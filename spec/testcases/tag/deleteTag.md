@@ -1,0 +1,11 @@
+# テストケース: deleteTag
+
+| 前提条件 | 操作 | 期待結果 | 実装ステータス |
+|---|---|---|---|
+| 3 件のノートに付いたタグ | 削除する | タグと付与が削除され、`affectedNotes: 3` が返る | |
+| 削除後 | ノートを確認する | ノート自体は残り、そのタグだけが外れている | |
+| 使用件数 0 のタグ | 削除する | 成功し、`affectedNotes: 0` が返る | |
+| 存在しないタグ ID | 削除する | `NotFoundError("TAG_NOT_FOUND")` が投げられる | |
+| 他スコープのタグ | 削除する | `NotFoundError("TAG_NOT_FOUND")` が投げられる | |
+| ワークスペースの viewer | 削除する | `BusinessRuleError(InsufficientRole)` が投げられる | |
+| 削除後 | そのタグで絞り込む | 結果が 0 件になる | |
