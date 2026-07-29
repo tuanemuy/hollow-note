@@ -7,5 +7,5 @@
 | 非メンバーである | 一覧する | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | owner が 2 名いる | 一覧する | `ownerCount: 2` が返る | |
 | メンバーが `limit` を超える | 一覧する | `limit` 件と総件数が返る | |
-| ページング値が範囲外 | 一覧する | `ValidationError("INVALID_PAGINATION")` が投げられる | |
+| ページング値が範囲外 | 一覧する | `ValidationError("INVALID_PAGINATION")` が投げられる（一覧系ユースケース共通の規約） | |
 | 削除済みの利用者がメンバーに残っている | 一覧する | その行は表示名を解決できない旨を示して返る（エラーにしない） | |

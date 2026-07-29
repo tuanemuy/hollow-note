@@ -7,12 +7,26 @@
 - 入力 DTO のフィールドは原始型。値オブジェクトの構築はユースケースの先頭かエンティティのファクトリーで行う
 - 出力 DTO のフィールドも原始型。ブランド型は原始型へ自然に広がるため射影にキャストは不要
 - ここに列挙したエラーは、明示のない限りアプリケーション層の `NotFoundError` / `ConflictError` / `ValidationError` / `SystemError`、またはドメインの `BusinessRuleError`
+- 一覧系ユースケースのページングは全ドメイン共通の規約に従う。`limit` は 1〜100、`cursor` は直前の応答が返した値のみ。範囲外・不正な値は `ValidationError("INVALID_PAGINATION")`（各ユースケースのエラー表では省略することがある）
+
+### UoW の合成と、ユースケースどうしの呼び出し
+
+同一 UoW でどこまでを束ねるかの基準は [ADR 008](../adr/008-domain-boundaries.md) の「ドメインをまたぐ整合性の取り方」に従う。束ねると決めたものをどう組み立てるかは次の規約による。
+
+- `UnitOfWorkProvider.run` は**入れ子にしない**。1 回の要求で開く UoW は最も外側の 1 つだけとする
+- 複数の呼び出し元が同一トランザクションの中で使い回す書き込みは、ユースケースではなく**共有手順**として定義する。共有手順は UoW のコンテキストを引数に取り、自分では `run` を開かない。呼び出し元は自分の UoW の中でそれを実行する。現行の spec が持つ共有手順は次の 2 つで、どちらも同じ規約に従う
+  - **保管ファイルの削除手順**（[usecases/storage.md](./storage.md) の「共有手順: 保管ファイルの削除」）。`deleteFiles` ユースケース自身は「UoW を開いてこの手順を実行するだけ」の薄い入口になる
+  - **強制終端の後始末**（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」の `finalizeTerminatedJobs`）。ジョブを終端させた 9 経路とリース失効の自動回収が使い回す。この手順は自分の中で前者を実行する（共有手順が共有手順を呼ぶ形になるが、どちらも `run` を開かないため入れ子は生じない）
+  - 各経路の記述にある「`deleteFiles` で回収する（同一 UoW）」は、`deleteFiles` ユースケースの呼び出しではなく手順の実行を指す
+- ユースケースが**他のユースケースを呼ぶ**場合（`runBulkNoteOperationItem` → `trashNote` / `purgeNote` など）、呼ばれた側は自分の UoW を開いて独立に確定する。`expectedVersion` を要求するユースケースには**呼び出し側が版を渡す**（この入力は転送境界から来たものに限らない）。対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す（`runBulkNoteOperationItem` は手順 2 で引いたノートの版を使う）。競合したときの扱い（1 度だけ読み直して再適用するか、失敗として記録するか）は呼び出し側が決める
+- 呼ばれた側の保存とイベントの収集はその UoW で確定するため、そのあと呼び出し側が失敗しても巻き戻らない。ユースケースどうしの呼び出しを採ってよいのは「呼ばれた側だけが確定していても矛盾しない」場合に限り、そうでなければ共有手順に切り出して 1 つの UoW にまとめる
+- 書き込みを持たないユースケース（`planConversionForUpload` のような判定だけのもの）はこの規約の対象外で、どこから呼んでも UoW に影響しない
 
 ## signUpWithPassword
 
 ### 概要
 
-メールアドレスとパスワードで新しい利用者を登録し、確認メールを送る。招待経由の場合は確認を省いてセッションを発行する。
+メールアドレスとパスワードで新しい利用者を登録し、確認メールを送る（AC-01）。招待経由の場合は確認を省いてセッションを発行する（WS-04）。
 
 ### 入力DTO
 
@@ -60,7 +74,7 @@
 
 ### 概要
 
-確認トークンを消費して利用者を確認済みにし、セッションを発行する。
+確認トークンを消費して利用者を確認済みにし、セッションを発行する（AC-02）。
 
 ### 入力DTO
 
@@ -83,7 +97,7 @@
 3. `status` が `consumed` なら、対象の利用者が既に `active` かを確認して `alreadyVerified: true` で返す（セッションは発行しない）
 4. `AuthToken.consume(token, now)` を呼ぶ（期限切れは `BusinessRuleError(TokenExpired)`）
 5. `UserRepository.findById` で利用者を引き、`PendingUser` なら `User.verifyEmail` を適用する
-6. `UnitOfWorkProvider.run` で利用者とトークンを保存し、イベントを収集する
+6. `UnitOfWorkProvider.run` で利用者とトークンを保存し、イベントを収集する。トークンの保存は `status = 'pending'` の行への条件付き更新であり（[domains/identity.md](../domains/identity.md) の `AuthTokenRepository`）、並行する要求が先に消費していれば `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` になる。この場合はトランザクションを巻き戻したうえで手順 3 と同じ扱いに落とし、利用者を引き直して `active` なら `alreadyVerified: true` を返す（セッションは発行しない）。同じトークンによる同時アクセスで確認が二重に成立することも、失敗として見えることもない
 7. `Session.create` を作って保存し、平文トークンを返す
 
 ### エラーケース
@@ -93,13 +107,14 @@
 | トークン不在・用途違い | `NotFoundError("AUTH_TOKEN_NOT_FOUND")` |
 | 期限切れ | `BusinessRuleError(TokenExpired)` |
 | 利用者が既に削除済み | `NotFoundError("USER_NOT_FOUND")` |
+| 並行する要求が先にトークンを消費した（`ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")`） | エラーにせず `alreadyVerified: true` で返す（手順 6） |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## resendVerificationEmail
 
 ### 概要
 
-確認メールを再送する。
+確認メールを再送する（AC-02 / AC-04）。
 
 ### 入力DTO
 
@@ -129,7 +144,7 @@
 
 ### 概要
 
-メールアドレスとパスワードで認証してセッションを発行する。
+メールアドレスとパスワードで認証してセッションを発行する（AC-04）。
 
 ### 入力DTO
 
@@ -137,7 +152,7 @@
 | --- | --- | --- | --- |
 | `email` | `string` | ○ | `Email` の規則 |
 | `password` | `string` | ○ | 空文字列でないこと |
-| `clientKey` | `string` | ○ | 発信元を表す文字列（レート制限の鍵） |
+| `clientKey` | `string` | ○ | 発信元を表す文字列（レート制限の鍵の材料） |
 
 ### 出力DTO
 
@@ -148,12 +163,15 @@
 
 ### 処理フロー
 
-1. `LoginAttemptStore.get` と `LoginThrottlePolicy.evaluate` で待機・ロックを判定する
-2. `UserRepository.findByEmail` で引く
-3. 利用者がいない、`IdentityPolicy.findPassword` が `null`、または `PasswordHasher.verify` が偽のいずれかなら、失敗を記録して `ValidationError("INVALID_CREDENTIALS")`
-4. 利用者が `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`
-5. `LoginThrottlePolicy.reset` で失敗回数を消す
-6. `Session.create` を作って保存し、平文トークンを返す
+1. `Email.create(input.email)` を構築し、`LoginAttemptKey.forSignIn(email, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)）
+2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("LOGIN_THROTTLED")` / `ValidationError("LOGIN_LOCKED")`
+3. `UserRepository.findByEmail` で引く
+4. 利用者がいない、`IdentityPolicy.findPassword` が `null`、または `PasswordHasher.verify` が偽のいずれかなら、`LoginAttemptStore.put(LoginThrottlePolicy.recordFailure(attempt, now), LoginThrottlePolicy.attemptTtlMs)` で失敗を記録し、`ValidationError("INVALID_CREDENTIALS")`
+5. 利用者が `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`（失敗として記録しない。資格情報は正しく、再送すれば通る状態のため）
+6. `LoginAttemptStore.clear(key)` で失敗の記録を消す
+7. `Session.create` を作って保存し、平文トークンを返す
+
+`login_attempts` への書き込みはこのユースケースと `verifySharePassword`（[usecases/note.md](./note.md)）の 2 か所だけで、どちらも同じ順序（`get` → `evaluate` → 失敗なら `put` / 成功なら `clear`）に従う。Unit of Work には入れない — 記録は集約の不変条件に関与せず、認証が失敗して例外を投げる経路でも書き込みが残らなければレート制限が機能しないため。書き込みの失敗は記録して継続し、認証の結果そのものは変えない。
 
 ### エラーケース
 
@@ -168,7 +186,7 @@
 
 ### 概要
 
-サインイン用の OAuth 認可 URL を生成し、`state` と `codeVerifier` を保存する。
+サインイン用の OAuth 認可 URL を生成し、`state` と `codeVerifier` を保存する（AC-03 / AC-06）。
 
 ### 入力DTO
 
@@ -204,7 +222,7 @@
 
 ### 概要
 
-認可コードを交換し、利用者を作成または既存利用者へ紐づけてセッションを発行する。
+認可コードを交換し、利用者を作成または既存利用者へ紐づけてセッションを発行する（AC-03）。
 
 ### 入力DTO
 
@@ -241,13 +259,13 @@
 | コード交換の失敗 | `ValidationError("OAUTH_CODE_INVALID")` / `SystemError(ExternalServiceError)` |
 | プロバイダー側のメール未確認 | `ValidationError("OAUTH_EMAIL_UNVERIFIED")` |
 | 既存利用者がメール未確認 | `ValidationError("EXISTING_ACCOUNT_UNVERIFIED")` |
-| 紐づけ先が別の利用者 | `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` |
+| 紐づけ先が別の利用者 | `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（同時サインアップの競合で `(provider, providerAccountId)` の一意制約違反が起きたときのみ到達する。既存の紐づけは手順 3 で先に解決される） |
 
 ## linkOAuthIdentity
 
 ### 概要
 
-サインイン済みの利用者に OAuth の認証手段を追加する。
+サインイン済みの利用者に OAuth の認証手段を追加する（AC-06）。
 
 ### 入力DTO
 
@@ -274,7 +292,7 @@
 
 ### 概要
 
-セッショントークンから利用者を解決する。すべての保護された操作の前段で呼ばれる。
+セッショントークンから利用者を解決する（AC-04 / AC-08）。すべての保護された操作の前段で呼ばれる。
 
 ### 入力DTO
 
@@ -309,7 +327,7 @@
 
 ### 概要
 
-現在のセッションを破棄する。
+現在のセッションを破棄する（AC-08）。
 
 ### 入力DTO
 
@@ -332,7 +350,7 @@
 
 ### 概要
 
-現在のセッション以外をすべて破棄する。
+現在のセッション以外をすべて破棄する（AC-08）。
 
 ### 入力DTO
 
@@ -357,7 +375,7 @@
 
 ### 概要
 
-パスワード再設定用のトークンを発行してメールを送る。
+パスワード再設定用のトークンを発行してメールを送る（AC-05）。
 
 ### 入力DTO
 
@@ -385,7 +403,7 @@
 
 ### 概要
 
-再設定トークンを消費してパスワードを差し替え、全セッションを破棄する。
+再設定トークンを消費してパスワードを差し替え、全セッションを破棄する（AC-05）。
 
 ### 入力DTO
 
@@ -401,7 +419,7 @@
 2. `AuthToken.consume` を呼ぶ
 3. `PlainPassword.create(newPassword)` と `PasswordHasher.hash` を実行する
 4. `IdentityPolicy.findPassword` で対象の認証手段を得る。存在しなければ `Identity.createPassword` を作る
-5. `Identity.changePassword` の結果とトークンを `UnitOfWorkProvider.run` で保存する
+5. `Identity.changePassword` の結果とトークンを `UnitOfWorkProvider.run` で保存する。トークンの保存が `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` になった場合（並行する要求が先に消費した）は、パスワードの差し替えごと巻き戻して `NotFoundError("AUTH_TOKEN_NOT_FOUND")` を返す。手順 1 の「消費済み」と同じ扱いで、先に成立した再設定を後から上書きしない。`verifyEmail` と違って成功に落とさないのは、勝った側と負けた側で設定されるパスワードが異なるため
 6. `SessionRepository.deleteByUserId(userId, null)` で全セッションを破棄する
 
 ### エラーケース
@@ -409,6 +427,7 @@
 | 条件 | 種類 |
 | --- | --- |
 | トークン不在・用途違い・消費済み | `NotFoundError("AUTH_TOKEN_NOT_FOUND")` |
+| 並行する要求が先にトークンを消費した（`ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")`） | `NotFoundError("AUTH_TOKEN_NOT_FOUND")` に落として返す（手順 5） |
 | 期限切れ | `BusinessRuleError(TokenExpired)` |
 | パスワード強度の違反 | `BusinessRuleError(WeakPassword)` |
 
@@ -416,7 +435,7 @@
 
 ### 概要
 
-パスワード認証手段を持たない利用者に追加する。
+パスワード認証手段を持たない利用者に追加する（AC-06）。
 
 ### 入力DTO
 
@@ -443,7 +462,7 @@
 
 ### 概要
 
-現在のパスワードを確認して差し替え、他のセッションを破棄する。
+現在のパスワードを確認して差し替え、他のセッションを破棄する（AC-06）。
 
 ### 入力DTO
 
@@ -469,7 +488,7 @@
 
 ### 概要
 
-認証手段を 1 件削除する。
+認証手段を 1 件削除する（AC-06）。
 
 ### 入力DTO
 
@@ -496,7 +515,7 @@
 
 ### 概要
 
-利用者の認証手段を一覧する。
+利用者の認証手段を一覧する（AC-06）。
 
 ### 入力DTO
 
@@ -519,7 +538,7 @@
 
 ### 概要
 
-表示名・自己紹介・アイコン・公開ハンドルを更新する。
+表示名・自己紹介・アイコン・公開ハンドルを更新する（AC-07）。
 
 ### 入力DTO
 
@@ -540,7 +559,7 @@
 1. `UserRepository.findById` で引く。`PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`
 2. `handle` が指定されていれば `UserRepository.existsByHandle(handle, userId)` を調べ、真なら `ConflictError("HANDLE_ALREADY_USED")`
 3. `User.updateProfile` を適用し、`handle` の指定があれば `User.assignHandle` または `User.clearHandle` を続けて適用する
-4. `UnitOfWorkProvider.run` で保存し、イベントを収集する
+4. `UnitOfWorkProvider.run` で保存し、イベントを収集する。`displayName` が変わったときは `User.updateProfile` が `identity.user.profileUpdated` を発行し、読み取りモデルの著者表示名の投影（`projectNoteChanges`）が購読する
 
 ### エラーケース
 
@@ -555,7 +574,7 @@
 
 ### 概要
 
-公開ページ用に、ハンドルから利用者の公開情報を引く。
+公開ページ用に、ハンドルから利用者の公開情報を引く（DS-01 / DS-04）。
 
 ### 入力DTO
 
@@ -592,7 +611,11 @@
 
 ### 処理フロー
 
-1. `NoteQueryService.listPublicAuthors(cursor, limit)` を引く。読み取りモデルの `author_handle` が非 NULL で、公開かつ有効なノートを 1 件以上持つ利用者だけが返る
+1. `NoteQueryService.listPublicAuthors(cursor, limit)` を引く。**個人所有**（`owner_type = "user"`）で公開かつ有効なノートを 1 件以上持つ利用者について、`{ userId, updatedAt }`（`updatedAt` はその利用者の個人所有の公開ノートの最新更新時刻）が `userId` の昇順で返る
+2. `UserRepository.listByIds` でハンドルを解決し、`handle` が未設定の利用者は落とす（`/@:handle` を持たないため）。読み取りモデルは所有者のハンドルを列に持たないので、解決はここで行う
+3. `nextCursor` は最後に読んだ `userId`
+
+母集合は所有者基準に統一する。`/@:handle` の一覧は `searchPublicNotes` が `ownerFilter: { type: "user", userId }` で引く所有者基準の集合であり、サイトマップに載せる利用者の集合はそれと一致しなければならない。著者基準（`created_by` / `author_handle`）で列挙すると、ワークスペース所有の公開ノートしか作っていない利用者がサイトマップに現れる一方その `/@:handle` は 0 件になり、空の公開ページを量産する。逆に、ワークスペースから個人へ移したノート（作成者は別人のまま）を持つ利用者は所有者基準でのみ拾える。
 
 ### エラーケース
 
@@ -602,7 +625,7 @@
 
 ### 概要
 
-アカウントと関連データを削除する。
+アカウントと関連データを削除する（AC-09）。
 
 ### 入力DTO
 
@@ -616,9 +639,20 @@
 
 1. `UserRepository.findById` で引き、`confirmationEmail` が一致しなければ `ValidationError("CONFIRMATION_MISMATCH")`
 2. `MembershipRepository.listByUser` を引き、`owner` として属するワークスペースそれぞれについて `MembershipRepository.countByRole(workspaceId, "owner")` を調べる。1 なら `BusinessRuleError(LastOwnerCannotLeave)` として中止する
-3. `JobRepository.listActiveByRequester` を引き、すべて `Job.cancel` する
-4. `UnitOfWorkProvider.run` で利用者を削除し、`IdentityEvents.userDeleted` を収集する
-5. 関連データ（認証手段、セッション、トークン、ノート、ファイル、タグ、連携、クォータ、ジョブ）は `identity.user.deleted` を購読するワーカーが削除する
+3. 取り消す対象の実行中ジョブを集める。`JobRepository.listActiveByRequester(userId)`（この利用者が要求したジョブ。ワークスペース所有ノートを対象とするものを含む）と `JobRepository.listActiveByScope({ type: "user", userId })`（この利用者の個人所有ノートを対象とするジョブ。要求者が `null` の匿名 PDF 書き出しはこちらでしか拾えない。[ADR 010](../adr/010-anonymous-export-and-ticket.md)）の両方を引き、`jobId` で重複を除く
+4. `UnitOfWorkProvider.run` の中で、3 で集めたジョブに `Job.cancel` を適用して保存し、利用者を削除して `IdentityEvents.userDeleted` を収集する。**これらの保存はすべて同一 UoW で行う** — 利用者だけが消えてジョブが走り続ける中間状態を作らないため。`Job.cancel` はリースを検査しないので、実行中のワーカーの生存を待つ必要はない（[domains/job.md](../domains/job.md) の「強制終端とリース」）。併せて [usecases/job.md](./job.md) の「共通: 強制終端の後始末」に従う（`kind: "conversion"` の対象ノートが `processing` なら `Note.markConversionFailed("canceled")`、生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を「保管ファイルの削除手順」（[usecases/storage.md](./storage.md) の `deleteFiles`）で回収。いずれもこの UoW の中で行う）。個人所有ノートは手順 5 の購読者がまとめて消すため回復は結果的に無意味だが、退会後も残るワークスペース所有ノート（AC-09）にはこの回復が要る
+5. 認証手段・セッション・トークンは同一ドメインの FK CASCADE で消える。残りの関連データは `identity.user.deleted` を購読する各ドメインの掃除ユースケースが削除する。購読関係は次のとおり（本体の定義は各ドメインのユースケース文書が持つ）
+
+| ドメイン | 購読ユースケース | 責務 |
+| --- | --- | --- |
+| Note | [`deleteNotesForOwner`](./note.md) | 個人所有ノートと版・読み取りモデルの削除。1 件ずつ `note.purged` を発行し、タグ付与・保管ファイル・バックアップ記録の後始末につなぐ（ワークスペース所有ノートは残る — AC-09） |
+| Note（読み取りモデル） | [`projectNoteChanges`](./note.md) | 残るワークスペース所有ノートの著者表示の置換（`updateAuthor(userId, "退会した利用者", null)`）。行は消さず、退会後の投影で旧表示名が復活しないようにする |
+| Tag | [`deleteTagsForScope`](./tag.md) | 個人スコープのタグと付与の削除（`TagRepository.deleteByScope`） |
+| Workspace | [`deleteMembershipsForUser`](./workspace.md) | 参加していたワークスペースからの除去（`MembershipRepository.deleteByUser`。唯一の owner でないことは手順 2 が保証する） |
+| Integration | [`deleteIntegrationsForUser`](./integration.md) | 連携・バックアップ記録の削除とトークンの破棄（`ExternalConnectionRepository.deleteByUser` / `BackupRecordRepository.deleteByUser`） |
+| Job | [`deleteJobsForRequester`](./job.md) | ジョブ履歴の削除（`JobRepository.deleteByRequester`。実行中のものは手順 3 でキャンセル済み） |
+| Storage | [`deleteFilesByOwner`](./storage.md) | 個人所有ファイルの削除 |
+| Usage | [`deleteQuota`](./usage.md) | クォータ行の削除 |
 
 ### エラーケース
 
@@ -627,3 +661,41 @@
 | 確認入力の不一致 | `ValidationError("CONFIRMATION_MISMATCH")` |
 | 唯一の owner であるワークスペースがある | `BusinessRuleError(LastOwnerCannotLeave)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
+
+## pruneExpiredAuthState
+
+### 概要
+
+期限切れの認証状態（セッション・認証トークン・ログイン試行・認可フロー状態）をまとめて回収する。定期ワーカーから呼ばれる。
+
+### 入力DTO
+
+なし（基準時刻は `clock` から得る）。
+
+### 出力DTO
+
+| フィールド | 型 |
+| --- | --- |
+| `sessions` | `number` |
+| `authTokens` | `number` |
+| `loginAttempts` | `number` |
+| `oauthFlowStates` | `number` |
+
+### 処理フロー
+
+1. `SessionRepository.deleteExpired(now)` を呼ぶ。`authenticateSession` は期限切れのセッションを常に `UNAUTHENTICATED` として扱うため、削除しても認証結果は変わらない
+2. `AuthTokenRepository.deleteExpired(now)` を呼ぶ。消費済みのトークンも期限を過ぎていれば消える。単回性は消費時の条件付き更新（[domains/identity.md](../domains/identity.md) の `AuthTokenRepository`）が担保しており、行が残り続けることには依存しない
+3. `LoginAttemptStore.deleteExpired(now)` を呼ぶ。ロック中の記録は `lockedUntil` より後に期限が来るため、ロックの解除を早めることはない
+4. `OAuthStateStore.deleteExpired(now)` を呼ぶ。サインイン用（Identity）と連携用（Integration）の認可フロー状態は同じポートに載るため、この 1 回の掃除が両方を覆う。Integration 側に同種の定期掃除は置かない
+5. 4 つの削除は互いに独立で、1 つの失敗は他に影響させない（記録して継続し、成功した分の件数を返す）
+
+Unit of Work は使わない。いずれも期限切れ行の削除だけで、イベントも集約の不変条件も関与しないため。
+
+冪等性: すべて「期限を過ぎた行の削除」であり、2 回目以降は 0 件で終わる。境界は `expiresAt <= now`（`Session.isExpired` / `AuthToken.isExpired` と同じ判定）。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 個々の削除の失敗 | 記録して継続 |
+| 4 つすべての削除が失敗 | `SystemError(DatabaseError)` |

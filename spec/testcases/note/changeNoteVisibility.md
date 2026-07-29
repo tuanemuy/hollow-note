@@ -6,6 +6,9 @@
 | ハンドル設定済みで本文のあるノート | 公開に変更する | `visibility: "public"` になり、`note.published` が発行される | |
 | ハンドル未設定の個人ノート | 公開に変更する | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる | |
 | スラッグ未設定のワークスペースのノート | 公開に変更する | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる | |
+| 他の利用者が作ったワークスペースのノートを自分の個人所有へ移動した（`createdBy` は別人）。所有者の自分はハンドル設定済み | 公開に変更する | 成功する（検査は所有者 `owner.userId` 基準で、`createdBy` は用いない） | |
+| 同じく移動後のノートで、所有者の自分はハンドル未設定・作成者はハンドル設定済み | 公開に変更する | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる（作成者のハンドルでは通らない） | |
+| 個人ノートをワークスペースへ移動した。ワークスペースは公開スラッグ設定済み、作成者はハンドル未設定 | 公開に変更する | 成功する（ワークスペース所有はワークスペースの公開スラッグで判定する） | |
 | 変換処理中のノート | 公開に変更する | `BusinessRuleError(CannotPublishEmptyNote)` が投げられる | |
 | 「要 LLM 連携」のノート | 限定公開に変更する | `BusinessRuleError(CannotPublishEmptyNote)` が投げられる | |
 | 限定公開のノート | 非公開に戻す | 共有リンクが無効になり、休眠として保持される | |

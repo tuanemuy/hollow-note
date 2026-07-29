@@ -21,8 +21,11 @@
 
 ### ConversionCapability
 
-- **フィールド**: `llmAvailable: boolean`
-- 変換方針の決定に必要な、外部連携の有無だけを表す。Integration ドメインの詳細は持ち込まない
+- **フィールド**: `llm: "available" | "unavailable" | "declined"`
+- `available` は要求者の LLM 連携が使える、`unavailable` は連携がない、`declined` は利用者が `conversionPreference: "machineOnly"` を選んで LLM 構造化を使わないと決めた状態
+- 失効した連携は方針決定の入力にしない。資格情報を解決した時点で失効が判明するため、呼び出し側は方針を決めずに `providerAuthFailed` として失敗させる（[usecases/conversion.md](../usecases/conversion.md) の `runConversion` 手順 5）。「連携すれば取り込める」保留（`awaitingIntegration`）と「再連携が要る」失敗は案内が異なるため、`unavailable` に畳まない。ジョブ登録時の事前確認（`requestRegeneration`）でも同じ区別を保ち、未連携と失効を 1 つのエラーに畳まない
+- 「使えない」と「使わないと決めた」を分けるのは、LLM を要する形式が来たときの結果と案内が異なるため（前者は連携を促す `awaitingIntegration`、後者は方針の変更を促す `failed(machineExtractionUnavailable)`）。連携済みの利用者が `machineOnly` を選ぶ場合もあるため、真偽値 1 つでは表現できない
+- 変換方針の決定に必要な情報だけを表す。Integration ドメインの詳細は持ち込まない
 
 ### ConversionPlan
 
@@ -35,7 +38,7 @@ ConversionPlan =
   | { kind: "pageImageStructuring" }                                // ページ画像 → LLM 構造化
   | { kind: "imageStructuring" }                                   // 画像 → LLM 構造化
   | { kind: "transcriptionThenStructuring" }                        // 音声認識 → LLM 構造化
-  | { kind: "unavailable"; reason: "integrationRequired" | "unsupportedFormat" }
+  | { kind: "unavailable"; reason: "integrationRequired" | "machineExtractionUnavailable" | "unsupportedFormat" }
 ```
 
 - **補助**: `ConversionPlan.requiresLlm(plan): boolean`
@@ -47,9 +50,22 @@ ConversionPlan =
 
 ### ConversionFailureReason
 
-- **フィールド**: `value: "unsupportedFormat" | "corruptedFile" | "integrationRequired" | "providerAuthFailed" | "modelError" | "quotaExceeded" | "timeout" | "sizeExceeded" | "passwordProtected" | "unknown"`
+- **フィールド**: `value: "unsupportedFormat" | "corruptedFile" | "integrationRequired" | "machineExtractionUnavailable" | "providerAuthFailed" | "modelError" | "quotaExceeded" | "timeout" | "sizeExceeded" | "passwordProtected" | "unknown"`
 - **バリデーション**: 既知の値のみ
 - 利用者に説明できる語彙に限る。Note の `content.status = "failed"` と Job の失敗記録が同じ語彙を共有するため、ここを唯一の定義とする
+- `integrationRequired` は Job の失敗理由としてのみ現れる。Note 本文の `failed` はこの値を取らない（未連携は本文では `awaitingIntegration` として表す。[note.md](./note.md)）
+- `machineExtractionUnavailable` は `capability.llm === "declined"` の取り込みで LLM 必須形式（テキスト層のない PDF・画像・音声）が来た場合にのみ現れる。利用者が LLM を使わないと決めた結果なので、連携を促す `awaitingIntegration` ではなく Note 本文の `failed` に入る
+
+### InitialContentState
+
+```
+InitialContentState =
+  | { status: "processing" }
+  | { status: "awaitingIntegration" }
+  | { status: "failed"; reason: Extract<ConversionFailureReason, "machineExtractionUnavailable" | "unsupportedFormat" | "passwordProtected"> }
+```
+
+取り込み時にノートへ与える本文の初期値。Note の `NoteContent` から `ready` を除いた部分と構造的に一致し、`Note.createFromUpload` の `initialContent` にそのまま渡せる（Note → Conversion の依存方向は [index.md](./index.md) のとおり）。状態と理由を 1 つの値に閉じ込めることで、`failed` なのに理由が失われた状態を表現できなくする。
 
 ### TranscriptText
 
@@ -69,18 +85,20 @@ ConversionPlan =
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `plan` | `format: SourceFormat, capability: ConversionCapability` | `ConversionPlan` | 下表に従う |
-| `initialContentStatusFor` | `plan: ConversionPlan` | `"processing" \| "awaitingIntegration" \| "failed"` | ノート作成時の本文状態を決める。`unavailable(integrationRequired)` は `awaitingIntegration`、`unavailable(unsupportedFormat)` は `failed`、それ以外は `processing` |
+| `initialContentFor` | `plan: ConversionPlan` | `InitialContentState` | ノート作成時の本文の初期値を決める。`unavailable(integrationRequired)` は `{ status: "awaitingIntegration" }`、`unavailable(machineExtractionUnavailable)` / `unavailable(unsupportedFormat)` は同じ理由を載せた `{ status: "failed"; reason }`、それ以外は `{ status: "processing" }`。状態と理由を同時に返すため、呼び出し側が理由を別経路で持ち回る必要がない |
 
-| 入力形式 | LLM なし | LLM あり |
-| --- | --- | --- |
-| `html` | `passthrough` | `passthrough` |
-| `markdown` | `markdown` | `markdown` |
-| `plainText` / `word` / `excel` / `powerPoint` | `textExtraction` | `textExtractionThenStructuring` |
-| `pdfWithText` | `textExtraction` | `textExtractionThenStructuring` |
-| `pdfWithoutText` | `unavailable(integrationRequired)` | `pageImageStructuring` |
-| `image` | `unavailable(integrationRequired)` | `imageStructuring` |
-| `audio` | `unavailable(integrationRequired)` | `transcriptionThenStructuring` |
-| `unsupported` | `unavailable(unsupportedFormat)` | `unavailable(unsupportedFormat)` |
+| 入力形式 | `llm: "declined"` | `llm: "unavailable"` | `llm: "available"` |
+| --- | --- | --- | --- |
+| `html` | `passthrough` | `passthrough` | `passthrough` |
+| `markdown` | `markdown` | `markdown` | `markdown` |
+| `plainText` / `word` / `excel` / `powerPoint` | `textExtraction` | `textExtraction` | `textExtractionThenStructuring` |
+| `pdfWithText` | `textExtraction` | `textExtraction` | `textExtractionThenStructuring` |
+| `pdfWithoutText` | `unavailable(machineExtractionUnavailable)` | `unavailable(integrationRequired)` | `pageImageStructuring` |
+| `image` | `unavailable(machineExtractionUnavailable)` | `unavailable(integrationRequired)` | `imageStructuring` |
+| `audio` | `unavailable(machineExtractionUnavailable)` | `unavailable(integrationRequired)` | `transcriptionThenStructuring` |
+| `unsupported` | `unavailable(unsupportedFormat)` | `unavailable(unsupportedFormat)` | `unavailable(unsupportedFormat)` |
+
+`declined` と `unavailable` は、機械的変換で取り込める形式では同じ方針になる。分かれるのは LLM 必須形式のときだけで、`declined` は「利用者が選んだ方針では取り込めない」ため失敗として確定し、`unavailable` は「連携すれば取り込める」ため保留（`awaitingIntegration`）になる。
 
 **依存するポート**: なし
 
@@ -118,11 +136,13 @@ ConversionOutcome =
 | `passthrough` | `FileContentReader.readText` → そのまま `rawHtml` |
 | `markdown` | `FileContentReader.readText` → `MarkdownRenderer.render` |
 | `textExtraction` | `DocumentTextExtractor.extract` → 段落を `<p>` に包んだ素朴な HTML |
-| `textExtractionThenStructuring` | `DocumentTextExtractor.extract` → `StructuringModel.structureText` |
-| `pageImageStructuring` | `DocumentTextExtractor.renderPages` → `StructuringModel.structureImages` |
-| `imageStructuring` | `FileContentReader.readBytes` → `StructuringModel.structureImages` |
-| `transcriptionThenStructuring` | `TranscriptionModel.transcribe` → `StructuringModel.structureText` |
+| `textExtractionThenStructuring` | `DocumentTextExtractor.extract` → `StructuringModel.structureText`（`models.structuring`） |
+| `pageImageStructuring` | `DocumentTextExtractor.renderPages` → `StructuringModel.structureImages`（`models.vision`） |
+| `imageStructuring` | `FileContentReader.readBytes` → `StructuringModel.structureImages`（`models.vision`） |
+| `transcriptionThenStructuring` | `TranscriptionModel.transcribe`（`models.transcription`）→ `StructuringModel.structureText`（`models.structuring`） |
 | `unavailable` | 実行せず `failed` を返す |
+
+LLM を呼ぶ手順は、表中の括弧に示した `models` のフィールドのモデルを使う。再生成（`runRegeneration`）の `modelOverride` は、方針の構造化に使うフィールドだけを上書きする: `textExtractionThenStructuring` / `transcriptionThenStructuring` は `structuring` を、`pageImageStructuring` / `imageStructuring` は `vision` を置き換える。`transcription` は上書きの対象にしない（音声認識モデルは IN-02 の設定に従う）。
 
 失敗の分類:
 
@@ -263,6 +283,8 @@ ConversionErrorCode =
 ```
 
 `ModelsRequired` は、LLM を要する方針なのに `models` が `null` で `ConversionExecutor.execute` が呼ばれた場合に投げる。
+
+連携の未接続・失効を表すコードはここに持たない。それらは Integration の語彙（未連携は `NotFoundError("CONNECTION_NOT_FOUND")`、失効は `IntegrationErrorCode.ReauthorizationRequired`）で表し、判断するのは両ドメインを束ねるユースケース層である（[usecases/conversion.md](../usecases/conversion.md) の `requestRegeneration`）。Conversion ドメイン自体は連携の存在を知らず、`ConversionCapability` という値としてだけ受け取る（[index.md](./index.md) の依存方向）。
 
 ## ユースケース（概要）
 

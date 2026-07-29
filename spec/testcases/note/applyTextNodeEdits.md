@@ -8,7 +8,10 @@
 | `expected` が現在の内容と異なる | 適用する | その編集は `skipped(contentChanged)` になる | |
 | すべての編集が `skipped` になる | 適用する | 成功として返り、版は作られず本文も変わらない | |
 | テキストを空文字列にする | 適用する | ノードは削除されず空のまま残る | |
-| 本文が `processing` のノート | 適用する | `BusinessRuleError(CannotCaptureEmptyContent)` が投げられる | |
+| 本文が `processing` で、実行中の変換・再生成ジョブがない（ジョブがキャンセル・回収された後） | 適用する | 手順 2 の `NoteLockedByJob` 検査を通過し、手順 3 で `BusinessRuleError(CannotCaptureEmptyContent)` が投げられる | |
+| 本文が `awaitingIntegration` または `failed`（実行中ジョブなし） | 適用する | 同じく手順 3 で `BusinessRuleError(CannotCaptureEmptyContent)` が投げられる | |
+| 本文が `processing` で、その変換ジョブが実行中 | 適用する | 手順 2 が先に効くため、`CannotCaptureEmptyContent` ではなく `BusinessRuleError(NoteLockedByJob)` が投げられる（検査の順序を確認する） | |
+| 実行中の再生成ジョブがある（本文は `ready` のまま） | 適用する | `BusinessRuleError(NoteLockedByJob)` が投げられる | |
 | `script` の中身を指す経路を指定する | 適用する | `skipped(pathNotFound)` になる（編集対象外） | |
 | viewer である | 適用する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 他者が先に更新した | 古い `expectedVersion` で適用する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |

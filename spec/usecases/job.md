@@ -1,6 +1,164 @@
 # ユースケース: Job
 
-ドメインの詳細は [domains/job.md](../domains/job.md)。共通の約束は [usecases/identity.md](./identity.md) の冒頭と同じ。
+ドメインの詳細は [domains/job.md](../domains/job.md)。共通の約束は [usecases/identity.md](./identity.md) の冒頭と同じ。実行の回復性と batch 親の完了経路は [ADR 012](../adr/012-job-execution-resilience.md)、匿名ジョブの扱いは [ADR 010](../adr/010-anonymous-export-and-ticket.md) に従う。
+
+## 共通: 登録時の scope の決定
+
+ジョブを登録するユースケース（[domains/job.md](../domains/job.md) の登録経路の表に挙がる全 11 kind）は、`Job.enqueue` / `Job.enqueueBatch` に渡す `scope` を**対象の所有文脈**から導く。要求者からは導かない。
+
+- `target.type === "note"` → 対象ノートの `NoteOwner` を写す
+- `target.type === "storedFile"` → 対象ファイルの `StorageOwner` を写す（元ファイルの帰属はノートの所有文脈と一致する）
+- `target.type === "batch"`（親ジョブ）→ 子の所有文脈を写す。子ジョブの `scope` は親と同じ値になる
+
+対象を ID の並びで受け取る登録（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）は、絞り込んだあとの所有文脈が 2 つ以上あれば、子を 1 件も作らずに全体を中止して `ValidationError("MIXED_OWNER_SCOPE")` を返す（`startBulkUpload` は取り込み先の所有者を 1 つだけ受け取るため構造的に混在しない）。混在した親の `scope` は原理的に 1 つに決まらず、除名・脱退・ワークスペース削除・退会のキャンセルの網（`listActiveByScope`）が唯一の鍵にしている値だからである（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」、[ADR 012](../adr/012-job-execution-resilience.md)）。
+
+`scope` は登録時点の値のまま書き換えない。`bulkMove` は移動元の文脈を保つ。
+
+## 共通: リース期間と回収の間隔
+
+`leaseUntil: Date` を要求する振る舞い（`Job.enqueueBatch` / `start` / `beginAssembly` / `reportProgress` / `renewAssemblyLease` / `reopenBatch`、および `BatchProgressCalculator.applyTo`）に渡す値は、呼び出し側のユースケースが `clock.now() + リース期間` で作る。ドメインは期間を知らない（[domains/job.md](../domains/job.md)）。
+
+| 対象 | リース期間 | 延長の契機 |
+| --- | --- | --- |
+| 実行体を持つジョブ（単体ジョブと batch の子。kind を問わず一律） | 15 分 | `Job.start`、処理中の `Job.reportProgress` |
+| batch 親の進捗リース | 60 分 | `Job.enqueueBatch`、子の終了報告（`updateBatchProgress` → `reportProgress`）、`Job.reopenBatch` |
+| batch 親の組み立てリース（`bulkExport` の親のみ） | 60 分 | `Job.beginAssembly`、組み立て中の `Job.renewAssemblyLease` |
+
+- kind では分けない。15 分は最も重い実行（LLM 構造化を伴う変換・再生成）が 1 回の試行で収まる長さで、これを超える処理は `Job.reportProgress` で延ばす。PDF 書き出しの実行時間の上限もこの 15 分であり、`ExportTicket` の有効期間 30 分（[usecases/note.md](./note.md)）は「実行時間の上限に余裕を足した値」としてこれと整合する
+- 親の 60 分は「子 1 件の実行時間の上限より長く取る」（[domains/job.md](../domains/job.md)）を満たす最小の桁で、子の報告が途絶えてから親が回収されるまでの猶予でもある
+- 組み立て中の親（`attempts >= 1`）のリースは `reportProgress` では延びない（[domains/job.md](../domains/job.md) の「組み立て中の親のリース」）。延ばせるのは実行権を持つワーカーの `renewAssemblyLease` だけである
+- `reapExpiredJobs` の実行間隔は **5 分**とし、**実行間隔 < 最短のリース期間（15 分）** を保つ。生きているジョブを誤って落とす心配はない（`listExpiredRunning` は失効行しか返さず、`Job.expire` はリース有効なら `LeaseActive` で拒否する）ので、この関係は安全のためではなく回復の遅れを抑えるためのものである — 失効から回収までの遅れが 1 周期（5 分）に収まり、滞留の総時間がリース期間の 2 倍を超えない
+- `reapExpiredJobs` は `pruneJobHistory` と同じ定期ワーカーロールに相乗りするが、起動間隔は別に持つ（履歴の掃除は 1 日 1 回で足りる。[ADR 012](../adr/012-job-execution-resilience.md)）
+
+## 共通: run 系ワーカーの冪等規則
+
+キューからの配送で起動されるユースケース（`runConversion` / `runRegeneration` / `runNoteExport` / `runBulkExportItem` / `runBulkNoteOperationItem` / `runBackup` / `importExternalReferences`）は、先頭で対象ジョブを引いて次の順に判定する（ADR 012）。
+
+1. ジョブが見つからなければ何もせず成功として返す。終端状態（`succeeded` / `failed` / `canceled`）なら同じく何もせず返す（再配送の重複）
+2. `running` でリースが有効（`leaseExpiresAt > now`）なら何もせず返す（他のワーカーが実行中）
+3. それ以外は `Job.start(job, total, now, leaseUntil)` を保存して本処理へ進む
+   - `queued` は通常の開始
+   - リース失効の `running` は引き継ぎ再開（`attempts` を加算し、進捗を作り直す）
+   - 引き継ぎで `attempts` が上限を超えた場合、`start` は `expire` の結果（`failed`、`reason: "timeout"`、手動 `retry` 可能）を返すので、それを保存して終了する。この保存の UoW で下記「共通: 強制終端の後始末」を `cause: { type: "expired" }` として併せて実行する — 本処理に入る前に終端しているため、`kind: "conversion"` の対象ノートは `processing` のまま取り残される
+4. 本処理の結果（`Job.succeed` / `Job.fail` / `Job.reportProgress`）の保存が `ConflictError`（楽観ロック）になったら、ジョブを読み直す
+   - 終端済みなら、実行中に外部から強制終端されたということである（`Job.fail` / `Job.cancel` はリースを検査しない。[domains/job.md](../domains/job.md) の「強制終端とリース」）。生成物を破棄して成功として返し、ジョブは書き換えない。保管済みの artifact は期限付き保管の自動回収に委ねる（強制終端の時点では存在せず、終端させた側から見えないもの。終端の時点で batch 親の子が保管し終えていた artifact は下記「共通: 強制終端の後始末」が回収する）
+   - 終端していなければ（リース失効中に別のワーカーが引き継いだなど）`ConflictError` をそのまま投げて再配送に委ねる
+
+配送は少なくとも 1 回のため、この判定により同じジョブを 2 回受け取っても結果は変わらない。長い処理は `Job.reportProgress` でリースを延長する。各ドメインの run 系ユースケースでは、この手順を「run 系の共通規則に従う」と記す。
+
+判定 1 の「見つからない」は、`deleteJobsForRequester`（退会の後始末。状態を問わず削除する）と配送が競合すると起こる。行がない以上その配送で進められる処理はなく、再配送しても結果は変わらないため、`updateBatchProgress` の「親が不在 → 何もせず成功として返す」と同じ扱いにする。
+
+判定順の唯一の例外は `importExternalReferences`（Storage）で、`Job.start` に渡す `total` が本文を読んで参照を抽出するまで確定しないため、判定 1・2 は先頭で行いつつ判定 3 の `Job.start` だけを抽出後へ後ろ倒しする（[usecases/storage.md](./storage.md)）。
+
+batch 親（`target.type === "batch"`）は本規則の対象外である。親は `enqueueBatch` で即 `running` + リース付きで生成され、子の終了報告（`updateBatchProgress`）がそのリースを延長した直後に起動されるため、判定 2 に必ず該当してしまう。親自身の実行を持つのは `bulkExport` だけで、その再入防止は下記「batch 親の組み立て規則」が定める。
+
+## 共通: 強制終端の後始末
+
+ワーカーの生存を待たずにジョブを終端させる経路（[domains/job.md](../domains/job.md) の「強制終端とリース」の 9 経路 — `failActiveJobsForExpiredIntegration` / `disconnectIntegration` / `trashNote` / `deleteWorkspace` / `deleteAccount` / `removeMember` / `leaveWorkspace` / `changeMemberRole` / `cancelJob`）は、ジョブを終端させるだけでは対象の側に中途半端な状態を残す。次の 2 つを**ジョブの終端と同一 UoW で**併せて行う。各経路の記述ではこれを「強制終端の後始末の規則に従う」と記す。
+
+`cancelJob`（利用者自身による取り消し）だけは網で引かず `jobId` で 1 件を指すが、後始末は同じである。対象を選ぶ手段（対象・スコープ・要求者・`jobId`）は経路ごとに違っても、終端したあとに要る後始末は変わらない。
+
+**節の名前と適用範囲**。この節は強制終端の 9 経路を主たる呼び出し元として書くが、手順 1（`processing` のままのノートの回復）は**リース失効による自動回収**（`Job.expire`）にも適用する。どちらも「実行体が自分で本文を書き換える余地なく終端した」という同じ穴を塞ぐためである。適用範囲の差は下記の共有手順の引数 `cause` が表し、節の名前は主たる呼び出し元を指す通称として残す（手順そのものの名前は `finalizeTerminatedJobs` = 「ジョブを終端させた側の後始末」で、そちらは由来を限定しない）。
+
+**共有手順として定義する**
+
+これは複数の呼び出し元が同一トランザクションの中で使い回す書き込みであり、ユースケースではなく**共有手順**として定義する（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。「保管ファイルの削除手順」（[usecases/storage.md](./storage.md) の `deleteFiles`）と並ぶ 2 つ目の共有手順であり、同じ規約に従う — UoW のコンテキストを引数に取り、自分では `UnitOfWorkProvider.run` を開かない。
+
+```ts
+// ctx は UnitOfWorkProvider.run のコールバックが受け取るコンテキスト
+// （application/execution/unitOfWork.ts。[domains/index.md](../domains/index.md) の横断的関心事）
+finalizeTerminatedJobs(ctx, params: {
+  jobs: readonly (FailedJob | CanceledJob)[];   // この UoW で終端させたジョブ
+  cause:
+    | { type: "forced"; noteFailureReason: NoteFailureReason }
+    | { type: "expired" };
+}): Promise<void>
+```
+
+- `jobs` は呼び出し元が `Job.fail` / `Job.cancel` / `Job.expire` を適用した**結果**であり、手順そのものは終端の適用を含まない。どの遷移を当てるか（`fail` か `cancel` か `expire` か）と対象をどう選ぶか（対象・スコープ・要求者・`jobId`・リース失効）は経路ごとに違い、共有できるのは終端したあとの後始末だけだからである
+- `cause` は終端の由来。`forced` は上記 9 経路（利用者の操作・資格情報の喪失に由来する強制終端）で、`noteFailureReason` を経路ごとに指定する。`expired` はリース失効による自動回収（`reapExpiredJobs` の `Job.expire` と、run 系の共通規則の判定 3 で引き継ぎ試行が上限を超えた場合の `Job.expire`）で、理由は `timeout` に固定される。手順 2 を行うのは `forced` のときだけである（下記「`expired` で生成物を回収しない理由」）
+- 呼び出し元は自分の UoW の中でこの手順を実行する。手順の中で保管ファイルを消すときも `deleteFiles` ユースケースは呼ばず、「保管ファイルの削除手順」を同じ `ctx` で実行する
+
+**1. `processing` のままのノートを回復させる**
+
+終端させたジョブの `kind` が `conversion` で、対象ノート（`target.type === "note"`）の `content.status` が `processing` のままなら、`Note.markConversionFailed(reason, now)` を併せて保存する。`cause` の両方に適用する。
+
+- `cause.type === "forced"` の `reason` は強制終端の原因を写す。連携の失効による一括失敗（`failActiveJobsForExpiredIntegration`）だけは `providerAuthFailed`（`runConversion` の失敗時と同じ表示に揃えるため）、残る経路（`disconnectIntegration` / `trashNote` / `deleteWorkspace` / `deleteAccount` / `removeMember` / `leaveWorkspace` / `changeMemberRole`）と `cancelJob` は `canceled` とする
+- `cause.type === "expired"` の `reason` は `timeout` に固定する。ジョブ側の `JobFailure.reason` と同じ値であり（`Job.expire` は `failure: { reason: "timeout" }` で終端化する）、`NoteFailureReason` にも `timeout` があるためそのまま写せる。利用者に示す次の一手が「再試行する」で、`retryJob` が使える（`expire` は `attempts` を 0 に戻す）ことともつながる
+- `canceled`（「処理が取り消されました」）は本文の失敗理由の語彙 `NoteFailureReason`（[domains/note.md](../domains/note.md)）に加える値である。`unknown` に畳まないのは、利用者に示す次の一手が「取り込み直す・再試行する」と一意に定まるため。変換の実行が返す理由の集合（`ConversionFailureReason`）には足さない — 変換が `canceled` を返すことはなく、外から止められたことだけを表す値だからである
+- `regeneration` は失敗しても本文を `ready` のまま保つ設計（[usecases/conversion.md](./conversion.md)）なので対象外。ノート以外を対象とする kind（`driveBackup` / `bulkBackup`）と、`content.status` を動かさない kind（`referenceImport` / `pdfExport` / `bulkExport` / 一括操作系）も対象外
+- 対象ノートが `ActiveNote` でなければ何もしない。ノート自身も書き換える `trashNote` だけは順序が要り、`Note.markConversionFailed` を `Note.trash` より**先に**適用する（`markConversionFailed` は `ActiveNote` しか受け取らない）
+- 対象ノートごと消える経路（`deleteWorkspace`、`deleteAccount` の個人所有ノート）では結果的に無意味だが、規則を経路ごとに分けない。`deleteAccount` で残るワークスペース所有ノート（AC-09）にはこの回復が要る
+- `cause.type === "expired"` の呼び出し元は 2 つある。**リーパー**（`reapExpiredJobs` の手順 2）は、`listExpiredRunning` が返した `running` を `Job.expire` で終端化したあと、同じ行の UoW でこの手順を実行する。**引き継ぎ試行の上限超過**（run 系の共通規則の判定 3）は、`Job.start` が返した `expire` の結果を保存する UoW でこの手順を実行する。どちらもワーカーが自分で本文を書き換える余地なく終端しているため、強制終端と同じ穴が開く
+
+この後始末がないと、`processing` のノートは移動を拒否され（`BusinessRuleError(CannotMoveWhileProcessing)`）、`restoreNote` で戻しても `processing` のままで、本文を作り直す手立て（`requestRegeneration` は元ファイルからの再生成、取り込み直しは別のノートになる）に辿り着けないまま恒久的に固定される。ワーカーが生きている通常の失敗（`runConversion` が `Job.fail` を保存する経路）では本文の回復を実行体自身が同一 UoW で行うため、この手順は「実行体が自分で書き換えられなかったすべての終端」を埋める役になる。
+
+**2. 保管済みの生成物を回収する**
+
+`cause.type === "forced"` のときだけ行う。終端させたジョブが batch 親（`target.type === "batch"`）なら、`JobRepository.listChildren` で子を引き、**`succeeded` の子が持つ `artifact`** を集めて「保管ファイルの削除手順」（[usecases/storage.md](./storage.md) の `deleteFiles`）で破棄する。`cancelJob` の手順 5（一括ダウンロードの中間生成物の破棄）を全経路に広げたものである。
+
+`listChildren` はページングを要求するポートで、`limit` の上限は全ドメイン共通の 100（[usecases/identity.md](./identity.md) の「共通の約束」）である。一括操作の子は最大 500 件あるため 1 ページには収まらない。この手順は**全ページを走査して**子を集める（`retryFailedChildren` の手順 4 も同じ）。画面に返す `getJobDetail` だけが利用者の指定したページをそのまま引く。
+
+- 終端させたジョブ自身は対象にならない。`Job.cancel` / `Job.fail` が受け取るのは `QueuedJob | RunningJob` で、`artifact` を持つのは `succeeded` だけだからである（[domains/job.md](../domains/job.md)）。強制終端の網（`listActiveByTarget` / `listActiveByRequester` / `listActiveByScope`）が未終端のジョブしか返さないことも同じ帰結を与える。**回収の対象は、まだ終端していない親の、既に成功した子の生成物だけ**である
+- それが要るのは一括ダウンロードだからである。子・ZIP とも生成物は**要求者の個人 subject**に帰属し、TTL は 7 日ある（[usecases/note.md](./note.md) の `runBulkExportItem` / `runBulkExport`）。除名（`removeMember`）・脱退（`leaveWorkspace`）で走行中の親を止めても回収しなければ、そのワークスペースのノート本文を含む生成物が、既にアクセス権を失った利用者の手元に 7 日残る。期限切れの自動回収（`collectExpiredArtifacts`）に委ねてよい話ではない
+- 逆に、成功して終端済みのジョブが持つ生成物（単体の PDF、匿名の PDF、組み立て済みの ZIP）はこの規則では回収しない。強制終端はそもそも未終端のジョブしか止めないため、これらは終端させる集合に入らない。回収は期限（`expiresAt`）の経過に委ね、`collectExpiredArtifacts` が行う。ノートの生涯に連動させないのは Storage 側の方針とも一致する — `deleteFilesForNote` / `relocateFilesForNote` も `purpose: "artifact"` を対象にしない（[usecases/storage.md](./storage.md)）
+- 回収するのはジョブが作った生成物（`purpose: "artifact"`）だけである。元ファイル（`purpose: "source"`）や媒体には触れない
+- batch 親を終端させうるのは、スコープ・要求者で引く経路（`deleteWorkspace` / `deleteAccount` / `removeMember` / `leaveWorkspace` / `changeMemberRole`）と、親を直接指す `cancelJob` だけである。`trashNote` は対象（`target.type === "note"`）で引くため batch 親を返さず、`failActiveJobsForExpiredIntegration` / `disconnectIntegration` は batch 親を直接終端させない（子の終端化の集計に委ねる。[usecases/integration.md](./integration.md)）
+- そのうち実際に artifact が集まるのは、`bulkExport` 親を終端させうる経路（`deleteWorkspace` / `deleteAccount` / `removeMember` / `leaveWorkspace` / `cancelJob`）に限られる。artifact を持つ子は `bulkExport` の子だけだからである。`changeMemberRole` が取り消すのは降格後のロールで実行できなくなる kind に限られ、`bulkExport` は viewer でも実行できてそこに入らない（[usecases/workspace.md](./workspace.md) の kind→要ロール表）ため、batch 親（一括操作・一括バックアップの親）を終端させても回収対象は空になる。`disconnectIntegration` / `failActiveJobsForExpiredIntegration` が絞る provider 依存の kind にも `bulkExport` は入らないため、batch 親を直接終端させないことと合わせて二重に空になる
+- 空振りする経路でも規則は分けない。後始末を経路ごとの例外なく同じ形で読めるようにするためである
+- 強制終端の**時点で**子が保管し終えている artifact だけが対象である。終端と同時に走っていた子のワーカーがそのあと保管したものは、上記 run 系の共通規則の判定 4 に従い期限付き保管の自動回収に委ねる。`cancelJob` が「実行中の子は完了を待つ」としているぶんもここに含まれる
+- 「保管し終えている」と「`succeeded` である」は一致する。`runBulkExportItem` は保管ファイルの登録（手順 4）と `Job.succeed(artifact)`（手順 5）を**同一 UoW で**保存するため、artifact の行が存在することと子が `succeeded` であることが同時に確定するからである（[usecases/note.md](./note.md)）。この原子性がないと「保管済みだが `Job.succeed` 前」の子が生まれ、`succeeded` で絞るこの手順から漏れて、除名・脱退の時点でアクセス権を失った利用者の手元に本文を含む生成物が残る。オブジェクトストレージへの `put` だけは UoW の外（手順 4 の前半）で、UoW がロールバックすればメタデータのない孤児オブジェクトとして残るが、参照されないため害はない（[domains/storage.md](../domains/storage.md) の削除順序と同じ整理）
+
+**`expired` で生成物を回収しない理由**
+
+リース失効による自動回収（`Job.expire`）は `failed`（`timeout`）を作る。`failed` の batch 親は `retryFailedChildren` / `retryJob` が `Job.reopenBatch` で開き直せる（終端不変条件の唯一の例外）ため、成功済みの子の artifact は**そのあとの組み立てで要る資材**であり、消してはならない。7 日の TTL は再試行の窓を覆う長さとして選んである（[usecases/note.md](./note.md) の `runBulkExportItem`）。
+
+対して `forced` の 9 経路が batch 親を終端させるときは必ず `Job.cancel` を使い（`fail` を使う `failActiveJobsForExpiredIntegration` は batch 親を直接終端させない。[domains/job.md](../domains/job.md) の「強制終端とリース」）、`canceled` の親は `Job.reopenBatch` の受理型（`SucceededJob | FailedJob`）に入らないため二度と開き直せない。回収してよいのはこの「開き直せないことが型で保証された」場合だけである。
+
+## 共通: 実行体の振り分け
+
+`JobDispatcher` が運ぶのは `jobId` と `kind` だけで、子ジョブは親と同じ `kind` を持つ（[domains/job.md](../domains/job.md) の batch 親の子ジョブ登録規則）。そのため受け手は `kind` だけで実行体を選べない。必ず `jobId` でジョブを読み直し（run 系の共通規則の先頭でどのみち引く）、`kind` と `target.type` の組で実行体を決める。
+
+| `kind` | `target.type` | 実行体 |
+| --- | --- | --- |
+| `conversion` | `note` | `runConversion`（Conversion。単体取り込みと一括アップロードの子で共通） |
+| `regeneration` | `note` | `runRegeneration`（Conversion） |
+| `referenceImport` | `note` | `importExternalReferences`（Storage） |
+| `pdfExport` | `note` | `runNoteExport`（Note） |
+| `driveBackup` | `storedFile` | `runBackup`（Integration。単体バックアップ） |
+| `bulkBackup` | `storedFile` | `runBackup`（Integration。一括バックアップの子） |
+| `bulkExport` | `note` | `runBulkExportItem`（Note。一括ダウンロードの子） |
+| `bulkExport` | `batch` | `runBulkExport`（Note。親の ZIP 組み立て） |
+| `bulkTag` / `bulkVisibility` / `bulkMove` / `bulkDelete` | `note` | `runBulkNoteOperationItem`（Note。一括操作の子） |
+| 上記以外 | `batch` | 実行体なし。何もせず返す |
+
+`target.type === "batch"` で実行体を持つのは `bulkExport` 親だけである。他 kind の batch 親は `updateBatchProgress` が終端化するため `dispatchJob` がキューへ送らず、受け手に届かない。古いメッセージなどで届いた場合は何もせず返す。
+
+同じ処理でも登録経路によって `kind` が変わる（一括バックアップの子は `bulkBackup` だが実行体は単体と同じ `runBackup`）。この非対称は `kind` が履歴（JB-01）の分類軸であることに由来する。
+
+## 共通: batch 親の組み立て規則
+
+`bulkExport` 親の実行（`runBulkExport`）は、run 系の共通規則ではなく次の手順で再入を防ぐ（ADR 012）。`job.readyToAssemble` は重複発行・重複配送されうるため、この手順が唯一の防御である。
+
+1. 親ジョブを引く。見つからない、または終端状態なら何もせず返す（不在の扱いは run 系の共通規則の判定 1 と同じ）
+2. `JobRepository.summarizeChildren` を引く。未終端の子が残っていれば何もせず返す（終端した親を `retryFailedChildren` が開き直して子を再試行した場合など。組み立ては次の全子終端で改めて起動される）。成功した子が 0 件なら何もせず返す（`updateBatchProgress` が `failed` / `canceled` にする）
+3. `Job.beginAssembly(parent, now, leaseUntil)` を保存して実行権を取る
+   - `BusinessRuleError(LeaseActive)` なら別のワーカーが組み立て中のため何もせず返す
+   - `attempts` が上限を超えた場合、`beginAssembly` は `expire` の結果（`failed`、`reason: "timeout"`）を返すので、それを保存して終了する
+   - 保存が `ConflictError` になったらジョブを読み直し、終端済みまたは組み立て中（`attempts >= 1` かつリース有効）なら何もせず返す。同時配送はここで一方だけが実行権を得る
+4. 本処理（ZIP の組み立て）を行い、長引く間は `Job.renewAssemblyLease` でリースを延長する（`Job.reportProgress` ではない。組み立て中の親の期限を動かせるのは実行権を持つこのワーカーだけである）
+5. `Job.succeed(artifact)` を保存する。保存が `ConflictError` になったときの扱いは run 系の共通規則の判定 4 と同じ（終端済みなら生成物を破棄して成功として返す）
+
+**親を開き直すときの生成物の破棄**
+
+`Job.reopenBatch` は `artifact` を捨てて親を `running` に戻す（[domains/job.md](../domains/job.md)）。捨てるのは参照だけなので、**呼び出し側は開き直す前の親が `artifact` を持っていたなら、その保管ファイルを「保管ファイルの削除手順」（[usecases/storage.md](./storage.md) の `deleteFiles`）で同じ UoW から破棄する**。`reopenBatch` を呼ぶのは `retryFailedChildren` の手順 6 と `retryJob` の手順 3・8 で、いずれもこの規則に従う。
+
+- 対象になるのは `succeeded` の `bulkExport` 親が持つ組み立て済みの ZIP だけである。`failed` / `canceled` の親は `artifact` を持たず（不変条件）、`bulkExport` 以外の batch 親は自身の実行を持たないため生成物を作らない
+- 破棄しないと、`stored_files` の行がどこからも参照されないまま TTL（7 日）まで容量を占める。ジョブの `artifact` 参照は上書きされ、履歴（`listJobs` の `artifact`）からも辿れなくなるため、利用者が古い ZIP をダウンロードし直す手立ては残らない
+- 破棄の失敗で開き直し自体を止めない、という例外は設けない。同一 UoW なので、どちらかが失敗すれば両方が巻き戻る
+- 開き直したあとの組み立てで作る ZIP は新しい `StoredFile` になる。`runBulkExport` の手順 6 が毎回新規に `registerEphemeral` するため、古い行を消しても組み立てのやり直しには影響しない
+
+実行権は `attempts`（親では `beginAssembly` でしか増えない）とリースの組で表す。組み立てが始まる前の親のリースは `updateBatchProgress` の `reportProgress` でも延長されるが、それは「子の報告が届き続けている」ことの表明であって実行権ではない。組み立てが始まったあと（`attempts >= 1`）は `reportProgress` が期限を動かさない（[domains/job.md](../domains/job.md) の「組み立て中の親のリース」）ため、組み立て中にワーカーが落ちればリースは必ず失効し、再配送された `job.readyToAssemble` を `beginAssembly` が引き継ぐか、届かなければリーパー（`reapExpiredJobs`）が `failed`（`timeout`）に回収する。この規則がないと、死んだ組み立てワーカーのリースを子側の報告が延ばし続け、親が `running` のまま永久に終端しない。
 
 ## listJobs
 
@@ -22,16 +180,19 @@
 
 `items: JobSummary[]`, `count: number`, `activeCount: number`
 
-`JobSummary` は `jobId`, `kind`, `status`, `targetType`, `targetId`, `targetLabel`, `progress: { completed; total } | null`, `failureReason: string | null`, `artifact: { fileId; expiresAt; expired: boolean } | null`, `startedAt`, `finishedAt`, `createdAt`, `retryable: boolean`, `cancelable: boolean`。
+`JobSummary` は `jobId`, `kind`, `status`, `targetType`, `targetId`, `targetLabel`, `progress: { completed; total } | null`, `childSummary: { total; succeeded; failed; canceled } | null`, `failureReason: string | null`, `artifact: { fileId; expiresAt; expired: boolean } | null`, `startedAt`, `finishedAt`, `createdAt`, `retryable: boolean`, `cancelable: boolean`。
+
+`progress` は実行中の進捗であり、`running` のときだけ値を持つ（DB の `progress_*` 列が `running` 限定のため）。`childSummary` は batch 親（`target.type === "batch"`）のみ非 null で、子ジョブの行から数え直した内訳のため終端後も残る。履歴一覧の「100 件中 98 件成功」はこちらから作る。全子終端は `succeeded + failed + canceled === total` で判定する。
 
 ### 処理フロー
 
 1. `JobRepository.listByRequester` を引く
-2. `targetLabel` は対象がノートなら `NoteRepository.listByIds` でタイトルを、ファイルなら `StoredFileRepository.listByIds` でファイル名を解決する。対象が削除済みなら「削除済み」と表示する
-3. `retryable` は `status === "failed"` かつ再試行上限に達していないこと。`cancelable` は `Job.isCancelable`
-4. `activeCount` は `JobRepository.listActiveByRequester` の件数
+2. `targetLabel` は対象がノートなら `NoteRepository.listByIds` でタイトルを、ファイルなら `StoredFileRepository.listByIds` でファイル名を解決する。対象が削除済みなら「削除済み」と表示する。batch 親は対象を持たないため、操作の内容（`kind` と `payload`）から表示名を作る
+3. 結果に含まれる batch 親の ID をまとめて `JobRepository.summarizeChildrenOf` に渡し、`childSummary` を埋める（親 1 件につき 1 クエリにしない）。batch 親以外は `null`
+4. `retryable` は `status === "failed"` かつ再試行上限に達していないこと。ただし batch 親は `retryJob` の規則に従い、`kind === "bulkExport"` かつ子が全件終端・成功 1 件以上のときだけ真とする（組み立てのやり直し）。他の batch 親は偽で、導線は `retryFailedChildren` になる。`cancelable` は `Job.isCancelable`
+5. `activeCount` は `JobRepository.listActiveByRequester` の件数
 
-ジョブは実行者本人にのみ見える。ワークスペースのノートに対するジョブでも他のメンバーには表示しない。
+ジョブは実行者本人にのみ見える。ワークスペースのノートに対するジョブでも他のメンバーには表示しない。匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため結果に現れない（ADR 010）。
 
 ### エラーケース
 
@@ -57,7 +218,9 @@
 ### 処理フロー
 
 1. `JobRepository.findById` で引き、`requestedBy` が `userId` と一致しなければ `NotFoundError("JOB_NOT_FOUND")`
-2. `JobRepository.listChildren` と `summarizeChildren` を引く
+2. `JobRepository.listChildren` と `summarizeChildren` を引く。`summary` は `job.childSummary`（`listJobs` と同じ投影）と同じ値であり、終端後も子の行から数え直すため内訳が残る
+
+匿名ジョブは `requestedBy: null` がどの `userId` とも一致しないため、常に `JOB_NOT_FOUND` になる（ADR 010）。
 
 ### エラーケース
 
@@ -83,19 +246,33 @@
 
 1. ジョブを引き、所有を確認する
 2. `status !== "failed"` なら `BusinessRuleError(JobNotRetryable)`
-3. 対象が存在するかを確認する。ノート・ファイルが削除済みなら `ValidationError("TARGET_MISSING")`
-4. 失敗理由が `integrationRequired` / `providerAuthFailed` の場合、該当の連携が `active` でなければ `BusinessRuleError(ReauthorizationRequired)`
-5. 対象への権限を再確認する。失っていれば `BusinessRuleError(AccessDenied)`
-6. `Job.retry` を保存する。実行系への送信は `job.enqueued` を購読するハンドラーが行う（このユースケースは `JobDispatcher` を直接呼ばない）
+3. batch 親（`target.type === "batch"`）は分岐して終える
+   - `kind === "bulkExport"` かつ `summarizeChildren` が全件終端・成功 1 件以上なら、失敗したのは ZIP の組み立てである。その `BatchSummary` をそのまま `Job.reopenBatch(parent, summary, now, leaseUntil)` に渡して `running` に戻し、発行される `job.readyToAssemble` を収集して組み立てだけをやり直す（`reopenBatch` が `attempts` を 0 に戻すため `beginAssembly` が改めて実行権を取れる）。保存は `UnitOfWorkProvider.run` で行い、上記「共通: batch 親の組み立て規則」の「親を開き直すときの生成物の破棄」に従う（この分岐の親は `failed` なので `artifact` を持たず、破棄の対象は実際には空になるが、規則は分岐ごとに省かない）
+   - それ以外の batch 親は `BusinessRuleError(JobNotRetryable)` とし、子の再試行は `retryFailedChildren` に任せる。batch 親を `Job.retry` で `queued` に戻しても、`job.enqueued` の購読ハンドラーが batch 親をキューへ送らないため実行されない
+4. 子ジョブ（`parentId !== null`）は、親を `JobRepository.findById` で引いて `retryFailedChildren` の手順 2・3 と同じガードを当てる
+   - 親が組み立て中（`kind === "bulkExport"` かつ `status === "running"` かつ `attempts >= 1`）なら `BusinessRuleError(AssemblyInProgress)`
+   - 親が `canceled` なら `BusinessRuleError(JobNotRetryable)`
+   - どちらのガードも `retryFailedChildren` と同じ理由による。子を 1 件だけ指しても、走っている組み立てワーカーと競合する事実も、`canceled` の親に子の結果を戻す先がない事実も変わらない。ガードを `retryFailedChildren` にしか置かないと、画面から子ジョブの再試行を選ぶ（`getJobDetail` の子一覧の導線）だけで同じ破れ方をする
+5. 対象が存在するかを確認する。ノート・ファイルが削除済みなら `ValidationError("TARGET_MISSING")`
+6. 失敗理由が `integrationRequired` / `providerAuthFailed` の場合、`ExternalConnectionRepository.findByUserAndProvider(userId, provider)` で該当の連携を引く（`provider` は `kind` から決まる。`conversion` / `regeneration` は `openrouter`、`driveBackup` / `bulkBackup` は `googleDrive`）。行がなければ `NotFoundError("CONNECTION_NOT_FOUND")`（未連携）、`ExpiredConnection` なら `BusinessRuleError(ReauthorizationRequired)`（失効）。`ActiveConnection` なら次へ進む
+   - 未連携と失効を 1 つに畳まないのは `requestRegeneration`（[usecases/conversion.md](./conversion.md)）と同じ理由による — 未連携は「連携すれば再実行できる」、失効は「再連携が要る」で案内が異なり、失敗理由の `integrationRequired` / `providerAuthFailed` の区別とも対応する
+7. 対象への権限を再確認する。失っていれば `BusinessRuleError(AccessDenied)`
+8. `UnitOfWorkProvider.run` で `Job.retry` を保存する。子ジョブの場合は同じ UoW で親も進行中に戻す — `retryFailedChildren` の手順 6 と同じ規則で、親が終端状態（`succeeded` / `failed`）なら `retry` 適用後の子の現況を `BatchProgressCalculator.summarize` で集計し直して `Job.reopenBatch` に渡し（`succeeded` の `bulkExport` 親なら「親を開き直すときの生成物の破棄」に従って古い ZIP を同じ UoW で破棄する）、`running` の親なら `Job.reportProgress` で進捗を作り直す（リース延長を兼ねる）。実行系への送信は `job.enqueued` を購読するハンドラーが行う（このユースケースは `JobDispatcher` を直接呼ばない）
+
+匿名ジョブは所有の確認で `JOB_NOT_FOUND` になり対象外。匿名の「再試行」は `exportNote` の再実行である（ADR 010）。
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | 失敗状態でない | `BusinessRuleError(JobNotRetryable)` |
+| batch 親（`bulkExport` 以外、または子が未終端・成功 0 件） | `BusinessRuleError(JobNotRetryable)` |
+| 子ジョブで親が組み立て中（`bulkExport` かつ `running` かつ `attempts >= 1`） | `BusinessRuleError(AssemblyInProgress)` |
+| 子ジョブで親が取り消し済み（`canceled`） | `BusinessRuleError(JobNotRetryable)` |
 | 再試行の上限 | `BusinessRuleError(RetryLimitExceeded)` |
 | 対象が削除済み | `ValidationError("TARGET_MISSING")` |
-| 原因が未解消（連携なし） | `BusinessRuleError(ReauthorizationRequired)` |
+| 原因が未解消（未連携） | `NotFoundError("CONNECTION_NOT_FOUND")` |
+| 原因が未解消（連携が失効） | `BusinessRuleError(ReauthorizationRequired)` |
 | 権限を喪失 | `BusinessRuleError(AccessDenied)` |
 
 ## retryFailedChildren
@@ -115,15 +292,30 @@
 ### 処理フロー
 
 1. 親ジョブを引き、所有を確認する
-2. `JobRepository.listChildren` から `failed` のものを集める
-3. 各件について `retryJob` と同じ検査を行い、通ったものだけを `Job.retry` する。通らなかったものは `skipped` に積む
-4. 親ジョブを `RunningJob` に戻して進捗を計算し直す
+2. 親が**組み立て中**（`target.type === "batch"` かつ `status === "running"` かつ `attempts >= 1`。`bulkExport` 親でのみ成立する）なら、子を 1 件も再試行せずに `BusinessRuleError(AssemblyInProgress)` を返す
+3. 親が `canceled` なら、子を 1 件も再試行せずに `BusinessRuleError(JobNotRetryable)` を返す（`retryJob` の手順 2 が `status !== "failed"` を弾くのに対応する、本ユースケース唯一の親の状態ガード）
+4. `JobRepository.listChildren` を**全ページ走査**して `failed` のものを集める（`limit` の上限は 100 で子は最大 500 件のため 1 ページには収まらない。「共通: 強制終端の後始末」の 2 と同じ走査）
+5. 各件について `retryJob` と同じ検査を行い、通ったものだけを `Job.retry` する。通らなかったものは `skipped` に積む
+6. 1 件以上 `retry` したら、親を進行中に戻す
+   - 親が終端状態（`succeeded` / `failed`）なら、`retry` 適用後の子の現況を `BatchProgressCalculator.summarize` で集計し直し、その `BatchSummary` を `Job.reopenBatch(parent, summary, now, leaseUntil)` に渡して `running` に戻す（終端不変条件の唯一の例外。ADR 012）。進捗は `reopenBatch` が集計から作り直す。`retry` した子が未終端になるため `summary.settled` は偽で、`job.readyToAssemble` は発行されない（全子が改めて終端したときに `updateBatchProgress` が発行する）。`reopenBatch` は `attempts` を 0 に戻すため、改めて全子が終端すれば `beginAssembly` が実行権を取り直して組み立てをやり直せる。開き直す前の親が `artifact`（組み立て済みの ZIP）を持っていた場合は、「共通: batch 親の組み立て規則」の「親を開き直すときの生成物の破棄」に従って同じ UoW でその保管ファイルを破棄する
+   - 親がまだ `running` なら `Job.reportProgress` で進捗を同じ値に作り直す（リース延長を兼ねる）。ここに到達する `running` の親は組み立てを始めていない（`attempts === 0`）ため、リースは必ず延びる — 組み立て中の親は手順 2 で弾かれている
+7. 保存はすべて同一 UoW で行う。実行系への送信は `job.enqueued` を購読するハンドラーが行う
+
+手順 3 が `canceled` の親を弾くのは、その親には子を戻す先がないためである。キャンセルは待機中の子だけを取り消して実行中の子の結果を残す（`cancelJob` の手順 3）ので、キャンセル前に `failed` だった子を抱えた `canceled` の親は実在する。`Job.reopenBatch` の受理型は `SucceededJob | FailedJob` で `CanceledJob` を含まない（[domains/job.md](../domains/job.md)）ため手順 6 の第 1 分岐は型として適用できず、`running` でもないため第 2 分岐にも合流しない。ガードなしに子だけを `retry` すると親は `canceled` のままで、子が改めて終端しても `updateBatchProgress` は「終端状態なら何もせず返す」で抜けるため、再試行した子の結果が永久に行き場を失う。取り消したものは再試行ではなく元の操作をやり直す（JB-02）。
+
+手順 2 が組み立て中の親を弾くのは、走っている組み立てワーカーとの競合を規則で断つためである。弾かないと、ワーカーは再試行前の古い子集合のまま ZIP を作り終えて `succeed(artifact)` し、そのあと再試行した子が全件終端しても `updateBatchProgress` は「親が終端状態なら何もせず返す」で抜けるため `job.readyToAssemble` が二度と出ない（再試行した子の結果が ZIP に入らないまま親が `succeeded` で固定される）。
+
+拒否は一時的なもので、待てば必ず解ける。組み立て中の親は必ず終端に至るからである（[domains/job.md](../domains/job.md) の「組み立て中の親のリース」） — ワーカーが完了すれば `succeeded`、落ちればリースが `reportProgress` で延びないまま失効し `reapExpiredJobs` が `failed`（`timeout`）に回収する。どちらでも手順 6 の `reopenBatch` 経路に合流し、`attempts` が 0 に戻って組み立てからやり直せる。リースの有効・失効で分けないのはこのためで、失効した親に再試行を許しても `attempts >= 1` のままではリースを延ばせず、結局リーパーの回収を待つあいだに親だけが `failed` になって子の終端が行き場を失う。
+
+匿名ジョブは `parentId: null` のみ構成できるため子として存在せず、本ユースケースが匿名ジョブに触れることはない（ADR 010）。
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | 親ジョブ不在・他人のもの | `NotFoundError("JOB_NOT_FOUND")` |
+| 親が組み立て中（`bulkExport` かつ `running` かつ `attempts >= 1`） | `BusinessRuleError(AssemblyInProgress)` |
+| 親が取り消し済み（`canceled`） | `BusinessRuleError(JobNotRetryable)` |
 | 失敗した子が 0 件 | `ValidationError("NO_RETRYABLE_CHILD")` |
 
 ## cancelJob
@@ -146,7 +338,9 @@
 2. `Job.isCancelable` が偽なら `BusinessRuleError(JobNotCancelable)`
 3. 親ジョブなら、待機中の子をすべて `Job.cancel` する。実行中の子は完了を待つ（結果は残る）
 4. `Job.cancel` を保存し、イベントを収集する
-5. 一括ダウンロードの中間生成物があれば `deleteFiles`（Storage）で破棄する
+5. 「共通: 強制終端の後始末」に従う。`kind: "conversion"` の対象ノートが `processing` なら `Note.markConversionFailed("canceled")` を、既に保管された子の生成物（一括ダウンロードの中間生成物）があれば `deleteFiles`（Storage）を、いずれも同一 UoW で併せて保存する
+
+匿名ジョブは所有の確認で `JOB_NOT_FOUND` になり対象外。ただし、対象で引くキャンセル（ゴミ箱への移動。`trashNote` の `listActiveByTarget` 経由）と、スコープで引く一括キャンセル（ワークスペース削除・退会。`listActiveByScope` 経由）には匿名ジョブも含まれる（ADR 010）。除名・脱退のキャンセルは `requestedBy` で絞るため匿名ジョブに触れない。
 
 ### エラーケース
 
@@ -173,8 +367,15 @@
 
 1. `JobRepository.findById` で親を引く。終端状態なら何もせず返す
 2. `JobRepository.summarizeChildren` を引く
-3. `BatchProgressCalculator.applyTo(parent, summary, now)` を適用して保存する
-4. 現在の子の状態から毎回計算し直すため、同じイベントを 2 回受け取っても結果は変わらない
+3. `BatchProgressCalculator.applyTo(parent, summary, now, leaseUntil)` を適用して保存し、イベントを収集する
+   - 未終了なら `reportProgress`（リース延長を兼ねる。組み立て中の親（`attempts >= 1`）では進捗だけが更新され、リースは延びない。[domains/job.md](../domains/job.md) の「組み立て中の親のリース」）
+   - 全子終端なら親を終端化する（成功 1 件以上で `succeeded`、成功 0 件かつ失敗ありで `failed`、全件キャンセルで `canceled`）
+   - 例外: `kind: "bulkExport"` の親は、成功した子が 1 件以上あれば終端化せず、進捗を `total` まで更新して `job.readyToAssemble` を発行する。ZIP の組み立て（`runBulkExport`）が `succeed(artifact)` で終端させる（ADR 012）。成功 0 件なら他の kind と同じ規則で `failed` / `canceled` になる
+4. 現在の子の状態から毎回計算し直すため、同じイベントを 2 回受け取っても結果は変わらない。`job.readyToAssemble` の重複発行・重複配送は受け手が吸収する — `runBulkExport` は上記「共通: batch 親の組み立て規則」に従い、`Job.beginAssembly` の実行権（親の `attempts` とリースの組）で二重の組み立てを防ぐ
+
+このユースケースは `total` を変えない。全子終端の判定が成立するのは「対象 1 件につき子ジョブ 1 件」を登録側が守るからであり、処理が不要・不能な対象でも子を省かない（[domains/job.md](../domains/job.md) の batch 親の子ジョブ登録規則）。子の投入自体が中断されて `total` に届かない場合は、親のリースが延長されなくなって `reapExpiredJobs` が `failed`（`timeout`）として回収する。
+
+匿名ジョブは `parentId: null` のみ構成できるため、本ユースケースが匿名ジョブに触れることはない（ADR 010）。
 
 ### エラーケース
 
@@ -183,11 +384,71 @@
 | 親が不在 | 何もせず成功として返す |
 | 版の競合 | `ConflictError` を投げて再配送に委ねる |
 
+## dispatchJob
+
+### 概要
+
+登録・再開されたジョブを実行系（キュー）へ送る（`job.enqueued` / `job.readyToAssemble` の購読）。`JobDispatcher` を呼ぶのはこのハンドラーだけとする（[domains/job.md](../domains/job.md)）。
+
+### 入力DTO
+
+`jobId: string`, `kind: string`（イベント payload。`job.enqueued` は `target` / `requestedBy` / `parentId` も持つ）
+
+### 出力DTO
+
+なし
+
+### 処理フロー
+
+1. `job.enqueued` で `target.type === "batch"`（batch 親）なら、キューへ送らず返す。親ジョブの実行は `job.readyToAssemble` の購読経由のみとする（ADR 012）
+2. それ以外は `JobDispatcher.dispatch(jobId, kind)` を呼ぶ。`job.readyToAssemble` は `bulkExport` 親に対してのみ発行されるため、無条件に送る
+
+このハンドラーは実行体を選ばない。`kind` だけでは親と子を区別できないため、振り分けは受け手がジョブを読み直して `kind` と `target.type` の組で行う（上記「共通: 実行体の振り分け」）。
+
+配送は少なくとも 1 回。重複配送は受け手（run 系の共通規則、batch 親は組み立て規則）が吸収するため、このハンドラーは重複排除を行わない。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| キュー送信の失敗 | `SystemError(ExternalServiceError)` を投げて再配送に委ねる |
+
+## reapExpiredJobs
+
+### 概要
+
+リースが失効した実行中ジョブを回収する（ADR 012）。pruner と同じ定期ワーカーロールから **5 分間隔**で呼ばれる（間隔とリース期間の関係は冒頭の「共通: リース期間と回収の間隔」）。通常の回復はリース失効の `running` を再配送時の `Job.start` が引き継ぐことで行われ、本ユースケースは再配送が来ない場合の保険である。
+
+### 入力DTO
+
+なし
+
+### 出力DTO
+
+`expiredCount: number`
+
+### 処理フロー
+
+1. `JobRepository.listExpiredRunning(now)` でリース失効（`leaseExpiresAt <= now`）の `running` を列挙する
+2. 各件を `UnitOfWorkProvider.run` で 1 行ずつ処理する。`Job.expire` で終端化して保存し、`job.failed` を収集する（`failure: { reason: "timeout" }`。`attempts` は 0 に戻り、手動 `retry` できる）。同じ UoW で「共通: 強制終端の後始末」を `cause: { type: "expired" }` として実行する — `kind: "conversion"` の対象ノートが `processing` のままなら `Note.markConversionFailed("timeout")` を併せて保存する。生成物の回収（手順 2）は行わない（`failed` の batch 親は `reopenBatch` で開き直せるため、成功済みの子の artifact は組み立ての資材として残す）
+3. 1 件の失敗は記録して次の行へ進む（部分失敗の許容）
+
+冪等性: `listExpiredRunning` はリース失効中の `running` のみを返し、`Job.expire` はリース有効なら `BusinessRuleError(LeaseActive)` で拒否する。引き継ぎ再開（`Job.start`、batch 親の組み立ては `Job.beginAssembly`）と競合しても楽観ロックでどちらか一方だけが成立するため、2 回実行しても・再配送と重なっても結果は変わらない。後始末の本文回復も `content.status === "processing"` のときだけ書き換えるため、同じ行を 2 回処理しても `failed(timeout)` のままで変わらない。
+
+回収の対象には batch 親も含まれる — 子の投入や終了報告が途絶えた親、組み立て中にワーカーが落ちた `bulkExport` 親のどちらもリース失効で `failed`（`timeout`）になる。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 版の競合 | 該当行をスキップして継続（引き継ぎ再開が成立したものとして扱う） |
+| DB 障害 | `SystemError(DatabaseError)` |
+
 ## pruneJobHistory
 
 ### 概要
 
-保持期間を過ぎたジョブ履歴を削除する。定期ワーカーから呼ばれる。
+保持期間を過ぎたジョブ履歴を削除する。`reapExpiredJobs` と同じ定期ワーカーロールから 1 日 1 回呼ばれる（冒頭の「共通: リース期間と回収の間隔」）。
 
 ### 入力DTO
 
@@ -200,8 +461,41 @@
 ### 処理フロー
 
 1. `JobRepository.deleteOlderThan(now - retentionDays)` を呼ぶ
-2. 終端状態のジョブのみを対象とする
+2. 終端状態のジョブのみを対象とし、終了時刻（`finishedAt`）を比較する。境界は排他（`finishedAt < cutoff` のみ削除し、ちょうど `retentionDays` 前に終了したものは残る）
+3. 削除の起点は**親を持たないジョブ**（`parentId === null`）に限る。子は親の削除に伴って `parent_id` の外部キー CASCADE で消えるため、1 つの一括操作の履歴は親子まとめて消えるか、まとめて残るかのどちらかになる
+   - 子を単独で削除しないのは、`retryFailedChildren` で親が `running` に戻ったまま保持期間を跨いだ場合に、終端済みの子だけが消えて `summarizeChildren` の件数が `total` に届かなくなり、親が永久に終端しなくなるためである。この規則は「親が終端しているか、親を持たないこと」という条件を含み、さらに `getJobDetail` / `listJobs` の `childSummary`（子の行から数え直す内訳）が欠けた状態も生まない
+   - 起点が親なので、保持期間は親の `finishedAt` で判定される。子が先に終端していても親が終端して `retentionDays` を過ぎるまでは残る
+4. 匿名ジョブ（`requestedBy: null`）もここで削除される。匿名ジョブは `parentId: null` のみ構成できるため必ず削除の起点になる。退会時の後始末（`deleteByRequester`）が及ばないため、これが匿名ジョブの唯一の掃除経路になる（ADR 010）
 
 ### エラーケース
 
 `SystemError(DatabaseError)`
+
+## deleteJobsForRequester
+
+### 概要
+
+利用者の退会に伴って、その利用者のジョブ履歴をすべて削除する（`identity.user.deleted` の購読）。
+
+### 入力DTO
+
+`userId`
+
+### 出力DTO
+
+`deletedCount: number`
+
+### 処理フロー
+
+1. `UnitOfWorkProvider.run` で `JobRepository.deleteByRequester(userId)` を呼ぶ。状態を問わず削除する。実行中のジョブは `deleteAccount` の手順 3 でキャンセル済みのため、未終端のジョブは通常ここには残らない。batch の子は親と同じ要求者のため、`parent_id` の FK CASCADE によらず自身も削除対象になる
+2. 匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため対象外で、`pruneJobHistory` が唯一の掃除経路になる（ADR 010）
+3. イベントは発行しない。ジョブの artifact（保管ファイル）は要求者の個人 subject が所有するため、同じイベントを購読する Storage の `deleteFilesByOwner` が回収する
+
+冪等性: 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| ジョブが 1 件もない | 何もせず成功として返す |
+| 書き込みの失敗 | `SystemError(DatabaseError)`（再試行される） |

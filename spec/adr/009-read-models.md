@@ -22,7 +22,7 @@
 
 - 一覧・検索・タイムライン・公開検索・サイトマップの読み取りは、書き込みモデルではなく専用の読み取りモデル `note_search` に対して行う
 - `note_search` は 1 ノート 1 行。本文から抽出したテキスト、タグ名の連結、著者の表示名とハンドル、ワークスペース名とスラッグを非正規化して持つ
-- 全文検索は SQLite の FTS5 仮想テーブルを `note_search` に対応づけて構成する
+- 全文検索は SQLite の FTS5 仮想テーブルを `note_search` に対応づけて構成する。トークナイズと同期の方式は [ADR 011](./011-bigram-search.md) に従う
 - 更新はドメインイベントを購読するプロジェクションが行う。Note / Tag / Identity / Workspace のイベントがそれぞれ該当列を更新する
 - 書き込み側（`NoteRepository`）は読み取りモデルを一切参照しない。読み取り側（`NoteQueryService`）は書き込みモデルを一切参照しない
 - 投影は結果整合とする。アウトボックス経由の配送は少なくとも 1 回であり順序保証がないため、プロジェクションは冪等な上書きとして実装する
@@ -49,7 +49,8 @@
 ## 影響
 
 - `note_search` テーブルと、それに対応する FTS5 仮想テーブルが必要になる
-- プロジェクションを担うイベントハンドラーが必要になる。購読するイベントは Note の全イベント、`tag.assigned` / `tag.unassigned` / `tag.renamed` / `tag.merged` / `tag.deleted`、`identity.user.handleChanged` とプロフィール更新、`workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.created`（名前）
+- タグの AND 絞り込み用に `note_search_tags`（`note_id` × 正規化済みタグ名）テーブルが必要になる。絞り込みは本表への JOIN による完全一致で行い、`note_search` のタグ名の連結列は関連度にのみ寄与させる（[ADR 011](./011-bigram-search.md)）
+- プロジェクションを担うイベントハンドラーが必要になる。購読するイベントは Note のイベントのうち**投影列を変えるもの**（`note_search` は Note の列を最も多く写すため、投影列を変えるイベントが Note に増えれば購読も増える。どのイベントを購読し、どれを購読しないかの一覧は [usecases/note.md](../usecases/note.md) の `projectNoteChanges` を正とする — 現状は `note.published` / `note.shareLinkReissued` / `note.sharePasswordChanged` の 3 件が非購読で、前者は `note.visibilityChanged` と必ず併発し、残る 2 件は投影列を 1 つも変えない）、`tag.assigned` / `tag.unassigned` / `tag.renamed` / `tag.merged`（`tag.deleted` は購読しない — タグ削除時は付与ごとに併発される `tag.unassigned` が投影を担い、`tag.deleted` 自体は監査用）、`identity.user.handleChanged` / `identity.user.profileUpdated`（表示名）、`identity.user.deleted`（退会した作成者の著者表示を「退会した利用者」に置き換える。行は削除しない）、`workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.created`。ワークスペース名の変更は `workspace.profileUpdated` を購読して反映する
 - 一覧に表示される内容は最大で数秒遅れうる。利用者の自身の操作については、操作元の画面が楽観的更新で即時反映するため体感上の遅延は生じない
 - 投影が失われた場合に備え、書き込みモデルから全件を再投影するバッチが必要になる
 - 読み取りモデルにはアクセス制御に使える情報（`visibility`、`owner`、`lifecycle`）を含める。公開検索は `visibility = 'public'` かつ `lifecycle = 'active'` の行のみを対象とする

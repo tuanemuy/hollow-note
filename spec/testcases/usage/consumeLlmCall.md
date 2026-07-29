@@ -11,4 +11,6 @@
 | 変換の実行前に判明した失敗 | 結果を確認する | 消費されていない | |
 | 版が競合する | 消費する | 読み直して再適用され、成功する | |
 | 上限を超えた | 消費する | `usage.llmExceeded` が発行される | |
-| `calls` に 0 を指定する | 消費する | `BusinessRuleError(InvalidDelta)` が投げられる | |
+| `calls` に 0 を指定する | 消費する | `BusinessRuleError(InvalidDelta)` が投げられる（境界値。仕様のエラー表の「`calls` が 1 未満」） | |
+| `calls` に負の値を指定する | 消費する | `BusinessRuleError(InvalidDelta)` が投げられる | |
+| `calls` に 1 を指定する | 消費する | 通る（`calls` の下限の境界値） | |

@@ -62,7 +62,7 @@ Tag = {
 | `create` | `params: { id: string; scope: TagScope; name: string }, now: Date` | `WithEventDrafts<Tag, TagEvent>` | `TagName.create` で検証・正規化して生成。`tag.created` を発行 |
 | `rename` | `tag: Tag, name: string, now: Date` | `WithEventDrafts<Tag, TagEvent>` | 正規化後が同じなら表示名のみ更新。異なれば更新し `tag.renamed`（旧名を含む）を発行 |
 
-削除と統合はユースケースが `TagEvents.deleted` / `TagEvents.merged` を直接発行する。
+削除と統合はユースケースが `TagEvents.deleted` / `TagEvents.merged` を直接発行する。削除では、ユースケースが削除前に付与を読み、同一 UoW で付与 1 件ごとに `TagEvents.unassigned` を併発する（読み取りモデルの投影は `tag.unassigned` が担い、`tag.deleted` は監査用）。
 
 ### TagAssignment（集約ルート）
 
@@ -121,7 +121,7 @@ RelocationPlan = Readonly<{
 }>;
 ```
 
-`reassign` の各要素は「この付与を削除し、移動先の `targetTagId` で付与を作り直す」ことを表す。`drop` は移動先に同名のタグがないため外れる付与。
+`reassign` の各要素は「この付与を削除し、移動先の `targetTagId` で付与を作り直す」ことを表す。`drop` は移動先に同名のタグがないため外れる付与。作り直す付与の `assignedBy` は元の付与の値を引き継ぐ（付け替えは `note.moved` の購読で行われるため、操作者を入力に要求しない）。
 
 移動先に存在しないタグを新規作成することはしない。名前が一致するタグだけを引き継ぐ。
 
@@ -150,6 +150,7 @@ interface TagAssignmentRepository {
   findByTagAndNote(tagId: TagId, noteId: NoteId): Promise<TagAssignment | null>;
   listByNote(noteId: NoteId): Promise<readonly TagAssignment[]>;
   listByNotes(noteIds: readonly NoteId[]): Promise<readonly TagAssignment[]>;
+  listByTag(tagId: TagId): Promise<readonly TagAssignment[]>;   // タグ削除前の付与の列挙（deleteTag が tag.unassigned を併発するために読む）
   countByNote(noteId: NoteId): Promise<number>;
   delete(id: AssignmentId): Promise<void>;
   deleteByTag(tagId: TagId): Promise<number>;
@@ -168,7 +169,6 @@ interface TagAssignmentRepository {
 interface TagQueryService {
   listWithUsage(scope: TagScope, criteria: TagListCriteria): Promise<PaginationResult<TagUsage>>;
   suggest(scope: TagScope, prefix: string, limit: number): Promise<readonly TagUsage[]>;
-  listNamesByNotes(noteIds: readonly NoteId[]): Promise<ReadonlyMap<string, readonly string[]>>;
 }
 
 type TagListCriteria = Readonly<{
@@ -185,6 +185,8 @@ type TagUsage = Readonly<{
 }>;
 ```
 
+ノート群に付いたタグ名の解決（`listTagsForNotes`）は、付与と語彙をそれぞれの集約から引く `TagAssignmentRepository.listByNotes` + `TagRepository.listByIds` で行うため、この読み取りサービスには持たせない。
+
 **エラーケース**: `SystemError(DatabaseError)`
 
 ## ドメインイベント
@@ -194,7 +196,7 @@ type TagUsage = Readonly<{
 | `tag.created` | `{ tagId, scope, name }` | 監査 |
 | `tag.renamed` | `{ tagId, scope, previousName, currentName }` | 読み取りモデルの投影 |
 | `tag.merged` | `{ sourceTagId, targetTagId, scope }` | 読み取りモデルの投影 |
-| `tag.deleted` | `{ tagId, scope }` | 読み取りモデルの投影 |
+| `tag.deleted` | `{ tagId, scope }` | 監査（投影は併発される `tag.unassigned` が担う） |
 | `tag.assigned` | `{ tagId, noteId, scope }` | 読み取りモデルの投影 |
 | `tag.unassigned` | `{ tagId, noteId, scope }` | 読み取りモデルの投影 |
 
@@ -208,6 +210,6 @@ TagErrorCode =
 
 ## ユースケース（概要）
 
-`assignTag`, `unassignTag`, `listTagsWithUsage`, `suggestTags`, `renameTag`, `mergeTags`, `deleteTag`, `deleteUnusedTags`, `listTagsForNotes`, `relocateAssignmentsForNote`
+`assignTag`, `unassignTag`, `listTagsWithUsage`, `suggestTags`, `renameTag`, `mergeTags`, `deleteTag`, `deleteUnusedTags`, `listTagsForNotes`, `relocateAssignmentsForNote`, `deleteAssignmentsForNote`, `deleteTagsForScope`
 
 詳細は [usecases/tag.md](../usecases/tag.md)。

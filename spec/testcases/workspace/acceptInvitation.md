@@ -4,6 +4,7 @@
 |---|---|---|---|
 | 有効な保留中の招待、サインイン済み | 受諾する | `Membership` が作られ、招待が `accepted` になり、指定ロールが付く | |
 | 招待されたメールと異なるアカウントでサインイン中 | 受諾する | 受諾が成功する（リンクを認可の根拠とする） | |
+| 存在しないトークン | 受諾する | `NotFoundError("INVITATION_NOT_FOUND")` が投げられる | |
 | 期限切れの招待 | 受諾する | `BusinessRuleError(InvitationExpired)` が投げられる | |
 | 取り消し済みの招待 | 受諾する | `ValidationError("INVITATION_NOT_PENDING")` が投げられる | |
 | 既にメンバー | 受諾する | 招待は `accepted` になり、既存のロールは変更されない | |

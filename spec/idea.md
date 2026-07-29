@@ -80,7 +80,7 @@ Phase 0 のヒアリングで確定した方針。
 - Google SSO とメール + パスワードの両方をサポートする
 - 将来的に他の SSO プロバイダー（GitHub, Microsoft 等）を追加できる設計にする
     - 認証手段（Identity）をユーザー（User）から分離し、1 ユーザーに複数の認証手段を紐づけられるようにする
-- Google SSO でサインインした場合、同じ認可フローで Google Drive 連携も取得する
+- Google SSO でサインイン済みであれば、追加スコープへの同意のみで Google Drive 連携を有効にできる（増分認可。サインイン時に Drive のスコープは要求しない。詳細は [ADR 001](./adr/001-authentication-strategy.md)）
 
 ### LLM 連携
 

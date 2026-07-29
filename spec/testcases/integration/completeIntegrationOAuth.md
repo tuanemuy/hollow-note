@@ -11,5 +11,8 @@
 | Drive でリフレッシュトークンが得られない | 交換する | `ValidationError("OAUTH_REFRESH_TOKEN_MISSING")` が投げられる | |
 | 疎通確認が失敗する | 交換する | `ValidationError("CONNECTION_PROBE_FAILED")` が投げられ、連携は作られない | |
 | 交換後 | 保存された資格情報を確認する | 暗号化されて保存されている | |
-| OpenRouter を新規連携した | 交換後に応答を確認する | 「要 LLM 連携」のノートがある旨が含まれる | |
+| OpenRouter を新規連携し、`awaitingIntegration` のノートが 3 件ある | 交換後に応答を確認する | `NoteQueryService.countByContentStatus` で数えた `awaitingIntegrationCount: 3` が返り、P-23 が「3 件のノートが本文の生成を待っています」と案内してノート一覧への導線を出す（IN-01 手順 4） | |
+| OpenRouter を新規連携し、`awaitingIntegration` のノートが 0 件 | 交換後に応答を確認する | `awaitingIntegrationCount: 0` が返り、案内は表示されない | |
+| OpenRouter を再連携した（`reconnected: true`） | 交換後に応答を確認する | `awaitingIntegrationCount: null` が返る（件数の取得は新規連携時のみ） | |
+| Google Drive を連携した | 交換後に応答を確認する | `awaitingIntegrationCount: null` が返る | |
 | プロバイダーとの通信が失敗する | 交換する | `SystemError(ExternalServiceError)` が投げられる | |

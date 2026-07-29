@@ -8,3 +8,6 @@
 | ワークスペースの viewer | 実行する | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | 個人スコープで実行する | 実行する | ワークスペースのタグは削除されない | |
 | 実行中に別の要求がタグを使用した | 実行する | そのタグは削除されないか、削除されても付与は作られ直せる | |
+| 削除の経路 | `deleteTag` の呼び出しを確認する | 手順の複製ではなくユースケースの呼び出しで、`deleteUnusedTags` 自身は `UnitOfWorkProvider.run` を開かない（`deleteTag` が 1 件ごとに確定する） | |
+| 列挙後・削除前に 1 件が別の要求で削除された | 実行する | その 1 件は `NotFoundError("TAG_NOT_FOUND")` として飛ばし、残りの削除は続行する。`deletedCount` には数えない | |
+| 列挙後・削除前に 1 件へ付与が付いた | 実行する | `deleteTag` が付与を読み直すため、付与 1 件ごとに `tag.unassigned` が発行されてから消える（列挙の結果を根拠に消さない） | |
