@@ -1,5 +1,7 @@
 # データベース設計
 
+**本書の位置づけ**。以下は現時点の候補である D1（SQLite）を前提に置いた具体的な設計である。保存先の選択は未確定であり（[idea.md](../idea.md) の「未確定の技術選択（候補）」）、前提が変われば本書は改訂または一部破棄の対象になる。どの判断がどの前提に乗っているかの逆引きは [ADR 一覧と前提依存マップ](../adr/index.md) を参照すること。
+
 対象は Cloudflare D1（SQLite）。Drizzle でスキーマを定義し、マイグレーションは `apps/web/` の設定に従う。ただし `note_search_fts`（FTS5 仮想テーブル）と関連する raw SQL は Drizzle スキーマでは表現できないため、Drizzle スキーマ外の手書き SQL マイグレーションで管理する。
 
 ## 共通の規約
@@ -19,7 +21,7 @@
 | --- | --- |
 | Identity | `users`, `identities`, `sessions`, `auth_tokens`, `login_attempts` |
 | Workspace | `workspaces`, `memberships`, `invitations` |
-| Storage | `stored_files` |
+| Storage | `stored_files`, `reference_import_attempts`, `reference_import_summaries` |
 | Note | `notes`, `note_revisions` |
 | Tag | `tags`, `tag_assignments` |
 | Integration | `external_connections`, `backup_records`, `oauth_flow_states` |
@@ -85,9 +87,9 @@
 | `token_hash` | text | NOT NULL, UNIQUE |
 | `created_at` | integer | NOT NULL |
 | `expires_at` | integer | NOT NULL |
-| `last_used_at` | integer | NOT NULL |
 
 - 版を持たない（[domains/identity.md](../domains/identity.md) のとおり）
+- **更新されない**。`expires_at` はサインイン時に `Session.ttlMs`（30 日）で確定する絶対期限で、以後書き換わらない。最終使用時刻の列を持たないのは、読む経路（セッション一覧・端末管理）が存在せず、認証要求のたびに書き込むコストだけが残るため（[domains/identity.md](../domains/identity.md) の「有効期間」）
 - **インデックス**: `sessions_user_idx` (`user_id`)、`sessions_expires_idx` (`expires_at`) — 期限切れの一括削除用
 
 ### auth_tokens
@@ -215,6 +217,43 @@
 - **インデックス**: `stored_files_owner_idx` (`owner_type`, `owner_id`, `purpose`)、`stored_files_expires_idx` (`expires_at`) WHERE `retention = 'ephemeral'` — 期限切れの回収、`stored_files_purpose_created_idx` (`purpose`, `created_at`) — 孤児メディアの走査、`stored_files_note_idx` (`note_id`) WHERE `note_id IS NOT NULL` — `listByNote`（`note.purged` 後の回収・所有者付け替え）と `findArtifactByNoteAndVersion`（`note_id` + `note_version` + `purpose` + 期限内判定。1 ノートあたりの行数は少ないためインデックスは `note_id` のみで足りる）
 
 `checksum_value` に索引は張らない。チェックサムによる重複保管の回避は行わず（`FileProvenance` が `note_id` を必須で持つため、同一内容でも 1 行を複数ノートで共有できない。[domains/storage.md](../domains/storage.md)）、値から行を引く経路が存在しないため。チェックサムは行を読んだあとの完全性の検証と、外部バックアップの同一判定（`backup_records.checksum_value` との比較）にだけ使う。
+
+### reference_import_attempts
+
+本文中の外部参照を取りにいった結果（[ADR 014](../adr/014-import-result-provenance.md)、[domains/storage.md](../domains/storage.md) の `ReferenceAttempt`）。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `note_id` | text | NOT NULL |
+| `url` | text | NOT NULL |
+| `kind` | text | NOT NULL, CHECK IN ('resource','stylesheet') |
+| `status` | text | NOT NULL, CHECK IN ('imported','inlined','failed','notAttempted') |
+| `file_id` | text | `status = 'imported'` のとき NOT NULL |
+| `reason` | text | `status IN ('failed','notAttempted')` のとき NOT NULL |
+| `attempted_at` | integer | NOT NULL |
+
+- **PK**: (`note_id`, `url`)。`importExternalReferences` は同じ鍵で上書きする（最後の試行結果だけを持つ）
+- 版を持たない。集約ではなく、1 行の中で不変条件が閉じているため（[domains/storage.md](../domains/storage.md)）
+- **CHECK**:
+  - `kind = 'stylesheet'` なら `status != 'imported'`（スタイルシートは保管しない）
+  - `kind = 'resource'` なら `status != 'inlined'`
+- **インデックス**: PK が `note_id` を先頭に持つため、ノート単位の読み取り（`listAttemptsByNote`）と削除（`deleteByNote`）は追加の索引を要さない
+- `note_id` にドメインをまたぐ外部キーは張らない（他のドメイン跨ぎの参照と同じ扱い）。回収は `note.purged` を購読する `deleteFilesForNote` が `deleteByNote` を呼んで行う
+
+行数は 1 ノートあたり `FetchBudget.maxCount`（200）で上界が決まる。**この表は「なぜ」だけを持つ**。「どの参照が未解決か」「どのスタイルシートが埋め込まれ、どれが失われたか」は本文の HTML が語り（`notes.content_html` の `data-*` 痕跡）、読み取り側は本文と突き合わせる。突き合わせの向きが本文からなので、本文に現れなくなった URL の行が残っていても表示に出ない — 古い行を掃除する規則を持たないのはこのためである。
+
+### reference_import_summaries
+
+直近の取り込み 1 回分の要約（`ReferenceImportSummary`）。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `note_id` | text | PK |
+| `removed_css` | text | NOT NULL（JSON 配列。`{ property, count }[]`） |
+| `completed_at` | integer | NOT NULL |
+
+- `removed_css` は取り込んだ CSS から宣言・規則の単位で落ちたものをプロパティ名ごとに畳んだ値。生の一覧を持たないのは、取り込んだ第三者のスタイルシートによっては宣言が数百件落ちうるためで、畳めば要素数は落とす対象の種類数（現在は 3）で頭打ちになる
+- 回収は `reference_import_attempts` と同じく `deleteFilesForNote` が行う
 
 ---
 
@@ -415,6 +454,7 @@
 | `artifact_expires_at` | integer | `artifact_file_id` が NOT NULL のとき NOT NULL |
 | `failure_reason` | text | `status = 'failed'` のとき NOT NULL, CHECK IN（`JobFailureReason` の 14 値） |
 | `failure_detail` | text | `status = 'failed'` のとき NOT NULL |
+| `notices` | text | `status = 'succeeded'` のとき NOT NULL（JSON 配列。`JobNotice[]` を格納。申し送りがなければ `[]`） |
 | `version` | integer | NOT NULL DEFAULT 0 |
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
@@ -429,6 +469,7 @@
   - `target_type = 'batch'` なら `target_id IS NULL`、そうでなければ `target_id IS NOT NULL`
   - `requested_by IS NULL` なら `kind = 'pdfExport' AND parent_id IS NULL`
   - `status = 'succeeded'` 以外なら `artifact_file_id IS NULL`
+  - `status = 'succeeded'` 以外なら `notices IS NULL`
   - `status IN ('running','succeeded')` なら `started_at IS NOT NULL`
   - `status IN ('succeeded','failed','canceled')` なら `finished_at IS NOT NULL`
   - `status = 'running'` なら `progress_completed IS NOT NULL AND progress_total IS NOT NULL AND progress_completed <= progress_total`
@@ -644,7 +685,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - クエリ内の 1 文字 CJK run は unigram の挙動になる
 - ハイライトの一致位置は生テキストへの部分一致で求めるため、FTS のヒットと必ずしも一致しない。境界をまたぐ偽陽性の行や、タイトル・タグ名だけで一致した行では `highlightedExcerpt` が `null` になる（前節「ハイライトと抜粋の生成」）
 
-共有パスワードの通過証（`SharePass`）に署名する鍵はテーブルに置かない。`AppConfig` から供給し、署名と検証は presentation 層で行う（[domains/note.md](../domains/note.md) の `SharePass` を参照）。同様に `SecretCipher` の鍵も設定から供給する。
+鍵と秘密はテーブルに置かない。供給元（`AppConfig`）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
 
 ---
 
@@ -678,6 +719,8 @@ jobs.target_id             → notes.id または stored_files.id
 storage_quotas.subject_id  → users.id または workspaces.id
 note_search.note_id        → notes.id
 note_search_tags.note_id   → notes.id
+reference_import_attempts.note_id  → notes.id
+reference_import_summaries.note_id → notes.id
 ```
 
 これらは外部キーを張らず、`identity.user.deleted` / `workspace.deleted` / `note.purged` などのイベントを購読するワーカーが後始末する。参照先が消えている行を読んだ場合は「対象が存在しない」として扱う。例外は `notes.created_by`（および投影先の `note_search.created_by`）で、退会した作成者のワークスペース所有ノートは行ごと残し、作成者を「退会した利用者」と表示する。この表示を書き込むのは `projectNoteChanges` の `identity.user.deleted` 分岐で、`NoteProjectionWriter.updateAuthor(userId, "退会した利用者", null)` が `created_by` の一致する全行の `author_display_name` / `author_handle` を置き換える（行は消さない。個人所有ノートの行は `deleteNotesForOwner` が発行する `note.purged` 経由で消える）。退会後に本文更新・移動で `upsert` が走る場合も、呼び出し側が同じ既定値を解決して渡すため旧表示名は復活しない（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。

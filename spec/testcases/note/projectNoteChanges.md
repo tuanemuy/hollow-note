@@ -32,7 +32,9 @@
 | 利用者がハンドルを変更した | `identity.user.handleChanged` を処理する | payload の新旧ハンドルを使わず、`userId` で `UserRepository.findById` を引いて現在の表示名とハンドルの組を解決し、`updateAuthor(userId, displayName, handle)` を呼ぶ。`author_handle` が更新され、FTS 対象列に触れないため FTS 更新は行われない | |
 | 利用者が表示名を変更した | `identity.user.profileUpdated` を処理する | payload は `displayName` しか運ばないため、同じく `findById` でハンドルを含む現在値の組を解決してから `updateAuthor` を呼ぶ。`author_display_name` が更新される | |
 | `identity.user.handleChanged` が配送順の入れ替わりで古くなっている | 処理する | payload の値ではなく解決した現在値を書くため、古い値が復活しない | |
-| ワークスペースのイベント（`workspace.created` / `slugChanged` / `published` / `unpublished` / `profileUpdated`） | 処理する | `workspaceId` で `WorkspaceRepository.findById` を引き、`name` / `slug` / `published` の組を解決してから `updateWorkspace` を呼ぶ（payload は変化の通知にとどまる） | |
+| ワークスペースのイベント（`workspace.slugChanged` / `published` / `unpublished` / `profileUpdated`） | 処理する | `workspaceId` で `WorkspaceRepository.findById` を引き、`name` / `slug` / `published` の組を解決してから `updateWorkspace` を呼ぶ（payload は変化の通知にとどまる） | |
+| ワークスペースが作られた | `workspace.created` を処理する | 購読しない（`createWorkspace` はノートを 1 件も作らないため投影対象の行が存在せず、`updateWorkspace` は必ず 0 行更新になる） | |
+| 利用者が作られた | `identity.user.created` を処理する | 同じ理由で購読しない。購読する Identity のイベントは `identity.user.handleChanged` / `identity.user.profileUpdated` / `identity.user.deleted` の 3 つに限られる | |
 | 利用者が退会した | `identity.user.deleted` を処理する | `updateAuthor(userId, "退会した利用者", null)` が呼ばれ、`created_by` がその利用者である行の著者表示だけが置き換わる。行は消さない（個人所有ノートの行は `deleteNotesForOwner` が発行する `note.purged` 経由で消える） | |
 | 退会者が作成したワークスペース所有ノートがある | `identity.user.deleted` を処理する | 行は残り、著者表示が「退会した利用者」・ハンドルが `null` になる（AC-09） | |
 | 同じ `identity.user.deleted` を 2 回受け取る | 2 回処理する | 同じ値の上書きのため結果が変わらない（冪等）。`deleteNotesForOwner` との到着順にも依存せず、対象行が既に消えていれば 0 行更新で成功する | |

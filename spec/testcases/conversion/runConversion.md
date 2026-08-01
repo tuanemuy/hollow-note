@@ -46,3 +46,8 @@
 | タイトルの由来が `manual` | 実行する | タイトルは差し替わらない | |
 | LLM を使う変換を実行した | 使用量を確認する | LLM 実行回数が 1 消費されている | |
 | 実行前に判明した失敗（未連携） | 使用量を確認する | LLM 実行回数は消費されていない | |
+| `requestedVisibility: "public"` だが公開ハンドルが未設定 | 実行する | ノートは非公開のまま残り、ジョブは `succeeded` になる。`notices` に `{ kind: "visibilityNotApplied", requested: "public", reason: "handleMissing" }` が入る（`failure.detail` には書かない。成功したジョブは `failure` を持たない） | |
+| `requestedVisibility: "public"` でワークスペース所有だがスラッグが未設定 | 実行する | 同じく `reason: "slugMissing"` の申し送りが入る | |
+| 公開ステータスが適用できた | 実行する | `notices` は空配列になる | |
+| 変換結果に外部参照がある | 実行する | `StorageUrlPolicy.isInternal` が偽の参照が 1 件以上あるときだけ参照取り込みジョブが登録される | |
+| 同じノートに未終端の `referenceImport` ジョブがある | 実行する | 新しい参照取り込みジョブは登録されず、変換ジョブ自体は成功する（`ensureNoDuplicate` は使わない。例外にせず登録を見送るだけ） | |

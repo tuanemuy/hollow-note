@@ -11,6 +11,7 @@
 | Ephemeral | 一時的 | 期限を過ぎたら回収される保管ファイル |
 | ObjectKey | オブジェクトキー | オブジェクトストレージ上の位置を示す文字列 |
 | Checksum | チェックサム | 同一内容の重複保管を避けるための内容ハッシュ |
+| ReferenceAttempt | 取得試行 | 本文中の外部参照 1 件を取りにいった結果の記録。ノートと URL の組で 1 件 |
 
 ## 値オブジェクト
 
@@ -70,6 +71,53 @@ StorageOwner =
 容量の帰属先を表す。個人のノートに属するファイルは `user`、ワークスペースのノートに属するファイルは `workspace`。
 
 生成物（`artifact`）の帰属は要求の文脈で決まる。サインイン済みの要求では要求者の個人 subject（`user`）、匿名の PDF エクスポートでは対応する利用者が存在しないため対象ノートの所有文脈に帰属させる。artifact は容量クォータに算入しない（[usage.md](./usage.md)）ため、この帰属の差異にクォータ上の副作用はない（[ADR 010](../adr/010-anonymous-export-and-ticket.md)）。
+
+### ReferenceAttempt
+
+本文中の外部参照 1 件を取りにいった結果（[ADR 014](../adr/014-import-result-provenance.md)）。
+
+```
+ReferenceAttemptOutcome =
+  | { status: "imported"; fileId: StoredFileId }        // リソース参照。保管して差し替えた
+  | { status: "inlined" }                                // スタイルシート。本文に埋め込んだ
+  | { status: "failed"; reason: ReferenceFailureReason }
+  | { status: "notAttempted"; reason: "budgetExceeded" }
+
+ReferenceFailureReason = "notFound" | "timeout" | "tooLarge" | "refusedUrl" | "unreadable" | "unknown"
+
+ReferenceAttempt = Readonly<{
+  noteId: NoteId;
+  url: string;                                           // 取得を試みた元の URL
+  kind: "resource" | "stylesheet";
+  outcome: ReferenceAttemptOutcome;
+  attemptedAt: Date;
+}>
+```
+
+- **バリデーション**: `url` は空文字列不可。`kind: "stylesheet"` の `outcome.status` は `imported` にならない（スタイルシートは保管しない）。`kind: "resource"` の `outcome.status` は `inlined` にならない
+- 集約ではない。不変条件は 1 件の中で閉じており、版も持たない。`importExternalReferences` が本文の保存と同一の Unit of Work で書く
+
+**この記録が語るのは「なぜ」だけである**。「どの参照が未解決か」「どのスタイルシートが埋め込まれ、どれが失われたか」は本文自身が語る（[domains/note.md](./note.md) の `HtmlProcessor` の痕跡の 3 状態）。読み取り側は本文と記録を突き合わせ、**本文にその URL がもう現れない記録は表示しない**。これにより古い記録を掃除する規則が要らなくなる。
+
+**「記録に行があるか」が「試行済みか未試行か」を分ける**。本文の上では、取得に失敗したリソース参照・一度も試行していない参照・予算超過で打ち切られた参照がいずれも「外部 URL がそのまま残っている」という同じ姿になり区別できない。記録の有無がその区別を与える。
+
+行数は 1 ノートあたり `FetchBudget.maxCount`（200）で上界が決まる。取得を試みた参照だけが記録されるため、予算を超えて打ち切られた分（`notAttempted`）を含めても 1 回の実行で増えるのはその上限までである。
+
+### ReferenceImportSummary
+
+直近の取り込み 1 回分の要約。ノートにつき 1 件。
+
+```
+ReferenceImportSummary = Readonly<{
+  noteId: NoteId;
+  removedCss: readonly { property: string; count: number }[];   // 分類ごとに畳んだ形
+  completedAt: Date;
+}>
+```
+
+`removedCss` は、取り込んだ CSS を本文へ書き戻したあとのサニタイズで宣言・規則の単位に落ちたもの（`position: fixed` / `position: sticky` / `@import`）を、プロパティ名ごとに件数へ畳んだ値である（[ADR 013](../adr/013-html-sanitization-policy.md) の「利用者に提示する件数が従来より増えるため、除去の一覧は分類ごとに畳める形が要る」）。生の一覧を持たないのは、取り込んだ第三者のスタイルシートが `position: fixed` を多用していれば宣言が数百件落ちうるためで、畳めば要素数は落とす対象の種類数（現在は 3）で頭打ちになる。
+
+利用者が書いた CSS の除去はここに入らない。それは保存操作への応答（`updateNoteBody` の出力 DTO の `removed`）が担う。この要約が持つのは**利用者が書いていない内容が黙って変わった**分だけである。
 
 ## エンティティ
 
@@ -150,7 +198,7 @@ StoredFile = PersistentFile | EphemeralFile
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `ensureFetchable` | `url: string` | `void` | スキームが `http` / `https` 以外、ホストが private / loopback / link-local / メタデータ用アドレスに解決される、既にサービス内のストレージを指す、のいずれかなら `BusinessRuleError(RefusedUrl)` |
+| `ensureFetchable` | `url: string` | `void` | スキームが `http` / `https` 以外、ホストが private / loopback / link-local / メタデータ用アドレスに解決される、`StorageUrlPolicy.isInternal` が真、のいずれかなら `BusinessRuleError(RefusedUrl)` |
 | `budget` | `—` | `FetchBudget` | 1 ノートあたりの取り込み上限。`ensureWithinBudget` の判定基準であり、`RemoteResourceFetcher.fetch` に渡す 1 件あたりの `limits` の出どころでもある（[usecases/storage.md](../usecases/storage.md) の `importExternalReferences`） |
 | `ensureWithinBudget` | `state: FetchState, nextSize: ByteSize` | `void` | `budget()` に対して件数またはバイト数が上限を超えるなら `BusinessRuleError(FetchBudgetExceeded)` |
 
@@ -161,7 +209,28 @@ FetchState  = Readonly<{ fetchedCount: number; fetchedBytes: number }>;
 
 既定値は `{ maxCount: 200, maxTotalBytes: 100 * 1024 * 1024, perItemTimeoutMs: 10_000 }`。
 
-**依存するポート**: `DnsResolver`（ホスト名からアドレスを解決して private 判定を行う）
+外部スタイルシートもこの予算に等しく数える。ただし取得した CSS は本文に `<style>` としてインライン化されるだけで保管しないため（[usecases/storage.md](../usecases/storage.md) の `importExternalReferences`）、`StoredFile` にはならず容量クォータ（[usage.md](./usage.md)）にも算入されない。この予算が抑えるのは 1 ノートあたりの外部取得そのものであって、保管量ではない。
+
+予算を超えて取得に至らなかった参照は、リソース参照なら本文に元の URL のまま残り、スタイルシートなら痕跡が `data-stylesheet-unavailable` になる（[domains/note.md](./note.md)）。どちらも**再試行の主体を持たない** — 打ち切りは成功として終端するため `Job.retry` の対象にならず、次に本文を保存したときに改めて参照取り込みジョブが登録されるまで手つかずのまま残る。この状態は `ReferenceAttempt` の `outcome.status: "notAttempted"` として記録され、ノート詳細が「上限に達したため打ち切られた」と示す根拠になる。
+
+**依存するポート**: `DnsResolver`（ホスト名からアドレスを解決して private 判定を行う）、`StorageUrlPolicy`
+
+### StorageUrlPolicy
+
+**責務**: URL がサービス内のストレージを指すかを判定する。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `isInternal` | `url: string` | `boolean` | 配信元がサービス自身のストレージなら真 |
+
+`ExternalFetchPolicy.ensureFetchable` の複合条件から**この 1 つだけを切り出した**ものである。切り出す理由は 2 つある。
+
+- `ensureFetchable` は `DnsResolver` に依存し、ホスト名を解決して private / loopback / メタデータ用アドレスを弾く。読み取り経路（ノート詳細で「未解決の参照はどれか」を求める）で呼ぶには重すぎるうえ、I/O を伴う
+- 同じ判定を `importExternalReferences` の `skipped` の判定、参照取り込みジョブの登録条件（[usecases/note.md](../usecases/note.md) の `updateNoteBody`、[usecases/conversion.md](../usecases/conversion.md) の `runConversion` / `runRegeneration`）、`collectOrphanMedia` の参照判定、そしてノート詳細の合成が使う。1 か所に置かないと規則が分岐する
+
+判定材料（配信元のホストや URL の前置き）は構成に依存するため、値は `AppConfig`（[presentation/index.md](../presentation/index.md)）から供給する。`ensureFetchable` は引き続きこの判定を内部で使い、内部を指す URL を `RefusedUrl` として弾く。
+
+**依存するポート**: なし
 
 ## ポート
 
@@ -184,6 +253,28 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
 `listByNote` は `noteId` が一致する全ファイルを引く。`artifact` も `noteId` を持つため結果に混ざる。`note.purged` 後の回収（`deleteFilesForNote`）とノート移動時の所有者付け替え（`relocateFilesForNote`）はどちらも `source` / `media` / `reference` だけが対象なので、呼び出し側が `purpose` で絞る。生成物は所属ノートの都合ではなく `expiresAt` の経過で `collectExpiredArtifacts` が回収し、所有者も生成時の帰属のまま動かさない（容量クォータに算入されないため、付け替えても意味を持たない）。`findArtifactByNoteAndVersion` は期限内（`expiresAt > now`）の `artifact` を引き、`exportNote` の PDF 分岐での相乗り・再利用に使う（複数あれば最新の 1 件）。`listByPurposeOlderThan` は所有者に依らず用途と作成時刻だけで走査する（`createdAt < createdBefore` を `id` の昇順で `limit` 件）。孤児メディアの回収（`collectOrphanMedia`）は全体走査であり所有者を絞れないため、所有者を必須とする `listByOwner` では引けない。`sumSizeByOwner` は `purpose: "artifact"` を除外して合算する（生成物は容量クォータに算入しない。増分集計と同じ除外規則。[usage.md](./usage.md)）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("OBJECT_KEY_ALREADY_USED")`、`SystemError(DatabaseError)`
+
+### ReferenceImportRecordRepository
+
+**目的**: 外部参照の取得結果を保持する（[ADR 014](../adr/014-import-result-provenance.md)）。
+
+```ts
+interface ReferenceImportRecordRepository {
+  saveAttempts(attempts: readonly ReferenceAttempt[]): Promise<void>;
+  putSummary(summary: ReferenceImportSummary): Promise<void>;
+  listAttemptsByNote(noteId: NoteId): Promise<readonly ReferenceAttempt[]>;
+  findSummaryByNote(noteId: NoteId): Promise<ReferenceImportSummary | null>;
+  deleteByNote(noteId: NoteId): Promise<number>;
+}
+```
+
+- `saveAttempts` は `(noteId, url)` を鍵に上書きする。1 回の取り込みが試みた参照だけを渡し、触れなかった URL の記録は残る（前回失敗した参照に今回手が届かなかった場合、その理由が消えてはならない）
+- `putSummary` はノートにつき 1 件を上書きする
+- `TransactionalRepository` を継承しない。集約ではなく版も持たないため、`Versioned<T>` も楽観ロックも要らない。ただし書き込みは本文の保存と同一の Unit of Work に載る
+- `deleteByNote` は `note.purged` を購読する `deleteFilesForNote`（[usecases/storage.md](../usecases/storage.md)）が呼ぶ。専用の購読者は置かない
+- 読み取り（`listAttemptsByNote` / `findSummaryByNote`）はノート詳細の合成が呼ぶ。**ノートを読める者すべてが読める** — この記録はノートに帰属し、要求者に帰属しない（ジョブとの違いは ADR 014）
+
+**エラーケース**: `SystemError(DatabaseError)`
 
 ### ObjectStorage
 

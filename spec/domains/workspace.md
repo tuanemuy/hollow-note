@@ -234,6 +234,8 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
 }
 ```
 
+`countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。
+
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
 ## ドメインイベント
@@ -242,7 +244,7 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
 
 | 型 | payload | 用途 |
 | --- | --- | --- |
-| `workspace.created` | `{ workspaceId, ownerId }` | Usage のクォータ行の初期化（[`initializeQuota`](../usecases/usage.md)）、読み取りモデルの投影（[`projectNoteChanges`](../usecases/note.md)） |
+| `workspace.created` | `{ workspaceId, ownerId }` | Usage のクォータ行の初期化（[`initializeQuota`](../usecases/usage.md)）。読み取りモデルの投影は購読しない（`createWorkspace` はノートを 1 件も作らず、作成直後のワークスペースには投影対象の行が存在しないため。[usecases/note.md](../usecases/note.md) の `projectNoteChanges`） |
 | `workspace.profileUpdated` | `{ workspaceId, name }` | 読み取りモデルの投影（`projectNoteChanges` のワークスペース名） |
 | `workspace.slugChanged` | `{ workspaceId, previousSlug, currentSlug }` | 読み取りモデルの投影（`projectNoteChanges` のスラッグ） |
 | `workspace.published` | `{ workspaceId, slug }` | 読み取りモデルの投影（`projectNoteChanges` の公開状態） |
@@ -259,7 +261,7 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
 
 サイトマップは購読で更新しない（`listPublicWorkspaces` が要求のたびに現在の状態から列挙する引き取り型のため）。公開ページのキャッシュについても、無効化の仕組みを本設計は持たない。
 
-読み取りモデルへ投影されるイベント（`workspace.created` / `profileUpdated` / `slugChanged` / `published` / `unpublished`）の payload も、変化の通知にとどめて投影に必要な現在値を運ばない。`NoteProjectionWriter.updateWorkspace(workspaceId, name, slug, published)` が要る `name` / `slug` / `published` の組は、購読側が `workspaceId` で `WorkspaceRepository.findById` を引いて解決して渡す（[domains/identity.md](./identity.md) の同じ注記、[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
+読み取りモデルへ投影されるイベント（`workspace.profileUpdated` / `slugChanged` / `published` / `unpublished`）の payload も、変化の通知にとどめて投影に必要な現在値を運ばない。`NoteProjectionWriter.updateWorkspace(workspaceId, name, slug, published)` が要る `name` / `slug` / `published` の組は、購読側が `workspaceId` で `WorkspaceRepository.findById` を引いて解決して渡す（[domains/identity.md](./identity.md) の同じ注記、[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
 
 ## エラーコード
 

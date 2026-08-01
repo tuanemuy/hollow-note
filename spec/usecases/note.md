@@ -103,14 +103,45 @@ ExportTicket = {
 | `createdBy` | `string` |
 | `sourceFileId` | `string \| null` |
 | `headings` | `{ level: number; text: string; anchorId: string }[]` |
+| `references` | `ReferenceReport`（下記） |
 | `permissions` | `{ canEdit: boolean; canDelete: boolean; canChangeVisibility: boolean }` |
 | `createdAt`, `updatedAt` | `Date` |
+
+```
+ReferenceReport = {
+  imported: { fileId: string; url: string | null }[]              // 保管して差し替えたリソース
+  inlinedStylesheets: { url: string }[]                           // 本文に埋め込んだ外部スタイルシート
+  unavailableStylesheets: { url: string; reason: string | null }[] // 取得できず装飾を失ったもの
+  unresolved: { url: string; reason: string | null }[]             // 本文に外部 URL のまま残っている参照
+  removedCss: { property: string; count: number }[]                // 直近の取り込みでサニタイズが落とした宣言
+}
+```
 
 ### 処理フロー
 
 1. 閲覧者コンテキストを解決する
 2. `content.status === "ready"` なら `content.headings` をそのまま射影に含める（保存時に算出済み）
 3. `shareUrl` は `canChangeVisibility` が真の閲覧者にのみ含める
+4. `references` を合成する（下記）
+
+### `references` の合成
+
+[ADR 014](../adr/014-import-result-provenance.md) の割り当てに従い、**構造は本文が、理由は Storage の記録が**供給する。[ADR 008](../adr/008-domain-boundaries.md) の「ノート詳細はアプリケーション層で Note / Tag / Job / Storage のクエリポートを合成する読み取りになる」にそのまま乗る。
+
+| フィールド | 供給元 |
+| --- | --- |
+| `imported` | `StoredFileRepository.listByNote(noteId)` を `purpose: "reference"` で絞る。元の URL は取得記録の `imported` の行から引く（記録が消えていれば `null`） |
+| `inlinedStylesheets` | 本文の `<style data-imported-stylesheet="…">` を数える |
+| `unavailableStylesheets` | 本文の `<style data-stylesheet-unavailable="…">` を数え、理由を取得記録から引く |
+| `unresolved` | `HtmlProcessor.extractExternalReferences(html)` のうち `StorageUrlPolicy.isInternal` が偽のもの（`data-stylesheet-href` の痕跡を含む）。理由は取得記録から引く |
+| `removedCss` | `ReferenceImportRecordRepository.findSummaryByNote(noteId)` の `removedCss` |
+
+- **理由が引けなくても構造は必ず出る**。取得記録が消えている（あるいは一度も試行されていない）場合、`reason` は `null` になる。「まだ取りに行っていない」と「取りに行って失敗した」の区別は記録の有無が与える（[domains/storage.md](../domains/storage.md)）
+- **本文に現れない URL の記録は出さない**。突き合わせの向きが本文からなので、利用者が参照を消したあとに古い記録が残っていても表示に出ない。記録側に掃除の規則が要らないのはこのためである
+- ジョブは引かない。取り込みの結果をジョブに載せない理由（要求者本人にしか見えず、退会で消える）は ADR 014 にある
+- `content.status !== "ready"` のときは全フィールドが空になる（本文がないので突き合わせる対象がない）
+
+**公開経路（`getPublicNote` / `getSharedNote`）はこのフィールドを含めない**。取り込みの状態は本文をこれから直す人のための情報であり、読みに来た匿名の閲覧者には意味を持たない。痕跡の URL は本文そのものに載って公開ページにも出るため隠せないが（ADR 014 の「影響」）、**取得記録の理由まで匿名に渡す必要はない**。射影する側で落とす。
 
 ### エラーケース
 
@@ -130,7 +161,7 @@ ExportTicket = {
 
 ### 出力DTO
 
-`getNote` と同じ形に加えて `passwordRequired: boolean`。
+`getNote` と同じ形に加えて `passwordRequired: boolean`。ただし `references` は含めない（下記）。
 
 ### 処理フロー
 
@@ -165,19 +196,21 @@ ExportTicket = {
 ### 処理フロー
 
 1. `SecureTokenGenerator.hashOf(shareToken)` を求め、`LoginAttemptKey.forSharePassword(tokenHash, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)。素のトークンではなくハッシュを材料にするため、`login_attempts.key` に共有の秘密が平文で残らない）
-2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("RATE_LIMITED")`
+2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("THROTTLED")`（下記のとおりロックも同じコードに畳む）
 3. 手順 1 のハッシュで `NoteRepository.findByShareToken` を引き、限定公開かつパスワードが設定されていることを確認する
 4. `PasswordHasher.verify` が偽なら、`LoginAttemptStore.put(LoginThrottlePolicy.recordFailure(attempt, now), LoginThrottlePolicy.attemptTtlMs)` で失敗を記録して `ValidationError("INVALID_SHARE_PASSWORD")`
 5. `LoginAttemptStore.clear(key)` で失敗の記録を消し、`NoteAccessPolicy.issuePass(shareLink, now)` の結果を返す
 
 鍵の名前空間（`share:`）がサインインの記録（`signIn:`）と分かれているため、共有リンクの照合失敗がサインインのロックを誘発することはない。読み書きの順序は `LoginThrottlePolicy` の「読み書きの分担」に従う（`signInWithPassword`（[usecases/identity.md](./identity.md)）と同じ）。
 
+**待機とロックを 1 つのコードに畳む**。`signInWithPassword` は `THROTTLED` と `LOCKED` を分けるが、こちらは同じ `LoginThrottlePolicy` を使いながら両方を `THROTTLED` として返す。閲覧者に**解除のための次の一手がない**ためである — サインインのロックは「パスワードを再設定すれば解ける」という導線を伴うが、共有リンクの閲覧者はそのノートの所有者ではなく、待つ以外にできることがない。区別しても示せる違いがないので、畳んで「しばらく待つ」1 つの案内に寄せる（P-45 の画面状態も 1 つである）。
+
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | パスワード相違 | `ValidationError("INVALID_SHARE_PASSWORD")` |
-| 連続失敗 | `ValidationError("RATE_LIMITED")` |
+| 連続失敗（待機・ロックとも） | `ValidationError("THROTTLED")` |
 | トークン不在・パスワード未設定 | `NotFoundError("NOTE_NOT_FOUND")` |
 
 ## getPublicNote
@@ -192,20 +225,30 @@ ExportTicket = {
 
 ### 出力DTO
 
-`getNote` と同じ形に加えて、著者（`handle` / `displayName` / `avatarUrl`）とワークスペース（`slug` / `name`）、メタ情報（`description`, `canonicalUrl`）。
+`getNote` と同じ形に加えて、著者（`handle` / `displayName` / `avatarUrl`）とワークスペース（`slug` / `name`）、メタ情報（`description`, `canonicalUrl`）。ただし `references` は含めない（下記）。
 
 ### 処理フロー
 
-1. `NoteRepository.findById` で引く。不在または `lifecycle !== "active"` または `visibility.status !== "public"` なら、削除済みかどうかを区別して `NotFoundError("NOTE_NOT_FOUND")` または `NotFoundError("NOTE_GONE")` を返す（後者は検索エンジンへのインデックス削除に使う）
+1. `NoteRepository.findById` で引き、次の順で応答を確定する
+   - 不在（完全削除後、またはそもそも存在しない `noteId`） → `NotFoundError("NOTE_NOT_FOUND")`
+   - `visibility.status !== "public"`（非公開・限定公開。公開だったものを非公開・限定公開に戻した場合を含む） → `NotFoundError("NOTE_NOT_FOUND")`
+   - `visibility.status === "public"` かつ `lifecycle !== "active"`（ゴミ箱在籍中で公開状態を保持している） → `NotFoundError("NOTE_GONE")`（検索エンジンへのインデックス削除を促す応答に写す）
+   - 公開かつ `active` → 手順 2 へ進む
 2. 著者を `getPublicProfile` 相当で、ワークスペースを `getPublicWorkspace` 相当で解決する。作成者が解決できない場合（退会済み。`USER_NOT_FOUND` になる場合を含む）は `{ displayName: "退会した利用者", handle: null }` を用い、著者ページへのリンクは出さない（R-59。読み取りモデル側の既定値 `projectNoteChanges` / `rebuildNoteProjection` と同じ文言に揃える）。ノート自体は公開のまま読める — 退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートは残る（AC-09）
 3. `description` は `excerpt` から生成する
+
+**410 を返す範囲を最小にした理由**。公開を取り下げた URL に 410 を返すと、その `noteId` を知る相手に「そのノートは存在したが今は取得できない」と伝えることになり、公開を取り下げた事実そのものを漏らす。この設計は `getSharedNote` で「トークン不在・再発行済み・非公開化・削除を区別しない」という**存在を漏らさない**原則を既に置いており、公開ページ側だけ区別を設けるのは一貫しない。そこで 410 は「公開状態のままゴミ箱に入っている」状態、つまり所有者がまだ公開を取り下げておらず、復元すれば同じ URL で再び読める状態に限り、それ以外はすべて 404 に寄せる。
+
+**既知の限界**。完全削除後は行そのものが消えるため公開されていた事実を判定できず、410 を返せない（下のエラーケース表の 1 行目）。したがって検索エンジンからの削除は 404 の応答と、読み取りモデル・サイトマップ（`listSitemapEntries`）から当該ノートが消えることに依存する。公開されたことのある `noteId` の削除記録（tombstone）を残せば完全削除後も 410 を返せるが、専用のテーブルに加えて保持期間と掃除の設計が要り、得られるのはインデックス削除がわずかに早まることだけなので、今回は採らない。
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
-| 非公開・不在 | `NotFoundError("NOTE_NOT_FOUND")` |
-| かつて公開されていて削除された | `NotFoundError("NOTE_GONE")` |
+| 不在（完全削除後・存在しない `noteId`） | `NotFoundError("NOTE_NOT_FOUND")` |
+| 非公開・限定公開（公開だったものを戻した場合を含む） | `NotFoundError("NOTE_NOT_FOUND")` |
+| 公開されたことがない | `NotFoundError("NOTE_NOT_FOUND")` |
+| ゴミ箱在籍中で公開状態を保持している | `NotFoundError("NOTE_GONE")` |
 
 ## searchNotes
 
@@ -331,7 +374,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | `rawHtml` | `string` | ○ | 2 MB 以内（サニタイズ前） |
 | `expectedVersion` | `number` | ○ | 楽観ロックのために必須 |
 | `reason` | `"manualEdit" \| "wysiwygConversion"` | ○ | 版の記録理由 |
-| `importReferences` | `boolean` | — | 新規の外部参照を取り込むか |
+| `importReferences` | `boolean` | — | 新規の外部参照を取り込むか。**省略時は真**（下記） |
 
 ### 出力DTO
 
@@ -346,7 +389,22 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 5. `Note.updateBody` を適用する
 6. `UnitOfWorkProvider.run` で版とノートを保存し、イベントを収集する
 7. `NoteRevisionRepository.deleteOlderThanNewest(noteId, 20)` を呼ぶ
-8. `importReferences` が真なら、`HtmlProcessor.extractExternalReferences` の結果が空でない場合に限り参照取り込みジョブを登録する — `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy: userId, parentId: null })`。`scope` は対象ノートの所有文脈から導出する（個人所有なら `{ type: "user", userId: owner.userId }`、ワークスペース所有なら `{ type: "workspace", workspaceId: owner.workspaceId }`。[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。ノートを編集した本人が要求者だが、`scope` の基準は所有者であり `createdBy` でも `userId` でもない — ワークスペースのノートに他のメンバーが参照を取り込ませたジョブは、そのワークスペースの削除・除名でキャンセルされなければならない
+8. `importReferences` が真なら参照取り込みジョブを登録する。登録は次の 2 つをどちらも満たすときだけ行う。
+   - `HtmlProcessor.extractExternalReferences` の結果のうち、`StorageUrlPolicy.isInternal`（[domains/storage.md](../domains/storage.md)）が偽のものが 1 件以上ある
+   - 同じノートを対象とする未終端の `referenceImport` ジョブがない。手順 2 で引いた `JobRepository.listActiveByTarget` の結果を `kind === "referenceImport"` で絞るだけでよく、**`JobConcurrencyPolicy.ensureNoDuplicate` は使わない** — あれは `BusinessRuleError(DuplicateJob)` を投げるものであり、利用者が明示的に要求した操作（`requestRegeneration`）を拒むためのものである。ここでの重複は利用者の誤りではなく自動保存の副作用なので、**保存自体は成功させ、既存の `jobId` を `referenceImportJobId` として返す**
+
+   登録する場合は `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy: userId, parentId: null })`。`scope` は対象ノートの所有文脈から導出する（個人所有なら `{ type: "user", userId: owner.userId }`、ワークスペース所有なら `{ type: "workspace", workspaceId: owner.workspaceId }`。[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。ノートを編集した本人が要求者だが、`scope` の基準は所有者であり `createdBy` でも `userId` でもない — ワークスペースのノートに他のメンバーが参照を取り込ませたジョブは、そのワークスペースの削除・除名でキャンセルされなければならない
+
+### `importReferences` の既定と、偽を選んだときの本文
+
+**省略時は真**とする。取り込み経路（`runConversion` / `runRegeneration`）は利用者の選択なしに参照を取り込むため、既定を偽にすると「同じ HTML をファイルとして取り込めば装飾が残り、エディタに貼ると失われる」という非対称が生まれる。既定を真にすればこの差は消え、明示的に偽を選んだ場合だけが例外になる。
+
+**偽のときは本文中の痕跡に手を触れない**。外部スタイルシートの痕跡（`<style data-stylesheet-href="…">`。[domains/note.md](../domains/note.md)）はそのまま残り、CSS が入らないので装飾は当たらない。落とさない理由は 2 つある。
+
+- 痕跡を落とすと、後から取り込み直す道が永久に閉じる。本文に `<link>` はもう残っておらず、URL を持っているのはこの痕跡だけだからである。残しておけば、次に `importReferences` を真にして保存した時点で取り込まれる
+- 空の痕跡が禁じられていた理由（残すと保存のたびに同じ参照取り込みジョブが登録され続ける）は、偽のときはジョブを登録しないので発生しない。真のときも手順 8 の重複防止が効く
+
+`removed` には `link` の除去が現れる（初回の保存時）ので、装飾が当たらないことは利用者に伝わる。既定スタイルを当て直す導線は表示スタイルの切り替え（ED-11）にある。
 
 ### エラーケース
 
@@ -378,12 +436,17 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 2. `JobRepository.listActiveByTarget({ type: "note", noteId })` を引き、実行中の変換・再生成ジョブ（`kind: "conversion" | "regeneration"`）があれば `BusinessRuleError(NoteLockedByJob)`
 3. 現在の本文が `ready` でなければ `BusinessRuleError(CannotCaptureEmptyContent)`
 4. `HtmlProcessor.editTextNodes(html, edits)` を呼ぶ
-5. `NoteRevision.capture("manualEdit")` を作る
-6. `Note.updateBody` を適用して保存する
+5. 手順 4 の `html` を `HtmlProcessor.process` に通して `ProcessedHtml` を得る（下記）
+6. `NoteRevision.capture("manualEdit")` を作る
+7. `Note.updateBody` に手順 5 の `ProcessedHtml` を渡して保存する
+
+**編集結果を `process` に通す**。`editTextNodes` が返すのは `EditTextNodesResult`（`html` と `skipped`）であって `ProcessedHtml` ではなく、`Note.updateBody` は `ProcessedHtml` を要求する（[domains/note.md](../domains/note.md)）ため、この一手が要る。派生情報（`text` / `excerpt` / `headings`）もテキストの書き換えで変わるので、作り直さないと読み取りモデルへの投影が古いまま残る。
+
+サニタイズの観点でも要る。`editTextNodes` は `<style>` の子テキストノードに経路を割り当てない（[domains/note.md](../domains/note.md)）ため CSS を書き換える経路は塞がっているが、それはポートの契約であって、契約を満たさない実装や将来の変更に対する保険にはならない。保存前に必ず `process` を通すことで、本文が常に [ADR 013](../adr/013-html-sanitization-policy.md) の規則を満たしている状態を保つ。
 
 ### エラーケース
 
-`updateNoteBody` と同じ。加えて、すべての編集が `skipped` になった場合も成功として返す（版は作らない）。
+`updateNoteBody` と同じ。加えて、すべての編集が `skipped` になった場合も成功として返す（版は作らない）。`<style>` の中身を指す編集は経路が割り当たらないため `pathNotFound` として `skipped` に落ちる。
 
 ## renameNote
 
@@ -742,7 +805,11 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 1. `NoteOwner` を組み立てる（`identity.user.deleted` → `{ type: "user", userId }`、`workspace.deleted` → `{ type: "workspace", workspaceId }`）。個人の退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートには触れない（AC-09）
 2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず 1 件ずつ `UnitOfWorkProvider.run` で削除して `NoteEvents.purged` を収集する（`purgeNote` の手順 3 と同じ。版は FK CASCADE で同時に消える）。1 件の失敗は記録して次へ進む
 3. タグ付与・保管ファイル・バックアップ記録・読み取りモデル・件数の後始末は `note.purged` の購読者（`purgeNote` の手順 4 と同じ受け手）に委ねる
-4. `batchSize` 件を処理してまだ残りがあれば自身を再登録する（`deleteFilesByOwner` と同じ。1 回の処理量を配送単位に収める）。再登録の媒体は**イベントの再投入**であってジョブではない — `JobKind` の 11 種にこの後始末に当たる種別はなく、追加もしない。受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を、そのバッチの最後の削除と同じ `UnitOfWorkProvider.run` の中で outbox に再投入し、次の配送で続きを処理する。他の購読者も再投入分を受け取るが、いずれも冪等に設計されているため（`deleteTagsForScope` / `deleteFilesByOwner` はどちらも 0 件削除で無害に終わる）結果は変わらない
+4. `batchSize` 件を処理してまだ残りがあれば自身を再登録する（1 回の処理量を配送単位に収める）。再登録の媒体は**イベントの再投入**であってジョブではない — `JobKind` の 11 種にこの後始末に当たる種別はなく、追加もしない。受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を、そのバッチの最後の削除と同じ `UnitOfWorkProvider.run` の中で outbox に再投入し、次の配送で続きを処理する。他の購読者も再投入分を受け取るが、いずれも冪等に設計されているため（`deleteTagsForScope` / `deleteFilesByOwner` はどちらも 0 件削除で無害に終わる）結果は変わらない
+
+**継続の仕方は `deleteFilesByOwner`（[usecases/storage.md](./storage.md)）とは異なる**。ファイル側は 1 回の配送の中で `listByOwner` を `batchSize` ずつ読んで `deleteFiles` を繰り返し、消し切れなかった場合にだけ自身を再登録する。ノート側は 1 件ずつ `UnitOfWorkProvider.run` を張って `note.purged` を発行するため 1 バッチの負荷が読みにくく、バッチごとに必ず再投入して次の配送に続きを渡す。両者を「同じ」と書くと、ファイル側の再登録が保険であるのに対しノート側は常用の継続経路である、という違いが消える。
+
+**既知の課題**: 再投入されるのは購読者が複数ある `identity.user.deleted`（8 つ。[usecases/identity.md](./identity.md) の `deleteAccount` 手順 5）/ `workspace.deleted`（4 つ。[usecases/workspace.md](./workspace.md) の `deleteWorkspace` 手順 5）そのものであり、`deleteNotesForOwner` と `deleteFilesByOwner` の双方に残作業がある間は同じイベントのコピーが増えていく。購読者はすべて冪等で、残作業が 0 になった系列から再投入をやめるため**正確性と停止性は保たれる**が、outbox とキューを水増しする。本来は継続専用のイベント（購読者 1 件・カーソル付き）に分けるべきだが、継続の媒体として何が適切か（イベントの再投入か、遅延キューか、カーソルを持つ定期ワーカーか）は実行基盤の選択に依存するため、**ランタイムの前提が確定してから扱う**。
 
 イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は `emptyTrash` の 500 件分割（`bulkDelete`）と同水準で、受け手はすべて冪等に設計されている。
 
@@ -800,9 +867,17 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 1. 閲覧者コンテキストを解決し、`canEdit` を確認する
 2. `NoteRevisionRepository.findById` を引き、`noteId` の一致を確認する
 3. 現在の本文から `NoteRevision.capture("restore")` を作る
-4. 版の HTML・タイトル・スタイルで `Note.updateBody` と `Note.changeStyleMode`、必要なら `Note.rename` を適用して保存する
+4. 版の HTML を `HtmlProcessor.process` に通して `ProcessedHtml` を得る（下記）
+5. 手順 4 の `ProcessedHtml` とタイトル・スタイルで `Note.updateBody` と `Note.changeStyleMode`、必要なら `Note.rename` を適用して保存する
+6. 復元後の本文に外部参照があれば参照取り込みジョブを登録する。条件と形は `updateNoteBody` の手順 8 と同じ（内部を指さない参照が 1 件以上あり、かつ同じノートを対象とする未終端の `referenceImport` がない）
 
 版の追加とノートの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する（`updateNoteBody` の手順 6 と同じ）。
+
+**版の HTML も `process` に通す**。`NoteRevision` が持つのは HTML だけで（[domains/note.md](../domains/note.md)）、`Note.updateBody` は `ProcessedHtml` を要求するため。派生情報を作り直さないと、復元後の抜粋・見出し・読み取りモデルが復元前のままになる。
+
+**復元は参照の状態を巻き戻す**。取り込みは版を作らない（[usecases/storage.md](./storage.md) の `importExternalReferences`）ため、直近の版は取り込み**前**の本文である。これを復元すると、取り込み済みだった内部 URL が外部 URL に戻り、`data-imported-stylesheet` になっていた痕跡が `data-stylesheet-href` に戻る。手順 6 で取り込みを登録し直すのはこのためで、これがないと本文に未取得の参照が残ったまま誰も取りに行かない状態になる。
+
+Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `ReferenceAttempt`）は復元で消さない。記録は URL ごとの「最後に試したときどうだったか」であり、本文が巻き戻っても事実は変わらないからである。再取り込みが走れば同じ鍵で上書きされる。
 
 ### エラーケース
 
@@ -853,7 +928,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
    - `html` → `NoteExportComposer.composeSelfContainedHtml` で 1 ファイルにまとめて即時に返す。`resolveAsset` はサービス内のストレージを指す参照だけを解決する。`styleMode === "default"` のときだけ既定スタイルを埋め込む。解決できなかった参照は元の URL のまま残す
    - `markdown` → `MarkdownRenderer.toMarkdown(html)` の結果を即時に返す
    - `pdf` → 次の順に解決する（[ADR 010](../adr/010-anonymous-export-and-ticket.md)）。外側の手順との取り違えを避けるため、この分岐の中は **4-a / 4-b / 4-c** と呼ぶ
-     - **4-a**: `StoredFileRepository.findArtifactByNoteAndVersion(noteId, note.version, "application/pdf", now)` で期限内・同版の生成物を引く。得られた artifact の `expiresAt` が単体エクスポートの保持期限の上限（`now + 24 時間`）以内であれば再利用し、`kind: "file"` として `{ kind: "file", fileId }` の `ExportTicket` を発行して返す（ジョブは登録しない）。上限を超えるものは再利用せず 4-b へ進む
+     - **4-a**: `StoredFileRepository.findArtifactByNoteAndVersion(noteId, note.version, "application/pdf", now)` で期限内・同版の生成物を引く。得られた artifact の残りの保持期間が `ExportTicket` の有効期間（30 分）に余裕を足した長さ以上（`expiresAt >= now + 35 分`）であれば再利用し、`kind: "file"` として `{ kind: "file", fileId }` の `ExportTicket` を発行して返す（ジョブは登録しない）。この下限を満たさないものは再利用せず 4-b へ進む — 発行したチケットが有効なうちに artifact のほうが先に失効し、ダウンロードが `ARTIFACT_EXPIRED` で落ちるため
      - **4-b**: なければ `JobRepository.listActiveByTarget({ type: "note", noteId })` から未終端の `pdfExport` ジョブを探す。あれば新規登録せず、そのジョブへの `{ kind: "job", jobId }` の `ExportTicket` を発行して返す（相乗り。描画は実行時点の版に対して行われる）。複数存在した場合は最も新しい 1 件に相乗りする — 4-b の探索と 4-c の登録は同一トランザクションではないため、同時要求では未終端の `pdfExport` が一時的に複数並びうるが、いずれも同じノートの同じ版から同じ PDF を作るだけなので害はない
      - **4-c**: どちらもなければ `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "pdfExport" }, scope, kind: "pdfExport", requestedBy, parentId: null })` を登録する。`requestedBy` はサインイン済みなら `userId`、匿名なら `null`（型は `pdfExport` かつ親なしに限られる）。`scope` は要求者ではなく対象ノートの所有文脈から導出する（個人所有なら `{ type: "user", userId: owner.userId }`、ワークスペース所有なら `{ type: "workspace", workspaceId: owner.workspaceId }`。[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。`kind: "job"` とし、`{ kind: "job", jobId }` の `ExportTicket` を発行して返す
 5. ファイル名は `NoteTitle` から生成し、使えない文字を置き換える。空になればノート ID を使う
@@ -862,7 +937,11 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 **`JobConcurrencyPolicy.ensureNoDuplicate` は呼ばない**（手順 4-b）。同じ `kind`・`target` の未終端ジョブを `BusinessRuleError(DuplicateJob)` で弾く振る舞いは、既存ジョブに合流させる相乗りと両立しない（弾いた時点で要求元に返す `jobId` がなくなる）。`requestBackup` / `requestRegeneration` のように「本人の多重要求を業務エラーにしてよい」経路とは要件が違い、こちらは匿名を含む任意の閲覧者が同時に同じノートを要求してよい。したがって未終端ジョブが高々 1 件であることは保証されず、ADR-010 が相乗りに期待する増幅の抑止は最善努力である。同時要求が正確に何倍のレンダリングを起こしうるかを縛るのは transport 層のレート制限と PDF レンダラーの同時実行上限（運用）であり、相乗りはその手前で大半を吸収する層として置く。
 
-**再利用の範囲**（手順 4-a）。`findArtifactByNoteAndVersion` の条件（`noteId` + `noteVersion` + `mimeType` + 期限内）だけでは、一括ダウンロードの子（`runBulkExportItem`、TTL 7 日）が作った PDF まで拾ってしまい、EX-01 が約束する「PDF は 24 時間保持」が経路によって崩れる。そこで `expiresAt <= now + 24 時間`（残りの保持期間が 24 時間以内）を再利用の追加条件にする。約束は保持期間の上限なので、この条件を満たす artifact を返すかぎり、どの経路の生成物であっても利用者から見た保持期間は約束の範囲に収まる。生成直後の 7 日保持の子はこれで外れ、残り 24 時間を切った子だけが結果的に再利用の対象になる。条件を外した結果 artifact が見つからなければ 4-b・4-c に進んで新しいジョブを登録するだけなので、取りこぼしても結果は変わらない（同版の PDF が高々 1 回余分に描画される）。
+**再利用の範囲**（手順 4-a）。EX-01（[scenario/export.md](../scenario/export.md)）の「生成した PDF は一定期間（24 時間）保持し、その間は再生成せずに再ダウンロードできる」は保持期間の**下限**の約束である。したがって再利用に上限（残りの保持期間が短いものだけを返す条件）を課す必要はない — 一括ダウンロードの子（`runBulkExportItem`、TTL 7 日）が作った PDF を返しても、利用者から見た保持期間が約束より長くなるだけで、「その間は再ダウンロードできる」に違反しないためである。以前は `expiresAt <= now + 24 時間` を追加条件にしていたが、これは EX-01 の 24 時間を保持期間の**上限**と読み違えたもので、守る必要のない制約だった。
+
+代わりに課すのは**下限**である。残りの保持期間が `ExportTicket` の有効期間（30 分）に余裕を足した長さ以上（`expiresAt >= now + 35 分`）ある artifact だけを再利用する。上限しか見ていなかったときは、再利用の対象が「残りの保持期間が短いもの」に絞られ、残り数分で失効する artifact まで含まれてしまう。その場合、有効期間 30 分のチケットを返した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。しかもこれは 7 日 TTL の子を経由する場合に限らず、通常の 24 時間 TTL の artifact でも生成から 23:30〜24:00 の間に来た要求では必ず起きる。下限はこの窓を塞ぐためのもので、余裕の 5 分はダウンロード URL の有効期間と時刻のずれを吸収する。代償として、TTL 24 時間の artifact は生成から 23 時間 25 分を過ぎた要求では再利用されず作り直しになる — EX-01 の「再生成せずに」を文字どおり読めばこの末尾 35 分は外れるが、利用者が受け取るのは「少し待って同じ PDF を得る」結果であって失敗ではない。下限を置かなければ同じ窓で「チケットを受け取った直後にダウンロードが失効で落ちる」ことになり、そちらのほうが約束から遠いため、この交換を選ぶ。
+
+条件を満たす artifact が見つからなければ 4-b・4-c に進んで新しいジョブを登録するだけなので、取りこぼしても結果は変わらない（同版の PDF が高々 1 回余分に描画される）。
 
 一方、**要求者をまたぐ再利用は意図した挙動**である。artifact はノートの版だけから決まる純粋な生成物で（本文もスタイルも版が決まれば決まる。`changeNoteStyleMode` も版を進める）、他の利用者が作った PDF を匿名閲覧者に返しても内容は同じものになる。アクセスは要求のたびに `NoteAccessPolicy.evaluate` で再評価されるため、再利用が権限をバイパスすることもない。artifact は容量クォータに算入されない（`sumSizeByOwner` は `purpose: "artifact"` を除外する）ので、他者の所有として保管された行を配っても消費量の帰属は狂わない。
 
@@ -930,8 +1009,10 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 1. チケットの有効期間（発行から 30 分）を確認する。失効なら `ValidationError("TICKET_EXPIRED")`（`exportNote` の再実行で再発行できる旨を返す）
 2. `ticket.noteId` でノートを引き、閲覧者コンテキストを解決する。`granted` でなければ `NotFoundError("NOTE_NOT_FOUND")` — チケットはアクセスをバイパスしないため、非公開化・削除・リンク再発行はここで遮断される。`passwordRequired` なら `ValidationError("SHARE_PASSWORD_REQUIRED")`
 3. `ticket.target` で分岐する
-   - `{ kind: "file" }` → 生成済み。`status: "succeeded"` と同じチケットを返す（`downloadExportArtifact` に進める）
+   - `{ kind: "file" }` → 生成済み。`StoredFileRepository.findById(fileId)` で引き、不在・`noteId` がチケットと不一致・期限切れ（`StoredFile.isExpired`）なら `ValidationError("ARTIFACT_EXPIRED")`（`exportNote` の再実行で再生成できる旨を返す。`downloadExportArtifact` の手順 3 と同じ扱いに揃える）。生きていれば `status: "succeeded"` と同じチケットを返す（`downloadExportArtifact` に進める）
    - `{ kind: "job" }` → `JobRepository.findById` で引く。不在なら `NotFoundError("EXPORT_NOT_FOUND")`（`exportNote` の再実行を促す）。`succeeded` なら artifact の `fileId` で `{ kind: "file" }` の新しいチケットを発行して返す。それ以外は `status`（`running` なら `progress` も）を返す
+
+`{ kind: "file" }` で artifact の生死を確かめるのは、`exportNote` の手順 4-a が課す下限が**チケット発行時点の**保証にすぎず、発行後に artifact が保持期限を迎える、あるいは強制終端の後始末（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）や所有者の削除（`deleteFilesByOwner`。[usecases/storage.md](./storage.md)）で回収されることはありうるためである。確かめずに返すと「完了しました」と表示した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。
 
 ### エラーケース
 
@@ -941,6 +1022,7 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 | ノート不在・権限なし・非公開化・削除 | `NotFoundError("NOTE_NOT_FOUND")` |
 | パスワード未通過 | `ValidationError("SHARE_PASSWORD_REQUIRED")` |
 | ジョブ不在（履歴の削除後） | `NotFoundError("EXPORT_NOT_FOUND")`（`exportNote` の再実行へ誘導する） |
+| artifact の期限切れ・不在・`noteId` の不一致 | `ValidationError("ARTIFACT_EXPIRED")`（`exportNote` の再実行へ誘導する） |
 
 ## downloadExportArtifact
 
@@ -987,12 +1069,12 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 
 `jobId`, `targetCount: number`, `skipped: { noteId: string; reason: string }[]`
 
-`skipped` の形は `requestBulkNoteOperation` / `requestBackup`（[usecases/integration.md](./integration.md)）と揃える。対象を ID の並びで受け取る 3 経路は、どれも「一部だけが対象から外れる」ことが常態なので、件数だけでなく**どれがなぜ外れたか**を返す。`reason` は `permissionDenied`（閲覧権限がない）/ `contentNotReady`（本文が `ready` でない）のいずれか。
+`skipped` の**構造**（`{ noteId, reason }[]`）は `requestBulkNoteOperation` / `requestBackup`（[usecases/integration.md](./integration.md)）と揃える。対象を ID の並びで受け取る 3 経路は、どれも「一部だけが対象から外れる」ことが常態なので、件数だけでなく**どれがなぜ外れたか**を返す。揃えるのは構造だけで `reason` の**語彙は経路ごとに固有**である（`requestBackup` の `noSourceFile` のように他経路に存在しない値がある）。ただし「対象が引けなかった」という同じ事象には 3 経路とも同じ `notFound` を使う。本経路の `reason` は `notFound`（`listByIds` の結果に現れなかった ID）/ `permissionDenied`（閲覧権限がない）/ `contentNotReady`（本文が `ready` でない）のいずれか。
 
 ### 処理フロー
 
 1. 件数が 500 を超えれば `ValidationError("TOO_MANY_TARGETS")`
-2. `NoteRepository.listByIds` で引き、閲覧できるものだけに絞る。閲覧できないものは `reason: "permissionDenied"`、本文が `ready` でないものは `reason: "contentNotReady"` として `skipped` に積み、対象から外す
+2. `NoteRepository.listByIds` で引き、閲覧できるものだけに絞る。`listByIds` は存在しない ID を単に返さない契約（[domains/note.md](../domains/note.md)）なので、入力の `noteIds` と結果を突き合わせ、引けなかった ID は `reason: "notFound"` として `skipped` に積む。閲覧できないものは `reason: "permissionDenied"`、本文が `ready` でないものは `reason: "contentNotReady"` として `skipped` に積み、対象から外す。突き合わせを省くと存在しない ID が無言で落ち、全件不在のときに `NO_EXPORTABLE_TARGET` になるだけで「どれが無かったのか」が利用者に返らない
 3. 合計サイズの見積もりが 1 GB を超えれば `ValidationError("EXPORT_TOO_LARGE")`
 4. `JobRepository.countActiveByKind(userId, "bulkExport")` で未終端の `bulkExport` ジョブ（親・子の両方）を数え、その件数を `runningBulkExports` として `JobConcurrencyPolicy.ensureBulkExportSlot(runningBulkExports)` に渡す
 5. 親ジョブ `Job.enqueueBatch(kind: "bulkExport", payload: { kind: "bulkExport", format }, requestedBy: userId, scope, total)` と、対象ノートごとの子ジョブ（`Job.enqueue`。`kind: "bulkExport"`、`payload` は親と同じ、`target: { type: "note", noteId }`、`parentId` は親、`scope` は下記）を作って保存する（[domains/job.md](../domains/job.md) の登録経路と `kind` / `payload` の対応、および `JobScope` の導出規則）。子は `job.enqueued` の購読ハンドラーがキューへ送り、`runBulkExportItem` が実行する。batch 親はディスパッチ対象外で、実行は `job.readyToAssemble` の購読経由のみ（[ADR 012](../adr/012-job-execution-resilience.md)）
@@ -1032,7 +1114,7 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
    - `html` → `NoteExportComposer.composeSelfContainedHtml`（`exportNote` の同期分岐と同じ規則）
    - `markdown` → `MarkdownRenderer.toMarkdown(html)`
    - `pdf` → `PdfRenderer.render`（`styleMode` に従う）
-4. `ObjectStorage.put` と `StoredFile.registerEphemeral(ttl: 7 日)` で保管する（ZIP と同じ期限に揃え、親の組み立て・子の再試行の間も生存させる）。`purpose: "artifact"` とし、`noteId` と生成時点の版 `noteVersion` を付ける。`uploadedBy: job.requestedBy`、`owner` は要求者の個人 subject。この 7 日保持の artifact は、生成直後は `exportNote` の再利用の対象にならない — 再利用側が `expiresAt <= now + 24 時間` を条件に加えるため、単体エクスポートの保持の約束（24 時間）を超える残存期間を持つうちは外れる（`exportNote` の「再利用の範囲」）
+4. `ObjectStorage.put` と `StoredFile.registerEphemeral(ttl: 7 日)` で保管する（ZIP と同じ期限に揃え、親の組み立て・子の再試行の間も生存させる）。`purpose: "artifact"` とし、`noteId` と生成時点の版 `noteVersion` を付ける。`uploadedBy: job.requestedBy`、`owner` は要求者の個人 subject。この 7 日保持の artifact は `exportNote` の再利用の対象になる — 再利用側が課すのは残りの保持期間の**下限**だけであり、EX-01 の 24 時間は保持期間の下限の約束なので、それより長く残る生成物を単体エクスポートに返しても約束に反しないためである（`exportNote` の「再利用の範囲」）
 5. `Job.succeed(artifact)` を保存する。保存が `ConflictError` になったときの扱いは run 系の共通規則の判定 4 に従う。親の進捗更新は `job.succeeded` を購読する `updateBatchProgress` が行う
 
 手順 4 の `StoredFile.registerEphemeral` と手順 5 の `Job.succeed` は**同一の `UnitOfWorkProvider.run`** で保存する。artifact の行が存在することと子が `succeeded` であることを同時に確定させるためで、これがないと「保管済みだが `Job.succeed` 前」の子が生まれ、強制終端の後始末が `succeeded` で絞る回収（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」の 2）から漏れる — 除名・脱退でアクセス権を失った利用者の手元に、ワークスペースのノート本文を含む生成物が 7 日残ることになる。オブジェクトストレージへの `ObjectStorage.put` だけは UoW の外で先に行い、UoW がロールバックした場合はメタデータのない孤児オブジェクトとして残る（参照されないため害はない。[domains/storage.md](../domains/storage.md) の削除順序と同じ整理）。
@@ -1223,7 +1305,8 @@ BulkOperation =
    - `tag.merged` → 対象ノートは `TagAssignmentRepository.listByTag(targetTagId)` で列挙する。merge の時点で `sourceTagId` の付与は `targetTagId` へ付け替え済み（衝突する行は削除済み）なので、`sourceTagId` で引くと 0 件になる。payload は両方の ID を運ぶ（[domains/tag.md](../domains/tag.md)）。列挙したノートごとにタグを引き直して同じ形で `updateTags`
    - `identity.user.handleChanged` / `identity.user.profileUpdated` → `UserRepository.findById` で現在の状態を読み、表示名とハンドルの組を解決して `updateAuthor(userId, displayName, handle)` を呼ぶ。payload は変化の通知にとどまり投影に要る組を運ばないため、現在値はここで解決する（[domains/identity.md](../domains/identity.md)）。利用者が解決できない場合（退会と入れ替わった配送）は `identity.user.deleted` と同じ既定値 `updateAuthor(userId, "退会した利用者", null)` を書く
    - `identity.user.deleted` → `updateAuthor(userId, "退会した利用者", null)`。退会者が作成したワークスペース所有ノートは残るため（AC-09）、著者表示だけを退会後の姿に置き換える。行は消さない（個人所有ノートの行は `deleteNotesForOwner` が発行する `note.purged` 経由で消える）
-   - `workspace.created` / `slugChanged` / `published` / `unpublished` / `workspace.profileUpdated` → `WorkspaceRepository.findById` で現在の状態を読み、名前・スラッグ・公開状態を解決して `updateWorkspace(workspaceId, name, slug, published)` を呼ぶ。こちらも payload は変化の通知にとどまるため、現在値はここで解決する（[domains/workspace.md](../domains/workspace.md)）。ワークスペースが解決できない場合（削除と入れ替わった配送）は何もせず返す — 対象行は `note.purged` 経由で消える
+   - `workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.profileUpdated` → `WorkspaceRepository.findById` で現在の状態を読み、名前・スラッグ・公開状態を解決して `updateWorkspace(workspaceId, name, slug, published)` を呼ぶ。こちらも payload は変化の通知にとどまるため、現在値はここで解決する（[domains/workspace.md](../domains/workspace.md)）。ワークスペースが解決できない場合（削除と入れ替わった配送）は何もせず返す — 対象行は `note.purged` 経由で消える
+   - `workspace.created` は購読しない。`createWorkspace`（[usecases/workspace.md](./workspace.md)）はノートを 1 件も作らないため、作成直後のワークスペースには投影対象の行が存在せず、`updateWorkspace` は必ず 0 行更新になるためである。同じ理由で `identity.user.created` も購読しない（本ユースケースが購読する Identity のイベントは `identity.user.handleChanged` / `identity.user.profileUpdated` / `identity.user.deleted` の 3 つ）
    - 上記に現れない Note のイベント（`note.published` / `note.shareLinkReissued` / `note.sharePasswordChanged`）は購読しない。`note.published` は `note.visibilityChanged` と必ず併発するため投影は後者だけで足り、それ自身は監査用に残る（サイトマップも読み取りモデルから引くため専用の受け手を持たない。`listSitemapEntries`）。残る 2 つは投影列を 1 つも変えない
 2. どの分岐も payload の値ではなく `findById` で読み直した現在の状態を書くため、同じイベントを 2 回受け取っても、配送順が入れ替わって古いイベントが後着しても結果は変わらない。`identity.user.deleted` も同じ値を書き込む上書きであり、`deleteNotesForOwner` との到着順にも依存しない（対象行が既に消えていれば 0 行更新で成功する）
 

@@ -217,11 +217,17 @@
 
 ### 概要
 
-本文中の外部リソースを取得して保管し、参照先を差し替える（IM-05）。参照取り込みジョブ（`kind: "referenceImport"`、`target: { type: "note", noteId }`）から呼ばれる。
+本文中の外部リソースを取得して保管し、参照先を差し替える（IM-05）。ただし外部スタイルシートだけは差し替えではなく、取得した CSS を本文に `<style>` として**インライン化**する（[ADR 013](../adr/013-html-sanitization-policy.md)）。参照取り込みジョブ（`kind: "referenceImport"`、`target: { type: "note", noteId }`）から呼ばれる。
 
 このユースケースはジョブを登録しない。`referenceImport` ジョブを登録するのは `updateNoteBody`（[usecases/note.md](./note.md)）と `runConversion` / `runRegeneration`（[usecases/conversion.md](./conversion.md)）で、いずれも `scope` を**対象ノートの所有文脈**から導出する（[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。ここで保管する参照ファイル（`purpose: "reference"`）の `StorageOwner` も同じノートの所有文脈になるため、ジョブの `scope` と保管ファイルの帰属は一致する。`scope` は登録時点で決まり、このユースケースは書き換えない。
 
 run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する唯一の例外である。`Job.start` は `total`（取り込む参照の件数）を要求するが、その件数は本文を読んで参照を抽出するまで確定しない。そのため判定 1・2（終端済み・リース有効の除外）は先頭で行い、判定 3 の `Job.start` だけを本文の抽出後（手順 4）へ後ろ倒しする。他の run 系ユースケースは `total` を入力か登録時の payload から得られるためこの例外を要さない。
+
+**サニタイズはこのユースケースより前に済んでいる**。取り込みが読むのは、`runConversion` / `runRegeneration` / `updateNoteBody` が `HtmlProcessor.process` を通して保存した後の本文である。サニタイズは許可リスト方式であり `link rel=stylesheet` は許可されない（[ADR 013](../adr/013-html-sanitization-policy.md)）ため、このユースケースが動く時点で `<link>` は本文に残っていない。そこで `HtmlProcessor.process` は `<link rel="stylesheet" href="…">` を**同じ位置の空の `<style data-stylesheet-href="元の URL">` に置き換え**、除去の事実は従来どおり `removed` に報告する（`style` 要素と `data-*` 属性はいずれも許可リストの内側にある。[domains/note.md](../domains/note.md)）。このユースケースが取り込むのはこの痕跡であり、元の位置を保つのは CSS のカスケード順が `<link>` の並びに依存するためである。痕跡は `data-*` 属性に URL を持つ通常の要素なので、`ExternalReference`（`{ url, attribute, elementName }` という属性ベースの形）のまま抽出できる。
+
+**取得の結果は痕跡の属性名に書く**（[ADR 014](../adr/014-import-result-provenance.md)）。取得できた痕跡は `data-imported-stylesheet` に、取得できなかった痕跡は `data-stylesheet-unavailable` に付け替える。抽出の対象は `data-stylesheet-href` だけなので、どちらに遷移しても再抽出されない。取得できなかった痕跡を要素ごと取り除かないのは、それが「この URL のスタイルシートを取り込めず装飾を失った」という事実の唯一の記録になるからである（本文以外にこれを語れる場所がない。ジョブは要求者本人にしか見えず保持期間で消える）。
+
+逆向きの順序も守る。**取得した CSS も本文に入る前にサニタイズ規則を通す**（手順 7）。外部から取得した内容を検査せずに本文へ書き込む経路は作らない。
 
 ### 入力DTO
 
@@ -231,32 +237,49 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 出力DTO
 
-`importedCount: number`, `failed: { url: string; reason: string }[]`, `skipped: number`
+`importedCount: number`, `inlinedStylesheetCount: number`, `failed: { url: string; kind: "resource" | "stylesheet"; reason: ReferenceFailureReason }[]`, `skipped: number`
+
+`importedCount` は保管して差し替えたリソースの件数、`inlinedStylesheetCount` はインライン化できたスタイルシートの件数である。分けて返すのは、失敗したときに利用者に伝わる内容が違うため — リソースは元の URL のまま表示され続けるが、スタイルシートは装飾そのものが失われる（IM-05）。`failed` の `kind` はその区別を表す。
+
+**この出力 DTO は呼び出し元（ジョブのディスパッチャー）が受け取るだけで、利用者には届かない**。利用者に見せる経路は本文と `ReferenceImportRecordRepository` の記録であり、ノート詳細（`getNote` の `references`。[usecases/note.md](./note.md)）が合成する。両者は同じ実行から作られるので食い違わない。
 
 ### 処理フロー
 
 1. `JobRepository.findById` で引く。終端状態なら何もせず返す（同じジョブを 2 回受け取っても結果が変わらない）。リース有効の `running` も何もせず返す（run 系の共通規則。[usecases/job.md](./job.md)）
 2. ノートを引く。不在なら `Job.fail(reason: "targetMissing")` として終了する
-3. 本文が `ready` なら `HtmlProcessor.extractExternalReferences(html)` で参照を集める（`ready` でなければ 0 件として扱う）
-4. 参照の件数を `total` として `Job.start(job, total, now, leaseUntil)` を保存する（0 件なら何も取り込まず 9 の `Job.succeed` で終端する）
-5. 各参照について
-   - 既にサービス内のストレージを指すものは飛ばす
-   - `ExternalFetchPolicy.ensureFetchable(url)` と `ensureWithinBudget` を呼ぶ
-   - `RemoteResourceFetcher.fetch` で取得し、`ObjectStorage.put` と `StoredFile.register` で保管する。`limits` は `ExternalFetchPolicy.budget()` から作る（`timeoutMs` は `perItemTimeoutMs`、`maxBytes` は `maxTotalBytes` の残り）。`FileProvenance` は `{ purpose: "reference", noteId, uploadedBy: userId }`
-   - 失敗した参照は元の URL のまま残し、理由を記録する
-6. `HtmlProcessor.rewriteReferences(html, replacements)` で本文を書き換える
-7. `Note.updateBody` を適用して保存する（版は作らない）
+3. 本文が `ready` なら `HtmlProcessor.extractExternalReferences(html)` で参照を集め、`StorageUrlPolicy.isInternal`（[domains/storage.md](../domains/storage.md)）が真のものを落とす（`ready` でなければ 0 件として扱う）。抽出はサービス内のストレージを指す URL も返すため、この絞り込みは呼び出し側の責務である。スタイルシートの痕跡（`elementName: "style"`、`attribute: "data-stylesheet-href"`）も同じ抽出に現れる
+4. 参照の件数を `total` として `Job.start(job, total, now, leaseUntil)` を保存する（0 件なら何も取り込まず手順 10 の `Job.succeed` で終端する）
+5. 各参照について。**種別によって取得後の扱いが分かれる**が、取得までの検査は共通である
+   - 既にサービス内のストレージを指すものは飛ばす（`skipped`）。この判定はリソース参照にのみ適用する — スタイルシートの痕跡は飛ばしても本文に空の `<style>` が残るだけで装飾にならないため、取得元がどこであれ次に進む
+   - `ExternalFetchPolicy.ensureFetchable(url)` と `ensureWithinBudget` を呼ぶ。スタイルシートも 1 件として数え、SSRF 対策も予算（件数・合計サイズ・タイムアウト）の扱いもリソース参照と同じにする
+   - **リソース参照**（画像・動画・音声など、`src` / `srcset` / `poster` といった属性が指すもの）: `RemoteResourceFetcher.fetch` で取得し、`ObjectStorage.put` と `StoredFile.register` で保管する。`limits` は `ExternalFetchPolicy.budget()` から作る（`timeoutMs` は `perItemTimeoutMs`、`maxBytes` は `maxTotalBytes` の残り）。`FileProvenance` は `{ purpose: "reference", noteId, uploadedBy: userId }`。元の URL と保管先の URL の対応を差し替え表に積む
+   - **スタイルシート**（`<style data-stylesheet-href>` の痕跡）: 同じ `limits` で CSS を取得し、テキストとして読む。**保管はしない**（`ObjectStorage.put` も `StoredFile.register` も行わない）— 内容が本文の一部になるため、保管すると同じ CSS を本文と保管ファイルで二重に持ち、どこからも参照されない `purpose: "reference"` のファイルが `collectOrphanMedia` の対象にもならないまま残る。読んだ CSS の中の相対 URL は、**取得元のスタイルシートの URL を基準に絶対 URL へ解決してから**インライン化表に積む（インライン化すると相対 URL の基準が本文の文書へ移り、解決先が変わって装飾が壊れるため）
+   - 失敗した参照は理由を記録する（`failed`）。リソース参照は**元の URL のまま残る**が、スタイルシートは元の URL のまま残せない — `<link>` は既に本文になく、残せるのは空の痕跡だけである。痕跡は `data-stylesheet-unavailable` に付け替えて空のまま残し、その装飾は失われる。予算超過で取得に至らなかった痕跡も同じ扱いにする。**取り除かない**のは、これが装飾を失った事実の唯一の記録になるためで、抽出の対象が `data-stylesheet-href` に限られる以上、残しても再登録は起きない（[ADR 014](../adr/014-import-result-provenance.md)）
+6. 本文を書き換える。リソース参照は `HtmlProcessor.rewriteReferences(html, replacements)` で参照先を差し替え、スタイルシートは `HtmlProcessor.inlineStylesheets(html, contents, unavailable)` で痕跡を遷移させる（`contents` に載せた URL は `data-imported-stylesheet` として CSS を内容に持ち、`unavailable` に載せた URL は `data-stylesheet-unavailable` として空のまま残る）。`rewriteReferences` は URL を URL に写す差し替えなので、内容の埋め込みには使えない（`inlineStylesheets` は [domains/note.md](../domains/note.md) の `HtmlProcessor` に要る操作である）
+7. 書き換えた本文を `HtmlProcessor.process` に通し、その `ProcessedHtml` を `Note.updateBody` に渡して保存する（版は作らない）。インライン化した CSS が `position: fixed` / `position: sticky` / `@import` を含んでいれば、ここで宣言単位に落ちる（[ADR 013](../adr/013-html-sanitization-policy.md)）。落ちた宣言は `ProcessedHtml.removed`（`kind: "css"`）に現れる。**これをプロパティ名ごとに件数へ畳んで `ReferenceImportSummary.removedCss` に書く**（ジョブの `detail` には書かない。`detail` は運用者向けであり、`failure` を持たない成功したジョブには存在しない）。1 つの違反で本文全体の装飾を捨てないのは ADR 013 の規則どおりで、このユースケースはスタイルシート単位でも捨てない
 8. 進捗は `Job.reportProgress` で更新する（リースの延長を兼ねる）
-9. `Job.succeed` を保存する。本文の保存とジョブの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する
+9. 取得記録を書く。手順 5 で扱った参照 1 件につき `ReferenceAttempt` を 1 件作り（`outcome` は `imported` / `inlined` / `failed` / `notAttempted`）、`ReferenceImportRecordRepository.saveAttempts` で `(noteId, url)` を鍵に上書きする。あわせて手順 7 の `removedCss` を `putSummary` で書く。**この実行が触れなかった URL の記録は消さない** — 前回失敗した参照に今回手が届かなかった場合、その理由が消えてはならない
+10. `Job.succeed(job, null, [], now)` を保存する（申し送りはない）。本文の保存・取得記録の書き込み・ジョブの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する
+
+**`styleMode` は再判定しない**。手順 7 の `Note.updateBody` は `content` だけを更新し `styleMode` を触らない（`styleMode` を変えるのは `changeStyleMode` だけである。[domains/note.md](../domains/note.md)）。インライン化で本文に `<style>` が加わるため手順 7 の `ProcessedHtml.hasDecoration` は真になるが、この値をここで使ってはならない。理由は 2 つある。
+
+- **判定は取り込みの前に済んでいる**。`hasDecoration` はサニタイズで除去する前の入力に対して求められ、除去された `link rel=stylesheet` も装飾の痕跡として数える（[ADR 013](../adr/013-html-sanitization-policy.md) / [ADR 007](../adr/007-default-style-isolation.md)）。外部スタイルシートを持っていた本文は変換の時点で既に `preserve` と判定されており、インライン化は同じ根拠を作り直しているにすぎない
+- **利用者の設定を上書きしない**。判定結果はノートごとの設定として後から切り替えられる（[ADR 007](../adr/007-default-style-isolation.md)）。参照取り込みは利用者の操作ではなく後から走るジョブなので、ここで再判定すると `preserve` から `default` に戻した設定をジョブが押し戻すことになる
+
+スタイルシートの取得にすべて失敗して装飾が何も残らなかった場合も `styleMode` は `preserve` のままになる。既定スタイルを当て直したい利用者はノート詳細の切り替え（ADR 007）で `default` にできる。この切り替えを残しているのは、まさに自動判定が実態と食い違いうるためである。
+
+**インライン化した CSS の中の `url()` は取り込まない**。背景画像やフォントを指す `url()` は絶対 URL に解決されたうえで**元の URL のまま残り**、表示のたびに外部から取得される。取り込みの対象にしないのは、`ExternalReference` が `{ url, attribute, elementName }` という属性ベースの形（[domains/note.md](../domains/note.md)）であり、宣言値の中の `url()` を構造上指せないためである。指せる形に広げるには参照の表現そのものを変えることになり、それは「この穴は塞がらないものとし、公開ページの CSP の `style-src` / `img-src` / `font-src` で受ける」という [ADR 013](../adr/013-html-sanitization-policy.md) の決定を越える。したがって手順 5 で `url()` に対して行うのは基準 URL の解決だけで、取得も保管も差し替えもせず、件数・合計サイズの予算にも数えない（取得しないため）。
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | ノートが不在 | `Job.fail("targetMissing")` |
-| 個々の取得失敗（404・タイムアウト・認証必要） | 記録して継続 |
-| 拒否された URL（内部アドレス等） | 記録して継続 |
-| 予算超過 | 以降の取得を打ち切り、件数を記録して成功として返す |
+| リソース参照の取得失敗（404・タイムアウト・認証必要） | 記録して継続。元の URL のまま残り、`ReferenceAttempt` に `failed` を書く |
+| スタイルシートの取得失敗（404・タイムアウト・認証必要） | 記録して継続。痕跡を `data-stylesheet-unavailable` に付け替えて空のまま残し、その装飾は失われる（元の URL を `<link>` として戻す選択肢はない。[ADR 013](../adr/013-html-sanitization-policy.md)） |
+| 取得した CSS が禁じた宣言・規則（`position: fixed` / `position: sticky` / `@import`）を含む | 手順 7 の走査が宣言単位で落とし、残りはインライン化されたまま成功として扱う。落ちた宣言は `ReferenceImportSummary.removedCss` に畳んで残る |
+| 拒否された URL（内部アドレス等） | 記録して継続（`failed` の `reason: "refusedUrl"`） |
+| 予算超過 | 以降の取得を打ち切り、件数を記録して成功として返す。打ち切られた参照は `ReferenceAttempt` に `notAttempted` を書く。スタイルシートの痕跡は `data-stylesheet-unavailable` にする |
 | 本文の保存で版が競合 | 1 度だけ読み直して再適用し、それでも競合すれば `ConflictError` |
 | ジョブ保存の版の競合（実行中に外部から強制終端された） | 読み直して終端済みなら、本文の書き換えごと同一 UoW でロールバックされているため取り込み結果を破棄して成功として返し、未終端なら `ConflictError` を投げて再配送に委ねる（run 系の共通規則の判定 4）。保管済みの参照ファイルは本文から参照されないまま残り、ノートの完全削除時に `deleteFilesForNote` が回収する |
 
@@ -372,7 +395,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 ### 処理フロー
 
 1. `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit)` で走査する。所有者を絞らない全体走査のため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）
-2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）
+2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
 3. 現れないものを `deleteFiles` で削除する
 
 ### エラーケース
@@ -428,7 +451,8 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 1. `StoredFileRepository.listByNote(noteId)` で `purpose` が `source` / `media` / `reference` のファイルを列挙する。`artifact` は対象にしない（期限（`expiresAt`）の経過時に `collectExpiredArtifacts` が回収する）
 2. `deleteFiles` を呼んで削除する（各件について `storage.fileDeleted` が収集され、実体の回収は `deleteStoredObjects` が行う）
-3. 削除済みのファイルは `listByNote` に現れないため、同じイベントを 2 回受け取っても結果は変わらない（冪等）
+3. `ReferenceImportRecordRepository.deleteByNote(noteId)` で外部参照の取得記録と要約を消す（[ADR 014](../adr/014-import-result-provenance.md)）。記録はノートに紐づく Storage 側のデータなので、専用の購読者を置かずこの経路に相乗りさせる。ノートが消えれば突き合わせる本文もなくなり、記録だけが残っても読む者がいない
+4. 削除済みのファイルは `listByNote` に現れず、`deleteByNote` は 2 回目に 0 件を返すため、同じイベントを 2 回受け取っても結果は変わらない（冪等）
 
 ### エラーケース
 

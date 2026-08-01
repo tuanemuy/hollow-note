@@ -61,7 +61,8 @@ Note は Job も知らない。Job → Note の依存が既にあるため、Not
 | イベントの重複排除 | `application/ports/idempotencyStore.ts`（新規。再適用が非可換な購読者が使う） |
 | HTML のサニタイズ | Note ドメインのドメインサービス（[ADR 006](../adr/006-html-content-model.md)） |
 | パスワードのハッシュ化 | Identity ドメインのポート |
-| 資格情報の暗号化 | Integration ドメインのポート |
+| 資格情報の暗号化 | Integration ドメインのポート（`SecretCipher`）。**鍵そのものの供給と版の解決はアダプターの責務**で、正典は [presentation/index.md](../presentation/index.md) の `AppConfig` |
+| 秘密と鍵の供給（署名鍵・暗号鍵） | [presentation/index.md](../presentation/index.md) の `AppConfig`。ドメインは鍵を受け取るポートの形だけを定め、どこから来るかを知らない |
 | 全文検索 | Note ドメインのクエリポート（検索インデックスの更新はイベント駆動） |
 | メール送信 | `application/ports/mailSender.ts`（新規。Identity と Workspace の両方が使う） |
 | 認可フロー状態（OAuth の `state` / `codeVerifier`） | `application/ports/oauthStateStore.ts`（新規。Identity と Integration の両方が使う） |

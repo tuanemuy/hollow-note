@@ -5,11 +5,15 @@
 | Drive 連携済み、元ファイルのあるノート 1 件 | 要求する | 単体のバックアップジョブが登録される | |
 | 元ファイルのあるノート 5 件 | 要求する | 親ジョブと 5 件の子ジョブが登録される | |
 | 元ファイルのないノートを含む | 要求する | それらは対象から外れ、`skipped` に `{ noteId, reason: "noSourceFile" }` として積まれる | |
+| 存在しない `noteId` を含む | 要求する | `listByIds` の結果に現れないその ID は `skipped` に `{ noteId, reason: "notFound" }` として積まれる（入力の `noteIds` と結果を突き合わせる。省くと存在しない ID が無言で落ちる） | |
+| 存在しない `noteId` だけを指定する | 要求する | 対象が 0 件になり `ValidationError("NO_BACKUPABLE_TARGET")` が投げられる。`skipped` にはすべての ID が `reason: "notFound"` として載る | |
+| 存在しない ID・編集権限のない ID・元ファイルのない ID を混ぜて指定する | 要求する | `skipped` に `notFound` / `permissionDenied` / `noSourceFile` がそれぞれ対応する `noteId` とともに積まれ、残りだけが対象になる | |
 | ワークスペースの viewer が自分の参加ワークスペースのノートを指定する | 要求する | `NoteAccessPolicy.canEdit` が偽のため対象から外れ、`skipped` に `{ noteId, reason: "permissionDenied" }` として積まれる（バックアップは `downloadNote` ではなく `editNote` を要する。`runBackup` が `BackupRecord` を書き、既存記録の所有者を付け替えるため） | |
 | ワークスペースの viewer が指定したノートしかない | 要求する | 対象が 0 件になり `ValidationError("NO_BACKUPABLE_TARGET")` が投げられる（`skipped` にはすべての ID と理由が載る） | |
 | ワークスペースの editor が同じノートを指定する | 要求する | 対象になり、ジョブが登録される | |
 | 個人所有のノートを本人が指定する | 要求する | `canEdit` が真のため対象になる（個人所有ではロールの概念がなく所有者が編集できる） | |
 | `skipped` の形 | `requestBulkNoteOperation` / `requestBulkExport` と比べる | 3 経路とも `{ noteId, reason }[]` で揃っている（どれがなぜ外れたかを画面が案内できる） | |
+| `skipped` の `reason` の語彙 | 同じく 3 経路を比べる | 語彙は経路ごとに固有（`noSourceFile` は本経路にしかない）だが、「対象が引けなかった」という同じ事象には 3 経路とも同じ `notFound` を使う | |
 | すべて元ファイルがない | 要求する | `ValidationError("NO_BACKUPABLE_TARGET")` が投げられる | |
 | 未連携 | 要求する | `NotFoundError("CONNECTION_NOT_FOUND")` が投げられる | |
 | 同じノートのバックアップが実行中 | 要求する | `BusinessRuleError(DuplicateJob)` が投げられる | |

@@ -18,6 +18,8 @@ idea.md には「デフォルトのスタイルを当てたいが、装飾され
 - 取り込み時に自動判定する。本文に `style` 要素、`link rel=stylesheet`、または意味のある量の `style` 属性が含まれる場合は `preserve`、そうでなければ `default` とする
 - 判定結果は利用者が後から切り替えられる。ノートごとの設定として保持する
 - 本文の描画は Shadow DOM で隔離する。アプリケーション側の CSS は本文に届かず、本文の CSS はアプリケーション側に漏れない
+- ただし、この「漏れない」の射程は**セレクタのスコープ**であって**レイアウトではない**。シャドウツリー内の `position: fixed` はビューポートを基準に配置されるため、本文のインライン `<style>` 1 個で公開ページ全面を覆うオーバーレイを描ける。したがって本文の CSS には `position: fixed` / `position: sticky` と `@import` を許さない。規則の正典は [ADR 013](./013-html-sanitization-policy.md) に置き、除去は `HtmlProcessor` が宣言単位で行う
+- `styleMode` の自動判定はサニタイズで除去する前の入力に対して行う。`link rel=stylesheet` は許可リストから外れて本文には残らないため（ADR 013）、除去されたこと自体を装飾の痕跡として `preserve` の根拠に数える
 - 公開ページはサーバー側で描画するため、Declarative Shadow DOM（`<template shadowrootmode="open">`）を使う。本文の文字列は HTML の応答に含まれ、検索エンジンから読める
 - 既定スタイル（GitHub の Markdown 相当）は Shadow DOM の内側に注入する。`preserve` の場合は注入しない
 - 書き出し（EX-01）の HTML でも同じ規則を適用し、`default` の場合のみ既定スタイルを埋め込む
@@ -47,3 +49,4 @@ idea.md には「デフォルトのスタイルを当てたいが、装飾され
 - 本文の描画コンポーネントは Shadow DOM を使うため、サーバー側での描画結果に依存した表示（本文内へのアプリ側 UI の差し込み）はできない
 - ノート詳細に、既定スタイルの適用を切り替える操作（所有者のみ）を置く
 - 公開ページは Declarative Shadow DOM で描画する。本文から抽出したテキストは説明用のメタ情報にも使う
+- この ADR は「本文を Shadow DOM に入れたから安全」とは読めない。Shadow DOM が与えるのはスタイルの相互不干渉であって、本文が公開ページの見た目を乗っ取れないことの保証ではない。本文の CSS に対する制約（[ADR 013](./013-html-sanitization-policy.md)）は Shadow DOM とは独立に必要であり、片方を理由にもう片方を省略できない

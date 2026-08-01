@@ -42,9 +42,13 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 10. `ConversionPlan.requiresLlm(plan)` が真なら `consumeLlmCall`（Usage）を呼ぶ。上限に達していれば `Note.markConversionFailed(quotaExceeded)` と `Job.fail("quotaExceeded")` として終了する。`storeUpload` / `startBulkUpload` の残量確認は受け付け時の事前検査にすぎず、消費はここでのみ行う（[usecases/usage.md](./usage.md) の `consumeLlmCall`）
 11. `ConversionExecutor.execute` を呼ぶ
 12. 成功なら `HtmlProcessor.process(rawHtml)`（Note）でサニタイズし、`hasDecoration` から `StyleMode` を決め、`Note.applyConversionResult` を保存する
-13. 外部参照があれば参照取り込みジョブを登録する — `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy, parentId: null })`。`scope` は手順 2 で引いたノートの所有文脈（`NoteOwner`）から導出し、`requestedBy` は変換ジョブの `requestedBy` を引き継ぐ。`parentId` は一括アップロードの子として動いている場合でも `null` にする（親の `total` は登録後に変えられないため、子を増やしてはならない）
-14. `payload.requestedVisibility` が `private` 以外なら、公開ステータスを適用する。**`changeNoteVisibility` ユースケースは呼ばず、その手順 2〜4 をこの UoW の中で再現する**（下記「手順 14 は複製であって呼び出しではない」）。検査の基準は所有者であり、作成者（`createdBy`）ではない（[usecases/note.md](./note.md) の `changeNoteVisibility` 手順 2）。公開ハンドル／スラッグが未設定などで適用できない場合は非公開のまま残し、その旨をジョブの `detail` に記録する（ジョブ自体は成功とする）
-15. `Job.succeed` を保存する
+13. 参照取り込みジョブを登録する。条件は 2 つで、`updateNoteBody`（[usecases/note.md](./note.md) の手順 8）と同じ規則に従う。
+    - `HtmlProcessor.extractExternalReferences` の結果のうち `StorageUrlPolicy.isInternal`（[domains/storage.md](../domains/storage.md)）が偽のものが 1 件以上ある
+    - 同じノートを対象とする未終端の `referenceImport` ジョブがない（`JobRepository.listActiveByTarget` を `kind === "referenceImport"` で絞る。`JobConcurrencyPolicy.ensureNoDuplicate` は使わない — 重複は利用者の誤りではないので例外にせず、登録を見送るだけにする）
+
+    登録する場合は `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy, parentId: null })`。`scope` は手順 2 で引いたノートの所有文脈（`NoteOwner`）から導出し、`requestedBy` は変換ジョブの `requestedBy` を引き継ぐ。`parentId` は一括アップロードの子として動いている場合でも `null` にする（親の `total` は登録後に変えられないため、子を増やしてはならない）
+14. `payload.requestedVisibility` が `private` 以外なら、公開ステータスを適用する。**`changeNoteVisibility` ユースケースは呼ばず、その手順 2〜4 をこの UoW の中で再現する**（下記「手順 14 は複製であって呼び出しではない」）。検査の基準は所有者であり、作成者（`createdBy`）ではない（[usecases/note.md](./note.md) の `changeNoteVisibility` 手順 2）。公開ハンドル／スラッグが未設定などで適用できない場合は非公開のまま残し、`JobNotice` の `{ kind: "visibilityNotApplied", requested, reason }` を組み立てて手順 15 に渡す（ジョブ自体は成功とする）
+15. `Job.succeed(job, null, notices, now)` を保存する。`notices` は手順 14 が申し送りを作っていればその 1 件、なければ空配列である（[ADR 014](../adr/014-import-result-provenance.md)。従来この事実は「ジョブの `detail` に記録する」と書かれていたが、`detail` は `JobFailure` のフィールドであり成功したジョブは持てなかった）
 16. 失敗なら `Note.markConversionFailed(reason)` と `Job.fail(reason, detail)` を保存する
 
 ノートの更新とジョブの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する。手順 10 の `consumeLlmCall`（Usage）はこの UoW を開く**前**に呼ぶ — `UnitOfWorkProvider.run` を入れ子にしないためで、消費が先に確定して変換が失敗しても戻さない設計（[usecases/usage.md](./usage.md) の「共通: UoW の境界」）とも整合する。
@@ -161,8 +165,8 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 9. `ConversionPlan.requiresLlm(plan)` が真なら `consumeLlmCall`（Usage）を呼ぶ。上限に達していれば本文を変更せず `Job.fail("quotaExceeded")` として終了する
 10. `instruction` と `modelOverride` を載せた `ConversionInput` で `ConversionExecutor.execute` を呼ぶ。`modelOverride` は方針の構造化に使うフィールドだけを上書きする: `textExtractionThenStructuring` / `transcriptionThenStructuring` は `structuring` を、`pageImageStructuring` / `imageStructuring` は `vision` を置き換え、`transcription` は対象にしない（[domains/conversion.md](../domains/conversion.md)）
 11. 成功なら `HtmlProcessor.process(rawHtml)`（Note）でサニタイズし、`hasDecoration` から `StyleMode` を決め、`Note.applyConversionResult` で本文を差し替えて保存する。本文が変わるのは成功時のみ
-12. 外部参照があれば参照取り込みジョブを登録する — `runConversion` の手順 13 と同じ形（`Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy, parentId: null })`。`scope` は手順 2 で引いたノートの所有文脈から導出し、`requestedBy` は再生成ジョブの `requestedBy` を引き継ぐ）
-13. `Job.succeed` を保存する
+12. 参照取り込みジョブを登録する — `runConversion` の手順 13 と**条件も形も同じ**（内部を指さない参照が 1 件以上あり、かつ同じノートを対象とする未終端の `referenceImport` がないときに限り `Job.enqueue({ target: { type: "note", noteId }, payload: { kind: "referenceImport" }, scope, kind: "referenceImport", requestedBy, parentId: null })`。`scope` は手順 2 で引いたノートの所有文脈から導出し、`requestedBy` は再生成ジョブの `requestedBy` を引き継ぐ）
+13. `Job.succeed(job, null, [], now)` を保存する（再生成は申し送りを持たない。公開ステータスの適用がないため）
 14. 失敗した場合は本文を変更せず（`Note.markConversionFailed` を呼ばない）、`Job.fail(reason, detail)` のみを保存する
 
 初回変換（`runConversion`）との違い: `markAwaitingIntegration` は使わない（初回変換専用）、公開ステータスの適用はない（regeneration の payload に `requestedVisibility` が存在しない）、`capability.llm` は `"declined"` を取らない（本人明示の再生成のため payload に `conversionPreference` が存在せず、`unavailable(machineExtractionUnavailable)` にも到達しない）、失敗しても本文は保持されジョブだけが `failed` になる（失効時の `providerAuthFailed` とパスワード保護時の `passwordProtected` も同じで、`Note.markConversionFailed` は呼ばない）。

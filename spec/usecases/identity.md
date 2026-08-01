@@ -56,7 +56,7 @@
 6. 確認済みの経路なら `User.createVerified`、そうでなければ `User.create` を呼ぶ
 7. `Identity.createPassword` を呼ぶ
 8. `UnitOfWorkProvider.run` の中で `userRepository.insert` / `identityRepository.insert` を実行し、両者のイベントを `collectEvents` する
-9. 確認済みの経路なら `Session.create` を作って `sessionRepository.insert` し、平文トークンを返す
+9. 確認済みの経路なら `Session.create` を作って `sessionRepository.insert` し、平文トークンを返す。有効期間は `Session.ttlMs`（30 日の絶対期限）をドメインが与え、呼び出し側は渡さない（[domains/identity.md](../domains/identity.md)）。`Session.create` を呼ぶ 4 つのユースケース（本ユースケース / `verifyEmail` / `signInWithPassword` / `completeOAuthSignIn`）はすべてこの形である
 10. そうでなければ `AuthToken.issue(purpose: "email_verification")` を作って保存し、`MailSender.send({ kind: "emailVerification" })` を送る
 
 ### エラーケース
@@ -98,7 +98,7 @@
 4. `AuthToken.consume(token, now)` を呼ぶ（期限切れは `BusinessRuleError(TokenExpired)`）
 5. `UserRepository.findById` で利用者を引き、`PendingUser` なら `User.verifyEmail` を適用する
 6. `UnitOfWorkProvider.run` で利用者とトークンを保存し、イベントを収集する。トークンの保存は `status = 'pending'` の行への条件付き更新であり（[domains/identity.md](../domains/identity.md) の `AuthTokenRepository`）、並行する要求が先に消費していれば `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` になる。この場合はトランザクションを巻き戻したうえで手順 3 と同じ扱いに落とし、利用者を引き直して `active` なら `alreadyVerified: true` を返す（セッションは発行しない）。同じトークンによる同時アクセスで確認が二重に成立することも、失敗として見えることもない
-7. `Session.create` を作って保存し、平文トークンを返す
+7. `Session.create` を作って保存し、平文トークンを返す（有効期間は `Session.ttlMs`）
 
 ### エラーケース
 
@@ -164,12 +164,12 @@
 ### 処理フロー
 
 1. `Email.create(input.email)` を構築し、`LoginAttemptKey.forSignIn(email, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)）
-2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("LOGIN_THROTTLED")` / `ValidationError("LOGIN_LOCKED")`
+2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("THROTTLED")` / `ValidationError("LOCKED")`
 3. `UserRepository.findByEmail` で引く
 4. 利用者がいない、`IdentityPolicy.findPassword` が `null`、または `PasswordHasher.verify` が偽のいずれかなら、`LoginAttemptStore.put(LoginThrottlePolicy.recordFailure(attempt, now), LoginThrottlePolicy.attemptTtlMs)` で失敗を記録し、`ValidationError("INVALID_CREDENTIALS")`
 5. 利用者が `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`（失敗として記録しない。資格情報は正しく、再送すれば通る状態のため）
 6. `LoginAttemptStore.clear(key)` で失敗の記録を消す
-7. `Session.create` を作って保存し、平文トークンを返す
+7. `Session.create` を作って保存し、平文トークンを返す（有効期間は `Session.ttlMs`）
 
 `login_attempts` への書き込みはこのユースケースと `verifySharePassword`（[usecases/note.md](./note.md)）の 2 か所だけで、どちらも同じ順序（`get` → `evaluate` → 失敗なら `put` / 成功なら `clear`）に従う。Unit of Work には入れない — 記録は集約の不変条件に関与せず、認証が失敗して例外を投げる経路でも書き込みが残らなければレート制限が機能しないため。書き込みの失敗は記録して継続し、認証の結果そのものは変えない。
 
@@ -179,8 +179,8 @@
 | --- | --- |
 | 認証失敗（利用者不在・手段なし・パスワード相違） | `ValidationError("INVALID_CREDENTIALS")`（原因を区別しない） |
 | メール未確認 | `ValidationError("EMAIL_NOT_VERIFIED")` |
-| 待機中 | `ValidationError("LOGIN_THROTTLED")`（待機秒数を添える） |
-| ロック中 | `ValidationError("LOGIN_LOCKED")`（解除時刻を添える） |
+| 待機中 | `ValidationError("THROTTLED")`（待機秒数を添える） |
+| ロック中 | `ValidationError("LOCKED")`（解除時刻を添える） |
 
 ## startOAuthFlow
 
@@ -249,7 +249,7 @@
 5. `createNew` → `User.createVerified` と `Identity.createOAuth` を作って保存する
 6. `linkToExisting` → `Identity.createOAuth` のみを作って保存する
 7. `refuse` → 理由に応じた `ValidationError` を返す
-8. `Session.create` を作って保存し、平文トークンと `redirectTo` を返す
+8. `Session.create` を作って保存し、平文トークンと `redirectTo` を返す（有効期間は `Session.ttlMs`）
 
 ### エラーケース
 
@@ -315,7 +315,8 @@
 2. `SessionRepository.findByTokenHash` が `null` なら `ValidationError("UNAUTHENTICATED")`
 3. `Session.isExpired` が真なら削除して `ValidationError("UNAUTHENTICATED")`
 4. `UserRepository.findById` で利用者を引く。不在なら `ValidationError("UNAUTHENTICATED")`
-5. `Session.touch` の結果を保存する（`lastUsedAt` の更新が 5 分以上前のときのみ書き込む）
+
+**このユースケースはセッションを書き換えない**。`Session` は絶対期限で最終使用時刻を持たないため（[domains/identity.md](../domains/identity.md)）、認証は純粋な読み取りである。すべての保護された操作の前段で呼ばれる経路に書き込みを置かない、という性質はここから来る。
 
 ### エラーケース
 

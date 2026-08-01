@@ -283,11 +283,14 @@ TargetOwnerAccess = { owner: NoteOwner; canCreate: boolean }
 
 **目的**: 生の HTML をサニタイズし、保存に必要な派生情報を 1 度の走査で取り出す。
 
+サニタイズ規則の正典は [ADR 013](../adr/013-html-sanitization-policy.md)（許可する要素・属性・URL スキームの列挙、CSS の内容制約）であり、`HtmlProcessor` はその唯一の適用点である。取り込み・編集・メディア挿入・SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）はいずれもこのポートを通す。
+
 ```ts
 interface HtmlProcessor {
   process(rawHtml: string): ProcessedHtml;
   extractExternalReferences(html: NoteHtml): readonly ExternalReference[];
   rewriteReferences(html: NoteHtml, replacements: ReadonlyMap<string, string>): NoteHtml;
+  inlineStylesheets(html: NoteHtml, contents: ReadonlyMap<string, string>, unavailable: ReadonlySet<string>): NoteHtml;
   editTextNodes(html: NoteHtml, edits: readonly TextNodeEdit[]): EditTextNodesResult;
 }
 
@@ -297,10 +300,10 @@ type ProcessedHtml = Readonly<{
   excerpt: Excerpt;
   hasDecoration: boolean;                     // style 要素 / stylesheet / 意味のある style 属性の有無
   headings: readonly { level: number; text: string; anchorId: string }[];
-  removed: readonly RemovedNode[];            // サニタイズで除去した要素・属性
+  removed: readonly RemovedNode[];            // サニタイズで除去した要素・属性・URL・CSS
 }>;
 
-type RemovedNode = Readonly<{ kind: "element" | "attribute" | "url"; name: string; reason: string }>;
+type RemovedNode = Readonly<{ kind: "element" | "attribute" | "url" | "css"; name: string; reason: string }>;
 type ExternalReference = Readonly<{ url: string; attribute: string; elementName: string }>;
 type TextNodeEdit = Readonly<{ path: string; expected: string; text: string }>;
 ```
@@ -309,6 +312,8 @@ type TextNodeEdit = Readonly<{ path: string; expected: string; text: string }>;
 
 `expected` は編集前にそのノードが持っていた文字列。`editTextNodes` は経路が解決できない、または現在の文字列が `expected` と一致しない場合、その編集だけを適用せず `SkippedEdit` として返す。要素の追加・削除・並べ替えは行わない。空文字列への更新はノードを削除せず空のまま残す。
 
+**`<style>` の子テキストノードには経路を割り当てない**。`<style>` の中身はテキストノードなので、経路を与えるとビジュアルエディタから CSS を直接書き換えられ、[ADR 013](../adr/013-html-sanitization-policy.md) の内容制約（`position: fixed` / `sticky` / `@import` の除去）を迂回して再注入できてしまう。ビジュアルモードは「テキストノードのみを書き換える」（[ADR 006](../adr/006-html-content-model.md)）が、その「テキスト」は読み物としての文字列を指し、スタイルシートの中身は含まない。経路が割り当たらないため、この位置を指す編集は `pathNotFound` として `skipped` に落ちる。呼び出し側は結果を `process` に通してから保存する（[usecases/note.md](../usecases/note.md) の `applyTextNodeEdits`）。
+
 ```ts
 type EditTextNodesResult = Readonly<{ html: NoteHtml; skipped: readonly SkippedEdit[] }>;
 type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentChanged" }>;
@@ -316,7 +321,39 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 `editTextNodes` の戻り値は `EditTextNodesResult`。
 
-`hasDecoration` は `StyleMode` の自動判定に使う（[ADR 007](../adr/007-default-style-isolation.md)）。
+`removed` は許可リスト方式の報告であり、危険と名指しされたものだけでなく、**許可リストから外れたために除去された要素・属性**も対象になる。`kind` の内訳は、`element`（列挙にない要素、および `script` / `iframe` などの非許可要素）、`attribute`（列挙にない属性、`on*`、`srcdoc`）、`url`（許可しないスキーム）、`css`（`<style>` 要素とインライン `style` 属性から宣言・規則の単位で落とした `position: fixed` / `position: sticky` / `@import`）である。`name` は要素名・属性名・スキーム名・プロパティ名を、`reason` は除去理由を表す。
+
+`hasDecoration` は `StyleMode` の自動判定に使う（[ADR 007](../adr/007-default-style-isolation.md)）。判定はサニタイズで除去する前の入力に対して行うため、許可リストから外れる `link rel=stylesheet` も装飾の痕跡として数える。
+
+**外部スタイルシートの痕跡**
+
+`process` は `<link rel="stylesheet" href="…">` を除去して `removed` に報告すると同時に、**同じ位置に空の `<style data-stylesheet-href="元の URL">` を残す**。`style` 要素と `data-*` 属性はいずれも許可リストの内側にある（[ADR 013](../adr/013-html-sanitization-policy.md)）。除去したうえで痕跡を残すのは、外部スタイルシートを `<style>` としてインライン化するという ADR 013 の決定を実行可能にするためである — サニタイズは取り込み時に走り、参照を取得する `importExternalReferences`（[usecases/storage.md](../usecases/storage.md)）はそのあとに走るので、痕跡がなければ元の URL がその間に失われる。元の位置に置くのは CSS のカスケード順が `<link>` の並びに依存するためである。
+
+痕跡は `data-*` 属性に URL を持つ通常の要素なので、`extractExternalReferences` は `{ url, attribute: "data-stylesheet-href", elementName: "style" }` として**他の外部参照と同じ形**で返す。`ExternalReference` の形は変わらない。
+
+**痕跡の 3 状態**（[ADR 014](../adr/014-import-result-provenance.md)）
+
+取得の結果を痕跡の属性名で表し、**抽出の対象を `data-stylesheet-href` だけに限定する**。
+
+| 状態 | 本文中の表現 | `extractExternalReferences` が拾うか |
+| --- | --- | --- |
+| 未取り込み（未試行、または利用者が取り込まないと選んだ） | `<style data-stylesheet-href="URL">`（空） | ○ |
+| 取り込み済み | `<style data-imported-stylesheet="URL">…CSS…</style>` | × |
+| 取得できなかった（失敗・予算超過） | `<style data-stylesheet-unavailable="URL">`（空） | × |
+
+`inlineStylesheets(html, contents, unavailable)` が痕跡を遷移させる。`contents` の鍵は `data-stylesheet-href` の値、値は取得した CSS で、この痕跡は `data-imported-stylesheet` に属性を付け替えて中身に CSS を書き戻す。`unavailable` に含まれる URL の痕跡は `data-stylesheet-unavailable` に付け替え、中身は空のまま残す。どちらにも現れない痕跡は手を触れない（`data-stylesheet-href` のまま残り、次に取り込みを選んだ保存で対象になる）。
+
+**取得できなかった痕跡を要素ごと取り除かない**のは、それが「この URL のスタイルシートを取り込めず装飾を失った」という事実の唯一の記録になるからである。当初は取り除く決定だったが、その根拠は「空の痕跡を残すと以後の保存のたびに同じ参照取り込みジョブが登録され続ける」という再登録ループ 1 つだけであり、抽出の対象を `data-stylesheet-href` に限定した時点で失効している。
+
+書き戻した CSS も本文の一部として ADR 013 の内容制約（`position: fixed` / `sticky` / `@import` の除去）を受けるため、呼び出し側は結果を `process` に通してから保存する。`process` は 3 つの属性をいずれも許可リストの内側の `data-*` としてそのまま通し、痕跡の状態を巻き戻さない（`data-imported-stylesheet` を `data-stylesheet-href` に戻すことはない）。`rewriteReferences` は URL を URL に写す差し替えであって内容の埋め込みには使えず、`editTextNodes` は要素を追加しないため、この操作は独立したメソッドとして持つ。
+
+これらの属性は**利用者が HTML モードで手書きできる**。本文は利用者が書き換えられる領域なので、痕跡は「本文に記録された取り込み元」であって監査記録ではない。再取得・認可・監査の入力に使ってはならない（ADR 014）。
+
+**内部参照の判定**
+
+`extractExternalReferences` は「外部」参照だけを返すのではなく、**本文中の属性ベースの URL 参照をすべて返す**。サービス内のストレージを指す URL も含まれる — `collectOrphanMedia`（[usecases/storage.md](../usecases/storage.md)）は保管済みメディアの URL が本文に現れるかを調べるのにこのポートを使っており、内部の URL が除外されると参照中のメディアを孤児と誤判定してしまう。
+
+内部と外部の切り分けは呼び出し側が行う。判定は `StorageUrlPolicy.isInternal`（[domains/storage.md](./storage.md)）を使う。参照取り込みジョブを登録するかどうかも、抽出結果のうち内部を指さないものが 1 件以上あるかで判定する。
 
 **エラーケース**: `SystemError(ExternalServiceError)`（パース不能）。壊れた HTML は例外にせず、補正した結果を返す
 

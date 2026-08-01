@@ -237,7 +237,7 @@
 1. 権限を `manageMembers` で確認する
 2. `Email.create` と `WorkspaceRole.create` を構築する
 3. 招待先が既にメンバーなら `ConflictError("ALREADY_MEMBER")`
-4. `InvitationRepository.countPendingIssuedSince(workspaceId, now - 24 時間)` が上限（50 件）以上なら `ValidationError("RATE_LIMITED")`
+4. `InvitationRepository.countPendingIssuedSince(workspaceId, now - 24 時間)` が上限（50 件）以上なら `ValidationError("INVITATION_LIMIT_REACHED")`。**これはレート制限ではなくクォータである** — 上限に掛かるのは「直近 24 時間に発行した未処理の招待」の在庫であり、招待が 1 件受諾されるか取り消されればその場で枠が空く。待てば必ず解けるとは限らず、解除の時刻も出せない（`countPendingIssuedSince` は件数しか返さない。[domains/workspace.md](../domains/workspace.md)）。`THROTTLED` / `RATE_LIMITED` と別のコードにするのはこの違いによる（[presentation/index.md](../presentation/index.md)）
 5. `InvitationRepository.findPendingByWorkspaceAndEmail` を引き、既に `pending` の招待があれば `resendInvitation` を**呼ぶ**（`workspaceId` / `userId` はそのまま、`invitationId` は引いた招待の ID）。その結果の `invitationId` / `expiresAt` / `invitationUrl` をそのまま返し、`email` / `role` は既存の招待の値を写して手順 6・7 には進まない
 6. `UnitOfWorkProvider.run` で `SecureTokenGenerator.issue` のトークンとともに `Invitation.issue` を保存する
 7. `MailSender.send({ kind: "workspaceInvitation" })` を送る
@@ -251,7 +251,7 @@
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
 | メール形式・ロールの違反 | `BusinessRuleError` |
 | 既にメンバー | `ConflictError("ALREADY_MEMBER")` |
-| 招待数の上限 | `ValidationError("RATE_LIMITED")` |
+| 未処理の招待が上限（50 件） | `ValidationError("INVITATION_LIMIT_REACHED")` |
 | メール送信の失敗 | 記録して継続（招待は成立させる） |
 
 ## resendInvitation
@@ -274,12 +274,15 @@
 2. `InvitationRepository.findById` で引き、`workspaceId` の一致と `status === "pending"` を確認する
 3. `Invitation.resend` を保存し、メールを送る
 
+このユースケースは**メール送信を伴うため転送境界のレート制限の対象である**（[presentation/index.md](../presentation/index.md)）。`inviteMember` 経由で呼ばれる場合は手前の手順 4 が在庫の上限で守るが、直接呼ばれる経路にはその検査がない — 同じ招待に対する再送を繰り返しても `pending` の件数は増えないため、在庫の上限では止まらない。しきい値は転送境界のレート制限のしきい値がまだ未定であるのと同じ理由で保留する。
+
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | 招待が不在・他ワークスペースのもの | `NotFoundError("INVITATION_NOT_FOUND")` |
 | 受諾済み・取り消し済み | `ValidationError("INVITATION_NOT_PENDING")` |
+| レート制限（転送境界） | `ValidationError("RATE_LIMITED")` |
 
 ## revokeInvitation
 

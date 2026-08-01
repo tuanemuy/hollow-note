@@ -12,6 +12,7 @@
 | Target | 対象 | ジョブが作用する相手。種別と ID の組で多相に持つ |
 | Artifact | 生成物 | ジョブが作った成果物（PDF / ZIP） |
 | FailureReason | 失敗理由 | 利用者に説明できる粒度の失敗の分類 |
+| Notice | 申し送り | 成功したジョブが要求者に伝える、実行中に下した判断 |
 | Lease | リース | 実行中のワーカーが生きていることの表明。失効した `running` は回収の対象になる |
 
 ## 値オブジェクト
@@ -52,6 +53,21 @@ JobFailureReason =
 ```
 
 `JobFailureReason` は Conversion の `ConversionFailureReason` の全値を含む上位集合であり、変換ジョブの失敗理由をそのまま格納できる。Job から Conversion への型依存は持たない。`timeout` はリース失効による回収（`expire`）も含む。
+
+### JobNotice
+
+成功したジョブが要求者に伝える申し送り（[ADR 014](../adr/014-import-result-provenance.md)）。
+
+```
+JobNotice =
+  | { kind: "visibilityNotApplied"; requested: "unlisted" | "public"; reason: "handleMissing" | "slugMissing" }
+```
+
+`runConversion`（[usecases/conversion.md](../usecases/conversion.md)）が取り込み時の公開指定を適用できず非公開のまま残したことを表す。従来この事実は「ジョブの `detail` に記録する（ジョブ自体は成功とする）」と書かれていたが、`detail` は `JobFailure` のフィールドであり `failure` を持つのは `FailedJob` だけなので、**型の上で実行できない記述だった**。`notices` はその置き場である。
+
+**中身を 1 種に絞るのは意図である**。取り込み結果（取得できなかった参照、装飾を失ったスタイルシート、除去された CSS 宣言）は `notices` に入れない。それらはノートに帰属する情報で、ノートを読める者すべてに、ジョブの保持期間と無関係に見えなければならない。供給元は本文と Storage の取得記録であり、その割り当ての根拠は ADR 014 にある。すべてをここに載せると `JobNotice` が Conversion・Storage・Note の 3 ドメインの語彙を吸収し、Job の変更理由がすべてのワーカーの都合に開かれる。
+
+**`notices` に依存する不変条件は存在しない**。Job は運搬（終端時に受け取って保持する）と刈り取り（`pruneJobHistory` で行ごと消える）だけを担い、中身を解釈しない。`JobFailure.detail`（運用者向け）は据え置きで、役割が重ならない — `detail` は運用者が原因を追うための文字列、`notices` は利用者に見せる判断の記録である。
 
 `canceled` は含めない。取り消しは `Job.cancel` が `failure` を持たない `CanceledJob` を作るため `status` そのものが表し、`fail` に渡す理由にはならない（`Job.fail("canceled")` を発行する経路は存在しない）。本文側の `NoteFailureReason`（[domains/note.md](./note.md)）が持つ `canceled` は `ConversionFailureReason` から独立に定義される Note の語彙であり、Job の集合とは連動しない。
 
@@ -115,7 +131,7 @@ JobScope =
 
 QueuedJob    = JobBase & JobAttribution & { status: "queued" }
 RunningJob   = JobBase & JobAttribution & { status: "running"; startedAt: Date; progress: JobProgress; leaseExpiresAt: Date }
-SucceededJob = JobBase & JobAttribution & { status: "succeeded"; startedAt: Date; finishedAt: Date; artifact: ArtifactRef | null }
+SucceededJob = JobBase & JobAttribution & { status: "succeeded"; startedAt: Date; finishedAt: Date; artifact: ArtifactRef | null; notices: readonly JobNotice[] }
 FailedJob    = JobBase & JobAttribution & { status: "failed"; startedAt: Date | null; finishedAt: Date; failure: JobFailure }
 CanceledJob  = JobBase & JobAttribution & { status: "canceled"; startedAt: Date | null; finishedAt: Date }
 
@@ -126,6 +142,7 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 
 - 終端状態（`succeeded` / `failed` / `canceled`）からは遷移しない（batch 親の子再試行による `reopenBatch` を除く）
 - `artifact` を持つのは `succeeded` のみ
+- `notices` を持つのも `succeeded` のみ。空配列でありうる。匿名ジョブ（`pdfExport`）は常に空 — `visibilityNotApplied` を出すのは `runConversion` だけであり、匿名ジョブは変換を行わない
 - `requestedBy: null`（匿名ジョブ）は `kind: "pdfExport"` かつ `parentId: null` のみ（ADR 010）
 - `leaseExpiresAt` を持つのは `running` のみ。実行開始（`start`）と進捗報告（`reportProgress`）のたびに延長する（組み立て中の batch 親は例外。下記「振る舞い」の `reportProgress` / `renewAssemblyLease`）。失効の判定は `leaseExpiresAt <= now`（ADR 012）。期間の値と供給元は [usecases/job.md](../usecases/job.md) の「共通: リース期間と回収の間隔」が定める
 - `parentId` が指すジョブの `target.type` は `"batch"`
@@ -200,12 +217,12 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 | `beginAssembly` | `parent: RunningJob, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob \| FailedJob, JobEvent>` | batch 親自身の実行（`bulkExport` の ZIP 組み立て）の実行権を取る（ADR 012）。`target.type !== "batch"` または `kind !== "bulkExport"` なら `BusinessRuleError(InvalidTarget)`。`attempts >= 1` かつリース有効（`leaseExpiresAt > now`）なら別のワーカーが組み立て中のため `BusinessRuleError(LeaseActive)`。それ以外は `attempts` を 1 増やし、加算後の `AttemptCount.exhausted` を判定する。真ならリースを張り直さず、**受け取った親（リース失効のまま）**に `expire` を適用してその結果を返す（`start` と同じ順序。張り直したあとでは `LeaseActive` で拒否される。上限に達するのは `attempts >= 2` の親だけで、直前の `LeaseActive` 判定を抜けている以上リースは必ず失効している）。偽なら `leaseExpiresAt` を `leaseUntil` に張り直して `job.started` を発行 |
 | `reportProgress` | `job: RunningJob, completed: number, now: Date, leaseUntil: Date` | `RunningJob` | `JobProgress` を作り直し、`leaseExpiresAt` を `leaseUntil` に延長する。ただし組み立て中の batch 親（`target.type === "batch"` かつ `attempts >= 1`）には延長を適用せず、進捗だけを作り直す（下記「組み立て中の親のリース」）。イベントは発行しない（更新が高頻度になるため） |
 | `renewAssemblyLease` | `parent: RunningJob, now: Date, leaseUntil: Date` | `RunningJob` | 組み立て中の batch 親のリースを延長する。`target.type !== "batch"`、`kind !== "bulkExport"`、または `attempts === 0`（実行権を取っていない）なら `BusinessRuleError(InvalidTarget)`。進捗は変えない。イベントは発行しない。実行権を持つ組み立てワーカー（`runBulkExport`）だけが呼ぶ |
-| `succeed` | `job: RunningJob, artifact: ArtifactRef \| null, now: Date` | `WithEventDrafts<SucceededJob, JobEvent>` | `job.succeeded` を発行 |
+| `succeed` | `job: RunningJob, artifact: ArtifactRef \| null, notices: readonly JobNotice[], now: Date` | `WithEventDrafts<SucceededJob, JobEvent>` | `job.succeeded` を発行。`notices` を解釈せずそのまま保持する。申し送りを持たない実行体は空配列を渡す |
 | `fail` | `job: QueuedJob \| RunningJob, failure: JobFailure, now: Date` | `WithEventDrafts<FailedJob, JobEvent>` | リースを検査せず終端化する（下記「強制終端とリース」）。`job.failed` を発行 |
 | `expire` | `job: RunningJob, now: Date` | `WithEventDrafts<FailedJob, JobEvent>` | リース失効の `running` を回収する（ADR 012）。リース有効なら `BusinessRuleError(LeaseActive)`。`failure: { reason: "timeout" }` で終端化し、`attempts` を 0 に戻して手動 `retry` の余地を残す。`job.failed` を発行 |
 | `cancel` | `job: QueuedJob \| RunningJob, now: Date` | `WithEventDrafts<CanceledJob, JobEvent>` | リースを検査せず終端化する（下記「強制終端とリース」）。`job.canceled` を発行 |
 | `retry` | `job: FailedJob, now: Date` | `WithEventDrafts<QueuedJob, JobEvent>` | `AttemptCount.exhausted` が真なら `BusinessRuleError(RetryLimitExceeded)`。`status` を `queued` に戻し `failure` を捨てる。`job.enqueued` を発行 |
-| `reopenBatch` | `parent: SucceededJob \| FailedJob, summary: BatchSummary, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | `target.type !== "batch"` なら `BusinessRuleError(InvalidTarget)`。子の再試行・組み立ての再試行に伴い親を `running` に戻す（終端不変条件の唯一の例外。ADR 012）。`finishedAt` / `failure` / `artifact` を捨てる（捨てるのは参照だけなので、保管ファイルの破棄は呼び出し側が同じ UoW で行う。[usecases/job.md](../usecases/job.md) の「親を開き直すときの生成物の破棄」）。`progress` は呼び出し側（`retryFailedChildren` / `retryJob`）が渡した子の現況の集計から `{ completed: succeeded + failed + canceled, total: summary.total }` として作り直す。`startedAt` は維持する（`null` なら `now`）。`attempts` は 0 に戻す（親自身の実行 = 組み立てを新たに主張できるようにする）。`kind: "bulkExport"` かつ `summary.settled` かつ `summary.succeeded >= 1`（子は全件終端のまま親だけを開き直す場合）なら `job.readyToAssemble` を発行し、そうでなければイベントを発行しない。受理型に `CanceledJob` を含めないのは意図であり、取り消した親は開き直さず元の操作をやり直す（呼び出し側は `canceled` の親を手前で弾く。[usecases/job.md](../usecases/job.md) の `retryFailedChildren` 手順 3）。下記「`reopenBatch` が受け取るのは子の集計である」 |
+| `reopenBatch` | `parent: SucceededJob \| FailedJob, summary: BatchSummary, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | `target.type !== "batch"` なら `BusinessRuleError(InvalidTarget)`。子の再試行・組み立ての再試行に伴い親を `running` に戻す（終端不変条件の唯一の例外。ADR 012）。`finishedAt` / `failure` / `artifact` / `notices` を捨てる（捨てるのは参照だけなので、保管ファイルの破棄は呼び出し側が同じ UoW で行う。[usecases/job.md](../usecases/job.md) の「親を開き直すときの生成物の破棄」）。`progress` は呼び出し側（`retryFailedChildren` / `retryJob`）が渡した子の現況の集計から `{ completed: succeeded + failed + canceled, total: summary.total }` として作り直す。`startedAt` は維持する（`null` なら `now`）。`attempts` は 0 に戻す（親自身の実行 = 組み立てを新たに主張できるようにする）。`kind: "bulkExport"` かつ `summary.settled` かつ `summary.succeeded >= 1`（子は全件終端のまま親だけを開き直す場合）なら `job.readyToAssemble` を発行し、そうでなければイベントを発行しない。受理型に `CanceledJob` を含めないのは意図であり、取り消した親は開き直さず元の操作をやり直す（呼び出し側は `canceled` の親を手前で弾く。[usecases/job.md](../usecases/job.md) の `retryFailedChildren` 手順 3）。下記「`reopenBatch` が受け取るのは子の集計である」 |
 | `isTerminal` | `job: Job` | `boolean` | 終端状態かどうか |
 | `isCancelable` | `job: Job` | `boolean` | `queued` または `running` |
 
@@ -263,7 +280,7 @@ batch 親は `enqueueBatch` で直接 `running` から始まり、組み立て�
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `summarize` | `children: readonly Job[]` | `BatchSummary` | 件数を数え、全件が終端なら親の終了状態を決める |
-| `applyTo` | `parent: RunningJob, summary: BatchSummary, now: Date, leaseUntil: Date` | `WithEventDrafts<Job, JobEvent>` | 未終了なら `reportProgress`（組み立てが始まる前の親ではリース延長を兼ねる。上記「組み立て中の親のリース」）、全件終端なら `succeed` または `fail`。`kind: "bulkExport"` の親のみ下記の例外に従う |
+| `applyTo` | `parent: RunningJob, summary: BatchSummary, now: Date, leaseUntil: Date` | `WithEventDrafts<Job, JobEvent>` | 未終了なら `reportProgress`（組み立てが始まる前の親ではリース延長を兼ねる。上記「組み立て中の親のリース」）、全件終端なら `succeed` または `fail`。`succeed` には空の `notices` を渡す（申し送りは 1 件を処理した実行体が出すものであり、集計から生まれない）。`kind: "bulkExport"` の親のみ下記の例外に従う |
 
 ```
 BatchSummary = Readonly<{
@@ -277,7 +294,9 @@ BatchSummary = Readonly<{
 
 `BatchSummary` は `Job.reopenBatch` の引数でもある（上記「`reopenBatch` が受け取るのは子の集計である」）。親を開き直すときの `job.readyToAssemble` の条件を、`applyTo` の `bulkExport` の例外と同じ集計から判定するためである。
 
-全件が終端で、成功が 1 件以上なら親は `succeeded`（部分失敗を含む）。成功が 0 件かつ失敗が 1 件以上なら `failed`（`reason: "unknown"`, `detail` に内訳）。それ以外（全件キャンセル）は `canceled`。
+全件が終端で、成功が 1 件以上なら親は `succeeded`（部分失敗を含む）。成功が 0 件かつ失敗が 1 件以上なら `failed`（`reason: "unknown"`）。それ以外（全件キャンセル）は `canceled`。
+
+親の失敗の**内訳を `detail` に書かない**。`detail` は運用者向けの文字列であり（上記 `JobFailure`）、利用者に内訳を見せる経路は既に別にある — 履歴（`listJobs` / `getJobDetail`）は親の `childSummary` を子の行から数え直して返す（[usecases/job.md](../usecases/job.md)）。`detail` にも書くと同じ内訳が 2 か所に載り、しかも一方は終端時点で凍結され、子を再試行して `reopenBatch` で親を開き直したあとは実態とずれる。`detail` に入れるのは運用者が原因を追うための情報（例外の種別など）だけとする。
 
 例外として `kind: "bulkExport"` の親は、成功した子が 1 件以上あっても終端化しない。進捗を `total` まで更新して `job.readyToAssemble` を発行し、ZIP の組み立て（`runBulkExport`）が `succeed(artifact)` で終端させる（ADR 012）。成功が 0 件なら他の kind と同じ規則で `failed` / `canceled` になる。
 
@@ -293,6 +312,8 @@ batch 親のリースは子の終了報告（`updateBatchProgress` 経由の `re
 | --- | --- | --- | --- |
 | `ensureNoDuplicate` | `existing: readonly Job[], kind: JobKind, target: JobTarget` | `void` | 同じ `kind` と `target` の未終端ジョブがあれば `BusinessRuleError(DuplicateJob)` |
 | `ensureBulkExportSlot` | `runningBulkExports: number` | `void` | 1 件以上動いていれば `BusinessRuleError(BulkExportInProgress)` |
+
+`ensureNoDuplicate` を呼ぶのは、**多重要求を利用者への業務エラーとして返してよい経路だけ**である（`requestRegeneration` と `requestBackup`）。多重登録を避けたいが要求そのものは成功させたい経路はこれを使わず、未終端ジョブの有無を見て登録を見送る — 参照取り込みの登録（`updateNoteBody` / `runConversion` / `runRegeneration` / `restoreNoteRevision`）がこれに当たり、重複の原因が利用者の操作ではなく自動保存だからである。PDF 書き出し（`exportNote`）はさらに別で、既存ジョブに**相乗り**させるためこれを呼べない（[usecases/note.md](../usecases/note.md)）。
 
 **依存するポート**: なし
 

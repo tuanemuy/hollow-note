@@ -13,6 +13,9 @@
 | 本文が `processing` で、その変換ジョブが実行中 | 適用する | 手順 2 が先に効くため、`CannotCaptureEmptyContent` ではなく `BusinessRuleError(NoteLockedByJob)` が投げられる（検査の順序を確認する） | |
 | 実行中の再生成ジョブがある（本文は `ready` のまま） | 適用する | `BusinessRuleError(NoteLockedByJob)` が投げられる | |
 | `script` の中身を指す経路を指定する | 適用する | `skipped(pathNotFound)` になる（編集対象外） | |
+| `<style>` の中身を指す経路を指定する | 適用する | `skipped(pathNotFound)` になる。`editTextNodes` は `<style>` の子テキストノードに経路を割り当てないため、ビジュアルエディタから CSS を書き換えて `position: fixed` / `@import` を再注入する経路が存在しない | |
+| 編集が成功した | 保存までの経路を確認する | `editTextNodes` の結果を `HtmlProcessor.process` に通してから `Note.updateBody` に渡す（`updateBody` は `ProcessedHtml` を要求する。派生情報も作り直される） | |
+| 編集でテキストを書き換えた | 保存後の `excerpt` / `headings` を確認する | 書き換え後の本文から作り直されている（`process` を通さないと読み取りモデルへの投影が古いまま残る） | |
 | viewer である | 適用する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 他者が先に更新した | 古い `expectedVersion` で適用する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
 | 適用が成功した | 版を確認する | 直前の内容が `manualEdit` として記録されている | |

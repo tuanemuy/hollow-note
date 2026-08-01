@@ -8,7 +8,10 @@
 | 削除権限のないノートが混ざる | `trash` を要求する | それらは `skipped` に積まれ、他は登録される | |
 | 501 件を指定する | 要求する | `ValidationError("TOO_MANY_TARGETS")` が投げられる | |
 | 500 件を指定する | 要求する | 成功する（境界値） | |
-| 権限のないノートが混ざる | 要求する | それらは `skipped` に積まれ、他は登録される | |
+| 権限のないノートが混ざる | 要求する | それらは `skipped` に `{ noteId, reason: "permissionDenied" }` として積まれ、他は登録される | |
+| 存在しない `noteId` を含む | 要求する | `listByIds` の結果に現れないその ID は `skipped` に `{ noteId, reason: "notFound" }` として積まれる | |
+| 存在しない ID と権限のない ID を混ぜて指定する | 要求する | `skipped` に `notFound` と `permissionDenied` がそれぞれ対応する `noteId` とともに積まれ、残りだけが登録される | |
+| `skipped` の形と `reason` の語彙 | `requestBulkExport` / `requestBackup` と比べる | 3 経路とも `{ noteId, reason }[]` で揃い、「対象が引けなかった」という同じ事象には 3 経路とも同じ `notFound` を使う | |
 | すべて権限がない | 要求する | `BusinessRuleError(AccessDenied)` が投げられる | |
 | ハンドル未設定で公開への変更を要求する | 要求する | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられ、1 件も登録されない | |
 | ワークスペースから個人へ移動したノート（`createdBy` は別人）で公開への変更を要求する | 要求する | 所有者 `owner.userId` の公開ハンドルで検査される（`createdBy` は用いない） | |

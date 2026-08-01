@@ -173,11 +173,21 @@ Session = {
   tokenHash: TokenHash
   createdAt: Date
   expiresAt: Date
-  lastUsedAt: Date
 }
 ```
 
-版管理（OCC）は行わない。書き込みは作成・`lastUsedAt` の更新・削除のみで、競合しても害がないため。
+版管理（OCC）は行わない。書き込みは作成と削除だけで、更新が存在しないため。
+
+- **保持方法**: 平文のセッショントークンはクライアントが持ち、サーバー側は `tokenHash` だけを保存する
+- **運搬方法**: Cookie で運ぶ。属性（`HttpOnly` / `Secure` / `SameSite` / `Path`）と CSRF 対策は presentation 層の責務であり、正典は [presentation/index.md](../presentation/index.md)。ドメインは平文トークンとそのハッシュだけを扱い、どう運ばれるかを知らない（`SharePass`（[note.md](./note.md)）と同じ分担）
+
+**有効期間**
+
+`Session.ttlMs` は **30 日**。サインインした時点からの絶対期限であり、使うたびに延びることはない。`AuthTokenPurpose.ttlMs` が用途から期間を導くのと同じく、値はドメインが持ち、`create` の呼び出し側は渡さない。呼び出し側は 4 つある（`signUpWithPassword` / `verifyEmail` / `signInWithPassword` / `completeOAuthSignIn`。[usecases/identity.md](../usecases/identity.md)）ので、引数で受けると 4 か所が同じ値を渡すことを型で保証できない。
+
+**アイドル失効（最終使用時刻からの相対期限）は採らない**。採ると `authenticateSession` が要求のたびに `expiresAt` を延ばして Cookie を張り直すことになり、「サーバー側の失効が唯一の正であり、Cookie 側はそれに一致させるだけ」という presentation との分担（[presentation/index.md](../presentation/index.md)）が崩れる。最終使用時刻（`lastUsedAt`）そのものも持たない — 値を読む経路が存在せず（セッション一覧・端末管理の画面要件を持たない）、認証要求のたびに書き込むコストだけが残るためである。
+
+**受け入れたリスク**: セッションの一覧も端末管理も持たないため、利用者は不審なセッションの存在に気づく手段を持たない。トークンが漏れた場合の対抗手段は、他端末からのサインアウト（`signOutOtherSessions`。P-22）とパスワード再設定（`resetPassword` が全セッションを破棄する）の 2 つに限られる。「サインイン状態を保持しない」選択肢（ブラウザセッション限りの Cookie）も持たない。
 
 **不変条件**
 
@@ -188,9 +198,8 @@ Session = {
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `create` | `params: { id: string; userId: UserId; tokenHash: TokenHash }, now: Date, ttlMs: number` | `Session` | `expiresAt = now + ttlMs` で生成。イベントは発行しない |
+| `create` | `params: { id: string; userId: UserId; tokenHash: TokenHash }, now: Date` | `Session` | `expiresAt = now + Session.ttlMs` で生成。イベントは発行しない |
 | `isExpired` | `session: Session, now: Date` | `boolean` | `session.expiresAt <= now` |
-| `touch` | `session: Session, now: Date` | `Session` | `lastUsedAt` を更新。`isExpired` が真なら `BusinessRuleError(SessionExpired)` |
 
 ### AuthToken（集約ルート）
 
@@ -329,12 +338,13 @@ interface IdentityRepository extends TransactionalRepository<Identity, IdentityI
 interface SessionRepository {
   insert(session: Session): Promise<void>;
   findByTokenHash(tokenHash: TokenHash): Promise<Session | null>;
-  save(session: Session): Promise<void>;
   deleteById(id: SessionId): Promise<void>;
   deleteByUserId(userId: UserId, excluding: SessionId | null): Promise<number>;
   deleteExpired(now: Date): Promise<number>;
 }
 ```
+
+更新の口（`save`）を持たない。`Session` は絶対期限で、作成後に変わるフィールドがないため（上記「有効期間」）。
 
 **エラーケース**: `SystemError(DatabaseError)`
 
@@ -419,6 +429,10 @@ interface LoginAttemptStore {
 
 `put` は同じ鍵の行を上書きし、`expiresAt = now + ttlMs` を書き直す。呼び出し元は `signInWithPassword`（`put` / `clear`）と `verifySharePassword`（`put` / `clear`）、`pruneExpiredAuthState`（`deleteExpired`）。読み書きの順序は `LoginThrottlePolicy` の「読み書きの分担」に従う。
 
+**契約: 失敗の記録は、同じ鍵に対する並行した試行に対してロストアップデートを起こしてはならない。** 呼び出し元の手順は `get` → 判定 → `put` の「読んでから書く」形であり、`login_attempts`（[database/index.md](../database/index.md)）は集約ルートではないため楽観ロックも掛からない。素朴に実装すると、並行した失敗が同じ `failureCount` を読んで同じ値を書き、要求を並列化するだけで施錠を回避できる。`LoginThrottlePolicy` のしきい値（3 回目から待機、10 回で 15 分ロック）はこの契約が満たされて初めて意味を持つ。
+
+この契約を満たす手段（原子的な加算・条件付き更新・専用の機構のいずれを使うか）は実行基盤に依存するため**保留**とし、アダプターが基盤の確定後に決める。要件の正典は [presentation/index.md](../presentation/index.md) のレート制限の節。
+
 **エラーケース**: `SystemError(DatabaseError)`
 
 ### OAuthStateStore（横断的ポート）
@@ -456,7 +470,7 @@ payload は「何が変わったか」の通知にとどめ、投影に必要な
 IdentityErrorCode =
   | "InvalidId" | "InvalidEmail" | "InvalidHandle" | "HandleReserved"
   | "InvalidDisplayName" | "InvalidBio" | "WeakPassword"
-  | "InvalidProviderAccount" | "SessionExpired" | "TokenExpired"
+  | "InvalidProviderAccount" | "TokenExpired"
   | "LastIdentityCannotBeRemoved" | "PasswordIdentityAlreadyExists"
 ```
 

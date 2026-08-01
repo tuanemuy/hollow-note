@@ -24,3 +24,5 @@
 | `failed` の batch 親（`bulkExport` 以外） | 一覧する | `retryable: false` が返る（導線は `retryFailedChildren`） | |
 | 実行中のジョブがある | 一覧する | `activeCount` が 1 以上になり、進捗が含まれる | |
 | `limit` を 101 にする | 一覧する | `ValidationError("INVALID_PAGINATION")` が投げられる | |
+| 公開ステータスを適用できなかった変換ジョブがある | 一覧する | その行の `notices` に `visibilityNotApplied` が入る | |
+| 終端していないジョブがある | 一覧する | その行の `notices` は空配列になる |

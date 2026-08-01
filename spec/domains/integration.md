@@ -216,7 +216,11 @@ interface SecretCipher {
 }
 ```
 
-**エラーケース**: `SystemError(ExternalServiceError)`（鍵の取得・暗号処理の失敗）、`SystemError(DataIntegrityError)`（未知の `keyVersion`）
+**鍵は単一ではなく版付きの束である**。`currentKeyVersion` が返すのは「これから暗号化するときに使う版」で、`EncryptedSecret.keyVersion` は「その値が暗号化されたときの版」である。両者が食い違いうるからこそ、復号は保存された版の鍵を引き当てられなければならない。鍵を交換したあとも**旧版の鍵を保持し続ける**必要があり、保持をやめた版で暗号化された行を復号しようとすると `SystemError(DataIntegrityError)` に落ちる。したがって「いつ旧版を捨ててよいか」は再暗号化が全行に行き渡ったかどうかで決まる運用上の判断であり、このポートの契約には含まれない。
+
+**鍵の供給元はこのポートの関心事ではない**。版から鍵を引く写像も、現在の版も、アダプターが `AppConfig` から解決する。正典は [presentation/index.md](../presentation/index.md)。ドメインに供給元を書くと、鍵の管理を外部の鍵管理基盤に移すたびにドメイン文書を書き換えることになる。
+
+**エラーケース**: `SystemError(ExternalServiceError)`（鍵の取得・暗号処理の失敗）、`SystemError(DataIntegrityError)`（未知の `keyVersion`。保持をやめた版で暗号化された行を読んだ場合を含む）
 
 ### IntegrationOAuthClient
 

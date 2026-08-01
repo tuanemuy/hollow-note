@@ -46,6 +46,8 @@
 
 配送は少なくとも 1 回のため、この判定により同じジョブを 2 回受け取っても結果は変わらない。長い処理は `Job.reportProgress` でリースを延長する。各ドメインの run 系ユースケースでは、この手順を「run 系の共通規則に従う」と記す。
 
+**`Job.succeed` は `notices` を要求する**（[domains/job.md](../domains/job.md)）。申し送りを出すのは `runConversion` の公開ステータスの適用（`visibilityNotApplied`）だけで、**それ以外の run 系はすべて空配列を渡す**。各ユースケースの記述にある `Job.succeed(artifact)` のような略記はこの既定（空の `notices`）を指す。取り込みの結果を `notices` に載せない理由は [ADR 014](../adr/014-import-result-provenance.md) にある — ノートに帰属する情報は、ノートを読める者すべてに、ジョブの保持期間と無関係に見えなければならないためである。
+
 判定 1 の「見つからない」は、`deleteJobsForRequester`（退会の後始末。状態を問わず削除する）と配送が競合すると起こる。行がない以上その配送で進められる処理はなく、再配送しても結果は変わらないため、`updateBatchProgress` の「親が不在 → 何もせず成功として返す」と同じ扱いにする。
 
 判定順の唯一の例外は `importExternalReferences`（Storage）で、`Job.start` に渡す `total` が本文を読んで参照を抽出するまで確定しないため、判定 1・2 は先頭で行いつつ判定 3 の `Job.start` だけを抽出後へ後ろ倒しする（[usecases/storage.md](./storage.md)）。
@@ -180,9 +182,11 @@ finalizeTerminatedJobs(ctx, params: {
 
 `items: JobSummary[]`, `count: number`, `activeCount: number`
 
-`JobSummary` は `jobId`, `kind`, `status`, `targetType`, `targetId`, `targetLabel`, `progress: { completed; total } | null`, `childSummary: { total; succeeded; failed; canceled } | null`, `failureReason: string | null`, `artifact: { fileId; expiresAt; expired: boolean } | null`, `startedAt`, `finishedAt`, `createdAt`, `retryable: boolean`, `cancelable: boolean`。
+`JobSummary` は `jobId`, `kind`, `status`, `targetType`, `targetId`, `targetLabel`, `progress: { completed; total } | null`, `childSummary: { total; succeeded; failed; canceled } | null`, `failureReason: string | null`, `notices: JobNotice[]`, `artifact: { fileId; expiresAt; expired: boolean } | null`, `startedAt`, `finishedAt`, `createdAt`, `retryable: boolean`, `cancelable: boolean`。
 
-`progress` は実行中の進捗であり、`running` のときだけ値を持つ（DB の `progress_*` 列が `running` 限定のため）。`childSummary` は batch 親（`target.type === "batch"`）のみ非 null で、子ジョブの行から数え直した内訳のため終端後も残る。履歴一覧の「100 件中 98 件成功」はこちらから作る。全子終端は `succeeded + failed + canceled === total` で判定する。
+`progress` は実行中の進捗であり、`running` のときだけ値を持つ（DB の `progress_*` 列が `running` 限定のため）。`childSummary` は batch 親（`target.type === "batch"`）のみ非 null で、子ジョブの行から数え直した内訳のため終端後も残る。履歴一覧の「100 件中 98 件成功」はこちらから作る。全子終端は `succeeded + failed + canceled === total` で判定する。`notices` は `succeeded` のジョブのみ非空になりうる（それ以外は空配列）。`failureReason` が「なぜ失敗したか」を表すのに対し、`notices` は**成功したジョブが実行中に下した判断**を表す（[domains/job.md](../domains/job.md) の `JobNotice`）。
+
+親ジョブは `notices` を持たない（集計から申し送りは生まれない）。一括アップロードで複数の子が `visibilityNotApplied` になった場合、親の行には現れず子を開いて確認することになる。取り込みの直後に見せる集約表示は P-13（アップロード）の完了内訳が担い、そちらは `startBulkUpload` の応答を追う画面なので履歴とは別経路である。
 
 ### 処理フロー
 

@@ -7,7 +7,8 @@
 | 組み立て中の親（`attempts >= 1`）で組み立てワーカーが停止した | 子の終了報告を繰り返し処理する | `reportProgress` が期限を延ばさないため組み立てリースは必ず失効し、`beginAssembly` の再取得か `reapExpiredJobs` の回収に戻る（`running` のまま永久に終端しない） | |
 | 全 10 件が成功（`bulkExport` 以外の kind） | 更新する | 親が `succeeded` になる | |
 | 8 件成功・2 件失敗（`bulkExport` 以外の kind） | 更新する | 親が `succeeded` になる（部分失敗を含む） | |
-| 全 10 件が失敗 | 更新する | 親が `failed` になり、内訳が `detail` に記録される | |
+| 全 10 件が失敗 | 更新する | 親が `failed`（`reason: "unknown"`）になる。**内訳は `detail` に書かない** — 利用者向けの内訳は `childSummary` が子の行から数え直して返すため、`detail` に凍結した内訳を持つと再試行後に実態とずれる | |
+| 全件終端で成功が 1 件以上 | 更新する | 親が `succeeded` になり、`notices` は空配列で渡される（集計から申し送りは生まれない） | |
 | 全件がキャンセル | 更新する | 親が `canceled` になる | |
 | `kind: "bulkExport"` の親で全子が終端し、成功が 1 件以上 | 更新する | 親は終端化せず、進捗が `total` まで進んで `job.readyToAssemble` が発行される（終端化は `runBulkExport` の `succeed(artifact)` が行う） | |
 | `kind: "bulkExport"` の親で全子が終端し、成功が 0 件・失敗あり | 更新する | 他の kind と同じ規則で `failed` になり、`job.readyToAssemble` は発行されない | |
