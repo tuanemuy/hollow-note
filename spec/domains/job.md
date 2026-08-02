@@ -300,7 +300,7 @@ BatchSummary = Readonly<{
 
 例外として `kind: "bulkExport"` の親は、成功した子が 1 件以上あっても終端化しない。進捗を `total` まで更新して `job.readyToAssemble` を発行し、ZIP の組み立て（`runBulkExport`）が `succeed(artifact)` で終端させる（ADR 012）。成功が 0 件なら他の kind と同じ規則で `failed` / `canceled` になる。
 
-batch 親のリースは子の終了報告（`updateBatchProgress` 経由の `reportProgress`）で延長される。リース期間（60 分）は子 1 件の実行時間の上限（15 分）より長く取る（[usecases/job.md](../usecases/job.md) の「共通: リース期間と回収の間隔」）。このリースは「親の進捗が更新され続けている」ことの表明であって組み立ての実行権ではない。実行権は `runBulkExport` が `Job.beginAssembly` で別に取る（親の `attempts` は `enqueueBatch` で 0 のまま `reportProgress` でも増えないため、最初の要求は必ず通り、2 回目以降は組み立て中のリースが有効なかぎり `LeaseActive` で弾かれる）。組み立てが始まったあと（`attempts >= 1`）は `applyTo` の `reportProgress` が期限を延ばさない — 上記「組み立て中の親のリース」の規則に従う。
+batch 親のリースは子の終了報告（`updateBatchProgress` 経由の `reportProgress`）で延長される。進捗リースの期間（60 分）は子 1 件の実行時間の上限（15 分）より長く取る。組み立ての実行権のほうは 15 分（キューのコンシューマーの壁時計と同じ）で、同じ列を使いながら期間が違う（[usecases/job.md](../usecases/job.md) の「共通: リース期間と回収の間隔」）。このリースは「親の進捗が更新され続けている」ことの表明であって組み立ての実行権ではない。実行権は `runBulkExport` が `Job.beginAssembly` で別に取る（親の `attempts` は `enqueueBatch` で 0 のまま `reportProgress` でも増えないため、最初の要求は必ず通り、2 回目以降は組み立て中のリースが有効なかぎり `LeaseActive` で弾かれる）。組み立てが始まったあと（`attempts >= 1`）は `applyTo` の `reportProgress` が期限を延ばさない — 上記「組み立て中の親のリース」の規則に従う。
 
 **依存するポート**: なし
 
@@ -325,11 +325,11 @@ batch 親のリースは子の終了報告（`updateBatchProgress` 経由の `re
 interface JobRepository extends TransactionalRepository<Job, JobId> {
   listByRequester(userId: UserId, criteria: JobListCriteria): Promise<PaginationResult<Job>>;
   listChildren(parentId: JobId, pagination: Pagination): Promise<PaginationResult<Job>>;
-  listActiveByTarget(target: JobTarget): Promise<readonly Job[]>;
-  listActiveByRequester(userId: UserId): Promise<readonly Job[]>;
+  listActiveByTarget(target: JobTarget, limit: number): Promise<readonly Job[]>;
+  listActiveByRequester(userId: UserId, limit: number): Promise<readonly Job[]>;
   countActiveByKind(userId: UserId, kind: JobKind): Promise<number>;
-  listActiveByScope(scope: JobScope): Promise<readonly Job[]>;
-  listExpiredRunning(asOf: Date): Promise<readonly RunningJob[]>;
+  listActiveByScope(scope: JobScope, limit: number): Promise<readonly Job[]>;
+  listExpiredRunning(asOf: Date, limit: number): Promise<readonly RunningJob[]>;
   summarizeChildren(parentId: JobId): Promise<BatchSummary>;
   summarizeChildrenOf(parentIds: readonly JobId[]): Promise<readonly { parentId: JobId; summary: BatchSummary }[]>;
   deleteOlderThan(cutoff: Date): Promise<number>;
@@ -350,6 +350,7 @@ type JobListCriteria = Readonly<{
 - `summarizeChildren` は 1 件の親の内訳（`getJobDetail`）、`summarizeChildrenOf` は一覧に載った親をまとめて集計する用（`listJobs`）。どちらも `jobs_parent_idx` を使い、親の状態に依存せず子の現況から数え直す。子を持たない ID は結果に現れない
 - `deleteOlderThan` は終端状態かつ**親を持たない**（`parentId === null`）ジョブのみを対象とし、終了時刻（`finishedAt`）を比較する。境界は排他（`finishedAt < cutoff` のみ削除する）。子は親の削除に伴って `parent_id` の外部キー CASCADE で一緒に消えるため、親が生きているあいだ子だけが消えることはない（[usecases/job.md](../usecases/job.md) の `pruneJobHistory`）
 - 匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため、`listByRequester` / `listActiveByRequester` / `countActiveByKind` / `deleteByRequester` の結果には現れない（ADR 010）
+- **網で引く 3 つ（`listActiveByTarget` / `listActiveByRequester` / `listActiveByScope`）と `listExpiredRunning` は `limit` を必須で受け取る**。呼び出し元はこれらの結果を 1 つの Unit of Work で終端させ、1 件ごとに後始末を伴うため、件数が 1 回の実行あたりのクエリ予算に直結するからである。既定は 100 で、上限に達した場合の続きは継続要求が運ぶ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」、[ADR 018](../adr/018-query-budget.md)）。`PaginationResult` ではなく素の配列を返すのは、呼び出し元が総件数を必要とせず「残りがあるか」だけを `limit` に達したかで判断するためである
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 

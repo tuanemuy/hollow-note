@@ -6,8 +6,10 @@
 | — | 誤ったパスワードを送る | `ValidationError("INVALID_SHARE_PASSWORD")` が投げられる | |
 | 連続して失敗している | 再度失敗する | `ValidationError("THROTTLED")` が投げられる（待機とロックを畳んでいる） | |
 | — | レート制限の鍵を確認する | `LoginAttemptKey.forSharePassword(tokenHash, clientKey)` で `share:{共有トークンのハッシュ}:{clientKey}` の形に組み立てられる。材料は `TokenHash` であり、素の共有トークンを鍵に残さない | |
-| — | 判定と記録の順序を確認する | `signInWithPassword` と同じ順序（`LoginAttemptStore.get` →（`null` なら `initial`）→ `LoginThrottlePolicy.evaluate` → 失敗なら `put` / 成功なら `clear`）に従う | |
-| 照合に失敗した | 記録を確認する | `LoginAttemptStore.put(recordFailure(attempt, now), attemptTtlMs)` が呼ばれ、TTL は 24 時間になる | |
+| — | 判定と記録の順序を確認する | `signInWithPassword` と同じ順序（`LoginAttemptStore.get` →（`null` なら `initial`）→ `LoginThrottlePolicy.evaluate` → 失敗なら `recordFailure` / 成功なら `clear`）に従う | |
+| 照合に失敗した | 記録を確認する | `LoginAttemptStore.recordFailure(key, now, attemptTtlMs)` が呼ばれ、TTL は 24 時間になる。戻り値は加算後の `LoginAttempt` | |
+| 同じ鍵に対して失敗が並行して 10 件届く | すべて処理する | `failureCount` が 10 になる（1 件も取りこぼさない）。加算が原子的でないと、要求を並列化するだけで施錠を回避できる | |
+| 加算後の記録がしきい値に達した | 応答を確認する | 返ってきた加算後の値を `evaluate` し、待機・ロックに当たるなら `THROTTLED` に切り替える（ロックも同じコードに畳む） | |
 | 照合に成功した | 記録を確認する | `LoginAttemptStore.clear(key)` が呼ばれる | |
 | 同じ共有リンクに別の `clientKey` から失敗する | 照合する | 鍵が異なるため別の行になり、互いの待機・ロックに影響しない | |
 | 同じ端末が別の共有リンクで失敗している | 照合する | `tokenHash` が異なるため別の行になる | |

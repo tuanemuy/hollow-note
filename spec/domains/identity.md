@@ -79,7 +79,7 @@
 | パスワードサインイン | `forSignIn(email: Email, clientKey: string)` | `signIn:{正規化済みメールアドレス}:{clientKey}` | [`signInWithPassword`](../usecases/identity.md) |
 | 共有リンクのパスワード照合 | `forSharePassword(tokenHash: TokenHash, clientKey: string)` | `share:{共有トークンのハッシュ}:{clientKey}` | [`verifySharePassword`](../usecases/note.md) |
 
-生成経路はこの 2 つのメソッドだけとし、文字列連結を呼び出し側に書かせない。共有リンク側が素のトークンではなく `TokenHash` を材料にするのは、`login_attempts.key`（[database/index.md](../database/index.md)）に共有の秘密が平文で残らないようにするため。`clientKey` は発信元を表す文字列で、要求ごとに transport 層が組み立てて入力 DTO で渡す。
+生成経路はこの 2 つのメソッドだけとし、文字列連結を呼び出し側に書かせない。共有リンク側が素のトークンではなく `TokenHash` を材料にするのは、`login_attempts.key`（[database/index.md](../database/index.md)）に共有の秘密が平文で残らないようにするため。`clientKey` は発信元を表す文字列で、要求ごとに transport 層が組み立てて入力 DTO で渡す（材料は `CF-Connecting-IP`。正典は [presentation/index.md](../presentation/index.md) のレート制限の節）。
 
 ## エンティティ
 
@@ -278,28 +278,42 @@ LinkDecision =
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `evaluate` | `attempt: LoginAttempt, now: Date` | `ThrottleDecision` | `lockedUntil > now` なら `locked`、そうでなければ失敗回数から `allow` / `delay` を判定 |
-| `recordFailure` | `attempt: LoginAttempt, now: Date` | `LoginAttempt` | 失敗回数を 1 増やし、最終失敗時刻を更新。閾値に達していれば `lockedUntil` を設定 |
-| `initial` | `key: string` | `LoginAttempt` | 記録がないときの初期値（`failureCount: 0`、時刻はいずれも `null`） |
+| `evaluate` | `attempt: LoginAttempt, now: Date` | `ThrottleDecision` | 失敗回数と最終失敗時刻から `allow` / `delay` / `locked` を**導出**する |
+| `initial` | `key: string` | `LoginAttempt` | 記録がないときの初期値（`failureCount: 0`、`lastFailedAt: null`） |
 
 ```
-LoginAttempt = { key: string; failureCount: number; lastFailedAt: Date | null; lockedUntil: Date | null }
+LoginAttempt = { key: string; failureCount: number; lastFailedAt: Date | null }
 ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kind: "locked"; until: Date }
 ```
 
-規則: 3 回目以降の失敗ごとに待機 `2^(failureCount-2)` 秒（上限 60 秒）。10 回で 15 分ロック。
+規則: 3 回目以降の失敗ごとに待機 `2^(failureCount-2)` 秒（上限 60 秒）。**`failureCount >= 10` かつ `now < lastFailedAt + 15 分` ならロック**（解除時刻は `lastFailedAt + 15 分`）。
 
-`LoginThrottlePolicy.attemptTtlMs = 24 時間`（`LoginAttemptStore.put` に渡す保持期間。定数としてこのサービスが公開する）。ロック期間の 15 分より十分長く取るのは、ロック中の記録が期限切れで消えるとロックが早期に解除され、失敗回数を捨てて総当たりを続けられてしまうため。逆に無期限にしないのは、`pruneExpiredAuthState` が回収できない行が溜まり続けるのを避けるためで、成功時は期限を待たず `clear` で即座に消す。
+定数（このサービスが公開する。値の正典はここ）:
 
-**読み書きの分担**: 全メソッドが純関数で、`LoginAttemptStore` の読み書きはユースケースが行う。呼ぶ側は次の順序を守る。
+| 定数 | 値 | 意味 |
+| --- | --- | --- |
+| `lockThreshold` | 10 | ロックに入る失敗回数 |
+| `lockDurationMs` | 15 分 | ロックの長さ |
+| `maxDelayMs` | 60 秒 | 待機の上限 |
+| `attemptTtlMs` | 24 時間 | 記録の保持期間 |
 
-1. `LoginAttemptStore.get(key)`（`null` なら `initial(key)`）→ `evaluate` で待機・ロックを判定
-2. 認証に失敗したら `LoginAttemptStore.put(recordFailure(attempt, now), attemptTtlMs)`
+`attemptTtlMs` をロック期間の 15 分より十分長く取るのは、ロック中の記録が期限切れで消えるとロックが早期に解除され、失敗回数を捨てて総当たりを続けられてしまうため。逆に無期限にしないのは、`pruneExpiredAuthState` が回収できない行が溜まり続けるのを避けるためで、成功時は期限を待たず `clear` で即座に消す。
+
+**ロックを保存せず導出するのはなぜか**。失敗回数の加算は並行した試行に対して原子的でなければならず（下記 `LoginAttemptStore` の契約）、原子性を単一の SQL 文で与えるには**書き込む値が読んだ値に依存してはならない**（[ADR 020](../adr/020-coordination-state.md)）。`lockedUntil` を保存すると、その値が `failureCount` から計算される以上、しきい値の判定をアダプターの SQL に持ち込むことになる。導出に変えれば、しきい値の規則はこのドメインサービスの 1 か所に残る。
+
+振る舞いは保存していたときと変わらない。ロック中は照合そのものを行わないので `lastFailedAt` は 10 回目で凍り、ロックは 10 回目の失敗から 15 分で解ける。解けたあとは `failureCount` が 10 のままなので待機は上限の 60 秒になり、次の失敗で `lastFailedAt` が更新されて再びロックに入る。
+
+**読み書きの分担**: `evaluate` / `initial` は純関数で、`LoginAttemptStore` の読み書きはユースケースが行う。呼ぶ側は次の順序を守る。
+
+1. `LoginAttemptStore.get(key)`（`null` なら `initial(key)`）→ `evaluate` で入場を判定する
+2. 認証に失敗したら `LoginAttemptStore.recordFailure(key, now, attemptTtlMs)` を呼ぶ。**加算はポート側の原子的な操作**であり、戻り値は加算後の `LoginAttempt`。応答に載せる待機秒数・解除時刻は、この戻り値を `evaluate` して求める
 3. 認証に成功したら `LoginAttemptStore.clear(key)`
 
-成功時に「失敗回数を 0 にした記録を書き戻す」のではなく行ごと消すのは、消費 0 の行を残さないため。ロック中は 2 を実行しない（`evaluate` が `locked` を返した時点で照合そのものを行わないので、ロック期間中の試行で `lockedUntil` が延び続けることはない）。
+成功時に「失敗回数を 0 にした記録を書き戻す」のではなく行ごと消すのは、消費 0 の行を残さないため。ロック中は 2 を実行しない（`evaluate` が `locked` を返した時点で照合そのものを行わない）。
 
-**依存するポート**: なし（全メソッドが純関数）
+手順 1 の `get` は**古い値を読みうる**が害にならない。判定が緩む方向に外れても、その試行の失敗は手順 2 で原子的に数えられるため施錠は必ず追いつく。
+
+**依存するポート**: なし（`evaluate` / `initial` は純関数）
 
 ## ポート
 
@@ -421,17 +435,17 @@ type OAuthProfile = Readonly<{
 ```ts
 interface LoginAttemptStore {
   get(key: string): Promise<LoginAttempt | null>;
-  put(attempt: LoginAttempt, ttlMs: number): Promise<void>;   // ttlMs は LoginThrottlePolicy.attemptTtlMs
+  recordFailure(key: string, now: Date, ttlMs: number): Promise<LoginAttempt>;   // 加算後の値を返す
   clear(key: string): Promise<void>;
-  deleteExpired(now: Date): Promise<number>;                  // pruneExpiredAuthState が呼ぶ
+  deleteExpired(now: Date): Promise<number>;                                     // pruneExpiredAuthState が呼ぶ
 }
 ```
 
-`put` は同じ鍵の行を上書きし、`expiresAt = now + ttlMs` を書き直す。呼び出し元は `signInWithPassword`（`put` / `clear`）と `verifySharePassword`（`put` / `clear`）、`pruneExpiredAuthState`（`deleteExpired`）。読み書きの順序は `LoginThrottlePolicy` の「読み書きの分担」に従う。
+`recordFailure` は失敗回数を 1 増やし、`lastFailedAt` を `now` に、`expiresAt` を `now + ttlMs` に書き直したうえで、**加算後の状態**を返す。行がなければ `failureCount: 1` で作る。呼び出し元は `signInWithPassword`（`recordFailure` / `clear`）と `verifySharePassword`（`recordFailure` / `clear`）、`pruneExpiredAuthState`（`deleteExpired`）。読み書きの順序は `LoginThrottlePolicy` の「読み書きの分担」に従う。
 
-**契約: 失敗の記録は、同じ鍵に対する並行した試行に対してロストアップデートを起こしてはならない。** 呼び出し元の手順は `get` → 判定 → `put` の「読んでから書く」形であり、`login_attempts`（[database/index.md](../database/index.md)）は集約ルートではないため楽観ロックも掛からない。素朴に実装すると、並行した失敗が同じ `failureCount` を読んで同じ値を書き、要求を並列化するだけで施錠を回避できる。`LoginThrottlePolicy` のしきい値（3 回目から待機、10 回で 15 分ロック）はこの契約が満たされて初めて意味を持つ。
+**契約: `recordFailure` は単一の原子的な操作でなければならない。読んでから書く実装を禁ずる。** `login_attempts`（[database/index.md](../database/index.md)）は集約ルートではないため楽観ロックが掛からず、素朴に実装すると並行した失敗が同じ `failureCount` を読んで同じ値を書き、要求を並列化するだけで施錠を回避できる。`LoginThrottlePolicy` のしきい値（3 回目から待機、10 回で 15 分ロック）はこの契約が満たされて初めて意味を持つ。
 
-この契約を満たす手段（原子的な加算・条件付き更新・専用の機構のいずれを使うか）は実行基盤に依存するため**保留**とし、アダプターが基盤の確定後に決める。要件の正典は [presentation/index.md](../presentation/index.md) のレート制限の節。
+D1 ではこの契約を `INSERT … ON CONFLICT DO UPDATE SET failure_count = failure_count + 1, last_failed_at = ?, expires_at = ? RETURNING failure_count, last_failed_at` の 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。ロックの判定は書き込む値に含まれないため、しきい値の規則が SQL に漏れない。要件の正典は [presentation/index.md](../presentation/index.md) のレート制限の節。
 
 **エラーケース**: `SystemError(DatabaseError)`
 

@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md) が改訂した — external content から contentless に変わり、`note_search` の `title_fts` / `text_fts` / `tag_names_fts` の 3 列は存在しない。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
 
 ## コンテキスト
 

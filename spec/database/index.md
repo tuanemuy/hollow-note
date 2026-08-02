@@ -1,8 +1,8 @@
 # データベース設計
 
-**本書の位置づけ**。以下は現時点の候補である D1（SQLite）を前提に置いた具体的な設計である。保存先の選択は未確定であり（[idea.md](../idea.md) の「未確定の技術選択（候補）」）、前提が変われば本書は改訂または一部破棄の対象になる。どの判断がどの前提に乗っているかの逆引きは [ADR 一覧と前提依存マップ](../adr/index.md) を参照すること。
+対象は Cloudflare D1（SQLite）。保存先は確定している（[ADR 015](../adr/015-cloudflare-runtime.md)）。Drizzle でスキーマを定義し、マイグレーションは `apps/web/` の設定に従う。ただし `note_search_fts`（FTS5 仮想テーブル）と関連する raw SQL は Drizzle スキーマでは表現できないため、Drizzle スキーマ外の手書き SQL マイグレーションで管理する。
 
-対象は Cloudflare D1（SQLite）。Drizzle でスキーマを定義し、マイグレーションは `apps/web/` の設定に従う。ただし `note_search_fts`（FTS5 仮想テーブル）と関連する raw SQL は Drizzle スキーマでは表現できないため、Drizzle スキーマ外の手書き SQL マイグレーションで管理する。
+D1 の実上限と、そこから逆算した設計値（行サイズ予算・クエリ予算・キュー構成・定期実行）は [platform/index.md](../platform/index.md) を正典とする。本書は表と索引の定義を持ち、上限そのものは持たない。
 
 ## 共通の規約
 
@@ -14,6 +14,9 @@
 - **外部キー**: 同じドメイン内の親子には `ON DELETE CASCADE` を張る。ドメインをまたぐ参照には外部キーを張らず、イベント駆動で後始末する（集約の独立性を保つため）
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
+- **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
+- **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる（[ADR 018](../adr/018-query-budget.md)）
+- **原子性**: 集約でない表への「読んでから書く」更新は、**単一の SQL 文**で行う（`ON CONFLICT DO UPDATE … RETURNING` / `DELETE … RETURNING` / `INSERT … ON CONFLICT DO NOTHING`）。対象は `login_attempts` / `oauth_flow_states` / `processed_events`（[ADR 020](../adr/020-coordination-state.md)）
 
 ## テーブル一覧
 
@@ -114,10 +117,21 @@
 | `key` | text | PK（`LoginAttemptKey` が組み立てる `{namespace}:{subject}:{clientKey}`） |
 | `failure_count` | integer | NOT NULL DEFAULT 0 |
 | `last_failed_at` | integer | NULL 可 |
-| `locked_until` | integer | NULL 可 |
 | `expires_at` | integer | NOT NULL |
 
 - **インデックス**: `login_attempts_expires_idx` (`expires_at`)
+- **ロックの状態は列に持たない**。ロックは `failure_count` と `last_failed_at` から `LoginThrottlePolicy.evaluate` が導出する（[domains/identity.md](../domains/identity.md)）。保存しないのは、失敗回数の加算を単一の SQL 文にするためである — 書き込む値が読んだ値に依存しなければ「読んでから書く」形を避けられ、しきい値の規則を SQL に持ち込まずに済む（[ADR 020](../adr/020-coordination-state.md)）
+- 加算は次の 1 文で行う。返る値がそのまま `LoginAttemptStore.recordFailure` の戻り値になる
+
+```sql
+INSERT INTO login_attempts (key, failure_count, last_failed_at, expires_at)
+VALUES (?1, 1, ?2, ?3)
+ON CONFLICT(key) DO UPDATE SET
+  failure_count = failure_count + 1,
+  last_failed_at = excluded.last_failed_at,
+  expires_at     = excluded.expires_at
+RETURNING failure_count, last_failed_at;
+```
 - `key` は用途ごとに名前空間を分けた 2 系統を持つ（[domains/identity.md](../domains/identity.md) の `LoginAttemptKey`）。パスワードサインインは `signIn:{正規化済みメールアドレス}:{clientKey}`（`forSignIn`）、共有リンクのパスワード照合は `share:{共有トークンのハッシュ}:{clientKey}`（`forSharePassword`）。名前空間を先頭に置くのは、別種の照合の失敗が同じ行に集まって互いのロックを誘発するのを防ぐため。共有側の材料が素の共有トークンではなく `TokenHash` なのは、この列に共有の秘密を平文で残さないためである
 
 ---
@@ -543,9 +557,6 @@
 | `excerpt` | text | NOT NULL |
 | `tag_names` | text | NOT NULL DEFAULT ''（改行区切りで連結した正規化済みタグ名。キーワード検索の関連度用） |
 | `tag_display_names` | text | NOT NULL DEFAULT ''（改行区切りで連結した表示名。一覧の表示用。FTS 対象外） |
-| `title_fts` | text | NOT NULL（`title` の bigram 前処理済みテキスト） |
-| `text_fts` | text | NOT NULL（`text` の bigram 前処理済みテキスト） |
-| `tag_names_fts` | text | NOT NULL DEFAULT ''（`tag_names` の bigram 前処理済みテキスト） |
 | `visibility` | text | NOT NULL |
 | `content_status` | text | NOT NULL |
 | `style_mode` | text | NOT NULL |
@@ -561,10 +572,10 @@
 | `trashed_at` | integer | NULL 可 |
 | `purge_after` | integer | NULL 可 |
 
-- 版を持たない（投影は現在の状態からの冪等な上書き）
-- 通常の rowid 表として作る。`note_search_fts` が `content_rowid='rowid'` で参照するため、`WITHOUT ROWID` にしてはならない
-- `*_fts` の 3 列は後述の bigram 前処理を適用したテキスト。`note_search_fts` の content 列として使う
-- `tag_names` は `ProjectedTagName.normalized` を `tag_display_names` と同じく改行（`\n`）で連結する。区切り文字は改行に固定する — この列は `tag_names_fts` の入力であり、bigram 前処理は CJK run と非 CJK を文字クラスで分けるだけなので、区切りが CJK 文字や英数字だと隣接するタグの末尾と先頭が 1 トークンに融合し、bm25 のタグ名列の関連度が壊れる。改行は前処理の非 CJK 側で空白と同じ区切りとして働き、`TagName` が改行を含まない（[domains/tag.md](../domains/tag.md)）ため融合が起きない
+- 版を持たない（投影は現在の状態からの冪等な上書き。並行実行がないことは [ADR 016](../adr/016-projection-single-writer.md) が保証する）
+- 通常の rowid 表として作る。`note_search_fts` の行を `note_search.rowid` で対応づけるため、`WITHOUT ROWID` にしてはならない
+- **bigram 前処理済みのテキストは列に持たない**。FTS5 は contentless 構成で、前処理済みのテキストは索引の中だけに存在する（[ADR 017](../adr/017-content-size-budget.md)）。索引を書き換えるときの旧値は、生テキスト列に前処理関数を再適用して求める
+- `tag_names` は `ProjectedTagName.normalized` を `tag_display_names` と同じく改行（`\n`）で連結する。区切り文字は改行に固定する — この列は FTS の `tag_names_fts` 列に入れる bigram の入力であり、bigram 前処理は CJK run と非 CJK を文字クラスで分けるだけなので、区切りが CJK 文字や英数字だと隣接するタグの末尾と先頭が 1 トークンに融合し、bm25 のタグ名列の関連度が壊れる。改行は前処理の非 CJK 側で空白と同じ区切りとして働き、`TagName` が改行を含まない（[domains/tag.md](../domains/tag.md)）ため融合が起きない
 - `tag_display_names` は `NoteSummary.tagNames` / `PublicNoteSummary.tagNames`（表示名。正規化前）を一覧の 1 クエリで返すための列。`ProjectedTagName.name` を改行（`\n`）で連結する — `TagName` は改行を含めないため（[domains/tag.md](../domains/tag.md)）分割は一意に戻せる。並び順は `tag_names` と同じ（`updateTags` が同一の配列から両列を組み立てる）。検索の対象ではなく、FTS にも `note_search_tags` にも入れない。絞り込みは正規化名（`note_search_tags.normalized`）だけで行うため、表示ゆれは検索結果に影響しない
 - `author_*` 列は `created_by` の利用者を指す（ワークスペース所有ノートでも作成者を表示する）。`NoteProjectionEntry` の `author` / `workspace` は `upsert` の呼び出し側が投影のたびに解決して渡すため（[domains/note.md](../domains/note.md)）、初回投影（`note.created` / `note.moved`）から必ず値が入り、既定値に頼らない
 - **インデックス**:
@@ -601,34 +612,37 @@
 - **主キー**: (`normalized`, `note_id`) — タグ名から対象ノートを引く向きに最適化
 - **インデックス**: `note_search_tags_note_idx` (`note_id`) — ノート単位の入れ替え（`updateTags`）と削除（`remove`）用
 - 版を持たない（投影は現在の状態からの冪等な上書き）
-- タグの AND 絞り込みは本表への JOIN（関係除算。または `INTERSECT`）による完全一致で行う。`note_search.tag_names` / `tag_names_fts` はキーワード検索の関連度に寄与させるための列であり、絞り込みには使わない
+- タグの AND 絞り込みは本表への JOIN（関係除算。または `INTERSECT`）による完全一致で行う。`note_search.tag_names` と FTS の `tag_names_fts` 列はキーワード検索の関連度に寄与させるためのものであり、絞り込みには使わない
 
 #### タグ列の同期契約
 
-タグは `note_search.tag_names` / `note_search.tag_names_fts`（関連度用）・`note_search_tags`（絞り込み用）・`note_search.tag_display_names`（表示用）の 4 か所に投影される。書き手は [domains/note.md](../domains/note.md) の分掌のとおり固定する。
+タグは `note_search.tag_names`（関連度用）・`note_search_tags`（絞り込み用）・`note_search.tag_display_names`（表示用）の 3 か所と、FTS 索引の `tag_names_fts` 列に投影される。書き手は [domains/note.md](../domains/note.md) の分掌のとおり固定する。
 
-- `NoteProjectionWriter.updateTags(noteId, tags: readonly { name; normalized }[])` が唯一の書き手。ノートのタグ集合を丸ごと入れ替え、4 か所すべてを同一バッチ（D1 の `batch()`）で更新する。`tag_names` / `tag_names_fts` / `note_search_tags.normalized` には `normalized` を、`tag_display_names` には `name` を使う。連結列（`tag_names` / `tag_display_names`）の区切りはどちらも改行（`\n`）で、同一の並び順で組み立てる。`tag_names_fts` は `tag_names` に bigram 前処理を適用した値。`note_search_tags` は当該 `note_id` の行を全削除してから入れ直す
-- `upsert` は 4 か所に**一切触れない**。`NoteProjectionEntry` にタグのフィールドがないためタグを再構築できず、逆にノート本体の投影でタグが消えることもない。FTS の取り消し → 再挿入で `tag_names_fts` を渡す必要があるが、そこには現在の `note_search.tag_names_fts` をそのまま書き戻す（値を変えない）。タグを伴う投影の再構築は `upsert` と `updateTags` の 2 呼び出しで行う（[usecases/note.md](../usecases/note.md) の `rebuildNoteProjection`）
+- `NoteProjectionWriter.updateTags(noteId, tags: readonly { name; normalized }[])` が唯一の書き手。ノートのタグ集合を丸ごと入れ替え、3 列と FTS 索引を同一バッチ（D1 の `batch()`）で更新する。`tag_names` / `note_search_tags.normalized` には `normalized` を、`tag_display_names` には `name` を使う。連結列（`tag_names` / `tag_display_names`）の区切りはどちらも改行（`\n`）で、同一の並び順で組み立てる。FTS の `tag_names_fts` 列へは `tag_names` に bigram 前処理を適用した値を入れる。`note_search_tags` は当該 `note_id` の行を全削除してから入れ直す
+- `upsert` はタグの 3 列に**一切触れない**。`NoteProjectionEntry` にタグのフィールドがないためタグを再構築できず、逆にノート本体の投影でタグが消えることもない。FTS 索引は 3 列を 1 行として持つため取り消し → 再挿入の際に `tag_names_fts` の値が要るが、そこへは `note_search.tag_names`（現在値）から前処理関数で求めた値を入れる。タグを伴う投影の再構築は `upsert` と `updateTags` の 2 呼び出しで行う（[usecases/note.md](../usecases/note.md) の `rebuildNoteProjection`）
 - `remove` は `note_search` の行・FTS 索引の行・`note_search_tags` の当該ノートの行をすべて消す
 
 ### note_search_fts
 
-`note_search` の前処理済み列に対応する FTS5 仮想テーブル（[ADR 011](../adr/011-bigram-search.md)）。Drizzle スキーマ外の手書き SQL マイグレーションで管理する。
+bigram 前処理済みのテキストを索引する FTS5 仮想テーブル（[ADR 011](../adr/011-bigram-search.md) / [ADR 017](../adr/017-content-size-budget.md)）。Drizzle スキーマ外の手書き SQL マイグレーションで管理する。
 
 ```sql
 CREATE VIRTUAL TABLE note_search_fts USING fts5(
   title_fts,
   text_fts,
   tag_names_fts,
-  content='note_search',
-  content_rowid='rowid',
+  content='',
   tokenize='unicode61'
 );
 ```
 
-- content には前処理済み列（`title_fts` / `text_fts` / `tag_names_fts`）を指定する。生テキスト列（`title` / `text` / `tag_names`）を content に指定する構成は、`'rebuild'` で FTS が content 表を素のトークナイザーで読み直してインデックスが全損する（実測）ため禁止
-- SQL トリガーでは同期しない。`NoteProjectionWriter`（アダプター）の各メソッドが `note_search` 本体（前処理済み列を含む）・`note_search_tags`・FTS の同期まで責任を持ち、D1 の `batch()`（暗黙トランザクション）1 バッチで書く。外部コンテンツ表の作法どおり、更新・削除では先に `INSERT INTO note_search_fts(note_search_fts, rowid, title_fts, text_fts, tag_names_fts) VALUES('delete', old.rowid, ...)` で旧行を取り消してから新しい行を入れる。`updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要。`upsert` は `title_fts` / `text_fts` だけを新しい値にし、`tag_names_fts` は現在値を書き戻す（前節「タグ列の同期契約」）
+- **contentless（`content=''`）である**。前処理済みのテキストはどこにも保存されず、索引の中だけに存在する。`note_search` の行サイズが生テキストの約 3.2 倍に膨らむのを避けるためで、読み返す経路は存在しない（後述「ハイライトと抜粋の生成」のとおり `snippet()` / `highlight()` は使わない）
+- `rowid` は `note_search.rowid` を**明示して**挿入する（contentless では自動で対応づかない）
+- SQL トリガーでは同期しない。`NoteProjectionWriter`（アダプター）の各メソッドが `note_search` 本体・`note_search_tags`・FTS の同期まで責任を持ち、D1 の `batch()`（暗黙トランザクション）1 バッチで書く。更新・削除では先に `INSERT INTO note_search_fts(note_search_fts, rowid, title_fts, text_fts, tag_names_fts) VALUES('delete', :rowid, :oldTitleFts, :oldTextFts, :oldTagNamesFts)` で旧行を取り消してから新しい行を入れる
+- **取り消しに渡す旧値は保存していないので、生テキスト列から前処理関数を再適用して求める**（`note_search.title` / `text` / `tag_names` を読み、後述の bigram 前処理を通す）。前処理は純関数なので、書き込み時に入れた値と必ず一致する
+- `updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要。`upsert` は `title_fts` / `text_fts` を新しい値にし、`tag_names_fts` は `note_search.tag_names`（現在値）から求めた値を入れる（前節「タグ列の同期契約」）
 - 関連度順は `bm25` の列重みで求める。重みはタイトル > タグ名 > 本文（例: `bm25(note_search_fts, 5.0, 1.0, 3.0)`。列順は `title_fts`, `text_fts`, `tag_names_fts`。具体値は実装時に調整してよい）
+- **前処理関数を変更したら FTS 表を作り直す**。旧い関数で入れた索引行は新しい関数が作る値では取り消せないため、変更は表の再作成と全件の再挿入を伴う
 
 #### bigram 前処理
 
@@ -659,7 +673,7 @@ CJK 文字クラスの正確な範囲は次のとおり。半角カナ・全角�
 
 #### ハイライトと抜粋の生成
 
-`NoteSummary.highlightedExcerpt` / `PublicNoteSummary.highlightedExcerpt`（[domains/note.md](../domains/note.md)。OR-03 手順 3「一致箇所の抜粋がハイライトつきで表示される」）に FTS5 の `snippet()` / `highlight()` は**使わない**。これらの関数が返すのは content に指定した列、つまり前処理済みの `title_fts` / `text_fts` であり、「東京 京都 都庁」のようなビグラム列がそのまま出てくるため利用者に見せられない。
+`NoteSummary.highlightedExcerpt` / `PublicNoteSummary.highlightedExcerpt`（[domains/note.md](../domains/note.md)。OR-03 手順 3「一致箇所の抜粋がハイライトつきで表示される」）に FTS5 の `snippet()` / `highlight()` は**使わない**。これらの関数が返すのは索引に入れたテキスト、つまり前処理済みの `title_fts` / `text_fts` であり、「東京 京都 都庁」のようなビグラム列がそのまま出てくるため利用者に見せられない（contentless 構成ではそもそも呼び出せない）。
 
 FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い、「どこが一致したか」はアダプター側が生テキスト列から求める。
 
@@ -672,9 +686,9 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 
 #### 移行と再構築
 
-- trigram + トリガー同期の旧構成からの移行は、トリガー 3 本の `DROP TRIGGER` → FTS 表の再作成（前処理済み列の追加を含む）→ `rebuildNoteProjection` の順で行う
+- trigram + トリガー同期の旧構成からの移行は、トリガー 3 本の `DROP TRIGGER` → FTS 表の再作成（contentless 構成）→ `rebuildNoteProjection` の順で行う
 - `tag_display_names` のような投影列の追加は、既定値付きで列を足してから `rebuildNoteProjection`（`upsert` + `updateTags` の 2 呼び出し）で埋める。`updateTags` が唯一の書き手であるため、`upsert` だけの再投影では埋まらない
-- 一括再構築には `INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` が使える。再構築後は `INSERT INTO note_search_fts(note_search_fts) VALUES('integrity-check')` を運用手順に含める
+- **`INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` は contentless では使えない**（読み直す content 表がない）。一括再構築は FTS 表を作り直したうえで、`rebuildNoteProjection` が 1 件ずつ積む再投影要求で埋め直す（[ADR 016](../adr/016-projection-single-writer.md)）。`INSERT INTO note_search_fts(note_search_fts) VALUES('integrity-check')` は使えるが、検査できるのは索引の内部整合性だけで、`note_search` との一致は検査できない。両者の一致は `rebuildNoteProjection` の孤児掃除が担う
 
 #### 既知の限界
 

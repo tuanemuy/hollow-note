@@ -32,14 +32,16 @@
 ### NoteHtml
 
 - **フィールド**: `value: string`
-- **バリデーション**: サニタイズ済みであることが前提。1 MB（UTF-8 バイト数）を超える場合 `BusinessRuleError(ContentTooLarge)`
+- **バリデーション**: サニタイズ済みであることが前提。**800,000 バイト**（UTF-8）を超える場合 `BusinessRuleError(ContentTooLarge)`
 - **生成経路**: `HtmlProcessor.process` / `rewriteReferences` / `editTextNodes` の結果、および空の本文を作る `NoteHtml.empty()` のみ
 - **等価性**: 文字列として一致
+
+上限が 800,000 バイトなのは、`notes` の 1 行が D1 の行サイズ上限（2,000,000 バイト）に収まることを設計として示せるようにするためである（[ADR 017](../adr/017-content-size-budget.md)）。本文とその派生（平文・見出し・抜粋）は同じ行に載るため、合計の予算から逆算した値になる。予算の内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。
 
 ### PlainTextContent
 
 - **フィールド**: `value: string`
-- **バリデーション**: なし（本文から抽出したテキスト。検索と抜粋の元）
+- **バリデーション**: 800,000 バイト（UTF-8）以内。本文からの抽出はタグの除去・実体参照の解決・空白の畳み込みだけを行いバイト数を増やさないため、構造上 `NoteHtml` の上限を超えない。明示の上限としても同値を置く
 
 ### Excerpt
 
@@ -49,8 +51,9 @@
 ### NoteHeading
 
 - **フィールド**: `level: number`（1〜6）, `text: string`, `anchorId: string`
-- **バリデーション**: `level` は 1〜6 の整数、`anchorId` は空文字列不可
+- **バリデーション**: `level` は 1〜6 の整数、`anchorId` は空文字列不可、`text` は 100 文字以内（超過分は切り捨てる）
 - **生成**: `HtmlProcessor.process` の結果からのみ構築する。本文の保存時に算出して保持し、取得のたびに再計算しない
+- **件数**: 1 ノートあたり 200 件まで。超えた見出しは捨てる（目次の網羅性より行サイズの保証を優先する。[ADR 017](../adr/017-content-size-budget.md)）
 
 ### StyleMode
 
@@ -507,7 +510,11 @@ type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;   // 個
 
 ### NoteProjectionWriter
 
-**目的**: 読み取りモデルを更新する。イベント購読側（プロジェクション）から呼ばれる。各メソッドは `note_search` 本体（bigram 前処理済み列を含む）・タグの正規化表（`note_search_tags`）・FTS 索引の同期まで、自分が触れる範囲について責任を持つ（[ADR 011](../adr/011-bigram-search.md)、詳細は database 設計）。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列（タイトル・本文・タグ名）に触れないため FTS 更新は不要。
+**目的**: 読み取りモデルを更新する。イベント購読側（プロジェクション）から呼ばれる。各メソッドは `note_search` 本体・タグの正規化表（`note_search_tags`）・FTS 索引の同期まで、自分が触れる範囲について責任を持つ（[ADR 011](../adr/011-bigram-search.md) / [ADR 017](../adr/017-content-size-budget.md)、詳細は database 設計）。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列（タイトル・本文・タグ名）に触れないため FTS 更新は不要。
+
+bigram 前処理済みのテキストは**どこにも保存されない**（FTS5 は contentless 構成。[ADR 017](../adr/017-content-size-budget.md)）。索引を書き換えるときの旧値は、`note_search` の生テキスト列に前処理関数を再適用して求める。前処理は純関数なので同じ値が必ず得られる。
+
+**呼び出しは直列化されている。** これらのメソッドを呼ぶのは `projectNoteChanges` だけで、そのコンシューマーは同時実行数 1 のキューに固定されている（[ADR 016](../adr/016-projection-single-writer.md)）。「現在の状態を読み直して上書きする」形が正しさを保つのはこの前提の下でだけである — 並行して呼ばれるとロストアップデートが起きる。
 
 ```ts
 interface NoteProjectionWriter {
@@ -547,10 +554,10 @@ type NoteProjectionEntry = Readonly<{
 
 **タグ列の分掌**
 
-タグは読み取りモデルの 4 か所 — 関連度用の `note_search.tag_names` / `tag_names_fts`、一覧の表示名用の `note_search.tag_display_names`、絞り込み用の `note_search_tags` — に投影される（[database/index.md](../database/index.md) の「タグ列の同期契約」）。書き分けは次のとおり。
+タグは読み取りモデルの 3 か所 — 関連度用の `note_search.tag_names`、一覧の表示名用の `note_search.tag_display_names`、絞り込み用の `note_search_tags` — と、FTS 索引の `tag_names_fts` 列に投影される（[database/index.md](../database/index.md) の「タグ列の同期契約」）。書き分けは次のとおり。
 
-- `upsert` はタグの 4 か所に**一切触れない**（`NoteProjectionEntry` にタグのフィールドがないのはこのため）。ノート本体の投影でタグが消えることはなく、逆にノート本体の投影だけでタグを再構築することもできない。タグを伴う再構築は `upsert` と `updateTags` の 2 呼び出しで行う
-- `updateTags` はノートのタグ集合を丸ごと入れ替え、4 か所を同一バッチで更新する。関連度用の列と `note_search_tags.normalized` には `normalized` を、一覧に載る表示名（`NoteSummary.tagNames`）の `tag_display_names` には `name` を用いる。`NoteSearchCriteria.tagNames` / `PublicSearchCriteria.tagNames` は正規化名で照合するため、絞り込みは表示ゆれの影響を受けない
+- `upsert` はタグの 3 か所に**一切触れない**（`NoteProjectionEntry` にタグのフィールドがないのはこのため）。ノート本体の投影でタグが消えることはなく、逆にノート本体の投影だけでタグを再構築することもできない。タグを伴う再構築は `upsert` と `updateTags` の 2 呼び出しで行う。FTS 索引はタイトル・本文・タグ名を 1 行として持つため `upsert` も索引には触れるが、そこへ書き戻すタグ名は `note_search.tag_names` の現在値から求める
+- `updateTags` はノートのタグ集合を丸ごと入れ替え、3 か所と FTS 索引を同一バッチで更新する。関連度用の列と `note_search_tags.normalized` には `normalized` を、一覧に載る表示名（`NoteSummary.tagNames`）の `tag_display_names` には `name` を用いる。`NoteSearchCriteria.tagNames` / `PublicSearchCriteria.tagNames` は正規化名で照合するため、絞り込みは表示ゆれの影響を受けない
 - `remove` は `note_search` の行・FTS 索引の行・`note_search_tags` の当該ノートの行をすべて消す
 
 **エラーケース**: `SystemError(DatabaseError)`

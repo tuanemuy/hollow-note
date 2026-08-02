@@ -22,13 +22,14 @@
 | --- | --- | --- |
 | 実行体を持つジョブ（単体ジョブと batch の子。kind を問わず一律） | 15 分 | `Job.start`、処理中の `Job.reportProgress` |
 | batch 親の進捗リース | 60 分 | `Job.enqueueBatch`、子の終了報告（`updateBatchProgress` → `reportProgress`）、`Job.reopenBatch` |
-| batch 親の組み立てリース（`bulkExport` の親のみ） | 60 分 | `Job.beginAssembly`、組み立て中の `Job.renewAssemblyLease` |
+| batch 親の組み立てリース（`bulkExport` の親のみ） | **15 分** | `Job.beginAssembly`、組み立て中の `Job.renewAssemblyLease` |
 
-- kind では分けない。15 分は最も重い実行（LLM 構造化を伴う変換・再生成）が 1 回の試行で収まる長さで、これを超える処理は `Job.reportProgress` で延ばす。PDF 書き出しの実行時間の上限もこの 15 分であり、`ExportTicket` の有効期間 30 分（[usecases/note.md](./note.md)）は「実行時間の上限に余裕を足した値」としてこれと整合する
-- 親の 60 分は「子 1 件の実行時間の上限より長く取る」（[domains/job.md](../domains/job.md)）を満たす最小の桁で、子の報告が途絶えてから親が回収されるまでの猶予でもある
-- 組み立て中の親（`attempts >= 1`）のリースは `reportProgress` では延びない（[domains/job.md](../domains/job.md) の「組み立て中の親のリース」）。延ばせるのは実行権を持つワーカーの `renewAssemblyLease` だけである
+- kind では分けない。15 分は**キューのコンシューマーの壁時計の上限そのもの**であり（[platform/index.md](../platform/index.md)）、実行体を持つジョブがこれを超えて生き続けることは原理的にない。最も重い実行（LLM 構造化を伴う変換・再生成）もこの中で終わる必要があり、長い処理は `Job.reportProgress` で次の配送へリースを引き継ぐ。PDF 書き出しの実行時間の上限もこの 15 分であり、`ExportTicket` の有効期間 30 分（[usecases/note.md](./note.md)）は「実行時間の上限に余裕を足した値」としてこれと整合する
+- 親の進捗リース 60 分は「子 1 件の実行時間の上限より長く取る」（[domains/job.md](../domains/job.md)）を満たす最小の桁で、子の報告が途絶えてから親が回収されるまでの猶予でもある。こちらは実行体ではなく**一括操作全体の進み具合**を表すため、壁時計の上限とは無関係である
+- **組み立てリースだけは 15 分**である（[ADR 015](../adr/015-cloudflare-runtime.md) が ADR 012 の 60 分を改訂した）。組み立て（`runBulkExport` の ZIP 生成）を実行するのはキューのコンシューマーであり、壁時計 15 分で必ず強制終了される。60 分にしても組み立てが長く生きられるわけではなく、死んだ組み立てワーカーの親が最大 60 分滞留するだけになる
+- 進捗リースと組み立てリースは `jobs.lease_expires_at` の 1 列を共有し、`attempts` の 0 / 1 以上で主体を区別する（[domains/job.md](../domains/job.md)）。期間が違うのは、期限を張り直す主体が違うためである — 組み立て中の親（`attempts >= 1`）のリースは `reportProgress` では延びず、延ばせるのは実行権を持つワーカーの `renewAssemblyLease` だけである
 - `reapExpiredJobs` の実行間隔は **5 分**とし、**実行間隔 < 最短のリース期間（15 分）** を保つ。生きているジョブを誤って落とす心配はない（`listExpiredRunning` は失効行しか返さず、`Job.expire` はリース有効なら `LeaseActive` で拒否する）ので、この関係は安全のためではなく回復の遅れを抑えるためのものである — 失効から回収までの遅れが 1 周期（5 分）に収まり、滞留の総時間がリース期間の 2 倍を超えない
-- `reapExpiredJobs` は `pruneJobHistory` と同じ定期ワーカーロールに相乗りするが、起動間隔は別に持つ（履歴の掃除は 1 日 1 回で足りる。[ADR 012](../adr/012-job-execution-resilience.md)）
+- `reapExpiredJobs` は `pruneJobHistory` と同じ定期ワーカーに載るが、**別々の cron 式で起動する**（履歴の掃除は 1 日 1 回で足りる。加えて、1 回の実行あたりのクエリ予算は実行単位で与えられるため、1 つの cron 実行で複数の役割を走らせない。[platform/index.md](../platform/index.md)）
 
 ## 共通: run 系ワーカーの冪等規則
 
@@ -80,6 +81,10 @@ finalizeTerminatedJobs(ctx, params: {
 - `jobs` は呼び出し元が `Job.fail` / `Job.cancel` / `Job.expire` を適用した**結果**であり、手順そのものは終端の適用を含まない。どの遷移を当てるか（`fail` か `cancel` か `expire` か）と対象をどう選ぶか（対象・スコープ・要求者・`jobId`・リース失効）は経路ごとに違い、共有できるのは終端したあとの後始末だけだからである
 - `cause` は終端の由来。`forced` は上記 9 経路（利用者の操作・資格情報の喪失に由来する強制終端）で、`noteFailureReason` を経路ごとに指定する。`expired` はリース失効による自動回収（`reapExpiredJobs` の `Job.expire` と、run 系の共通規則の判定 3 で引き継ぎ試行が上限を超えた場合の `Job.expire`）で、理由は `timeout` に固定される。手順 2 を行うのは `forced` のときだけである（下記「`expired` で生成物を回収しない理由」）
 - 呼び出し元は自分の UoW の中でこの手順を実行する。手順の中で保管ファイルを消すときも `deleteFiles` ユースケースは呼ばず、「保管ファイルの削除手順」を同じ `ctx` で実行する
+
+**1 回に終端させるジョブ数の上限は 100 とする**（[ADR 018](../adr/018-query-budget.md)）。網で引く経路（`listActiveByScope` / `listActiveByRequester` / `listActiveByTarget`）は最大 100 件を返し、呼び出し元はその 100 件を自分の UoW で終端させる。100 件に達した場合は、同じ UoW で継続要求 `job.terminationContinued { scopeType, scopeId, cause }` を outbox に積み、次の配送で続きを終端させる（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。この継続要求の購読者は本手順を呼ぶハンドラーだけである。
+
+上限を設けると「操作の完了時点でスコープ内のジョブがすべて終端している」とは言えなくなるが、[ADR 008](../adr/008-domain-boundaries.md) が守ろうとした保証は失われない。残ったジョブも次の配送で必ず終端し、その終端も後始末を同一 UoW で伴うためである。加えて、網で引く 8 経路はいずれも**その操作の直後から対象へアクセスできなくなる**（退会・ワークスペース削除・除名・脱退・降格・連携解除・連携失効・ゴミ箱への移動）ため、途中状態が利用者に観測されない。`cancelJob` は `jobId` で 1 件を指すので上限に掛からない。
 
 **1. `processing` のままのノートを回復させる**
 
@@ -433,7 +438,7 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `JobRepository.listExpiredRunning(now)` でリース失効（`leaseExpiresAt <= now`）の `running` を列挙する
+1. `JobRepository.listExpiredRunning(now, limit)` でリース失効（`leaseExpiresAt <= now`）の `running` を **`limit` 件（既定 100）**列挙する。上限は 1 回の実行あたりのクエリ予算から逆算した値で、残りは次の起動（5 分後）で拾う（[ADR 018](../adr/018-query-budget.md)）
 2. 各件を `UnitOfWorkProvider.run` で 1 行ずつ処理する。`Job.expire` で終端化して保存し、`job.failed` を収集する（`failure: { reason: "timeout" }`。`attempts` は 0 に戻り、手動 `retry` できる）。同じ UoW で「共通: 強制終端の後始末」を `cause: { type: "expired" }` として実行する — `kind: "conversion"` の対象ノートが `processing` のままなら `Note.markConversionFailed("timeout")` を併せて保存する。生成物の回収（手順 2）は行わない（`failed` の batch 親は `reopenBatch` で開き直せるため、成功済みの子の artifact は組み立ての資材として残す）
 3. 1 件の失敗は記録して次の行へ進む（部分失敗の許容）
 

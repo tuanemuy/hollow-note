@@ -137,8 +137,11 @@ interface TagRepository extends TransactionalRepository<Tag, TagId> {
   listByScope(scope: TagScope): Promise<readonly Tag[]>;
   listByIds(ids: readonly TagId[]): Promise<readonly Tag[]>;
   deleteByScope(scope: TagScope): Promise<number>;
+  deleteUnusedInScope(scope: TagScope): Promise<readonly TagId[]>;
 }
 ```
+
+`deleteUnusedInScope` は、そのスコープのタグのうち `TagAssignment` を 1 件も持たないものをすべて消し、消した ID を返す（呼び出し元が `TagEvents.deleted` を組み立てるため）。**単一の文で削除し、未使用かどうかの判定を削除と同時に行う**こと — 列挙してから 1 件ずつ消す実装は、削除までの間に付与が付いたタグを巻き込むうえ、クエリ数がタグの数に比例して 1 回の実行あたりの予算を超える（[ADR 018](../adr/018-query-budget.md)、[usecases/tag.md](../usecases/tag.md) の `deleteUnusedTags`）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("TAG_NAME_ALREADY_USED")`、`SystemError(DatabaseError)`
 

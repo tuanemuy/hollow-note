@@ -11,7 +11,7 @@
 | すべての子ジョブが取り消された（成功 0 件） | 全子が終端する | 同様に起動せず、親は `canceled` になる | |
 | ファイル名が重複する対象がある | 実行する | 連番が付いて衝突しない | |
 | 実行中に対象ノートが削除された | 実行する | そのノートは除外され、処理は続行される | |
-| 組み立てに時間がかかる | 実行する | `Job.renewAssemblyLease(parent, now, leaseUntil)` を保存して組み立てリースを 60 分先へ延長する（`Job.reportProgress` は使わない。組み立て中の親の期限を動かせるのは実行権を持つこのワーカーだけ） | |
+| 組み立てに時間がかかる | 実行する | `Job.renewAssemblyLease(parent, now, leaseUntil)` を保存して組み立てリースを 15 分先へ延長する（`Job.reportProgress` は使わない。組み立て中の親の期限を動かせるのは実行権を持つこのワーカーだけ） | |
 | 組み立て中に、遅れて届いた・重複配送された子の終了報告で `updateBatchProgress` の `reportProgress` が走る（組み立て中は `retryFailedChildren` が `AssemblyInProgress` で弾かれるため、子の再試行では起こらない） | 親のリースを確認する | 進捗だけが作り直され、`leaseExpiresAt` は延びない（死んだ組み立てワーカーのリースを子側の報告が延ばし続ける事態を防ぐ） | |
 | 組み立て権を持たないワーカーが `renewAssemblyLease` を呼ぶ（`attempts === 0`、`target.type !== "batch"`、`kind !== "bulkExport"` のいずれか） | 直接呼ぶ | `BusinessRuleError(InvalidTarget)` で拒否される | |
 | ZIP の保管が失敗する | 実行する | 親ジョブが `failed("storageError")` になる | |

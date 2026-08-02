@@ -198,10 +198,12 @@ ReferenceReport = {
 1. `SecureTokenGenerator.hashOf(shareToken)` を求め、`LoginAttemptKey.forSharePassword(tokenHash, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)。素のトークンではなくハッシュを材料にするため、`login_attempts.key` に共有の秘密が平文で残らない）
 2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("THROTTLED")`（下記のとおりロックも同じコードに畳む）
 3. 手順 1 のハッシュで `NoteRepository.findByShareToken` を引き、限定公開かつパスワードが設定されていることを確認する
-4. `PasswordHasher.verify` が偽なら、`LoginAttemptStore.put(LoginThrottlePolicy.recordFailure(attempt, now), LoginThrottlePolicy.attemptTtlMs)` で失敗を記録して `ValidationError("INVALID_SHARE_PASSWORD")`
+4. `PasswordHasher.verify` が偽なら、`LoginAttemptStore.recordFailure(key, now, LoginThrottlePolicy.attemptTtlMs)` で失敗を**原子的に**記録して `ValidationError("INVALID_SHARE_PASSWORD")`。返ってきた加算後の記録を `evaluate` し、次が待機・ロックに当たるなら `ValidationError("THROTTLED")` に切り替える
 5. `LoginAttemptStore.clear(key)` で失敗の記録を消し、`NoteAccessPolicy.issuePass(shareLink, now)` の結果を返す
 
 鍵の名前空間（`share:`）がサインインの記録（`signIn:`）と分かれているため、共有リンクの照合失敗がサインインのロックを誘発することはない。読み書きの順序は `LoginThrottlePolicy` の「読み書きの分担」に従う（`signInWithPassword`（[usecases/identity.md](./identity.md)）と同じ）。
+
+**手順 4 の加算が原子的であることは、この施錠が意味を持つための前提である**（[ADR 020](../adr/020-coordination-state.md)）。手順 2 の `get` は古い値を読みうるが、判定が緩む方向に外れてもその試行の失敗は手順 4 で必ず数えられるため、施錠は追いつく。逆に手順 4 が「読んでから書く」形だと、要求を並列化するだけで失敗回数がほとんど増えず、施錠を丸ごと回避できる。
 
 **待機とロックを 1 つのコードに畳む**。`signInWithPassword` は `THROTTLED` と `LOCKED` を分けるが、こちらは同じ `LoginThrottlePolicy` を使いながら両方を `THROTTLED` として返す。閲覧者に**解除のための次の一手がない**ためである — サインインのロックは「パスワードを再設定すれば解ける」という導線を伴うが、共有リンクの閲覧者はそのノートの所有者ではなく、待つ以外にできることがない。区別しても示せる違いがないので、畳んで「しばらく待つ」1 つの案内に寄せる（P-45 の画面状態も 1 つである）。
 
@@ -413,7 +415,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
 | ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
 | 実行中の変換・再生成ジョブがある | `BusinessRuleError(NoteLockedByJob)` |
-| サニタイズ後が 1 MB 超 | `BusinessRuleError(ContentTooLarge)` |
+| サニタイズ後が 800,000 バイト超 | `BusinessRuleError(ContentTooLarge)` |
 | 版の競合（他者が更新） | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## applyTextNodeEdits
@@ -744,12 +746,14 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 1. 権限を `deleteNote`（ワークスペースの場合）で確認する
 2. `NoteRepository.countByOwner(owner, "trashed")` で件数を数え、次のどちらか一方だけを行う
-   - 500 件以下 → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` を全ページ走査してゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
-   - 500 件超 → 対象を 500 件ごとに分割し、分割ごとに `requestBulkNoteOperation` の `{ kind: "purge" }` として一括削除ジョブ（`bulkDelete`）を登録する（複数ジョブになる）。`mode: "scheduled"`、`purgedCount` は登録した対象件数、`jobIds` は登録した親ジョブの ID。対象は 1 つの文脈のゴミ箱に限られるため、分割したどのジョブも所有文脈は単一で `MIXED_OWNER_SCOPE` には当たらない
+   - **50 件以下** → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` でゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
+   - **50 件超** → 対象を 500 件ごとに分割し、分割ごとに `requestBulkNoteOperation` の `{ kind: "purge" }` として一括削除ジョブ（`bulkDelete`）を登録する（51〜500 件なら 1 件、501 件以上なら複数）。`mode: "scheduled"`、`purgedCount` は登録した対象件数、`jobIds` は登録した親ジョブの ID。対象は 1 つの文脈のゴミ箱に限られるため、分割したどのジョブも所有文脈は単一で `MIXED_OWNER_SCOPE` には当たらない
+
+**同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者は**1 回の実行**で消し切る件数、後者は**1 つの親ジョブ**が受け持つ件数で、掛かる制約が違う。同期削除は 1 件あたり `purgeNote` の約 5 クエリを 1 回の Worker 実行の中で発行するため、1 実行あたり 500 クエリという予算（[ADR 018](../adr/018-query-budget.md)）から 50 件が上限になる。ジョブの子は 1 件ずつ別の実行で処理されるので、この予算には掛からない。値の正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
 
 **同期削除は `purgeNote` の呼び出しである**。複製ではなく合成であり、「共通: ユースケースを合成するときの副作用の範囲」と [usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」に従う。
 
-- このユースケース自身は `UnitOfWorkProvider.run` を開かない。`purgeNote` が 1 件ごとに自分の UoW を開いて確定する。500 件を 1 トランザクションに束ねないのは、`note.purged` の購読者が結果整合で後始末する設計（[ADR 008](../adr/008-domain-boundaries.md)）である以上、まとめても得られる保証が増えないためである。途中で失敗しても既に消えたノートは戻らないが、ゴミ箱を空にする操作は部分的に進んでも矛盾しない
+- このユースケース自身は `UnitOfWorkProvider.run` を開かない。`purgeNote` が 1 件ごとに自分の UoW を開いて確定する。50 件を 1 トランザクションに束ねないのは、`note.purged` の購読者が結果整合で後始末する設計（[ADR 008](../adr/008-domain-boundaries.md)）である以上、まとめても得られる保証が増えないためである。途中で失敗しても既に消えたノートは戻らないが、ゴミ箱を空にする操作は部分的に進んでも矛盾しない
 - `purgeNote` が要求する `expectedVersion` は**呼び出し側が渡す**。値の出所は手順 2 の `listByOwner` で引いた各ノートのその時点の `version` である（規約の「対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す」に当たる）
 - 版が競合した（`ConflictError`）ノートは**読み直さずに飛ばし**、`purgedCount` に数えない。列挙から削除までの間に版が動くのは、そのノートが `restoreNote` でゴミ箱から出された場合がほとんどで、読み直して再適用すると利用者が戻したばかりのノートを消してしまう。同じ理由で `NOTE_NOT_TRASHED`（既に他の経路で消えた・戻された）も飛ばして続ける
 - `purgeNote` が周辺を巻き込む副作用（ジョブの強制終端など）を持たないため、`trashNote` のような除外引数は要らない（本文冒頭の「共通: ユースケースを合成するときの副作用の範囲」）
@@ -765,11 +769,11 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 概要
 
-保持期限を過ぎたゴミ箱のノートを回収する。定期ワーカーから呼ばれる。
+保持期限を過ぎたゴミ箱のノートを回収する。定期ワーカーから呼ばれる（cron は 10 分ごと。[platform/index.md](../platform/index.md)）。
 
 ### 入力DTO
 
-`limit: number`
+`limit: number`（既定 100）
 
 ### 出力DTO
 
@@ -779,6 +783,8 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 1. `NoteRepository.listPurgeable(now, limit)` を引く
 2. 1 件ずつ `UnitOfWorkProvider.run` で削除し、`note.purged` を収集する。1 件の失敗は他に影響させない
+
+`limit` の既定 100 は 1 回の実行あたりのクエリ予算（500）から逆算した値である（1 件あたり約 3 クエリ）。残りは次の起動で拾うため、継続要求は積まない（[ADR 018](../adr/018-query-budget.md) の継続の 3 通りのうち「次の起動に任せる」）。
 
 ### エラーケース
 
@@ -790,11 +796,11 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 概要
 
-利用者・ワークスペースの削除に伴って、その所有ノートをすべて完全削除する（`identity.user.deleted` / `workspace.deleted` の購読）。
+利用者・ワークスペースの削除に伴って、その所有ノートをすべて完全削除する（`identity.user.deleted` / `workspace.deleted` と、継続要求 `note.ownerPurgeContinued` の購読）。
 
 ### 入力DTO
 
-`ownerType`, `ownerId`, `batchSize: number`（既定 500）
+`ownerType`, `ownerId`, `batchSize: number`（既定 100）
 
 ### 出力DTO
 
@@ -805,13 +811,16 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 1. `NoteOwner` を組み立てる（`identity.user.deleted` → `{ type: "user", userId }`、`workspace.deleted` → `{ type: "workspace", workspaceId }`）。個人の退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートには触れない（AC-09）
 2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず 1 件ずつ `UnitOfWorkProvider.run` で削除して `NoteEvents.purged` を収集する（`purgeNote` の手順 3 と同じ。版は FK CASCADE で同時に消える）。1 件の失敗は記録して次へ進む
 3. タグ付与・保管ファイル・バックアップ記録・読み取りモデル・件数の後始末は `note.purged` の購読者（`purgeNote` の手順 4 と同じ受け手）に委ねる
-4. `batchSize` 件を処理してまだ残りがあれば自身を再登録する（1 回の処理量を配送単位に収める）。再登録の媒体は**イベントの再投入**であってジョブではない — `JobKind` の 11 種にこの後始末に当たる種別はなく、追加もしない。受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を、そのバッチの最後の削除と同じ `UnitOfWorkProvider.run` の中で outbox に再投入し、次の配送で続きを処理する。他の購読者も再投入分を受け取るが、いずれも冪等に設計されているため（`deleteTagsForScope` / `deleteFilesByOwner` はどちらも 0 件削除で無害に終わる）結果は変わらない
+4. `batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued { ownerType, ownerId }` を 1 件だけ**、そのバッチの最後の削除と同じ `UnitOfWorkProvider.run` の中で outbox に積む（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。次の配送で続きを処理する。この継続要求の購読者は本ユースケースだけである
+5. ただし**そのバッチで 1 件も削除できなかった場合は継続要求を積まず、失敗として返す**。キューの再試行と、それを使い切ったあとの DLQ に委ねる。恒久的に失敗する 1 件が列の先頭に居座って継続が無限に回るのを防ぐ
 
-**継続の仕方は `deleteFilesByOwner`（[usecases/storage.md](./storage.md)）とは異なる**。ファイル側は 1 回の配送の中で `listByOwner` を `batchSize` ずつ読んで `deleteFiles` を繰り返し、消し切れなかった場合にだけ自身を再登録する。ノート側は 1 件ずつ `UnitOfWorkProvider.run` を張って `note.purged` を発行するため 1 バッチの負荷が読みにくく、バッチごとに必ず再投入して次の配送に続きを渡す。両者を「同じ」と書くと、ファイル側の再登録が保険であるのに対しノート側は常用の継続経路である、という違いが消える。
+**カーソルは持たない**。対象は処理するそばから消えるため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。重複配送で 2 系列が並走しても、両方が残りを読んで消し、対象が 0 件になった系列から順に止まる。
 
-**既知の課題**: 再投入されるのは購読者が複数ある `identity.user.deleted`（8 つ。[usecases/identity.md](./identity.md) の `deleteAccount` 手順 5）/ `workspace.deleted`（4 つ。[usecases/workspace.md](./workspace.md) の `deleteWorkspace` 手順 5）そのものであり、`deleteNotesForOwner` と `deleteFilesByOwner` の双方に残作業がある間は同じイベントのコピーが増えていく。購読者はすべて冪等で、残作業が 0 になった系列から再投入をやめるため**正確性と停止性は保たれる**が、outbox とキューを水増しする。本来は継続専用のイベント（購読者 1 件・カーソル付き）に分けるべきだが、継続の媒体として何が適切か（イベントの再投入か、遅延キューか、カーソルを持つ定期ワーカーか）は実行基盤の選択に依存するため、**ランタイムの前提が確定してから扱う**。
+**継続の媒体を専用の要求にした理由**。以前は受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を再投入して継続していたが、これらは購読者を 8 つ / 4 つ持つため、残作業がある間じゅう購読者全員にコピーが配られ、outbox とキューを水増しした。購読者 1 件の要求に分ければ 1 系列 1 件で済む。継続の媒体としてジョブを使わない理由（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）は変わらない。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形になったため、両者の継続の仕方の違いは解消した。
 
-イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は `emptyTrash` の 500 件分割（`bulkDelete`）と同水準で、受け手はすべて冪等に設計されている。
+`batchSize` の既定 100 は 1 回の実行あたりのクエリ予算（500）から逆算した値である（1 件あたり約 3 クエリ）。正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
+
+イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は 1 バッチ `batchSize` 件（既定 100）に上限があり、受け手はすべて冪等に設計されている。
 
 冪等性: 削除済みのノートは `listByOwner` に現れないため、同じイベントを 2 回受け取っても 2 回目は 0 件で終わり、結果は変わらない。
 
@@ -820,7 +829,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | 条件 | 種類 |
 | --- | --- |
 | 対象のノートが 1 件もない | 何もせず成功として返る |
-| 個々の削除の失敗 | 記録して継続（再配送・再登録でやり直す） |
+| 個々の削除の失敗 | 記録して継続（再配送・継続要求でやり直す） |
 
 ## listNoteRevisions
 
@@ -1287,9 +1296,19 @@ BulkOperation =
 
 ドメインイベントを受け取って読み取りモデルを更新する（[ADR 009](../adr/009-read-models.md)）。イベント購読ワーカーから呼ばれる。
 
+**このユースケースは読み取りモデルの唯一の書き手であり、同時実行数 1 の専用キュー（`events-projection`）で直列に処理される**（[ADR 016](../adr/016-projection-single-writer.md)）。手順 2 の冪等性は重複配送と順序の入れ替わりに対するもので、**並行実行に対しては成り立たない** — 読み取りと書き込みの間に別の消費者が割り込めばロストアップデートが起き、恒久的に古い投影が残る。直列化はこの穴を塞ぐためのもので、配備の都合ではなく設計上の要件である。
+
 ### 入力DTO
 
-`event: NoteEvent | TagEvent | IdentityEvent | WorkspaceEvent`
+`event: NoteEvent | TagEvent | IdentityEvent | WorkspaceEvent | ProjectionRequest`
+
+```ts
+type ProjectionRequest =
+  | { type: "projection.reprojectRequested"; noteId: NoteId }
+  | { type: "projection.tagFanOutContinued"; tagId: TagId; afterNoteId: NoteId | null };
+```
+
+継続要求（[domains/index.md](../domains/index.md) の「継続要求」）であってドメインイベントではない。`projection.reprojectRequested` は `rebuildNoteProjection` とタグのファンアウトが積み、`projection.tagFanOutContinued` はタグのファンアウトが自分の続きとして積む。
 
 ### 出力DTO
 
@@ -1301,16 +1320,19 @@ BulkOperation =
    - `note.created` / `note.contentUpdated` / `note.conversionFailed` / `note.awaitingIntegration` / `note.renamed` / `note.styleModeChanged` / `note.visibilityChanged` / `note.moved` / `note.trashed` / `note.restored` → `NoteRepository.findById` で現在の状態を読み、`author`（`createdBy` の利用者の表示名・ハンドル）と `workspace`（ワークスペース所有の場合は名前・スラッグ・公開状態、個人所有なら `null`）を解決して `NoteProjectionEntry` を組み立て、`NoteProjectionWriter.upsert` で上書きする。初回投影（`note.created`）と所有者の変わる `note.moved` も、この解決を経ることで著者・ワークスペース列が最初から埋まる。`createdBy` の利用者が解決できない場合（退会後に本文更新・移動が投影される場合）は `{ displayName: "退会した利用者", handle: null }` を既定値として埋める — `author_display_name` は NOT NULL であり、退会後の投影で旧表示名が復活してはならない
    - `note.purged` → `NoteProjectionWriter.remove`
    - `tag.assigned` / `tag.unassigned` → 対象ノートのタグを引き直し、表示名と正規化名の組（`{ name, normalized }`）で `updateTags`（タグ削除時は付与 1 件ごとに `tag.unassigned` が併発されるため、`tag.deleted` は購読しない）
-   - `tag.renamed` → `TagAssignmentRepository.listByTag(tagId)` で対象ノートを列挙し、ノートごとにタグを引き直して同じ形で `updateTags`
-   - `tag.merged` → 対象ノートは `TagAssignmentRepository.listByTag(targetTagId)` で列挙する。merge の時点で `sourceTagId` の付与は `targetTagId` へ付け替え済み（衝突する行は削除済み）なので、`sourceTagId` で引くと 0 件になる。payload は両方の ID を運ぶ（[domains/tag.md](../domains/tag.md)）。列挙したノートごとにタグを引き直して同じ形で `updateTags`
+   - `tag.renamed` / `tag.merged` → 対象ノートを `TagAssignmentRepository.listByTag` で**1 ページ（200 件）だけ**列挙し、1 件につき `projection.reprojectRequested` を積む。ここで投影そのものは行わない。続きがあれば `projection.tagFanOutContinued`（最後に見た `NoteId` をカーソルに持つ）を積む。`tag.merged` の対象は `targetTagId` で引く — merge の時点で `sourceTagId` の付与は `targetTagId` へ付け替え済み（衝突する行は削除済み）なので `sourceTagId` では 0 件になる。payload は両方の ID を運ぶ（[domains/tag.md](../domains/tag.md)）
+   - `projection.tagFanOutContinued` → 上と同じ列挙をカーソルの続きから行う。対象のノートは削除されないため、この継続だけはカーソルを持つ（[domains/index.md](../domains/index.md) の「継続要求」）
+   - `projection.reprojectRequested` → `NoteRepository.findById` で現在の状態を読み、`upsert` と `updateTags` の 2 呼び出しで投影を作り直す（`rebuildNoteProjection` の手順 2〜3 と同じ）。ノートが存在しなければ何もせず成功として返す
+
+**タグのファンアウトが投影を直接書かないのはなぜか。** 1 つのタグに付いたノートの数に上限はなく、1 件の投影は約 12 クエリを要する。直接書くと 1 メッセージで発行するクエリ数が対象件数に比例し、1 回の実行あたり 1,000 クエリという D1 の上限を超える（[ADR 018](../adr/018-query-budget.md)）。列挙と要求の投入だけなら、件数によらず 2 クエリ（列挙 1 + 多行 outbox INSERT 1）で終わる。これにより投影キューのどのメッセージも一定のクエリ数で収まり、バッチのメッセージ数を予算から逆算できるようになる。
    - `identity.user.handleChanged` / `identity.user.profileUpdated` → `UserRepository.findById` で現在の状態を読み、表示名とハンドルの組を解決して `updateAuthor(userId, displayName, handle)` を呼ぶ。payload は変化の通知にとどまり投影に要る組を運ばないため、現在値はここで解決する（[domains/identity.md](../domains/identity.md)）。利用者が解決できない場合（退会と入れ替わった配送）は `identity.user.deleted` と同じ既定値 `updateAuthor(userId, "退会した利用者", null)` を書く
    - `identity.user.deleted` → `updateAuthor(userId, "退会した利用者", null)`。退会者が作成したワークスペース所有ノートは残るため（AC-09）、著者表示だけを退会後の姿に置き換える。行は消さない（個人所有ノートの行は `deleteNotesForOwner` が発行する `note.purged` 経由で消える）
    - `workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.profileUpdated` → `WorkspaceRepository.findById` で現在の状態を読み、名前・スラッグ・公開状態を解決して `updateWorkspace(workspaceId, name, slug, published)` を呼ぶ。こちらも payload は変化の通知にとどまるため、現在値はここで解決する（[domains/workspace.md](../domains/workspace.md)）。ワークスペースが解決できない場合（削除と入れ替わった配送）は何もせず返す — 対象行は `note.purged` 経由で消える
    - `workspace.created` は購読しない。`createWorkspace`（[usecases/workspace.md](./workspace.md)）はノートを 1 件も作らないため、作成直後のワークスペースには投影対象の行が存在せず、`updateWorkspace` は必ず 0 行更新になるためである。同じ理由で `identity.user.created` も購読しない（本ユースケースが購読する Identity のイベントは `identity.user.handleChanged` / `identity.user.profileUpdated` / `identity.user.deleted` の 3 つ）
    - 上記に現れない Note のイベント（`note.published` / `note.shareLinkReissued` / `note.sharePasswordChanged`）は購読しない。`note.published` は `note.visibilityChanged` と必ず併発するため投影は後者だけで足り、それ自身は監査用に残る（サイトマップも読み取りモデルから引くため専用の受け手を持たない。`listSitemapEntries`）。残る 2 つは投影列を 1 つも変えない
-2. どの分岐も payload の値ではなく `findById` で読み直した現在の状態を書くため、同じイベントを 2 回受け取っても、配送順が入れ替わって古いイベントが後着しても結果は変わらない。`identity.user.deleted` も同じ値を書き込む上書きであり、`deleteNotesForOwner` との到着順にも依存しない（対象行が既に消えていれば 0 行更新で成功する）
+2. どの分岐も payload の値ではなく `findById` で読み直した現在の状態を書くため、同じイベントを 2 回受け取っても、配送順が入れ替わって古いイベントが後着しても結果は変わらない。`identity.user.deleted` も同じ値を書き込む上書きであり、`deleteNotesForOwner` との到着順にも依存しない（対象行が既に消えていれば 0 行更新で成功する）。**この冪等性は並行実行までは覆わない**（冒頭の直列化の要件）
 
-`note_search` 本体（bigram 前処理済み列を含む）・`note_search_tags`・FTS 索引の同期は `NoteProjectionWriter`（アダプター）の責務で、D1 の `batch()` による 1 バッチでアトミックに書く。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要（[ADR 011](../adr/011-bigram-search.md)）。タグの 4 か所（`note_search.tag_names` / `tag_names_fts` / `tag_display_names` と `note_search_tags`）を更新するのは `updateTags` だけで、`upsert` は触れない（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`、[database/index.md](../database/index.md) の「タグ列の同期契約」）。
+`note_search` 本体・`note_search_tags`・FTS 索引の同期は `NoteProjectionWriter`（アダプター）の責務で、D1 の `batch()` による 1 バッチでアトミックに書く。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要（[ADR 011](../adr/011-bigram-search.md)）。bigram 前処理済みのテキストは保存されないため、FTS の取り消しに渡す旧値は生テキスト列から再計算する（[ADR 017](../adr/017-content-size-budget.md)）。タグの 3 列（`note_search.tag_names` / `tag_display_names` と `note_search_tags`）を更新するのは `updateTags` だけで、`upsert` は触れない（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`、[database/index.md](../database/index.md) の「タグ列の同期契約」）。
 
 本文状態（`content_status`）とスタイル（`style_mode`）は `upsert` でしか更新されない。`note.awaitingIntegration` / `note.styleModeChanged` を購読しないと、`runConversion` が `processing → awaitingIntegration` に遷移させても投影は `processing` のまま残り、`countByContentStatus` を根拠とする `completeIntegrationOAuth`（[usecases/integration.md](./integration.md)）の「要 LLM 連携の N 件」の案内が常に 0 件になる。ED-11 のスタイル切り替えも一覧に反映されない。
 
@@ -1327,22 +1349,32 @@ BulkOperation =
 
 読み取りモデルを書き込みモデルから作り直す。運用操作。
 
+**このユースケースは読み取りモデルへ直接書かない。** 対象ノートを列挙して 1 件につき 1 件の再投影要求を投影キューへ積み、実際の書き込みは `projectNoteChanges` が行う。読み取りモデルの書き手を 1 つに保つためである（[ADR 016](../adr/016-projection-single-writer.md)）— 直接書くと、この運用操作と生きているイベント購読が並行し、単一ライターの前提が破れる。
+
 ### 入力DTO
 
-`ownerType: "user" | "workspace" | null`, `ownerId: string | null`, `batchSize: number`
+`ownerType: "user" | "workspace" | null`, `ownerId: string | null`, `batchSize: number`（既定 100）, `sweepOrphans: boolean`（既定 `true`）
 
 ### 出力DTO
 
-`processedCount: number`
+| フィールド | 型 |
+| --- | --- |
+| `requestedCount` | `number` |
+| `sweptCount` | `number` |
+
+`requestedCount` は**再投影を要求した件数**であり、返った時点で投影は 1 件も終わっていない。進捗は投影キューの滞留で見る。
 
 ### 処理フロー
 
 1. 対象の絞り込みに従って書き込みモデルを順に読む
    - `ownerType` の指定がある → `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読む（ゴミ箱のノートも読み取りモデルに載るため `"all"`）
    - `ownerType` が `null`（全件再構築） → `NoteRepository.listAll(cursor, batchSize)` を `NoteId` 順に読み進める。所有者を問わない全件走査はこのメソッドだけが担う（[domains/note.md](../domains/note.md) の `NoteRepository`）
-2. 著者（`createdBy` の利用者。解決できなければ `projectNoteChanges` と同じ既定値 `{ displayName: "退会した利用者", handle: null }`）とワークスペースを解決して `NoteProjectionWriter.upsert` を呼ぶ
-3. 続けてノートのタグを引き直し、表示名と正規化名の組（`{ name, normalized }`）で `NoteProjectionWriter.updateTags` を呼ぶ。`upsert` はタグの 4 か所（`note_search.tag_names` / `tag_names_fts` / `tag_display_names` と `note_search_tags`）に触れないため、投影の再構築はこの 2 呼び出しの組で行う（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`）
-4. bigram 前処理と FTS 索引の同期は `projectNoteChanges` と同じく `NoteProjectionWriter` の責務（FTS の一括再構築には `INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` が使える。[ADR 011](../adr/011-bigram-search.md)）
+2. 読んだ `NoteId` ごとに `projection.reprojectRequested` を outbox へ積む。1 バッチにつき多行 INSERT 1 文で書き、クエリ数を件数に比例させない（[ADR 018](../adr/018-query-budget.md)）
+3. `sweepOrphans` が真なら、最後に**孤児行を掃除する**。書き込みモデルに対応するノートが存在しない `note_search` / `note_search_tags` / FTS 索引の行を削除する。投影の取りこぼしは `remove` の欠落としても現れるため、再投影だけでは読み取りモデルは正しくならない。全件再構築（`ownerType` が `null`）でないときは対象所有者の行に限る
+
+投影の実体（著者・ワークスペースの解決、`upsert` + `updateTags` の 2 呼び出し、FTS 索引の同期）は `projectNoteChanges` の `projection.reprojectRequested` 分岐が担う。`upsert` はタグの 3 列に触れないため、投影の再構築が 2 呼び出しの組になる点は変わらない（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`）。
+
+FTS 表そのものを作り直す場合（前処理関数を変えたときなど）は、先に表を再作成してから本ユースケースを走らせる。`INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` は contentless 構成では使えない（[ADR 017](../adr/017-content-size-budget.md)）。
 
 ### エラーケース
 

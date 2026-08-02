@@ -229,6 +229,8 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 逆向きの順序も守る。**取得した CSS も本文に入る前にサニタイズ規則を通す**（手順 7）。外部から取得した内容を検査せずに本文へ書き込む経路は作らない。
 
+**取得は同時 6 本を超えて並行させない**。実行環境が同時に応答待ちにできる外部接続は 6 本までである（[platform/index.md](../platform/index.md)）。`FetchBudget.maxCount`（200）まで取りにいく場合も 6 本ずつ進める。サブリクエストの総数（10,000）には余裕があるため、上限になるのは同時接続数だけである。
+
 ### 入力DTO
 
 `noteId`, `userId`, `jobId`
@@ -359,11 +361,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-期限を過ぎた生成物を回収する。定期ワーカーから呼ばれる。
+期限を過ぎた生成物を回収する。定期ワーカーから呼ばれる（cron は 1 時間ごと。[platform/index.md](../platform/index.md)）。
 
 ### 入力DTO
 
-`limit: number`
+`limit: number`（既定 100。1 回の実行あたりのクエリ予算から逆算した値。残りは次の起動で拾う）
 
 ### 出力DTO
 
@@ -382,11 +384,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-作成から 30 日が経過し、本文から参照されていないメディアを回収する。定期ワーカーから呼ばれる。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
+作成から 30 日が経過し、本文から参照されていないメディアを回収する。定期ワーカーから呼ばれる（cron は 1 日 1 回。[platform/index.md](../platform/index.md)）。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
 
 ### 入力DTO
 
-`limit: number`
+`limit: number`（既定 100。1 件ごとに所属ノートを引いて本文を調べるため、1 回の実行あたりのクエリ予算から逆算した値。残りは次の起動で拾う）
 
 ### 出力DTO
 
@@ -465,11 +467,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-利用者・ワークスペースの削除に伴って、その所有ファイルをすべて回収する（`identity.user.deleted` / `workspace.deleted` の購読）。
+利用者・ワークスペースの削除に伴って、その所有ファイルをすべて回収する（`identity.user.deleted` / `workspace.deleted` と、継続要求 `storage.ownerDeleteContinued` の購読）。
 
 ### 入力DTO
 
-`ownerType`, `ownerId`, `batchSize: number`
+`ownerType`, `ownerId`, `batchSize: number`（既定 100）
 
 ### 出力DTO
 
@@ -477,12 +479,17 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 処理フロー
 
-1. `StoredFileRepository.listByOwner` を `batchSize` ずつ読み、`deleteFiles` を繰り返す
-2. 1 回の呼び出しで消し切れなければ自身を再登録し、対象が 0 件になるまで続ける
+1. `StoredFileRepository.listByOwner` を `batchSize` 件読み、`deleteFiles` を呼ぶ
+2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { ownerType, ownerId }` を 1 件だけ**、その削除と同じ `UnitOfWorkProvider.run` の中で outbox に積む（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。次の配送で続きを処理する。この継続要求の購読者は本ユースケースだけである
+3. そのバッチで 1 件も削除できなかった場合は継続要求を積まず、失敗として返す（キューの再試行と DLQ に委ねる）
+
+`batchSize` の既定 100 は、1 バッチのクエリ数（列挙 1 + 多行 DELETE 1 + 多行 outbox INSERT 1 = 3。件数によらない）ではなく、**1 回で発行するイベント数**を抑えるための上限である。`deleteFiles` はファイル 1 件につき `storage.fileDeleted` を出し、その購読者（`deleteStoredObjects`）が R2 の実体を消す。正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
 
 冪等性: `IdempotencyStore` は使わない。削除済みのファイルは `listByOwner` に現れないため、同じイベントを 2 回受け取っても 2 回目は 0 件で終わる（`deleteFilesForNote` と同じ根拠。[domains/index.md](../domains/index.md) の「使わない」分類）。
 
-自己再登録があるため、重複配送では同じ所有者に対して 2 系列が並走しうる。並走しても結果は変わらない — 両系列とも「残っているものを読んで消す」だけで、同じファイルを両方が拾った場合は先に消したほうだけが `deleteFiles` の `listByIds` に載せ、遅れたほうは対象が消えているので 0 件で終わる（`storage.fileDeleted` も 1 件につき 1 回しか出ない）。終了条件も系列ごとに独立で、対象が 0 件になった系列から順に再登録をやめる。
+継続要求があるため、重複配送では同じ所有者に対して 2 系列が並走しうる。並走しても結果は変わらない — 両系列とも「残っているものを読んで消す」だけで、同じファイルを両方が拾った場合は先に消したほうだけが `deleteFiles` の `listByIds` に載せ、遅れたほうは対象が消えているので 0 件で終わる（`storage.fileDeleted` も 1 件につき 1 回しか出ない）。終了条件も系列ごとに独立で、対象が 0 件になった系列から順に継続をやめる。カーソルを持たないのは、対象が処理するそばから消えるため先頭から読むだけで必ず前に進むからである（[domains/index.md](../domains/index.md) の「継続要求」）。
+
+継続の形は `deleteNotesForOwner`（[usecases/note.md](./note.md)）と同一である。以前は両者で異なっていた（ファイル側は消し切れなかったときだけの保険、ノート側はバッチごとの常用経路）が、どちらも「1 バッチ処理して残りがあれば専用の継続要求を 1 件積む」に揃った。
 
 ### エラーケース
 

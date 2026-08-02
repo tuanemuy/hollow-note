@@ -166,7 +166,7 @@
 1. `Email.create(input.email)` を構築し、`LoginAttemptKey.forSignIn(email, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)）
 2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("THROTTLED")` / `ValidationError("LOCKED")`
 3. `UserRepository.findByEmail` で引く
-4. 利用者がいない、`IdentityPolicy.findPassword` が `null`、または `PasswordHasher.verify` が偽のいずれかなら、`LoginAttemptStore.put(LoginThrottlePolicy.recordFailure(attempt, now), LoginThrottlePolicy.attemptTtlMs)` で失敗を記録し、`ValidationError("INVALID_CREDENTIALS")`
+4. 利用者がいない、`IdentityPolicy.findPassword` が `null`、または `PasswordHasher.verify` が偽のいずれかなら、`LoginAttemptStore.recordFailure(key, now, LoginThrottlePolicy.attemptTtlMs)` で失敗を**原子的に**記録し、`ValidationError("INVALID_CREDENTIALS")`。返ってきた加算後の記録を `evaluate` し、次が待機・ロックに当たるなら `ValidationError("THROTTLED")` / `ValidationError("LOCKED")` に切り替える（待機秒数・解除時刻はこの `ThrottleDecision` から取る）
 5. 利用者が `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`（失敗として記録しない。資格情報は正しく、再送すれば通る状態のため）
 6. `LoginAttemptStore.clear(key)` で失敗の記録を消す
 7. `Session.create` を作って保存し、平文トークンを返す（有効期間は `Session.ttlMs`）
@@ -686,7 +686,7 @@
 
 1. `SessionRepository.deleteExpired(now)` を呼ぶ。`authenticateSession` は期限切れのセッションを常に `UNAUTHENTICATED` として扱うため、削除しても認証結果は変わらない
 2. `AuthTokenRepository.deleteExpired(now)` を呼ぶ。消費済みのトークンも期限を過ぎていれば消える。単回性は消費時の条件付き更新（[domains/identity.md](../domains/identity.md) の `AuthTokenRepository`）が担保しており、行が残り続けることには依存しない
-3. `LoginAttemptStore.deleteExpired(now)` を呼ぶ。ロック中の記録は `lockedUntil` より後に期限が来るため、ロックの解除を早めることはない
+3. `LoginAttemptStore.deleteExpired(now)` を呼ぶ。ロックは `lastFailedAt + 15 分`（[domains/identity.md](../domains/identity.md) の `LoginThrottlePolicy`）で解けるのに対し、記録の保持期間は `attemptTtlMs`（24 時間）なので、期限切れの回収がロックの解除を早めることはない
 4. `OAuthStateStore.deleteExpired(now)` を呼ぶ。サインイン用（Identity）と連携用（Integration）の認可フロー状態は同じポートに載るため、この 1 回の掃除が両方を覆う。Integration 側に同種の定期掃除は置かない
 5. 4 つの削除は互いに独立で、1 つの失敗は他に影響させない（記録して継続し、成功した分の件数を返す）
 

@@ -133,6 +133,8 @@ type OAuthFlowState = Readonly<{
 
 `provider` を原始型のままにしているのは、Identity と Integration が別々の列挙を持つため。値の解釈は取り出した側が自分の値オブジェクトで再構築する。期限切れの回収は 1 か所に寄せ、Identity の [`pruneExpiredAuthState`](../usecases/identity.md) が両方の `intent` をまとめて掃除する（Integration 側に同種の定期掃除は置かない）。
 
+`take` の「取得と同時に削除する」は**原子的でなければならない**。同じ `state` を持つ 2 つの要求が両方とも値を受け取れると、認可応答の二重消費が通る。D1 では `DELETE FROM oauth_flow_states WHERE state = ? RETURNING …` の 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。
+
 **エラーケース**: `SystemError(DatabaseError)`
 
 #### IdempotencyStore（`application/ports/idempotencyStore.ts`）
@@ -154,7 +156,27 @@ interface IdempotencyStore {
 
 `deleteStoredObjects` のように外部リソースへの書き込みを含む購読者では、記録を持たないほうが安全側に倒れる（処理済みを先に記録すると、失敗したイベントが再配送で弾かれて実体が回収されない）。判断の根拠は [usecases/storage.md](../usecases/storage.md) の当該ユースケースを参照。
 
+`markProcessed` の「既に処理済みなら false」は**原子的でなければならない**。並行した 2 つの配送が両方とも `true` を受け取ると、非可換な処理が二重に適用される。D1 では `INSERT INTO processed_events (consumer, event_id) VALUES (?, ?) ON CONFLICT DO NOTHING` の影響行数で判定する 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。
+
 **エラーケース**: `SystemError(DatabaseError)`
+
+## 継続要求
+
+イベントとは別に、**1 回の実行で処理しきれなかった仕事の続き**を次の配送へ渡すためのメッセージがある（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。ドメインで何かが起きたことを表さないため、ドメインイベントの一覧には載せない。ドメインイベントと同じアウトボックス・同じキューで運ぶが、**購読者は必ず 1 つだけ**である。
+
+| 継続要求 | payload | 唯一の購読者 |
+| --- | --- | --- |
+| `note.ownerPurgeContinued` | `{ ownerType, ownerId }` | [`deleteNotesForOwner`](../usecases/note.md) |
+| `storage.ownerDeleteContinued` | `{ ownerType, ownerId }` | [`deleteFilesByOwner`](../usecases/storage.md) |
+| `projection.reprojectRequested` | `{ noteId }` | [`projectNoteChanges`](../usecases/note.md) |
+| `projection.tagFanOutContinued` | `{ tagId, afterNoteId }` | [`projectNoteChanges`](../usecases/note.md) |
+| `job.terminationContinued` | `{ scopeType, scopeId, cause }` | [強制終端の後始末](../usecases/job.md) |
+
+規約は 3 つ。
+
+- **購読者を 1 つに保つ**。既存のイベントを再投入して継続する形は採らない（購読者の数だけコピーが増え、outbox とキューを水増しする）
+- **カーソルは、対象が処理によって消える場合は持たない**。「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進み、重複配送で 2 系列が並走しても両方が進んで両方が止まる。対象が消えない場合（`projection.tagFanOutContinued`）だけカーソルを持つ
+- **進捗がなければ継続しない**。1 バッチで 1 件も処理できなかったら継続要求を積まず、メッセージを失敗させてキューの再試行と DLQ に委ねる。恒久的に失敗する 1 件が列の先頭に居座って無限に回るのを防ぐ
 
 ## ユースケースの分布
 

@@ -229,15 +229,14 @@
 ### 処理フロー
 
 1. スコープを解決し、`manageTags` の権限を確認する
-2. `TagQueryService.listWithUsage` で使用件数 0 のものを集める
-3. 集めたタグを順に `deleteTag` に渡して**呼ぶ**（`tagId` 以外の入力はこのユースケースが受け取った値をそのまま渡す）。`deletedCount` は削除し終えた件数
+2. `UnitOfWorkProvider.run` で `TagRepository.deleteUnusedInScope(scope)` を呼ぶ。これは**1 文の集合削除**で、そのスコープのタグのうち `tag_assignments` に行を持たないものをすべて消す。`deletedCount` は削除された行数
+3. 削除したタグ 1 件につき `TagEvents.deleted`（監査用）を同一 UoW で収集する。多行 INSERT 1 文で outbox に積む
 
-手順 3 はユースケースの**呼び出し**であり、手順の複製ではない（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。`deleteTag` が 1 件ごとに自分の `UnitOfWorkProvider.run` で確定するため、このユースケースは UoW を開かない。
+**1 件ずつ `deleteTag` を呼ばないのはなぜか**。`deleteTag` が 1 件ずつ独立した UoW を張るのは、付与ごとに `tag.unassigned` を併発して読み取りモデルの投影につなぐためである（手順 2）。しかしここでの対象は**使用件数 0 のタグに限られる**ので、読む付与は必ず 0 件で `tag.unassigned` は 1 件も出ない。`deleteTag` を 1 件ずつ呼ぶ唯一の理由がそもそも存在しない。
 
-- 対象は使用件数 0 のタグなので、`deleteTag` の手順 2 が読む付与は 0 件で、`tag.unassigned` は発行されない。読み取りモデルへの影響がないぶん、1 件ずつ独立に確定しても部分的に進んだ状態が矛盾しない
-- `deleteTag` は `expectedVersion` を要求しないため渡す版はない。手順 2 の列挙から削除までの間に付与が付いたタグは、`deleteTag` が改めて付与を読み直して `tag.unassigned` を伴って消す（列挙の結果を根拠に消すのではない）
-- 権限は手順 1 で確認済みだが `deleteTag` 側でも再確認される。読み取りだけの重複であり、検査を省くために手順を複製するほうが規約から外れる
-- 1 件が `NotFoundError("TAG_NOT_FOUND")`（並行して消された）になった場合は飛ばして続け、`deletedCount` に数えない
+一方、1 件ずつ呼ぶ形には上限がない。タグの数に比例したクエリを発行するため、スコープに未使用タグが数千あると 1 回の実行あたり 1,000 クエリという D1 の上限を超える（[ADR 018](../adr/018-query-budget.md)）。集合削除なら件数によらず 2 クエリで終わる。
+
+**「未使用である」の判定時点も強くなる**。以前は手順 2 の列挙から削除までの間に付与が付いたタグを `deleteTag` の読み直しが救っていたが、集合削除では削除の副問い合わせが**削除の時点で**付与の有無を見るため、その窓自体が存在しない。`TagQueryService.listWithUsage` は画面に件数を出すための読み取りであって、削除の根拠ではなくなる。
 
 ### エラーケース
 
