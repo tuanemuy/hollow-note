@@ -1,6 +1,6 @@
 # データベース設計
 
-対象は Cloudflare の **global D1** と、user / workspace ごとの **SQLite-backed Durable Object storage** である（[scope sharded data plane ADR](../../.adr/001-scope-sharded-data-plane.md)）。両者の SQL schema は同じ migration version を共有するが、配置する表は異なる。FTS5 仮想表と関連 raw SQL は Drizzle schema 外の手書き migration で管理する。
+対象は Cloudflare の **global D1** と、user / workspace ごとの **SQLite-backed Durable Object storage** である（[scope sharded data plane ADR](../adr/021-scope-sharded-data-plane.md)）。両者の SQL schema は同じ migration version を共有するが、配置する表は異なる。FTS5 仮想表と関連 raw SQL は Drizzle schema 外の手書き migration で管理する。
 
 D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](../platform/index.md) を正典とする。本書は論理表・物理配置・索引を定める。
 

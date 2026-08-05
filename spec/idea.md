@@ -115,7 +115,7 @@ Phase 0 のヒアリングで確定した方針。
 
 ### 確定した技術選択
 
-冒頭の「CloudFlare 向けに実装する」を正式な決定として確定した。Workers Paid を前提とし、データ配置は [scope sharded data plane ADR](../.adr/001-scope-sharded-data-plane.md) を正典とする。
+冒頭の「CloudFlare 向けに実装する」を正式な決定として確定した。Workers Paid を前提とし、データ配置は [scope sharded data plane ADR](./adr/021-scope-sharded-data-plane.md) を正典とする。
 
 | 項目 | 製品 |
 | --- | --- |

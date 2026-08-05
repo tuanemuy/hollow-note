@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み（local / public の配置と再構築経路を [S-001](../../.adr/001-scope-sharded-data-plane.md) が追加）
+承認済み（local / public の配置と再構築経路を [021](./021-scope-sharded-data-plane.md) が追加）
 
 ## コンテキスト
 

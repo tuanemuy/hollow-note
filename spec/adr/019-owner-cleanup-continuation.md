@@ -2,7 +2,7 @@
 
 ## ステータス
 
-superseded by [001. scope sharded data plane](../../.adr/001-scope-sharded-data-plane.md)
+superseded by [021. scope sharded data plane](./021-scope-sharded-data-plane.md)
 
 ## コンテキスト
 

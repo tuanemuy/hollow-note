@@ -1,6 +1,6 @@
 # 実行基盤の設計
 
-実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[scope sharded data plane ADR](../../.adr/001-scope-sharded-data-plane.md)）。本書は、データ配置・ルーティング・実上限と、そこから逆算した設計値の正典である。
+実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[scope sharded data plane ADR](../adr/021-scope-sharded-data-plane.md)）。本書は、データ配置・ルーティング・実上限と、そこから逆算した設計値の正典である。
 
 ## この文書の役割
 
@@ -219,7 +219,7 @@ download URL は発行前に scope object で Job / StoredFile の access princi
 
 ## 関連文書
 
-- [Scope sharded data plane ADR](../../.adr/001-scope-sharded-data-plane.md)
+- [Scope sharded data plane ADR](../adr/021-scope-sharded-data-plane.md)
 - [ADR 012. Job execution resilience](../adr/012-job-execution-resilience.md)
 - [ADR 017. Content size budget](../adr/017-content-size-budget.md)
 - [Database design](../database/index.md)

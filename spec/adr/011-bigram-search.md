@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md)、local / public の物理配置とwriter契約は [S-001](../../.adr/001-scope-sharded-data-plane.md) が改訂。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
+承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md)、local / public の物理配置とwriter契約は [021](./021-scope-sharded-data-plane.md) が改訂。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
 
 ## コンテキスト
 

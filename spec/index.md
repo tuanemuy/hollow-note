@@ -2,7 +2,7 @@
 
 あらゆるファイルを HTML に変換して保存・共有するサービスの設計ドキュメント。
 
-実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[scope sharded data plane ADR](../.adr/001-scope-sharded-data-plane.md)）。基盤の実上限と、データ配置・ルーティング・Queue / Alarm の役割は [実行基盤の設計](./platform/index.md) を正典とする。
+実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[scope sharded data plane ADR](./adr/021-scope-sharded-data-plane.md)）。基盤の実上限と、データ配置・ルーティング・Queue / Alarm の役割は [実行基盤の設計](./platform/index.md) を正典とする。
 
 ## 進捗
 
@@ -28,9 +28,9 @@
 
 2026-08-03 の改訂（Phase 9）では、指摘 11 件を**すべて独立に反証にかけた**うえで確定した 8 件を修正し、誤りだった 3 件を取り下げて記録に残した（[クロスフェーズ検証 005](./review/cross-phase/005.md)）。最大のものは「強制終端の継続要求が 9 経路のうち 7 経路の選択述語を再現できず、続きが元より広い集合を終端させる」で、payload を経路タグ付きの判別ユニオンに改め、購読ユースケース `continueForcedTermination` を新設した（Phase 8 が導入した継続は、発行側と購読側の両方が未接続だった）。あわせて「問題なし」と判断していた 4 件も逆向きに反証にかけ、そこから 5 件の課題（`listByTag` の契約・カーソルの正当化・空ページの扱い・ダウンロード URL の正典・再投影のクエリ見積もり）を拾っている。さらに改訂そのものを対象にもう一度掃き直し、下流に反映しきれていなかった 12 件（呼び出し元 7 経路のテストケース行・ADR 019 に残っていた古いカーソルの根拠・件数の食い違いなど）を追補として修正した。
 
-2026-08-02 の改訂（Phase 8）では、当時の単一 D1 前提で H-01〜H-05 を解決した。投影の直列化（[016](./adr/016-projection-single-writer.md)）・行サイズの予算（[017](./adr/017-content-size-budget.md)）・クエリ予算（[018](./adr/018-query-budget.md)）・後始末の継続（[019](./adr/019-owner-cleanup-continuation.md)）・調整状態の置き場（[020](./adr/020-coordination-state.md)）を D1 / Queues / Workers の実上限から決め、Durable Objects / Workflows は採らないとしていた。このうち行サイズと組み立てリースは維持し、DO を採らない決定、投影・予算・後始末・調整状態の配置は Phase 10 の [S-001](../.adr/001-scope-sharded-data-plane.md) が置き換えた。
+2026-08-02 の改訂（Phase 8）では、当時の単一 D1 前提で H-01〜H-05 を解決した。投影の直列化（[016](./adr/016-projection-single-writer.md)）・行サイズの予算（[017](./adr/017-content-size-budget.md)）・クエリ予算（[018](./adr/018-query-budget.md)）・後始末の継続（[019](./adr/019-owner-cleanup-continuation.md)）・調整状態の置き場（[020](./adr/020-coordination-state.md)）を D1 / Queues / Workers の実上限から決め、Durable Objects / Workflows は採らないとしていた。このうち行サイズと組み立てリースは維持し、DO を採らない決定、投影・予算・後始末・調整状態の配置は Phase 10 の [021](./adr/021-scope-sharded-data-plane.md) が置き換えた。
 
-2026-08-05 の改訂（Phase 10）では、Phase 8 の単一 D1 前提を [scope sharded data plane ADR](../.adr/001-scope-sharded-data-plane.md) で置き換えた。通常の業務データと private 検索を user / workspace ごとの DO に置き、D1 は Identity・directory・route・利用者横断投影・public 検索に限定する。scope 内の強制終端はローカルトランザクションを維持し、ノート移動と利用者削除だけを route / directory を切替点とする回復可能な orchestration にした。Queues は外部 I/O job と global projection に残し、scope 内の relay / reaper / continuation は Alarm が起動する。
+2026-08-05 の改訂（Phase 10）では、Phase 8 の単一 D1 前提を [scope sharded data plane ADR](./adr/021-scope-sharded-data-plane.md) で置き換えた。通常の業務データと private 検索を user / workspace ごとの DO に置き、D1 は Identity・directory・route・利用者横断投影・public 検索に限定する。scope 内の強制終端はローカルトランザクションを維持し、ノート移動と利用者削除だけを route / directory を切替点とする回復可能な orchestration にした。Queues は外部 I/O job と global projection に残し、scope 内の relay / reaper / continuation は Alarm が起動する。
 
 ## 成果物
 
@@ -108,4 +108,4 @@
 - [018. 1 回の実行あたりの D1 クエリ予算を定め、分割単位をそこから逆算する](./adr/018-query-budget.md)
 - [019. 後始末の継続は購読者 1 件の専用イベントで運ぶ](./adr/019-owner-cleanup-continuation.md)
 - [020. 調整状態は D1 に置き、原子性を単一 SQL 文で与える](./adr/020-coordination-state.md)
-- [S-001. 業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する](../.adr/001-scope-sharded-data-plane.md)
+- [021. 業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する](./adr/021-scope-sharded-data-plane.md)
