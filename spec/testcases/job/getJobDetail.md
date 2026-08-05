@@ -17,3 +17,6 @@
 | `failed` / `canceled` のジョブ | 開く | `notices` は空配列になる（申し送りを持つのは `succeeded` のみ） | |
 | 参照取り込みのジョブ | 開く | `notices` は空配列になる。取り込みの結果はノート詳細（`getNote` の `references`）が持ち、ジョブには載らない | |
 | batch 親 | 開く | `notices` は空配列になる（集計から申し送りは生まれない。子が持つ申し送りは親に集約されない） | |
+| workspace scopeのJob | 開く | JobId prefixのworkspace objectから親子の正データを読み、local `requestedBy` で認可する | |
+| JobId prefixを改ざんする | 開く | 改ざん先objectに行がないため `JOB_NOT_FOUND`。global projectionのscope値で上書きしない | |
+| global projectionが遅延している | 既知のJob URLを開く | local Jobから詳細を返し、history到着を待たない | |

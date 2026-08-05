@@ -4,7 +4,7 @@
 |---|---|---|---|
 | `styleMode: "default"` のノート | `preserve` に変更する | 値が更新され、`note.styleModeChanged`（payload に `noteId` と `styleMode`）が発行される | |
 | `styleMode: "preserve"` のノート | `default` に変更する | 値が更新され、同じくイベントが発行される | |
-| 変更を保存した | 読み取りモデルを確認する | `note.styleModeChanged` を購読する `projectNoteChanges` の `upsert` で `style_mode` が反映される（`style_mode` は `upsert` でしか更新されないため、このイベントを発行・購読しないと一覧が恒久的に古くなる） | |
+| 変更を保存した | 読み取りモデルを確認する | `note.styleModeChanged` を購読する `projectNoteChanges` の完全snapshot置換で `style_mode` が反映される（このイベントを発行・購読しないと一覧が恒久的に古くなる） | |
 | 変更を保存した | 一覧（`NoteSummary.styleMode`）を確認する | 変更後の値で表示される（ED-11 の切り替えが一覧に反映される） | |
 | 同じ値を指定する | 変更する | 更新は成立し `note.styleModeChanged` が発行される（差分によるイベントの抑制はしない）。投影は現在の状態からの上書きのため結果は変わらない | |
 | — | 未知の値を指定する | `BusinessRuleError(InvalidStyleMode)` が投げられる | |

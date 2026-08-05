@@ -115,30 +115,29 @@ Phase 0 のヒアリングで確定した方針。
 
 ### 確定した技術選択
 
-冒頭の「CloudFlare 向けに実装する」を正式な決定として確定した（[ADR 015](./adr/015-cloudflare-runtime.md)）。Workers Paid を前提とする。
+冒頭の「CloudFlare 向けに実装する」を正式な決定として確定した。Workers Paid を前提とし、データ配置は [scope sharded data plane ADR](../.adr/001-scope-sharded-data-plane.md) を正典とする。
 
 | 項目 | 製品 |
 | --- | --- |
 | 実行基盤 | Cloudflare Workers |
-| データベース | D1（SQLite） |
+| scope 内の業務データ | SQLite-backed Durable Objects（user / workspace ごと） |
+| グローバル制御・公開投影 | D1（SQLite） |
 | オブジェクトストレージ | R2 |
 | ジョブとイベントの配送 | Cloudflare Queues |
-| 全文検索 | D1 の FTS5 |
-| 定期実行 | Workers の Cron Triggers |
+| 全文検索 | scope DO の FTS5（private）+ D1 の FTS5（public） |
+| 定期実行 | scope DO の Alarms + global plane の Cron Triggers |
 | 転送境界の粗いレート制限 | Workers の Rate Limiting binding |
 
-調整状態（レート制限のカウンター、OAuth の一時状態、イベントの重複排除の記録）も主データベースである D1 に置く。専用の低遅延ストアは設けない（[ADR 020](./adr/020-coordination-state.md)）。
+調整状態は、その状態が守る正データと同じ整合性境界に置く。Identity の施錠と OAuth 一時状態は D1、scope event の重複排除・job lease・継続予定は当該 scope DO に置く。粗い転送境界のレート制限だけは Workers の Rate Limiting binding を使う。
 
-**確定したことで何が変わるか**。ヘキサゴナルアーキテクチャ（`CLAUDE.md`）によりアダプター層の差し替えは引き続き安いが、**設計判断を基盤の実上限から逆算してよい**ようになった。行サイズ・1 実行あたりのクエリ数・キューの並行度・壁時計といった実上限と、そこから導いた設計値は [実行基盤の設計](./platform/index.md) を正典とする。どの ADR がどの前提に乗っているかの逆引きは [ADR 一覧と前提依存マップ](./adr/index.md) が引き続き担う。
+**確定したことで何が変わるか**。通常の読み書き・ジョブ・クォータ・private 検索は scope 数に比例して水平分割される。D1 は Identity、グローバル一意性、route、利用者横断の directory、public 検索だけを担う。行サイズ・D1 query・DO request / CPU・Queue / Alarm の壁時計と、そこから導いた設計値は [実行基盤の設計](./platform/index.md) を正典とする。
 
-### 永続実行基盤（Durable Objects / Workflows）は採らない
+### Durable Objects はデータシャードとして使い、ジョブ実行は Queues に残す
 
-ジョブの実行は Queues + D1 + 自前のリース（[ADR 012](./adr/012-job-execution-resilience.md)）のまま続ける。理由は [ADR 015](./adr/015-cloudflare-runtime.md) に記録した。要点は 3 つ。
+ジョブの正データと lease は対象の scope DO に置くが、外部 I/O を伴う実行は Queues の consumer が担う。Queues の少なくとも 1 回配送と強制終了は残るため、[ADR 012](./adr/012-job-execution-resilience.md) の lease / attempt / reaper は維持する。
 
-- `Job` は業務述語（スコープ・対象・要求者）で検索できる第一級の実体であり続ける必要があり、載せ替えても `jobs` 表は索引として残る。状態の正が 2 か所に分かれるだけで 1 か所も減らない
-- 強制終端の 9 経路は、ジョブの終端と後始末を D1 の**同一トランザクション**で束ねている。Workflows のインスタンス終了も Durable Object への通知もそのトランザクションには入らないため、載せ替えるとこの保証が失われる
-- リースが解いていた問題（生きているワーカーと死んだワーカーの残骸を区別できない）は、Queues の性質（少なくとも 1 回・順序保証なし・最大 250 並行・壁時計 15 分）としてそのまま残る
+- scope 内では Job / Note / StoredFile metadata / Membership を同じ DO transaction に束ね、強制終端の保証を維持する
+- scope をまたぐノート移動と利用者削除は、D1 route / membership directory を切替点にした再開可能な orchestration とする
+- scope outbox・lease 回収・継続は各 DO の Alarm、外部 I/O job と global projection は Queues で運ぶ
 
-Durable Objects が担いうる「キー単位の直列化」も採らない。必要だった 2 か所は、キューの同時実行数（[ADR 016](./adr/016-projection-single-writer.md)）と D1 の単一 SQL 文の原子性（[ADR 020](./adr/020-coordination-state.md)）でより安く解けた。
-
-したがって **ADR 012 から落とすものはない**。確定に伴う変更は、batch 親の組み立てリースを 60 分から 15 分へ短縮する 1 点だけである（組み立ては Queue コンシューマーで走り、壁時計 15 分で必ず終了するため）。
+DO の単一インスタンス性だけを排他錠として使うのではなく、scope の正データ・トランザクション・ローカル予定表を同居させる。Workflows は採らない。batch 親の組み立てリースは Queue consumer の壁時計に合わせて 15 分のままとする。

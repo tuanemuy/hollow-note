@@ -9,4 +9,5 @@
 | 期限切れのセッション | トークンで認証する | `ValidationError("UNAUTHENTICATED")` が投げられ、セッションが削除される | |
 | 存在しないトークン | トークンで認証する | `ValidationError("UNAUTHENTICATED")` が投げられる | |
 | セッションはあるが利用者が削除済み | トークンで認証する | `ValidationError("UNAUTHENTICATED")` が投げられる | |
+| Sessionの`authEpoch`がcurrent Userより古い | 認証する | 物理行が残っていても`ValidationError("UNAUTHENTICATED")`。削除失敗で認証が復活しない | |
 | 期限のちょうど 1 ミリ秒前 | トークンで認証する | 認証が成功する（境界値） | |

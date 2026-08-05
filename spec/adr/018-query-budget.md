@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+superseded by [001. scope sharded data plane](../../.adr/001-scope-sharded-data-plane.md)
 
 ## コンテキスト
 

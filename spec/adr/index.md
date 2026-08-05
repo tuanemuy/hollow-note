@@ -2,7 +2,7 @@
 
 設計上の非自明な判断を記録した Architecture Decision Record の索引。あわせて、**どの ADR がどのプラットフォーム前提に乗っているか**を逆引きできる表を置く。
 
-実行基盤は **Cloudflare Workers + D1 + R2 + Queues** に確定している（[ADR 015](./015-cloudflare-runtime.md)）。実上限と、そこから逆算した設計値は [platform/index.md](../platform/index.md) を正典とする。ヘキサゴナルアーキテクチャによりアダプター層の差し替えは引き続き安いが、**ADR に記録された判断は前提を差し替えても自動的には剥がれない**。将来 前提を動かすときは、まずこの表で影響範囲を引くこと。
+実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[S-001](../../.adr/001-scope-sharded-data-plane.md)）。実上限と配置は [platform/index.md](../platform/index.md) を正典とする。`spec/adr/` の 001〜020 は設計過程の台帳で、Phase 10 以降の永続 ADR はプロジェクトルートの `.adr/` に置く。
 
 ## 一覧
 
@@ -15,19 +15,20 @@
 | 005 | [時間のかかる処理はすべて非同期ジョブとして扱う](./005-async-processing.md) | 承認済み |
 | 006 | [ノートの正データはサニタイズ済み HTML の 1 つとし、編集モードはその上の見え方とする](./006-html-content-model.md) | 承認済み |
 | 007 | [既定スタイルは装飾を持たない本文にのみ適用し、本文は Shadow DOM で隔離する](./007-default-style-isolation.md) | 承認済み |
-| 008 | [ドメインを 9 つに分割し、タグ付けを Tag 側に置く](./008-domain-boundaries.md) | 承認済み |
+| 008 | [ドメインを 9 つに分割し、タグ付けを Tag 側に置く](./008-domain-boundaries.md) | 承認済み（配置・scope間整合性は S-001 が改訂） |
 | 009 | [一覧・検索・タイムラインは専用の読み取りモデルに投影する](./009-read-models.md) | 承認済み |
 | 010 | [匿名の PDF エクスポートは要求者なしのジョブとし、結果到達は署名チケットで行う](./010-anonymous-export-and-ticket.md) | 承認済み |
-| 011 | [全文検索は書き込み時前処理による bigram 方式で行う](./011-bigram-search.md) | 承認済み（FTS 表の構成は [017](./017-content-size-budget.md) が改訂） |
+| 011 | [全文検索は書き込み時前処理による bigram 方式で行う](./011-bigram-search.md) | 承認済み（FTS表構成は017、配置はS-001が改訂） |
 | 012 | [ジョブの実行はリースで保護し、batch 親の完了経路を一本化する](./012-job-execution-resilience.md) | 承認済み（組み立てリースの期間は [015](./015-cloudflare-runtime.md) が改訂） |
 | 013 | [HTML のサニタイズは許可リスト方式で行い、規則の正典を 1 か所に置く](./013-html-sanitization-policy.md) | 承認済み（取得できなかったスタイルシートの扱いは [014](./014-import-result-provenance.md) が改訂） |
 | 014 | [取り込み結果の供給元は帰属で割り、本文・Storage の記録・ジョブの申し送りに分ける](./014-import-result-provenance.md) | 承認済み |
-| 015 | [実行基盤を Cloudflare Workers + D1 + R2 + Queues に確定し、永続実行基盤は採らない](./015-cloudflare-runtime.md) | 承認済み |
-| 016 | [読み取りモデルの投影は同時実行数 1 の専用キューで直列化する](./016-projection-single-writer.md) | 承認済み |
-| 017 | [全文検索インデックスを contentless FTS5 にし、本文の上限を D1 の行サイズから逆算する](./017-content-size-budget.md) | 承認済み |
-| 018 | [1 回の実行あたりの D1 クエリ予算を定め、分割単位をそこから逆算する](./018-query-budget.md) | 承認済み |
-| 019 | [後始末の継続は購読者 1 件の専用イベントで運ぶ](./019-owner-cleanup-continuation.md) | 承認済み |
-| 020 | [調整状態は D1 に置き、原子性を単一 SQL 文で与える](./020-coordination-state.md) | 承認済み |
+| 015 | [実行基盤を Cloudflare Workers + D1 + R2 + Queues に確定し、永続実行基盤は採らない](./015-cloudflare-runtime.md) | superseded by S-001 |
+| 016 | [読み取りモデルの投影は同時実行数 1 の専用キューで直列化する](./016-projection-single-writer.md) | superseded by S-001 |
+| 017 | [全文検索インデックスを contentless FTS5 にし、本文の上限を D1 の行サイズから逆算する](./017-content-size-budget.md) | 承認済み（配置はS-001が改訂） |
+| 018 | [1 回の実行あたりの D1 クエリ予算を定め、分割単位をそこから逆算する](./018-query-budget.md) | superseded by S-001 |
+| 019 | [後始末の継続は購読者 1 件の専用イベントで運ぶ](./019-owner-cleanup-continuation.md) | superseded by S-001 |
+| 020 | [調整状態は D1 に置き、原子性を単一 SQL 文で与える](./020-coordination-state.md) | superseded by S-001 |
+| S-001 | [業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する](../../.adr/001-scope-sharded-data-plane.md) | 承認済み |
 
 ## 前提依存マップ
 
@@ -44,19 +45,16 @@
 | 005 非同期ジョブ | Workers の CPU 5 分 / Queue コンシューマーの壁時計 15 分と、Queues による配送 | 実行時間の制約が桁で緩めば、同期に戻せる処理が出る。境界（実行時間が予測できるか）そのものは動かない |
 | 006 HTML の本文モデル | 依存なし | — |
 | 007 既定スタイルと Shadow DOM | 依存なし（ブラウザの機能） | — |
-| 008 ドメイン境界 | **業務データがすべて D1 という単一のストアに載ること** | ストアを分けると「中間状態を許容できない後始末は同一 UoW」の表が成立しなくなる。強制終端の後始末（Job + Note + StoredFile を同一 UoW で書く）などが結果整合に落ちる |
-| 009 読み取りモデル | D1 に閉じること と、SQLite の FTS5 | 検索を専用エンジンに出すと `note_search` の存在意義そのものが変わる。タグ絞り込みと関連度順を検索エンジン側が担えるなら、読み取りモデルは一覧の非正規化だけを担う軽いものになる |
+| 008 ドメイン境界 | scope 内の Job / Note / StoredFile metadata / Membership が同じ DO storage に載ること | scope 内の強制終端は同一 UoW。scope をまたぐ操作は S-001 の route / directory orchestration に従う |
+| 009 読み取りモデル | SQLite FTS5 と、private は scope-local / public は global D1 という配置 | 検索エンジンを替える場合は local/global の投影境界と再構築手順を再設計する |
 | 010 匿名エクスポートとチケット | 依存なし（レート制限の手段は 020 が決めた） | — |
 | 011 bigram 検索 | **FTS5 にカスタムトークナイザーを積めないこと**（D1 では SQLite の拡張をロードできず、組み込みの `unicode61` / `trigram` の範囲で日本語の部分一致を成立させる必要がある） | 日本語アナライザーを持つ検索エンジンなら 011 は丸ごと不要になる。書き込み時の bigram 前処理も、ハイライト生成の自前実装も要らなくなる |
-| 012 ジョブ実行の回復性 | ステートレスな実行環境と、Queues の at-least-once・順序保証なし・最大 250 並行・壁時計 15 分 | 永続実行基盤へ載せ替えればリース・リーパー・実行権の表現の大半が不要になる。**この載せ替えは 015 で明示的に不採用とした** |
+| 012 ジョブ実行の回復性 | Queue consumer の at-least-once・順序保証なし・壁時計 15 分 | Job は scope DO に移るが実行体は Queue のままなので lease は維持する。reaper は scope Alarm が起動する |
 | 013 サニタイズ方針 | 依存なし | — |
 | 014 取り込み結果の供給元 | 依存なし | — |
-| 015 実行基盤の確定 | — （前提そのものを定める ADR） | 016〜020 と、上の 005 / 008 / 009 / 011 / 012 の前提欄がすべてここに紐づく |
-| 016 投影の単一ライター | **Queues の `max_concurrency` を 1 に固定できること** | キューの並行度を絞れない配送機構に替えると、投影は条件付き書き込みか単一ライターの別手段を要する |
-| 017 本文サイズの予算 | **D1 の 1 行 2,000,000 バイト**と、FTS5 の contentless 構成 | 行サイズの制約が実質ない保存先なら `NoteHtml` の上限を戻せる。contentless をやめるなら `*_fts` 列と再構築手順が復活する |
-| 018 クエリ予算 | **D1 の 1 実行 1,000 クエリ** | 上限がない実行環境なら分割単位を大きく戻せる。ただし「上限と継続を持つ」規則そのものは、壁時計の制約がある限り残る |
-| 019 後始末の継続 | アウトボックス経由の配送が少なくとも 1 回を保証すること | 保証がない配送機構では、継続の耐久性を別に与える必要がある |
-| 020 調整状態の置き場 | **D1（SQLite）が 1 文を原子的に実行すること**、Cloudflare が `CF-Connecting-IP` を上書きすること | 単一文の原子性がないストアでは、加算に別の機構（原子カウンター・条件付き更新）が要る。発信元の識別は前段の構成に依存する |
+| 015 / 016 / 018 / 019 / 020 | superseded | 現在の前提は S-001 を参照する |
+| 017 本文サイズの予算 | D1 と SQLite-backed DO に共通する 1 行 2,000,000 バイトと、FTS5 の contentless 構成 | 行サイズの制約が実質ない保存先なら `NoteHtml` の上限を再検討できる |
+| S-001 scope shard | DO storage の object 私有性、D1 read replication、Queues、Alarms | scope の粒度または global plane の製品を替えると route・directory・Saga・projection の境界が動く |
 
 ### 注記
 
@@ -76,10 +74,10 @@
 
 ## 決着した技術選択
 
-保留していた 3 項目は [ADR 015](./015-cloudflare-runtime.md) の確定に伴ってすべて決着した。
+現在の決定は S-001 により次の形で確定している。
 
 | 項目 | 決定 | 記録 |
 | --- | --- | --- |
-| 全文検索の置き場 | 書き込みモデルと同じ D1 に置く。FTS5 は contentless 構成にする | [015](./015-cloudflare-runtime.md) / [017](./017-content-size-budget.md)（009 / 011 の決定は維持） |
-| ジョブ実行基盤 | ステートレスな実行環境 + Queues + 自前のリースで続ける。永続実行基盤は採らない | [015](./015-cloudflare-runtime.md)（012 の決定は維持。組み立てリースの期間のみ改訂） |
-| 調整状態の置き場 | 主データベース（D1）。読んでから書く更新の原子性は単一 SQL 文で与える。粗いレート制限だけは Workers の Rate Limiting binding | [020](./020-coordination-state.md) |
+| 全文検索の置き場 | private は scope DO、public は global D1。どちらも contentless FTS5 | [S-001](../../.adr/001-scope-sharded-data-plane.md) / [017](./017-content-size-budget.md) |
+| ジョブ実行基盤 | Job state は scope DO、実行は Queues + lease、回収起動は Alarm | [S-001](../../.adr/001-scope-sharded-data-plane.md) / [012](./012-job-execution-resilience.md) |
+| 調整状態の置き場 | 守る正データと同じ plane。Identity は D1、scope coordination は DO | [S-001](../../.adr/001-scope-sharded-data-plane.md) |

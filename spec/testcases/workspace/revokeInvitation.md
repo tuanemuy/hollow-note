@@ -8,3 +8,4 @@
 | 存在しない招待 ID | 取り消す | `NotFoundError("INVITATION_NOT_FOUND")` が投げられる | |
 | editor である | 取り消す | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | 取り消し後 | 同じメールアドレスに再度招待する | 新しい招待が作られる | |
+| local revoke後にglobal応答を失う | recoveryする | local正データは即時にacceptを拒否し、同じoperation IDでrouteをrevokedへ収束させる | |

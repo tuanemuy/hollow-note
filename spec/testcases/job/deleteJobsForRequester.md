@@ -2,13 +2,13 @@
 
 | 前提条件 | 操作 | 期待結果 | 実装ステータス |
 |---|---|---|---|
-| 退会した利用者の終端状態のジョブが 5 件ある | `identity.user.deleted` を受け取る | 5 件が削除され、`deletedCount: 5` が返る | |
-| 退会した利用者の親ジョブと子ジョブがある | 受け取る | 子も同じ要求者のため親と一緒に削除される | |
-| 他の利用者のジョブがある | 受け取る | 削除されない | |
-| 匿名ジョブ（`requestedBy: null`）がある | 受け取る | 対象外で残る（掃除は `pruneJobHistory` のみが行う） | |
-| ジョブが 1 件もない | 受け取る | 何もせず成功し、`deletedCount: 0` が返る | |
-| 同じイベントを 2 回受け取る | 2 回実行する | 2 回目は 0 件で終わる（冪等） | |
-| 削除の直後にそのジョブの配送が run 系ワーカーへ届く | 配送を処理する | 行がないため run 系共通規則の判定 1 に落ち、何もせず成功として返る（`updateBatchProgress` の「親が不在 → 何もせず成功として返す」と同じ扱い） | |
-| 状態を問わず削除する規則 | 未終端のジョブが残っている場合を確認する | `deleteAccount` の手順 3 でキャンセル済みのため通常は残らないが、残っていても状態を問わず削除される | |
-| 削除後 | イベントを確認する | 発行されない（artifact の回収は同じイベントを購読する Storage の `deleteFilesByOwner` が行う） | |
-| 書き込みが失敗する | 受け取る | `SystemError(DatabaseError)` が投げられ、再試行される | |
+| requesterの親子Jobを削除する | 実行する | 1 root familyずつroute manifestを100件pageで固定し、local/global cleanupを継続する | |
+| current scopeに退会者の終端Jobが5件 | scope cleanup command | familyごとにmanifestを作り、全local正データとglobal historyを削除する | |
+| 5 familyを同じaccount operationで削除する | 継続する | scope+rootから5つの異なるfamily removal IDを導出し、親account operation IDはtask/headerの対応として保持する | |
+| 1 familyの完了応答を失う | account commandを再配送する | 同じfamily manifestを再開し、次root用headerへ上書きしない | |
+| 500子の親子Jobがある | 削除する | FK RESTRICT下で子を100件ずつ削除し、最後に親を消す。manifestは全global ackまで残る | |
+| 他scopeにもJobがある | current scopeで実行 | 他scopeには触れず、orchestratorの別commandが処理する | |
+| active Jobが残っている | 削除を試す | 強制終端task完了前として延期し、走行中の行を消さない | |
+| 匿名Job | user基準で削除 | 対象外。personal scope全削除時またはretention pruneで回収する | |
+| 同じoperation IDを再配送 | 実行する | 2回目は保存済み結果または0件で冪等に終わる | |
+| global history削除eventが遅延 | 一覧する | 一時表示されうるがdetail/actionはlocal行不在としてnot foundになる | |

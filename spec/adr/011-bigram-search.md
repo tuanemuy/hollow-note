@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md) が改訂した — external content から contentless に変わり、`note_search` の `title_fts` / `text_fts` / `tag_names_fts` の 3 列は存在しない。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
+承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md)、local / public の物理配置とwriter契約は [S-001](../../.adr/001-scope-sharded-data-plane.md) が改訂。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
 
 ## コンテキスト
 
@@ -27,7 +27,7 @@ trigram トークナイザーを廃止し、書き込み時前処理 + FTS5(unic
 - CJK 文字クラスは Hiragana U+3040–309F、Katakana U+30A0–30FF（長音 `ー` 含む）、Katakana Phonetic Extensions U+31F0–31FF、CJK Unified U+4E00–9FFF、Ext A U+3400–4DBF、CJK Compatibility U+F900–FAFF、および U+3005 `々`・U+3006 `〆`（「佐々木」の分断防止）とする。半角カナ・全角英数は NFKC が先に解決する
 - クエリは前処理後、run ごとに二重引用符で包んだフレーズ（内部の `"` は `""` に倍化し、FTS5 演算子の無力化を兼ねる）とし、run 間は AND で結ぶ。全滅時はキーワードなし扱い。英数字トークンには前方一致（`word*`）を付与する
 - external content は「前処理済み列を content に指定する」変種とする。`note_search` に `title_fts` / `text_fts` / `tag_names_fts` 列を追加し、`note_search_fts = fts5(title_fts, text_fts, tag_names_fts, content='note_search', content_rowid='rowid', tokenize='unicode61')` とする。生テキスト列を content に指定すると `'rebuild'` でインデックスが全損する（実測）ため禁止する
-- SQL トリガーによる同期は廃止し、アダプター管理とする。`NoteProjectionWriter` の各メソッドが FTS 同期（`'delete'` → INSERT）まで責任を持ち、`note_search` 本体・前処理列・FTS を D1 の `batch()`（暗黙トランザクション）1 バッチで書く。`updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要
+- SQL トリガーによる同期は廃止し、アダプター管理とする。`NoteProjectionWriter.replaceSnapshotIfNewer` が FTS 同期（`'delete'` → INSERT）まで責任を持ち、`note_search` 本体・タグ・FTS・表示contextを1transaction/batchで書く
 - 関連度順の列重みはタイトル > タグ名 > 本文（例: `bm25(fts, 5.0, 1.0, 3.0)`。具体値は実装時に調整可）
 - 2 文字クエリは公開全体検索を含む全検索で有効になる。1 文字は従来どおり `QUERY_TOO_SHORT` / null 落としとする
 
@@ -35,7 +35,7 @@ trigram トークナイザーを廃止し、書き込み時前処理 + FTS5(unic
 
 読み取りモデルに `note_search_tags (note_id, normalized)` を設け、タグの AND 絞り込みは本表への JOIN（関係除算。または `INTERSECT`）による正規化済みタグ名の完全一致で行う。`note_search.tag_names` / `tag_names_fts` は絞り込みには使わず、キーワード検索の関連度（bm25 のタグ名列）に寄与させるためだけに残す。
 
-タグの投影先は関連度用の `tag_names` / `tag_names_fts`、絞り込み用の `note_search_tags`、一覧の表示名用の `tag_display_names` の 4 か所になる。`NoteProjectionWriter.updateTags(noteId, tags: readonly { name; normalized }[])` を 4 か所の唯一の書き手とし、ノートのタグ集合を丸ごと入れ替えて同一バッチで更新する。関連度用の 3 経路には `normalized` を、`tag_display_names` には `name` を使う。`upsert` は 4 か所に一切触れない（`NoteProjectionEntry` にタグのフィールドがないため）。FTS の取り消し → 再挿入で `tag_names_fts` を渡す必要があるが、そこには現在値をそのまま書き戻す。タグを伴う投影の再構築は `upsert` と `updateTags` の 2 呼び出しで行う。
+タグの投影先は関連度用の `tag_names` / `tag_names_fts`、絞り込み用の `note_search_tags`、一覧の表示名用の `tag_display_names` の 4 か所になる。完全snapshot writerがタグ集合を丸ごと入れ替えて同一transaction/batchで更新する。関連度用の3経路には `normalized`、表示列には `name` を使う。
 
 ## 検討した代替案
 
@@ -62,4 +62,4 @@ FTS 表 1 つで全文検索とタグ絞り込みを兼ねられ、表もイン�
   - クエリ内の 1 文字 CJK run は unigram の挙動になる
   - ハイライトの一致位置は生テキストへの部分一致で求めるため、FTS のヒットと必ずしも一致しない。境界をまたぐ偽陽性の行や、`excerpt` にも `text` にも一致が現れない行（タイトルやタグ名だけで一致した行）では `highlightedExcerpt` が `null` になり、画面は素の抜粋を出す
 - 前処理関数は書き込み側とクエリ側の 1 か所で共有し、テストもこの関数単体に対して書ける
-- 読み取りモデルに `note_search_tags` 表が加わり、タグの AND 絞り込みの経路が全文検索と分かれる。`NoteProjectionWriter.updateTags` はタグの投影先 4 か所（`tag_names` / `tag_names_fts` / `note_search_tags` / `tag_display_names`）を更新する唯一の書き手となる（[ADR 009](./009-read-models.md)）
+- 読み取りモデルに `note_search_tags` 表が加わり、タグの AND 絞り込みの経路が全文検索と分かれる。完全snapshot writerがタグの投影先4か所を更新する唯一の書き手となる（[ADR 009](./009-read-models.md)）

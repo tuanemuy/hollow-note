@@ -9,5 +9,8 @@
 | 削除後 | 使用量を確認する | `storage.fileDeleted` を購読する `applyStorageDelta` によって保存容量が返る | |
 | 削除後 | オブジェクトストレージを確認する | 実体は `storage.fileDeleted` を購読する `deleteStoredObjects` が削除する | |
 | 対象のファイルが 1 件もない（元ファイルのないノート） | `note.purged` を処理する | 何もせず成功し、`deletedCount: 0` が返る | |
+| deletable fileが250件ある | 処理する | 100件ずつ`storage.noteDeleteContinued`で再開し、各taskが同じ`deletionOperationId`を保持する | |
+| personal account deletion由来のtoken | 処理する | personal scopeのcommit済み`applied_operations` receiptと照合して通し、workspace専用portを要求しない | |
+| workspace deletion由来の別operation ID | 処理する | manifest owner不一致として削除を拒否する | |
 | 同じイベントを 2 回受け取る | 2 回処理する | 削除済みのファイルは `listByNote` に現れず、2 回目は `deletedCount: 0` で終わる（冪等） | |
 | 一部のファイルが既に不在 | 処理する | 無視して継続し、残りが削除される | |

@@ -7,5 +7,7 @@
 | 外した後 | タグ自体を確認する | タグは残る（使用件数が減るだけ） | |
 | viewer である | 外す | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 存在しないノート | 外す | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
-| 外した後 | 読み取りモデルを確認する | `tag.unassigned` を受けた `projectNoteChanges` が `updateTags` を呼び、外したタグが `tag_names` / `note_search_tags` / `tag_display_names` の 3 列と FTS 索引の `tag_names_fts` 列すべてから同一バッチで除かれる | |
-| 外した後、同じノートに他のタグが残っている | 読み取りモデルを確認する | 残ったタグは 3 列と FTS 索引のすべてに残る（`updateTags` はタグ集合を丸ごと入れ替える） | |
+| move直後のstale route | 外す | primaryで1回引き直し、target scopeだけを変更する | |
+| routeが`purging` | 外す | `NOTE_NOT_FOUND`で付与を変更しない | |
+| 外した後 | 読み取りモデルを確認する | `tag.unassigned` を受けた `projectNoteChanges` が完全snapshotを置換し、外したタグを`tag_names` / `note_search_tags` / `tag_display_names`とFTS `tag_names_fts`から同一バッチで除く | |
+| 外した後、同じノートに他のタグが残っている | 読み取りモデルを確認する | 完全snapshotのタグ集合に含まれる残りのタグは3列とFTS索引のすべてに残る | |

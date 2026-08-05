@@ -83,10 +83,11 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 | SharePass の署名鍵 | 共有パスワードの通過証の署名と検証 | 単一の鍵 |
 | ExportTicket の署名鍵 | 書き出しチケットの署名と検証 | 単一の鍵。SharePass とは別の鍵を使う |
 | `SecretCipher` の鍵束 | 外部連携の資格情報の暗号化と復号 | **版 → 鍵の写像と、現在の版**（[domains/integration.md](../domains/integration.md)） |
+| `ShareTokenProtector` の鍵束 | 共有 URL の再表示に必要なトークンの暗号化と復号 | **版 → 鍵の写像と、現在の版**（[domains/note.md](../domains/note.md)）。資格情報とは用途を分離した鍵を使う |
 | ストレージの配信元 | `StorageUrlPolicy.isInternal` の判定材料（[domains/storage.md](../domains/storage.md)） | 自サービスのストレージを指す URL の前置き |
 | 転送境界のレート制限のしきい値 | サインアップ・匿名の PDF 書き出し・公開検索・招待の発行（下記「レート制限」） | 対象ごとの「60 秒あたりの要求数」。**既定値は本文書が持ち、`AppConfig` はそれを配備ごとに上書きするためだけにある**（規模で変わるが、設計としての妥当な出発点はある） |
 
-`SecretCipher` の鍵だけが単一でないのは、暗号化した値がデータベースに残り続けるためである。署名付きの値は最長でも 24 時間で入れ替わるので鍵を 1 本ずつ差し替えればよいが、暗号化された資格情報は交換前の版で書かれた行が残る。鍵を交換したあとも**旧版を保持し続ける**必要があり、保持をやめた版の行を読むと `SystemError(DataIntegrityError)` になる。旧版をいつ捨てられるかは再暗号化が全行に行き渡ったかで決まる運用上の判断で、設計としては「保持が要る」ことだけを定める。
+`SecretCipher` と `ShareTokenProtector` の鍵が単一でないのは、暗号化した値がデータベースに残り続けるためである。署名付きの値は最長でも 24 時間で入れ替わるので鍵を 1 本ずつ差し替えればよいが、暗号化された資格情報と共有トークンは交換前の版で書かれた行が残る。鍵を交換したあとも**用途ごとの旧版を保持し続ける**必要があり、保持をやめた版の行を読むと `SystemError(DataIntegrityError)` になる。旧版をいつ捨てられるかは再暗号化が全行に行き渡ったかで決まる運用上の判断で、設計としては「保持が要る」ことだけを定める。
 
 `clientKey`（発信元を表す文字列）は `AppConfig` に持たない。材料が **`CF-Connecting-IP` ヘッダー**に確定したためである（[ADR 020](../adr/020-coordination-state.md)）— 配備ごとに変わる値ではなく、コードに書ける決定になった。
 
@@ -219,9 +220,15 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 
 名前から `LOGIN_` を外したのは、共有リンクのパスワード照合（`verifySharePassword`）が同じ `LoginThrottlePolicy` を使うためである。サインインだけの語彙ではない。
 
-招待の発行上限（`INVITATION_LIMIT_REACHED`）はレート制限ではなく**クォータ**なので、この 3 つに含めない（下記「レート制限」）。
+招待の発行上限（`INVITATION_LIMIT_REACHED`）はレート制限ではなく**クォータ**なので、この 4 つに含めない（下記「レート制限」）。
 
 ---
+
+## 複数 scope にまたがる操作
+
+`deleteAccount` と `disconnectIntegration` は複数の Durable Object を同一要求で完了させない。転送境界は `operationId` と `status: "accepted"` を **202 Accepted** で返し、クライアントは operation status をpollする。`deleteAccount` はsessionを直ちに失効させるため、応答に30分有効の署名済みstatus ticketを含める。このticketは当該operationの状態だけを読め、再実行・取消・他データの取得には使えない。
+
+状態は `accepted` / `running` / `completed` / `rejected` / `failed`。`rejected` は唯一のworkspace ownerなど事前条件の不成立で、UIは解消方法を示す。`failed` は再試行不能と確定した場合だけで、通信失敗・応答喪失は `running` のままserver-side recoveryが続ける。同じ冪等keyの再要求には既存operationを返す。
 
 ## レート制限
 

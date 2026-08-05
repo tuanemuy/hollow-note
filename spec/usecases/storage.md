@@ -41,7 +41,7 @@
 6. `Job.enqueueBatch(kind: "conversion", payload: { kind: "conversion", requestedVisibility: visibility, conversionPreference }, requestedBy: userId, scope, total: accepted.length)` で親ジョブを作って保存する。子の `storeUpload` は同じ payload の変換ジョブを作る（[domains/job.md](../domains/job.md) の `JobPayload`）
 7. 呼び出し側は `accepted` の各ファイルを `storeUpload` に `parentJobId` と `conversionPreference` つきで送る。`storeUpload` は受理した 1 件につき変換ジョブを必ず 1 件作るため、子の件数は `total` と一致する（[domains/job.md](../domains/job.md) の batch 親の子ジョブ登録規則）
 
-`scope` は手順 2 で組み立てた**取り込み先の所有文脈**から導出する（`ownerType === "user"` なら `{ type: "user", userId }`、`ownerType === "workspace"` なら `{ type: "workspace", workspaceId: ownerWorkspaceId }`。[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。要求者からは導かない — 参加ワークスペースへ取り込むアップロードの `scope` は `workspace` になる。このユースケースは取り込み先の所有者を入力として 1 つだけ受け取るため、対象を ID の並びで受け取る登録（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）と違って所有文脈が構造的に混在せず、`ValidationError("MIXED_OWNER_SCOPE")` の検査は要らない（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」）。子の `storeUpload` も同じ `ownerType` / `ownerWorkspaceId` を受け取るため、親子の `scope` は一致する。
+`scope` は手順2で組み立てた取り込み先の所有文脈から導出する。要求者からは導かない。対象IDを受ける一括登録もsource ScopeKeyを必須にしたため、いずれの経路も親子のscopeは入力時点で一意になる。
 
 親の `total` は登録後に変えない。子が `total` に届かないのは呼び出しが中断された場合（`storeUpload` 自体が失敗した、クライアントが離脱した）だけで、この異常系は親のリース失効による回収（`reapExpiredJobs` → `failed("timeout")`）に委ねる。既に取り込めたノートは子ジョブの結果として残る。
 
@@ -98,6 +98,8 @@
 10. Drive の自動バックアップが有効なら `Job.enqueue({ target: { type: "storedFile", fileId }, payload: { kind: "driveBackup" }, scope, kind: "driveBackup", requestedBy: userId, parentId: null })` も作る
 11. `UnitOfWorkProvider.run` でファイル・ノート・ジョブを保存し、すべてのイベントを収集する
 
+Note ID は手順 4 の前に operation ID とともに採番し、global D1 の `NoteRouteStore.reserveCreate(noteId, scope, createdBy: userId, operationId)` で `reserved` routeを確保する。手順 11 のscope-local commit後に `activateCreate` し、失敗時は `createBlankNote` と同じ回復規則に従う。`createdBy` はmove後もrouteに残り、membership離脱後の著者refresh台帳になる。
+
 **手順 9 の `requestedVisibility`**。`visibility` が `private` 以外でも、本文がまだないため保管の時点では適用できない。指定は手順 9 の変換ジョブの payload（`requestedVisibility`）として引き継ぎ、変換の成功後に `runConversion` の手順 14 が適用する（`changeNoteVisibility` ユースケースの呼び出しではなく、その手順の複製である。[usecases/conversion.md](./conversion.md) の「手順 14 は複製であって呼び出しではない」）。変換に失敗した場合は非公開のまま残す。手順 1 の事前検査（公開ハンドル／スラッグ）は、この後追いの適用が権限不足で失敗しないようにするためのものである。
 
 **手順 9・10 の `scope`**。どちらも手順 1 で組み立てた**取り込み先の所有文脈**から導出する（`ownerType === "user"` なら `{ type: "user", userId }`、`ownerType === "workspace"` なら `{ type: "workspace", workspaceId: ownerWorkspaceId }`。[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。要求者からは導かない。手順 8 で作るノートの `NoteOwner` と元ファイル（`purpose: "source"`）の `StorageOwner` はいずれもこの所有者そのものなので、`note` を対象とする変換ジョブと `storedFile` を対象とするバックアップジョブは同じ `scope` になる。`parentJobId` があるとき（一括アップロードの子）は、親の `startBulkUpload` が同じ `ownerType` / `ownerWorkspaceId` から導出した値と一致し、親子の `scope` が一致するという不変条件を満たす。
@@ -139,7 +141,7 @@
 
 ### 処理フロー
 
-1. ノートを引き、`NoteAccessPolicy` で `canEdit` を確認する
+1. D1 primaryの`NoteRouteStore.resolve(noteId)`でactive routeを解決し、その1つのscope objectでノート・routeVersion・`canEdit`を確認する。`moving`は切替前source、`purging` / `tombstone`はnot found、scope missはprimaryで1回だけ引き直す
 2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
 4. SVG の場合は `HtmlProcessor.process` と同じサニタイズ規則を適用してから保管する
@@ -193,7 +195,7 @@
 
 ### 入力DTO
 
-`userId`, `fileId`, `expiresInMs: number`
+`userId`, `storageScopeType: "user" | "workspace"`, `storageScopeId`, `fileId`, `expiresInMs: number`
 
 ### 出力DTO
 
@@ -201,10 +203,10 @@
 
 ### 処理フロー
 
-1. `StoredFileRepository.findById` で引く
+1. 入力のstorage ScopeKeyから1つのscope objectを決め、current scopeの`StoredFileRepository.findById`で引く。別scopeのfileIdは存在を漏らさずnot foundとし、全scope探索やfile routeは行わない
 2. 所有者が利用者本人か、所有ワークスペースで `downloadNote` の権限があるかを確認する
 3. `EphemeralFile` で期限を過ぎていれば `NotFoundError("ARTIFACT_EXPIRED")`
-4. `ObjectStorage.createDownloadUrl` を返す
+4. `ObjectStorage.createDownloadUrl` を返す。`expiresInMs` の既定は **5 分**で、正典は [platform/index.md](../platform/index.md) の「転送境界」。入力DTO で受け取るのは配備ごとの上書きのためであり、値そのものを呼び出し側が自由に選んでよいという意味ではない（`exportNote` の再利用の下限 35 分がこの値に乗っている。[usecases/note.md](./note.md)）
 
 ### エラーケース
 
@@ -293,7 +295,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 入力DTO
 
-`fileIds: string[]`
+`fileIds: string[]`, `deletionOperationId: string | null`（既定null）
 
 ### 出力DTO
 
@@ -309,7 +311,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 削除そのものは、UoW のコンテキストを引数に取り自分では `UnitOfWorkProvider.run` を開かない**共有手順**として定義する（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。
 
 1. `StoredFileRepository.listByIds(fileIds)` で引く（既に不在のものは結果に現れないだけで、エラーにしない）
-2. 各件を削除し、`StorageEvents.fileDeleted` を収集する（`objectKey` を含める）
+2. 各件を削除し、`StorageEvents.fileDeleted` を収集する（`objectKey`と呼び出し元の`deletionOperationId`を含める）
 
 `deleteFiles` ユースケースは「UoW を開いてこの手順を実行するだけ」の薄い入口であり、他の書き込みと同一トランザクションで消したい呼び出し元は、`deleteFiles` を呼ばずに自分の UoW の中でこの手順を実行する。
 
@@ -361,11 +363,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-期限を過ぎた生成物を回収する。定期ワーカーから呼ばれる（cron は 1 時間ごと。[platform/index.md](../platform/index.md)）。
+期限を過ぎた生成物を回収する。`registerEphemeral` が当該 scope の最小 `expiresAt` を `scheduled_tasks` に upsertし、その scope object の Alarm から呼ばれる。
 
 ### 入力DTO
 
-`limit: number`（既定 100。1 回の実行あたりのクエリ予算から逆算した値。残りは次の起動で拾う）
+`limit: number`（既定100。1 Alarm turnのCPU時間と `storage.fileDeleted` fan-outを有界にする値）
 
 ### 出力DTO
 
@@ -376,6 +378,8 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 1. `StoredFileRepository.listExpired(now, limit)` を引く
 2. `deleteFiles` を呼んで削除する
 
+`limit` 件に達したら同じtaskを直後に再設定し、未満なら次の `expiresAt` にAlarmを合わせる。global Cronはscope objectを列挙しない。
+
 ### エラーケース
 
 個々の失敗は記録して継続。
@@ -384,11 +388,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-作成から 30 日が経過し、本文から参照されていないメディアを回収する。定期ワーカーから呼ばれる（cron は 1 日 1 回。[platform/index.md](../platform/index.md)）。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
+作成から 30 日が経過し、本文から参照されていないメディアを回収する。scopeで最初のmediaを登録するときに日次taskを自己登録し、そのscope objectのAlarmから呼ぶ。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
 
 ### 入力DTO
 
-`limit: number`（既定 100。1 件ごとに所属ノートを引いて本文を調べるため、1 回の実行あたりのクエリ予算から逆算した値。残りは次の起動で拾う）
+`limit: number`（既定100。1件ごとの本文検査に使うAlarm turnのCPU時間を有界にする値）
 
 ### 出力DTO
 
@@ -396,9 +400,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 処理フロー
 
-1. `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit)` で走査する。所有者を絞らない全体走査のため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）
+1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）
 2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
 3. 現れないものを `deleteFiles` で削除する
+
+処理後は翌日のtaskを自己登録する。`limit`件に達したときは残件を先に処理するため直後にも継続taskを設定し、完了後に日次へ戻す。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。
 
 ### エラーケース
 
@@ -411,11 +417,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-ノートの移動に追随して、その保管ファイルの所有者を移す（`note.moved` の購読）。保存容量の帰属を移動先へ付け替えるために必要。
+move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する内部command。R2 bytesは移動せず、`note.moved` の購読者でもない。
 
 ### 入力DTO
 
-`noteId`, `previousOwner: { type; id }`, `currentOwner: { type; id }`
+`migrationId`, `phase: "snapshotSource" | "stageTarget" | "retireSource"`, `noteId`, `targetOwner`, `files?: readonly MovedFileMetadata[]`
 
 ### 出力DTO
 
@@ -423,10 +429,10 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 処理フロー
 
-1. `StoredFileRepository.listByNote(noteId)` で `purpose` が `source` / `media` / `reference` のファイルを列挙する。`artifact` は対象にしない（`deleteFilesForNote` の手順 1 と同じ絞り込み）。生成物は容量クォータに算入されないため付け替える意味がなく、付け替えると `storage.fileOwnerChanged` が発行されて `applyStorageDelta` が加算されていない容量を旧主体から減算してしまう（[domains/storage.md](../domains/storage.md)）。保有期間の管理も所属ノートではなく `expiresAt` で行い、`collectExpiredArtifacts` が回収する
-2. 所有者が既に移動先と一致するものは飛ばす
-3. 残りに `StoredFile.changeOwner` を適用して保存し、`storage.fileOwnerChanged` を収集する
-4. 同じイベントを 2 回受け取っても、2 の判定によって結果は変わらない
+1. `snapshotSource` はsource scopeの `source` / `media` / `reference` metadataを列挙する。artifactはJob scopeに残しTTLで回収する
+2. `stageTarget` は同じobject keyを指すmetadataをtarget ownerで登録する。R2 copyと `storage.fileOwnerChanged` は発行しない
+3. `retireSource` はroute切替後にsource metadataを削除するが、R2 delete eventは発行しない（target metadataが同じkeyを参照中）
+4. 各phaseは `migrationId + phase` で重複排除し、応答喪失時も二重metadataやR2削除を作らない
 
 ### エラーケース
 
@@ -443,7 +449,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 入力DTO
 
-`noteId`
+`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -451,10 +457,10 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 処理フロー
 
-1. `StoredFileRepository.listByNote(noteId)` で `purpose` が `source` / `media` / `reference` のファイルを列挙する。`artifact` は対象にしない（期限（`expiresAt`）の経過時に `collectExpiredArtifacts` が回収する）
-2. `deleteFiles` を呼んで削除する（各件について `storage.fileDeleted` が収集され、実体の回収は `deleteStoredObjects` が行う）
-3. `ReferenceImportRecordRepository.deleteByNote(noteId)` で外部参照の取得記録と要約を消す（[ADR 014](../adr/014-import-result-provenance.md)）。記録はノートに紐づく Storage 側のデータなので、専用の購読者を置かずこの経路に相乗りさせる。ノートが消えれば突き合わせる本文もなくなり、記録だけが残っても読む者がいない
-4. 削除済みのファイルは `listByNote` に現れず、`deleteByNote` は 2 回目に 0 件を返すため、同じイベントを 2 回受け取っても結果は変わらない（冪等）
+1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`StoredFileRepository.listDeletableByNote(noteId, 100)` で `purpose` が `source` / `media` / `reference` のファイルを最大100件列挙する。`artifact` は対象にしない
+2. `deleteFiles(fileIds, deletionOperationId)` を呼んで削除する（各`storage.fileDeleted`へ同じtokenを引き継ぐ）
+3. 100件なら同じUoWで`storage.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。100件未満になったturnから`ReferenceImportRecordRepository.deleteByNote(noteId, 100)`で取得記録と要約を最大100件ずつ消し、100件なら同じtaskを再登録する（[ADR 014](../adr/014-import-result-provenance.md)）
+4. 両集合が100件未満になったときだけ完了する。削除済み行は次回に現れず、同じoperation/tokenで再実行しても結果は変わらない（冪等）
 
 ### エラーケース
 
@@ -467,11 +473,11 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-利用者・ワークスペースの削除に伴って、その所有ファイルをすべて回収する（`identity.user.deleted` / `workspace.deleted` と、継続要求 `storage.ownerDeleteContinued` の購読）。
+scope cleanup commandに従って所有file metadataを回収する。継続はcurrent scopeの `scheduled_tasks` / Alarmで行う。
 
 ### 入力DTO
 
-`ownerType`, `ownerId`, `batchSize: number`（既定 100）
+`deletionOperationId`, `scope: ScopeKey`, `batchSize: number`（既定・最大100）
 
 ### 出力DTO
 
@@ -479,9 +485,9 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 処理フロー
 
-1. `StoredFileRepository.listByOwner` を `batchSize` 件読み、`deleteFiles` を呼ぶ
-2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { ownerType, ownerId }` を 1 件だけ**、その削除と同じ `UnitOfWorkProvider.run` の中で outbox に積む（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。次の配送で続きを処理する。この継続要求の購読者は本ユースケースだけである
-3. そのバッチで 1 件も削除できなかった場合は継続要求を積まず、失敗として返す（キューの再試行と DLQ に委ねる）
+1. 入力`scope`から`StorageOwner`を組み立てる。各UoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼び、`StoredFileRepository.listByOwner` を `batchSize` 件読んで`deleteFiles(fileIds, deletionOperationId)`を呼ぶ
+2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { scope, deletionOperationId }` を 1 件だけ**、その削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
+3. 対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まず、現在taskをbackoffする。上限到達時は `failed` + global運用通知とする。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）
 
 `batchSize` の既定 100 は、1 バッチのクエリ数（列挙 1 + 多行 DELETE 1 + 多行 outbox INSERT 1 = 3。件数によらない）ではなく、**1 回で発行するイベント数**を抑えるための上限である。`deleteFiles` はファイル 1 件につき `storage.fileDeleted` を出し、その購読者（`deleteStoredObjects`）が R2 の実体を消す。正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
 

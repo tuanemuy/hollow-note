@@ -62,7 +62,7 @@ Tag = {
 | `create` | `params: { id: string; scope: TagScope; name: string }, now: Date` | `WithEventDrafts<Tag, TagEvent>` | `TagName.create` で検証・正規化して生成。`tag.created` を発行 |
 | `rename` | `tag: Tag, name: string, now: Date` | `WithEventDrafts<Tag, TagEvent>` | 正規化後が同じなら表示名のみ更新。異なれば更新し `tag.renamed`（旧名を含む）を発行 |
 
-削除と統合はユースケースが `TagEvents.deleted` / `TagEvents.merged` を直接発行する。削除では、ユースケースが削除前に付与を読み、同一 UoW で付与 1 件ごとに `TagEvents.unassigned` を併発する（読み取りモデルの投影は `tag.unassigned` が担い、`tag.deleted` は監査用）。
+削除と統合は再開可能なlocal operationが最大200付与ずつ処理する。operation開始後は対象タグをlockし、assign/rename/別operationを拒否する。各pageで付与変更・対象Noteのprojection revision bump・個別再投影taskを同じUoWに入れ、全page完了後だけ `TagEvents.deleted` / `TagEvents.merged` を発行する。
 
 ### TagAssignment（集約ルート）
 
@@ -121,7 +121,7 @@ RelocationPlan = Readonly<{
 }>;
 ```
 
-`reassign` の各要素は「この付与を削除し、移動先の `targetTagId` で付与を作り直す」ことを表す。`drop` は移動先に同名のタグがないため外れる付与。作り直す付与の `assignedBy` は元の付与の値を引き継ぐ（付け替えは `note.moved` の購読で行われるため、操作者を入力に要求しない）。
+`reassign` の各要素は「source snapshotの付与をtarget scopeの `targetTagId` で作る」ことを表す。`drop` は移動先に同名Tagがない付与。`assignedBy` はsnapshotの値を引き継ぎ、move Sagaは操作者を改めて要求しない。
 
 移動先に存在しないタグを新規作成することはしない。名前が一致するタグだけを引き継ぐ。
 
@@ -136,12 +136,12 @@ interface TagRepository extends TransactionalRepository<Tag, TagId> {
   findByScopeAndName(scope: TagScope, normalized: string): Promise<Versioned<Tag> | null>;
   listByScope(scope: TagScope): Promise<readonly Tag[]>;
   listByIds(ids: readonly TagId[]): Promise<readonly Tag[]>;
-  deleteByScope(scope: TagScope): Promise<number>;
-  deleteUnusedInScope(scope: TagScope): Promise<readonly TagId[]>;
+  deleteByScope(scope: TagScope, limit: number): Promise<number>;
+  deleteUnusedInScope(scope: TagScope, limit: number): Promise<readonly TagId[]>;
 }
 ```
 
-`deleteUnusedInScope` は、そのスコープのタグのうち `TagAssignment` を 1 件も持たないものをすべて消し、消した ID を返す（呼び出し元が `TagEvents.deleted` を組み立てるため）。**単一の文で削除し、未使用かどうかの判定を削除と同時に行う**こと — 列挙してから 1 件ずつ消す実装は、削除までの間に付与が付いたタグを巻き込むうえ、クエリ数がタグの数に比例して 1 回の実行あたりの予算を超える（[ADR 018](../adr/018-query-budget.md)、[usecases/tag.md](../usecases/tag.md) の `deleteUnusedTags`）。
+`deleteByScope`はassignmentが0件になったTagだけをTagId順の先頭から最大`limit`件（1〜100）削除する。FK CASCADEは安全網でありscope cleanupの作業分割には使わない。`deleteUnusedInScope` は、そのスコープのタグのうち `TagAssignment` を持たずoperation lockもないものをTagId順で最大`limit`件だけ1文で消し、IDを返す。`limit`は1〜200。未使用判定と削除を同じ文にし、200件ならcursorを持たず次のAlarm turnで残存行を先頭から処理する。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("TAG_NAME_ALREADY_USED")`、`SystemError(DatabaseError)`
 
@@ -153,14 +153,56 @@ interface TagAssignmentRepository {
   findByTagAndNote(tagId: TagId, noteId: NoteId): Promise<TagAssignment | null>;
   listByNote(noteId: NoteId): Promise<readonly TagAssignment[]>;
   listByNotes(noteIds: readonly NoteId[]): Promise<readonly TagAssignment[]>;
-  listByTag(tagId: TagId): Promise<readonly TagAssignment[]>;   // タグ削除前の付与の列挙（deleteTag が tag.unassigned を併発するために読む）
+  listByTag(tagId: TagId, page: TagAssignmentPage): Promise<readonly TagAssignment[]>;
   countByNote(noteId: NoteId): Promise<number>;
   delete(id: AssignmentId): Promise<void>;
-  deleteByTag(tagId: TagId): Promise<number>;
-  deleteByNote(noteId: NoteId): Promise<number>;
-  reassign(fromTagId: TagId, toTagId: TagId): Promise<number>;   // 統合時に付与を寄せる。衝突する行は削除する
+  deleteBatchByTag(tagId: TagId, limit: number): Promise<readonly TagAssignment[]>;
+  deleteByScope(scope: TagScope, limit: number): Promise<number>;
+  deleteByNote(noteId: NoteId, limit: number): Promise<number>;
+  reassignBatch(fromTagId: TagId, toTagId: TagId, limit: number): Promise<readonly NoteId[]>;   // 衝突行削除を含み、影響Noteを返す
 }
+
+type TagAssignmentPage = Readonly<{
+  afterNoteId: NoteId | null;   // この NoteId より後ろを読む（キーセット。件数を数える OFFSET ではない）
+  limit: number;
+}>;
 ```
+
+**`listByTag` は必ず `noteId` の昇順で返す。** 順序は契約であって実装の裁量ではない — 読み取りモデルのタグのファンアウト（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）が `afterNoteId` をカーソルにしてページを進めるため、順序が安定しないとノートを取りこぼす。索引は `tag_assignments_tag_note_uq` (`tag_id`, `note_id`) がそのまま使える（[database/index.md](../database/index.md)）。
+
+`listByTag` / delete / reassignはいずれも最大200件のpage/batchだけを扱う。全件を返す契約は提供しない。scope cleanup用`deleteByScope`もTagが同scopeであるassignmentを最大200件だけ消す。delete/reassign batchは影響Noteを返し、同じUoWでprojection revisionをbumpできるようにする。
+
+### TagOperationStore
+
+```ts
+interface TagOperationStore {
+  startDelete(input: { operationId: string; tagId: TagId; scope: TagScope }): Promise<void>;
+  startMerge(input: { operationId: string; sourceTagId: TagId; targetTagId: TagId; scope: TagScope }): Promise<void>;
+  startDeleteUnused(input: { operationId: string; scope: TagScope }): Promise<void>;
+  find(operationId: string): Promise<TagOperation | null>;
+  assertUnlocked(tagIds: readonly TagId[]): Promise<void>;
+  addProcessed(operationId: string, count: number): Promise<void>;
+  complete(operationId: string): Promise<void>;
+  markFailed(operationId: string, errorCode: string): Promise<void>;
+  retryFailed(operationId: string): Promise<void>;
+  abortUnstarted(operationId: string): Promise<void>;
+}
+
+type TagOperation = Readonly<{
+  operationId: string;
+  kind: "delete" | "merge" | "deleteUnused";
+  scope: TagScope;
+  sourceTagId: TagId | null;
+  targetTagId: TagId | null;
+  affectedCount: number;
+  processedCount: number;
+  state: "running" | "completed" | "failed" | "aborted";
+}>;
+```
+
+operation rowと対象tagのUNIQUE lockを同じscope SQLiteに置く。`assignTag` / `unassignTag` / `renameTag` / `deleteTag` / `mergeTags` は`assertUnlocked`を同じtransactionで呼ぶ。worker停止時もoperationとscheduled taskが残り、Alarmが同じoperation IDで再開する。retry上限では`markFailed`がoperationとtaskをfailedにし、lockは自動解放しない。`retryFailed`は同じoperation/taskをrunning/pendingへ戻し、処理済みpageをやり直さず残集合から再開する。`abortUnstarted`は`processedCount = 0`のfailed operationだけを`aborted`へ遷移させ、task削除とlock解放を同じtransactionで行う。aborted rowは冪等応答のため保持し、同じabortの再送にはabortedを返す。1件でも処理済みなら元のTag/Assignment集合へ原子的に戻せないため中止を拒否し、retryだけを許す。
+
+**`afterNoteId` はキーセットであってオフセットではない。** `WHERE tag_id = ? AND note_id > ? ORDER BY note_id LIMIT ?` と解釈する。読んだ件数を数える `OFFSET` にすると、カーソルより前の付与が並行して消えるたびに後続のノートを静かに飛ばす — 付与は `unassignTag` / `deleteTag` の CASCADE / `deleteAssignmentsForNote` / `relocateAssignmentsForNote` / `mergeTags` の衝突行削除によって、ファンアウトの進行中にも消えうる。位置を ID で表せば、前方の削除は残りの行の位置を動かさない（[domains/index.md](./index.md) の「継続要求」）。
 
 **エラーケース**: `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`SystemError(DatabaseError)`
 
@@ -198,8 +240,9 @@ type TagUsage = Readonly<{
 | --- | --- | --- |
 | `tag.created` | `{ tagId, scope, name }` | 監査 |
 | `tag.renamed` | `{ tagId, scope, previousName, currentName }` | 読み取りモデルの投影 |
-| `tag.merged` | `{ sourceTagId, targetTagId, scope }` | 読み取りモデルの投影 |
-| `tag.deleted` | `{ tagId, scope }` | 監査（投影は併発される `tag.unassigned` が担う） |
+| `tag.merged` | `{ sourceTagId, targetTagId, scope, affectedNotes }` | 完了監査。各Noteの投影はpageごとの個別再投影taskが担う |
+| `tag.deleted` | `{ tagId, scope, affectedNotes }` | 完了監査。各Noteの投影は個別再投影taskが担う |
+| `tag.unusedBatchDeleted` | `{ tagIds, scope }`（最大200） | 未使用タグ一括削除の監査 |
 | `tag.assigned` | `{ tagId, noteId, scope }` | 読み取りモデルの投影 |
 | `tag.unassigned` | `{ tagId, noteId, scope }` | 読み取りモデルの投影 |
 
@@ -213,6 +256,6 @@ TagErrorCode =
 
 ## ユースケース（概要）
 
-`assignTag`, `unassignTag`, `listTagsWithUsage`, `suggestTags`, `renameTag`, `mergeTags`, `deleteTag`, `deleteUnusedTags`, `listTagsForNotes`, `relocateAssignmentsForNote`, `deleteAssignmentsForNote`, `deleteTagsForScope`
+`assignTag`, `unassignTag`, `listTagsWithUsage`, `suggestTags`, `renameTag`, `mergeTags`, `deleteTag`, `deleteUnusedTags`, `getTagOperation`, `retryTagOperation`, `listTagsForNotes`, `relocateAssignmentsForNote`, `deleteAssignmentsForNote`, `deleteTagsForScope`
 
 詳細は [usecases/tag.md](../usecases/tag.md)。

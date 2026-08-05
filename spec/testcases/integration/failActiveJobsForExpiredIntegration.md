@@ -11,6 +11,10 @@
 | 失敗させたジョブ | 破棄された生成物を確認する | 「共通: 強制終端の後始末」の 2 を規則どおり適用するが、この経路の回収対象は実際には空になる。対象を `provider` に依存する `kind`（`conversion` / `regeneration` / `driveBackup` / `bulkBackup`）に絞っており、生成物（`purpose: "artifact"`）を持つのは `pdfExport` / `bulkExport` だけで、batch 親も直接は終端させないためである（`disconnectIntegration` と同じ理由。規則は経路ごとに省かず同じ形で適用する） | |
 | 同じ利用者に `queued` のジョブがある | 処理する | 未終端のため対象となり、`failed("providerAuthFailed")` になる | |
 | 他の利用者が同じプロバイダーの実行中ジョブを持つ | 処理する | 他の利用者のジョブには触れない（対象は `listActiveByRequester(userId)` の範囲） | |
+| 取り消し対象の絞り込み | 引くクエリを確認する | `listActiveByRequester(userId)` を `limit: 100` で引く | |
+| 網が 100 件を返した | 処理する | 失敗させたジョブの保存と同じ UoW で継続要求 `job.terminationContinued { origin: { path: "integrationExpired", userId, provider } }` を積む。続きは `continueForcedTermination` が引き受ける | |
+| 継続要求の `origin` | 遷移の再現を確認する | `path` は `disconnectIntegration` ではなく `integrationExpired`。**9 経路で唯一この経路だけが `cancel` ではなく `fail` を当てる**ため、続きも `path` から遷移を導いて `Job.fail("providerAuthFailed")` を当てる。`cause` だけを運ぶ形にすると 2 巡目で `canceled` にすり替わり、履歴と本文の理由が 1 巡目と食い違う | |
+| 継続で終端したジョブの対象ノートが `processing` のまま | 続きを処理する | `cause.noteFailureReason` も `path` から導くため `providerAuthFailed` のままで、1 巡目と同じ表示になる | |
 | 対象の未終端ジョブが 1 件もない | 処理する | 何もせず `failedCount: 0` で成功として返る | |
 | 同じイベントを 2 回受け取る | 2 回処理する | 2 回目は対象が既に終端で `listActiveByRequester` に現れず、`failedCount: 0` で終わる（冪等） | |
 | ワーカーが同時に同じジョブを終端化した | 処理する | 該当ジョブを読み直し、既に終端なら何もしない（版の競合を表出させない） | |

@@ -13,3 +13,6 @@
 | ワークスペースを 20 件所有 | 作成する | `BusinessRuleError(WorkspaceQuotaExceeded)` が投げられる | |
 | 作成直後 | 公開状態を確認する | `publication: "private"` になっている | |
 | 同じスラッグで 2 つの要求が同時に走る | 両方が作成する | 片方は成功、もう片方は `ConflictError("SLUG_ALREADY_USED")` になる | |
+| slug / membership reservation後にworkspace commitが失敗 | 作成する | operation IDでglobal reservationを解放し、directoryにactive workspaceを残さない | |
+| local commit後にglobal activation応答を失う | recoveryを実行する | 同じoperation IDでedge / slug / directoryをactiveにし、Workspaceを二重作成しない | |
+| pending workspaceを含め所有数20件 | 作成する | quota回避を防ぐため `WorkspaceQuotaExceeded` | |

@@ -15,3 +15,6 @@
 | 上限に達した状態で招待が 1 件受諾される | 招待する | 未処理の件数が減るため成功する（時間の経過を待たずに枠が空く） | |
 | メール送信基盤が失敗する | 招待する | 招待は成立し、送信失敗が記録される | |
 | 招待作成直後 | 有効期限を確認する | 発行から 14 日後になっている | |
+| 新規招待 | route処理を確認する | global reserved → local Invitation commit → global activeの順で、active後にメールを送る | |
+| route予約後にlocal commitが失敗する | 再試行する | reservationをabandonし、Invitationもメールも残らない | |
+| local commit後にactivate応答を失う | recoveryする | 同じoperation IDでactive化し、Invitationを二重作成しない | |

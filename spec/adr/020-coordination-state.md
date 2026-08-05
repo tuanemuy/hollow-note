@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+superseded by [001. scope sharded data plane](../../.adr/001-scope-sharded-data-plane.md)
 
 ## コンテキスト
 
@@ -39,7 +39,7 @@
 
 ### 転送境界の粗いレート制限は Workers の Rate Limiting binding で行う
 
-`RATE_LIMITED` を返す 3 経路（サインアップ・匿名の PDF 書き出し・公開検索。[presentation/index.md](../presentation/index.md)）は、**D1 では数えない**。Workers の Rate Limiting binding を使う。
+`RATE_LIMITED` を返す 4 経路（サインアップ・匿名の PDF 書き出し・公開検索・招待の発行。[presentation/index.md](../presentation/index.md)）は、**D1 では数えない**。Workers の Rate Limiting binding を使う。
 
 分ける理由は、要求される保証が違うからである。`THROTTLED` / `LOCKED` は「10 回で施錠」という正確な計数が要件で、1 回でも取りこぼせば設計が意味を失う。一方 `RATE_LIMITED` は「無認証の経路が乱用されない程度に粗く抑える」もので、presentation 層の文書自身が「`THROTTLED` と同じ保証を持てない」と明記している。Rate Limiting binding は Cloudflare のロケーション単位で数える緩い（permissive・結果整合な）機構であり、まさにこの粗さに対応する。逆に、公開検索のような無認証・高頻度の経路を D1 で数えると、検索 1 回につき書き込みが 1 回増える。
 

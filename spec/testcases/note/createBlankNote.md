@@ -11,3 +11,7 @@
 | — | 201 文字のタイトルで作成する | `BusinessRuleError(InvalidTitle)` が投げられる | |
 | 存在しないワークスペース ID | 作成する | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる | |
 | 作成直後 | `styleMode` を確認する | `default` になっている | |
+| route予約後にscope-local commitが失敗する | 作成する | reserved routeをoperation IDで解放し、外部からNoteへ到達できない | |
+| scope-local commit後にactivation応答を失う | 再試行する | 同じoperation IDでrouteをactiveにし、Noteを二重作成しない | |
+| reserved routeが期限切れ | recoveryを実行する | 対象scopeにNoteがあればactivateし、なければreservationを削除する | |
+| workspaceにNoteを作成する | routeを確認する | immutable `created_by` に作成者userIdが入り、membership離脱やNote move後も著者refresh台帳として残る | |

@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+承認済み（local / public の配置と再構築経路を [S-001](../../.adr/001-scope-sharded-data-plane.md) が追加）
 
 ## コンテキスト
 
@@ -20,11 +20,11 @@
 
 ## 決定
 
-- 一覧・検索・タイムライン・公開検索・サイトマップの読み取りは、書き込みモデルではなく専用の読み取りモデル `note_search` に対して行う
-- `note_search` は 1 ノート 1 行。本文から抽出したテキスト、タグ名の連結、著者の表示名とハンドル、ワークスペース名とスラッグを非正規化して持つ
+- 一覧・検索は、書き込みモデルではなく専用の読み取りモデルに対して行う。private の一覧・検索は各scope DOの `note_search`、公開検索・公開タイムライン・サイトマップはglobal D1の `public_note_search` を読む
+- local `note_search` とglobal `public_note_search` はともに 1 ノート 1 行。本文から抽出したテキスト、タグ名の連結、著者の表示名とハンドル、ワークスペース名とスラッグを非正規化して持つ
 - 全文検索は SQLite の FTS5 仮想テーブルを `note_search` に対応づけて構成する。トークナイズと同期の方式は [ADR 011](./011-bigram-search.md) に従う
 - 更新はドメインイベントを購読するプロジェクションが行う。Note / Tag / Identity / Workspace のイベントがそれぞれ該当列を更新する
-- 書き込み側（`NoteRepository`）は読み取りモデルを一切参照しない。読み取り側（`NoteQueryService`）は書き込みモデルを一切参照しない
+- 書き込み側（`NoteRepository`）は読み取りモデルを一切参照しない。読み取り側（`LocalNoteQueryService` / `PublicNoteQueryService`）は書き込みモデルを一切参照しない
 - 投影は結果整合とする。アウトボックス経由の配送は少なくとも 1 回であり順序保証がないため、プロジェクションは冪等な上書きとして実装する
 - 投影の遅延が許されない読み取り（ノート詳細、共有リンクの解決、権限判定）は書き込みモデルから直接読む
 
@@ -44,7 +44,7 @@
 
 ### 検索だけを外部の検索サービスに委ねる
 
-運用は楽になるが、Cloudflare 上で完結させる前提から外れ、依存とコストが増える。D1 の FTS5 で要件を満たせる規模と判断した。不採用。
+運用は楽になるが、Cloudflare 上で完結させる前提から外れ、依存とコストが増える。scope DO と D1 の FTS5 で要件を満たせる規模と判断した。不採用。
 
 ここで引いている「1 つの基盤の上で完結させる」は、[ADR 015](./015-cloudflare-runtime.md) で確定した決定である。したがってこの代替案は前提の側から不採用が確定した。009 は不採用理由だけでなく決定そのもの（FTS5 を `note_search` に対応づける）も前提に乗っているため、将来 前提を動かすときの影響の範囲は [ADR 一覧と前提依存マップ](./index.md) から引くこと。
 
@@ -52,8 +52,8 @@
 
 - `note_search` テーブルと、それに対応する FTS5 仮想テーブルが必要になる
 - タグの AND 絞り込み用に `note_search_tags`（`note_id` × 正規化済みタグ名）テーブルが必要になる。絞り込みは本表への JOIN による完全一致で行い、`note_search` のタグ名の連結列は関連度にのみ寄与させる（[ADR 011](./011-bigram-search.md)）
-- プロジェクションを担うイベントハンドラーが必要になる。購読するイベントは Note のイベントのうち**投影列を変えるもの**（`note_search` は Note の列を最も多く写すため、投影列を変えるイベントが Note に増えれば購読も増える。どのイベントを購読し、どれを購読しないかの一覧は [usecases/note.md](../usecases/note.md) の `projectNoteChanges` を正とする — 現状は `note.published` / `note.shareLinkReissued` / `note.sharePasswordChanged` の 3 件が非購読で、前者は `note.visibilityChanged` と必ず併発し、残る 2 件は投影列を 1 つも変えない）、`tag.assigned` / `tag.unassigned` / `tag.renamed` / `tag.merged`（`tag.deleted` は購読しない — タグ削除時は付与ごとに併発される `tag.unassigned` が投影を担い、`tag.deleted` 自体は監査用）、`identity.user.handleChanged` / `identity.user.profileUpdated`（表示名）、`identity.user.deleted`（退会した作成者の著者表示を「退会した利用者」に置き換える。行は削除しない）、`workspace.slugChanged` / `workspace.published` / `workspace.unpublished`。ワークスペース名の変更は `workspace.profileUpdated` を購読して反映する
+- プロジェクションを担うイベントハンドラーが必要になる。Note/tagの変更はノート単位の完全snapshot、Identity/Workspace変更はrouteを200件ずつページングして個別再投影する。merge/delete operationは各assignment pageでrevision bumpと再投影taskを保存するため、完了監査eventを投影しない。購読一覧の正典は [usecases/note.md](../usecases/note.md) の `projectNoteChanges` とする
 - `workspace.created` と `identity.user.created` は購読しない。作成直後のワークスペース・利用者には投影対象のノートが 1 件も存在せず（`createWorkspace` はノートを作らない）、更新は必ず 0 行になるためである
 - 一覧に表示される内容は最大で数秒遅れうる。利用者の自身の操作については、操作元の画面が楽観的更新で即時反映するため体感上の遅延は生じない
-- 投影が失われた場合に備え、書き込みモデルから全件を再投影するバッチが必要になる
+- 投影が失われた場合に備え、local は対象scope内をページングする再投影、public はglobal D1の `note_routes` をページングして各scopeを1点参照する再投影が必要になる。全DOの列挙には依存しない
 - 読み取りモデルにはアクセス制御に使える情報（`visibility`、`owner`、`lifecycle`）を含める。公開検索は `visibility = 'public'` かつ `lifecycle = 'active'` の行のみを対象とする

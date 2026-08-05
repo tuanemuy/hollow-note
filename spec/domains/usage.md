@@ -163,7 +163,7 @@ interface LlmUsageRepository {
   find(userId: UserId, period: BillingPeriod): Promise<Versioned<LlmUsage> | null>;
   insert(usage: LlmUsage): Promise<void>;
   save(usage: LlmUsage, expectedVersion: ExpectedVersion<LlmUsage>): Promise<void>;
-  deleteByUser(userId: UserId): Promise<number>;
+  deleteByUser(userId: UserId, limit: number): Promise<number>;
 }
 ```
 
@@ -180,7 +180,7 @@ interface LlmUsageRepository {
 
 購読側（`applyStorageDelta`）の冪等性は、イベント ID による重複排除で担保する。加減算は再適用が非可換で、処理そのものからは冪等性を引き出せないため、`IdempotencyStore`（横断的ポート。[index.md](./index.md) を参照）が必須となる購読者にあたる。処理済みイベント ID を記録して重複配送を弾き、処理済みの記録と集計の更新は同一 UoW で原子的に行う。`subtract` の 0 丸めは防御的措置にすぎず、冪等性の根拠ではない。
 
-容量の集計は `purpose: "artifact"` のファイルを対象にしない。生成物（PDF / ZIP）は期限付きで自動回収されるため、容量クォータに算入しない。除外は加算・減算だけでなく**所有者の付け替えにも及ぶ**。`storage.fileStored` / `storage.fileDeleted` / `storage.fileOwnerChanged` の 3 型すべてで `purpose` を見て artifact を落とす — artifact は一度も加算されていないので、付け替えで旧主体から減算すれば加算していない量を引くことになり、集計が負に振れる（`subtract` の 0 丸めが働けば消費量そのものが失われる）。棚卸し（`recalculateStorageUsage` の `sumSizeByOwner`）も同じ除外条件で数えるため、増分と全数のどちらで数えても同じ値になる。
+容量の集計は `purpose: "artifact"` を対象にしない。生成物は期限付きで自動回収されるためである。scope間moveのsnapshotもsource / media / referenceだけを合計し、artifactをsource debit / target creditへ含めない。棚卸しの `sumSizeByOwner` も同じ除外条件を使う。
 
 ## エラーコード
 

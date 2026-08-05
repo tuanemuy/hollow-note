@@ -157,7 +157,7 @@ CredentialResolution =
 
 `resolved` の `updated` が `null` でなければ呼び出し側が保存する（トークンの更新または `lastUsedAt` の更新が起きた場合）。これにより `lastUsedAt` が実際の利用に追随する。
 
-再連携が必要なことは戻り値の分岐で表し、例外にはしない。`TokenRefresher.refresh` が `ValidationError("REFRESH_TOKEN_REJECTED")` で拒否したときはリフレッシュトークンごと失効しているため `resolve` が `markExpired` を適用するが、その結果（`ExpiredConnection` と `integration.expired` の草稿）は保存を要する状態変化であり、例外に載せて運ぶと保存の責務が型から見えなくなるためである。呼び出し側は `reauthorizationRequired` を受け取ったら、`expired` が非 `null` ならその連携と草稿を**同一 Unit of Work で保存してから**、自分の文脈に応じた失敗（利用者の要求からの呼び出しなら `BusinessRuleError(ReauthorizationRequired)`、ジョブワーカーからの呼び出しなら `Job.fail("providerAuthFailed")`）に変換する。`expired` が `null` になるのは既に `expired` として保存済みの連携を渡した場合と、リフレッシュトークンを持たない失効の場合で、どちらも保存すべき変化はない。
+再連携が必要なことは戻り値の分岐で表し、例外にはしない。`TokenRefresher.refresh` が `ValidationError("REFRESH_TOKEN_REJECTED")` で拒否したときはリフレッシュトークンごと失効しているため `resolve` が `markExpired` を適用するが、その結果（`ExpiredConnection` と `integration.expired` の草稿）は保存を要する状態変化であり、例外に載せて運ぶと保存の責務が型から見えなくなるためである。呼び出し側は `reauthorizationRequired` を受け取ったら、`expired` が非 `null` ならその連携と草稿を**global D1 の同一 Unit of Work で保存してから**、自分の文脈に応じた失敗（利用者の要求からの呼び出しなら `BusinessRuleError(ReauthorizationRequired)`、ジョブワーカーからの呼び出しなら scope-local の `Job.fail("providerAuthFailed")`）に変換する。connection と scope-local Job / Note を同じ UoW に入れない。scope-local 保存が競合しても、資格情報の更新・失効は正しいglobal状態なので巻き戻さず、ジョブの再試行が現在状態を読み直す。`expired` が `null` になるのは既に `expired` として保存済みの連携を渡した場合と、リフレッシュトークンを持たない失効の場合で、どちらも保存すべき変化はない。
 
 戻り値が表すのは「解決できた」「再連携が必要」の 2 つだけである。`TokenRefresher.refresh` の通信失敗や `SecretCipher` の処理失敗（`SystemError(ExternalServiceError)`）は失効とみなさず、`CredentialResolution` には現れずに例外としてそのまま伝播する（判別ユニオンに畳むと、再試行すれば直る失敗が「再連携が必要」として恒久的な失敗に見えてしまう）。呼び出し側は再試行可能な失敗として扱う — 利用者の要求からの呼び出しならそのまま `SystemError` を返し、ジョブワーカーからの呼び出しなら `Job.fail("unknown")` として再試行に委ねる。
 
@@ -185,7 +185,7 @@ BackupDecision = { kind: "upload" } | { kind: "replace"; recordId: BackupRecordI
 interface ExternalConnectionRepository extends TransactionalRepository<ExternalConnection, ConnectionId> {
   findByUserAndProvider(userId: UserId, provider: ProviderKind): Promise<Versioned<ExternalConnection> | null>;
   listByUser(userId: UserId): Promise<readonly ExternalConnection[]>;
-  deleteByUser(userId: UserId): Promise<number>;
+  deleteByUser(userId: UserId, limit: number): Promise<number>;
 }
 ```
 
@@ -197,10 +197,12 @@ interface ExternalConnectionRepository extends TransactionalRepository<ExternalC
 interface BackupRecordRepository extends TransactionalRepository<BackupRecord, BackupRecordId> {
   findByNoteAndFile(noteId: NoteId, sourceFileId: StoredFileId): Promise<Versioned<BackupRecord> | null>;
   listByNotes(noteIds: readonly NoteId[]): Promise<readonly BackupRecord[]>;
-  deleteByNote(noteId: NoteId): Promise<number>;
-  deleteByUser(userId: UserId): Promise<number>;
+  deleteByNote(noteId: NoteId, limit: number): Promise<number>;
+  deleteByUser(userId: UserId, limit: number): Promise<number>;
 }
 ```
+
+`ExternalConnectionRepository` は global D1 に置き、利用者の provider credential を一意に管理する。`BackupRecordRepository` は対象 Note / source file と同じ scope DO に束縛し、scope をまたぐ `deleteByUser` は提供しない。どちらの`deleteByUser`も最大`limit`件だけを削除し、account deletion は directory で列挙した各 scope に削除commandを送る。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 

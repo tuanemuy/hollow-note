@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+承認済み（本文サイズとcontentless FTSの決定は維持。Note / private FTSはscope DO、public FTSはglobal D1へ置くことを [S-001](../../.adr/001-scope-sharded-data-plane.md) が追加）
 
 ## コンテキスト
 

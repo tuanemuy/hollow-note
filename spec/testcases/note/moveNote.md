@@ -13,10 +13,24 @@
 | 移動元にのみ存在するタグが付いている | 移動する | `droppedTagNames` にそのタグ名が含まれ、付与が外れる | |
 | 移動先に同名のタグがある | 移動する | そのタグに付け替えられる | |
 | 元ファイルとメディアを持つノート | 移動する | 保管ファイルの所有者も移動先に移り、使用量が付け替わる | |
-| 移動が成功した | `note.moved` の購読者を確認する | Tag の `relocateAssignmentsForNote` / Storage の `relocateFilesForNote` / Note の `projectNoteChanges`（所有者・ワークスペース列の解決し直し）/ Usage の `applyStorageDelta` の 4 つが受け取る | |
+| 移動が成功した | snapshotを確認する | Note・Revision・Tag assignment・StoredFile metadata・Backup・Usage deltaを1つのmigration snapshotとしてtarget scopeへ取り込み、target local projectionも同じscopeで作る | |
 | 移動先の使用量が既に容量クォータを超えている | 移動する | 移動は成功する（移動時に容量クォータを検査しないのは意図的な設計。クォータの強制は取り込み時のみ） | |
 | 移動によって移動先がクォータを超える | 移動する | 移動は成功し、以後の新規アップロードが拒否されるだけになる（`applyStorageDelta` は消費量を付け替えるが判定はしない） | |
 | 移動の確定時点で移動元のワークスペースから除名されていた | 移動する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`ensureMovable` の `AccessDenied` には到達しない） | |
 | 移動の確定時点で移動先のワークスペースから除名されていた | 移動する | `BusinessRuleError(InsufficientRole)` が投げられる | |
+| 事前確認後・source freeze前に移動元Membership versionが変わる | freezeする | actorと期待Membership versionをlocal transactionで再検査し、移動を中止する | |
+| target stage後にactorの除名・降格を試みる | 変更する | target authorization lockと競合して拒否され、activateまたはabort後に解放される | |
 | ワークスペースのノートを個人へ移動した | ワークスペースの他メンバーが開く | 「見つかりません」が返る | |
 | 他者が先に更新した | 古い `expectedVersion` で移動する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
+| sourceをfreezeした直後に失敗する | 同じmigration IDで再開する | source snapshotを再利用し、重複したtarget Noteを作らない | |
+| target staging後に失敗する | recoveryを実行する | routeはsourceのままで利用者には旧scopeだけが見え、staged targetは直接読めない | |
+| targetCredit後・route switch前に再認可失敗 | abortする | creditを逆仕訳し、stage/lockを削除、sourceをthawしてrouteをactive sourceへ戻す | |
+| abortMoveの応答を失う | recoveryする | 同じmigration IDで各rollbackを再適用し、二重debit/creditなしでactive sourceへ戻る | |
+| target stage後にworkspace削除を試みる | 削除する | `WORKSPACE_MOVE_IN_PROGRESS`で拒否され、activate/abort後に再試行できる | |
+| route switch後に失敗する | recoveryする | abortせずtarget activate・source retire・sourceDebitへ前進する | |
+| target credit後・route switch前に長時間停止する | sourceでuploadする | source quotaはまだ減算されておらず空きを過大に見積もらない。中間状態は二重計上側になる | |
+| route switch後・source debit前に停止する | recoveryを実行する | targetがactiveでsourceは過剰計上のまま。source debitを冪等に再試行する | |
+| route switchの応答を失う | 再開する | D1のmigration IDとrouteVersionを読み、切替済みならactivateへ進む。二重switchしない | |
+| route切替後・source tombstone前 | noteを読む | current routeからtargetへ到達する。sourceへの遅延writeはfreeze/version不一致で拒否される | |
+| move前のpublic projection eventが遅延 | 処理する | routeVersionが古いためtarget ownerのpublic行を上書きしない | |
+| source cleanupが失敗する | recoveryを実行する | routeはtargetを維持し、source tombstoneだけを再試行する。利用者向け所属をsourceへ戻さない | |

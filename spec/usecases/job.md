@@ -10,9 +10,17 @@
 - `target.type === "storedFile"` → 対象ファイルの `StorageOwner` を写す（元ファイルの帰属はノートの所有文脈と一致する）
 - `target.type === "batch"`（親ジョブ）→ 子の所有文脈を写す。子ジョブの `scope` は親と同じ値になる
 
-対象を ID の並びで受け取る登録（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）は、絞り込んだあとの所有文脈が 2 つ以上あれば、子を 1 件も作らずに全体を中止して `ValidationError("MIXED_OWNER_SCOPE")` を返す（`startBulkUpload` は取り込み先の所有者を 1 つだけ受け取るため構造的に混在しない）。混在した親の `scope` は原理的に 1 つに決まらず、除名・脱退・ワークスペース削除・退会のキャンセルの網（`listActiveByScope`）が唯一の鍵にしている値だからである（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」、[ADR 012](../adr/012-job-execution-resilience.md)）。
+対象を ID の並びで受け取る登録（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）は source ScopeKey を必須入力にし、D1 route の一括解決後もその1つのscope DOだけを呼ぶ。別scope・移動中・削除中のIDは存在を漏らさず `notFound` として除外し、親子の `scope` はsourceに固定する。これによりbatch親のscopeを一意に保ち、最大500のIDを複数DOへfan-outしない（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」、[ADR 012](../adr/012-job-execution-resilience.md)）。
 
 `scope` は登録時点の値のまま書き換えない。`bulkMove` は移動元の文脈を保つ。
+
+Job IDを受け取る `getJobDetail` / `retryJob` / `retryFailedChildren` / `cancelJob` とQueue consumerは、先に `JobId.scopeOf` でscopeを復元してそのobjectだけを呼ぶ。global `job_history` は一覧表示用であり、route・認可・状態遷移の正として使わない。
+
+## 共通: family removal claim
+
+Jobを変化させる全経路は、同じscope-local UoW内で`JobRepository.assertFamilyMutable(jobId)`を状態遷移より先に呼ぶ。単体/rootは自身の`removalOperationId`、子は親rootの同列を検査する。対象にはrun workerのstart/progress/succeed/fail、`updateBatchProgress`、retry、cancel、強制終端、reaperが含まれる。claim中なら`ConflictError("JOB_REMOVAL_IN_PROGRESS")`とし、遅延workerの結果も保存しない。例外はclaim ownerが実行するmanifest buildと`deleteFamilyPage(root, removalOperationId, 100)`だけである。
+
+claimはrootのexpected versionと終端状態を条件に、manifest header作成と同じUoWでCASする。以後abortして通常状態へ戻す経路は設けず、同じremoval operation IDでforward recoveryする。
 
 ## 共通: リース期間と回収の間隔
 
@@ -28,8 +36,8 @@
 - 親の進捗リース 60 分は「子 1 件の実行時間の上限より長く取る」（[domains/job.md](../domains/job.md)）を満たす最小の桁で、子の報告が途絶えてから親が回収されるまでの猶予でもある。こちらは実行体ではなく**一括操作全体の進み具合**を表すため、壁時計の上限とは無関係である
 - **組み立てリースだけは 15 分**である（[ADR 015](../adr/015-cloudflare-runtime.md) が ADR 012 の 60 分を改訂した）。組み立て（`runBulkExport` の ZIP 生成）を実行するのはキューのコンシューマーであり、壁時計 15 分で必ず強制終了される。60 分にしても組み立てが長く生きられるわけではなく、死んだ組み立てワーカーの親が最大 60 分滞留するだけになる
 - 進捗リースと組み立てリースは `jobs.lease_expires_at` の 1 列を共有し、`attempts` の 0 / 1 以上で主体を区別する（[domains/job.md](../domains/job.md)）。期間が違うのは、期限を張り直す主体が違うためである — 組み立て中の親（`attempts >= 1`）のリースは `reportProgress` では延びず、延ばせるのは実行権を持つワーカーの `renewAssemblyLease` だけである
-- `reapExpiredJobs` の実行間隔は **5 分**とし、**実行間隔 < 最短のリース期間（15 分）** を保つ。生きているジョブを誤って落とす心配はない（`listExpiredRunning` は失効行しか返さず、`Job.expire` はリース有効なら `LeaseActive` で拒否する）ので、この関係は安全のためではなく回復の遅れを抑えるためのものである — 失効から回収までの遅れが 1 周期（5 分）に収まり、滞留の総時間がリース期間の 2 倍を超えない
-- `reapExpiredJobs` は `pruneJobHistory` と同じ定期ワーカーに載るが、**別々の cron 式で起動する**（履歴の掃除は 1 日 1 回で足りる。加えて、1 回の実行あたりのクエリ予算は実行単位で与えられるため、1 つの cron 実行で複数の役割を走らせない。[platform/index.md](../platform/index.md)）
+- `reapExpiredJobs` は各 scope object の Alarm で起動する。active Job を保存するたびに最も早い `leaseExpiresAt`（遅くとも5分後）へ Alarm を設定し、回収後も active Job があれば次を設定する。全scopeを5分ごとに走査するglobal Cronは置かない
+- `pruneJobHistory` も Job を持つscopeだけが日次taskを自己スケジュールする
 
 ## 共通: run 系ワーカーの冪等規則
 
@@ -37,7 +45,7 @@
 
 1. ジョブが見つからなければ何もせず成功として返す。終端状態（`succeeded` / `failed` / `canceled`）なら同じく何もせず返す（再配送の重複）
 2. `running` でリースが有効（`leaseExpiresAt > now`）なら何もせず返す（他のワーカーが実行中）
-3. それ以外は `Job.start(job, total, now, leaseUntil)` を保存して本処理へ進む
+3. それ以外は、外部I/O kindならcurrent scopeの `ScopeJobAdmissionStore.tryAcquire({ jobId, leaseUntil, limit: 4 }, now)` を呼ぶ。4枠が埋まっていればJobをqueued/lease失効のまま変更せず `SystemError("SCOPE_ADMISSION_BUSY", retryAfter)` を投げ、Queue再試行へ戻す。取得と `Job.start(job, total, now, leaseUntil)` は同じscope-local UoWで保存して本処理へ進む
    - `queued` は通常の開始
    - リース失効の `running` は引き継ぎ再開（`attempts` を加算し、進捗を作り直す）
    - 引き継ぎで `attempts` が上限を超えた場合、`start` は `expire` の結果（`failed`、`reason: "timeout"`、手動 `retry` 可能）を返すので、それを保存して終了する。この保存の UoW で下記「共通: 強制終端の後始末」を `cause: { type: "expired" }` として併せて実行する — 本処理に入る前に終端しているため、`kind: "conversion"` の対象ノートは `processing` のまま取り残される
@@ -46,6 +54,8 @@
    - 終端していなければ（リース失効中に別のワーカーが引き継いだなど）`ConflictError` をそのまま投げて再配送に委ねる
 
 配送は少なくとも 1 回のため、この判定により同じジョブを 2 回受け取っても結果は変わらない。長い処理は `Job.reportProgress` でリースを延長する。各ドメインの run 系ユースケースでは、この手順を「run 系の共通規則に従う」と記す。
+
+外部I/O kindは `conversion` / `regeneration` / `pdfExport` / `bulkExport` / `driveBackup` / `bulkBackup` / `referenceImport`。進捗保存は同じUoWでadmission leaseもrenewする。成功・失敗・cancelを含むすべての終端遷移と強制終端は同じUoWでreleaseする。worker crash時はJob leaseと同時刻にadmission leaseも失効し、scope Alarmのreaperが最大100件ずつ回収する。取得commit後の応答喪失ではJobもrunningなので、重複workerは有効lease判定で本処理へ入らない。
 
 **`Job.succeed` は `notices` を要求する**（[domains/job.md](../domains/job.md)）。申し送りを出すのは `runConversion` の公開ステータスの適用（`visibilityNotApplied`）だけで、**それ以外の run 系はすべて空配列を渡す**。各ユースケースの記述にある `Job.succeed(artifact)` のような略記はこの既定（空の `notices`）を指す。取り込みの結果を `notices` に載せない理由は [ADR 014](../adr/014-import-result-provenance.md) にある — ノートに帰属する情報は、ノートを読める者すべてに、ジョブの保持期間と無関係に見えなければならないためである。
 
@@ -82,9 +92,47 @@ finalizeTerminatedJobs(ctx, params: {
 - `cause` は終端の由来。`forced` は上記 9 経路（利用者の操作・資格情報の喪失に由来する強制終端）で、`noteFailureReason` を経路ごとに指定する。`expired` はリース失効による自動回収（`reapExpiredJobs` の `Job.expire` と、run 系の共通規則の判定 3 で引き継ぎ試行が上限を超えた場合の `Job.expire`）で、理由は `timeout` に固定される。手順 2 を行うのは `forced` のときだけである（下記「`expired` で生成物を回収しない理由」）
 - 呼び出し元は自分の UoW の中でこの手順を実行する。手順の中で保管ファイルを消すときも `deleteFiles` ユースケースは呼ばず、「保管ファイルの削除手順」を同じ `ctx` で実行する
 
-**1 回に終端させるジョブ数の上限は 100 とする**（[ADR 018](../adr/018-query-budget.md)）。網で引く経路（`listActiveByScope` / `listActiveByRequester` / `listActiveByTarget`）は最大 100 件を返し、呼び出し元はその 100 件を自分の UoW で終端させる。100 件に達した場合は、同じ UoW で継続要求 `job.terminationContinued { scopeType, scopeId, cause }` を outbox に積み、次の配送で続きを終端させる（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。この継続要求の購読者は本手順を呼ぶハンドラーだけである。
+**1 回に終端させるジョブ数の上限は 100 とする**（[platform/index.md](../platform/index.md)）。網で引く経路（`listActiveByScope` / `listActiveByRequester` / `listActiveByTarget`）は `limit: 100` で引き、呼び出し元はその結果を自分の UoW で終端させる。**引いた件数が 100 に達した場合は、同じ scope-local UoW で継続要求 `job.terminationContinued` を `scheduled_tasks` に積み、Alarm を再設定する**。
 
-上限を設けると「操作の完了時点でスコープ内のジョブがすべて終端している」とは言えなくなるが、[ADR 008](../adr/008-domain-boundaries.md) が守ろうとした保証は失われない。残ったジョブも次の配送で必ず終端し、その終端も後始末を同一 UoW で伴うためである。加えて、網で引く 8 経路はいずれも**その操作の直後から対象へアクセスできなくなる**（退会・ワークスペース削除・除名・脱退・降格・連携解除・連携失効・ゴミ箱への移動）ため、途中状態が利用者に観測されない。`cancelJob` は `jobId` で 1 件を指すので上限に掛からない。
+積むのは**網を引いた呼び出し元自身**であり、`finalizeTerminatedJobs` ではない。共有手順は終端済みのジョブを受け取るだけで、網が上限に達したかどうかを知らないからである。継続要求を受け取るのは [`continueForcedTermination`](#continueforcedtermination) ただ 1 つ。
+
+上限を設けると「操作の完了時点でスコープ内のジョブがすべて終端している」とは言えなくなるが、[ADR 008](../adr/008-domain-boundaries.md) が守ろうとした保証は失われない。残ったジョブも同じ scope の次の Alarm turn で終端し、その終端も後始末を同一 UoW で伴うためである。加えて、網で引く 8 経路はいずれも**その操作の直後から対象へアクセスできなくなる**（退会・ワークスペース削除・除名・脱退・降格・連携解除・連携失効・ゴミ箱への移動）ため、途中状態が利用者に観測されない。`cancelJob` は `jobId` で 1 件を指すので上限に掛からない。
+
+**継続要求は経路を判別子で持つ**
+
+対象の選び方は経路ごとに違い（上記のとおり対象・スコープ・要求者・`kind`）、当てる遷移も違う。したがって継続要求は**どの経路の続きか**を判別子で持ち、その経路が網を引き直すのに要る引数だけを添える。
+
+```ts
+// job.terminationContinued の payload は { origin: JobTerminationOrigin } の 1 フィールド
+type JobTerminationOrigin =
+  | { path: "trashNote";             noteId: NoteId; excludingJobId: JobId | null }
+  | { path: "deleteWorkspace";       workspaceId: WorkspaceId; deletionOperationId: string }
+  | { path: "deleteAccount";         userId: UserId }
+  | { path: "removeMember";          workspaceId: WorkspaceId; memberUserId: UserId }
+  | { path: "leaveWorkspace";        workspaceId: WorkspaceId; memberUserId: UserId }
+  | { path: "changeMemberRole";      workspaceId: WorkspaceId; memberUserId: UserId; nextRole: WorkspaceRole }
+  | { path: "disconnectIntegration"; userId: UserId; provider: ProviderKind }
+  | { path: "integrationExpired";    userId: UserId; provider: ProviderKind };
+```
+
+スコープだけを運ぶ形（`{ scopeType, scopeId, cause }`）は採らない。それで選択述語を再現できるのは `deleteWorkspace` ただ 1 つで、残る 7 経路の続きは**元より広い集合を終端させる**からである — 除名の続きが他のメンバーのジョブと匿名ジョブまで取り消し（[testcases/workspace/removeMember.md](../testcases/workspace/removeMember.md) が「触れない」と定めている行を破る）、連携解除の続きが対象外の `kind` まで巻き込み、ゴミ箱への移動の続きが所有文脈の全ジョブに広がる。
+
+**網と遷移は `path` から導く。payload には持たせない** — 経路が決まれば一意に決まり、二重に持つと食い違いうるためである。
+
+| `path` | 網 | 追加の絞り込み | 遷移 | `cause.noteFailureReason` |
+| --- | --- | --- | --- | --- |
+| `trashNote` | `listActiveByTarget({ type: "note", noteId })` | `excludingJobId` に一致するものを除く | `cancel` | `canceled` |
+| `deleteWorkspace` | `listActiveByScope({ type: "workspace", workspaceId })` | なし（要求者を問わない） | `cancel` | `canceled` |
+| `deleteAccount` | `listActiveByRequester(userId)` と `listActiveByScope({ type: "user", userId })` の和集合 | `jobId` で重複除去（下記） | `cancel` | `canceled` |
+| `removeMember` / `leaveWorkspace` | `listActiveByRequester(memberUserId)` | なし（current workspace scope が境界） | `cancel` | `canceled` |
+| `changeMemberRole` | `listActiveByRequesterAndKinds(memberUserId, disallowedKinds)` | `nextRole` から kind 集合を導く | `cancel` | `canceled` |
+| `disconnectIntegration` | `listActiveByRequesterAndKinds(userId, providerKinds)` | `provider` から kind 集合を導く | `cancel` | `canceled` |
+| `integrationExpired` | 同上 | 同上 | **`fail("providerAuthFailed")`** | `providerAuthFailed` |
+
+- `changeMemberRole` の `kind` の絞り込みは `nextRole` から導く。許される `kind` の表は [usecases/workspace.md](./workspace.md) の `changeMemberRole` が唯一の正典であり、継続要求に `kind` の並びを焼き付けない（焼き付けると表を変えたときに配送中のメッセージだけが古い規則で動く）
+- `integrationExpired`（`failActiveJobsForExpiredIntegration`）だけが `fail` を使う 9 経路唯一の例外である（[domains/job.md](../domains/job.md) の「強制終端とリース」）。遷移を `path` から導くのはこの 1 経路のためで、`cause` だけを運ぶ形にすると継続の 2 巡目で `failed(providerAuthFailed)` が黙って `canceled` にすり替わる
+- `deleteAccount` は global repository を2本走査しない。account deletion orchestrator が membership directory で列挙した各 scope へ command を送り、personal scope は `listActiveByScope`、workspace scope は `listActiveByRequester` をそれぞれ100件ずつ処理する。各 scope の local transaction が終端と後始末を束ね、Alarm task が続ける
+- `trashNote` の `excludingJobId` は、`listActiveByTarget` が 1 ノートに限られるため実際には上限に達しない。それでも `origin` に含めるのは、達しないことが**規模の見積もりであって型の保証ではない**ためで、継続が走ったときに除外規約（[usecases/note.md](./note.md) の「共通: ユースケースを合成するときの副作用の範囲」）が黙って外れるほうを避ける
 
 **1. `processing` のままのノートを回復させる**
 
@@ -195,11 +243,10 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `JobRepository.listByRequester` を引く
-2. `targetLabel` は対象がノートなら `NoteRepository.listByIds` でタイトルを、ファイルなら `StoredFileRepository.listByIds` でファイル名を解決する。対象が削除済みなら「削除済み」と表示する。batch 親は対象を持たないため、操作の内容（`kind` と `payload`）から表示名を作る
-3. 結果に含まれる batch 親の ID をまとめて `JobRepository.summarizeChildrenOf` に渡し、`childSummary` を埋める（親 1 件につき 1 クエリにしない）。batch 親以外は `null`
-4. `retryable` は `status === "failed"` かつ再試行上限に達していないこと。ただし batch 親は `retryJob` の規則に従い、`kind === "bulkExport"` かつ子が全件終端・成功 1 件以上のときだけ真とする（組み立てのやり直し）。他の batch 親は偽で、導線は `retryFailedChildren` になる。`cancelable` は `Job.isCancelable`
-5. `activeCount` は `JobRepository.listActiveByRequester` の件数
+1. global D1 の `JobHistoryQueryService.listByRequester` を引く。projection は scope-local `job.*` event が `sourceVersion` 条件付きで更新し、`targetLabel`、`childSummary`、failure / notice / artifact を一覧表示に必要な形で保持する
+2. 一覧表示では scope DO を fan-out して読み直さない。projection の対象が削除済みになった event を受けたら `targetLabel = "削除済み"` に更新する
+3. `retryable` は `status === "failed"` かつ再試行上限に達していないこと。ただし batch 親は `retryJob` の規則に従い、`kind === "bulkExport"` かつ子が全件終端・成功 1 件以上のときだけ真とする（組み立てのやり直し）。他の batch 親は偽で、導線は `retryFailedChildren` になる。`cancelable` は projection 上の表示値で、操作時に正データで再判定する
+4. `activeCount` も `job_history` の `status IN ('queued','running')` を数える。表示は結果整合でよいが、cancel / retry の可否は操作時に scope-local Job を読み直す
 
 ジョブは実行者本人にのみ見える。ワークスペースのノートに対するジョブでも他のメンバーには表示しない。匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため結果に現れない（ADR 010）。
 
@@ -226,8 +273,8 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `JobRepository.findById` で引き、`requestedBy` が `userId` と一致しなければ `NotFoundError("JOB_NOT_FOUND")`
-2. `JobRepository.listChildren` と `summarizeChildren` を引く。`summary` は `job.childSummary`（`listJobs` と同じ投影）と同じ値であり、終端後も子の行から数え直すため内訳が残る
+1. `JobId.scopeOf(jobId)` でscopeを復元し、`ScopeRouter` で正データのobjectを呼ぶ。parseできなければ `NotFoundError("JOB_NOT_FOUND")`
+2. scope-local `JobRepository.findById` で `requestedBy === userId` を確認し、違えばnot found。続けて `listChildren` / `summarizeChildren` を引く。global historyの到着を待たず、認可と操作対象はlocal Jobで決める
 
 匿名ジョブは `requestedBy: null` がどの `userId` とも一致しないため、常に `JOB_NOT_FOUND` になる（ADR 010）。
 
@@ -254,7 +301,7 @@ finalizeTerminatedJobs(ctx, params: {
 ### 処理フロー
 
 1. ジョブを引き、所有を確認する
-2. `status !== "failed"` なら `BusinessRuleError(JobNotRetryable)`
+2. `assertFamilyMutable(jobId)`を確認し、`status !== "failed"` なら `BusinessRuleError(JobNotRetryable)`
 3. batch 親（`target.type === "batch"`）は分岐して終える
    - `kind === "bulkExport"` かつ `summarizeChildren` が全件終端・成功 1 件以上なら、失敗したのは ZIP の組み立てである。その `BatchSummary` をそのまま `Job.reopenBatch(parent, summary, now, leaseUntil)` に渡して `running` に戻し、発行される `job.readyToAssemble` を収集して組み立てだけをやり直す（`reopenBatch` が `attempts` を 0 に戻すため `beginAssembly` が改めて実行権を取れる）。保存は `UnitOfWorkProvider.run` で行い、上記「共通: batch 親の組み立て規則」の「親を開き直すときの生成物の破棄」に従う（この分岐の親は `failed` なので `artifact` を持たず、破棄の対象は実際には空になるが、規則は分岐ごとに省かない）
    - それ以外の batch 親は `BusinessRuleError(JobNotRetryable)` とし、子の再試行は `retryFailedChildren` に任せる。batch 親を `Job.retry` で `queued` に戻しても、`job.enqueued` の購読ハンドラーが batch 親をキューへ送らないため実行されない
@@ -301,7 +348,7 @@ finalizeTerminatedJobs(ctx, params: {
 ### 処理フロー
 
 1. 親ジョブを引き、所有を確認する
-2. 親が**組み立て中**（`target.type === "batch"` かつ `status === "running"` かつ `attempts >= 1`。`bulkExport` 親でのみ成立する）なら、子を 1 件も再試行せずに `BusinessRuleError(AssemblyInProgress)` を返す
+2. `assertFamilyMutable(parentJobId)`を確認する。親が**組み立て中**（`target.type === "batch"` かつ `status === "running"` かつ `attempts >= 1`。`bulkExport` 親でのみ成立する）なら、子を 1 件も再試行せずに `BusinessRuleError(AssemblyInProgress)` を返す
 3. 親が `canceled` なら、子を 1 件も再試行せずに `BusinessRuleError(JobNotRetryable)` を返す（`retryJob` の手順 2 が `status !== "failed"` を弾くのに対応する、本ユースケース唯一の親の状態ガード）
 4. `JobRepository.listChildren` を**全ページ走査**して `failed` のものを集める（`limit` の上限は 100 で子は最大 500 件のため 1 ページには収まらない。「共通: 強制終端の後始末」の 2 と同じ走査）
 5. 各件について `retryJob` と同じ検査を行い、通ったものだけを `Job.retry` する。通らなかったものは `skipped` に積む
@@ -376,7 +423,7 @@ finalizeTerminatedJobs(ctx, params: {
 
 1. `JobRepository.findById` で親を引く。終端状態なら何もせず返す
 2. `JobRepository.summarizeChildren` を引く
-3. `BatchProgressCalculator.applyTo(parent, summary, now, leaseUntil)` を適用して保存し、イベントを収集する
+3. `BatchProgressCalculator.applyTo(parent, summary, now, leaseUntil)`を保存する。未終端の`job.progressed`抑制は`Job.reportProgress`が保存済みevent markerで自律判定し、全子終端のterminal eventは抑制しない
    - 未終了なら `reportProgress`（リース延長を兼ねる。組み立て中の親（`attempts >= 1`）では進捗だけが更新され、リースは延びない。[domains/job.md](../domains/job.md) の「組み立て中の親のリース」）
    - 全子終端なら親を終端化する（成功 1 件以上で `succeeded`、成功 0 件かつ失敗ありで `failed`、全件キャンセルで `canceled`）
    - 例外: `kind: "bulkExport"` の親は、成功した子が 1 件以上あれば終端化せず、進捗を `total` まで更新して `job.readyToAssemble` を発行する。ZIP の組み立て（`runBulkExport`）が `succeed(artifact)` で終端させる（ADR 012）。成功 0 件なら他の kind と同じ規則で `failed` / `canceled` になる
@@ -401,7 +448,7 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 入力DTO
 
-`jobId: string`, `kind: string`（イベント payload。`job.enqueued` は `target` / `requestedBy` / `parentId` も持つ）
+`scope: JobScope`, `jobId: string`, `kind: string`（event payload）
 
 ### 出力DTO
 
@@ -410,7 +457,7 @@ finalizeTerminatedJobs(ctx, params: {
 ### 処理フロー
 
 1. `job.enqueued` で `target.type === "batch"`（batch 親）なら、キューへ送らず返す。親ジョブの実行は `job.readyToAssemble` の購読経由のみとする（ADR 012）
-2. それ以外は `JobDispatcher.dispatch(jobId, kind)` を呼ぶ。`job.readyToAssemble` は `bulkExport` 親に対してのみ発行されるため、無条件に送る
+2. それ以外は `JobDispatcher.dispatch(scope, jobId, kind)` を呼ぶ。JobId に埋め込まれた scope と payload が違えば不正eventとして失敗させる
 
 このハンドラーは実行体を選ばない。`kind` だけでは親と子を区別できないため、振り分けは受け手がジョブを読み直して `kind` と `target.type` の組で行う（上記「共通: 実行体の振り分け」）。
 
@@ -426,7 +473,7 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 概要
 
-リースが失効した実行中ジョブを回収する（ADR 012）。pruner と同じ定期ワーカーロールから **5 分間隔**で呼ばれる（間隔とリース期間の関係は冒頭の「共通: リース期間と回収の間隔」）。通常の回復はリース失効の `running` を再配送時の `Job.start` が引き継ぐことで行われ、本ユースケースは再配送が来ない場合の保険である。
+リースが失効した実行中ジョブを回収する（ADR 012）。Job を持つ scope object の Alarm から呼ばれ、current scope だけを処理する。通常の回復は再配送時の `Job.start`、本ユースケースは再配送が来ない場合の保険である。
 
 ### 入力DTO
 
@@ -438,7 +485,7 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `JobRepository.listExpiredRunning(now, limit)` でリース失効（`leaseExpiresAt <= now`）の `running` を **`limit` 件（既定 100）**列挙する。上限は 1 回の実行あたりのクエリ予算から逆算した値で、残りは次の起動（5 分後）で拾う（[ADR 018](../adr/018-query-budget.md)）
+1. current scope の `JobRepository.listExpiredRunning(now, limit)` で **100件**まで列挙する。上限は1 Alarm turnのCPU時間とevent fan-outを固定するためで、100件なら直後にcontinuation taskを積む
 2. 各件を `UnitOfWorkProvider.run` で 1 行ずつ処理する。`Job.expire` で終端化して保存し、`job.failed` を収集する（`failure: { reason: "timeout" }`。`attempts` は 0 に戻り、手動 `retry` できる）。同じ UoW で「共通: 強制終端の後始末」を `cause: { type: "expired" }` として実行する — `kind: "conversion"` の対象ノートが `processing` のままなら `Note.markConversionFailed("timeout")` を併せて保存する。生成物の回収（手順 2）は行わない（`failed` の batch 親は `reopenBatch` で開き直せるため、成功済みの子の artifact は組み立ての資材として残す）
 3. 1 件の失敗は記録して次の行へ進む（部分失敗の許容）
 
@@ -453,15 +500,47 @@ finalizeTerminatedJobs(ctx, params: {
 | 版の競合 | 該当行をスキップして継続（引き継ぎ再開が成立したものとして扱う） |
 | DB 障害 | `SystemError(DatabaseError)` |
 
+## projectJobHistory
+
+### 概要
+
+scope-local Job のイベントから、利用者横断の一覧に使う global D1 `job_history` を更新する。
+
+### 入力DTO
+
+`input: JobEvent | NotePurgedEvent | StorageFileDeletedEvent | { type: "job.removalGlobalContinued"; scope: JobScope; removalOperationId: string } | { type: "job.removalManifestCompactContinued"; scope: JobScope; removalOperationId: string } | { type: "job.targetHistoryCleanupContinued"; target: JobTarget; operationId: string; cursor: string }`
+
+### 出力DTO
+
+なし。
+
+### 処理フロー
+
+0. `job.removalManifestCompactContinued`ならpayloadのscope objectで`compactItems(removalOperationId, 100)`を1回だけ実行する。残件中は同じtaskを同一UoWで再登録し、itemsが0件になった最後のUoWだけが`markCompleted`でheaderを30日tombstoneへ移す
+1. `job.removed` / `job.removalGlobalContinued`ならpayloadのscope objectに残る`JobRemovalManifestStore.listUnacknowledged(removalOperationId, 100)`を読む。各routeは`target.type !== "batch"`ならtarget shardの`tombstoneRoute`を先に呼び、その成功後にrequestedBy別にgroupingして`JobHistoryProjectionWriter.tombstoneAndRemove(routes, removalOperationId)`を最大6 shard並行のwaveで呼ぶ。匿名routeはhistoryを飛ばす。全成功後にmanifest itemをackし、未ackが残れば決定的IDの`job.removalGlobalContinued { scope, removalOperationId }`を1件積む。0件ならscopeへ`job.removalManifestCompactContinued { scope, removalOperationId }`を積む。cursorはmanifestのack集合そのもので、どの段階の応答喪失も同じoperation IDから再実行する
+2. `note.purged` / `storage.fileDeleted` / `job.targetHistoryCleanupContinued`ならtarget削除分岐へ入る。初回は`JobTargetHistoryRouteStore.tombstoneTargetBeforeFanOut(target, eventId)`を確定してcursor nullから、継続はpayloadの同じoperation ID/cursorから同target shardを100件ずつ読む。各routeをrequestedBy shardへ最大6並行のwaveで送り、`markTargetRemoved`する。nextCursorがあれば決定的IDの`job.targetHistoryCleanupContinued { target, operationId, cursor: nextCursor }`を1件保存して終了する。Job正データは変更せず、全history shardをscanしない
+3. 残る通常Job eventはpayloadの`scope`がJobIdに埋め込まれたScopeKeyと一致することを確認し、そのscope objectから現在のJobを読み直す。Jobが既に削除済みならpayloadの`{ jobId, requestedBy, target }`で、batch以外のreverse routeを先にtombstone化してからhistoryを`tombstoneAndRemove`して終了する
+4. parent Jobなら`summarizeChildren(jobId)`、子なら親の現在値と`summarizeChildren(parentId)`も読み、対象ノート・ファイルの表示名を同じscopeで解決して表示専用`JobHistoryEntry`を組み立てる。匿名Jobはglobal historyに保存しない
+5. 匿名でなくtargetがbatchでもないJobは、event IDをoperation IDとして`JobTargetHistoryRouteStore.registerBeforeHistory`を先に呼ぶ。返る`routeRemoved`が真ならupsertせず成功、`targetRemoved`だけが真ならtargetLabelを「削除済み」にして`JobHistoryProjectionWriter.upsertIfNewer`を呼ぶ。writerは同じrequestedBy shardの有効なJob removal tombstoneもatomicに確認する。batchはreverse indexへ登録せず通常labelでupsertする。登録応答喪失は同じevent IDで再実行し、history upsert失敗時もrouteを残して再配送する。`sourceVersion`が保存済み以下ならstale eventとしてno-opにする
+
+少なくとも1回配送を前提とし、event payload の進捗や失敗詳細を正として保存しない。常に scope の正データを読み直すため、配送順が逆転しても最新 snapshot へ収束する。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| scope と JobId の不一致 | 不正イベントとして隔離し運用通知 |
+| scope object / D1 の一時障害 | 再配送 |
+
 ## pruneJobHistory
 
 ### 概要
 
-保持期間を過ぎたジョブ履歴を削除する。`reapExpiredJobs` と同じ定期ワーカーロールから 1 日 1 回呼ばれる（冒頭の「共通: リース期間と回収の間隔」）。
+current scope で保持期間を過ぎたジョブ正データを削除する。Job を持つ scope object の日次 scheduled task から呼ばれる。削除eventは global `job_history` projection も消す。
 
 ### 入力DTO
 
-`retentionDays: number`（既定 90）
+local用`{ type: "scopeRetention"; retentionDays: number }`（既定90）、global初回用`{ type: "job.globalTombstonePruneCron" }`、またはglobal継続用`{ type: "job.globalTombstonePruneContinued"; runId; generation; shardId; table: "historyRemoval" | "targetRoute"; cursor: string | null; asOf: Date }`
 
 ### 出力DTO
 
@@ -469,12 +548,12 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `JobRepository.deleteOlderThan(now - retentionDays)` を呼ぶ
+0. `job.globalTombstonePruneCron` / `job.globalTombstonePruneContinued`分岐ではscope Jobを読まない。初回Cronは固定`asOf`を持つ`global.maintenanceRunPruneContinued`初回taskを共通handlerへ発行し、hour bucket・kind・routing generationsから決定的`candidateRunId`を作って`beginOrResumeKind`する。同kindの前hour runが未完了なら新runを作らず、その固定`runId` / `asOf` / positionを再開する。新規または期限切れlease回復時だけ未claim shardから最大6 commandを起動する。各commandは指定1 shard・1 tableについて`pruneRemovalTombstones(asOf, cursor, 100)`または`pruneExpiredTombstones(asOf, cursor, 100)`を1回だけ呼ぶ。行の`expiresAt`自体がremovedAt+30日またはdeletedAt+120日なのでcutoffを再度引かない。target shardのDELETE成功後、run storeのtable/cursor/次command keyとQueue outboxだけをrouting catalog transactionでcheckpointする。DELETE後・checkpoint前の応答喪失は保存済み入力cursorから冪等再実行する。100件なら同laneの次cursor、100件未満なら次table、shard完了ならrun storeへackして未claim shardを1件取得する。kind全体のactive laneは最大6、全generation/shard ackでcompleted。同時Cronと応答喪失は同じrunId/lease/command keyから再開する。global分岐はここで終了する
+1. `type: "scopeRetention"`では`JobRepository.listRemovableRoots(now - retentionDays, 1)`で終端rootを1件だけ選び、`sha256("jobFamilyRemoval:" + canonicalScopeKey + ":" + rootJobId)`をremoval operation IDとする。rootのversion/終端状態を条件に、同じscope-local UoWで`claimFamilyForRemoval`と`JobRemovalManifestStore.beginOrResume(parentOperationId: null)`を確定する。既存claimならそのmanifest stateから再開する
 2. 終端状態のジョブのみを対象とし、終了時刻（`finishedAt`）を比較する。境界は排他（`finishedAt < cutoff` のみ削除し、ちょうど `retentionDays` 前に終了したものは残る）
-3. 削除の起点は**親を持たないジョブ**（`parentId === null`）に限る。子は親の削除に伴って `parent_id` の外部キー CASCADE で消えるため、1 つの一括操作の履歴は親子まとめて消えるか、まとめて残るかのどちらかになる
-   - 子を単独で削除しないのは、`retryFailedChildren` で親が `running` に戻ったまま保持期間を跨いだ場合に、終端済みの子だけが消えて `summarizeChildren` の件数が `total` に届かなくなり、親が永久に終端しなくなるためである。この規則は「親が終端しているか、親を持たないこと」という条件を含み、さらに `getJobDetail` / `listJobs` の `childSummary`（子の行から数え直す内訳）が欠けた状態も生まない
-   - 起点が親なので、保持期間は親の `finishedAt` で判定される。子が先に終端していても親が終端して `retentionDays` を過ぎるまでは残る
-4. 匿名ジョブ（`requestedBy: null`）もここで削除される。匿名ジョブは `parentId: null` のみ構成できるため必ず削除の起点になる。退会時の後始末（`deleteByRequester`）が及ばないため、これが匿名ジョブの唯一の掃除経路になる（ADR 010）
+3. rootと子をJobId keysetで100件ずつ読み、各行の`{ jobId, requestedBy, target }`とcursorをmanifestへ同じUoWで追加する。各page後は決定的IDの`job.removalLocalContinued { removalOperationId }`からheader state/cursorを再開する。全件固定後にmarkReadyし、`deleteFamilyPage(root, removalOperationId, 100)`でclaim ownerと全行の終端状態を再検査しながら子を100件ずつ削除して最後にrootを削除する。root削除と同じUoWで`job.removed { scope, removalOperationId, rootJobId, requestedBy }`をoutboxへ保存する。FKはRESTRICTで予期しないCASCADEを禁止する
+4. 匿名ジョブ（`requestedBy: null`）もここで削除される。匿名ジョブは `parentId: null` のみ構成できるため必ず削除の起点になる。退会時の後始末（`deleteJobsForRequester`）が及ばないため、これが匿名ジョブの唯一の掃除経路になる（ADR 010）
+5. manifest構築・local削除は`job.removalLocalContinued`、global ackは`job.removalGlobalContinued`、item縮約は`job.removalManifestCompactContinued`で再開する。完了headerはscope-local日次taskが`pruneExpiredHeaders(now, 100)`で回収し、100件なら同じtaskを再登録する。family完了後に次rootを選び、対象0件なら翌日のtaskを自己登録する。1turnはいずれも100行以下である。削除済みworkspace scopeではこれらJob retention taskをmaintenance allowlistとして通し、新規Jobやretryはcompleted deletion tombstoneで拒否し続ける
 
 ### エラーケース
 
@@ -484,11 +563,11 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 概要
 
-利用者の退会に伴って、その利用者のジョブ履歴をすべて削除する（`identity.user.deleted` の購読）。
+account deletion command が指定した current scope で、その利用者のジョブ履歴を削除する。
 
 ### 入力DTO
 
-`userId`
+`operationId`, `scope: JobScope`, `userId`
 
 ### 出力DTO
 
@@ -496,9 +575,10 @@ finalizeTerminatedJobs(ctx, params: {
 
 ### 処理フロー
 
-1. `UnitOfWorkProvider.run` で `JobRepository.deleteByRequester(userId)` を呼ぶ。状態を問わず削除する。実行中のジョブは `deleteAccount` の手順 3 でキャンセル済みのため、未終端のジョブは通常ここには残らない。batch の子は親と同じ要求者のため、`parent_id` の FK CASCADE によらず自身も削除対象になる
+1. current scope が入力の `scope` と一致することを確認し、`JobRepository.listRemovableRootsByRequester(userId, 1)`でroot familyを1件選ぶ。active Job の強制終端taskが完了するまでは実行しない。familyごとのremoval operation IDはpruneと同じscope+rootの決定式を使い、account deletionの`operationId`はparent task/manifestの`parentOperationId`として保持する
 2. 匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため対象外で、`pruneJobHistory` が唯一の掃除経路になる（ADR 010）
-3. イベントは発行しない。ジョブの artifact（保管ファイル）は要求者の個人 subject が所有するため、同じイベントを購読する Storage の `deleteFilesByOwner` が回収する
+3. pruneと同じclaim+manifest state machineへroot/childrenのroute keyを100件ずつ固定し、ready後に`deleteFamilyPage(root, removalOperationId, 100)`でlocal正データを削除する。root削除時にmanifest参照型`job.removed`を発行し、global consumerはreverse route→historyの順に100件ずつ消す。artifact は同じ scope の account deletion storage task が回収する
+4. familyのglobal ack後に次rootを選び、0件になるまで親account deletion operationのscope taskで続ける。rootが0件でも`hasIncompleteByRequester(userId)`が真なら完了ackを返さず再予定する。これにより同じfamilyをpruneが先にclaimした場合もglobal history cleanupを待ってからaccount deletionを完了する
 
 冪等性: 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない。
 
@@ -507,4 +587,46 @@ finalizeTerminatedJobs(ctx, params: {
 | 条件 | 種類 |
 | --- | --- |
 | ジョブが 1 件もない | 何もせず成功として返す |
+| 書き込みの失敗 | `SystemError(DatabaseError)`（再試行される） |
+
+## continueForcedTermination
+
+### 概要
+
+強制終端が1回で終端しきれなかったJobを、current scopeの `scheduled_tasks` / Alarmで続ける。上限100件を超えたぶんだけを同じscopeで引き受ける。
+
+本ユースケースが `job.terminationContinued` の唯一の購読者であり、逆に本ユースケースが受け取るのはこの継続要求だけである（ドメインイベントは購読しない）。
+
+### 入力DTO
+
+`origin: JobTerminationOrigin`（「共通: 強制終端の後始末」の判別ユニオン）
+
+### 出力DTO
+
+`terminatedCount: number`
+
+### 処理フロー
+
+1. `origin.path` に応じて網を引き直す。`trashNote` は `listActiveByTarget`、`deleteWorkspace` と personal scope の `deleteAccount` は `listActiveByScope`、workspace scope の `deleteAccount` と `removeMember` / `leaveWorkspace` は `listActiveByRequester`、`changeMemberRole` と integration 系は `listActiveByRequesterAndKinds` を使う。kind 集合は `nextRole` / `provider` から導き、**最終述語を repository query に含めてから `limit: 100` を適用する**。網・遷移・`cause.noteFailureReason` は「共通: 強制終端の後始末」の表を正典とする
+   - `deleteWorkspace`分岐は各turnで`assertDeletionOwner(origin.deletionOperationId)`を確認する。他のworkspace membership cleanupはそれぞれのaccount deletion/membership operation lockを確認する
+2. **0 件なら何もせず成功として返る。** 対象が尽きた正常な終端であり、継続要求は積まない。終端したジョブは `listActive*` の結果から外れるため、網が空になることが完了の判定そのものになる（[domains/index.md](../domains/index.md) の「継続要求」）
+3. `UnitOfWorkProvider.run` の中で、引いたジョブに表の遷移（`Job.cancel`、`integrationExpired` だけは `Job.fail("providerAuthFailed")`）を適用して保存し、併せて共有手順 `finalizeTerminatedJobs(ctx, { jobs, cause: { type: "forced", noteFailureReason } })` を同じ `ctx` で実行する
+4. 手順 1 で引いた件数が 100 に達していれば、**同じ UoW で** `job.terminationContinued`（`origin` をそのまま写したもの）を `scheduled_tasks` に積み、次の Alarm を設定する。`origin` は書き換えない — カーソルを持たない継続であり、対象は終端するそばから網の結果から外れるため、同じ `origin` で引き直すだけで必ず前に進む
+5. **対象が残っているのに 1 件も終端できなかった場合は新しい継続要求を積まない。** 現在taskの attempt と `dueAt` を更新して Alarm で再試行し、上限到達時は task を `failed` にして global 運用イベントを送る
+
+**遷移と理由を payload から取らない**。手順 1 のとおり `origin.path` から導く。これにより継続の 2 巡目以降も 1 巡目と同じ規則で終端し、`integrationExpired` の続きが `canceled` にすり替わることがない。
+
+**`origin` の実体の存在確認は行わない**。継続が届くまでに、`origin` が指すノート・ワークスペース・利用者・連携そのものが消えていることはありうる（退会やワークスペース削除の後始末は並行して走る）。網は「その述語に一致する未終端ジョブ」を返すだけで対象の実体を読まないため、実体が消えていれば 0 件になって手順 2 で正常終了する。存在確認を足すと、消えた実体のせいで**残っているジョブを終端させずに打ち切る**ことになる。
+
+**このユースケースは `retryJob` / `retryFailedChildren` と競合しうる**。継続が届くまでの間に利用者が `failed` の親を開き直すことはできるが、開き直せるのは `Job.reopenBatch` の受理型（`SucceededJob | FailedJob`）に限られ、9 経路が batch 親に当てるのは必ず `Job.cancel` である（「`expired` で生成物を回収しない理由」）。`canceled` の親は二度と開き直せないため、継続が終端させたものが後から復活することはない。
+
+冪等性: 終端したジョブは `listActive*` の結果に現れないため、同じ継続要求を再実行しても残っているぶんだけを終端させる。`scheduled_tasks` は (`kind`, `operationId`) で一意なので同じ系列を重ねず、個々のジョブの終端は版で守られ、競合したものは次の Alarm turn で拾われる。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 網が 0 件（対象が尽きた・実体が消えた） | 何もせず成功として返す（継続は積まない） |
+| 個々の終端の版競合 | そのジョブを飛ばして続ける（次の Alarm turn で拾う） |
+| 対象が残っているのに 1 件も終端できなかった | 新規継続を積まず現在taskをbackoffし、上限でfailed + 運用通知 |
 | 書き込みの失敗 | `SystemError(DatabaseError)`（再試行される） |

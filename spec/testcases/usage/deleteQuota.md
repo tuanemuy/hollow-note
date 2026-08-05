@@ -7,3 +7,6 @@
 | 既に削除済み | 実行する | 成功として返る | |
 | 同じイベントを 2 回受け取る | 2 回実行する | 結果が変わらない | |
 | 複数月の LLM 記録がある | 利用者を対象に実行する | すべての月の記録が削除される | |
+| workspace行削除後のcleanup | `deletionOperationId`付きで実行する | manifest owner一致時だけquotaを削除し、欠落・別IDは拒否する | |
+| LLM利用月が250件ある | 利用者を対象に実行する | 100件ずつ3回に分け、`usage.userCleanupContinued`で再開して100件未満のpage後にだけ完了ackする | |
+| 100件削除後に応答を失う | recoveryする | 同じoperation IDで再実行し、既に消えた月を復活させず残件から続ける | |

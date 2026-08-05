@@ -33,8 +33,8 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 4. `FileContentReader.readHead(sourceFileId, 8192)` で先頭バイト列を読み、手順 3 で引いた `StoredFile` の `fileName` / `mimeType` とともに `FormatDetector.detect` を呼んで形式を判定する（`requestRegeneration` の手順 4 と同じ読み方）。`passwordProtected` が真なら、方針の決定にも連携の解決にも進まず `Note.markConversionFailed(passwordProtected)` と `Job.fail("passwordProtected")` を保存して終了する（`planConversionForUpload` の手順 3 と同じ優先順位）。パスワード保護された PDF はテキスト層を読めないため `pdfWithoutText` と判定され、優先しないと取り込み直後に `failed(passwordProtected)` としたノートが変換後に `machineExtractionUnavailable` / `integrationRequired` へ化ける。P-13 は 3 つの理由で案内を分けているため、同じファイルで理由が入れ替わってはならない
 5. `ConversionCapability` の `llm` を決める。`payload.conversionPreference === "machineOnly"` なら連携の有無にかかわらず `"declined"`（取り込み時の指定を引き継ぐ。[usecases/storage.md](./storage.md) の `storeUpload`）。それ以外は要求者（`requestedBy`）の OpenRouter 連携を引き、次の 3 分岐で決める（[domains/integration.md](../domains/integration.md) の `CredentialResolver`）
    - 連携の行がない（未連携）: `{ llm: "unavailable" }` として 6 へ進む（LLM 必須形式なら手順 7 の `integrationRequired` に至り、機械的変換で足りる形式はそのまま変換される）
-   - `CredentialResolver.resolve` が `resolved`: `{ llm: "available" }` として 6 へ進む。`updated` が非 `null` ならその連携も同一 UoW で保存する
-   - `resolve` が `reauthorizationRequired`（失効）: 方針の決定には進まず、`Note.markConversionFailed(providerAuthFailed)` と `Job.fail("providerAuthFailed")` を保存して終了する。`expired` が非 `null` なら、その連携と `integration.expired` の草稿も**同一 UoW で保存**する。未連携（`integrationRequired` / `awaitingIntegration`）と失効（`providerAuthFailed` / `failed`）で結果と案内が変わるため、`unavailable` に畳まない
+   - `CredentialResolver.resolve` が `resolved`: `updated` が非 `null` なら、先にglobal D1のUoWで連携とeventを保存し、`{ llm: "available" }` として 6 へ進む
+   - `resolve` が `reauthorizationRequired`（失効）: `expired` が非 `null` なら、先にglobal D1のUoWで連携と `integration.expired` を保存する。その後scope-local UoWで `Note.markConversionFailed(providerAuthFailed)` と `Job.fail("providerAuthFailed")` を保存して終了する。global保存とscope-local保存の間で停止しても再試行がexpired状態を読み直して同じ失敗へ収束する。未連携（`integrationRequired` / `awaitingIntegration`）と失効（`providerAuthFailed` / `failed`）で結果と案内が変わるため、`unavailable` に畳まない
 6. `ConversionPlanner.plan(format, capability)` で方針を決める
 7. 方針が `unavailable(integrationRequired)` なら `Note.markAwaitingIntegration` を保存し、`Job.fail(reason: "integrationRequired")` とする
 8. 方針が `unavailable(machineExtractionUnavailable)` なら `Note.markConversionFailed(machineExtractionUnavailable)` を保存し、`Job.fail(reason: "machineExtractionUnavailable")` とする。利用者が LLM を使わないと決めた結果なので `markAwaitingIntegration` は呼ばず、連携ではなく `conversionPreference: "auto"` での取り込み直しを案内する
@@ -53,7 +53,7 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 
 ノートの更新とジョブの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する。手順 10 の `consumeLlmCall`（Usage）はこの UoW を開く**前**に呼ぶ — `UnitOfWorkProvider.run` を入れ子にしないためで、消費が先に確定して変換が失敗しても戻さない設計（[usecases/usage.md](./usage.md) の「共通: UoW の境界」）とも整合する。
 
-**手順 14 は複製であって呼び出しではない**。`changeNoteVisibility` を呼ぶ形にはできない。呼べば呼ばれた側が自分の `UnitOfWorkProvider.run` を開いて `run` が入れ子になり、本文の更新（手順 12）とは別のトランザクションで確定してしまう。さらに `changeNoteVisibility` は `expectedVersion` を要求するが、この経路が持つのは手順 12 で `Note.applyConversionResult` を適用したばかりの未保存のノートであり、渡せる版がない。本文と公開ステータスは 1 回の変換の結果として一緒に確定すべきものなので、手順 2〜4（所有者基準の公開ハンドル／スラッグ検査 → 休眠リンクがなければ `SecureTokenGenerator.issue` → `Note.makeUnlisted` / `makePublic` の適用）をこの UoW の中で再現する。手順 1 の権限確認は再現しない — 実行主体は利用者ではなくジョブであり、取り込み時の権限は `storeUpload` の手順 1 が既に確認している。
+**手順 14 は複製であって呼び出しではない**。`changeNoteVisibility` を呼ぶ形にはできない。呼べば呼ばれた側が自分の `UnitOfWorkProvider.run` を開いて `run` が入れ子になり、本文の更新（手順 12）とは別のトランザクションで確定してしまう。さらに `changeNoteVisibility` は `expectedVersion` を要求するが、この経路が持つのは手順 12 で `Note.applyConversionResult` を適用したばかりの未保存のノートであり、渡せる版がない。本文と公開ステータスは 1 回の変換の結果として一緒に確定すべきものなので、手順 2〜4（所有者基準の公開ハンドル／スラッグ検査 → 休眠リンクがなければ [usecases/note.md](./note.md) の共通形式で NoteId locator 付きトークンを発行・保護 → `Note.makeUnlisted` / `makePublic` の適用）をこの UoW の中で再現する。手順 1 の権限確認は再現しない — 実行主体は利用者ではなくジョブであり、取り込み時の権限は `storeUpload` の手順 1 が既に確認している。
 
 変換ジョブは `storeUpload` が受理したファイル 1 件につき必ず 1 件登録される（方針が `unavailable` でも省かない。[usecases/storage.md](./storage.md)）。7〜9 の分岐はその結果として通常経路であり、一括アップロードの親ジョブはここでの終端化によって進捗が進む。
 
@@ -63,7 +63,7 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 | --- | --- |
 | ノート・ファイルが不在 | `Job.fail("targetMissing")` |
 | `conversionPreference: "machineOnly"` で LLM 必須形式 | `Job.fail("machineExtractionUnavailable")` とし、ノートは `failed(machineExtractionUnavailable)` |
-| 連携が失効（`CredentialResolver.resolve` が `reauthorizationRequired`） | `Job.fail("providerAuthFailed")` とし、ノートは `failed(providerAuthFailed)`。`expired` は同一 UoW で保存する |
+| 連携が失効（`CredentialResolver.resolve` が `reauthorizationRequired`） | `expired` はglobal D1で先に保存し、その後scope-localで `Job.fail("providerAuthFailed")` とノートの `failed(providerAuthFailed)` を保存する |
 | LLM 実行回数の上限到達（サービス側。`consumeLlmCall`） | `Job.fail("quotaExceeded")` とし、ノートは `failed(quotaExceeded)` |
 | モデルのレート制限・残高不足 | `Job.fail("quotaExceeded")` |
 | 実行時間の超過 | `Job.fail("timeout")` |
@@ -155,8 +155,8 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 4. `FormatDetector.detect` で形式を判定する。渡す先頭バイト列は経路で分かれる — `source === "localFile"` なら `FileContentReader.readHead(sourceFileId, 8192)` の結果と手順 3 で引いた `StoredFile` の `fileName` / `mimeType`、`driveBackup` なら手順 3 で取り出した内容の先頭 8192 バイトと `fetchBackupForRegeneration` が返した `fileName` / `mimeType` を用いる（`requestRegeneration` の手順 4 と同じ読み方）。`passwordProtected` が真なら、連携の解決にも方針の決定にも進まず、本文を変更せず `Job.fail("passwordProtected")` を保存して終了する（`runConversion` の手順 4 と同じ優先順位。再生成では本文を保持するため `Note.markConversionFailed` は呼ばない）。優先しないと、パスワード保護された PDF はテキスト層を読めないため `pdfWithoutText` と判定されて LLM 経路に進み、手順 9 で `consumeLlmCall` を消費してから executor が落ちる（変換を実行する前に判明した失敗では消費しない。[usecases/usage.md](./usage.md) の `consumeLlmCall`）
 5. 要求者（`requestedBy`）の OpenRouter 連携を引き、`runConversion` の手順 5 と同じ 3 分岐で `ConversionCapability` を決める（[domains/integration.md](../domains/integration.md) の `CredentialResolver`）
    - 連携の行がない（未連携）: `{ llm: "unavailable" }` として 6 へ進む（LLM 必須形式なら手順 7 の `integrationRequired` に至り、機械的変換で足りる形式はそのまま変換される）
-   - `CredentialResolver.resolve` が `resolved`: `{ llm: "available" }` として 6 へ進む。`updated` が非 `null` ならその連携も同一 UoW で保存する
-   - `resolve` が `reauthorizationRequired`（失効）: 方針の決定には進まず、本文を変更せず `Job.fail("providerAuthFailed")` を保存して終了する（再生成では本文を保持するため `Note.markConversionFailed` は呼ばない）。`expired` が非 `null` なら、その連携と `integration.expired` の草稿も**同一 UoW で保存**する
+   - `CredentialResolver.resolve` が `resolved`: `updated` が非 `null` なら、先にglobal D1のUoWで連携とeventを保存し、`{ llm: "available" }` として 6 へ進む
+   - `resolve` が `reauthorizationRequired`（失効）: `expired` が非 `null` なら、先にglobal D1のUoWで連携と `integration.expired` を保存する。その後scope-local UoWで本文を変更せず `Job.fail("providerAuthFailed")` を保存して終了する（再生成では本文を保持するため `Note.markConversionFailed` は呼ばない）。途中停止は再試行で同じ状態へ収束する
 
    `"declined"` は再生成では起こらない（payload に `conversionPreference` がない）
 6. `ConversionPlanner.plan(format, capability)` で方針を決める
@@ -179,7 +179,7 @@ run 系ユースケース（`runConversion` / `runRegeneration`）は [usecases/
 | --- | --- |
 | 元ファイルもバックアップもない | `Job.fail("targetMissing")` |
 | Drive 上のファイルが削除・移動済み | `Job.fail("targetMissing")` |
-| OpenRouter の連携なし・失効 | 連携なしは `Job.fail("integrationRequired")`、失効（`resolve` が `reauthorizationRequired`）は `Job.fail("providerAuthFailed")`。どちらも本文は変更しない。失効時の `expired` は同一 UoW で保存する |
+| OpenRouter の連携なし・失効 | 連携なしは `Job.fail("integrationRequired")`、失効（`resolve` が `reauthorizationRequired`）はglobal D1へ `expired` を保存してからscope-localで `Job.fail("providerAuthFailed")`。どちらも本文は変更しない |
 | 記録所有者の Drive 連携が解除・失効・退会済み（`driveBackup`） | `Job.fail("integrationRequired")` / `Job.fail("providerAuthFailed")`（記録所有者には再連携を、他のメンバーには自分の Drive への再バックアップを経た再生成を案内する。IN-07） |
 | LLM 実行回数の上限到達（サービス側。`consumeLlmCall`） | 本文を維持したまま `Job.fail("quotaExceeded")` |
 | パスワード保護 | 本文を維持したまま `Job.fail("passwordProtected")`。手順 4 の判定時点で確定し、連携の解決・方針の決定・`consumeLlmCall` より優先する（実行前に判明した失敗で LLM 実行回数を消費しない） |

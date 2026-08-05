@@ -19,7 +19,9 @@
 
 ### JobId
 
-- **バリデーション**: 空白のみは不可。`BusinessRuleError(JobErrorCode.InvalidId)`
+- 文字列表現は `u_{userId}_{uuidv7}` または `w_{workspaceId}_{uuidv7}`。生成時の `JobScope` を埋め込み、`scopeOf(jobId)` で外部 I/O なしに route できる
+- parse できない値、空の scope ID / local ID は `BusinessRuleError(JobErrorCode.InvalidId)`
+- 親子の JobId は同じ scope prefix を持つ。Job は scope 間を移動しない
 
 ### JobKind
 
@@ -115,6 +117,7 @@ JobBase = {
   payload: JobPayload
   scope: JobScope                       // 対象が属する文脈。履歴の絞り込みに使う
   attempts: AttemptCount
+  removalOperationId: string | null       // rootだけがfamily removal claim中に保持
   version: number
   createdAt: Date
   updatedAt: Date
@@ -130,7 +133,7 @@ JobScope =
   | { type: "workspace"; workspaceId: WorkspaceId }
 
 QueuedJob    = JobBase & JobAttribution & { status: "queued" }
-RunningJob   = JobBase & JobAttribution & { status: "running"; startedAt: Date; progress: JobProgress; leaseExpiresAt: Date }
+RunningJob   = JobBase & JobAttribution & { status: "running"; startedAt: Date; progress: JobProgress; progressEventMarker: { completed: number; at: Date }; leaseExpiresAt: Date }
 SucceededJob = JobBase & JobAttribution & { status: "succeeded"; startedAt: Date; finishedAt: Date; artifact: ArtifactRef | null; notices: readonly JobNotice[] }
 FailedJob    = JobBase & JobAttribution & { status: "failed"; startedAt: Date | null; finishedAt: Date; failure: JobFailure }
 CanceledJob  = JobBase & JobAttribution & { status: "canceled"; startedAt: Date | null; finishedAt: Date }
@@ -145,10 +148,12 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 - `notices` を持つのも `succeeded` のみ。空配列でありうる。匿名ジョブ（`pdfExport`）は常に空 — `visibilityNotApplied` を出すのは `runConversion` だけであり、匿名ジョブは変換を行わない
 - `requestedBy: null`（匿名ジョブ）は `kind: "pdfExport"` かつ `parentId: null` のみ（ADR 010）
 - `leaseExpiresAt` を持つのは `running` のみ。実行開始（`start`）と進捗報告（`reportProgress`）のたびに延長する（組み立て中の batch 親は例外。下記「振る舞い」の `reportProgress` / `renewAssemblyLease`）。失効の判定は `leaseExpiresAt <= now`（ADR 012）。期間の値と供給元は [usecases/job.md](../usecases/job.md) の「共通: リース期間と回収の間隔」が定める
+- `progressEventMarker` を持つのは `running` のみで、最後に `job.started` / `job.progressed` を発行した時点の completed と時刻を保持する。repository は `progress_event_completed` / `progress_event_at` から必ず復元し、抑制判定をプロセス内メモリに置かない
 - `parentId` が指すジョブの `target.type` は `"batch"`
 - 親ジョブの `progress.total` は子ジョブの件数と一致する（`total` は登録後に変えない）
 - `scope` は対象の所有文脈と一致する（下記「`scope` の導出」）
 - 親ジョブと子ジョブの `scope` は一致する。batch 親は対象を持たないため `scope` を子から導くしかなく、子の所有文脈は 1 つでなければならない（下記「batch 親の `scope` は単一である」）
+- rootの`removalOperationId`が非nullなら、そのrootと全子は同じoperation IDのmanifest構築・削除以外の遷移を拒否する。子のmutationは親rootのclaimを同じUoWで検査する
 
 **`scope` の導出**
 
@@ -166,7 +171,7 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 
 **batch 親の `scope` は単一である**
 
-一括操作の対象に個人所有ノートとワークスペース所有ノートが混ざると、親の `scope` は原理的に 1 つに定まらない。そこで**混在は登録の入力段階で禁止する**。対象を ID の並びで受け取る登録（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）は、絞り込んだあとの所有文脈が 2 つ以上あれば子を 1 件も作らずに全体を中止し、`ValidationError("MIXED_OWNER_SCOPE")` とする。`startBulkUpload` は取り込み先の所有者を 1 つだけ受け取るため構造的に混在しない。選択と一括操作は 1 つの文脈のノート一覧で行うため通常の操作では起こらず、転送境界で弾いても体験は変わらない。混在を許す代替案（親を文脈ごとに分ける／`JobScope` に混在の variant を足す）を採らない理由は [ADR 012](../adr/012-job-execution-resilience.md) に記録した。
+対象をIDの並びで受け取る登録はsource ScopeKeyを必須にし、D1 routeでそのscopeのactive IDだけを選んで1つのscope DOへ渡す。別scope・moving・purgingのIDは`notFound`として除外する。親子の`scope`はsourceをそのまま使うため単一であり、複数DOへfan-outしてから混在判定する経路は持たない。
 
 **batch 親の子ジョブ登録規則**
 
@@ -212,10 +217,10 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `enqueue` | `params: { id: string; target: JobTarget; payload: JobPayload; scope: JobScope } & JobAttribution, now: Date` | `WithEventDrafts<QueuedJob, JobEvent>` | `payload.kind !== kind` なら `BusinessRuleError(PayloadKindMismatch)`。`attempts: 0` で生成し `job.enqueued` を発行。匿名構成（`requestedBy: null`）は `JobAttribution` の型で `pdfExport` かつ親なしに限られる |
-| `enqueueBatch` | `params: { id: string; kind: JobKind; payload: JobPayload; requestedBy: UserId; scope: JobScope; total: number }, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | 親ジョブ。`payload` は必須で、`payload.kind !== kind` なら `BusinessRuleError(PayloadKindMismatch)`。`target: { type: "batch" }`、`progress: { completed: 0, total }`、`attempts: 0`、`leaseExpiresAt: leaseUntil` で即 `running` にする。`job.enqueued` を発行（batch 親はディスパッチ対象外のため、この発行は監査と購読側の一様な扱いのためである） |
+| `enqueueBatch` | `params: { id: string; kind: JobKind; payload: JobPayload; requestedBy: UserId; scope: JobScope; total: number }, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | 親ジョブ。`payload` は必須で、`payload.kind !== kind` なら `BusinessRuleError(PayloadKindMismatch)`。`target: { type: "batch" }`、`progress: { completed: 0, total }`、`progressEventMarker: { completed: 0, at: now }`、`attempts: 0`、`leaseExpiresAt: leaseUntil` で即 `running` にする。`job.enqueued` を発行（batch 親はディスパッチ対象外のため、この発行は監査と購読側の一様な扱いのためである） |
 | `start` | `job: QueuedJob \| RunningJob, total: number, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob \| FailedJob, JobEvent>` | `queued` の場合: `attempts` を 1 増やし、`startedAt: now`・`leaseExpiresAt: leaseUntil` で `running` にして `job.started` を発行。リース失効の `running` の場合: 引き継ぎ再開（ADR 012）。まず `attempts` を 1 増やし、**この分岐に限り**加算後の `AttemptCount.exhausted` を判定する。真ならリースを張り直さず、**受け取ったジョブ（リース失効のまま）**に `expire` を適用してその結果を返す（張り直したあとでは `expire` がリース有効とみなして `LeaseActive` で拒否する）。偽なら `startedAt` は維持したままリースを `leaseUntil` に張り直し、`progress` を `{ completed: 0, total }` に作り直して `job.started` を発行。リース有効の `running` なら `BusinessRuleError(LeaseActive)`（run 系は呼び出し前にリースを検査し、有効なら何もせず返す）。分岐と試行上限の関係は下記「`start` の分岐と試行上限」 |
 | `beginAssembly` | `parent: RunningJob, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob \| FailedJob, JobEvent>` | batch 親自身の実行（`bulkExport` の ZIP 組み立て）の実行権を取る（ADR 012）。`target.type !== "batch"` または `kind !== "bulkExport"` なら `BusinessRuleError(InvalidTarget)`。`attempts >= 1` かつリース有効（`leaseExpiresAt > now`）なら別のワーカーが組み立て中のため `BusinessRuleError(LeaseActive)`。それ以外は `attempts` を 1 増やし、加算後の `AttemptCount.exhausted` を判定する。真ならリースを張り直さず、**受け取った親（リース失効のまま）**に `expire` を適用してその結果を返す（`start` と同じ順序。張り直したあとでは `LeaseActive` で拒否される。上限に達するのは `attempts >= 2` の親だけで、直前の `LeaseActive` 判定を抜けている以上リースは必ず失効している）。偽なら `leaseExpiresAt` を `leaseUntil` に張り直して `job.started` を発行 |
-| `reportProgress` | `job: RunningJob, completed: number, now: Date, leaseUntil: Date` | `RunningJob` | `JobProgress` を作り直し、`leaseExpiresAt` を `leaseUntil` に延長する。ただし組み立て中の batch 親（`target.type === "batch"` かつ `attempts >= 1`）には延長を適用せず、進捗だけを作り直す（下記「組み立て中の親のリース」）。イベントは発行しない（更新が高頻度になるため） |
+| `reportProgress` | `job: RunningJob, completed: number, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | 進捗とleaseを更新する。`progressEventMarker` から1分経過、markerのcompletedからtotalの5%以上進む、または完了なら`job.progressed`を発行してmarkerを `{ completed, at: now }` に更新する。抑制時はmarkerを維持する。抑制は永続化された状態を使ってドメイン自身が行う |
 | `renewAssemblyLease` | `parent: RunningJob, now: Date, leaseUntil: Date` | `RunningJob` | 組み立て中の batch 親のリースを延長する。`target.type !== "batch"`、`kind !== "bulkExport"`、または `attempts === 0`（実行権を取っていない）なら `BusinessRuleError(InvalidTarget)`。進捗は変えない。イベントは発行しない。実行権を持つ組み立てワーカー（`runBulkExport`）だけが呼ぶ |
 | `succeed` | `job: RunningJob, artifact: ArtifactRef \| null, notices: readonly JobNotice[], now: Date` | `WithEventDrafts<SucceededJob, JobEvent>` | `job.succeeded` を発行。`notices` を解釈せずそのまま保持する。申し送りを持たない実行体は空配列を渡す |
 | `fail` | `job: QueuedJob \| RunningJob, failure: JobFailure, now: Date` | `WithEventDrafts<FailedJob, JobEvent>` | リースを検査せず終端化する（下記「強制終端とリース」）。`job.failed` を発行 |
@@ -225,6 +230,8 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 | `reopenBatch` | `parent: SucceededJob \| FailedJob, summary: BatchSummary, now: Date, leaseUntil: Date` | `WithEventDrafts<RunningJob, JobEvent>` | `target.type !== "batch"` なら `BusinessRuleError(InvalidTarget)`。子の再試行・組み立ての再試行に伴い親を `running` に戻す（終端不変条件の唯一の例外。ADR 012）。`finishedAt` / `failure` / `artifact` / `notices` を捨てる（捨てるのは参照だけなので、保管ファイルの破棄は呼び出し側が同じ UoW で行う。[usecases/job.md](../usecases/job.md) の「親を開き直すときの生成物の破棄」）。`progress` は呼び出し側（`retryFailedChildren` / `retryJob`）が渡した子の現況の集計から `{ completed: succeeded + failed + canceled, total: summary.total }` として作り直す。`startedAt` は維持する（`null` なら `now`）。`attempts` は 0 に戻す（親自身の実行 = 組み立てを新たに主張できるようにする）。`kind: "bulkExport"` かつ `summary.settled` かつ `summary.succeeded >= 1`（子は全件終端のまま親だけを開き直す場合）なら `job.readyToAssemble` を発行し、そうでなければイベントを発行しない。受理型に `CanceledJob` を含めないのは意図であり、取り消した親は開き直さず元の操作をやり直す（呼び出し側は `canceled` の親を手前で弾く。[usecases/job.md](../usecases/job.md) の `retryFailedChildren` 手順 3）。下記「`reopenBatch` が受け取るのは子の集計である」 |
 | `isTerminal` | `job: Job` | `boolean` | 終端状態かどうか |
 | `isCancelable` | `job: Job` | `boolean` | `queued` または `running` |
+
+`queued → running` の `start`、`beginAssembly`、`reopenBatch` も、遷移時の `progress.completed` と `now` で `progressEventMarker` を初期化する。`retry` で `queued` に戻すときはmarkerを捨てる。これにより再起動・lease引継ぎ・親の開き直し後も、次の進捗eventの抑制基準が一意に復元できる。
 
 **`start` の分岐と試行上限**
 
@@ -327,13 +334,85 @@ interface JobRepository extends TransactionalRepository<Job, JobId> {
   listChildren(parentId: JobId, pagination: Pagination): Promise<PaginationResult<Job>>;
   listActiveByTarget(target: JobTarget, limit: number): Promise<readonly Job[]>;
   listActiveByRequester(userId: UserId, limit: number): Promise<readonly Job[]>;
-  countActiveByKind(userId: UserId, kind: JobKind): Promise<number>;
+  listActiveByRequesterAndKinds(userId: UserId, kinds: readonly JobKind[], limit: number): Promise<readonly Job[]>;
   listActiveByScope(scope: JobScope, limit: number): Promise<readonly Job[]>;
   listExpiredRunning(asOf: Date, limit: number): Promise<readonly RunningJob[]>;
   summarizeChildren(parentId: JobId): Promise<BatchSummary>;
   summarizeChildrenOf(parentIds: readonly JobId[]): Promise<readonly { parentId: JobId; summary: BatchSummary }[]>;
-  deleteOlderThan(cutoff: Date): Promise<number>;
-  deleteByRequester(userId: UserId): Promise<number>;
+  listRemovableRoots(cutoff: Date, limit: number): Promise<readonly Job[]>;
+  listRemovableRootsByRequester(userId: UserId, limit: number): Promise<readonly Job[]>;
+  claimFamilyForRemoval(rootJobId: JobId, expectedVersion: number, operationId: string): Promise<boolean>;
+  assertFamilyMutable(jobId: JobId): Promise<void>;
+  deleteFamilyPage(rootJobId: JobId, operationId: string, limit: number): Promise<Readonly<{ deletedCount: number; completed: boolean }>>;
+}
+
+interface JobHistoryQueryService {
+  listByRequester(userId: UserId, criteria: JobListCriteria): Promise<PaginationResult<JobHistoryEntry>>;
+  findById(requestedBy: UserId, jobId: JobId): Promise<JobHistoryEntry | null>;
+}
+
+interface JobHistoryProjectionWriter {
+  upsertIfNewer(entry: JobHistoryEntry): Promise<boolean>;
+  tombstoneAndRemove(routes: readonly JobHistoryRoute[], operationId: string): Promise<void>;
+  markTargetRemoved(route: JobHistoryRoute): Promise<void>;
+  pruneRemovalTombstones(expiresAtOrBefore: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
+}
+
+interface JobTargetHistoryRouteStore {
+  registerBeforeHistory(input: { target: JobTarget; route: JobHistoryRoute; sourceVersion: number; operationId: string }): Promise<Readonly<{ targetRemoved: boolean; routeRemoved: boolean }>>;
+  tombstoneTargetBeforeFanOut(target: JobTarget, operationId: string): Promise<void>;
+  listByTarget(target: JobTarget, cursor: string | null, limit: number): Promise<Readonly<{ items: readonly JobHistoryRoute[]; nextCursor: string | null }>>;
+  tombstoneRoute(input: { target: JobTarget; route: JobHistoryRoute; operationId: string }): Promise<void>;
+  pruneExpiredTombstones(expiresAtOrBefore: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
+}
+
+interface JobRemovalManifestStore {
+  beginOrResume(input: { operationId: string; parentOperationId: string | null; rootJobId: JobId; requestedBy: UserId | null }): Promise<void>;
+  appendPage(operationId: string, jobs: readonly Job[], nextCursor: string | null): Promise<void>;
+  markReady(operationId: string): Promise<void>;
+  listUnacknowledged(operationId: string, limit: number): Promise<readonly JobHistoryRoute[]>;
+  acknowledge(operationId: string, jobIds: readonly JobId[]): Promise<void>;
+  markCompleted(operationId: string): Promise<void>;
+  compactItems(operationId: string, limit: number): Promise<Readonly<{ removed: number; remaining: boolean }>>;
+  hasIncompleteByRequester(userId: UserId): Promise<boolean>;
+  pruneExpiredHeaders(expiredBefore: Date, limit: number): Promise<number>;
+}
+
+type JobHistoryRoute = Readonly<{ jobId: JobId; requestedBy: UserId | null; target: JobTarget }>;
+
+type JobHistoryEntry = Readonly<{
+  jobId: JobId;
+  requestedBy: UserId;
+  scope: JobScope;
+  kind: JobKind;
+  payload: JobPayload;
+  status: Job["status"];
+  progress: JobProgress | null;
+  target: JobTarget;
+  parentId: JobId | null;
+  targetLabel: string;
+  childSummary: BatchSummary | null;
+  failure: JobFailure | null;
+  notices: readonly JobNotice[];
+  artifact: ArtifactRef | null;
+  sourceVersion: number;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}>;
+
+interface JobSlotStore {
+  reserve(userId: UserId, kind: "bulkExport", operationId: string, ttlMs: number): Promise<boolean>;
+  attach(userId: UserId, kind: "bulkExport", operationId: string, jobId: JobId): Promise<void>;
+  release(userId: UserId, kind: "bulkExport", jobId: JobId): Promise<void>;
+}
+
+interface ScopeJobAdmissionStore {
+  tryAcquire(input: { jobId: JobId; leaseUntil: Date; limit: 4 }, now: Date): Promise<boolean>;
+  renew(jobId: JobId, leaseUntil: Date): Promise<void>;
+  release(jobId: JobId): Promise<void>;
+  releaseExpired(now: Date, limit: number): Promise<readonly JobId[]>;
 }
 
 type JobListCriteria = Readonly<{
@@ -345,12 +424,19 @@ type JobListCriteria = Readonly<{
 ```
 
 - `listExpiredRunning` はリース失効（`leaseExpiresAt <= asOf`）の `running` を返す。リーパーの回収対象の列挙に使う（ADR 012）
-- `listByRequester` の既定（`JobListCriteria.parentsOnly: true`）は `requested_by = ? AND parent_id IS NULL` を `created_at` の降順で引く。一括操作では子の行が親の数十〜数百倍になるため、`parent_id` を含まない索引では絞り込みが行の走査に落ちる。履歴一覧の索引は `requested_by` / `parent_id` / `created_at` の 3 列で支えられていることを前提にする（[database/index.md](../database/index.md)）
-- `countActiveByKind` は `requestBulkExport`（[usecases/note.md](../usecases/note.md)）が `JobConcurrencyPolicy.ensureBulkExportSlot` に渡す件数を数える。呼び出し元はここだけで、`kind: "bulkExport"` の未終端ジョブ（親・子の両方）を数える。`requested_by` と未終端 `status` に加えて `kind` で絞るため、実行中件数の索引が `kind` を含んでいることを前提にする（同上）
+- `listByRequester` は account deletion など現在の scope 内の選択にだけ使う。利用者横断の画面は D1 projection の `JobHistoryQueryService` で読み、cancel / retry / detail は `JobId` に埋め込まれた ScopeKey から正データの scope object を呼ぶ
+- `JobHistoryQueryService` / writerは引数またはentryのrequestedByでhash shardを選ぶ。親子のrequestedBy一致によりchild summaryも同じshardで更新でき、一覧はscope DOや複数history shardへfan-outしない。`tombstoneAndRemove`は同じrequestedBy shardでJobId removal tombstone保存とhistory削除をatomicに行い、`upsertIfNewer`は有効なtombstoneがあれば拒否する。これにより削除consumerと、削除前にJobを読んだ遅延consumerの競合でも履歴を復活させない
+- `JobTargetHistoryRouteStore`はtarget hash shardに`{ target, requestedBy, jobId, sourceVersion }`とtarget/route tombstoneを置くbounded reverse indexである。`target.type = "batch"`は実体削除の対象でなくnull keyへ集中するため登録しない。`registerBeforeHistory`をhistory upsertより先に同じoperation IDで呼び、`targetRemoved`ならlabelを「削除済み」、`routeRemoved`ならhistory upsert自体を行わない。target削除時は`tombstoneTargetBeforeFanOut`を先に呼んでから最大100件ずつ列挙する。history削除前には`tombstoneRoute`を呼ぶ。各methodは応答喪失後に同じoperation IDで再実行でき、全history shardへのscanを行わない
+- `bulkExport` の利用者単位の同時実行上限は global D1 の `JobSlotStore` で予約してから scope-local Job を作る。作成失敗時は operation ID、終端時は job ID で解放する。stale slot は過剰拒否にしかならず、recovery Cron が正データを確認して回収する
+- `JobSlotStore.reserve` は条件付き INSERT 1 文である。既存 slot がある場合は `false` を返し、同じ利用者の2つの scope DO が同時に一括エクスポートを作っても両方を受理しない
+- `ScopeJobAdmissionStore` はcurrent scope DOに束縛する。期限切れleaseを除外した行が4未満のときだけ同じscope-local UoWでslotを取得する。`jobId` UNIQUEにより取得応答喪失後の再試行は同じleaseを返す。外部I/Oを行うkindだけが使い、local-only bulkTag/bulkDeleteは対象外
 - `summarizeChildren` は 1 件の親の内訳（`getJobDetail`）、`summarizeChildrenOf` は一覧に載った親をまとめて集計する用（`listJobs`）。どちらも `jobs_parent_idx` を使い、親の状態に依存せず子の現況から数え直す。子を持たない ID は結果に現れない
-- `deleteOlderThan` は終端状態かつ**親を持たない**（`parentId === null`）ジョブのみを対象とし、終了時刻（`finishedAt`）を比較する。境界は排他（`finishedAt < cutoff` のみ削除する）。子は親の削除に伴って `parent_id` の外部キー CASCADE で一緒に消えるため、親が生きているあいだ子だけが消えることはない（[usecases/job.md](../usecases/job.md) の `pruneJobHistory`）
-- 匿名ジョブ（`requestedBy: null`）はどの `userId` とも一致しないため、`listByRequester` / `listActiveByRequester` / `countActiveByKind` / `deleteByRequester` の結果には現れない（ADR 010）
-- **網で引く 3 つ（`listActiveByTarget` / `listActiveByRequester` / `listActiveByScope`）と `listExpiredRunning` は `limit` を必須で受け取る**。呼び出し元はこれらの結果を 1 つの Unit of Work で終端させ、1 件ごとに後始末を伴うため、件数が 1 回の実行あたりのクエリ予算に直結するからである。既定は 100 で、上限に達した場合の続きは継続要求が運ぶ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」、[ADR 018](../adr/018-query-budget.md)）。`PaginationResult` ではなく素の配列を返すのは、呼び出し元が総件数を必要とせず「残りがあるか」だけを `limit` に達したかで判断するためである
+- removalは終端かつ親を持たないrootを起点にする。root選択と同じUoWで`claimFamilyForRemoval`とmanifest headerを確定し、以後retry/start/progress/terminal/reap/cancelを含む全通常transitionは`assertFamilyMutable`で拒否する。最大500子を一度にCASCADEせず、削除前にmanifestへroot/childrenの`{ jobId, requestedBy, target }`を100件ずつ固定する。ready後に`deleteFamilyPage(root, operationId, 100)`がclaim ownerと全対象の終端状態を条件に子を100件ずつ消し、子0件の最後のpageだけrootを消す
+- family removal IDは`sha256("jobFamilyRemoval:" + canonicalScopeKey + ":" + rootJobId)`で決定し、prune/account deletionのどちらが先でも同じrootは同じmanifestへ収束する。account deletionの親operation IDはheader/taskの`parentOperationId`へ保存し、複数familyに同じmanifest PKを再利用しない。global history/reverse routeの全ackまでmanifestを残す
+- `beginOrResume`が既存の同root manifestを返したとき、非nullの`parentOperationId`が渡され既存値がnullなら同じUoWでattachする。異なる非null値なら競合として拒否する。これによりpruneが先にclaimしたfamilyにもaccount deletionの完了待ちを結び付けられる
+- route/history removal tombstoneは30日、target tombstoneはJob保持90日+配送/replay窓30日=120日、completed manifestは30日保持する。global D1側はCron continuation、scope manifest側はAlarm taskが1 command/turn最大100件をkeysetで回収する。`compactItems`はack済みitemだけを消し、`markCompleted`はitem 0件のときだけ成功する。target tombstoneは保持窓内の全Jobがprune済みであることを確認してから消す
+- 匿名ジョブ（`requestedBy: null`）は requester 基準の local query / global history / slot に現れない（ADR 010）
+- 網で引く3メソッドと `listExpiredRunning` は `limit` 必須、既定100。scope Alarm 1 turn の CPU と event fan-out を制限するためで、上限到達時は local `scheduled_tasks` が続ける
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
@@ -360,7 +446,7 @@ type JobListCriteria = Readonly<{
 
 ```ts
 interface JobDispatcher {
-  dispatch(jobId: JobId, kind: JobKind): Promise<void>;
+  dispatch(scope: JobScope, jobId: JobId, kind: JobKind): Promise<void>;
 }
 ```
 
@@ -368,7 +454,7 @@ interface JobDispatcher {
 
 `job.enqueued` の購読ハンドラーは `target.type === "batch"`（batch 親）をキューへ送らない。親ジョブの実行は `job.readyToAssemble` の購読経由のみとする（ADR 012）。
 
-メッセージが運ぶのは `jobId` と `kind` だけで、これだけでは実行体が一意に定まらない（子ジョブは親と同じ `kind` を持つため、`bulkExport` には親 = `runBulkExport` と子 = `runBulkExportItem` の 2 つの実行体がある）。受け手は必ず `jobId` でジョブを読み直し、`kind` と `target.type` の組で実行体を選ぶ（[usecases/job.md](../usecases/job.md) の実行体の振り分け規則）。`kind` はキューやログの分類のために運ぶ値であり、振り分けの唯一の根拠ではない。
+メッセージは `scope`、`jobId`、`kind` を運ぶ。`jobId` に埋め込まれた scope と message の scope が違えば不正 message として失敗させる。受け手は scope object から Job を読み直し、`kind` と `target.type` の組で実行体を選ぶ。
 
 配送は少なくとも 1 回。受け手は同じジョブを 2 回受け取っても結果が変わらないように実装する。
 
@@ -378,16 +464,18 @@ interface JobDispatcher {
 
 | 型 | payload | 用途 |
 | --- | --- | --- |
-| `job.enqueued` | `{ jobId, kind, target, requestedBy, parentId }` | 実行系への送信 |
-| `job.started` | `{ jobId, kind }` | 監査 |
-| `job.succeeded` | `{ jobId, kind, target, parentId, artifactFileId }` | 親ジョブの進捗更新（`updateBatchProgress`） |
-| `job.failed` | `{ jobId, kind, target, parentId, reason }` | 親ジョブの進捗更新（`updateBatchProgress`） |
-| `job.canceled` | `{ jobId, kind, target, parentId }` | 親ジョブの進捗更新（`updateBatchProgress`） |
-| `job.readyToAssemble` | `{ jobId, kind }` | `bulkExport` 親の実行系への送信（`dispatchJob`。全子終端・成功 1 件以上のとき発行。ADR 012） |
+| `job.enqueued` | `{ scope, jobId, kind, target, requestedBy, parentId, sourceVersion }` | 実行系への送信とglobal history投影 |
+| `job.started` | `{ scope, jobId, kind, target, requestedBy, sourceVersion }` | global history投影・監査 |
+| `job.progressed` | `{ scope, jobId, kind, target, requestedBy, sourceVersion }` | global historyの進捗更新 |
+| `job.succeeded` | `{ scope, jobId, kind, target, parentId, requestedBy, artifactFileId, sourceVersion }` | 親ジョブの進捗更新とhistory投影 |
+| `job.failed` | `{ scope, jobId, kind, target, parentId, requestedBy, reason, sourceVersion }` | 親ジョブの進捗更新とhistory投影 |
+| `job.canceled` | `{ scope, jobId, kind, target, parentId, requestedBy, sourceVersion }` | 親ジョブの進捗更新とhistory投影 |
+| `job.readyToAssemble` | `{ scope, jobId, kind, target, requestedBy, sourceVersion }` | `bulkExport` 親の実行系への送信 |
+| `job.removed` | `{ scope, removalOperationId, rootJobId, requestedBy }` | scope-local removal manifestを100件ずつ読むglobal history cleanupの開始 |
 
 `job.enqueued` の `requestedBy` は匿名ジョブでは `null`（ADR 010）。
 
-終端 3 イベント（`job.succeeded` / `job.failed` / `job.canceled`）の購読者は `updateBatchProgress` だけで、しかも `parentId !== null`（batch の子）のときにしか働かない。購読ハンドラーは `parentId` が `null` のイベントを何もせず捨てる。これらは監査・履歴の材料でもあるが、履歴（`listJobs` / `getJobDetail`）は `jobs` の行を直接引くため専用の購読者を持たない。
+全 `job.*` event は `projectJobHistory` が購読する。`job.removed` 以外は JobIdに埋め込まれたscope DOから現在のJobと親の最新 `BatchSummary` を読み直し、payloadのrequestedByで選んだshardへ`JobHistoryProjectionWriter.upsertIfNewer`する。正データが既に消えていてもpayloadのroute keyでprojectionをremoveできる。終端3イベントはこれに加えて、`parentId !== null` のときだけ `updateBatchProgress` も購読する。
 
 - 通知の購読者はいない。処理の結果は利用者が履歴（JB-01）を開いて確認する設計で、プッシュ通知・メール通知はスコープ外である
 - ノートの失敗表示（`content.status: "failed"` と `NoteFailureReason`）も `job.failed` の購読では作らない。実行体自身が `Note.markConversionFailed` をジョブの終端と同一 UoW で保存し（[usecases/conversion.md](../usecases/conversion.md) の `runConversion`）、強制終端の経路では終端させた側が同じことを行う（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）。イベント経由にすると本文とジョブの状態が一時的に食い違うため、この二重化は意図的に避けている
@@ -403,6 +491,6 @@ JobErrorCode =
 
 ## ユースケース（概要）
 
-`listJobs`, `getJobDetail`, `retryJob`, `retryFailedChildren`, `cancelJob`, `updateBatchProgress`, `dispatchJob`, `reapExpiredJobs`, `pruneJobHistory`, `deleteJobsForRequester`
+`listJobs`, `getJobDetail`, `retryJob`, `retryFailedChildren`, `cancelJob`, `updateBatchProgress`, `dispatchJob`, `reapExpiredJobs`, `projectJobHistory`, `pruneJobHistory`, `deleteJobsForRequester`, `continueForcedTermination`
 
 詳細は [usecases/job.md](../usecases/job.md)。

@@ -26,13 +26,13 @@
 
 ### 処理フロー
 
-1. `NoteRepository.findById` でノートを引き、`NoteAccessPolicy` で `canEdit` を確認する。あわせてゴミ箱在籍を検査し、ゴミ箱なら `BusinessRuleError(NoteIsTrashed)`。`NoteAccessPolicy` は所有者にはゴミ箱のノートでも `canEdit: true` を返すため、この検査は権限判定とは別に置く
-2. `TagScope.fromNoteOwner(note.owner)` でスコープを決める
+1. `NoteRouteStore.resolve(noteId)`をD1 primaryで引き、`active` routeの1つのscope objectだけを呼ぶ。`moving`は切替前source、`purging` / `tombstone` / 不在は`NotFoundError("NOTE_NOT_FOUND")`。scope miss / routeVersion不一致はprimaryで1回だけ引き直す
+2. current scope の `NoteRepository.findById` でノートを引き、routeVersionと`canEdit`を確認する。ゴミ箱なら `BusinessRuleError(NoteIsTrashed)`。`TagScope`はcurrent ScopeKeyから組み立て、Note ownerから別DOを探索しない
 3. `TagName.create(tagName)` を構築する
 4. `TagAssignmentRepository.countByNote(noteId)` を引き、`TagAssignmentPolicy.ensureAssignable` を呼ぶ
-5. `TagRepository.findByScopeAndName(scope, normalized)` を引く。なければ `Tag.create` を作る
+5. `TagRepository.findByScopeAndName(scope, normalized)` を引く。既存tagなら同じUoWで`TagOperationStore.assertUnlocked([tagId])`を確認し、なければ `Tag.create` を作る
 6. 既に同じ付与があれば何もせず `created: false` で返す
-7. `TagAssignment.create` を作り、`UnitOfWorkProvider.run` でタグと付与を保存してイベントを収集する
+7. `TagAssignment.create`を作り、同じscope-local UoWでタグ・付与を保存し、`NoteProjectionRevisionStore.bump(noteId)`のrevisionを`tag.assigned`へ載せる
 
 ### エラーケース
 
@@ -60,9 +60,9 @@
 
 ### 処理フロー
 
-1. ノートを引き、`canEdit` を確認する
-2. `TagAssignmentRepository.findByTagAndNote` を引く。なければ何もせず成功として返す
-3. `UnitOfWorkProvider.run` で削除し、`TagEvents.unassigned` を収集する
+1. assignTagと同じくD1 primaryのNote routeを解決し、その1つのscopeでノート・routeVersion・`canEdit`を確認する。`purging` / `tombstone`はnot found、stale routeは1回だけ引き直す
+2. `TagAssignmentRepository.findByTagAndNote` を引く。なければ何もせず成功として返す。あれば同じUoWで`TagOperationStore.assertUnlocked([tagId])`を確認する
+3. 同じscope-local UoWで付与を削除し、`NoteProjectionRevisionStore.bump(noteId)`のrevisionを`tag.unassigned`へ載せる
 
 ### エラーケース
 
@@ -131,15 +131,15 @@
 
 ### 出力DTO
 
-`tagId`, `name`, `merged: boolean`, `mergeRequired: boolean`
+`tagId`, `name`, `merged: boolean`, `mergeRequired: boolean`, `operationId: string | null`, `status: "pending" | "completed" | null`
 
 ### 処理フロー
 
 1. スコープを解決し、`manageTags` の権限を確認する
-2. `TagRepository.findById` で引き、スコープの一致を確認する
+2. `TagRepository.findById` で引き、スコープの一致と`TagOperationStore.assertUnlocked([tagId])`を確認する
 3. `TagName.create(name)` を構築し、`findByScopeAndName` で衝突を調べる
 4. 衝突があり `confirmMerge` が偽なら、変更せず `mergeRequired: true` を返す
-5. 衝突があり `confirmMerge` が真なら `mergeTags` を**呼ぶ**（`sourceTagId: tagId`、`targetTagId: 衝突した既存タグの ID`）。その結果をそのまま返し（`tagId` は統合先、`merged: true`、`mergeRequired: false`）、手順 6 には進まない
+5. 衝突があり `confirmMerge` が真なら `mergeTags` を呼ぶ。`tagId`は統合先、`merged: true`、`mergeRequired: false`とoperation ID/statusを返し、手順6へ進まない。`merged`は統合operationを受理した意味で、`status: pending`なら物理付け替えは継続中である
 6. 衝突がなければ `UnitOfWorkProvider.run` で `Tag.rename` を保存する
 
 手順 5 はユースケースの**呼び出し**であり、手順の複製ではない（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。このユースケースは手順 5 までに 1 件も書き込みを行わないため末尾呼び出しになり、`mergeTags` が自分の `UnitOfWorkProvider.run` で確定した結果だけが残る。`run` の入れ子も、呼ばれた側だけが確定して矛盾する状態も生じない。`mergeTags` は `expectedVersion` を要求しないため渡す版もない。
@@ -164,16 +164,17 @@
 
 ### 出力DTO
 
-`targetTagId`, `movedAssignments: number`
+`operationId`, `targetTagId`, `affectedNotes: number | null`, `status: "pending" | "completed"`（pendingではnull、完了照会で確定値）
 
 ### 処理フロー
 
 1. スコープを解決し、`manageTags` の権限を確認する
-2. 両方のタグを引き、同一スコープであることと `sourceTagId !== targetTagId` を確認する
-3. `TagAssignmentRepository.reassign(sourceTagId, targetTagId)` を呼ぶ（衝突する行は削除される）
-4. `sourceTag` を削除し、`TagEvents.merged` を収集する
+2. operation IDを採番し、1つのlocal UoWで両タグを引き、同一スコープ・別tag・`assertUnlocked`を確認する。全件countは行わない
+3. 同じUoWで`startMerge`と `tag.mergeContinued` taskを保存し、pendingを返す
+4. Alarm workerは1 turnで `reassignBatch(source, target, 200)` を実行する。返った各NoteIdについて`NoteProjectionRevisionStore.bump`、local `projection.reprojectRequested`、routeVersionを持たないpublic `publicProjection.reprojectRequested` outboxを同じUoWへ保存し、processed件数を進める。両task IDは `tagProjectionTaskId(operationId, plane, noteId, projectionRevision)` で決定的に導出する
+5. 200件なら同じtaskを直後へ再設定する。200件未満ならsourceの残件0を確認してsource tagを削除し、lockを解放して`tag.merged`を発行する
 
-付与の付け替えと `sourceTag` の削除は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する（手順 3 も UoW の内側で実行する）。付け替えだけが残って統合元のタグが生き延びる状態を作らない。
+新規付与・rename・別のmerge/deleteはoperation中の両tagで拒否する。各pageがcommit済みなら再試行は残るsource assignmentだけを先頭から処理するため、cursorなしで前進する。targetへの重複付与は同じpageでsource行を削除し、影響Noteのrevisionはどちらの場合も1回進める。
 
 ### エラーケース
 
@@ -195,15 +196,17 @@
 
 ### 出力DTO
 
-`affectedNotes: number`
+`operationId`, `affectedNotes: number | null`, `status: "pending" | "completed"`（pendingではnull、完了照会で確定値）
 
 ### 処理フロー
 
 1. スコープを解決し、`manageTags` の権限を確認する
-2. 削除前に付与を読み、対象ノートの一覧を得る（`affectedNotes` はノートの件数）
-3. 付与とタグを削除し、付与 1 件ごとに `TagEvents.unassigned` を併発して収集する。あわせて `TagEvents.deleted` を監査用として発行する（読み取りモデルの投影は `tag.unassigned` が担う。[domains/tag.md](../domains/tag.md)）
+2. operation IDを採番し、1つのlocal UoWでtagを引き、`TagOperationStore.assertUnlocked`を確認する。全件countは行わない
+3. 同じUoWで`startDelete`と `tag.deleteContinued` taskを保存し、pendingを返す
+4. Alarm workerは `deleteBatchByTag(tagId, 200)` で最大200付与を削除し、各NoteIdの`NoteProjectionRevisionStore.bump`、local `projection.reprojectRequested`、routeVersionを持たないpublic `publicProjection.reprojectRequested` outboxを同じUoWへ保存する。両task IDは `tagProjectionTaskId(operationId, plane, noteId, projectionRevision)` で決定的に導出する
+5. 200件ならtaskを直後へ再設定する。200件未満なら残件0を確認してtagを削除し、lockを解放して`tag.deleted`を発行する
 
-手順 2 の読み取りと手順 3 の削除は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する。読み取りが外側だと、その間に付いた付与が `tag.unassigned` を伴わずに FK CASCADE で消え、読み取りモデルにタグが残る。
+operation開始後は対象tagへのassign/renameを拒否するため、page間に新しい付与は入らない。worker停止・Alarm重複はoperation IDと残存assignment集合で冪等に再開する。1 transactionの付与変更・revision bump・task fan-outは最大200件である。
 
 ### エラーケース
 
@@ -224,23 +227,73 @@
 
 ### 出力DTO
 
-`deletedCount: number`
+`operationId`, `deletedCount: number`, `status: "pending" | "completed"`
 
 ### 処理フロー
 
 1. スコープを解決し、`manageTags` の権限を確認する
-2. `UnitOfWorkProvider.run` で `TagRepository.deleteUnusedInScope(scope)` を呼ぶ。これは**1 文の集合削除**で、そのスコープのタグのうち `tag_assignments` に行を持たないものをすべて消す。`deletedCount` は削除された行数
-3. 削除したタグ 1 件につき `TagEvents.deleted`（監査用）を同一 UoW で収集する。多行 INSERT 1 文で outbox に積む
+2. operation IDを採番し、`startDeleteUnused`と `tag.deleteUnusedContinued` taskを同じlocal UoWで保存してpendingを返す。workerは `TagRepository.deleteUnusedInScope(scope, 200)` を呼び、削除IDを最大200件含む1つの `tag.unusedBatchDeleted` 監査eventを保存する
+3. 200件なら同じtaskを直後へ再設定し、累計をoperationへ加える。200件未満ならoperationをcompleteする
 
-**1 件ずつ `deleteTag` を呼ばないのはなぜか**。`deleteTag` が 1 件ずつ独立した UoW を張るのは、付与ごとに `tag.unassigned` を併発して読み取りモデルの投影につなぐためである（手順 2）。しかしここでの対象は**使用件数 0 のタグに限られる**ので、読む付与は必ず 0 件で `tag.unassigned` は 1 件も出ない。`deleteTag` を 1 件ずつ呼ぶ唯一の理由がそもそも存在しない。
-
-一方、1 件ずつ呼ぶ形には上限がない。タグの数に比例したクエリを発行するため、スコープに未使用タグが数千あると 1 回の実行あたり 1,000 クエリという D1 の上限を超える（[ADR 018](../adr/018-query-budget.md)）。集合削除なら件数によらず 2 クエリで終わる。
-
-**「未使用である」の判定時点も強くなる**。以前は手順 2 の列挙から削除までの間に付与が付いたタグを `deleteTag` の読み直しが救っていたが、集合削除では削除の副問い合わせが**削除の時点で**付与の有無を見るため、その窓自体が存在しない。`TagQueryService.listWithUsage` は画面に件数を出すための読み取りであって、削除の根拠ではなくなる。
+削除SQLはoperation lockのないtagに限り、`NOT EXISTS(tag_assignments)`を削除時点で評価する。したがって画面表示後に付与されたtagは消さない。個別`tag.deleted`を数千件生成せず、1 Alarm turnのrow・event payloadを200件に固定する。
 
 ### エラーケース
 
 `deleteTag` と同じ。ただし個々のタグの `TAG_NOT_FOUND` は飛ばして続ける。
+
+## getTagOperation
+
+### 概要
+
+非同期のタグ削除・統合・未使用削除の進捗を返す。
+
+### 入力DTO
+
+`userId`, `ownerType`, `ownerWorkspaceId`, `operationId`
+
+### 出力DTO
+
+`operationId`, `kind`, `status: "pending" | "completed" | "failed" | "aborted"`, `processedCount`, `affectedCount: number | null`
+
+### 処理フロー
+
+1. scopeと`manageTags`権限を確認する
+2. current scopeの`TagOperationStore.find`を引く。不在なら`NotFoundError("TAG_OPERATION_NOT_FOUND")`
+3. runningはprocessedCountとaffectedCount null、completedは確定affectedCountを返す。failedはscheduled taskのlastErrorを表示用codeへ写す。abortedは中止済みの終端状態として返す
+
+UIは2秒間隔でpollし、完了後にtag一覧と該当Note一覧を再読込する。
+
+## retryTagOperation
+
+### 概要
+
+失敗したタグ操作を同じoperation IDで再開する。変更がまだ1件も確定していない場合だけ中止してlockを解放できる。
+
+### 入力DTO
+
+`userId`, `ownerType`, `ownerWorkspaceId`, `operationId`, `action: "retry" | "abort"`
+
+### 出力DTO
+
+`operationId`, `status: "pending" | "aborted"`
+
+### 処理フロー
+
+1. scopeと`manageTags`権限を確認し、current scopeのoperationを引く
+2. `state = "aborted"`かつ`action = "abort"`なら書き込まずabortedを返す。それ以外で`state !== "failed"`なら`ConflictError("TAG_OPERATION_NOT_FAILED")`
+3. `action = "retry"`では、同じlocal UoWで`retryFailed(operationId)`を呼び、既存の継続taskをattempt 0 / pendingへ戻してAlarmを再設定する。operation ID、lock、task payloadは変えない
+4. `action = "abort"`では`abortUnstarted(operationId)`を呼ぶ。`processedCount > 0`なら`ConflictError("TAG_OPERATION_PARTIALLY_APPLIED")`とし、lockを保持する。0ならoperationをabortedへ遷移させ、task削除とlock解放を同じUoWで行う
+
+retry後のworkerが再び上限へ達した場合は`markFailed`へ戻る。新しいoperationを作らないため、完了済みpageのrevisionを二重に進めず、利用者が再試行を重ねても操作系列は1つのままである。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| operation不在・他scope | `NotFoundError("TAG_OPERATION_NOT_FOUND")` |
+| viewer | `BusinessRuleError(InsufficientRole)` |
+| failedでない | `ConflictError("TAG_OPERATION_NOT_FAILED")` |
+| 一部適用済みのabort | `ConflictError("TAG_OPERATION_PARTIALLY_APPLIED")` |
 
 ## listTagsForNotes
 
@@ -271,11 +324,11 @@
 
 ### 概要
 
-ノートの移動に追随してタグの付与を付け替える（`note.moved` の購読）。
+move Saga の source snapshot作成とtarget stagingで、タグ付与を移送する内部scope command。`note.moved` の購読者ではない。
 
 ### 入力DTO
 
-`noteId`, `previousScope: TagScope`, `targetScope: TagScope`
+`migrationId`, `phase: "snapshotSource" | "stageTarget" | "retireSource"`, `noteId`, `assignments?: readonly MovedTagAssignment[]`
 
 ### 出力DTO
 
@@ -283,11 +336,10 @@
 
 ### 処理フロー
 
-1. `TagAssignmentRepository.listByNote(noteId)` を引き、`TagRepository.listByIds` で名前を解決する
-2. `TagRepository.listByScope(targetScope)` を引く
-3. `TagRelocationPolicy.plan` で計画を作る
-4. `UnitOfWorkProvider.run` で、`drop` と `reassign` の元の付与を削除し、`reassign` の新しい付与を作る。作り直す付与の `assignedBy` は元の付与の値を引き継ぐ（`note.moved` の payload に操作者は含まれない）。イベントを収集する
-5. 同じイベントを 2 回受け取っても、既に付け替え済みなら計画が空になり結果は変わらない
+1. `snapshotSource` はcurrent source scopeでassignmentとTagの表示名・正規化名・`assignedBy`を読み、portable snapshotを返す。まだ削除しない
+2. `stageTarget` はcurrent target scopeの同名Tagを解決し、`TagRelocationPolicy.plan` に従ってassignmentをstaged Noteへ作る。存在しないTagはdropとして記録する
+3. `retireSource` はroute切替後にsource assignmentを削除する
+4. 各phaseは `migrationId + phase` を `applied_operations` で重複排除し、別scopeのrepositoryを同じUoWから呼ばない
 
 ### エラーケース
 
@@ -304,7 +356,7 @@
 
 ### 入力DTO
 
-`noteId`
+`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -312,8 +364,8 @@
 
 ### 処理フロー
 
-1. `UnitOfWorkProvider.run` で `TagAssignmentRepository.deleteByNote(noteId)` を呼ぶ
-2. イベントは発行しない（読み取りモデルの行は `note.purged` の投影 `NoteProjectionWriter.remove` が消すため）
+1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`UnitOfWorkProvider.run` で `TagAssignmentRepository.deleteByNote(noteId, 200)` を1回呼ぶ
+2. 200件なら同じUoWで`tag.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。イベントは発行しない（読み取りモデルの行は `note.purged` を処理するlocal/public projection writerが消すため）
 
 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない（冪等）。
 
@@ -328,11 +380,11 @@
 
 ### 概要
 
-利用者・ワークスペースの削除に伴って、そのスコープのタグをすべて削除する（`identity.user.deleted` / `workspace.deleted` の購読）。
+scope cleanup commandに従って、そのscopeのタグをすべて削除する。workspace deletionはlocal event、account deletionはpersonal scope commandから呼ぶ。
 
 ### 入力DTO
 
-`scopeType`, `scopeId`
+`deletionOperationId`, `scope: ScopeKey`
 
 ### 出力DTO
 
@@ -340,13 +392,14 @@
 
 ### 処理フロー
 
-1. `TagScope` を組み立てる（`identity.user.deleted` → 個人スコープ、`workspace.deleted` → ワークスペーススコープ）
-2. `UnitOfWorkProvider.run` で `TagRepository.deleteByScope(scope)` を呼ぶ。付与は `tag_assignments` の FK CASCADE で同時に消える
-3. イベントは発行しない（`tag.unassigned` の投影先である読み取りモデルの行自体を、同じ削除イベントを購読する Note の `deleteNotesForOwner` が消すため）
+1. 入力`scope`から`TagScope`を組み立てる
+2. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。最初のphaseは`TagAssignmentRepository.deleteByScope(scope, 200)`で付与を最大200件だけ消す。1件以上消したturnは件数にかかわらず同じUoWで`tag.scopeDeleteContinued { scope, deletionOperationId }`を保存して終了する
+3. assignment削除が0件だった次のturnだけ`TagRepository.deleteByScope(scope, 100)`でtagを最大100件消す。100件なら同じ継続を保存し、100件未満なら残るtag operation/lock行を縮約して完了する。1turnはassignment最大200またはtag最大100のどちらかで、1つのtagに数万assignmentがあっても親DELETEのCASCADEへ渡さない
+4. イベントは発行しない（`tag.unassigned` の投影先である読み取りモデルの行自体を、同じ削除イベントを購読する Note の `deleteNotesForOwner` が消すため）
 
 Note の `deleteNotesForOwner` が発行する `note.purged` 経由の `deleteAssignmentsForNote` と削除範囲が重なるが、どちらも 0 件削除で無害に終わるため、順序・重複によらず結果は同じ。
 
-冪等性: 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない。
+冪等性: 削除は対象がなければ 0 件で終わるため、同じcommand/taskを 2 回受け取っても結果は変わらない。cursorは持たず、削除後の先頭100件を読むため必ず前進する。
 
 ### エラーケース
 

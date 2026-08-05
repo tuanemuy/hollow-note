@@ -93,6 +93,7 @@ UserBase = {
   bio: Bio
   avatarUrl: string | null      // 公開 URL。Storage への依存を持たないための取り決め
   handle: Handle | null
+  authEpoch: number             // 全session/tokenをO(1)で論理失効する単調増加世代
   version: number
   createdAt: Date
   updatedAt: Date
@@ -100,32 +101,49 @@ UserBase = {
 
 PendingUser  = UserBase & { status: "pending" }    // メール未確認
 ActiveUser   = UserBase & { status: "active", verifiedAt: Date }
-User = PendingUser | ActiveUser
+DeletingUser = UserBase & { status: "deleting", verifiedAt: Date; deletionOperationId: string }
+DeletedUser = {
+  id: UserId
+  status: "deleted"
+  authEpoch: number
+  version: number
+  createdAt: Date
+  updatedAt: Date
+  deletedAt: Date
+}
+User = PendingUser | ActiveUser | DeletingUser | DeletedUser
 ```
 
 **不変条件**
 
-- `email` はサービス全体で一意（`UserRepository.findByEmail` で検査）
+- `email` はサービス全体で一意（`IdentityUniqueDirectory` のreservationで保証）
 - `handle` は設定されていればサービス全体で一意
 - `PendingUser` はセッションを発行できない
 - `ActiveUser` から `PendingUser` へ戻る遷移は存在しない
+- `DeletingUser` はsession・membership・Jobを新規作成できない。削除事前検査が唯一ownerで失敗した場合だけ同じoperation IDで `ActiveUser` に戻せる
+- `DeletedUser` はPIIを持たないtombstoneで、activeへ戻らない
+- `authEpoch`は減少しない。Session/AuthTokenの発行時世代がcurrent Userと違えば、物理行が残っていても無効
 
 **振る舞い**
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `create` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<PendingUser, IdentityEvent>` | VO を構築し `status: "pending"`、`version: 0` で生成。`user.created` を発行 |
-| `createVerified` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | OAuth サインアップ・招待経由サインアップ用。確認済みとして生成。`user.created` と `user.emailVerified` を発行 |
+| `create` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<PendingUser, IdentityEvent>` | VO を構築し `status: "pending"`、`authEpoch: 0`、`version: 0` で生成。`user.created` を発行 |
+| `createVerified` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | OAuth サインアップ・招待経由サインアップ用。`authEpoch: 0`の確認済みとして生成。`user.created` と `user.emailVerified` を発行 |
 | `verifyEmail` | `user: PendingUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `status` を `active` にし `verifiedAt` を設定。`user.emailVerified` を発行 |
 | `updateProfile` | `user: ActiveUser, params: { displayName?: string; bio?: string; avatarUrl?: string \| null }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | 指定された項目のみ VO を再構築して更新。`displayName` が変わったときのみ `user.profileUpdated` を発行 |
 | `assignHandle` | `user: ActiveUser, handle: string, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `Handle.create` で検証して設定。`user.handleChanged`（旧ハンドルを payload に含む。未設定からの初回設定なら `previousHandle: null`）を無条件で発行 |
 | `clearHandle` | `user: ActiveUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `handle` を `null` にする。`user.handleChanged` を発行 |
+| `advanceAuthEpoch` | `user: ActiveUser, now: Date` | `ActiveUser` | `authEpoch + 1`へ進め、既存session/tokenを論理失効する |
+| `beginDeletion` | `user: ActiveUser, operationId: string, now: Date` | `DeletingUser` | `authEpoch + 1`へ進め、新しい認証・membership・Jobを拒否する状態へ移す |
+| `rejectDeletion` | `user: DeletingUser, operationId: string, now: Date` | `ActiveUser` | 事前検査失敗時だけactiveへ戻す |
+| `finalizeDeletion` | `user: DeletingUser, operationId: string, now: Date` | `WithEventDrafts<DeletedUser, IdentityEvent>` | 全cleanup ack後にPIIを落とし `identity.user.deleted` を発行 |
 
 `assignHandle` が初回設定でもイベントを出すのは、読み取りモデルの `note_search.author_handle` を埋める唯一の経路がこのイベントだからである。ハンドル未設定のままワークスペース所有の公開ノートを作り、あとからハンドルを設定した場合、初回設定を無音にすると `author_handle` が `null` のまま残り、`searchPublicNotes` の結果に著者リンクが出ない一方 `getPublicNote` は Identity から直接引くので詳細だけ正しい、という不整合になる。`previousHandle: null` は payload の型で表現済みなので、購読側は初回設定と変更を区別せず現在値で上書きすればよい。`clearHandle` が常に発行するのと対称になる。
 
 **ライフサイクル**
 
-`create` → `PendingUser` → `verifyEmail` → `ActiveUser`。`createVerified` は直接 `ActiveUser` を生成する。削除は後継エンティティを持たないため、ユースケースが `IdentityEvents.userDeleted` を直接発行する。
+`create` → `PendingUser` → `verifyEmail` → `ActiveUser`。`createVerified` は直接 `ActiveUser` を生成する。削除は `ActiveUser → DeletingUser → DeletedUser` で、最後の遷移だけが `identity.user.deleted` を発行する。
 
 ### Identity（集約ルート）
 
@@ -171,12 +189,13 @@ Session = {
   id: SessionId
   userId: UserId
   tokenHash: TokenHash
+  authEpoch: number
   createdAt: Date
   expiresAt: Date
 }
 ```
 
-版管理（OCC）は行わない。書き込みは作成と削除だけで、更新が存在しないため。
+版管理（OCC）は行わない。通常は作成と削除だけで、`signOutOtherSessions` / `changePassword`が現在の1行だけをcurrent Userの`authEpoch`へ追随させる条件付き更新を例外として持つ。
 
 - **保持方法**: 平文のセッショントークンはクライアントが持ち、サーバー側は `tokenHash` だけを保存する
 - **運搬方法**: Cookie で運ぶ。属性（`HttpOnly` / `Secure` / `SameSite` / `Path`）と CSRF 対策は presentation 層の責務であり、正典は [presentation/index.md](../presentation/index.md)。ドメインは平文トークンとそのハッシュだけを扱い、どう運ばれるかを知らない（`SharePass`（[note.md](./note.md)）と同じ分担）
@@ -192,13 +211,14 @@ Session = {
 **不変条件**
 
 - `expiresAt > createdAt`
+- `authenticateSession`は`session.authEpoch === user.authEpoch`を要求する
 - `PendingUser` に対しては生成しない（この規則はユースケースが `ActiveUser` を要求することで型として担保される）
 
 **振る舞い**
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `create` | `params: { id: string; userId: UserId; tokenHash: TokenHash }, now: Date` | `Session` | `expiresAt = now + Session.ttlMs` で生成。イベントは発行しない |
+| `create` | `params: { id: string; userId: UserId; tokenHash: TokenHash; authEpoch: number }, now: Date` | `Session` | `expiresAt = now + Session.ttlMs` で生成。イベントは発行しない |
 | `isExpired` | `session: Session, now: Date` | `boolean` | `session.expiresAt <= now` |
 
 ### AuthToken（集約ルート）
@@ -209,6 +229,7 @@ AuthTokenBase = {
   userId: UserId
   purpose: AuthTokenPurpose
   tokenHash: TokenHash
+  authEpoch: number
   createdAt: Date
   expiresAt: Date
 }
@@ -224,12 +245,13 @@ AuthToken = PendingAuthToken | ConsumedAuthToken
 
 - 消費済みトークンは再び `pending` に戻らない
 - 期限切れのトークンは消費できない
+- 発行時`authEpoch`がcurrent Userと異なるトークンは消費できない
 
 **振る舞い**
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `issue` | `params: { id: string; userId: UserId; purpose: AuthTokenPurpose; tokenHash: TokenHash }, now: Date` | `PendingAuthToken` | `expiresAt = now + AuthTokenPurpose.ttlMs(purpose)` |
+| `issue` | `params: { id: string; userId: UserId; purpose: AuthTokenPurpose; tokenHash: TokenHash; authEpoch: number }, now: Date` | `PendingAuthToken` | `expiresAt = now + AuthTokenPurpose.ttlMs(purpose)` |
 | `consume` | `token: PendingAuthToken, now: Date` | `ConsumedAuthToken` | `isExpired` が真なら `BusinessRuleError(TokenExpired)`。そうでなければ `status: "consumed"` にする |
 | `isExpired` | `token: AuthToken, now: Date` | `boolean` | `token.expiresAt <= now` |
 
@@ -242,10 +264,13 @@ AuthToken = PendingAuthToken | ConsumedAuthToken
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `ensureRemovable` | `identities: readonly Identity[], targetId: IdentityId` | `void` | 対象を除いて 1 件も残らないなら `BusinessRuleError(LastIdentityCannotBeRemoved)` |
+| `ensureAddable` | `identities: readonly Identity[]` | `void` | 既に`maxIdentitiesPerUser`件なら`BusinessRuleError(IdentityLimitExceeded)` |
 | `ensurePasswordAddable` | `identities: readonly Identity[]` | `void` | 既に `PasswordIdentity` があれば `BusinessRuleError(PasswordIdentityAlreadyExists)` |
 | `findPassword` | `identities: readonly Identity[]` | `PasswordIdentity \| null` | パスワード認証手段を取り出す |
 
 **依存するポート**: なし
+
+`maxIdentitiesPerUser = 8`を正典とする。Password/OAuthの合計で数え、Identity追加を伴う`completeOAuthSignIn`、`linkOAuthIdentity`、`addPasswordIdentity`はUserId shardの最終UoW内でcurrent集合を読み直して`ensureAddable`してからinsertする。これにより`listByUserId`、一覧応答、account deletionで解放するprovider reservation集合は常に8件以下になる。
 
 ### AccountLinkingPolicy
 
@@ -259,7 +284,7 @@ AuthToken = PendingAuthToken | ConsumedAuthToken
 LinkDecision =
   | { kind: "createNew" }                       // 該当利用者なし
   | { kind: "linkToExisting"; userId: UserId }  // 確認済みの既存利用者
-  | { kind: "refuse"; reason: "providerEmailUnverified" | "existingUserUnverified" }
+  | { kind: "refuse"; reason: "providerEmailUnverified" | "existingUserUnverified" | "existingUserUnavailable" }
 ```
 
 | 既存利用者 | プロバイダー側のメール確認 | 判定 |
@@ -268,6 +293,7 @@ LinkDecision =
 | なし | 未 | `refuse(providerEmailUnverified)` |
 | `ActiveUser` | 済 | `linkToExisting` |
 | `PendingUser` | 済 | `refuse(existingUserUnverified)` |
+| `DeletingUser` / `DeletedUser` | 済 | `refuse(existingUserUnavailable)` |
 | いずれか | 未 | `refuse(providerEmailUnverified)` |
 
 **依存するポート**: なし
@@ -319,19 +345,26 @@ ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kin
 
 ### UserRepository
 
-**目的**: 利用者集約の永続化と一意性の問い合わせ。
+**目的**: UserId shard内の利用者集約の永続化。
 
 ```ts
-interface UserRepository extends TransactionalRepository<User, UserId> {
-  findByEmail(email: Email): Promise<Versioned<User> | null>;
-  findByHandle(handle: Handle): Promise<User | null>;
-  existsByEmail(email: Email): Promise<boolean>;
-  existsByHandle(handle: Handle, excluding: UserId | null): Promise<boolean>;
-  listByIds(ids: readonly UserId[]): Promise<readonly User[]>;
+interface UserRepository extends TransactionalRepository<User, UserId> {}
+
+interface UserBatchReader {
+  resolveMany(ids: readonly UserId[]): Promise<ReadonlyMap<UserId, Versioned<User>>>;
+}
+
+interface IdentityUniqueDirectory {
+  resolve(kind: "email" | "handle" | "providerAccount", normalizedKey: string): Promise<UserId | null>;
+  reserve(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; userId: UserId; operationId: string; expiresAt: Date }): Promise<void>;
+  activate(operationId: string, expectedUserVersion: number): Promise<void>;
+  release(operationId: string): Promise<void>;
 }
 ```
 
-サイトマップに載せる「公開ノートを持つ利用者」の列挙は、公開ノートの有無を判定する必要があるため `NoteQueryService.listPublicAuthors` が担う。母集合は `/@:handle` の一覧（`searchPublicNotes` の `ownerFilter`）と同じ所有者基準で、`listPublicAuthors` が返す利用者 ID を `listByIds` でハンドルに解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。
+`UserRepository`はcurrent UserId shardの書き込み用であり、別shardのIDを受けない。`UserBatchReader.resolveMany`は入力最大100 UserIdをhash shard別にgroupingし、最大6接続のwaveでbatch readする。署名済みrouting generationを使い、reshard中は旧新を読み、UserIdごとにversionが大きい行を採る。入力IDから直接routeするため全User shard scanは行わない。
+
+サイトマップに載せる「公開ノートを持つ利用者」の列挙は、公開ノートの有無を判定する必要があるため `NoteQueryService.listPublicAuthors` が担う。母集合は `/@:handle` の一覧（`searchPublicNotes` の `ownerFilter`）と同じ所有者基準で、`listPublicAuthors` が返す利用者 ID を `UserBatchReader.resolveMany` でハンドルに解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
 
@@ -339,8 +372,7 @@ interface UserRepository extends TransactionalRepository<User, UserId> {
 
 ```ts
 interface IdentityRepository extends TransactionalRepository<Identity, IdentityId> {
-  listByUserId(userId: UserId): Promise<readonly Identity[]>;
-  findByProviderAccount(provider: OAuthProvider, providerAccountId: string): Promise<Versioned<Identity> | null>;
+  listByUserId(userId: UserId): Promise<readonly Identity[]>; // IdentityPolicyの不変条件により最大8件
 }
 ```
 
@@ -351,10 +383,11 @@ interface IdentityRepository extends TransactionalRepository<Identity, IdentityI
 ```ts
 interface SessionRepository {
   insert(session: Session): Promise<void>;
-  findByTokenHash(tokenHash: TokenHash): Promise<Session | null>;
+  findByTokenHash(userId: UserId, tokenHash: TokenHash): Promise<Session | null>;
   deleteById(id: SessionId): Promise<void>;
-  deleteByUserId(userId: UserId, excluding: SessionId | null): Promise<number>;
-  deleteExpired(now: Date): Promise<number>;
+  refreshAuthEpoch(id: SessionId, userId: UserId, authEpoch: number): Promise<void>;
+  deleteOlderEpochByUser(userId: UserId, currentEpoch: number, limit: number): Promise<number>;
+  deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
 }
 ```
 
@@ -367,10 +400,11 @@ interface SessionRepository {
 ```ts
 interface AuthTokenRepository {
   insert(token: AuthToken): Promise<void>;
-  findByTokenHash(tokenHash: TokenHash): Promise<AuthToken | null>;
+  findByTokenHash(userId: UserId, tokenHash: TokenHash): Promise<AuthToken | null>;
   save(token: AuthToken): Promise<void>;
-  deleteByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose): Promise<number>;
-  deleteExpired(now: Date): Promise<number>;
+  deleteByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose, limit: number): Promise<number>;
+  deleteOlderEpochByUser(userId: UserId, currentEpoch: number, limit: number): Promise<number>;
+  deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
 }
 ```
 
@@ -398,11 +432,13 @@ interface PasswordHasher {
 ```ts
 interface SecureTokenGenerator {
   issue(): { readonly token: string; readonly hash: TokenHash };
+  issueForUser(userId: UserId): { readonly token: string; readonly hash: TokenHash };
+  locateUser(token: string): UserId | null;
   hashOf(token: string): TokenHash;
 }
 ```
 
-`token` は利用者に渡す値、`hash` は保存する値。`issue` の `token` は 256 ビット以上の乱数を URL 安全な文字列にしたもの。
+`token` は利用者に渡す値、`hash` は保存する値。`issue` の `token` は 256 ビット以上の乱数を URL 安全な文字列にしたもの。IdentityのSession/AuthTokenだけは`issueForUser`を使い、`base64url(UserId).256bit-secret`のlocator付き資格を発行する。`locateUser`は形式だけを検証してUserIdを返し、真正性は必ずtoken全体のhash照合で決める。UserId locator単体を認証済み主体として扱わない。
 
 **エラーケース**: `SystemError(ExternalServiceError)`
 
@@ -437,7 +473,7 @@ interface LoginAttemptStore {
   get(key: string): Promise<LoginAttempt | null>;
   recordFailure(key: string, now: Date, ttlMs: number): Promise<LoginAttempt>;   // 加算後の値を返す
   clear(key: string): Promise<void>;
-  deleteExpired(now: Date): Promise<number>;                                     // pruneExpiredAuthState が呼ぶ
+  deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>; // pruneExpiredAuthState
 }
 ```
 
@@ -467,16 +503,16 @@ D1 ではこの契約を `INSERT … ON CONFLICT DO UPDATE SET failure_count = f
 | `identity.user.emailVerified` | `{ userId }` | 監査 |
 | `identity.user.profileUpdated` | `{ userId, displayName }` | 読み取りモデルの投影（[`projectNoteChanges`](../usecases/note.md) の著者表示名） |
 | `identity.user.handleChanged` | `{ userId, previousHandle: string \| null, currentHandle: string \| null }` | 読み取りモデルの投影（[`projectNoteChanges`](../usecases/note.md) の著者ハンドル） |
-| `identity.user.deleted` | `{ userId }` | Note / Tag / Storage / Workspace / Integration / Job / Usage の後始末、読み取りモデルの投影（著者表示の置換）。購読者の一覧は [usecases/identity.md](../usecases/identity.md) の `deleteAccount` 手順 5 |
+| `identity.user.deleted` | `{ userId, deletionOperationId }` | cleanup完了の監査とglobal projectionの最終確認。scope cleanupの開始トリガーには使わない |
 | `identity.identity.added` | `{ identityId, userId, kind }` | 監査 |
-| `identity.identity.removed` | `{ identityId, userId, kind }` | 監査 |
-| `identity.identity.passwordChanged` | `{ identityId, userId }` | 監査（購読者なし。他セッションの失効は [`changePassword`](../usecases/identity.md) / [`resetPassword`](../usecases/identity.md) が同じ手順の中で `SessionRepository.deleteByUserId` を呼んで行う） |
+| `identity.identity.removed` | `{ identityId, userId, kind, providerAccountKey, operationId }` | providerAccount reservation解放。passwordではkey null、OAuthでは削除前に固定したnormalized keyをglobal consumerがreleasing→releaseする |
+| `identity.identity.passwordChanged` | `{ identityId, userId }` | 監査（購読者なし。既存sessionの即時失効は [`changePassword`](../usecases/identity.md) / [`resetPassword`](../usecases/identity.md) がUserの`authEpoch`を同じ手順で進めて行う） |
 
-`identity.passwordChanged` に失効の購読者を後から足してはならない。`changePassword` は現在のセッションだけを残す（`excluding: currentSessionId`）のに対し、購読側は「どのセッションが現在のものか」を知らないため全件を消すことになり、パスワードを変えた本人が直後にサインアウトされる。`resetPassword` が全件失効なのは要求そのものがセッションを持たないからで、両者は同じ処理ではない。
+`identity.passwordChanged` に失効の購読者を後から足してはならない。`changePassword` はUserの`authEpoch`を進めたtransactionで現在のSession 1行だけを新世代へ追随させるのに対し、購読側は「どのセッションが現在のものか」を知らない。`resetPassword` は追随させるsessionがないため全件が論理失効する。物理行の削除件数を認証安全性の切替点にしない。
 
 サイトマップは購読で更新しない。`listSitemapEntries` / `listPublicProfiles` / `listPublicWorkspaces` が要求のたびに現在の状態から列挙する引き取り型のため、ハンドルの変更にイベント駆動の追随は要らない。公開ページのキャッシュについても、無効化の仕組みを本設計は持たない。
 
-payload は「何が変わったか」の通知にとどめ、投影に必要な現在値を運ばない。`NoteProjectionWriter.updateAuthor(userId, displayName, handle)` は表示名とハンドルの組を要るが、`identity.user.profileUpdated` は `displayName` しか、`identity.user.handleChanged` は新旧のハンドルしか持たない。購読側が `userId` で `UserRepository.findById` を引き、現在値の組を解決して渡す規約とする（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。payload を投影メソッドの引数に合わせて拡張する案は採らない — 投影は現在の状態からの冪等な上書きであり、payload に写した値は配送順の入れ替わりで古くなりうるため。Note のイベント（`note.contentUpdated` など）が本文を運ばず `NoteRepository.findById` で読み直させるのと同じ型である。
+payload は変化の通知にとどめ、投影に必要な現在値を運ばない。global consumerは `note_routes(created_by, state, note_id)` をキーセットでページングし、各Noteのpublic再投影と、重複排除したscopeへのlocal author refresh commandを送る。active membershipだけを台帳にしないため、作成者がworkspaceから離脱した後も残るNoteを更新できる。各writerはcurrent Identity versionを含む完全snapshotを条件付きで置換する（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
 
 ## エラーコード
 

@@ -1,184 +1,225 @@
 # 実行基盤の設計
 
-実行基盤は **Cloudflare Workers + D1 + R2 + Queues** に確定している（[ADR 015](../adr/015-cloudflare-runtime.md)）。本書は、その基盤が課す**実上限**と、そこから逆算した**設計値**の正典である。
+実行基盤は **Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues** に確定している（[scope sharded data plane ADR](../../.adr/001-scope-sharded-data-plane.md)）。本書は、データ配置・ルーティング・実上限と、そこから逆算した設計値の正典である。
 
 ## この文書の役割
 
-`CLAUDE.md` のヘキサゴナルアーキテクチャにより、アダプター層の差し替えそのものは安い。しかし分割単位・上限値・キューの構成は、基盤の実上限から逆算しないと決められない。それらを各ユースケース文書に散らすと、上限が動いたときに追える範囲が分からなくなる。
-
 | 決めること | 正典 |
 | --- | --- |
+| global / scope のデータ配置と routing | 本文書 |
 | 基盤の実上限 | 本文書 |
-| 行サイズの予算と、可変長列の上限 | 本文書（値そのものは各ドメイン文書、根拠は本文書） |
-| 1 回の実行あたりのクエリ予算と、各経路の分割単位 | 本文書 |
-| キューの構成（本数・バッチサイズ・同時実行数・DLQ） | 本文書 |
-| 定期実行の割り当てと間隔 | 本文書 |
-| 外部への要求の同時実行数 | 本文書 |
-| HTTP 境界の決定（Cookie・CSRF・CSP・ステータス） | [presentation/index.md](../presentation/index.md) |
-| テーブルと索引の定義 | [database/index.md](../database/index.md) |
+| 行サイズの予算 | 本文書（値の定義は各 domain） |
+| D1 query 予算と scope operation の分割単位 | 本文書 |
+| Queue / Alarm / Cron の役割 | 本文書 |
+| 外部要求の同時実行数 | 本文書 |
+| HTTP 境界 | [presentation/index.md](../presentation/index.md) |
+| 表と索引 | [database/index.md](../database/index.md) |
+
+## データ配置
+
+### ScopeKey と Durable Object
+
+```ts
+type ScopeKey =
+  | Readonly<{ type: "user"; userId: UserId }>
+  | Readonly<{ type: "workspace"; workspaceId: WorkspaceId }>;
+```
+
+`user:{userId}` / `workspace:{workspaceId}` を正規名として `ScopeObject` の ID を決定する。同じ scope はどの Worker / Queue consumer / Alarm から呼んでも同じ object へ到達する。
+
+| plane | 正データ / 投影 |
+| --- | --- |
+| user scope DO | 個人 Note / Revision / Tag / StoredFile metadata / BackupRecord / Job / Usage / private search / outbox / scheduled task |
+| workspace scope DO | Workspace / Membership / Invitation と、その scope の Note / Revision / Tag / StoredFile metadata / BackupRecord / Job / Usage / private search / outbox / scheduled task |
+| global D1 | Identity / Session / auth state / external connection / uniqueness reservation / membership directory / note route / cross-scope operation / job slot / global job history projection / public profile・workspace・note projection / public FTS / global outbox |
+| R2 | ファイルと生成物のバイト列 |
+
+scope repository は必ず `ScopeKey` を受ける。`ScopeUnitOfWorkProvider.run(scope, fn)` の中から別 scope または D1 の repository を呼んではならない。global D1 の transaction から scope object を呼ぶことも禁止する。複数 plane の operation は operation ID を持つ状態機械で再開する。
+
+workspace scopeのwrite commandはScopeRouter入口で`WorkspaceOperationLockStore.assertWritable`を必ず通る。workspaceが`deleting(operationId)`なら、同じoperation IDを持つ削除continuation/security cleanup以外のNote/Tag/Storage/Job/Usage/Membership/Invitation writeを`WORKSPACE_DELETING`で拒否する。削除後に保持するJob/outbox/tombstoneの縮約だけは`jobRetention` / `outboxRelay` / `tombstonePrune`のsystem maintenance allowlistで通し、新規Jobやretryは通さない。global reservationを先に要する招待系も予約前とlocal commit時の2回検査し、競合時はreservationをabandonする。
+
+### routing
+
+- Note は D1 の `note_routes` で `NoteId → ScopeKey + routeVersion` を解決する。mutation は routeVersion を scope object に渡し、古ければ route を 1 回だけ引き直す
+- route / reservation / operation lock はD1 primaryまたは同じsessionのbookmarkで読む。public searchなどのprojectionはreplicaを許す。通常readでもscope側がrouteVersion不一致または対象不在を返した場合はprimaryでrouteを1回だけ再解決し、移動直後のstale replicaを偽のnot foundにしない。共有・purgeは安全側に倒し、`purging` / `tombstone`をcacheしない
+- Job は `ScopedJobId` に ScopeKey を含める。Job は移動しないため route 表を持たない
+- Workspace は `WorkspaceId` から workspace scope を決定できる。slug と invitation token は D1 directory で WorkspaceId に解決する
+- user の workspace 一覧は D1 membership directory / projection から読む。権限の正は workspace object の Membership であり、mutation の直前に scope object で確認する
 
 ## 実上限
 
-設計の根拠として引く値。Workers Paid を前提とする。
+Workers Paid を前提とする。Cloudflare の値が変わった場合は、本表を先に更新してから下流の設計値を引き直す。
+
+### SQLite-backed Durable Objects
+
+| 項目 | 値 |
+| --- | --- |
+| object 数 | 制限なし |
+| 1 object の storage | **10 GB** |
+| 1 object の request rate | **1,000 req/s soft limit**（storage write を伴う処理はこれより低い） |
+| 文字列 / BLOB / 1 行 | **2,000,000 バイト** |
+| SQL 文 | 100,000 バイト |
+| bound parameters | **100** |
+| CPU | 既定 30 秒 / 最大 5 分 |
+| Alarm 壁時計 | **15 分** |
+| 1 object の Alarm | **同時に 1 つ** |
+
+1 scopeが10GBまたは継続的なoverloadに近づいた場合はtenant内shardingが必要になる。foregroundを優先し、外部I/O Jobはscope-local admission leaseで同時4、Alarmは100行またはCPU 2秒までとする。待ち行列100件、foreground p95 500msを5分、またはSQL p95 100msを超えたら、priority 0 security/leaseとpriority 1 outboxは継続し、priority 2/3、新規bulk、外部I/O Job受付だけを抑制する。HTTPは503 + `Retry-After`、Queueは再試行、Alarmはbackoff再予定とする。閾値が7日中3日発生したscopeはtenant内sharding ADRを開始する。
+
+scope SQLite容量は `notes本文 / revisions / search+FTS / Job・metadata / indexes` の内訳と30日成長率を日次記録する。50%または90日以内に70%予測でtenant内sharding実装を開始し、60%で新規revision保持数とbulk uploadを抑制、70%で新規upload/Note作成を容量エラーで拒否する。削除・export・security cleanupは継続し、R2容量をSQLite空きとして数えない。
 
 ### D1
 
 | 項目 | 値 |
 | --- | --- |
-| 文字列 / BLOB / 1 行のサイズ | **2,000,000 バイト** |
-| 1 回の Worker 実行あたりのクエリ数 | **1,000**（Free: 50） |
-| SQL 文の長さ | 100,000 バイト |
-| 1 クエリのバインド変数 | **100** |
-| 1 クエリの実行時間 | 30 秒 |
-| 1 表のカラム数 | 100 |
-| データベースサイズ | 10 GB |
+| database size | **10 GB** |
+| Worker invocation あたりの query | **1,000** |
+| 文字列 / BLOB / 1 行 | **2,000,000 バイト** |
+| SQL 文 | 100,000 バイト |
+| bound parameters | **100** |
+| 1 query | 30 秒 |
 
-### Workers
+D1 read replication は global read の latency / throughput を分散するが、write は primary に集まる。global D1は「全データ」ではなくcontrol / public subsetだけだが、route readとpublic writeのcritical pathには残る。障害時はprivate noteのID直アクセスを安易に別scopeへfallbackせず一時エラーにし、権限や削除状態を推測しない。
 
-| 項目 | 値 |
-| --- | --- |
-| CPU 時間 | 既定 30 秒 / 最大 5 分 |
-| 壁時計（HTTP） | クライアントが接続している間は無制限 |
-| 壁時計（Cron Trigger） | 15 分 |
-| 壁時計（Queue コンシューマー） | **15 分** |
-| サブリクエスト | 10,000 / 実行 |
-| **同時に応答待ちにできる外部接続** | **6** |
-| メモリ | 128 MB |
-| Cron Trigger の数 | 250 / アカウント |
+global容量は表群ごとに週次予測する。publicは `公開Note件数 × p95投影行サイズ × FTS/索引実測係数`、job historyは `90日内のrequested Job数 × (p95履歴行+target reverse route+index係数)`、controlはroute / membership / operation/cleanup manifest ackの平均行サイズと増加率で見積もる。write QPSにはJobのenqueue/start/progress/terminal/removeとreverse route更新をすべて含める。使用率50%、D1 write p95 200ms超、またはoverloaded率1%を5分継続した時点でshard-aware readerを検証する。60%または90日以内に70%到達予測でdual-write/backfillを開始し、70%で新規公開など非critical writeを流量制御する。
 
-### Queues
+物理shardはtransaction groupを分断しない。NoteId hashの同じ `note coordination shard` に `note_routes`、noteMove/notePurge operation、当該Noteのpublic search/tag/FTS行をco-locateする。purgeのpublic delete+ack、moveのroute+operationはこのshard内transactionで保つ。public検索は最大32 shardを同時6接続のwaveで読み、署名opaque cursorがshard generation・各shardのkeyset位置・絶対rankを持つ。各shardから1page最大limit件だけ読み、keywordなしは `(updated_at DESC, note_id)`、keywordありはshard内FTS順位のReciprocal Rank Fusionと`updated_at, note_id` tie-breakでmergeする。単一DB時のglobal bm25同値は保証せず、shard数に依らず再現可能な順位を契約とする。dual-readはNoteIdで重複排除する。
 
-| 項目 | 値 |
-| --- | --- |
-| メッセージサイズ | 128 KB |
-| 1 バッチの最大メッセージ数 | 100 |
-| `sendBatch` の上限 | 100 件 または 256 KB |
-| 同時コンシューマー実行数 | 250（`max_concurrency` で 1 まで絞れる） |
-| 再試行回数 | 100 |
-| 保持期間 | 最大 14 日 |
-| 遅延配送 | 最大 24 時間 |
-| キューあたりのスループット | 5,000 メッセージ / 秒 |
+NoteId shard上の二次キー走査は共通shard readerだけが行う。`created_by` / `scope` route fan-out、sitemap、public authorは最大32 shard・全体limit 200（sitemapは呼出しlimit）・同時6接続のwaveとし、署名cursorにgenerationと各shard位置を持つ。`resolveMany`は最大500 NoteIdをshard別batchへgroupingする。reshard中はいずれも旧新を読み、NoteId/UserIdとversionで重複排除する。
 
-### R2
+`workspace_directory`はWorkspaceId hashで分ける。利用者のworkspace pageはUserId shardから得た最大20 IDだけを最大6接続で直接解決する。公開workspace/sitemap一覧は最大32 shard・同時6接続・全体200件を`(updatedAt DESC, workspaceId)`でmergeし、署名cursorにgenerationと各shard位置を持つ。総件数を求める全shard countは提供しない。
 
-| 項目 | 値 |
-| --- | --- |
-| オブジェクトサイズ | 単一 PUT 5 GiB / マルチパート 4.995 TiB |
-| カスタムメタデータ | 8,192 バイト |
-| 同一キーへの並行書き込み | 1 秒あたり 1 回（超過は 429） |
+`job_history`はrequestedBy hashで分ける。親子は同じrequestedBy不変条件により同じshardへ入り、`listJobs`は1 shardで閉じる。通常Job eventはrequestedBy route keyを運び、削除時はscope-local removal manifestへroot/最大500子のrequestedBy/targetを100件ずつ固定する。rootはmanifestと同じUoWでclaimしてretry/worker resultを閉じる。local Jobは子から100件ずつ消し、manifest参照型`job.removed`を起点にtarget route→requestedBy shardのhistory tombstone/removeの順で最大6接続のwaveにより回収する。route/history tombstoneとcompleted manifestは30日、target tombstoneは120日保持し、各prunerを100件/turnに制限する。target削除もtarget hash reverse indexを100件pageで読むため、history全shardをscanしない。移行中はsourceVersion条件付きdual-write、新→旧read merge、manifest itemに基づく旧新両generation removeで90日保持を維持する。匿名Jobはhistoryへ保存しない。
 
-利用者が上げられるファイルの上限（画像 20 MB / 動画 200 MB / 文書 50 MB / 一括合計 500 MB）はいずれも R2 の上限を大きく下回るため、R2 側の制約は設計値に影響しない。
+UserId hashの `user coordination shard` にはUser/Identity/Session/AuthToken/ExternalConnection正データ、membership directoryの当該user edge、accountDeletion/nameChange/integrationDisconnect operationをco-locateする。Session/AuthTokenのwire tokenは`base64url(UserId).256bit-secret`とし、locatorで1 shardへ到達してからtoken全体のhashを照合する。locatorを認証には使わない。これによりUserの`authEpoch`更新、資格/連携の発行、account deletion barrierを同じtransaction groupで直列化し、最終化のedge+PII transactionも維持する。容量都合でjob historyを別database familyへ分けても、このtransaction groupは分断しない。
+
+workspace削除はscope DOでmutationをlockし、MembershipのuserId/IDとInvitationのtokenHash/IDを各100件ずつlocal manifestへ固定する。local edgeもmanifestから100件ずつ削除し、RESTRICT下でWorkspaceを最後に消す。global cleanupはmanifest route keyから各UserId/key shardへ最大6接続で直接到達し、全ackまでmanifestを保持する。すべてのlocal cleanup command/taskは削除operation IDを保持し、manifestのowner一致時だけ通常write admissionを通過する。正データ削除後のshard横断scanには依存しない。
+
+Identity/email/handle/provider identityのequality uniquenessはnormalized key hash shardの `identity_unique_reservations` で reserve → UserId shard更新 → activate/releaseする。User rowとuniqueness shardを同一transactionにしない。応答喪失はoperation IDで再開し、active reservationからUserId shardへ解決する。slug/tokenも同じreservation原則を使う。移行中は旧新両reservation成功後だけUser更新し、backfill・重複監査後にroute generationをCASする。
+
+### Workers / Queues / R2
+
+| 基盤 | 項目 | 値 |
+| --- | --- | --- |
+| Workers | Queue consumer / Cron の壁時計 | **15 分** |
+| Workers | 同時に応答待ちにできる外部接続 | **6** |
+| Workers | subrequest | 10,000 / invocation |
+| Workers | memory | 128 MB |
+| Queues | message | 128 KB |
+| Queues | batch | 100 messages |
+| Queues | concurrent consumers | 250 |
+| Queues | retention | 最大 14 日 |
+| R2 | object | 単一 PUT 5 GiB / multipart 4.995 TiB |
+| R2 | 同一 key の並行 write | 1 秒あたり 1 回 |
 
 ## 行サイズの予算
 
-**D1 の 1 行は 2,000,000 バイトを超えてはならない。** 可変長の列を複数持つ表は、それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること（[ADR 017](../adr/017-content-size-budget.md)）。
+D1 と scope DO のどちらも **1 行 2,000,000 バイト**である。[ADR 017](../adr/017-content-size-budget.md) の contentless FTS と本文上限を維持する。
 
-| 表 | 可変長列の内訳 | 合計 | 上限比 |
+| 表 | plane | 可変長列の内訳 | 合計 |
 | --- | --- | --- | --- |
-| `notes` | `content_html` 800,000 + `content_text` 800,000 + `content_headings` 96,000 + `content_excerpt` 800 + `title` 800 + その他 < 2,000 | < 1,700,000 | 85% |
-| `note_search` | `text` 800,000 + `tag_names` 10,100 + `tag_display_names` 10,100 + `excerpt` 800 + `title` 800 + その他 < 2,000 | < 824,000 | 42% |
-| `note_revisions` | `html` 800,000 + `title` 800 + その他 < 1,000 | < 802,000 | 41% |
-| `jobs` | `payload` JSON（一括操作は対象 500 件 = 約 20,000）+ `notices` JSON + `failure_detail` | < 64,000 | 4% |
-| `reference_import_summaries` | `removed_css` JSON（プロパティ名ごとに畳むため要素数は種類数で頭打ち） | < 4,000 | 1% |
+| `notes` | scope | `content_html` 800,000 + `content_text` 800,000 + `content_headings` 96,000 + その他 | < 1,700,000 |
+| `note_search` | scope | `text` 800,000 + tags 20,200 + excerpt / title + その他 | < 824,000 |
+| `public_note_search` | global | `text` 800,000 + tags 20,200 + excerpt / title + その他 | < 824,000 |
+| `note_revisions` | scope | `html` 800,000 + title + その他 | < 802,000 |
+| `jobs` | scope | payload / notices / failure detail | < 64,000 |
 
-上限を持つ値の定義そのものは各ドメイン文書に置く（`NoteHtml` / `PlainTextContent` / `NoteHeading` は [domains/note.md](../domains/note.md)、`TagName` は [domains/tag.md](../domains/tag.md)）。本表はそれらを足し合わせて上限を下回ることを示すためのものである。
+大きな値は SQL へ埋め込まず bound value として渡す。ID 配列は JSON 1 value + `json_each` で展開し、100 parameters を超えない。
 
-**大きな値は必ずバインド変数として渡す**。SQL 文に埋め込むと文の長さの上限（100,000 バイト）に触れる。
+## 実行予算と分割単位
 
-## クエリ予算
+### Global D1
 
-**1 回の Worker 実行が発行してよい D1 クエリ数の設計上限は 500 とする**（実上限 1,000 の 50%。[ADR 018](../adr/018-query-budget.md)）。残りは同じ実行の中で走る認証・権限判定・ページングと、実装時の差分のための余裕である。
+1 Worker invocation が発行してよい D1 query は **500** を設計上限とする。実上限 1,000 の半分を、session / route 解決、ページング、実装差分の余裕として残す。この予算が掛かるのは Identity、directory / route operation、global projection / rebuild だけである。
 
-予算は**実行単位**で与えられる。Queue のコンシューマーは 1 回の実行で複数のメッセージを受け取るため、`max_batch_size × 1 メッセージあたりのクエリ数 ≤ 500` を満たすようにバッチサイズを決める。
+public projection の 1 note 再投影は最大10 query（route 1 + note / author / workspace / tagの解決4 + `replaceSnapshotIfNewer` のatomic batch最大5）を上限見積もりとする。`events-public-projection` は `max_batch_size: 20` とし、20 × 10 = 200 に抑える。
 
-### 1 件あたりの見積もり
+1 batchが異なるscopeを含む場合もRPCは同時6本までとする。public D1書き込みはroute・Note/tag・author・workspaceの世代ベクトル条件付きbatchにまとめる。
 
-| 処理 | 1 件あたり | 内訳 |
+### Scope DO
+
+scope-local SQL に D1 の query count は掛からない。ただし CPU、Alarm / Queue の15分、1回に生成する event 数、障害時の再試行量を制限するため、次を維持する。
+
+| 経路 | 1 回の上限 | 根拠 |
 | --- | --- | --- |
-| `purgeNote` の呼び出し | 5 | 閲覧者コンテキストの解決 2 + 削除 1 + outbox 1 + 余裕 1 |
-| ノートの削除（ユースケース内で直接行う場合） | 3 | 削除 1 + outbox 1 + 余裕 1 |
-| 1 ノートの再投影 | 12 | ノート 1 + 著者 1 + ワークスペース 1 + `upsert` の 3 文 + タグ読み取り 1 + `updateTags` の 5 文 |
-| ジョブ 1 件の強制終端と後始末 | 4 | 終端 1 + outbox 1 + 本文の回復 2 |
-| ファイル 1 バッチの削除 | 3（件数によらず） | 列挙 1 + 多行 DELETE 1 + 多行 outbox INSERT 1 |
+| `emptyTrash` の同期削除 | **50 notes** | HTTP mutation の CPU と response latency |
+| owner / workspace cleanup | **100 rows** | 1 Alarm turn の CPU と outbox fan-out |
+| 強制終端 / `reapExpiredJobs` | **100 jobs** | transition + recovery + event の fan-out |
+| tag rename/delete/merge fan-out、unused delete | **200 assignments/tags** | revision bump・再投影task・監査payloadの上限 |
+| expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
+| local projection rebuild | **100 notes** | 1 scheduled task の CPU と再開粒度 |
 
-### 分割単位
+上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 
-| 経路 | 分割単位 | 見積もり |
-| --- | --- | --- |
-| `emptyTrash` の同期削除のしきい値 | **50 件** | 1 + 1 + 5 × 50 = 252 |
-| `deleteNotesForOwner` の `batchSize` | **100** | 1 + 3 × 100 = 301 |
-| `purgeExpiredTrash` の `limit` | **100** | 1 + 3 × 100 = 301 |
-| `deleteFilesByOwner` の `batchSize` | **100** | 3（発行するイベント数を抑えるための上限） |
-| `rebuildNoteProjection` の `batchSize` | **100** | 列挙 1 + 多行 outbox INSERT 1 |
-| `collectExpiredArtifacts` / `collectOrphanMedia` の `limit` | **100** | 3 |
-| 強制終端が同一 UoW で終端させるジョブ数 | **100** | 1 + 4 × 100 = 401 |
-| タグのファンアウトの 1 ページ | **200 件** | 列挙 1 + 多行 outbox INSERT 1 |
-| `reapExpiredJobs` の `limit` | **100** | 1 + 4 × 100 = 401 |
+bulk operation の対象上限（500 notes）と bulk upload（100 files）は変えない。子 Job は個別 Queue message で実行する。
 
-`requestBulkNoteOperation` / `requestBulkExport` / `requestBackup` の対象上限（500 件）と一括アップロードの件数上限（100 件）は変えない。**子ジョブはそれぞれ別の実行で処理される**ため 1 実行あたりの予算に掛からず、登録そのものは親 1 行 + 子の多行 INSERT + outbox の多行 INSERT で数クエリに収まる。
+## Queue 構成
 
-### バインド変数
-
-1 クエリのバインド変数は 100 までである。**ID の並びで引く / 消すクエリは `?` を件数ぶん並べない。** JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる。これにより件数によらずクエリ数は 1、バインド変数は 1 になる。
-
-## キュー構成
-
-役割ごとに 3 本 + それぞれの DLQ を持つ（[ADR 016](../adr/016-projection-single-writer.md)）。アウトボックスのリレーは、1 つの outbox 行を**その種別に購読者を持つすべてのキュー**へ送る。
-
-| キュー | 運ぶもの | `max_batch_size` | `max_concurrency` | 1 メッセージの予算 |
-| --- | --- | --- | --- | --- |
-| `jobs` | `job.enqueued` / `job.readyToAssemble` によるジョブ実行 | **1** | 既定（〜250） | 500 |
-| `events` | 投影以外のイベント購読と、その継続要求 | **1** | 既定（〜250） | 500 |
-| `events-projection` | `projectNoteChanges` のみ | **20** | **1** | 25 |
-| `*-dlq` | 再試行を使い切ったメッセージ | 10 | 既定 | — |
-
-- **`events-projection` の `max_concurrency: 1` は配備の都合ではなく設計上の要件である**。投影の正しさがこれに乗っている（[ADR 016](../adr/016-projection-single-writer.md)）
-- `jobs` / `events` の `max_batch_size` を 1 にするのは、1 メッセージあたりの処理量が経路によって大きく違い、バッチにするともっとも重いメッセージに合わせてバッチサイズを決めることになるためである。同時実行数は既定のままなのでスループットは落ちない
-- 遅延配送（`delaySeconds`）は使わない。継続は outbox に積む（[ADR 019](../adr/019-owner-cleanup-continuation.md)）
-- DLQ に落ちたメッセージの扱いは運用手順であり、本設計は「落ちる形になっていること」だけを定める
-
-## 定期実行
-
-Cron Triggers で起動する。**1 つの cron 実行では 1 つの役割だけを走らせる** — クエリ予算は実行単位で与えられるため、複数の役割を同居させると予算が足し算になる。すべて同じ Worker スクリプトに載せ、`event.cron` で役割を切り替える。
-
-| 役割 | ユースケース | cron | 1 回の上限 |
+| Queue | 運ぶもの | max batch | concurrency |
 | --- | --- | --- | --- |
-| リーパー | `reapExpiredJobs` | `*/5 * * * *` | 100 件 |
-| ゴミ箱の回収 | `purgeExpiredTrash` | `*/10 * * * *` | 100 件 |
-| 生成物の回収 | `collectExpiredArtifacts` | `0 * * * *` | 100 件 |
-| 認証一時状態の掃除 | `pruneExpiredAuthState` | `15 * * * *` | 集合削除（件数によらず 3 文） |
-| 孤児メディアの回収 | `collectOrphanMedia` | `30 3 * * *` | 100 件 |
-| ジョブ履歴の削除 | `pruneJobHistory` | `0 4 * * *` | 集合削除（件数によらず 1 文 + CASCADE） |
+| `jobs` | 外部 I/O を伴う scoped Job | **1** | 既定（〜250） |
+| `global-events` | Identity / directory event、mail、R2 実体削除 | **1** | 既定 |
+| `events-public-projection` | D1 public / global projection | **20** | **4**（D1 write latencyで調整） |
+| `*-dlq` | retry exhausted | 10 | 既定 |
 
-リーパーの起動間隔（5 分）と、ジョブの実行体のリース期間（15 分）の大小関係は [ADR 012](../adr/012-job-execution-resilience.md) が定めたとおり保つ。正典は [usecases/job.md](../usecases/job.md) の「共通: リース期間と回収の間隔」。
+全 message は event / operation ID を持つ。Job message は `scope` と `jobId` を必ず持つ。scope object の outbox relay は送信成功後に row を完了するため、送信後・完了前の停止は重複になる。consumer は冪等に処理する。
 
-## 外部への要求
+private projection と scope cleanup continuation は Queue へ出さず、scope object の local task と Alarm で直列に処理する。public projection はroute・Note/tag・author・workspaceの世代ベクトル条件付き書き込みで競合を吸収するため、サービス全体の単一consumerにはしない。初期並行度4とし、D1 write latency / overloaded errorを見て下げるか、物理shardへ移す。
 
-| 制約 | 値 | 影響する経路 |
+全scope通常writeは共通admissionを通る。workspace scopeはWorkspace deletion state、personal scopeは`accountDeletionBarrier`を同じDOで検査する。personal barrier commandのcommit後はcleanup owner token以外を`ACCOUNT_DELETING`で拒否し、進行中receiptはpruneしない。全local cleanup ack後にcompletedへ縮約して120日保持する。
+
+## Alarm と Cron
+
+### Scope Alarm
+
+各 scope object は `scheduled_tasks(due_at, priority, kind, payload, attempts)` を持つ。outbox relay、job lease reaping、private projection、cleanup continuation、expired metadata collection の最小 `due_at` を `setAlarm()` する。
+
+Alarm handler は次を守る。
+
+1. priority 0（membership/account security cleanup・lease reaping）、1（outbox）、2（projection）、3（期限回収）の順を基本に、1 turnで各priorityへ最低1枠を確保するweighted round-robinで処理する。同priorityはdueAt順とする
+2. 同じ operation ID の再実行を安全にする
+3. 失敗 task は backoff して再予定し、上限超過を `global-events` へ通知する
+4. 最後に次の最小 `due_at` を Alarm へ設定する。task がなければ Alarm を消す
+
+1 turnは合計100行またはCPU 2秒でyieldする。priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
+
+### Global Cron
+
+| 役割 | cron | 対象 |
 | --- | --- | --- |
-| 同時に応答待ちにできる外部接続 | **6** | `importExternalReferences`（最大 200 件の参照取得）、`runBackup`（Google Drive）、LLM の呼び出し |
-| サブリクエスト | 10,000 / 実行 | 上記すべて。200 件でも余裕がある |
-| メモリ | 128 MB | `runBulkExport` の ZIP 組み立て |
+| auth state cleanup | `15 * * * *` | D1 sessions / auth tokens / login attempts / OAuth states |
+| Job tombstone cleanup | `45 * * * *` | D1 job history removal tombstone（30日）/ target route tombstone（120日） |
+| reservation / operation recovery | `*/5 * * * *` | Identity uniqueness・pending membership・slug・invitation・Note create/move/purge・Job slot・account deletion・integration disconnect |
+| public projection reconciliation | `30 3 * * *` | `purging` / tombstone route とD1 orphan rows（bounded keyset） |
 
-- **外部への `fetch` は同時 6 本を超えて並行させない。** 200 件の参照を取りにいく場合も、6 本ずつの並行で進める
-- **`runBulkExport` は生成物をメモリに全部載せない。** R2 から順に読みながら ZIP を書き出し、R2 へ書き戻す。500 件分の生成物は 128 MB に収まらない
-- 組み立ては Queue コンシューマーで走るため**壁時計 15 分で必ず終わる**。この事実がリースの期間を決めている（[ADR 015](../adr/015-cloudflare-runtime.md)）
+Cron は scope object を全列挙しない。scope-local cleanup は必ず Alarm で起動する。
+
+global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`(expiresAt, operationId)` keysetで100件ずつ回収する。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
+
+auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上のtable/cursor/command keyと次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
+
+## 外部要求
+
+- external `fetch` は同時 **6** connections を超えない
+- `runBulkExport` は R2 から読みながら ZIP を R2 へ stream し、128 MB memory に全件を載せない
+- Queue consumer の wall time 15 分が job lease の最短期間を決める
+- DO transaction / `blockConcurrencyWhile` の中で external I/O を待たない。外部処理は Queue worker、確定だけを scope RPC で行う
 
 ## 転送境界
 
-| 決めること | 値 | 根拠 |
-| --- | --- | --- |
-| `clientKey` の材料 | `CF-Connecting-IP` | Cloudflare が設定・上書きするため詐称できない（[ADR 020](../adr/020-coordination-state.md)） |
-| 粗いレート制限の実現手段 | Workers の Rate Limiting binding | 同上。窓は 60 秒 |
-| 正確な計数を要する施錠 | D1 の単一 SQL 文による原子的な加算 | 同上 |
+| 決めること | 値 |
+| --- | --- |
+| client key | `CF-Connecting-IP` |
+| 粗い rate limit | Workers Rate Limiting binding / 60秒窓 |
+| 正確な Identity lock | global D1 の原子的な SQL |
+| scope coordination | scope DO transaction |
+| signed download URL | **5 分** |
 
-しきい値そのものは [presentation/index.md](../presentation/index.md) を正典とする。
+download URL は発行前に scope object で Job / StoredFile の access principal と現在の membership を確認する。既存 artifact の再利用下限 `expiresAt >= now + 35分` は ExportTicket 30分 + URL 5分から導く。
 
 ## 関連文書
 
-- [ADR 015. 実行基盤の確定と永続実行基盤の不採用](../adr/015-cloudflare-runtime.md)
-- [ADR 016. 投影の単一ライター](../adr/016-projection-single-writer.md)
-- [ADR 017. 本文サイズの予算](../adr/017-content-size-budget.md)
-- [ADR 018. クエリ予算](../adr/018-query-budget.md)
-- [ADR 019. 後始末の継続](../adr/019-owner-cleanup-continuation.md)
-- [ADR 020. 調整状態の置き場](../adr/020-coordination-state.md)
+- [Scope sharded data plane ADR](../../.adr/001-scope-sharded-data-plane.md)
+- [ADR 012. Job execution resilience](../adr/012-job-execution-resilience.md)
+- [ADR 017. Content size budget](../adr/017-content-size-budget.md)
+- [Database design](../database/index.md)

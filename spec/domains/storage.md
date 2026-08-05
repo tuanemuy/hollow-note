@@ -164,10 +164,12 @@ StoredFile = PersistentFile | EphemeralFile
 | --- | --- | --- | --- |
 | `register` | `params: { id: string; owner: StorageOwner; objectKey: ObjectKey; fileName: string; mimeType: string; size: number; checksum: Checksum } & Exclude<FileProvenance, { purpose: "artifact" }>, now: Date` | `WithEventDrafts<PersistentFile, StorageEvent>` | `storage.fileStored` を発行。`artifact` は引数の型で弾かれるため実行時の検査を持たない |
 | `registerEphemeral` | `params: { id: string; owner: StorageOwner; objectKey: ObjectKey; fileName: string; mimeType: string; size: number; checksum: Checksum } & FileProvenance, ttlMs: number, now: Date` | `WithEventDrafts<EphemeralFile, StorageEvent>` | `expiresAt = now + ttlMs`。`storage.fileStored` を発行。`artifact` を作れる唯一の経路 |
-| `changeOwner` | `file: StoredFile, owner: StorageOwner, now: Date` | `WithEventDrafts<StoredFile, StorageEvent>` | ノートの移動に追随する。`storage.fileOwnerChanged`（旧所有者・用途・サイズを含む）を発行 |
+| `relocateForMove` | `file: StoredFile, owner: StorageOwner, now: Date` | `StoredFile` | move snapshotをtarget scopeで復元するときだけ使う。通常のeventは発行せず、migration operationがUsage deltaを担う |
 | `isExpired` | `file: StoredFile, now: Date` | `boolean` | `EphemeralFile` のみ真になりうる |
 
 削除はユースケースが `StorageEvents.fileDeleted` を直接発行する。
+
+application層は `registerEphemeral` の保存と同じscope-local UoWで最小`expiresAt`のartifact cleanup taskをupsertする。`register`で`purpose: "media"`を初めて保存するときも日次orphan-media taskを自己登録する。これらはStoredFile集約の状態遷移ではなくscope Alarmの起動責務なので、ドメインメソッドのeventへ暗黙に含めない。
 
 ## ドメインサービス
 
@@ -236,10 +238,13 @@ FetchState  = Readonly<{ fetchedCount: number; fetchedBytes: number }>;
 
 ### StoredFileRepository
 
+repository は現在の ScopeKey に束縛される。Note 由来のfile metadataはNoteと同じscope、Job生成物はJobと同じscopeに置く。fileId単独ではscopeを復元できないため、外部入口はNote route、JobId、または明示的なstorage ScopeKeyのいずれかを先に受ける。`StorageOwner`は物理shardを上書きしない。
+
 ```ts
 interface StoredFileRepository extends TransactionalRepository<StoredFile, StoredFileId> {
   listByIds(ids: readonly StoredFileId[]): Promise<readonly StoredFile[]>;
   listByNote(noteId: NoteId): Promise<readonly StoredFile[]>;
+  listDeletableByNote(noteId: NoteId, limit: number): Promise<readonly StoredFile[]>;
   findArtifactByNoteAndVersion(noteId: NoteId, noteVersion: number, mimeType: MimeType, now: Date): Promise<EphemeralFile | null>;
   listExpired(now: Date, limit: number): Promise<readonly EphemeralFile[]>;
   listByPurposeOlderThan(purpose: FilePurpose, createdBefore: Date, limit: number): Promise<readonly StoredFile[]>;
@@ -250,7 +255,7 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
 
 チェックサムによる重複保管の回避は行わない。`StoredFile` は `FileProvenance` で所属ノートと由来を持つため、同一内容でもノートごとに別の行が要る（1 行を複数ノートで共有すると `note.purged` 後の回収と所有者の付け替えが成立しない）。実体の共有はメタデータと blob を分ける設計を要し、本設計の範囲外とする。所有者単位の一括削除（`deleteFilesByOwner`）も、1 件ごとに `storage.fileDeleted` を発行して Usage の減算と実体の回収につなげる必要があるため、`listByOwner` + `deleteFiles` の反復で行い一括削除のメソッドは持たない。
 
-`listByNote` は `noteId` が一致する全ファイルを引く。`artifact` も `noteId` を持つため結果に混ざる。`note.purged` 後の回収（`deleteFilesForNote`）とノート移動時の所有者付け替え（`relocateFilesForNote`）はどちらも `source` / `media` / `reference` だけが対象なので、呼び出し側が `purpose` で絞る。生成物は所属ノートの都合ではなく `expiresAt` の経過で `collectExpiredArtifacts` が回収し、所有者も生成時の帰属のまま動かさない（容量クォータに算入されないため、付け替えても意味を持たない）。`findArtifactByNoteAndVersion` は期限内（`expiresAt > now`）の `artifact` を引き、`exportNote` の PDF 分岐での相乗り・再利用に使う（複数あれば最新の 1 件）。`listByPurposeOlderThan` は所有者に依らず用途と作成時刻だけで走査する（`createdAt < createdBefore` を `id` の昇順で `limit` 件）。孤児メディアの回収（`collectOrphanMedia`）は全体走査であり所有者を絞れないため、所有者を必須とする `listByOwner` では引けない。`sumSizeByOwner` は `purpose: "artifact"` を除外して合算する（生成物は容量クォータに算入しない。増分集計と同じ除外規則。[usage.md](./usage.md)）。
+`listByNote` はcurrent scopeで `noteId` が一致する全ファイルを引く。moveでは `source` / `media` / `reference` metadataをsnapshotへ含め、target scopeへ同じR2 keyで復元する。artifactはJob scopeに残し `expiresAt` で回収する。`listByPurposeOlderThan` の所有者に依らない走査もcurrent scope内に限り、全DO走査ではない。`sumSizeByOwner` はartifactを除外する。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("OBJECT_KEY_ALREADY_USED")`、`SystemError(DatabaseError)`
 
@@ -264,14 +269,14 @@ interface ReferenceImportRecordRepository {
   putSummary(summary: ReferenceImportSummary): Promise<void>;
   listAttemptsByNote(noteId: NoteId): Promise<readonly ReferenceAttempt[]>;
   findSummaryByNote(noteId: NoteId): Promise<ReferenceImportSummary | null>;
-  deleteByNote(noteId: NoteId): Promise<number>;
+  deleteByNote(noteId: NoteId, limit: number): Promise<number>;
 }
 ```
 
 - `saveAttempts` は `(noteId, url)` を鍵に上書きする。1 回の取り込みが試みた参照だけを渡し、触れなかった URL の記録は残る（前回失敗した参照に今回手が届かなかった場合、その理由が消えてはならない）
 - `putSummary` はノートにつき 1 件を上書きする
 - `TransactionalRepository` を継承しない。集約ではなく版も持たないため、`Versioned<T>` も楽観ロックも要らない。ただし書き込みは本文の保存と同一の Unit of Work に載る
-- `deleteByNote` は `note.purged` を購読する `deleteFilesForNote`（[usecases/storage.md](../usecases/storage.md)）が呼ぶ。専用の購読者は置かない
+- `deleteByNote` は外部参照attemptとsummaryを合わせて最大`limit`件だけ削除し、`note.purged` を購読する `deleteFilesForNote`（[usecases/storage.md](../usecases/storage.md)）が呼ぶ。専用の購読者は置かない
 - 読み取り（`listAttemptsByNote` / `findSummaryByNote`）はノート詳細の合成が呼ぶ。**ノートを読める者すべてが読める** — この記録はノートに帰属し、要求者に帰属しない（ジョブとの違いは ADR 014）
 
 **エラーケース**: `SystemError(DatabaseError)`
@@ -292,6 +297,8 @@ type ObjectMeta = Readonly<{ mimeType: MimeType; size: ByteSize; checksum: Check
 type ObjectBody = Readonly<{ stream: ReadableStream<Uint8Array>; meta: ObjectMeta }>;
 type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
 ```
+
+`createDownloadUrl` の `expiresInMs` は**呼び出し側が渡す**が、値そのものは配備で変わらない設計上の決定なので正典を 1 か所に置く — [platform/index.md](../platform/index.md) の「転送境界」に **5 分**として記す。この値は独立に選べない: `exportNote` が既存の生成物を再利用してよい下限（`expiresAt >= now + 35 分`。[usecases/note.md](../usecases/note.md)）は「`ExportTicket` の有効期間 30 分 + ダウンロード URL の有効期間」として導かれており、URL の有効期間を伸ばすなら下限も同じだけ伸びる。
 
 削除は複数鍵の `deleteMany` だけを置き、1 件用の `delete` は持たない。削除の唯一の経路が `storage.fileDeleted` のまとまりを受ける `deleteStoredObjects`（[usecases/storage.md](../usecases/storage.md)）で、1 件の削除も要素 1 個の配列で表せるため。実サイズとチェックサムは `put` の `PutResult` が返すので、保管後に問い合わせ直す `head` も持たない。
 
@@ -331,10 +338,9 @@ interface DnsResolver {
 | 型 | payload | 用途 |
 | --- | --- | --- |
 | `storage.fileStored` | `{ fileId, owner, purpose, size }` | Usage の加算（[`applyStorageDelta`](../usecases/usage.md)） |
-| `storage.fileOwnerChanged` | `{ fileId, previousOwner, currentOwner, purpose, size }` | Usage の付け替え（`applyStorageDelta`） |
-| `storage.fileDeleted` | `{ fileId, owner, purpose, size, objectKey }` | Usage の減算（`applyStorageDelta`）、オブジェクトの実削除（[`deleteStoredObjects`](../usecases/storage.md)） |
+| `storage.fileDeleted` | `{ fileId, owner, purpose, size, objectKey, deletionOperationId: string | null }` | Usage の減算、オブジェクト実削除。scope cleanup由来ならadmission tokenも運ぶ |
 
-3 つのイベントがそろって `purpose` を運ぶのは、`artifact` が容量クォータに算入されない（[usage.md](./usage.md)）ため購読側が用途で除外できなければならないから。`fileOwnerChanged` だけ `purpose` を欠くと、加算されていない生成物の容量を旧主体から減算して新主体へ加算する経路ができ、集計が壊れる。現在この事故は `relocateFilesForNote` が `artifact` を対象外にすること（[usecases/storage.md](../usecases/storage.md)）で防いでいるが、除外は 1 か所の絞り込みに依存させず購読側でも効くようにしておく — 付け替えの経路が将来増えたとき、`applyStorageDelta` 側の 1 行で守れる。
+`fileStored` / `fileDeleted` が `purpose` を運ぶのは、artifactをUsageから除外するためである。scope間moveはowner change eventを発行せず、migration snapshotのbytes合計をsource / targetのlocal commandで1回ずつ適用する。
 
 オブジェクトストレージ上の実体の削除は `storage.fileDeleted` を購読する `deleteStoredObjects` が行う。メタデータの削除とオブジェクトの削除を同一トランザクションにできないため、メタデータを先に消して実体を後から回収する（孤児オブジェクトは残るが、参照されないため害がない）。イベントが `objectKey` を含むのはこのためで、購読側はファイルの行を引き直さずに削除できる。
 

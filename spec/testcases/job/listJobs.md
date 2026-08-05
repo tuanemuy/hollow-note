@@ -16,9 +16,11 @@
 | 対象ノートが削除済みのジョブ | 一覧する | `targetLabel` が「削除済み」として返る | |
 | 生成物の期限が切れたジョブ | 一覧する | `artifact.expired: true` が返る | |
 | 失敗したジョブで再試行上限に達している | 一覧する | `retryable: false` が返る | |
-| batch 親ジョブがある | 一覧する | `childSummary`（`total` / `succeeded` / `failed` / `canceled`）が子ジョブの行から数え直して返る。batch 親以外は `null` | |
+| batch 親ジョブがある | 一覧する | global `job_history` projectionの `childSummary` が返る。batch 親以外は `null` | |
 | 終端した batch 親ジョブ（子 100 件中 98 件成功） | 一覧する | 終端後も `childSummary` が残り、「100 件中 98 件成功」を作れる（親の状態に依存せず子の現況から数え直すため）。`progress` は `running` 限定のため `null` になる | |
-| 一覧に batch 親が複数含まれる | 一覧する | `summarizeChildrenOf` にまとめて渡して埋められる（親 1 件につき 1 クエリにしない） | |
+| 一覧に異なるscopeのJobが含まれる | 一覧する | global D1 projectionだけで1ページを返し、scope DOへfan-outしない | |
+| job_historyがrequestedBy hashで分割済み | 一覧する | userIdから1 shardを決定し、異なるscopeの親子をそのshardだけで1ページ化する | |
+| projectionが古い | cancelを実行する | 表示値を信用せずJobIdのscopeへrouteし、scope-local正データで可否を再判定する | |
 | `failed` の `bulkExport` 親で子が全件終端・成功 1 件以上 | 一覧する | `retryable: true` が返る（`retryJob` で組み立てだけをやり直せる） | |
 | `failed` の `bulkExport` 親で子に未終端が残る、または成功が 0 件 | 一覧する | `retryable: false` が返る | |
 | `failed` の batch 親（`bulkExport` 以外） | 一覧する | `retryable: false` が返る（導線は `retryFailedChildren`） | |

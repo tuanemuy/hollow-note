@@ -26,23 +26,30 @@
 
 ### 入力DTO
 
-`userId: string`
+`userId: string`, `workspaceCursor: string | null`, `workspaceLimit: number`（既定20、最大20）
 
 ### 出力DTO
 
 | フィールド | 型 |
 | --- | --- |
 | `personal` | `{ consumedBytes; limitBytes; noteCount; level }` |
-| `workspaces` | `{ workspaceId; workspaceName; consumedBytes; limitBytes; noteCount; level }[]` |
+| `workspaces` | `WorkspaceUsageItem[]` |
+| `nextWorkspaceCursor` | `string | null` |
 | `llm` | `{ consumedCalls; limitCalls; period: { year; month }; level }` |
 | `updatedAt` | `Date` |
 
+```ts
+type WorkspaceUsageItem =
+  | { state: "available"; workspaceId: string; workspaceName: string; consumedBytes: number; limitBytes: number; noteCount: number; level: UsageLevel }
+  | { state: "unavailable"; workspaceId: string; workspaceName: string };
+```
+
 ### 処理フロー
 
-1. `StorageQuotaRepository.find({ type: "user", userId })` を引く。不在なら `StorageQuota.initialize` の値を返す（レコードは作らない）
-2. `MembershipRepository.listByUser` を引き、`owner` または `editor` のワークスペースだけを対象にする
-3. `StorageQuotaRepository.listBySubjects` でまとめて引き、`WorkspaceRepository.listByIds` で名前を解決する
-4. `BillingPeriod.of(now)` の `LlmUsageRepository.find` を引く。不在なら `LlmUsage.initialize` の値を返す（レコードは作らない）
+1. personal scope object から `StorageQuotaRepository.find({ type: "user", userId })` を引く。不在なら初期値を返す
+2. global D1 の `membership_directory` から `owner` / `editor` の active workspace edge を `(workspace_id > cursor)` のキーセットで最大 `workspaceLimit` 件だけ引き、`workspace_directory` で名前を解決する。editor 参加数には上限がないため、所有上限を fan-out 上限には使わない
+3. このページに含まれる最大20個の workspace scope object だけへ問い合わせる。同時RPCは6以下とし、1 scopeの失敗はそのworkspaceを `unavailable` として返し、personalや他workspaceを失敗させない。続きがあれば最後のworkspace IDから `nextWorkspaceCursor` を返す
+4. personal scope の `LlmUsageRepository.find(userId, BillingPeriod.of(now))` を引く。不在なら初期値を返す
 5. `QuotaEnforcement.describe` で表示用の値を組み立てる
 6. `updatedAt` は各レコードの最終更新時刻のうち最も新しいもの
 
@@ -83,13 +90,13 @@
 
 ### 概要
 
-保管ファイルの増減とノート件数の増減を集計に反映する（`storage.fileStored` / `fileDeleted` / `fileOwnerChanged` / `note.created` / `note.purged` / `note.moved` の購読）。
+current scopeの保管ファイル・ノート増減を集計する。通常は `storage.fileStored` / `fileDeleted` / `note.created` / `note.purged` のlocal event、move時はSagaのsource debit / target credit commandから呼ぶ。
 
 ### 入力DTO
 
-`eventId: string`（アウトボックスが採番したイベント ID。重複排除の鍵）, `event`（上記のいずれか）
+`input: { type: "localEvent"; eventId; event } | { type: "noteMove"; migrationId; phase: "sourceDebit" | "targetCredit"; bytes; noteCount: 1 }`
 
-イベント購読ワーカーは配送されたアウトボックス行の ID と本体を両方渡す。`event` の payload には ID が含まれないため、`IdempotencyStore` の鍵は入力として明示的に受け取る。
+local eventはoutbox行のID、move commandはmigration IDとphaseを重複排除鍵として明示的に渡す。
 
 ### 出力DTO
 
@@ -97,16 +104,16 @@
 
 ### 処理フロー
 
-1. `IdempotencyStore.markProcessed(consumer, eventId)` を呼ぶ。`false`（処理済み）なら何もせず成功として完了する
-2. `fileStored` / `fileDeleted` / `fileOwnerChanged` の `purpose` が `"artifact"` なら何もせず成功として完了する（生成物は容量クォータに算入しない。[domains/usage.md](../domains/usage.md) の除外規則）。`fileOwnerChanged` を除外に含めるのは、artifact が一度も加算されていないためである — `relocateFilesForNote`（[usecases/storage.md](./storage.md)）はノートに属するファイルを `listByNote` でまとめて付け替えるので artifact も対象に入り、除外しないと**加算されていない容量を旧主体から減算する**ことになる
+1. local eventの`deletionOperationId`が非nullなら`ScopeCleanupAdmissionStore.assertOwner`を確認する。その後、local eventは `(consumer, eventId)`、move commandは `(consumer, migrationId + phase)` をcurrent scopeの `IdempotencyStore.markProcessed` に渡す。`false`なら完了する
+2. local eventの `purpose` が `artifact` なら何もせず完了する。move commandの `bytes` はsnapshotに含めたsource / media / referenceだけの合計である
 3. イベントから対象の `QuotaSubject` と増減量を求める
-   - `fileStored` → 加算、`fileDeleted` → 減算
-   - `fileOwnerChanged` → 旧主体から減算し、新主体へ加算
-   - `note.created` → ノート件数を +1、`note.purged` → −1、`note.moved` → 旧主体を −1、新主体を +1
+   - `fileStored` → current scopeへ加算、`fileDeleted` → current scopeから減算
+   - `note.created` → current scopeのノート件数を+1、`note.purged` → −1
+   - move `sourceDebit` → source scopeでbytesとnote件数を減算、`targetCredit` → target scopeで加算
 4. `StorageQuotaRepository.find` を引く。不在なら経路で分ける
-   - 加算経路（`fileStored` / `note.created` / `fileOwnerChanged` と `note.moved` の新主体側）→ `StorageQuota.initialize` を `insert` する
-   - 減算経路（`fileDeleted` / `note.purged` / `fileOwnerChanged` と `note.moved` の旧主体側）→ その主体については何もせず終える。`deleteQuota` で消えた主体に遅れて減算イベントが届いたときに、`insert` で行を復活させないため（復活させると消費 0 のクォータ行が残り、`getUsageSnapshot` に削除済みの主体が現れる）
-5. `add` / `subtract` / `incrementNotes` / `decrementNotes` を適用して `save` する。処理済みの記録と集計の更新は同一 UoW で原子的に行う
+   - 加算経路（`fileStored` / `note.created` / `targetCredit`）→ `StorageQuota.initialize` をinsertする
+   - 減算経路（`fileDeleted` / `note.purged` / `sourceDebit`）→ 不在なら何もせず終え、削除済みscopeのquotaを復活させない
+5. `add` / `subtract` / `incrementNotes` / `decrementNotes` を適用して保存する。local event IDまたは `migrationId + phase` の処理済み記録と集計更新はcurrent scopeの同一UoWで原子的に行う
 6. `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が返ったら読み直して再適用する（最大 5 回）
 7. 上限を超えた場合は `usage.storageExceeded` を発行する
 
@@ -208,11 +215,11 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 概要
 
-利用者・ワークスペースの削除に合わせてクォータ行を消す（`identity.user.deleted` / `workspace.deleted` の購読）。
+scope cleanupに合わせてquota行を消す。workspace deletionはlocal event、account deletionはpersonal scope commandから呼ぶ。
 
 ### 入力DTO
 
-`subjectType`, `subjectId`
+`deletionOperationId`, `scope: ScopeKey`
 
 ### 出力DTO
 
@@ -220,10 +227,11 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 処理フロー
 
-1. `StorageQuotaRepository.delete` を呼ぶ
-2. 利用者の場合は `LlmUsageRepository.deleteByUser` も呼ぶ
+1. `ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を確認する
+2. `scope`からsubject keyを作り`StorageQuotaRepository.delete`を呼ぶ
+3. 利用者の場合は `LlmUsageRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じUoWで`usage.userCleanupContinued { scope, deletionOperationId }`をscope Alarmへ再登録し、100件未満になってからaccount deletion operation IDのscope cleanup receiptへ完了ackを付ける
 
-`IdempotencyStore` は使わない（[domains/index.md](../domains/index.md) の判断規則）。冪等性の根拠は、鍵を指定した削除であり 2 回目以降は 0 行で終わることにある（`deleteStoredObjects` と同じ性質）。主体の削除は取り消されないため、削除後に同じ主体の行が正当に作り直されることもない。`applyStorageDelta` の減算が本ユースケースより遅れて届いた場合も、減算経路は不在の主体に行を作らずに終える（`applyStorageDelta` の手順 4）ため、消えた主体の行が復活することはない。
+`IdempotencyStore` は使わない（[domains/index.md](../domains/index.md) の判断規則）。継続taskとcleanup receiptの進捗は同じscope-local UoWに保存する。冪等性の根拠は、鍵を指定した削除であり 2 回目以降は 0 行で終わることにある（`deleteStoredObjects` と同じ性質）。主体の削除は取り消されないため、削除後に同じ主体の行が正当に作り直されることもない。`applyStorageDelta` の減算が本ユースケースより遅れて届いた場合も、減算経路は不在の主体に行を作らずに終える（`applyStorageDelta` の手順 4）ため、消えた主体の行が復活することはない。
 
 ### エラーケース
 

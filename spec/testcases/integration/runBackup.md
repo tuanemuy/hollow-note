@@ -17,6 +17,8 @@
 | 連携が失効している | 実行する | `failed("providerAuthFailed")` になり、連携が `expired` になる | |
 | ノート・ファイルが削除済み | 実行する | `failed("targetMissing")` になる | |
 | 通信が失敗する | 実行する | `failed("unknown")` になり、再試行できる | |
+| `CredentialResolver.resolve` がtoken refreshまたは `lastUsedAt` 更新を返す | 実行する | `resolved.updated` をglobal D1で先に保存してからscope-localバックアップ処理を続ける | |
+| `resolve` が新たな失効を返し、global保存後・scope-local Job失敗前に停止する | 再配送する | 保存済みのexpired connectionを読み、Jobを `failed("providerAuthFailed")` へ収束させる | |
 | 既に `succeeded` のジョブ | 再度実行する | 何もせず終わる | |
 | ジョブの行が存在しない（`deleteJobsForRequester` と配送が競合した） | 配送で受け取る | 何もせず成功として返る（run 系共通規則の判定 1） | |
 | 実行後 | ノートを確認する | 「バックアップ済み」と Drive へのリンクが表示される | |

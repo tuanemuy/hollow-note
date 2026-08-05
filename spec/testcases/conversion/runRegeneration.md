@@ -15,7 +15,8 @@
 | 方針が `unavailable(unsupportedFormat)` | 実行する | 本文を変更せず `failed("unsupportedFormat")` になる | |
 | LLM 実行回数の上限に達している | 実行する | 本文を変更せず `failed("quotaExceeded")` になる | |
 | 連携が失効している（`CredentialResolver.resolve` が `reauthorizationRequired`） | 実行する | 方針の決定に進まず `failed("providerAuthFailed")` になり、本文は変わらない（再生成では `Note.markConversionFailed` を呼ばない） | |
-| `resolve` が返した `expired` が非 `null` | 実行する | `markExpired` を適用した連携と `integration.expired` の草稿が、ジョブと**同一 UoW** で保存される | |
+| `resolve` がtoken refreshまたは `lastUsedAt` 更新を返す | 実行する | `resolved.updated` をglobal D1で先に保存してからscope-local再生成を続ける | |
+| `resolve` が返した `expired` が非 `null` | 実行する | global D1で連携と `integration.expired` を先に保存し、scope-localでジョブを失敗させる。plane間で停止しても再試行で収束する | |
 | OpenRouter 未連携（連携の行がない） | 実行する | 失効とは分かれ、本文を変更せず `failed("integrationRequired")` になる | |
 | 変換の実行が失敗する | 実行する | ノートの `content` は `ready` のまま（`Note.markConversionFailed` を呼ばない）、ジョブだけが `failed` になる | |
 | 追加指示を指定した | 実行する | 指示が `ConversionInput` に載り、構造化の要求に含まれる | |

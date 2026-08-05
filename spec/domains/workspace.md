@@ -51,6 +51,7 @@ WorkspaceBase = {
   avatarUrl: string | null
   slug: WorkspaceSlug | null
   version: number
+  lifecycle: { state: "active" } | { state: "deleting"; operationId: string }
   createdAt: Date
   updatedAt: Date
 }
@@ -66,12 +67,13 @@ Workspace = PrivateWorkspace | PublishedWorkspace
 
 - `slug` は設定されていればサービス全体で一意
 - 公開中はスラッグを空にできない
+- `lifecycle.state = "deleting"`になった後は同じoperation IDの削除継続以外のscope mutationを受理しない
 
 **振る舞い**
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `create` | `params: { id: string; name: string; description: string; slug: string \| null }, now: Date` | `WithEventDrafts<PrivateWorkspace, WorkspaceEvent>` | 非公開で生成。`workspace.created` を発行 |
+| `create` | `params: { id: string; name: string; description: string; slug: string \| null }, now: Date` | `WithEventDrafts<PrivateWorkspace, WorkspaceEvent>` | `lifecycle: { state: "active" }`・非公開で生成。`workspace.created` を発行 |
 | `updateProfile` | `workspace: Workspace, params: { name?: string; description?: string; avatarUrl?: string \| null }, now: Date` | `WithEventDrafts<Workspace, WorkspaceEvent>` | 指定項目のみ更新。公開状態は保つ。`name` が変わったときのみ `workspace.profileUpdated` を発行 |
 | `changeSlug` | `workspace: Workspace, slug: string \| null, now: Date` | `WithEventDrafts<Workspace, WorkspaceEvent>` | 公開中に `null` を渡すと `BusinessRuleError(PublishedWorkspaceRequiresSlug)`。変更時は `workspace.slugChanged`（旧スラッグを含む）を発行 |
 | `publish` | `workspace: PrivateWorkspace, now: Date` | `WithEventDrafts<PublishedWorkspace, WorkspaceEvent>` | `slug` が `null` なら `BusinessRuleError(SlugRequiredToPublish)`。`workspace.published` を発行 |
@@ -197,11 +199,31 @@ WorkspaceAction =
 
 ```ts
 interface WorkspaceRepository extends TransactionalRepository<Workspace, WorkspaceId> {
-  findBySlug(slug: WorkspaceSlug): Promise<Workspace | null>;
-  existsBySlug(slug: WorkspaceSlug, excluding: WorkspaceId | null): Promise<boolean>;
-  listByIds(ids: readonly WorkspaceId[]): Promise<readonly Workspace[]>;
-  countOwnedBy(userId: UserId): Promise<number>;
-  findPublishedPage(pagination: Pagination): Promise<PaginationResult<PublishedWorkspace>>;
+}
+
+interface UserWorkspaceDirectory {
+  listActiveByUser(userId: UserId, cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; role: WorkspaceRole }[]; nextCursor: string | null }>>;
+}
+
+type WorkspaceDirectoryEntry = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: Workspace["publication"];
+}>;
+
+interface WorkspaceDirectoryBatchReader {
+  resolveMany(ids: readonly WorkspaceId[]): Promise<ReadonlyMap<WorkspaceId, WorkspaceDirectoryResolution>>; // 最大20件、最大6接続
+}
+
+type WorkspaceDirectoryResolution =
+  | Readonly<{ state: "active"; entry: Versioned<WorkspaceDirectoryEntry> }>
+  | Readonly<{ state: "deleted" }>
+  | Readonly<{ state: "unavailable"; retryAfterSeconds: number | null }>;
+
+interface PublicWorkspaceDirectoryReader {
+  listPublished(cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; slug: WorkspaceSlug; updatedAt: Date }[]; nextCursor: string | null }>>;
 }
 ```
 
@@ -213,13 +235,20 @@ interface WorkspaceRepository extends TransactionalRepository<Workspace, Workspa
 interface MembershipRepository extends TransactionalRepository<Membership, MembershipId> {
   findByWorkspaceAndUser(workspaceId: WorkspaceId, userId: UserId): Promise<Versioned<Membership> | null>;
   listByWorkspace(workspaceId: WorkspaceId, pagination: Pagination): Promise<PaginationResult<Membership>>;
-  listByUser(userId: UserId): Promise<readonly Membership[]>;
   countByRole(workspaceId: WorkspaceId, role: WorkspaceRole): Promise<number>;
-  deleteByUser(userId: UserId): Promise<number>;   // 退会時の後始末（deleteMembershipsForUser）
+  deleteByIds(ids: readonly MembershipId[]): Promise<number>; // 最大100件
 }
 ```
 
-ワークスペース削除に伴うメンバーシップと招待の削除は同一ドメイン内の FK CASCADE に任せるため、両リポジトリともワークスペース単位の削除・計数メソッドを持たない（[usecases/workspace.md](../usecases/workspace.md) の `deleteWorkspace` 手順 5）。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
+repository は current workspace scope に束縛される。slug検索、公開workspace一覧、利用者の参加workspace一覧・所有数は global D1 の `workspace_slug_reservations` / `workspace_directory` / `membership_directory` を読む query service が担う。scope内 repository に全workspace走査を持たせない。
+
+`UserWorkspaceDirectory.listActiveByUser`はUserId shard内のactive edgeを`(created_at DESC, workspace_id)`のkeysetで読み、limitは1〜20とする。cursorはrouting generationと末尾keyを含む署名opaque値である。`WorkspaceDirectoryBatchReader.resolveMany`はpage内最大20 WorkspaceIdをhash shard別にgroupingし、最大6接続で読み、reshard中はversionが大きい行を採る。名前変更に依存しない順序なのでpage間のrenameで欠落せず、全参加workspaceの取得・メモリsortを行わない。
+
+`PublicWorkspaceDirectoryReader.listPublished`はWorkspaceId hashの最大32 shardを同時6接続のwaveで読み、各shardの`(updated_at DESC, workspace_id)` keysetを署名opaque cursorへ保持して全体最大200件へmergeする。reshard中は旧新generationを読み、WorkspaceId/sourceVersionで重複排除する。総件数は数えず、サイトマップ生成側が`nextCursor`を末尾まで反復する。
+
+directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。
+
+ワークスペース削除はmanifestに固定したIDを`deleteByIds`へ最大100件ずつ渡し、Membership/Invitationを先に消してからWorkspaceを消す。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("MEMBERSHIP_ALREADY_EXISTS")`、`SystemError(DatabaseError)`
 
@@ -231,14 +260,82 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
   findPendingByWorkspaceAndEmail(workspaceId: WorkspaceId, email: Email): Promise<Versioned<Invitation> | null>;
   listByWorkspace(workspaceId: WorkspaceId, pagination: Pagination): Promise<PaginationResult<Invitation>>;
   countPendingIssuedSince(workspaceId: WorkspaceId, since: Date): Promise<number>;
+  deleteByIds(ids: readonly InvitationId[]): Promise<number>; // 最大100件
 }
+
+interface InvitationRouteStore {
+  resolveActive(tokenHash: TokenHash): Promise<{ workspaceId: WorkspaceId; invitationId: InvitationId } | null>;
+  reserve(input: { tokenHash: TokenHash; workspaceId: WorkspaceId; invitationId: InvitationId; operationId: string; expiresAt: Date }): Promise<void>;
+  activate(input: { tokenHash: TokenHash; operationId: string }): Promise<void>;
+  reserveReplacement(input: { oldTokenHash: TokenHash; newTokenHash: TokenHash; workspaceId: WorkspaceId; invitationId: InvitationId; operationId: string; expiresAt: Date }): Promise<void>;
+  activateReplacement(input: { oldTokenHash: TokenHash; newTokenHash: TokenHash; invitationId: InvitationId; operationId: string }): Promise<void>;
+  abandon(input: { tokenHash: TokenHash; operationId: string }): Promise<void>;
+  revoke(input: { tokenHash: TokenHash; invitationId: InvitationId; operationId: string }): Promise<void>;
+  consume(input: { tokenHash: TokenHash; invitationId: InvitationId; operationId: string }): Promise<void>;
+}
+
+interface MembershipDirectoryReservationStore {
+  reserveAndClaimActivation(input: { operationId: string; userId: UserId; workspaceId: WorkspaceId; membershipId: MembershipId; role: WorkspaceRole; expiresAt: Date }): Promise<void>;
+  activate(operationId: string): Promise<void>;
+  abandon(operationId: string): Promise<void>;
+  prepareAccountDeletion(input: { edgeOperationId: string; deletionOperationId: string; expiresAt: Date }): Promise<void>;
+  renewAccountDeletion(edgeOperationId: string, deletionOperationId: string, expiresAt: Date): Promise<void>;
+  commitAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
+  releaseAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
+  listActivatingByUser(userId: UserId, limit: number): Promise<readonly { operationId: string; workspaceId: WorkspaceId }[]>;
+}
+
+`MembershipDirectoryReservationStore`はcurrent UserId shardに束縛する。`reserveAndClaimActivation`はpending row insert、同shardのcurrent UserがActiveであることの検査、`activating`へのclaimを1 transactionで行う。Userがdeletingならrowを一切insertしない。account deletion開始前にclaim済みの`activating` edgeはaccept Sagaがactive/abandonedへ収束するまで削除manifest構築を待たせる。pending edgeのprepare/release/commitはedge operation IDとdeletion operation IDの組で冪等にする。
+
+interface MembershipRemovalPreparationStore {
+  prepare(input: { operationId: string; userId: UserId; expectedMembershipVersion: number; expiresAt: Date }): Promise<void>;
+  renew(operationId: string, expiresAt: Date): Promise<void>;
+  commit(operationId: string): Promise<void>;
+  release(operationId: string): Promise<void>;
+  hasConflict(userId: UserId): Promise<boolean>;
+}
+
+interface WorkspaceOperationLockStore {
+  hasActiveMove(): Promise<boolean>;
+  hasMoveConflict(userId: UserId): Promise<boolean>;
+  beginDeletion(input: { workspaceId: WorkspaceId; operationId: string; expectedWorkspaceVersion: number }): Promise<void>;
+  assertWritable(): Promise<void>;
+  assertDeletionOwner(operationId: string): Promise<void>;
+  assertMaintenanceAllowed(kind: "jobRetention" | "outboxRelay" | "tombstonePrune"): Promise<void>;
+}
+
+interface WorkspaceDeletionManifestStore {
+  appendMembershipPage(operationId: string, afterMembershipId: MembershipId | null, limit: number): Promise<Readonly<{ next: MembershipId | null; count: number }>>;
+  appendInvitationPage(operationId: string, afterInvitationId: InvitationId | null, limit: number): Promise<Readonly<{ next: InvitationId | null; count: number }>>;
+  markReady(operationId: string): Promise<void>;
+  listLocalPending(operationId: string, limit: number): Promise<readonly WorkspaceDeletionManifestItem[]>;
+  acknowledgeLocal(operationId: string, itemKeys: readonly string[]): Promise<void>;
+  listItems(operationId: string, cursor: string | null, limit: number): Promise<Readonly<{ items: readonly WorkspaceDeletionManifestItem[]; nextCursor: string | null }>>;
+  acknowledge(operationId: string, itemKeys: readonly string[]): Promise<void>;
+  compactAcknowledged(operationId: string, limit: number): Promise<Readonly<{ removed: number; remaining: boolean }>>;
+  markCompleted(operationId: string): Promise<void>;
+}
+
+type WorkspaceDeletionManifestItem =
+  | Readonly<{ key: string; kind: "membership"; userId: UserId; membershipId: MembershipId; localDeletedAt: Date | null; globalAckedAt: Date | null }>
+  | Readonly<{ key: string; kind: "invitation"; tokenHash: TokenHash; invitationId: InvitationId; localDeletedAt: Date | null; globalAckedAt: Date | null }>;
 ```
 
 `countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
+`WorkspaceOperationLockStore`はmove authorization lockと永続的なworkspace deletion admission stateを同じworkspace DOで読む。`beginDeletion`はWorkspaceを`active → deleting(operationId)`へCASし、同じtransactionで`WorkspaceDeletionManifestStore`のheaderを`building`として作る。以後`assertWritable`はWorkspaceの`deleting`、またはWorkspace行削除後も残るmanifest headerを見て`ConflictError("WORKSPACE_DELETING")`を返す。ScopeRouterはworkspace scopeの全write command（Note/Tag/Storage/Job/Usageを含む）の入口でこれを呼ぶ。削除workerだけが`assertDeletionOwner`でWorkspace lifecycleまたはmanifest headerの同じoperation IDを確認して継続できる。`compactAcknowledged`はlocal/global双方のack済みitemだけを最大`limit`件消し、残件有無を返す。`markCompleted`はitemが0件のときだけheaderを完了tombstoneへ移す。対象actorのrole/removalとworkspace deletionはactive move中に拒否する。
+
+Workspace削除後も意図的に残すoutbox、Job履歴正データ、compact tombstoneの回収だけは`assertMaintenanceAllowed`で通す。allowlistは`jobRetention` / `outboxRelay` / `tombstonePrune`に閉じ、create/retry/progressなど業務状態を増やす操作は含めない。maintenance taskは利用者commandへ派生せず、削除済み行の縮約だけを行う。
+
+削除受理後は利用者によるabortを提供せず、失敗時も同じoperation IDでforward recoveryする。manifest/CASCADE/global cleanupが複数turnに跨ってもactiveへ戻さないため、cursor通過後に新しいedge/Job/Noteが入らない。`WorkspaceDeletionManifestStore`は同じUoWでpage itemとcursorを保存し、全global ack後に完了tombstoneへ縮約する。tombstoneはscope routingの保持期間以上残し、削除済みscope宛ての遅延writeを恒久的に拒否する。
+
+membership removal prepare leaseはTTL 10分、orchestratorは2分ごとにrenewする。`hasConflict`は期限を過ぎたprepared lockも自動で無効にせず、安全側に拒否する。global recoveryだけがD1 operationをprimaryで確認し、preparing/runningならrenew、rejected/completedならreleaseする。commit開始前に全lockの残存5分以上を確認し、各lockを`committed`へ遷移してからdestructive cleanupを始める。committed lockは自動失効せず完了/recoveryがreleaseする。
+
 ## ドメインイベント
+
+Workspace / Membership / Invitation の正データは workspace scope DO に置く。`workspace.*` event は global D1 の `workspace_directory` を更新するが、権限判定は必ず scope DO の Membership で行う。membership 作成前には D1 に pending edge を予約し、scope-local commit 後に active にする。削除は scope-local job termination と membership removal を先に commit し、その後 directory edge を消す。
 
 用途欄の 3 分類は [identity.md](./identity.md) のドメインイベント節と同じ規約に従う。
 
@@ -249,7 +346,7 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
 | `workspace.slugChanged` | `{ workspaceId, previousSlug, currentSlug }` | 読み取りモデルの投影（`projectNoteChanges` のスラッグ） |
 | `workspace.published` | `{ workspaceId, slug }` | 読み取りモデルの投影（`projectNoteChanges` の公開状態） |
 | `workspace.unpublished` | `{ workspaceId }` | 読み取りモデルの投影（`projectNoteChanges` の公開状態） |
-| `workspace.deleted` | `{ workspaceId }` | Note / Tag / Storage / Usage の後始末。購読者の一覧は [usecases/workspace.md](../usecases/workspace.md) の `deleteWorkspace` 手順 5 |
+| `workspace.deleted` | `{ workspaceId, operationId }` | Note / Tag / Storage / Usage の後始末。global directory cleanupは削除前manifestのroute keyを使う |
 | `workspace.membership.added` | `{ workspaceId, userId, role }` | 監査 |
 | `workspace.membership.roleChanged` | `{ workspaceId, userId, previousRole, currentRole }` | 監査（購読者なし。降格に伴う実行中ジョブの取り消しは `changeMemberRole` が同じ手順の中で行う） |
 | `workspace.membership.removed` | `{ workspaceId, userId }` | 監査（購読者なし。実行中ジョブの取り消しは `removeMember` / `leaveWorkspace` が同じ手順の中で行う） |
@@ -261,7 +358,7 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
 
 サイトマップは購読で更新しない（`listPublicWorkspaces` が要求のたびに現在の状態から列挙する引き取り型のため）。公開ページのキャッシュについても、無効化の仕組みを本設計は持たない。
 
-読み取りモデルへ投影されるイベント（`workspace.profileUpdated` / `slugChanged` / `published` / `unpublished`）の payload も、変化の通知にとどめて投影に必要な現在値を運ばない。`NoteProjectionWriter.updateWorkspace(workspaceId, name, slug, published)` が要る `name` / `slug` / `published` の組は、購読側が `workspaceId` で `WorkspaceRepository.findById` を引いて解決して渡す（[domains/identity.md](./identity.md) の同じ注記、[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
+読み取りモデルへ投影されるworkspace eventのpayloadも変化の通知にとどめる。workspace scope内のlocal writerとglobal public writerは、Workspaceのcurrent snapshotから `name` / `slug` / `published` の組を解決する（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
 
 ## エラーコード
 

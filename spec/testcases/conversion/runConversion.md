@@ -22,7 +22,8 @@
 | `payload.conversionPreference: "machineOnly"` で画像、OpenRouter 連携済み | 実行する | 連携があっても結果は同じで、`Note.markAwaitingIntegration` は呼ばれない（案内は連携ではなく `auto` での取り込み直し） | |
 | `payload.conversionPreference: "machineOnly"` で変換した | 使用量を確認する | LLM 実行回数は消費されていない | |
 | LLM が必要で連携が失効（`CredentialResolver.resolve` が `reauthorizationRequired`） | 実行する | 方針の決定に進まず、ノートが `failed(providerAuthFailed)`、ジョブが `failed("providerAuthFailed")` になる | |
-| `resolve` が返した `expired` が非 `null` | 実行する | `markExpired` を適用した連携と `integration.expired` の草稿が、ノート・ジョブと**同一 UoW** で保存される（連携の失効記録だけが取り残されない） | |
+| `resolve` がtoken refreshまたは `lastUsedAt` 更新を返す | 実行する | `resolved.updated` をglobal D1で先に保存してからscope-local変換を続ける。後続のノート・ジョブ保存が競合してもconnection更新は巻き戻さない | |
+| `resolve` が返した `expired` が非 `null` | 実行する | global D1で連携と `integration.expired` を先に保存し、scope-localでノート・ジョブを失敗させる。plane間で停止しても再試行がexpired状態を読み直して同じ結果へ収束する | |
 | 未連携（連携の行がない）と失効を比べる | 実行する | 未連携は `awaitingIntegration` + `failed("integrationRequired")`、失効は `failed(providerAuthFailed)` + `failed("providerAuthFailed")` で、結果も案内も分かれる（`unavailable` に畳まない） | |
 | 実行中に外部から強制終端された（`trashNote` / `cancelJob` / 連携失効による一括失敗など） | 結果を保存する | 保存が `ConflictError` になるためジョブを読み直し、終端済みなら生成物を破棄して成功として返す（ジョブは書き換えない。run 系共通規則の判定 4） | |
 | 保存の `ConflictError` 後に読み直したジョブが終端していない（別のワーカーが引き継いだ） | 結果を保存する | `ConflictError` をそのまま投げて再配送に委ねる | |

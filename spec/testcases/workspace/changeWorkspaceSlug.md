@@ -9,3 +9,5 @@
 | 自分と同じスラッグ | 同じ値に変更する | 変更もイベントも起きず成功する | |
 | owner でない | 変更する | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | 公開中でスラッグを変更した | 旧スラッグの公開ページを開く | 「見つかりません」が返る | |
+| 新slug予約後にlocal更新が失敗 | 変更する | 新reservationを解放し、旧slugを維持する | |
+| local更新後にglobal切替応答を失う | recoveryを実行する | operation IDで新slugをactiveにしてから旧slugを解放する | |

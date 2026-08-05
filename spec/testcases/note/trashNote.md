@@ -6,7 +6,9 @@
 | 公開ノート | ゴミ箱に入れる | 公開 URL が「見つかりません」になる | |
 | 限定公開のノート | ゴミ箱に入れる | 共有リンクが「見つかりません」になる | |
 | 変換処理中のノート | ゴミ箱に入れる | 実行中のジョブがキャンセルされてから削除される | |
-| `excludingJobId: null`（画面からの呼び出し） | ゴミ箱に入れる | `listActiveByTarget` が返した未終端ジョブがすべて `Job.cancel` される（除外すべきジョブが存在しないため） | |
+| `excludingJobId: null`（画面からの呼び出し） | ゴミ箱に入れる | `listActiveByTarget` を `limit: 100` で引き、返った未終端ジョブがすべて `Job.cancel` される（除外すべきジョブが存在しないため） | |
+| 網が 100 件を返した | ゴミ箱に入れる | 同じ UoW で継続要求 `job.terminationContinued { origin: { path: "trashNote", noteId, excludingJobId } }` を積む。1 ノートの網なので実際には達しないが、達しないことは規模の見積もりであって型の保証ではないため、規則は経路ごとに省かない | |
+| 継続要求の `origin` | 内容を確認する | `excludingJobId` を必ず運ぶ。落とすと 2 巡目で除外規約（「共通: ユースケースを合成するときの副作用の範囲」）が黙って外れ、`runBulkNoteOperationItem` が自分自身を取り消す | |
 | `excludingJobId` に一括操作の子ジョブの ID を渡す（`runBulkNoteOperationItem` からの呼び出し） | ゴミ箱に入れる | 一致する 1 件だけが強制終端から外れ、同じノートを対象とする他のジョブ（変換・再生成・PDF 書き出し・別の一括操作の子）は通常どおり取り消される（取り消すべき理由は呼び出し経路によらない。「共通: ユースケースを合成するときの副作用の範囲」） | |
 | `excludingJobId` に、そのノートを対象としないジョブの ID を渡す | ゴミ箱に入れる | 除外は起きず、`listActiveByTarget` が返したジョブがすべて取り消される（除外は ID の一致する 1 件だけに効く） | |
 | 本文が `processing` のまま変換ジョブを強制終端した | ゴミ箱に入れる | 「共通: 強制終端の後始末」に従い `Note.markConversionFailed("canceled")` が適用され、本文が `failed(canceled)` になる（`restoreNote` で戻したときに `processing` のまま固定されない） | |

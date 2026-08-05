@@ -9,3 +9,5 @@
 | 期限切れの招待 | 再送する | 新しい期限で再送される | |
 | 他のワークスペースの招待 ID を指定する | 再送する | `NotFoundError("INVITATION_NOT_FOUND")` が投げられる | |
 | editor である | 再送する | `BusinessRuleError(InsufficientRole)` が投げられる | |
+| 新token予約後にlocal commitが失敗する | 再送する | 新reservationをabandonし、旧tokenは引き続き有効 | |
+| local commit後にroute切替応答を失う | recoveryする | 同じoperation IDで旧route revoked / 新route activeを原子的に完了し、新tokenだけが到達可能 | |

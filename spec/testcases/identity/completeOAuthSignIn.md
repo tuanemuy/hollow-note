@@ -5,8 +5,12 @@
 | 有効な `state` があり、該当の紐づけも同メールの利用者も存在しない | 認可コードを交換する | `ActiveUser` と `OAuthIdentity` が作られ、セッションが発行され、`created: true` が返る | |
 | 既に同じ `(provider, providerAccountId)` の紐づけがある | 認可コードを交換する | 既存の利用者でセッションが発行され、`created: false` が返る | |
 | 同じメールアドレスの `ActiveUser` が存在する | 認可コードを交換する | 既存の利用者に `OAuthIdentity` が追加され、セッションが発行される | |
+| 同じメールの既存利用者がIdentityを8件持つ | 新しいprovider accountで交換する | `BusinessRuleError(IdentityLimitExceeded)`となり、Identity/Sessionを追加せずreservationをreleaseする | |
 | 同じメールアドレスの `PendingUser` が存在する | 認可コードを交換する | `ValidationError("EXISTING_ACCOUNT_UNVERIFIED")` が投げられ、紐づけは行われない | |
-| 同じプロバイダーアカウントで 2 つのサインアップが同時に走る | 両方が認可コードを交換する | 一方が `(provider, providerAccountId)` の一意制約違反となり `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` が投げられる（既存の紐づけは手順 3 で解決されるため、このエラーは同時サインアップの競合でのみ到達する） | |
+| provider accountまたはemailが`DeletingUser`へ解決される | 認可コードを交換する | `ValidationError("ACCOUNT_UNAVAILABLE")`でIdentity/Sessionを作らない | |
+| 同じプロバイダーアカウントで 2 つのサインアップが同時に走る | 両方が認可コードを交換する | normalized providerAccount shardのreservationは一方だけ成立し、他方は `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` になる | |
+| createNewでemail reservation後にproviderAccount reservationが失敗する | recoveryする | 親operationから別sub-operation IDを導出し、確保済みemail reservationをreleaseする | |
+| User/Identity保存後に2 reservationの片方だけactivate応答を失う | recoveryする | operation payloadと正データversionを照合し、email/providerAccount両方をactiveへ収束させる | |
 | プロバイダーが返すメールが未確認 | 認可コードを交換する | `ValidationError("OAUTH_EMAIL_UNVERIFIED")` が投げられる | |
 | `state` が保存されていない | 認可コードを交換する | `ValidationError("OAUTH_STATE_INVALID")` が投げられる | |
 | `state` が既に 1 度使われている | 同じ `state` で再度交換する | `ValidationError("OAUTH_STATE_INVALID")` が投げられる（取り出しと同時に削除される） | |

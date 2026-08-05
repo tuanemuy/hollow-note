@@ -55,3 +55,7 @@
 | 変換が失敗した | 結果を確認する | 公開ステータスは非公開のまま残る | |
 | クォータの検査 | 呼び出し先を確認する | Usage の**ユースケース** `ensureUploadAllowed` を呼ぶ。Usage のドメインサービス `QuotaEnforcement` やリポジトリを直接触らない（Storage ドメインは Usage に依存しない） | |
 | LLM を要する方針と判定した | 消費の有無を確認する | このユースケースは `consumeLlmCall` を呼ばない。残量の事前確認だけを行い、消費は `runConversion` が行う | |
+| Note route予約後にupload処理が失敗する | 再試行する | 対象scopeにNoteがなければreservationを解放し、active routeを残さない | |
+| scope-local file / Note / Job commit後にactivation応答を失う | recoveryを実行する | 同じoperation IDでrouteをactiveにし、file・Note・Jobを二重登録しない | |
+| scope SQLite使用率が60%以上 | bulk uploadする | sharding完了まで新規bulkを抑制し、削除・export・security cleanupは継続する | |
+| scope SQLite使用率が70%以上 | 新規uploadする | 容量エラーで拒否し、hard limit到達前に書込みを止める | |

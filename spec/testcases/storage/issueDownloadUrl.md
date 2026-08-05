@@ -8,6 +8,8 @@
 | 期限切れの生成物 | URL を発行する | `NotFoundError("ARTIFACT_EXPIRED")` が投げられる | |
 | 期限内の生成物 | URL を発行する | 発行できる | |
 | 存在しないファイル ID | URL を発行する | `NotFoundError("STORED_FILE_NOT_FOUND")` が投げられる | |
+| 入力storage scopeとfileのscopeが違う | URLを発行する | 指定scope以外を探索せず`STORED_FILE_NOT_FOUND` | |
+| workspace fileに正しいstorage scopeを添える | URLを発行する | その1つのworkspace scopeだけでmembershipを再確認する | |
 | 発行された URL | 期限経過後にアクセスする | アクセスできない | |
 | 匿名の閲覧者が公開ノートの PDF 生成物を取得しようとする | — | 本ユースケースは対象にしない（入力に `userId` を要する）。匿名のダウンロードは Note 側の `downloadExportArtifact`（ExportTicket 経由）が担う | |
 | 匿名の PDF エクスポートで作られた artifact（`uploadedBy: null`） | 所有者本人が URL を発行する | ノートの所有文脈で所有者判定が通り、発行できる | |

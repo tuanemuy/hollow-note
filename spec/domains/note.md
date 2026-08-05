@@ -36,7 +36,7 @@
 - **生成経路**: `HtmlProcessor.process` / `rewriteReferences` / `editTextNodes` の結果、および空の本文を作る `NoteHtml.empty()` のみ
 - **等価性**: 文字列として一致
 
-上限が 800,000 バイトなのは、`notes` の 1 行が D1 の行サイズ上限（2,000,000 バイト）に収まることを設計として示せるようにするためである（[ADR 017](../adr/017-content-size-budget.md)）。本文とその派生（平文・見出し・抜粋）は同じ行に載るため、合計の予算から逆算した値になる。予算の内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。
+上限が 800,000 バイトなのは、scope DO の SQLite に置く `notes` の 1 行が D1 / DO 共通の行サイズ上限（2,000,000 バイト）に収まることを設計として示せるようにするためである（[ADR 017](../adr/017-content-size-budget.md)）。本文とその派生（平文・見出し・抜粋）は同じ行に載るため、合計の予算から逆算した値になる。予算の内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。
 
 ### PlainTextContent
 
@@ -77,14 +77,24 @@ NoteOwner =
 ```
 ShareLink = {
   tokenHash: TokenHash
+  protectedToken: ProtectedShareToken
   password: { hash: PasswordHash; updatedAt: Date } | null   // updatedAt はパスワードを設定・変更した時刻
   issuedAt: Date
 }
 ```
 
-- **バリデーション**: `tokenHash` は空文字列不可
+- **バリデーション**: `tokenHash` と `protectedToken.cipherText` は空文字列不可。`protectedToken.keyVersion` は正の整数
 - **等価性**: `tokenHash` が一致
 - パスワードのハッシュと更新時刻は常に対で持つ。片方だけが存在する状態は型で表現できない
+- 利用者へ渡すトークンは `base64url(NoteId).secret` の形を取り、`secret` は 256 ビット以上の乱数とする。前半は scope を引くための locator であって秘密ではなく、アクセス能力は後半の秘密と `tokenHash` の一致が与える
+- `protectedToken` は所有者へ同じ共有 URL を再表示するための暗号文である。平文トークンは保存せず、閲覧要求では復号せずに入力全体のハッシュを定数時間比較する
+
+```
+ProtectedShareToken = {
+  cipherText: string
+  keyVersion: number
+}
+```
 
 ### SharePass
 
@@ -397,17 +407,15 @@ interface NoteExportComposer {
 
 ```ts
 interface NoteRepository extends TransactionalRepository<Note, NoteId> {
-  findByShareToken(tokenHash: TokenHash): Promise<Note | null>;
   listByIds(ids: readonly NoteId[]): Promise<readonly Note[]>;
   listPurgeable(now: Date, limit: number): Promise<readonly TrashedNote[]>;
   countByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all"): Promise<number>;
   listByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all", pagination: Pagination): Promise<PaginationResult<Note>>;
-  listAll(cursor: NoteId | null, limit: number): Promise<readonly Note[]>;
 }
 ```
 
 - `listByOwner` の `lifecycle` は `countByOwner` と同じ 3 値を取る。ゴミ箱だけを対象にする `emptyTrash`、生死を問わない `deleteNotesForOwner` / `rebuildNoteProjection` がそれぞれ別の値で呼ぶため、件数と一覧で絞り込みの語彙を揃える
-- `listAll` は所有者を問わない全件走査。読み取りモデルの全体再構築（`rebuildNoteProjection` の owner 未指定）だけが使う運用向けのメソッドで、`NoteId` の昇順で返し `cursor` より後ろを `limit` 件ずつ読む（総件数を数えないため `PaginationResult` を返さない）。通常の一覧経路から呼んではならない
+- repository は現在の ScopeKey に束縛され、scope をまたぐ全件走査を提供しない。local projection の再構築は `listByOwner(currentScope, "all", ...)`、public projection の再構築は global D1 の `note_routes` を入口にする
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
@@ -425,19 +433,22 @@ interface NoteRevisionRepository {
 
 **エラーケース**: `SystemError(DatabaseError)`
 
-### NoteQueryService
+### LocalNoteQueryService / PublicNoteQueryService
 
 **目的**: 一覧・検索・タイムラインの読み取り。読み取りモデル（[ADR 009](../adr/009-read-models.md)）に対して問い合わせる。キーワード検索は書き込み時前処理による bigram 方式で、2 文字以上のクエリが有効（前処理・クエリ構築の詳細は [ADR 011](../adr/011-bigram-search.md) と database 設計）。
 
 ```ts
-interface NoteQueryService {
+interface LocalNoteQueryService {
   search(criteria: NoteSearchCriteria): Promise<PaginationResult<NoteSummary>>;
-  searchPublic(criteria: PublicSearchCriteria): Promise<PaginationResult<PublicNoteSummary>>;
   listMonthsWithNotes(owner: NoteOwner, timeZone: string): Promise<readonly YearMonth[]>;
   countByDay(owner: NoteOwner, range: DateRange, timeZone: string): Promise<readonly { day: string; count: number }[]>;
   countByContentStatus(owner: NoteOwner, status: "processing" | "awaitingIntegration" | "failed" | "ready"): Promise<number>;
-  listPublicSitemapEntries(cursor: NoteId | null, limit: number): Promise<readonly SitemapEntry[]>;
-  listPublicAuthors(cursor: string | null, limit: number): Promise<readonly PublicAuthorEntry[]>;
+}
+
+interface PublicNoteQueryService {
+  searchPublic(criteria: PublicSearchCriteria): Promise<PublicSearchPage>;
+  listPublicSitemapEntries(cursor: string | null, limit: number): Promise<ShardPage<SitemapEntry>>;
+  listPublicAuthors(cursor: string | null, limit: number): Promise<ShardPage<PublicAuthorEntry>>;
 }
 
 type NoteSearchCriteria = Readonly<{
@@ -457,8 +468,19 @@ type PublicSearchCriteria = Readonly<{
   tagNames: readonly string[];            // 同じく正規化済みの名前
   ownerFilter: NoteOwner | null;          // 公開ページ内の検索で使う
   updatedWithin: DateRange | null;        // `note_search.updated_at`（結果に表示する日時と同じ軸）に対する範囲。UTC で解決した範囲として渡す
-  pagination: Pagination;
+  cursor: string | null;                  // shard generation・各shard keyset/rankを含む署名opaque cursor
+  limit: number;
 }>;
+
+type PublicSearchPage = Readonly<{
+  items: readonly PublicNoteSummary[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}>;
+
+type ShardPage<T> = Readonly<{ items: readonly T[]; nextCursor: string | null }>;
+
+public検索はexact countとpage番号を返さない。物理shard後も1要求のworkを固定するため、最大32 shardから各`limit`件までを同時6接続で読み、opaque cursorのshard別位置から続きをmergeする。keywordなしは`updatedAt DESC, noteId`、keywordありはshard内FTS順位のReciprocal Rank Fusionに`updatedAt, noteId`をtie-breakとして使う。cursorはquery fingerprintとshard generationを含み、条件変更・改ざん・retired generationは`INVALID_PAGINATION`にする。
 
 type NoteSortKey = "updatedDesc" | "updatedAsc" | "createdDesc" | "createdAsc" | "titleAsc" | "titleDesc" | "relevance";
 
@@ -493,7 +515,7 @@ type SitemapEntry = Readonly<{ noteId: string; updatedAt: Date }>;
 type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;   // 個人所有の公開・有効ノートを 1 件以上持つ利用者
 ```
 
-期間の絞り込みは、個人向けの `search` が**作成日時**（`createdWithin`。OR-05 の月セレクターとカレンダーが作成日を軸にするため）、横断・公開ページ向けの `searchPublic` が**更新日時**（`updatedWithin`）と、基準列が異なる。公開検索が更新日時を採るのは、**結果に表示する日時と同じ軸で絞れる**ことが利用者から見た前提であり（DS-05 / P-41 は一覧に更新日時を出す。絞り込んだ範囲と並んでいる日時が一致しないと結果が読めない）、公開行を絞る索引が `note_search_public_updated_idx` / `note_search_owner_public_updated_idx`（いずれも `updated_at DESC` の部分索引）だけだからで、作成日時を基準にすると同じ絞り込みを支える索引がない。境界はどちらも `DateRange` の規約どおり `from` 以上 `toExclusive` 未満。`createdWithin` は利用者のタイムゾーンで解決した範囲を受け取るが、`updatedWithin` は閲覧者のタイムゾーンを持てない（サインイン不要の経路）ため UTC で解決した範囲を受け取る（[usecases/note.md](../usecases/note.md) の `searchPublicNotes`）。
+`LocalNoteQueryService` は owner の scope DO、`PublicNoteQueryService` は global D1 の public projection だけを読む。個人向け `search` は作成日時、公開 `searchPublic` は結果に表示する更新日時を期間軸にする。公開 projection の索引は `public_note_search_updated_idx` / `public_note_search_owner_updated_idx`。境界は `from` 以上 `toExclusive` 未満で、private は利用者の time zone、public は UTC で解決する。
 
 `highlightedExcerpt` は**生テキスト由来**である。`search` / `searchPublic` の一致判定は bigram 前処理済みの FTS 列で行うが、その列は「東京 京都 都庁」のようなビグラム列なので表示に使えない（[ADR 011](../adr/011-bigram-search.md)）。ハイライトは読み取りモデルの生テキスト（`note_search.excerpt`、なければ `text`）に対し、検索語と同じ NFKC 正規化 + 小文字化を適用した照合で一致位置を求めて組み立てる（[database/index.md](../database/index.md) の「ハイライトと抜粋の生成」）。`keyword` 未指定のときと、生テキストに一致が現れないとき（タイトル・タグ名だけで一致した行など）は `null` を返し、画面は素の `excerpt` を出す。
 
@@ -504,26 +526,43 @@ type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;   // 個
 - エスケープの責任を生成側（クエリポートの実装＝アダプター）に置くのは、標識を入れる側でなければ「どこがエスケープすべき本文で、どこが自分が入れたタグか」を区別できないためである（[database/index.md](../database/index.md) の「ハイライトと抜粋の生成」）。表示側で後からエスケープすると `<mark>` ごと無害化され、生成側でエスケープしないと本文中の `<script>` がそのまま描かれる
 - `null` のときに素の `excerpt` へフォールバックする経路は、**平文としての描画に切り替える**。HTML として描く枝と平文として描く枝を取り違えない
 
-`listPublicAuthors` は**所有者基準**で列挙する — `owner_type = 'user'` の公開かつ有効なノートを 1 件以上持つ利用者について、その利用者の当該ノートの最新更新時刻を添えて `userId` の昇順で返す。著者基準（`created_by`）ではない。母集合は `/@:handle` の一覧（`searchPublic` の `ownerFilter: { type: "user", userId }`）と一致しなければならないためで、ハンドルは読み取りモデルが所有者の列として持たないので呼び出し側が `UserRepository.listByIds` で解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。`cursor` は最後に読んだ `userId`。
+`listPublicAuthors` は**所有者基準**で列挙する — `owner_type = 'user'` の公開かつ有効なノートを 1 件以上持つ利用者について、その利用者の当該ノートの最新更新時刻を添えて `userId` の昇順で返す。著者基準（`created_by`）ではない。母集合は `/@:handle` の一覧（`searchPublic` の `ownerFilter: { type: "user", userId }`）と一致しなければならないためで、ハンドルは読み取りモデルが所有者の列として持たないので呼び出し側が `UserBatchReader.resolveMany` で解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。sitemap/authorsのcursorも署名opaque値で、shard generationと各shardのkeyset位置を持つ。最大32 shardを同時6接続のwaveで読み、全体limit件へmergeする。authorsは各shard headの同じUserIdをすべて消費してupdatedAtの最大を1件だけemitしてから次のUserIdへ進むため、同一利用者のNoteが複数shardに散ってもpage境界で再出現しない。cutover中は旧新generationを読み、NoteIdまたはUserIdで重複排除する。
 
 **エラーケース**: `SystemError(DatabaseError)`、`SystemError(TimeoutError)`（検索のタイムアウト）
 
-### NoteProjectionWriter
+### LocalNoteProjectionWriter / PublicNoteProjectionWriter
 
-**目的**: 読み取りモデルを更新する。イベント購読側（プロジェクション）から呼ばれる。各メソッドは `note_search` 本体・タグの正規化表（`note_search_tags`）・FTS 索引の同期まで、自分が触れる範囲について責任を持つ（[ADR 011](../adr/011-bigram-search.md) / [ADR 017](../adr/017-content-size-budget.md)、詳細は database 設計）。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列（タイトル・本文・タグ名）に触れないため FTS 更新は不要。
+**目的**: 読み取りモデルを更新する。イベント購読側（プロジェクション）から呼ばれる。本体・タグ・FTS・著者・workspace表示をノート単位の完全snapshotとして置換する（[ADR 011](../adr/011-bigram-search.md) / [ADR 017](../adr/017-content-size-budget.md)、詳細は database 設計）。著者やworkspaceの一括行更新は提供しない。
 
 bigram 前処理済みのテキストは**どこにも保存されない**（FTS5 は contentless 構成。[ADR 017](../adr/017-content-size-budget.md)）。索引を書き換えるときの旧値は、`note_search` の生テキスト列に前処理関数を再適用して求める。前処理は純関数なので同じ値が必ず得られる。
 
-**呼び出しは直列化されている。** これらのメソッドを呼ぶのは `projectNoteChanges` だけで、そのコンシューマーは同時実行数 1 のキューに固定されている（[ADR 016](../adr/016-projection-single-writer.md)）。「現在の状態を読み直して上書きする」形が正しさを保つのはこの前提の下でだけである — 並行して呼ばれるとロストアップデートが起きる。
+local writer は対象 scope の scheduled task / Alarm から呼ばれる。orderingはNote entity versionだけでなく、Note本体/tag集合の `projectionRevision`、Identityの `authorVersion`、Workspaceの `workspaceVersion` を持つ世代ベクトルで判定する。
 
 ```ts
-interface NoteProjectionWriter {
-  upsert(entry: NoteProjectionEntry): Promise<void>;
-  updateTags(noteId: NoteId, tags: readonly ProjectedTagName[]): Promise<void>;
-  updateAuthor(userId: UserId, displayName: string, handle: string | null): Promise<void>;
-  updateWorkspace(workspaceId: WorkspaceId, name: string, slug: string | null, published: boolean): Promise<void>;
+interface LocalNoteProjectionWriter {
+  replaceSnapshotIfNewer(entry: NoteProjectionEntry, tags: readonly ProjectedTagName[], version: ProjectionVersion): Promise<"written" | "stale" | "incomparable">;
   remove(noteId: NoteId): Promise<void>;
 }
+
+interface PublicNoteProjectionWriter {
+  replaceSnapshotIfNewer(entry: NoteProjectionEntry, tags: readonly ProjectedTagName[], version: ProjectionVersion & { routeVersion: number }): Promise<"written" | "stale" | "incomparable">;
+  removeIfNewer(noteId: NoteId, routeVersion: number, projectionRevision: number): Promise<boolean>;
+  removeForPurge(input: { noteId: NoteId; operationId: string; routeVersion: number; projectionRevision: number }): Promise<void>;
+}
+
+interface NoteProjectionSnapshotReader {
+  read(noteId: NoteId): Promise<{ entry: NoteProjectionEntry; tags: readonly ProjectedTagName[]; projectionRevision: number } | null>;
+}
+
+interface NoteProjectionRevisionStore {
+  bump(noteId: NoteId): Promise<number>;
+}
+
+type ProjectionVersion = Readonly<{
+  projectionRevision: number;
+  authorVersion: number;
+  workspaceVersion: number; // personal noteは0
+}>;
 
 type ProjectedTagName = Readonly<{ name: string; normalized: string }>;   // TagName の表示名と正規化名
 
@@ -531,8 +570,8 @@ type NoteProjectionEntry = Readonly<{
   noteId: NoteId;
   owner: NoteOwner;
   createdBy: UserId;
-  author: Readonly<{ displayName: string; handle: string | null }>;
-  workspace: Readonly<{ name: string; slug: string | null; published: boolean }> | null;   // owner.type === "workspace" のとき必須、user のとき null
+  author: Readonly<{ displayName: string; handle: string | null; version: number }>;
+  workspace: Readonly<{ name: string; slug: string | null; published: boolean; version: number }> | null;   // owner.type === "workspace" のとき必須、user のとき null
   title: string;
   text: string;
   excerpt: string;
@@ -548,7 +587,13 @@ type NoteProjectionEntry = Readonly<{
 }>;
 ```
 
-`author` は `createdBy` の利用者、`workspace` は所有ワークスペースの表示情報（`note_search` の `author_*` / `workspace_*` 列に対応）で、`upsert` の呼び出し側が投影のたびに解決して渡す。`updateAuthor` が更新するのは `createdBy` がその利用者であるすべての行の著者表示 — ワークスペース所有ノートでも作成者を表示する。退会した作成者の行は削除せず、`updateAuthor(userId, "退会した利用者", null)` で埋める（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
+`NoteProjectionSnapshotReader.read`はcurrent scopeのNote・tag集合・projection revisionを1つのSQLite read transactionで返す。呼び出し側はglobal Identityのcurrent versionと、workspace noteなら同じscopeのWorkspace versionを解決して完全snapshotを作る。Note本体の投影対象変更、TagAssignmentの作成/削除/rename fan-out起点は、正データ変更と同じlocal transactionで`bump`し、そのrevisionをoutbox eventに載せる。
+
+同じroute/scope世代の中では、writerは入力ベクトルの全成分が保存値以上で、少なくとも1成分が大きいときだけ置換する。全成分が保存値以下なら`stale`、大小が混在するなら`incomparable`を返す。public writerはまずrouteVersionを比較し、大きければowner contextが切り替わった新世代としてprojection/author/workspaceの保存値をリセットして入力snapshotを受理し、同値のときだけ残り3成分を比較し、小さければstaleにする。これによりworkspace→personalでworkspaceVersionが0へ下がる場合や、versionの小さい別workspaceへ移る場合も永久にincomparableにならない。local targetはstage時にsourceの`note_search`行をコピーせず、activate transactionで既存staged行を消して新規rowとして投影する。source rowはretire時にremoveするため、local比較も同じscope世代内だけである。
+
+`incomparable`は同一route内の「新しいNoteと古い著者」などのread-write競合なので、consumerは全sourceを読み直して1回再試行し、なお競合すればQueue/Alarm再試行へ委ねる。これによりprofile更新後の遅延Note snapshotや退会後の旧PIIが表示列を巻き戻さない。
+
+`author` は `createdBy` の利用者、`workspace` は所有ワークスペースの表示情報で、投影のたびにversion付きcurrent stateを解決する。退会した作成者はIdentity tombstoneのversionと `{ displayName: "退会した利用者", handle: null }` を使う。対象行はページングした個別再投影で更新し、無制限の `updateAuthor` / `updateWorkspace` は行わない（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
 
 `contentStatus` / `styleMode` は `upsert` でしか更新されない。したがって本文状態とスタイルを変える振る舞いはすべてイベントを発行しなければならない — `applyConversionResult` / `updateBody`（`note.contentUpdated`）、`markConversionFailed`（`note.conversionFailed`）、`markAwaitingIntegration`（`note.awaitingIntegration`）、`changeStyleMode`（`note.styleModeChanged`）。1 つでも欠けると読み取りモデルが恒久的に古くなり、`countByContentStatus` を根拠とする案内（`completeIntegrationOAuth` の「要 LLM 連携の N 件」）と一覧の表示が実体とずれる。
 
@@ -556,17 +601,74 @@ type NoteProjectionEntry = Readonly<{
 
 タグは読み取りモデルの 3 か所 — 関連度用の `note_search.tag_names`、一覧の表示名用の `note_search.tag_display_names`、絞り込み用の `note_search_tags` — と、FTS 索引の `tag_names_fts` 列に投影される（[database/index.md](../database/index.md) の「タグ列の同期契約」）。書き分けは次のとおり。
 
-- `upsert` はタグの 3 か所に**一切触れない**（`NoteProjectionEntry` にタグのフィールドがないのはこのため）。ノート本体の投影でタグが消えることはなく、逆にノート本体の投影だけでタグを再構築することもできない。タグを伴う再構築は `upsert` と `updateTags` の 2 呼び出しで行う。FTS 索引はタイトル・本文・タグ名を 1 行として持つため `upsert` も索引には触れるが、そこへ書き戻すタグ名は `note_search.tag_names` の現在値から求める
-- `updateTags` はノートのタグ集合を丸ごと入れ替え、3 か所と FTS 索引を同一バッチで更新する。関連度用の列と `note_search_tags.normalized` には `normalized` を、一覧に載る表示名（`NoteSummary.tagNames`）の `tag_display_names` には `name` を用いる。`NoteSearchCriteria.tagNames` / `PublicSearchCriteria.tagNames` は正規化名で照合するため、絞り込みは表示ゆれの影響を受けない
+- `replaceSnapshotIfNewer` はノート本体とタグ集合を丸ごと入れ替え、3 か所と FTS 索引を同一transaction/batchで更新する。関連度用の列と `note_search_tags.normalized` には `normalized` を、一覧に載る表示名の `tag_display_names` には `name` を用いる
 - `remove` は `note_search` の行・FTS 索引の行・`note_search_tags` の当該ノートの行をすべて消す
 
 **エラーケース**: `SystemError(DatabaseError)`
+
+### NoteRouteStore / NoteMovePort（application ports）
+
+```ts
+interface NoteRouteStore {
+  resolve(noteId: NoteId): Promise<NoteRoute | null>;
+  resolveMany(noteIds: readonly NoteId[]): Promise<ReadonlyMap<NoteId, NoteRoute>>;
+  reserveCreate(input: { noteId: NoteId; scope: ScopeKey; createdBy: UserId; operationId: string; expiresAt: Date }): Promise<NoteRoute>;
+  activateCreate(input: { noteId: NoteId; operationId: string }): Promise<NoteRoute>;
+  abandonCreate(input: { noteId: NoteId; operationId: string }): Promise<void>;
+  beginMove(input: { noteId: NoteId; expectedRouteVersion: number; target: ScopeKey; migrationId: string }): Promise<NoteRoute>;
+  abortMove(input: { noteId: NoteId; migrationId: string; expectedRouteVersion: number }): Promise<NoteRoute>;
+  switchMove(input: { noteId: NoteId; migrationId: string; expectedRouteVersion: number }): Promise<NoteRoute>;
+  beginPurge(input: { noteId: NoteId; scope: ScopeKey; expectedRouteVersion: number; operationId: string }): Promise<NoteRoute>;
+  abortPurge(input: { noteId: NoteId; operationId: string; expectedRouteVersion: number }): Promise<NoteRoute>;
+  finishPurge(input: { noteId: NoteId; operationId: string; expiresAt: Date }): Promise<NoteRoute>;
+}
+
+interface NoteRouteFanOutReader {
+  listByCreatedBy(userId: UserId, cursor: string | null, limit: number): Promise<ShardPage<NoteRoute>>;
+  listByScope(scope: ScopeKey, cursor: string | null, limit: number): Promise<ShardPage<NoteRoute>>;
+}
+
+interface ShareTokenProtector {
+  protect(token: string): Promise<ProtectedShareToken>;
+  reveal(token: ProtectedShareToken): Promise<string>;
+}
+
+type NoteRoute = Readonly<{
+  noteId: NoteId;
+  scope: ScopeKey;
+  createdBy: UserId;
+  routeVersion: number;
+  state: "reserved" | "active" | "moving" | "purging" | "tombstone";
+  target: ScopeKey | null;
+  migrationId: string | null;
+}>;
+
+interface NoteMovePort {
+  freezeSource(input: { migrationId: string; noteId: NoteId; source: ScopeKey; target: ScopeKey; actorUserId: UserId; sourceMembershipVersion: number | null; excludingJobId: JobId | null }): Promise<NoteMoveSnapshot>;
+  stageTarget(input: { migrationId: string; target: ScopeKey; actorUserId: UserId; targetMembershipVersion: number | null; nextRouteVersion: number; snapshot: NoteMoveSnapshot }): Promise<void>;
+  activateTarget(input: { migrationId: string; target: ScopeKey; routeVersion: number }): Promise<void>;
+  retireSource(input: { migrationId: string; source: ScopeKey; routeVersion: number }): Promise<void>;
+  abortBeforeSwitch(input: { migrationId: string; source: ScopeKey; target: ScopeKey }): Promise<void>;
+}
+```
+
+`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`の削除+ack transactionを維持する。
+
+`resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。
+
+`NoteRouteFanOutReader`はNoteId hash配置に対する二次キー走査の唯一のportである。`limit`は全shard合計で最大200。最大32 shardを同時6接続で読み、NoteId昇順へmergeする。署名opaque cursorはquery kind/fingerprint、shard generation、旧新各shardの`afterNoteId`を持つ。reshard中は旧新を読み、NoteIdで重複排除して大きいrouteVersionを採用する。空shardを含め全shardの位置を進めるため、createdBy/scope fan-out、account deletionの固定、workspace表示refreshはいずれも漏れなく有界に再開できる。
+
+moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。完了後に`abortMove`が同じmigration IDの`moving → active(source)`をCASする。routeが既にtargetならabortを拒否する。
+
+`ShareTokenProtector` は版付き鍵で共有トークンを暗号化する application port である。新規暗号化には現行版、復号には `keyVersion` が指す旧版を含む鍵束を使う。鍵はデータベースへ置かず、供給とローテーションはアダプターの責務とする。復号は所有者に共有 URL を返す経路だけで使い、共有リンクからの読み取りでは使わない。
+
+`NoteMoveSnapshot` は Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage deltaを含む。R2 bytes は移動しない。同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
 
 ## ドメインイベント
 
 | 型 | payload | 用途 |
 | --- | --- | --- |
-| `note.created` | `{ noteId, owner, createdBy, sourceFileId }` | 読み取りモデルの投影、Usage の集計 |
+| `note.created` | `{ noteId, owner, createdBy, sourceFileId, projectionRevision }` | 読み取りモデルの投影、Usage の集計。以下の投影対象eventも同じrevisionを持つ |
 | `note.contentUpdated` | `{ noteId }` | 読み取りモデルの投影 |
 | `note.conversionFailed` | `{ noteId, reason }` | 読み取りモデルの投影 |
 | `note.awaitingIntegration` | `{ noteId }` | 読み取りモデルの投影（`content_status` の反映。`countByContentStatus` による「要 LLM 連携の N 件」の案内が依存する） |
@@ -576,10 +678,10 @@ type NoteProjectionEntry = Readonly<{
 | `note.published` | `{ noteId }` | 監査（サイトマップは読み取りモデルから引くため専用の購読者はない） |
 | `note.shareLinkReissued` | `{ noteId }` | 監査 |
 | `note.sharePasswordChanged` | `{ noteId }` | 監査 |
-| `note.moved` | `{ noteId, previousOwner, currentOwner }` | Tag の付け替え（`relocateAssignmentsForNote`）、Storage の保管ファイルの所有者付け替え（`relocateFilesForNote`）、読み取りモデルの投影（`projectNoteChanges`）、Usage の付け替え（`applyStorageDelta`） |
+| `note.moved` | `{ noteId, previousOwner, currentOwner, routeVersion }` | target scope local projectionとglobal public projectionの更新。Tag / Storage metadata / Backup / Usageはmove snapshotで既に移送済みのため別consumerで付け替えない |
 | `note.trashed` | `{ noteId, owner }` | 読み取りモデル、サイトマップからの除去 |
 | `note.restored` | `{ noteId, owner }` | 読み取りモデル、サイトマップ |
-| `note.purged` | `{ noteId, owner, sourceFileId }` | Storage の保管ファイル回収（`deleteFilesForNote`）、Tag の付与削除（`deleteAssignmentsForNote`）、Integration のバックアップ記録削除（`deleteBackupRecordsForNote`）、読み取りモデルの行削除（`projectNoteChanges` → `remove`）、Usage の減算（`applyStorageDelta`） |
+| `note.purged` | `{ noteId, owner, sourceFileId, operationId, deletionOperationId: string | null, routeVersion, projectionRevision }` | local後始末とpublic remove ack。scope cleanup由来ならadmission tokenも運ぶ |
 
 ## エラーコード
 

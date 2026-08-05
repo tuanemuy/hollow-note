@@ -49,6 +49,82 @@ Note は Job も知らない。Job → Note の依存が既にあるため、Not
 - **時刻**: ドメインは `now: Date` を引数で受け取る。`new Date()` は呼ばない
 - **エラー**: 不変条件違反は `BusinessRuleError<${Domain}ErrorCode>`
 
+### ScopeKey と永続化境界
+
+`NoteOwner` / `TagScope` / `JobScope` / `QuotaSubject` が指す所有文脈を、アプリケーション共通型 `ScopeKey` に正規化する。
+
+```ts
+type ScopeKey =
+  | Readonly<{ type: "user"; userId: UserId }>
+  | Readonly<{ type: "workspace"; workspaceId: WorkspaceId }>;
+```
+
+`ScopeKey` は infrastructure の sharding key であり、domain entity が Durable Object を知ることはない。application port が次を担う。
+
+```ts
+interface ScopeRouter {
+  forScope(scope: ScopeKey): ScopeHandle;
+  resolveNote(noteId: NoteId): Promise<Readonly<{ scope: ScopeKey; routeVersion: number }>>;
+}
+
+interface ScopeUnitOfWorkProvider {
+  run<T>(scope: ScopeKey, fn: (uow: ScopeUnitOfWork) => T): Promise<T>;
+}
+
+interface ScopeCleanupAdmissionStore {
+  assertWritable(): Promise<void>;
+  assertActorWritable(actorUserId: UserId): Promise<void>;
+  beginPersonalAccountDeletion(operationId: string, userId: UserId): Promise<void>;
+  abortPersonalAccountDeletion(operationId: string): Promise<void>;
+  assertOwner(operationId: string): Promise<void>;
+  acknowledgePersonalComponent(operationId: string, component: "job" | "note" | "tag" | "storage" | "backup" | "usage" | "localProjection" | "outbox"): Promise<void>;
+  markCompleted(operationId: string, retainUntil: Date): Promise<void>;
+  pruneCompleted(asOf: Date, limit: number): Promise<number>;
+}
+
+interface AccountDeletionManifestStore {
+  begin(operationId: string, userId: UserId): Promise<void>;
+  appendMembershipPage(operationId: string, afterEdgeKey: string | null, limit: number): Promise<Readonly<{ count: number; nextCursor: string | null }>>;
+  appendAuthorRoutePage(operationId: string, routes: readonly AccountDeletionAuthorRoute[], nextCursor: string | null): Promise<void>;
+  markBuilt(operationId: string): Promise<void>;
+  beginRollback(operationId: string): Promise<void>;
+  claimPending(operationId: string, phase: "prepare" | "release" | "cleanup" | "redaction", limit: number): Promise<readonly AccountDeletionManifestItem[]>;
+  acknowledge(operationId: string, itemKeys: readonly string[], phase: "prepare" | "release" | "cleanup" | "localRedaction" | "publicRedaction"): Promise<void>;
+  acknowledgeReceipt(operationId: string, receipt: "personalAbort" | "personalCleanup" | "authResidue" | "externalConnections" | "jobHistory" | "uniquenessRelease"): Promise<void>;
+  allRollbackReleased(operationId: string): Promise<boolean>;
+  allRequiredAcknowledged(operationId: string): Promise<boolean>;
+  compactItems(operationId: string, limit: number): Promise<Readonly<{ removed: number; remaining: boolean }>>;
+  markCompleted(operationId: string, terminalAt: Date, retainUntil: Date): Promise<void>;
+  markRejected(operationId: string, terminalAt: Date, retainUntil: Date): Promise<void>;
+  pruneTerminal(asOf: Date, cursor: string | null, limit: number): Promise<Readonly<{ removed: number; nextCursor: string | null }>>;
+}
+
+type AccountDeletionManifestItem =
+  | Readonly<{ key: string; kind: "membership"; workspaceId: WorkspaceId; edgeState: "active" | "removing" | "pending"; membershipId: string | null; prepareCommandKey: string | null; prepareDispatchedAt: Date | null; prepareAckedAt: Date | null; releaseCommandKey: string | null; releaseDispatchedAt: Date | null; releaseAckedAt: Date | null; cleanupAckedAt: Date | null }>
+  | Readonly<{ key: string; kind: "authorRoute"; noteId: NoteId; routeVersion: number; localRedactionAckedAt: Date | null; publicRedactionAckedAt: Date | null }>;
+
+type AccountDeletionAuthorRoute = Readonly<{ noteId: NoteId; routeVersion: number }>;
+
+interface GlobalMaintenanceRunStore {
+  beginOrResumeKind(input: { candidateRunId: string; kind: "authStatePrune" | "jobTombstonePrune" | "accountManifestPrune"; candidateAsOf: Date; generations: readonly string[]; leaseOwner: string; leaseUntil: Date }): Promise<Readonly<{ runId: string; asOf: Date; result: "started" | "resumed" | "leased" }>>;
+  claimLanes(runId: string, leaseOwner: string, limit: number): Promise<readonly { generation: string; shardId: string; table: string; cursor: string | null; asOf: Date; commandKey: string }[]>;
+  checkpointLane(input: { runId: string; leaseOwner: string; generation: string; shardId: string; table: string; cursor: string | null; asOf: Date; nextCommandKey: string }): Promise<void>;
+  advanceOrAck(input: { runId: string; leaseOwner: string; generation: string; shardId: string; completed: boolean }): Promise<{ next: { generation: string; shardId: string } | null; runCompleted: boolean }>;
+  recoverLease(runId: string, leaseOwner: string, leaseUntil: Date): Promise<boolean>;
+  pruneCompleted(expiresAtOrBefore: Date, cursor: string | null, limit: number): Promise<Readonly<{ removed: number; nextCursor: string | null }>>;
+}
+```
+
+- 1 UoW は 1 scope object の repository と local outbox だけを公開する
+- 別 scope または global D1 の UoW を入れ子にしない
+- scope 内の Job / Note / StoredFile metadata / Membership の強制終端は同じ UoW に入る
+- scope をまたぐ note move と account deletion は `DistributedOperationStore` が持つ operation ID / state で再開する
+- `ScopeCleanupAdmissionStore`はcurrent scopeに束縛する。`assertWritable`はworkspace scopeではWorkspace deletion state、personal scopeではaccount deletion barrier receiptを検査する。`assertActorWritable`は加えてworkspaceのmembership removal prepare lockをactor UserIdで検査し、当該actor由来のNote/Tag/Storage/Usage/Integration/Job writeをlocal commit時に拒否する。全ドメインの通常write入口が両方を呼ぶ。`beginPersonalAccountDeletion`はpersonal DOの直列化点でbarrier receiptを保存し、先行writeはbarrier前に確定して後続scanに拾わせ、後続writeは`ACCOUNT_DELETING`で拒否する。workspace cleanup ownerは`Workspace.deleting`または削除manifest header、personal cleanup ownerはbarrier receiptのoperation IDを照合する。cleanup consumerはremote D1を読まず、別ID・欠落・未commitを拒否する。personal barrier resultにはoperation専用のjob/note/tag/storage/backup/usage/localProjection/outbox component ackを保存し、unrelated scheduled taskの有無を完了条件にしない
+- `abortPersonalAccountDeletion`は同じrunning ownerだけが呼べ、receiptを削除して通常writeを再開する。account deletion receiptは全local task/event consumer ack前に`markCompleted`できず、それまではexpiryを持たずprune禁止。完了時に同じUoWで120日後のprune taskを保存し、期限到達後はscope Alarmが最大100件ずつ消す。遅延重複を保持窓内は安全にno-op化する
+- `AccountDeletionManifestStore`はapplication orchestration portでUserId shardに置く。membership pageはco-locateしたactive/removing/pending edgeをedge key順に最大100件固定する。author routeは`NoteRouteFanOutReader`の署名generation cursorで最大100件読んだpageを冪等appendし、header cursorと同じtransactionで進める。itemはoperation ID+kind+対象IDで一意、全prepare/release/cleanup/redaction item ackとpersonal/global receipt集合がfinalize/rollbackの正本である。各remote commandは送信前に`claimPending`で決定的command key/dispatchedAtを最大100件保存する。prepare rejectionはprepare ackの有無でなくprepare dispatched全件をrelease対象にし、未取得lockへのreleaseは同じcommand keyでno-op成功する。100件page・最大6接続で全release ack後だけ縮約へ進む。成功/prepare rejectionのどちらもitemsを100件ずつ縮約し、terminal headerだけを120日保持した後、generation/shard/run付きglobal maintenance laneで100件ずつ回収する
+- `GlobalMaintenanceRunStore`はauth/Job prunerが共有するapplication portでrouting catalog shardに置く。kindごとにrunning runは1つだけで、次hourのCronも未完了runを最古の`asOf`のまま再開し、完了後だけcandidate runを新規作成する。lane claim、page checkpoint+次Queue outbox、shard ack+次claim、全完了判定はそれぞれ原子的で、kind全体のactive laneは最大6。target shardのDELETEとはtransactionを共有しないため、応答喪失時は同じ入力cursorのDELETEを冪等再実行してからcheckpointする。10分leaseのownerだけが進捗を更新できる。completed runは30日保持後に`(expiresAt, runId)` keysetで1回100件ずつ回収する
+- routeVersion が古い mutation は adapter が `ConflictError("STALE_SCOPE_ROUTE")` に写し、application が route を 1 回だけ引き直す。2 回目も競合したらそのまま返す
+
 ## 横断的な関心事
 
 | 関心事 | 置き場所 |
@@ -119,7 +195,7 @@ interface TimeZoneResolver {
 interface OAuthStateStore {
   put(state: string, value: OAuthFlowState, ttlMs: number): Promise<void>;
   take(state: string): Promise<OAuthFlowState | null>;   // 取得と同時に削除する
-  deleteExpired(now: Date): Promise<number>;             // コールバックが返らなかった分の回収
+  deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>; // 有界回収
 }
 
 type OAuthFlowState = Readonly<{
@@ -128,12 +204,13 @@ type OAuthFlowState = Readonly<{
   redirectTo: string | null;
   intent: "signIn" | "linkIdentity" | "integration";
   userId: UserId | null;      // intent が "linkIdentity" / "integration" のとき必須
+  userAuthEpoch: number | null; // authenticated intent発行時の世代。signInはnull
 }>;
 ```
 
 `provider` を原始型のままにしているのは、Identity と Integration が別々の列挙を持つため。値の解釈は取り出した側が自分の値オブジェクトで再構築する。期限切れの回収は 1 か所に寄せ、Identity の [`pruneExpiredAuthState`](../usecases/identity.md) が両方の `intent` をまとめて掃除する（Integration 側に同種の定期掃除は置かない）。
 
-`take` の「取得と同時に削除する」は**原子的でなければならない**。同じ `state` を持つ 2 つの要求が両方とも値を受け取れると、認可応答の二重消費が通る。D1 では `DELETE FROM oauth_flow_states WHERE state = ? RETURNING …` の 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。
+`take` の「取得と同時に削除する」は**原子的でなければならない**。global D1 の `DELETE … RETURNING` 1 文で満たす。
 
 **エラーケース**: `SystemError(DatabaseError)`
 
@@ -156,27 +233,63 @@ interface IdempotencyStore {
 
 `deleteStoredObjects` のように外部リソースへの書き込みを含む購読者では、記録を持たないほうが安全側に倒れる（処理済みを先に記録すると、失敗したイベントが再配送で弾かれて実体が回収されない）。判断の根拠は [usecases/storage.md](../usecases/storage.md) の当該ユースケースを参照。
 
-`markProcessed` の「既に処理済みなら false」は**原子的でなければならない**。並行した 2 つの配送が両方とも `true` を受け取ると、非可換な処理が二重に適用される。D1 では `INSERT INTO processed_events (consumer, event_id) VALUES (?, ?) ON CONFLICT DO NOTHING` の影響行数で判定する 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。
+`markProcessed` の「既に処理済みなら false」は**本処理と同じ plane で原子的でなければならない**。global consumer は D1、scope consumer は対象 DO の `processed_events` を本処理と同じ transaction で更新する。
 
 **エラーケース**: `SystemError(DatabaseError)`
 
 ## 継続要求
 
-イベントとは別に、**1 回の実行で処理しきれなかった仕事の続き**を次の配送へ渡すためのメッセージがある（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。ドメインで何かが起きたことを表さないため、ドメインイベントの一覧には載せない。ドメインイベントと同じアウトボックス・同じキューで運ぶが、**購読者は必ず 1 つだけ**である。
+イベントとは別に、**1 回で処理しきれなかった仕事の続き**を表す local task がある。scope task は `scheduled_tasks` と Alarm、global task は D1 outbox と Queue で運ぶ。どちらも購読者は1つだけである。
 
 | 継続要求 | payload | 唯一の購読者 |
 | --- | --- | --- |
-| `note.ownerPurgeContinued` | `{ ownerType, ownerId }` | [`deleteNotesForOwner`](../usecases/note.md) |
-| `storage.ownerDeleteContinued` | `{ ownerType, ownerId }` | [`deleteFilesByOwner`](../usecases/storage.md) |
-| `projection.reprojectRequested` | `{ noteId }` | [`projectNoteChanges`](../usecases/note.md) |
-| `projection.tagFanOutContinued` | `{ tagId, afterNoteId }` | [`projectNoteChanges`](../usecases/note.md) |
-| `job.terminationContinued` | `{ scopeType, scopeId, cause }` | [強制終端の後始末](../usecases/job.md) |
+| `note.ownerPurgeContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
+| `storage.ownerDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
+| `storage.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteFilesForNote`](../usecases/storage.md) |
+| `tag.scopeDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
+| `tag.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteAssignmentsForNote`](../usecases/tag.md) |
+| `integration.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteBackupRecordsForNote`](../usecases/integration.md) |
+| `workspace.deletionLocalContinued` | `{ operationId }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のJob終端・manifest build・local edge削除phase |
+| `workspace.deletionManifestCompactContinued` | `{ operationId }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のack済みmanifest縮約phase |
+| `projection.reprojectRequested` | `{ noteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
+| `projection.tagFanOutContinued` | `{ tagId, afterNoteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
+| `projection.authorRefreshRequested` | `{ userId, identityVersion, afterNoteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
+| `projection.authorRouteFanOutContinued` | `{ userId, identityVersion, cursor }` | global Queue → [`projectNoteChanges`](../usecases/note.md) |
+| `projection.workspaceRouteFanOutContinued` | `{ workspaceId, workspaceVersion, cursor }` | global Queue → [`projectNoteChanges`](../usecases/note.md) |
+| `projection.authorRedactionRequested` | `{ noteId, userId, redactionVersion, operationId }` | scope/global投影 → [`projectNoteChanges`](../usecases/note.md) |
+| `tag.deleteContinued` | `{ operationId, tagId }` | scope Alarm → [`deleteTag`](../usecases/tag.md) worker phase |
+| `tag.mergeContinued` | `{ operationId, sourceTagId, targetTagId }` | scope Alarm → [`mergeTags`](../usecases/tag.md) worker phase |
+| `tag.deleteUnusedContinued` | `{ operationId, scope }` | scope Alarm → [`deleteUnusedTags`](../usecases/tag.md) worker phase |
+| `job.terminationContinued` | `{ origin }` | scope Alarm → [`continueForcedTermination`](../usecases/job.md) |
+| `job.removalLocalContinued` | `{ removalOperationId }` | scope Alarm → `pruneJobHistory` / `deleteJobsForRequester`の共通family removal worker |
+| `job.removalGlobalContinued` | `{ scope, removalOperationId }` | global Queue → [`projectJobHistory`](../usecases/job.md) のremoval分岐 |
+| `job.removalManifestCompactContinued` | `{ scope, removalOperationId }` | scope Alarm → [`projectJobHistory`](../usecases/job.md) の完了manifest縮約phase |
+| `job.targetHistoryCleanupContinued` | `{ target, operationId, cursor }` | global Queue → [`projectJobHistory`](../usecases/job.md) のtarget削除分岐 |
+| `job.globalTombstonePruneContinued` | `{ runId, generation, shardId, table, cursor, asOf }` | global Queue → [`pruneJobHistory`](../usecases/job.md) のD1 tombstone回収分岐 |
+| `job.globalTombstonePruneCron` | `{ type: "job.globalTombstonePruneCron" }` | Cron → [`pruneJobHistory`](../usecases/job.md) のglobal run開始分岐 |
+| `identity.authStatePruneContinued` | `{ runId, generation, shardId, table, cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) |
+| `identity.userAuthResidueCleanupContinued` | `{ userId, authEpoch, table: "sessions" | "authTokens", deletionOperationId? }` | global Queue → password/session失効後の旧世代Session/AuthToken回収 |
+| `identity.accountDeletionManifestBuildContinued` | `{ operationId, phase: "memberships" | "authorRoutes" }` | global Queue → [`deleteAccount`](../usecases/identity.md) の対象固定phase |
+| `identity.accountDeletionDispatchContinued` | `{ operationId, phase: "prepare" | "rollbackRelease" | "cleanup" | "redaction" | "finalize" }` | global Queue → [`deleteAccount`](../usecases/identity.md) のbounded fan-out |
+| `identity.accountDeletionManifestCompactContinued` | `{ operationId }` | global Queue → [`deleteAccount`](../usecases/identity.md) の完了manifest縮約 |
+| `identity.accountDeletionManifestPruneContinued` | `{ runId, generation, shardId, cursor, asOf }` | global Queue → [`deleteAccount`](../usecases/identity.md) のterminal manifest回収 |
+| `identity.personalBarrierPruneContinued` | `{ scope, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
+| `global.maintenanceRunPruneContinued` | `{ cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) の共通maintenance run回収分岐（唯一の購読者） |
+| `integration.userCleanupContinued` | `{ operationId, userId, scope }` | scope Alarmまたはglobal Queue → [`deleteIntegrationsForUser`](../usecases/integration.md) |
+| `usage.userCleanupContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
+| `publicProjection.reprojectRequested` | `{ noteId, expectedRouteVersion? }` | global Queue → public projection consumer。scope-local tag fan-outはversionを省略し、consumerがcurrent routeを解決する |
 
-規約は 3 つ。
+規約は 4 つ。
+
+scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operation_id`は生成元operation/event/command IDと対象ID・version・cursorから決定的に導出する。同じ生成元が複数Noteへ`projection.reprojectRequested`を積む場合もNoteIdとprojectionRevisionを含めるため、1件へ潰れず、応答喪失時にも増殖しない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める。
 
 - **購読者を 1 つに保つ**。既存のイベントを再投入して継続する形は採らない（購読者の数だけコピーが増え、outbox とキューを水増しする）
-- **カーソルは、対象が処理によって消える場合は持たない**。「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進み、重複配送で 2 系列が並走しても両方が進んで両方が止まる。対象が消えない場合（`projection.tagFanOutContinued`）だけカーソルを持つ
-- **進捗がなければ継続しない**。1 バッチで 1 件も処理できなかったら継続要求を積まず、メッセージを失敗させてキューの再試行と DLQ に委ねる。恒久的に失敗する 1 件が列の先頭に居座って無限に回るのを防ぐ
+- **継続要求は、続きを引き直すのに必要な情報をすべて運ぶ**。次の実行で網を引き直す形の継続（`job.terminationContinued`）では、payload が**元の経路の選択述語をそのまま再現できなければならない**。再現できないと、続きが元より広い集合を処理してしまう。強制終端の 9 経路は対象の選び方（対象・スコープ・要求者・`kind`）と当てる遷移（`cancel` か `fail` か）が経路ごとに違うため、payload は**どの経路の続きか**を判別子で持つ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）
+- **カーソルは、処理そのものが対象を検索結果から外す場合は持たない**。削除も終端も対象を `listBy*` / `listActive*` の結果から外すため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。処理しても母集合が残るtag assignment fan-out、Note routeのauthor/workspace fan-out、target history fan-outは署名keyset cursorを持つ
+  - 根拠を「対象が消えないから」と書いてはならない。付与そのものは `unassignTag` / `deleteTag` の CASCADE / `deleteAssignmentsForNote` / `relocateAssignmentsForNote` / `mergeTags` の衝突行削除によって並行して消えうる。カーソルが要るのは、消えるかどうかではなく**処理しても残る**ためである
+  - **カーソルは必ずキーセット方式で解釈する**。`afterNoteId` は `WHERE tag_id = ? AND note_id > ? ORDER BY note_id` の意味であり、読んだ件数を数える `OFFSET` ではない。`OFFSET` にすると、カーソルより前の付与が並行して消えるたびに後続のノートを静かに飛ばす。位置を ID で表すこの形なら、前方の削除は残りの行の位置を動かさない
+- **対象が残っているのに 1 件も処理できなかったときは継続を増やさない**。scope task は同じ `scheduled_tasks` 行の attempt と `dueAt` を指数backoffで更新し、上限到達時は `failed` にして global 運用イベントを送る。global task は Queue の再試行と DLQ に委ねる。恒久的に失敗する 1 件が新しい継続を無限に増やすのを防ぐ
+  - **「対象が 0 件だった」は正常な終端であり、この規則の対象ではない**。継続を積まずに成功として返る。とくにカーソル方式（`projection.tagFanOutContinued`）では、付与の件数がちょうど 1 ページの倍数のときに**最後のページが空になるのが正常な終わり方**であり、これを失敗として扱うと正常終了を運用障害として通知してしまう
 
 ## ユースケースの分布
 
@@ -185,12 +298,12 @@ interface IdempotencyStore {
 | Identity | 21 |
 | Workspace | 21 |
 | Note | 36 |
-| Tag | 12 |
+| Tag | 14 |
 | Storage | 13 |
 | Conversion | 4 |
 | Integration | 15 |
-| Job | 10 |
+| Job | 12 |
 | Usage | 7 |
-| 合計 | 139 |
+| 合計 | 143 |
 
 詳細は `spec/usecases/${domain}.md` に定義する。

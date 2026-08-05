@@ -3,6 +3,8 @@
 | 前提条件 | 操作 | 期待結果 | 実装ステータス |
 |---|---|---|---|
 | 複数の利用者の公開ノートがある | キーワードで検索する | 該当する公開ノートが関連度順で返る | |
+| 全体検索 | query先を確認する | global D1の `public_note_search*` だけを読み、scope DOへfan-outしない | |
+| move前scopeの遅延eventがある | 検索する | route/source version条件により旧ownerの行が復活しない | |
 | 非公開・限定公開のノートがある | 検索する | それらは含まれない | |
 | ゴミ箱の公開ノートがある | 検索する | それは含まれない | |
 | 公開から外されたノートがある | 検索する | それは含まれない | |
@@ -39,3 +41,9 @@
 | `ownerHandle` と期間を組み合わせる | 検索する | その利用者の公開ノートのうち期間に該当するものだけが返る | |
 | 短時間に大量に検索する | 検索する | `ValidationError("RATE_LIMITED")` が投げられる | |
 | 一致が 0 件 | 検索する | 空配列が返る | |
+| 2page以上の結果がある | `nextCursor`で続ける | 各shardのkeyset位置から続き、既出Noteを重複せず返す。page番号やexact countは返さない | |
+| NoteId hash shardが32個ある | 1page検索する | 同時6接続のwaveで各shard最大`limit`候補だけを読み、深いpageでもworkがpage番号に比例しない | |
+| keyword検索でshardごとのFTS統計が異なる | mergeする | shard内rankのReciprocal Rank Fusionと`updatedAt, noteId` tie-breakを使い、global bm25同値ではなく明示した安定順位を返す | |
+| shard追加のdual-read中に同じNoteが旧新へある | 検索する | NoteIdで重複排除し、cursorのshard generationに従って次pageも同じ集合を読む | |
+| cursorの検索条件・署名・shard generationが一致しない | 検索する | `ValidationError("INVALID_PAGINATION")` を返す | |
+| 1page目の後に対象NoteのupdatedAtが変わる | 同じcursorで続ける | cursor時点のsnapshot isolationは保証しない。page内/dual-read重複は除くが、更新結果を確実に見るには先頭から再検索する | |

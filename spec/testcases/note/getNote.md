@@ -14,7 +14,7 @@
 | ワークスペースの viewer | そのワークスペースのゴミ箱のノートを引く | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`viewTrash` は editor 以上のため、メンバーでも到達できない） | |
 | ワークスペースの editor | そのワークスペースのゴミ箱のノートを引く | 取得できる（`viewTrash` を持つ） | |
 | 存在しないノート ID | 引く | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
-| 限定公開のノート（所有者） | 引く | `shareUrl` が含まれる | |
+| 限定公開のノート（所有者） | 引く | 権限確認後に暗号化済みトークンを復号し、同じ `shareUrl` が含まれる | |
 | 公開ノート（サインインしていない閲覧者） | 引く | 本文が返り、`shareUrl` は含まれない | |
 | 参照を取り込んだノート | 引く | `references.imported` に `purpose: "reference"` の保管ファイルが並ぶ（`StoredFileRepository.listByNote` を絞った結果） | |
 | 外部スタイルシートを埋め込んだノート | 引く | `references.inlinedStylesheets` に配布元の URL が並ぶ。供給元は本文の `data-imported-stylesheet` であり、取得記録やジョブではない | |

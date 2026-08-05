@@ -24,8 +24,8 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 処理フロー
 
-1. `ProviderKind.create` を構築する
-2. `state` と `codeVerifier` を作り、`OAuthStateStore.put` に 10 分で保存する
+1. `ProviderKind.create`を構築し、UserId shardで`ActiveUser`とcurrent `authEpoch`を確認する
+2. `state` と `codeVerifier` を作り、`userAuthEpoch`を含めて`OAuthStateStore.put` に 10 分で保存する
 3. プロバイダーごとのスコープを決める（Drive は「このアプリが作成したファイル」に限るスコープ、Google SSO 済みでも別途要求する）
 4. Google Drive の場合、`IdentityRepository.listByUserId` から `provider: "google"` の `OAuthIdentity` を探し、あればその `providerEmail` を `loginHint` に渡してアカウント選択を省略する（IN-04: SSO 済みアカウントの引き継ぎ）。なければ `loginHint: null`
 5. `IntegrationOAuthClient.buildAuthorizationUrl` を返す。Drive は `loginHint` の有無にかかわらず毎回 `prompt=consent` を伴い、リフレッシュトークンを確実に得る
@@ -59,7 +59,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 4. Drive で `refreshToken` が得られなければ `ValidationError("OAUTH_REFRESH_TOKEN_MISSING")`
 5. `ConnectionProbe.probe` で疎通確認する。失敗なら連携を成立させず `ValidationError("CONNECTION_PROBE_FAILED")`
 6. `SecretCipher.encrypt` でトークンを暗号化する
-7. `ExternalConnectionRepository.findByUserAndProvider` を引く。あれば `ExternalConnection.reconnect`、なければ `connect`（既定の `settings` つき）を保存する
+7. UserId coordination shard UoWでcurrent Userと`ExternalConnectionRepository.findByUserAndProvider`を読み直す。`ActiveUser`かつOAuth state発行時epochとcurrent epochが一致する場合だけ、既存なら`reconnect`、なければ`connect`を保存する。`DeletingUser` / `DeletedUser`またはepoch不一致なら`ValidationError("ACCOUNT_UNAVAILABLE")`で保存しない。User状態/epoch検査とConnection insert/updateを同じtransactionに置き、account deletionの0件cleanup ack後へlate insertさせない
 8. OpenRouter を新規に連携した場合、`NoteQueryService.countByContentStatus({ type: "user", userId }, "awaitingIntegration")`（Note）で「要 LLM 連携」のノート件数を取得し、`awaitingIntegrationCount` として応答に含める（1 件以上なら案内を表示する）。それ以外の場合は `null`
 
 ### エラーケース
@@ -109,14 +109,15 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 出力DTO
 
-`canceledJobs: number`
+`operationId: string`, `status: "accepted"`
 
 ### 処理フロー
 
-1. 連携を引く。不在なら何もせず成功として返す
+1. 連携を引く。不在でも同じ冪等keyのcompleted operationを作成または再利用し、`operationId` / `accepted`を返す。poll時点では直ちに`completed`であり、出力型と202境界を例外化しない
 2. `ActiveConnection` なら `CredentialResolver.resolve` を呼び、`resolved` なら平文で `IntegrationOAuthClient.revoke` を試みる（失敗しても続行する）。`reauthorizationRequired` なら取り消し要求を省いて続行する（`expired` は直後に連携ごと削除するため保存しない）
-3. その連携に依存する実行中ジョブを終端化する。対象の選び方は `failActiveJobsForExpiredIntegration` の手順 1〜2 と同じ — `JobRepository.listActiveByRequester(userId)` を `provider` に依存する `kind`（OpenRouter なら `conversion` / `regeneration`、Google Drive なら `driveBackup` / `bulkBackup`）の未終端ジョブ（`queued` / `running`）に絞り、batch 親（`target.type === "batch"`）は直接は終端させず子の終端化の集計（`updateBatchProgress`）に委ねる。異なるのは適用する遷移と後始末の理由だけで、失効ではなく利用者自身の操作による解除のため `Job.fail("providerAuthFailed")` ではなく `Job.cancel` を使う（履歴には「取り消された」として残る。IN-03 / IN-09）。終端させたジョブには [usecases/job.md](./job.md) の「共通: 強制終端の後始末」に従う（`kind: "conversion"` の対象ノートが `processing` なら `Note.markConversionFailed("canceled")`、生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles` で回収。`regeneration` は本文を変更しない）
-4. `UnitOfWorkProvider.run` で連携を削除し、手順 3 のジョブ・ノート・生成物の更新とあわせて保存し、`IntegrationEvents.disconnected` と手順 3 のイベントを収集する
+3. global D1 で `distributed_operations(kind: "integrationDisconnect")` を作り、personal scope と `membership_directory` の `active` / `removing` workspace scopes を対象として固定する。`removing` edge は先行する離脱 cleanup の ack まで残るため、離脱直後の residue も漏れない。active operation がある connection を使う Job 開始は拒否する
+4. 各 scope へ command を送り、provider 依存 kind を最終述語に含む `JobRepository.listActiveByRequesterAndKinds(userId, kinds, 100)` で対象だけを引き、local transaction で `Job.cancel` と後始末を行う。100件なら scope Alarm で継続する。batch親は直接終端せず子の集計に委ねる
+5. 全scopeのack後にglobal D1からconnectionを削除し `integration.disconnected` を発行する。D1と複数scope DOを同一UoWにせず、応答喪失はoperation IDで再開する
 
 生成物の回収は、この経路では規則どおり適用しても実際には空になる。終端させる `kind` は `provider` に依存するもの（`conversion` / `regeneration` / `driveBackup` / `bulkBackup`）に限られ、`Job.succeed(artifact)` で生成物を持つのは `pdfExport` / `bulkExport` だけだからである（[domains/job.md](../domains/job.md)、[usecases/note.md](./note.md) の `runNoteExport` / `runBulkExportItem` / `runBulkExport`）。それでも記述を省かないのは、後始末を経路ごとの例外なく同じ規則として読めるようにするため。`failActiveJobsForExpiredIntegration` も同じ絞り込みなので同じことが言える（`kind` で絞る経路だけが持つ性質で、`trashNote` / `deleteWorkspace` / `deleteAccount` / `removeMember` / `leaveWorkspace` / `cancelJob` のように `kind` を絞らずダウンロード系を含む経路では回収が実際に効く）。
 
@@ -249,7 +250,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 入力DTO
 
-`userId`, `noteIds: string[]`
+`userId`, `sourceScopeType: "user" | "workspace"`, `sourceScopeId: string`, `noteIds: string[]`
 
 ### 出力DTO
 
@@ -260,8 +261,8 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 ### 処理フロー
 
 1. Drive の連携を引く。未連携なら `NotFoundError("CONNECTION_NOT_FOUND")`
-2. `NoteRepository.listByIds` で各ノートを引き、`NoteAccessPolicy` で `canEdit` を確認し、`sourceFileId` の有無を調べる。`listByIds` は存在しない ID を単に返さない契約（[domains/note.md](../domains/note.md)）なので、入力の `noteIds` と結果を突き合わせ、引けなかった ID は `reason: "notFound"` として `skipped` に積む（突き合わせを省くと存在しない ID が無言で落ち、どれが無かったのかが利用者に返らない）。編集できないものは `reason: "permissionDenied"`、元ファイルがないものは `reason: "noSourceFile"` として `skipped` に積み、対象から外す。バックアップに `downloadNote`（viewer）ではなく `editNote`（editor）を要するのは、`runBackup` がノートに紐づく共有状態（`BackupRecord`）を書き、既存記録が別のメンバーのものなら所有者ごと付け替えるためである（`BackupPlanner.decide` の `replace`。この記録が再生成時にどのメンバーの Drive から元ファイルを取るかを決める。[ADR 004](../adr/004-workspace-roles.md) のロール表、[usecases/workspace.md](./workspace.md) の `changeMemberRole` の kind→要ロール表）
-3. 残った対象の所有文脈を集め、2 つ以上あれば全体を中止して `ValidationError("MIXED_OWNER_SCOPE")`（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」）。単一の所有文脈を `scope` とする（個人所有なら `{ type: "user", userId }`、ワークスペース所有なら `{ type: "workspace", workspaceId }`。要求者からは導かない）
+2. 入力source scopeを組み立て、`NoteRouteStore.resolveMany(noteIds)`で全routeを一括確認する。不在・別scope・`moving` / `purging`は`notFound`とし、その1つのscope DOの `NoteRepository.listByIds` で各ノートを引く。`NoteAccessPolicy` で `canEdit` を確認し、`sourceFileId` の有無を調べる。編集できないものは `permissionDenied`、元ファイルがないものは `noSourceFile` として外す。指定scope以外のDOへfan-outしない。バックアップに `editNote`（editor）を要するのは、`BackupRecord`という共有状態を書き換えるためである
+3. 親子の `scope` は入力の source ScopeKey に固定する。指定scope以外のIDは手順2で `notFound` へ落ちているため、混在判定やDO fan-outは行わない
 4. 1 件なら `Job.enqueue({ target: { type: "storedFile", fileId }, payload: { kind: "driveBackup" }, scope, kind: "driveBackup", requestedBy: userId, parentId: null })`（親なし）、複数なら親ジョブ `Job.enqueueBatch(kind: "bulkBackup", payload: { kind: "bulkBackup" }, requestedBy: userId, scope, total)` と、対象ファイルごとの子ジョブ（`kind: "bulkBackup"`、`payload` と `scope` は親と同じ、`target: { type: "storedFile", fileId }`、`parentId` は親）を作る（[domains/job.md](../domains/job.md) の登録経路と `kind` / `payload` / `requestedBy` / `scope` の対応）
 5. `JobConcurrencyPolicy.ensureNoDuplicate` で多重実行を防ぐ
 
@@ -273,7 +274,6 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 | --- | --- |
 | 未連携 | `NotFoundError("CONNECTION_NOT_FOUND")` |
 | 対象が 0 件 | `ValidationError("NO_BACKUPABLE_TARGET")` |
-| 対象に個人所有とワークスペース所有が混在 | `ValidationError("MIXED_OWNER_SCOPE")` |
 | 同じ対象のジョブが実行中 | `BusinessRuleError(DuplicateJob)` |
 
 ## runBackup
@@ -296,7 +296,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 1. ジョブを引き、run 系の共通規則（[usecases/job.md](./job.md)）の判定 1〜3 に従って `Job.start(job, 1, now, leaseUntil)` を保存する: 終端状態なら何もせず返す。リース有効な `running` なら他のワーカーが実行中のため何もせず返す。`queued` またはリース失効の `running` なら開始する（[domains/job.md](../domains/job.md) の `Job.start`、[ADR 012](../adr/012-job-execution-resilience.md)）
 2. `StoredFileRepository.findById` でファイルを引き、`StoredFile.noteId` からノートを解決する。どちらかが不在なら `Job.fail("targetMissing")`
-3. 実行者（`requestedBy`）の Drive 連携を引き、`CredentialResolver.resolve` を呼ぶ。`reauthorizationRequired` なら、`expired` が非 `null` のときそれを `Job.fail("providerAuthFailed")` と同一 Unit of Work で保存してイベントを収集し、終了する（[domains/integration.md](../domains/integration.md) の `CredentialResolver`）
+3. 実行者（`requestedBy`）の Drive 連携を引き、`CredentialResolver.resolve` を呼ぶ。`resolved.updated` が非 `null` ならglobal D1のUoWで連携とeventを先に保存する。`reauthorizationRequired` なら、`expired` が非 `null` のときglobal D1のUoWで連携と `integration.expired` を先に保存し、その後scope-local UoWで `Job.fail("providerAuthFailed")` を保存して終了する（[domains/integration.md](../domains/integration.md) の `CredentialResolver`）。両planeを同じUoWに入れず、途中停止は再試行で現在のconnection状態を読み直して収束させる
 4. `BackupRecordRepository.findByNoteAndFile` を引き、`BackupPlanner.decide(existing, checksum, requestedBy)` で判定する。`skip` なら成功として終える。既存記録が別のメンバーのものなら `replace`（実行者自身の Drive へ上げ直し、記録を付け替える。IN-07 の記録所有者失効時の復旧経路）
 5. `CloudDriveClient.ensureFolder` で保存先を確かめ、消えていれば作り直す。新しいフォルダは連携に反映する — **`updateBackupSetting` ユースケースは呼ばず**、`ExternalConnection.updateBackupSetting` を適用して自分の `UnitOfWorkProvider.run` で保存し、`integration.backupSettingChanged` を収集する（下記「手順 5 は複製であって呼び出しではない」）
 6. `ObjectStorage.get` の内容を `CloudDriveClient.upload` に流す
@@ -310,7 +310,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 | 条件 | 種類 |
 | --- | --- |
-| 実行者の連携が失効（`resolve` が `reauthorizationRequired`） | `Job.fail("providerAuthFailed")`。`resolve` が返した `expired`（`markExpired` を適用した連携と `integration.expired` の草稿）は同一 Unit of Work で保存する |
+| 実行者の連携が失効（`resolve` が `reauthorizationRequired`） | `resolve` が返した `expired`（`markExpired` を適用した連携と `integration.expired`）をglobal D1で先に保存し、scope-localで `Job.fail("providerAuthFailed")` を保存する |
 | 保存先フォルダが消えている | 手順 5 で作り直し、新しいフォルダ ID を連携に保存して続行する（ジョブは失敗させない） |
 | Drive の容量不足 | `Job.fail("quotaExceeded")` |
 | 権限不足 | `Job.fail("permissionRevoked")` |
@@ -381,7 +381,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 入力DTO
 
-`noteId`
+`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -389,7 +389,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 処理フロー
 
-1. `BackupRecordRepository.deleteByNote(noteId)` を実行する
+1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録する
 2. Drive 上のファイルは消さない。バックアップは利用者自身の Drive にあり、その扱いは利用者に委ねる（IN-09 と同じ整理）
 3. 同じイベントを 2 回受け取っても、2 回目は削除対象が既にないため 0 件削除で終わり、結果は変わらない
 
@@ -407,7 +407,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 入力DTO
 
-`connectionId`, `userId`, `provider`
+`operationId`, `scope: JobScope`, `connectionId`, `userId`, `provider`
 
 ### 出力DTO
 
@@ -415,7 +415,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 処理フロー
 
-1. `JobRepository.listActiveByRequester(userId)` を引き、`provider` に依存する `kind` に絞る。OpenRouter なら `conversion` / `regeneration`、Google Drive なら `driveBackup` / `bulkBackup`
+1. global `integration.expired` consumer は personal scope と membership directory の `active` / `removing` workspace scopesへ同じoperation IDのcommandを送る。本ユースケースは指定されたcurrent scopeだけで `JobRepository.listActiveByRequesterAndKinds(userId, providerKinds, 100)` を引く。OpenRouterは `conversion` / `regeneration`、Google Driveは `driveBackup` / `bulkBackup` を最終述語に含め、100件ならlocal scheduled taskで継続する
 2. batch 親（`target.type === "batch"`）は直接は失敗させず、子の終端化の集計（`updateBatchProgress`）に委ねる
 3. `UnitOfWorkProvider.run` で対象の未終端ジョブ（`queued` / `running`）に `Job.fail(reason: "providerAuthFailed")` を適用して保存し、イベントを収集する
 4. 終端させたジョブについて [usecases/job.md](./job.md) の「共通: 強制終端の後始末」に従い、同一 UoW で併せて保存する。`kind: "conversion"` の対象ノートが `processing` のままなら `Note.markConversionFailed(providerAuthFailed)`（この経路だけ理由が `canceled` ではなく `providerAuthFailed` になる。`runConversion` の失敗時と同じ表示に揃えるため。`regeneration` は本文を変更しない）。生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles`（[usecases/storage.md](./storage.md)）で回収する — ただし対象の `kind` を `provider` に依存するものへ絞るこの経路では、`disconnectIntegration` と同じ理由で回収対象は実際には空になる（生成物を持つのは `pdfExport` / `bulkExport` だけ）。規則は経路ごとに省かず同じ形で適用する
@@ -432,11 +432,11 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 概要
 
-利用者の退会に伴って、連携とバックアップ記録をすべて削除し、トークンを破棄する（`identity.user.deleted` の購読）。
+account deletion operationのglobal cleanupまたはscope cleanupとして、連携とバックアップ記録を削除する。
 
 ### 入力DTO
 
-`userId`
+`operationId`, `userId`, `scope: ScopeKey | null`
 
 ### 出力DTO
 
@@ -445,11 +445,11 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 ### 処理フロー
 
 1. `ExternalConnectionRepository.listByUser(userId)` を引き、`ActiveConnection` それぞれについて `CredentialResolver.resolve` を呼び、`resolved` なら平文で `IntegrationOAuthClient.revoke` を試みる（`disconnectIntegration` の手順 2 と同じ。`reauthorizationRequired` なら取り消し要求を省き、`expired` も保存しない。失敗しても続行する）
-2. `UnitOfWorkProvider.run` で `ExternalConnectionRepository.deleteByUser(userId)` と `BackupRecordRepository.deleteByUser(userId)` を呼ぶ。暗号化済みの資格情報とバックアップ設定（`ConnectionSettings`）は連携行に格納されているため、行の削除が保存側のトークン破棄と設定の削除を兼ねる
+2. `scope = null` のglobal cleanupはD1で `ExternalConnectionRepository.deleteByUser(userId, 100)` を1回呼ぶ。100件なら`integration.userCleanupContinued { operationId, userId, scope: null }`をglobal Queueへ再登録する。scope指定時は`ScopeCleanupAdmissionStore.assertOwner(operationId)`を確認し、そのobjectの `BackupRecordRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じpayloadをscope Alarmへ再登録する。削除件数が100未満になった側だけ完了ackを返し、orchestratorがglobalと全scopeのackを待つ
 3. Drive 上のバックアップファイルは消さない（IN-09。`deleteBackupRecordsForNote` と同じ整理）
 4. イベントは発行しない（`integration.disconnected` は監査のためのイベントであり、実行中ジョブの取り消しは `deleteAccount` の手順 3 で済んでいる）
 
-冪等性: 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない。取り消し要求の再送は、既に無効なトークンへの要求が失敗として記録されるだけで無害。
+継続taskの保存とscope cleanup receiptの進捗は同じUoWに置く。応答喪失時は同じoperation IDから再実行し、削除は対象がなければ 0 件で終わるため結果は変わらない。取り消し要求の再送は、既に無効なトークンへの要求が失敗として記録されるだけで無害。
 
 ### エラーケース
 

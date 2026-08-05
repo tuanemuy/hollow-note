@@ -19,6 +19,13 @@
 | 個人所有のノートだけを要求した | 親ジョブの `scope` を確認する | 対象ノートの所有文脈から `{ type: "user", userId: owner.userId }` が入る | |
 | 参加ワークスペース所有のノートだけを要求した（要求者は owner ではないメンバー） | 親ジョブの `scope` を確認する | `{ type: "workspace", workspaceId }` が入る（要求者からは導かない） | |
 | — | 親ジョブと子ジョブの `scope` を比べる | 親子で一致する | |
-| 個人所有のノートとワークスペース所有のノートを混ぜて要求する | 要求する | `ValidationError("MIXED_OWNER_SCOPE")` が投げられ、親も子も 1 件も作られない（全体中止） | |
+| source scope と異なるノートIDを混ぜて要求する | 要求する | 異なるIDは存在を漏らさず `notFound` でskipされ、指定scope以外のDOは呼ばれない | |
 | 指定時は混在しているが、権限・本文の絞り込みのあとに残る所有文脈が 1 つになる | 要求する | 判定は絞り込みのあとに行うため成功し、残った文脈が `scope` になる | |
 | 混在で全体が中止された | ジョブ一覧を確認する | 子ジョブが部分的に残らない | |
+| 同じ利用者が2つのworkspace scopeから同時に要求する | 並行実行する | global D1の `job_slots` 条件付きINSERTは片方だけ成功し、もう片方は `BulkExportInProgress` | |
+| slot予約後にscope-local Job作成が失敗する | 要求する | operation IDでslotを解放し、Jobは1件も残らない | |
+| scope-local commit後にattach応答を失う | 再試行する | 同じoperation IDで既存Job IDへattachされ、2つ目の親Jobを作らない | |
+| Jobが終端する | eventを処理する | scoped Job IDでslotを冪等に解放する | |
+| 未attachのslotが期限切れになる | recoveryを実行する | 正データの有無を確認し、Jobがなければ回収、あればattachを完了する | |
+| 入力source scopeと異なるNoteIdを混ぜる | 要求する | D1のbatch route lookupで`notFound`にし、指定scope DO以外へfan-outしない | |
+| 対象routeがmoving / purging | 要求する | `notFound`として外し、旧/new scopeの両方を探索しない | |

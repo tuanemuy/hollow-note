@@ -7,11 +7,27 @@
 ノートに触れるすべてのユースケースは、先頭で次を行う。
 
 1. `NoteId.create(input.noteId)` を構築する
-2. `NoteRepository.findById` で引く。不在なら `NotFoundError("NOTE_NOT_FOUND")`
-3. ノートの所有者がワークスペースなら `resolveWorkspaceAccess`（Workspace）でロールを引き、`NoteViewer` を組み立てる
-4. `NoteAccessPolicy.evaluate(note, viewer, credential, now)` を呼び、必要な権限がなければ `NotFoundError("NOTE_NOT_FOUND")`（存在を漏らさない）
+2. global D1 primary の `NoteRouteStore.resolve` を1点参照し、`active` または `moving` の route が指す scope DO を呼ぶ。`reserved` / `purging` / `tombstone` / 不在なら `NotFoundError("NOTE_NOT_FOUND")`
+3. 対象scopeに束縛された `NoteRepository.findById` で引く。不在なら `NotFoundError("NOTE_NOT_FOUND")`
+4. ノートの所有者がワークスペースなら同じ workspace scope の `resolveWorkspaceAccess`（Workspace）でロールを引き、`NoteViewer` を組み立てる
+5. `NoteAccessPolicy.evaluate(note, viewer, credential, now)` を呼び、必要な権限がなければ `NotFoundError("NOTE_NOT_FOUND")`（存在を漏らさない）
 
 以下の各ユースケースでは、この手順を「閲覧者コンテキストを解決する」と記す。
+
+`moving` は route switch 前の source scope を指すため読み取りに使える。switch 後は同じ route が target scope を指す。scope miss / stale route versionならprimaryから1回だけ引き直す。route/reservationはprimaryまたは直前writeのsession bookmark、public projection/searchだけread replicaを許す。したがって詳細・共有・エクスポートの読み取りは移動の前後で全scope走査せず、常に D1 1点参照 + scope DO 1点参照で完結する。
+
+Note本体の投影対象状態を変える全UoWは、正データ保存と同じtransactionで`NoteProjectionRevisionStore.bump(noteId)`を行い、そのrevisionをeventへ載せる。TagAssignment側も同じ規則に従う。public consumerはevent値そのものではなく、Note・tag集合・revisionのatomic snapshotを読み直す。
+
+## 共通: 共有トークンの発行と解決
+
+共有トークンは `base64url(NoteId).secret` の canonical form とする。`secret` は `SecureTokenGenerator.issue` が生成する 256 ビット以上の乱数である。
+
+- 発行時は NoteId を含む canonical token を組み立て、その全体を `SecureTokenGenerator.hashOf` でハッシュし、`ShareTokenProtector.protect` で暗号化する。`ShareLink` には hash と暗号文を保存し、平文は応答の `shareUrl` にだけ載せる
+- 既存リンクを所有者へ再表示するときだけ、権限確認後に `ShareTokenProtector.reveal` を呼ぶ
+- 閲覧時は separator が1つであること、locator が canonical base64url で復号できること、`NoteId.create` を通ることを検証する。得た NoteId を `NoteRouteStore` で解決して対象scopeの NoteをIDで引き、入力トークン全体の hash と保存済み `ShareLink.tokenHash` を定数時間比較する
+- parse、route、Note、visibility、hash のいずれが不正でも `NotFoundError("NOTE_NOT_FOUND")` に畳む。locator は秘密ではなく、NoteId を知っても secret がなければ共有アクセスは得られない
+
+この形式により共有トークン用の global directory や scope 横断検索は不要になる。ノート移動では NoteId と ShareLink を snapshot に含めるため URL は変わらず、route switch だけで新しいscopeへ到達する。
 
 ## 共通: ExportTicket
 
@@ -68,7 +84,9 @@ ExportTicket = {
 
 1. `NoteOwner` を組み立てる。ワークスペースなら `WorkspaceAuthorization.ensureCan(role, "createNote")`
 2. `title` が空なら `NoteTitle.auto("無題")`、指定があれば `NoteTitle.manual(title)`
-3. `Note.createBlank` を作り、`UnitOfWorkProvider.run` で保存してイベントを収集する
+3. Note IDとoperation IDを採番し、global D1の `NoteRouteStore.reserveCreate(noteId, scope, createdBy: userId, operationId)` で `reserved` routeを作る
+4. 対象scope DOのlocal transactionで `Note.createBlank` を保存してeventを収集する
+5. commit後に `activateCreate` を呼んでrouteを公開する。local commit失敗時はreservationを解放し、activation応答喪失時は同じoperation IDで再試行する
 
 ### エラーケース
 
@@ -121,7 +139,7 @@ ReferenceReport = {
 
 1. 閲覧者コンテキストを解決する
 2. `content.status === "ready"` なら `content.headings` をそのまま射影に含める（保存時に算出済み）
-3. `shareUrl` は `canChangeVisibility` が真の閲覧者にのみ含める
+3. `shareUrl` は `canChangeVisibility` が真、かつ `visibility === "unlisted"` のときだけ含める。有効な `ShareLink` は権限確認後に `ShareTokenProtector.reveal` で復号して組み立てる。休眠リンクは再び限定公開にする処理でだけ復号し、private / public の詳細には表示しない。匿名・閲覧専用の経路では復号しない
 4. `references` を合成する（下記）
 
 ### `references` の合成
@@ -165,7 +183,7 @@ ReferenceReport = {
 
 ### 処理フロー
 
-1. `SecureTokenGenerator.hashOf(shareToken)` を求め、`NoteRepository.findByShareToken` で引く。不在なら `NotFoundError("NOTE_NOT_FOUND")`
+1. 共通の共有トークン解決で locator の NoteId → `NoteRouteStore` → 対象scope DO の順にたどり、NoteをIDで引いて token hashを照合する。不正なら `NotFoundError("NOTE_NOT_FOUND")`
 2. `ShareCredential` を組み立てる
 3. `NoteAccessPolicy.evaluate` を呼ぶ
    - `passwordRequired` → 本文もタイトルも含めず `passwordRequired: true` だけを返す
@@ -197,7 +215,7 @@ ReferenceReport = {
 
 1. `SecureTokenGenerator.hashOf(shareToken)` を求め、`LoginAttemptKey.forSharePassword(tokenHash, input.clientKey)` で鍵を組み立てる（[domains/identity.md](../domains/identity.md)。素のトークンではなくハッシュを材料にするため、`login_attempts.key` に共有の秘密が平文で残らない）
 2. `LoginAttemptStore.get(key)` を引き（`null` なら `LoginThrottlePolicy.initial(key)`）、`LoginThrottlePolicy.evaluate` で待機・ロックを判定する。`delay` / `locked` なら以降の照合を行わずに `ValidationError("THROTTLED")`（下記のとおりロックも同じコードに畳む）
-3. 手順 1 のハッシュで `NoteRepository.findByShareToken` を引き、限定公開かつパスワードが設定されていることを確認する
+3. 共通の共有トークン解決で対象scopeの NoteをIDで引き、限定公開かつ token hash が一致し、パスワードが設定されていることを確認する
 4. `PasswordHasher.verify` が偽なら、`LoginAttemptStore.recordFailure(key, now, LoginThrottlePolicy.attemptTtlMs)` で失敗を**原子的に**記録して `ValidationError("INVALID_SHARE_PASSWORD")`。返ってきた加算後の記録を `evaluate` し、次が待機・ロックに当たるなら `ValidationError("THROTTLED")` に切り替える
 5. `LoginAttemptStore.clear(key)` で失敗の記録を消し、`NoteAccessPolicy.issuePass(shareLink, now)` の結果を返す
 
@@ -282,7 +300,7 @@ ReferenceReport = {
 1. `NoteOwner` を組み立て、ワークスペースなら `viewNote`（`lifecycle === "trashed"` なら `viewTrash`）の権限を確認する
 2. `month` があれば `TimeZoneResolver.monthRange` で `DateRange` に解決する
 3. 入力の `tagNames` を `TagName` の正規化規則（小文字化・全角英数の半角化・連続空白の畳み込み）で正規化してから渡す。読み取りモデルのタグ絞り込みは正規化名で照合するため、利用者が入力した表示ゆれをここで吸収する
-4. `NoteQueryService.search` を呼ぶ
+4. owner から ScopeKey を導き `LocalNoteQueryService.search` を呼ぶ
 
 ### エラーケース
 
@@ -307,7 +325,8 @@ ReferenceReport = {
 | `ownerHandle` | `string \| null` | — | `Handle` の文字種・長さの規則 |
 | `workspaceSlug` | `string \| null` | — | `WorkspaceSlug` の文字種・長さの規則 |
 | `updatedFrom`, `updatedTo` | `Date \| null` | — | 両方あるとき `updatedFrom <= updatedTo` |
-| `page`, `limit` | `number` | ○ | `limit` は 1〜100 |
+| `cursor` | `string \| null` | — | 直前の同じ公開検索条件で返したopaque cursorのみ |
+| `limit` | `number` | ○ | 1〜100 |
 
 `keyword` の 2 文字下限は転送境界で `null` に落とす形で効かせる。エラーにはしない — 落とした結果として条件が 1 つも残らなければ、処理フローの手前で `QUERY_TOO_SHORT`（`ownerFilter` 未指定のとき）になる。bigram 方式では 2 文字から検索が成立する（[ADR 011](../adr/011-bigram-search.md)）ため、この下限は「1 文字では母集合が絞れない」ことに由来する上限側の防御であり、`searchNotes` と同じ値・同じ落とし方に揃える。
 
@@ -315,14 +334,14 @@ ReferenceReport = {
 
 ### 出力DTO
 
-`items: PublicNoteSummary[]`, `count: number`
+`items: PublicNoteSummary[]`, `nextCursor: string | null`, `hasMore: boolean`
 
 ### 処理フロー
 
 1. `ownerHandle` があれば利用者を、`workspaceSlug` があれば公開ワークスペースを解決して `ownerFilter` を組み立てる
 2. `tagNames` は `searchNotes` と同じく `TagName` の正規化規則で正規化してから渡す
 3. `updatedFrom` / `updatedTo` のどちらかがあれば `updatedWithin: DateRange` に解決する。基準列は読み取りモデルの更新日時（`note_search.updated_at`）で、`from` は `updatedFrom` の 0 時、`toExclusive` は `updatedTo` の翌日 0 時（指定日を含める）。`searchNotes` と違い閲覧者のタイムゾーンを持てない（サインイン不要の経路）ため、境界は UTC で解決する。片方だけの指定は、欠けた側を範囲の端（`from` は epoch、`toExclusive` は十分先の未来）で埋める
-4. `NoteQueryService.searchPublic` を呼ぶ
+4. global public shard reader の `PublicNoteQueryService.searchPublic` を呼ぶ。cursorにはquery fingerprint、shard generation、各shardのkeyset位置/絶対rankを署名して含め、1pageで各shardから読む候補を`limit`件に固定する。dual-read中はNoteIdで重複排除する
 
 ### エラーケース
 
@@ -356,7 +375,7 @@ ReferenceReport = {
 
 1. 権限を `viewNote` で確認する
 2. `TimeZoneResolver.monthRange` で範囲を解決する
-3. `NoteQueryService.listMonthsWithNotes` と `countByDay` を呼ぶ
+3. owner の scope で `LocalNoteQueryService.listMonthsWithNotes` と `countByDay` を呼ぶ
 
 ### エラーケース
 
@@ -519,20 +538,21 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 処理フロー
 
-1. 閲覧者コンテキストを解決し、`canEdit` を確認する。権限がなければ共通規約どおり `NotFoundError("NOTE_NOT_FOUND")`（存在を漏らさない）
-2. 移動先の `NoteOwner` を組み立て、ワークスペースなら `WorkspaceRepository.findById` で実在を確かめてから `createNote` の権限を確認する。移動先が存在しなければ `NotFoundError("WORKSPACE_NOT_FOUND")`（移動先は要求者が選んだ先であり、隠す対象ではない）
-3. `NoteOwnershipPolicy.ensureMovable` を呼ぶ（権限は手順 1・2 で確認済みのため、ここで表出するのは `CannotMoveWhileProcessing` のみ。`AccessDenied` には到達しない）
-4. `Note.moveTo` を適用する
-5. `UnitOfWorkProvider.run` でノートを保存し、`note.moved` を収集する
-6. `note.moved` の購読者が後続を担う
-   - Tag の `relocateAssignmentsForNote` — タグの付け替え
-   - Storage の `relocateFilesForNote` — 保管ファイルの所有者の付け替え
-   - Note の `projectNoteChanges` — 読み取りモデルの所有者・ワークスペース列の解決し直し
-   - Usage の `applyStorageDelta` — ノート件数の付け替え
+1. `NoteRouteStore.resolve(noteId)` で source scope / routeVersion を解決し、source object で閲覧者コンテキストと `canEdit` を確認してactorとMembership versionを得る
+2. target ScopeKey を組み立てる。workspace なら target object で実在と `createNote` 権限を確認し、Membership versionを得る
+3. source object で `NoteOwnershipPolicy.ensureMovable` を呼び、`TagRelocationPolicy.plan` で外れるタグ名を確定する
+4. `migrationId` を採番し、NoteId hashのnote coordination shardで `distributed_operations` と `note_routes.state = moving` を expected routeVersion のcompare-and-swap transactionで作る。同じnoteにoperationがあれば再開する。routeとoperationを別shardへ分けない
+5. actorとsource Membership versionを渡して`freezeSource`を呼ぶ。再認可し、source move lockを保存して、active Jobを終端し、Note・tags・projectionRevisionをsnapshotへ固定する。この時点ではsource Usageを減らさない
+6. actorとtarget Membership versionを渡してtargetへstaged importする。snapshot revisionを復元してowner変更分を1増やし、move authorization lock保存とtargetCreditを同じlocal transactionで行う
+7. D1 route を source → target へ1文で切り替える。これが利用者から見える所属変更の唯一の切替点である
+8. target を有効化してauthorization lockを解放し、その後sourceをtombstoneにしてUsageの`sourceDebit`を適用する。停止中は最大でsource/targetへ二重計上され、過少計上にはならない。local projection、tag assignment、file metadata、backup recordはroute switch前に準備済みである
+9. `note.moved` を global projection Queue に送り、public projection を current route から再構築する。手順7以降の失敗は operation recovery Cron / scope Alarm が再開し、API は route switch 完了後なら成功を返してよい
 
-   外れるタグ名は移動前に `TagRelocationPolicy.plan` で算出して応答に含める
+手順4〜6で失敗しrouteがsourceの`moving`なら完全abortする。target creditを逆仕訳し、stageと両scopeのmove lockを削除し、sourceをthawしてから`abortMove`でactive sourceへ戻す。各応答喪失は同じmigration IDで再試行する。switch後はabortせず必ず前進する。
 
-移動先の容量クォータは検査しない（意図的な設計）。クォータの強制は取り込み時のみで、超過は警告表示と新規アップロードの拒否で扱う。移動でクォータを超えた移動先は、以後の取り込みが拒否されるだけで、移動そのものは成功する。`applyStorageDelta` は `note.moved` を受けて消費量を付け替えるが、判定は行わない。
+外れるタグ名は手順3で固定した operation payload から返し、再開時に計算し直さない。
+
+移動先の容量クォータは検査しない（意図的な設計）。クォータの強制は取り込み時のみで、超過は警告表示と新規アップロードの拒否で扱う。Usageは `note.moved` eventではなくSagaのtargetCredit → route switch → sourceDebit順のcommandで付け替え、migration ID + phaseにより二重増減を防ぐ。switch前のupload判定はsource消費を維持し、target credit済みなら過剰拒否にだけ倒れる。
 
 ### エラーケース
 
@@ -543,6 +563,8 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | 移動先の権限不足 | `BusinessRuleError(InsufficientRole)` |
 | 変換処理中 | `BusinessRuleError(CannotMoveWhileProcessing)` |
 | 移動先が同じ | 変更もイベントもなく成功として返す |
+| 同じノートの移動が進行中 | 既存 operation を再開し、その結果を返す |
+| route が途中で変わった | route を1回引き直して既存 operation を再開。再度競合したら `ConflictError("STALE_SCOPE_ROUTE")` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## changeNoteVisibility
@@ -563,7 +585,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 1. 閲覧者コンテキストを解決し、`canChangeVisibility` を確認する
 2. `public` に変える場合、個人所有なら `UserRepository.findById(owner.userId)` で所有者の公開ハンドルを、ワークスペース所有なら所有ワークスペースの公開スラッグを調べ、未設定なら `ValidationError("PUBLIC_HANDLE_REQUIRED")`。検査の基準は所有者であり、作成者（`createdBy`）ではない
-3. `unlisted` に変えるとき、休眠リンクがなければ `SecureTokenGenerator.issue` で新しい `ShareLink` を作る
+3. `unlisted` に変えるとき、休眠リンクがなければ共通の共有トークン発行で新しい `ShareLink` を作る。休眠リンクがあれば権限確認後にその `protectedToken` を復号して同じ URL を返す
 4. `Note.makePrivate` / `makeUnlisted` / `makePublic` を適用して保存する
 
 ### エラーケース
@@ -619,7 +641,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 ### 処理フロー
 
 1. 閲覧者コンテキストを解決し、`canChangeVisibility` を確認する
-2. `SecureTokenGenerator.issue` で新しいトークンを作る
+2. 共通の共有トークン発行で NoteId を locator に含む新しいトークンと `ShareLink` を作る
 3. `Note.reissueShareLink` を適用して保存する
 
 ### エラーケース
@@ -648,7 +670,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 ### 処理フロー
 
 1. 閲覧者コンテキストを解決し、`canDelete` を確認する
-2. `JobRepository.listActiveByTarget({ type: "note", noteId })` を引き、`excludingJobId` に一致するものを除いたすべてを `Job.cancel` する
+2. `JobRepository.listActiveByTarget({ type: "note", noteId }, limit: 100)` を引き、`excludingJobId` に一致するものを除いたすべてを `Job.cancel` する。100 件に達していれば同じ UoW で継続要求 `job.terminationContinued { origin: { path: "trashNote", noteId, excludingJobId } }` を積む（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）。1 ノートの網なので実際には達しないが、規則は経路ごとに省かない
 3. 「共通: 強制終端の後始末」（[usecases/job.md](./job.md)）に従う。`kind: "conversion"` のジョブを止めた結果、対象ノートの `content.status` が `processing` のままなら `Note.markConversionFailed("canceled", now)` を適用する。生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles`（[usecases/storage.md](./storage.md)）で回収する — ただし対象（`target.type === "note"`）で引くこの経路は batch 親を返さないため、回収対象は実際には空になる。規則は経路ごとに省かず同じ形で適用する
 4. `Note.trash` を適用して保存し、イベントを収集する
 
@@ -700,7 +722,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 入力DTO
 
-`noteId`, `userId`, `expectedVersion: number`
+`{ kind: "userRequest"; noteId; userId; expectedVersion } | { kind: "scopeCleanup"; noteId; expectedVersion; scope: ScopeKey; deletionOperationId: string }`
 
 ### 出力DTO
 
@@ -708,15 +730,19 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 処理フロー
 
-1. 閲覧者コンテキストを解決し、`canDelete` を確認する
-2. ゴミ箱にない場合は `ValidationError("NOTE_NOT_TRASHED")`
-3. `UnitOfWorkProvider.run` でノートを削除し、`NoteEvents.purged` を収集する。版（`note_revisions`）は DB の FK CASCADE で同時に消える
-4. `note.purged` の購読者が後始末を担う
+1. `userRequest`はprimary routeと対象scopeで閲覧者・Membership version・`canDelete`・trashed lifecycle・expected Note versionを確認する。`scopeCleanup`は`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`とrouteのscope/Note ownerが入力`scope`に一致すること、expected Note versionだけを確認し、削除中User・削除済みMembership/Workspace・active Noteを許す。どちらも判定材料をoperation payloadへ固定する
+2. `scopeCleanup`なら`sha256("ownerPurge:" + deletionOperationId + ":" + noteId)`を内部operation IDとし、`userRequest`なら新規採番する。ただしrouteが既に`purging`なら新規採番せず保存済みoperation ID/phaseを返してforward recoveryを再開する。`NoteRouteStore.beginPurge`をrouteVersion CASで呼んでrouteを`purging`にする
+3. 対象scopeのlocal transactionで、`userRequest`はactor/Membership・expected Note version・trashed lifecycleを再確認する。`scopeCleanup`はcleanup owner・scope/owner一致・expected Note versionだけを再確認し、actor/Membership/trashed lifecycleは要求しない。競合してNoteが残る場合はlocal変更をせず`abortPurge`でrouteをactiveへ戻し、元の競合/権限エラーを返す。abort応答喪失はrecoveryが同じoperation IDで再試行する
+4. 再確認が通ればNoteを削除し、内部operation ID・cleanup入力の`deletionOperationId`（userRequestはnull）・routeVersion・削除時projectionRevisionを含む`note.purged`を収集する。ここから先はabortせずforward recoveryする
+5. `note.purged` の購読者が後始末を担う
    - Tag の `deleteAssignmentsForNote` — タグ付与の削除
    - Storage の `deleteFilesForNote` — 保管ファイル（`source` / `media` / `reference`）の回収
    - Integration の `deleteBackupRecordsForNote` — バックアップ記録の削除
    - Note の `projectNoteChanges` — 読み取りモデルからの除去
    - Usage の `applyStorageDelta` — 件数の減算
+6. global consumerはNoteId hashで決まるnote coordination shardの`PublicNoteProjectionWriter.removeForPurge`を呼び、同じshardにco-locateしたpublic 3表の削除とoperationの`projectionRemoved` ackを1 transactionで確定する。そのack後だけ`finishPurge`で30日tombstoneにする
+
+recoveryはpayloadに固定したactor/Membership version、scope、expected Note version、routeVersion、projectionRevisionを使う。Noteが残り再検査不能ならabort、Noteが消えていればpublic remove以降を再開する。利用者入力を読み直さない
 
 ### エラーケース
 
@@ -747,9 +773,9 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 1. 権限を `deleteNote`（ワークスペースの場合）で確認する
 2. `NoteRepository.countByOwner(owner, "trashed")` で件数を数え、次のどちらか一方だけを行う
    - **50 件以下** → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` でゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
-   - **50 件超** → 対象を 500 件ごとに分割し、分割ごとに `requestBulkNoteOperation` の `{ kind: "purge" }` として一括削除ジョブ（`bulkDelete`）を登録する（51〜500 件なら 1 件、501 件以上なら複数）。`mode: "scheduled"`、`purgedCount` は登録した対象件数、`jobIds` は登録した親ジョブの ID。対象は 1 つの文脈のゴミ箱に限られるため、分割したどのジョブも所有文脈は単一で `MIXED_OWNER_SCOPE` には当たらない
+   - **50 件超** → 対象を500件ごとに分割し、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
 
-**同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者は**1 回の実行**で消し切る件数、後者は**1 つの親ジョブ**が受け持つ件数で、掛かる制約が違う。同期削除は 1 件あたり `purgeNote` の約 5 クエリを 1 回の Worker 実行の中で発行するため、1 実行あたり 500 クエリという予算（[ADR 018](../adr/018-query-budget.md)）から 50 件が上限になる。ジョブの子は 1 件ずつ別の実行で処理されるので、この予算には掛からない。値の正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
+**同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者はHTTP要求の中で開始・完了を待つpurge operation数、後者は**1つの親ジョブ**が受け持つ件数である。同期削除はroute/DO/D1投影をまたぐため応答時間とevent fan-outを50件に止める。子ジョブは1件ずつ別実行なので親は500件を持てる。scope-local SQLにD1 query予算は適用しない。値の正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 
 **同期削除は `purgeNote` の呼び出しである**。複製ではなく合成であり、「共通: ユースケースを合成するときの副作用の範囲」と [usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」に従う。
 
@@ -769,7 +795,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 概要
 
-保持期限を過ぎたゴミ箱のノートを回収する。定期ワーカーから呼ばれる（cron は 10 分ごと。[platform/index.md](../platform/index.md)）。
+保持期限を過ぎたゴミ箱のノートを回収する。trash時にscope-local `scheduled_tasks`へ最小の`purgeAfter`をupsertし、そのscopeのAlarmから呼ぶ。
 
 ### 入力DTO
 
@@ -782,9 +808,9 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 ### 処理フロー
 
 1. `NoteRepository.listPurgeable(now, limit)` を引く
-2. 1 件ずつ `UnitOfWorkProvider.run` で削除し、`note.purged` を収集する。1 件の失敗は他に影響させない
+2. 1 件ずつ内部purge commandを開始し、routeを閉じてからlocal delete・public remove・tombstoneまで進める。1 件の失敗はtaskへ記録して他に影響させない
 
-`limit` の既定 100 は 1 回の実行あたりのクエリ予算（500）から逆算した値である（1 件あたり約 3 クエリ）。残りは次の起動で拾うため、継続要求は積まない（[ADR 018](../adr/018-query-budget.md) の継続の 3 通りのうち「次の起動に任せる」）。
+`limit` の既定100は1 Alarm turnのCPUとevent fan-outを有界にする。残りがあれば同taskを直後に再予定し、なければ次の`purgeAfter`へAlarmを合わせる。
 
 ### エラーケース
 
@@ -796,11 +822,11 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 概要
 
-利用者・ワークスペースの削除に伴って、その所有ノートをすべて完全削除する（`identity.user.deleted` / `workspace.deleted` と、継続要求 `note.ownerPurgeContinued` の購読）。
+scope cleanup commandに従って、そのscopeのNoteを完全削除する。workspace deletionはlocal event、account deletionはpersonal scope commandから呼び、継続はlocal Alarmで行う。
 
 ### 入力DTO
 
-`ownerType`, `ownerId`, `batchSize: number`（既定 100）
+`deletionOperationId`, `scope: ScopeKey`, `batchSize: number`（既定・最大100）
 
 ### 出力DTO
 
@@ -808,21 +834,23 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 処理フロー
 
-1. `NoteOwner` を組み立てる（`identity.user.deleted` → `{ type: "user", userId }`、`workspace.deleted` → `{ type: "workspace", workspaceId }`）。個人の退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートには触れない（AC-09）
-2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず 1 件ずつ `UnitOfWorkProvider.run` で削除して `NoteEvents.purged` を収集する（`purgeNote` の手順 3 と同じ。版は FK CASCADE で同時に消える）。1 件の失敗は記録して次へ進む
+1. 入力`scope`から`NoteOwner`を組み立てる。個人の退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートには触れない（AC-09）
+2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず1件ずつ`purgeNote({ kind: "scopeCleanup", noteId, expectedVersion, scope, deletionOperationId })`で内部purge operationを開始する。各Noteはrouteを`purging`にしてからlocal削除・public remove・30日tombstoneへ進み、1件の失敗はoperation recoveryへ残して次へ進む
 3. タグ付与・保管ファイル・バックアップ記録・読み取りモデル・件数の後始末は `note.purged` の購読者（`purgeNote` の手順 4 と同じ受け手）に委ねる
-4. `batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued { ownerType, ownerId }` を 1 件だけ**、そのバッチの最後の削除と同じ `UnitOfWorkProvider.run` の中で outbox に積む（[ADR 019](../adr/019-owner-cleanup-continuation.md)）。次の配送で続きを処理する。この継続要求の購読者は本ユースケースだけである
-5. ただし**そのバッチで 1 件も削除できなかった場合は継続要求を積まず、失敗として返す**。キューの再試行と、それを使い切ったあとの DLQ に委ねる。恒久的に失敗する 1 件が列の先頭に居座って継続が無限に回るのを防ぐ
+4. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。`batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued { scope, deletionOperationId }` を 1 件だけ**、そのバッチの最後の削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
+5. ただし**対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まない**。現在taskをbackoffし、上限到達時は `failed` + global運用通知とする。恒久的に失敗する 1 件が新しい継続を無限に増やすのを防ぐ。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）
 
 **カーソルは持たない**。対象は処理するそばから消えるため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。重複配送で 2 系列が並走しても、両方が残りを読んで消し、対象が 0 件になった系列から順に止まる。
 
+`deletionOperationId`はscope cleanupのadmission tokenであり、Noteごとの内部purge operation IDとは別である。各continuationは前者を保持し、個別Note purgeは親operation ID+NoteIdから導出した後者で冪等化する。通常要求の再送はrouteに保存済みのoperation IDを再利用する。
+
 **継続の媒体を専用の要求にした理由**。以前は受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を再投入して継続していたが、これらは購読者を 8 つ / 4 つ持つため、残作業がある間じゅう購読者全員にコピーが配られ、outbox とキューを水増しした。購読者 1 件の要求に分ければ 1 系列 1 件で済む。継続の媒体としてジョブを使わない理由（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）は変わらない。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形になったため、両者の継続の仕方の違いは解消した。
 
-`batchSize` の既定 100 は 1 回の実行あたりのクエリ予算（500）から逆算した値である（1 件あたり約 3 クエリ）。正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
+`batchSize` の既定 100 は、1 Alarm turn の CPU と `note.purged` event fan-out を一定に抑えるための作業量上限である。scope-local SQL に D1 の 500 query 予算は適用しない。正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 
 イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は 1 バッチ `batchSize` 件（既定 100）に上限があり、受け手はすべて冪等に設計されている。
 
-冪等性: 削除済みのノートは `listByOwner` に現れないため、同じイベントを 2 回受け取っても 2 回目は 0 件で終わり、結果は変わらない。
+冪等性: `listByOwner`に現れないが`purging`のoperationが未完了なNoteもあるため、scope cleanupの完了ackは開始件数ではなく全purge operationがtombstoneへ到達したことを確認して返す。同じoperation IDの再実行は保存済みphaseから再開する。
 
 ### エラーケース
 
@@ -849,7 +877,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 1. 閲覧者コンテキストを解決し、`canEdit` を確認する
 2. `NoteRevisionRepository.listByNote(noteId, 20)` を引く
-3. 作成者の表示名を `UserRepository.listByIds` で解決する
+3. 最大20件の作成者IDを`UserBatchReader.resolveMany`でUserId shard別に最大6接続で解決する
 
 ### エラーケース
 
@@ -930,7 +958,7 @@ Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `Re
 
 ### 処理フロー
 
-1. `shareToken` があれば `NoteRepository.findByShareToken`、なければ `findById` で引く
+1. `shareToken` があれば共通の共有トークン解決で locator から対象scopeの NoteをIDで引いて hash を照合し、なければ `noteId` の route から対象scopeの `findById` で引く
 2. 閲覧者コンテキストを解決し、`granted` でなければ `NotFoundError("NOTE_NOT_FOUND")`。`passwordRequired` なら `ValidationError("SHARE_PASSWORD_REQUIRED")`
 3. 本文が `ready` でなければ `ValidationError("NOTE_CONTENT_NOT_READY")`
 4. `format` による分岐
@@ -948,7 +976,7 @@ Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `Re
 
 **再利用の範囲**（手順 4-a）。EX-01（[scenario/export.md](../scenario/export.md)）の「生成した PDF は一定期間（24 時間）保持し、その間は再生成せずに再ダウンロードできる」は保持期間の**下限**の約束である。したがって再利用に上限（残りの保持期間が短いものだけを返す条件）を課す必要はない — 一括ダウンロードの子（`runBulkExportItem`、TTL 7 日）が作った PDF を返しても、利用者から見た保持期間が約束より長くなるだけで、「その間は再ダウンロードできる」に違反しないためである。以前は `expiresAt <= now + 24 時間` を追加条件にしていたが、これは EX-01 の 24 時間を保持期間の**上限**と読み違えたもので、守る必要のない制約だった。
 
-代わりに課すのは**下限**である。残りの保持期間が `ExportTicket` の有効期間（30 分）に余裕を足した長さ以上（`expiresAt >= now + 35 分`）ある artifact だけを再利用する。上限しか見ていなかったときは、再利用の対象が「残りの保持期間が短いもの」に絞られ、残り数分で失効する artifact まで含まれてしまう。その場合、有効期間 30 分のチケットを返した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。しかもこれは 7 日 TTL の子を経由する場合に限らず、通常の 24 時間 TTL の artifact でも生成から 23:30〜24:00 の間に来た要求では必ず起きる。下限はこの窓を塞ぐためのもので、余裕の 5 分はダウンロード URL の有効期間と時刻のずれを吸収する。代償として、TTL 24 時間の artifact は生成から 23 時間 25 分を過ぎた要求では再利用されず作り直しになる — EX-01 の「再生成せずに」を文字どおり読めばこの末尾 35 分は外れるが、利用者が受け取るのは「少し待って同じ PDF を得る」結果であって失敗ではない。下限を置かなければ同じ窓で「チケットを受け取った直後にダウンロードが失効で落ちる」ことになり、そちらのほうが約束から遠いため、この交換を選ぶ。
+代わりに課すのは**下限**である。残りの保持期間が `ExportTicket` の有効期間（30 分）に余裕を足した長さ以上（`expiresAt >= now + 35 分`）ある artifact だけを再利用する。上限しか見ていなかったときは、再利用の対象が「残りの保持期間が短いもの」に絞られ、残り数分で失効する artifact まで含まれてしまう。その場合、有効期間 30 分のチケットを返した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。しかもこれは 7 日 TTL の子を経由する場合に限らず、通常の 24 時間 TTL の artifact でも生成から 23:30〜24:00 の間に来た要求では必ず起きる。下限はこの窓を塞ぐためのもので、余裕の 5 分は**ダウンロード URL の有効期間**（`ObjectStorage.createDownloadUrl` の `expiresInMs`。正典は [platform/index.md](../platform/index.md) の「転送境界」）と時刻のずれを吸収する。この 2 つは独立に選べない — URL の有効期間を伸ばすなら、この下限も同じだけ伸ばす。代償として、TTL 24 時間の artifact は生成から 23 時間 25 分を過ぎた要求では再利用されず作り直しになる — EX-01 の「再生成せずに」を文字どおり読めばこの末尾 35 分は外れるが、利用者が受け取るのは「少し待って同じ PDF を得る」結果であって失敗ではない。下限を置かなければ同じ窓で「チケットを受け取った直後にダウンロードが失効で落ちる」ことになり、そちらのほうが約束から遠いため、この交換を選ぶ。
 
 条件を満たす artifact が見つからなければ 4-b・4-c に進んで新しいジョブを登録するだけなので、取りこぼしても結果は変わらない（同版の PDF が高々 1 回余分に描画される）。
 
@@ -1019,9 +1047,11 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 2. `ticket.noteId` でノートを引き、閲覧者コンテキストを解決する。`granted` でなければ `NotFoundError("NOTE_NOT_FOUND")` — チケットはアクセスをバイパスしないため、非公開化・削除・リンク再発行はここで遮断される。`passwordRequired` なら `ValidationError("SHARE_PASSWORD_REQUIRED")`
 3. `ticket.target` で分岐する
    - `{ kind: "file" }` → 生成済み。`StoredFileRepository.findById(fileId)` で引き、不在・`noteId` がチケットと不一致・期限切れ（`StoredFile.isExpired`）なら `ValidationError("ARTIFACT_EXPIRED")`（`exportNote` の再実行で再生成できる旨を返す。`downloadExportArtifact` の手順 3 と同じ扱いに揃える）。生きていれば `status: "succeeded"` と同じチケットを返す（`downloadExportArtifact` に進める）
-   - `{ kind: "job" }` → `JobRepository.findById` で引く。不在なら `NotFoundError("EXPORT_NOT_FOUND")`（`exportNote` の再実行を促す）。`succeeded` なら artifact の `fileId` で `{ kind: "file" }` の新しいチケットを発行して返す。それ以外は `status`（`running` なら `progress` も）を返す
+   - `{ kind: "job" }` → `JobRepository.findById` で引く。不在なら `NotFoundError("EXPORT_NOT_FOUND")`（`exportNote` の再実行を促す）。`succeeded` なら artifact の `fileId` を **`{ kind: "file" }` の分岐と同じ手順で確かめてから**（`StoredFileRepository.findById` で引き、不在・`noteId` がチケットと不一致・期限切れなら `ValidationError("ARTIFACT_EXPIRED")`）、新しい `{ kind: "file" }` のチケットを発行して返す。それ以外は `status`（`running` なら `progress` も）を返す
 
-`{ kind: "file" }` で artifact の生死を確かめるのは、`exportNote` の手順 4-a が課す下限が**チケット発行時点の**保証にすぎず、発行後に artifact が保持期限を迎える、あるいは強制終端の後始末（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）や所有者の削除（`deleteFilesByOwner`。[usecases/storage.md](./storage.md)）で回収されることはありうるためである。確かめずに返すと「完了しました」と表示した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。
+**artifact の生死は 2 つの分岐のどちらでも確かめる。** `exportNote` の手順 4-a が課す下限は**チケット発行時点の**保証にすぎず、発行後に artifact が保持期限を迎える、あるいは強制終端の後始末（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）や所有者の削除（`deleteFilesByOwner`。[usecases/storage.md](./storage.md)）で回収されることはありうる。確かめずに返すと「完了しました」と表示した直後にダウンロードが `ARTIFACT_EXPIRED` で落ちる。
+
+この確認を `{ kind: "job" }` の側にも置くのは、**そちらが新しい 30 分のチケットを発行する側だから**である。`runNoteExport` が artifact を保管してから `Job.succeed` するまでは同一 UoW なので保持期限（24 時間）がチケットに負けることはないが、期限以外の回収経路がある — たとえばワークスペース所有の公開ノートに対する匿名の書き出しでは、`deleteFilesByOwner` と `deleteNotesForOwner` がどちらも 1 バッチ 100 件ずつ `events` キューで進むため、artifact だけが先に回収されてジョブ行が残る窓が開く。この窓で確認を省くと、`succeeded` を表示したうえで到達できないチケットを配ることになる。エラー表の `ARTIFACT_EXPIRED` は両分岐から返りうる。
 
 ### エラーケース
 
@@ -1052,7 +1082,7 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 1. チケットの有効期間を確認する。失効なら `ValidationError("TICKET_EXPIRED")`。`ticket.target.kind !== "file"` なら `ValidationError("INVALID_TICKET")`
 2. `ticket.noteId` でノートを引き、閲覧者コンテキストを解決する。`granted` でなければ `NotFoundError("NOTE_NOT_FOUND")`（毎回の再評価。非公開化・削除・リンク再発行はここで遮断される）。`passwordRequired` なら `ValidationError("SHARE_PASSWORD_REQUIRED")`
 3. `StoredFileRepository.findById(fileId)` で引く。不在、`noteId` がチケットと不一致、または期限切れ（`StoredFile.isExpired`）なら `ValidationError("ARTIFACT_EXPIRED")`（`exportNote` の再実行で再生成できる旨を返す）
-4. `ObjectStorage.createDownloadUrl` で有効期間の短い URL を発行して返す
+4. `ObjectStorage.createDownloadUrl` で URL を発行して返す。`expiresInMs` は **5 分**（正典は [platform/index.md](../platform/index.md) の「転送境界」）。この値は独立に選べない — `exportNote` の再利用の下限（`expiresAt >= now + 35 分`）が「`ExportTicket` の 30 分 + この 5 分」として導かれているため、伸ばすなら下限も同じだけ伸ばす
 
 ### エラーケース
 
@@ -1072,7 +1102,7 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 
 ### 入力DTO
 
-`userId`, `noteIds: string[]`, `format: "html" | "markdown" | "pdf"`
+`userId`, `sourceScopeType: "user" | "workspace"`, `sourceScopeId: string`, `noteIds: string[]`, `format: "html" | "markdown" | "pdf"`
 
 ### 出力DTO
 
@@ -1083,14 +1113,13 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 ### 処理フロー
 
 1. 件数が 500 を超えれば `ValidationError("TOO_MANY_TARGETS")`
-2. `NoteRepository.listByIds` で引き、閲覧できるものだけに絞る。`listByIds` は存在しない ID を単に返さない契約（[domains/note.md](../domains/note.md)）なので、入力の `noteIds` と結果を突き合わせ、引けなかった ID は `reason: "notFound"` として `skipped` に積む。閲覧できないものは `reason: "permissionDenied"`、本文が `ready` でないものは `reason: "contentNotReady"` として `skipped` に積み、対象から外す。突き合わせを省くと存在しない ID が無言で落ち、全件不在のときに `NO_EXPORTABLE_TARGET` になるだけで「どれが無かったのか」が利用者に返らない
-3. 合計サイズの見積もりが 1 GB を超えれば `ValidationError("EXPORT_TOO_LARGE")`
-4. `JobRepository.countActiveByKind(userId, "bulkExport")` で未終端の `bulkExport` ジョブ（親・子の両方）を数え、その件数を `runningBulkExports` として `JobConcurrencyPolicy.ensureBulkExportSlot(runningBulkExports)` に渡す
-5. 親ジョブ `Job.enqueueBatch(kind: "bulkExport", payload: { kind: "bulkExport", format }, requestedBy: userId, scope, total)` と、対象ノートごとの子ジョブ（`Job.enqueue`。`kind: "bulkExport"`、`payload` は親と同じ、`target: { type: "note", noteId }`、`parentId` は親、`scope` は下記）を作って保存する（[domains/job.md](../domains/job.md) の登録経路と `kind` / `payload` の対応、および `JobScope` の導出規則）。子は `job.enqueued` の購読ハンドラーがキューへ送り、`runBulkExportItem` が実行する。batch 親はディスパッチ対象外で、実行は `job.readyToAssemble` の購読経由のみ（[ADR 012](../adr/012-job-execution-resilience.md)）
-   - `scope` は対象ノートの所有文脈から導出し、親と子で同じ値にする（個人所有なら `{ type: "user", userId: owner.userId }`、ワークスペース所有なら `{ type: "workspace", workspaceId: owner.workspaceId }`）。要求者からは導かない — 参加ワークスペースのノートを書き出すジョブの `scope` は `workspace` になる
-   - 手順 2 で絞り込んだあとの対象に個人所有とワークスペース所有が混ざっていれば、親の `scope` が 1 つに定まらないため全体を中止して `ValidationError("MIXED_OWNER_SCOPE")` とする（[domains/job.md](../domains/job.md) の「batch 親の `scope` は単一である」）。選択は 1 つの文脈のノート一覧で行うため通常の操作では起こらない
+2. 入力からsource ScopeKeyを作り、`NoteRouteStore.resolveMany(noteIds)`で全routeを一括解決する。入力scopeと一致する`active` routeだけを対象とし、不在・別scope・`moving` / `purging`は存在を漏らさず`notFound`へ積む
+3. その1つのscope DOの `NoteRepository.listByIds` で引き、閲覧できるものだけに絞る。`listByIds` は存在しない ID を単に返さない契約（[domains/note.md](../domains/note.md)）なので、入力の `noteIds` と結果を突き合わせ、引けなかった ID は `reason: "notFound"` として `skipped` に積む。閲覧できないものは `reason: "permissionDenied"`、本文が `ready` でないものは `reason: "contentNotReady"` として `skipped` に積み、対象から外す。指定scope以外のDOへfan-outしない
+4. 合計サイズの見積もりが 1 GB を超えれば `ValidationError("EXPORT_TOO_LARGE")`
+5. operation ID を採番し、global D1 の `JobSlotStore.reserve(userId, "bulkExport", operationId, 30分)` を呼ぶ。`false` なら `BusinessRuleError(BulkExportInProgress)`。この条件付き INSERT が、異なる workspace scope から同時に要求された場合も利用者につき1件に直列化する
+6. 対象 scope の `ScopeUnitOfWorkProvider.run` で、親ジョブ `Job.enqueueBatch(kind: "bulkExport", payload: { kind: "bulkExport", format }, requestedBy: userId, scope, total)` と、対象ノートごとの子ジョブを作って保存する。親子の `scope` は入力の source ScopeKey に固定し、指定scope以外のIDは手順2で `notFound` へ落ちているため混在判定やDO fan-outは行わない
 
-親ジョブと全子ジョブの保存は同一の `UnitOfWorkProvider.run` で行い、`job.enqueued` をまとめて収集する。子だけが残って親のない孤児になる状態、親の `total` と実在する子の件数がずれる状態のどちらも作らない。
+親ジョブと全子ジョブの保存は同じ scope DO の1トランザクションで行い、`job.enqueued` をまとめて収集する。commit 後に `JobSlotStore.attach(operationId, parentJobId)` を呼ぶ。scope-local commit が失敗したら operation ID で slot を解放し、attach の応答を失った場合は同じ operation ID で再試行する。Job の終端 event は Job ID で slot を冪等に解放する。stale reservation は recovery Cron が回収するため、D1 と DO の二重書きに原子性を要求しない。
 
 ### エラーケース
 
@@ -1098,7 +1127,6 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 | --- | --- |
 | 件数・サイズの上限超過 | `ValidationError("TOO_MANY_TARGETS")` / `ValidationError("EXPORT_TOO_LARGE")` |
 | 対象が 0 件 | `ValidationError("NO_EXPORTABLE_TARGET")` |
-| 対象の所有文脈が混在 | `ValidationError("MIXED_OWNER_SCOPE")` |
 | 一括ダウンロードが既に実行中 | `BusinessRuleError(BulkExportInProgress)` |
 
 ## runBulkExportItem
@@ -1192,6 +1220,7 @@ PDF エクスポートの進捗を照会する（EX-01 / EX-04）。`ExportTicke
 | フィールド | 型 | 必須 | バリデーション |
 | --- | --- | --- | --- |
 | `userId` | `string` | ○ | — |
+| `sourceScopeType` / `sourceScopeId` | `string` | ○ | 操作元の1文脈 |
 | `noteIds` | `string[]` | ○ | 1〜500 件 |
 | `operation` | `BulkOperation` | ○ | 下記の判別ユニオン |
 
@@ -1212,13 +1241,13 @@ BulkOperation =
 ### 処理フロー
 
 1. 件数の上限を確認する
-2. `NoteRepository.listByIds` で引き、操作に必要な権限（`canEdit` / `canChangeVisibility` / `canDelete`）を持つものだけに絞る。外れたものは `reason: "permissionDenied"` として `skipped` に積む（引けなかった ID は `reason: "notFound"`）
+2. 入力source scopeを組み立て、`NoteRouteStore.resolveMany(noteIds)`で全routeを一括確認する。不在・別scope・`moving` / `purging`は`notFound`とし、その1つのscope DOの `NoteRepository.listByIds` で操作に必要な権限（`canEdit` / `canChangeVisibility` / `canDelete`）を確認する。指定scope以外のDOへfan-outしない
 3. 操作ごとの事前検査を行う
    - `purge` → ゴミ箱在籍の事前検査は行わない。`{ kind: "purge" }` は `emptyTrash` からの委譲専用で、**転送境界には露出しない**（`BulkOperation` のうち画面から選べるのは `addTag` / `removeTag` / `changeVisibility` / `move` / `trash` の 5 つで、`serverAction` の `inputValidator` は `purge` を受け付けない）。対象は `emptyTrash` が `listByOwner(owner, "trashed", …)` で集めた行に限られ、実行時には `runBulkNoteOperationItem` から呼ぶ `purgeNote` がゴミ箱在籍を検査して `ValidationError("NOTE_NOT_TRASHED")` を返す
    - `changeVisibility: "public"` → 各ノートの所有文脈で検査する（個人所有は `owner.userId` の利用者の公開ハンドル、ワークスペース所有は所有ワークスペースの公開スラッグ。`createdBy` は用いない）。未設定なら全体を中止して `ValidationError("PUBLIC_HANDLE_REQUIRED")`
    - `move` → 移動先の権限を確認し、移動で閲覧できなくなる利用者が出る場合と外れるタグがある場合を `warnings` に載せる。移動先の容量クォータは `moveNote` と同じく検査しない（クォータの強制は取り込み時のみ。意図的な設計）
 4. 親ジョブ `Job.enqueueBatch(kind, payload, requestedBy: userId, scope, total)` と、対象ノートごとの子ジョブ（`Job.enqueue`。親と同じ `kind` / `payload`、`target: { type: "note", noteId }`、`parentId` は親、`scope` は下記）を作って保存する。`kind` と `payload` は `operation.kind` から決まる（[domains/job.md](../domains/job.md) の登録経路と `kind` / `payload` の対応。`addTag` / `removeTag` → `bulkTag`、`changeVisibility` → `bulkVisibility`、`move` → `bulkMove`、`trash` / `purge` → `bulkDelete`。`BulkOperation` で失われる区別は `payload` が持つ）
-5. `scope` は `requestBulkExport` と同じ規則で決める（[domains/job.md](../domains/job.md) の `JobScope` の導出規則）。対象ノートの所有文脈から導出して親と子で同じ値にし、手順 2 の絞り込みのあとに個人所有とワークスペース所有が混ざっていれば全体を中止して `ValidationError("MIXED_OWNER_SCOPE")` とする。`move` は所有文脈を変える操作だが、`scope` は**移動元**の文脈で固定する — 移動先で取り直すと、実行前にキャンセルすべきジョブが移動元の文脈のキャンセル網から外れる
+5. 親子の `scope` は入力の source ScopeKey に固定する。指定scope以外のIDは手順2で `notFound` へ落ちているため混在判定やDO fan-outは行わない。`move` でも Job scope は移動元に固定する
 6. 対象が 1 件だけの場合もジョブとして扱い、経路を 1 本にする
 
 親ジョブと全子ジョブの保存は `requestBulkExport` と同じく同一の `UnitOfWorkProvider.run` で行い、`job.enqueued` をまとめて収集する。
@@ -1229,7 +1258,6 @@ BulkOperation =
 | --- | --- |
 | 件数の上限超過 | `ValidationError("TOO_MANY_TARGETS")` |
 | 対象が 0 件（すべて権限外） | `BusinessRuleError(AccessDenied)` |
-| 対象の所有文脈が混在 | `ValidationError("MIXED_OWNER_SCOPE")` |
 | 公開ハンドル未設定 | `ValidationError("PUBLIC_HANDLE_REQUIRED")` |
 | 未知の操作 | `ValidationError("INVALID_OPERATION")` |
 
@@ -1284,7 +1312,7 @@ BulkOperation =
 
 ### 処理フロー
 
-1. `NoteQueryService.listPublicSitemapEntries` を呼ぶ
+1. global D1 の `PublicNoteQueryService.listPublicSitemapEntries` を呼ぶ。cursorはpublic shard generationと各shardのkeysetを含む署名opaque値で、最大32 shardを同時6接続のwaveで読み全体limitへmergeする
 
 ### エラーケース
 
@@ -1294,21 +1322,25 @@ BulkOperation =
 
 ### 概要
 
-ドメインイベントを受け取って読み取りモデルを更新する（[ADR 009](../adr/009-read-models.md)）。イベント購読ワーカーから呼ばれる。
+ドメインイベントを受け取って読み取りモデルを更新する（[ADR 009](../adr/009-read-models.md)）。`target: "local"` は event を生んだ scope DO の Alarm task、`target: "public"` は global projection Queue から呼ばれる。
 
-**このユースケースは読み取りモデルの唯一の書き手であり、同時実行数 1 の専用キュー（`events-projection`）で直列に処理される**（[ADR 016](../adr/016-projection-single-writer.md)）。手順 2 の冪等性は重複配送と順序の入れ替わりに対するもので、**並行実行に対しては成り立たない** — 読み取りと書き込みの間に別の消費者が割り込めばロストアップデートが起き、恒久的に古い投影が残る。直列化はこの穴を塞ぐためのもので、配備の都合ではなく設計上の要件である。
+書き手はplaneごとに1つである。localは各scope DO、publicはnote coordination shard writerだけが書き、route/Note/tag/author/workspaceの世代ベクトルで古い配送とread-write競合を拒否する。
 
 ### 入力DTO
 
-`event: NoteEvent | TagEvent | IdentityEvent | WorkspaceEvent | ProjectionRequest`
+`target: "local" | "public"`, `scope: ScopeKey | null`, `event: NoteEvent | TagEvent | IdentityEvent | WorkspaceEvent | ProjectionRequest`
 
 ```ts
 type ProjectionRequest =
-  | { type: "projection.reprojectRequested"; noteId: NoteId }
-  | { type: "projection.tagFanOutContinued"; tagId: TagId; afterNoteId: NoteId | null };
+  | { type: "projection.reprojectRequested"; noteId: NoteId; expectedRouteVersion?: number }
+  | { type: "projection.tagFanOutContinued"; tagId: TagId; afterNoteId: NoteId | null }
+  | { type: "projection.authorRefreshRequested"; userId: UserId; identityVersion: number; afterNoteId: NoteId | null }
+  | { type: "projection.authorRouteFanOutContinued"; userId: UserId; identityVersion: number; cursor: string }
+  | { type: "projection.workspaceRouteFanOutContinued"; workspaceId: WorkspaceId; workspaceVersion: number; cursor: string }
+  | { type: "projection.authorRedactionRequested"; noteId: NoteId; userId: UserId; redactionVersion: number; operationId: string };
 ```
 
-継続要求（[domains/index.md](../domains/index.md) の「継続要求」）であってドメインイベントではない。`projection.reprojectRequested` は `rebuildNoteProjection` とタグのファンアウトが積み、`projection.tagFanOutContinued` はタグのファンアウトが自分の続きとして積む。
+これらはドメインイベントではなく、投影処理への要求である。継続要求の規約は [domains/index.md](../domains/index.md) に従う。`projection.reprojectRequested` は `rebuildNoteProjection` とタグのファンアウトが積み、`projection.tagFanOutContinued` はタグのファンアウトが自分の続きとして積む。`projection.authorRedactionRequested` はaccount deletionがfinalize前の消去ackを得るために積む。
 
 ### 出力DTO
 
@@ -1316,23 +1348,32 @@ type ProjectionRequest =
 
 ### 処理フロー
 
-1. イベントの種別で分岐する
-   - `note.created` / `note.contentUpdated` / `note.conversionFailed` / `note.awaitingIntegration` / `note.renamed` / `note.styleModeChanged` / `note.visibilityChanged` / `note.moved` / `note.trashed` / `note.restored` → `NoteRepository.findById` で現在の状態を読み、`author`（`createdBy` の利用者の表示名・ハンドル）と `workspace`（ワークスペース所有の場合は名前・スラッグ・公開状態、個人所有なら `null`）を解決して `NoteProjectionEntry` を組み立て、`NoteProjectionWriter.upsert` で上書きする。初回投影（`note.created`）と所有者の変わる `note.moved` も、この解決を経ることで著者・ワークスペース列が最初から埋まる。`createdBy` の利用者が解決できない場合（退会後に本文更新・移動が投影される場合）は `{ displayName: "退会した利用者", handle: null }` を既定値として埋める — `author_display_name` は NOT NULL であり、退会後の投影で旧表示名が復活してはならない
-   - `note.purged` → `NoteProjectionWriter.remove`
-   - `tag.assigned` / `tag.unassigned` → 対象ノートのタグを引き直し、表示名と正規化名の組（`{ name, normalized }`）で `updateTags`（タグ削除時は付与 1 件ごとに `tag.unassigned` が併発されるため、`tag.deleted` は購読しない）
-   - `tag.renamed` / `tag.merged` → 対象ノートを `TagAssignmentRepository.listByTag` で**1 ページ（200 件）だけ**列挙し、1 件につき `projection.reprojectRequested` を積む。ここで投影そのものは行わない。続きがあれば `projection.tagFanOutContinued`（最後に見た `NoteId` をカーソルに持つ）を積む。`tag.merged` の対象は `targetTagId` で引く — merge の時点で `sourceTagId` の付与は `targetTagId` へ付け替え済み（衝突する行は削除済み）なので `sourceTagId` では 0 件になる。payload は両方の ID を運ぶ（[domains/tag.md](../domains/tag.md)）
-   - `projection.tagFanOutContinued` → 上と同じ列挙をカーソルの続きから行う。対象のノートは削除されないため、この継続だけはカーソルを持つ（[domains/index.md](../domains/index.md) の「継続要求」）
-   - `projection.reprojectRequested` → `NoteRepository.findById` で現在の状態を読み、`upsert` と `updateTags` の 2 呼び出しで投影を作り直す（`rebuildNoteProjection` の手順 2〜3 と同じ）。ノートが存在しなければ何もせず成功として返す
+1. plane を検証する。`local` は `scope` 必須で、その scope object の repository / writer だけを使う。`public` は `scope = null` とする。NoteIdを持つnote-scoped event/requestだけが`NoteRouteStore`でcurrent scopeを解決してsnapshotを読む。Identity/Workspace eventとroute fan-out continuationは先に下記reader分岐へ入り、NoteId解決を要求しない。note-scoped routeが`purging` / `tombstone`、またはsnapshotがprivate / trashed / purgedならpublic行を削除する
+2. イベントの種別で分岐する
+   - `note.created` / `note.contentUpdated` / `note.conversionFailed` / `note.awaitingIntegration` / `note.renamed` / `note.styleModeChanged` / `note.visibilityChanged` / `note.moved` / `note.trashed` / `note.restored` → current routeと全sourceのcurrent versionを読み、local/publicとも世代ベクトル付き`replaceSnapshotIfNewer`で置換する
+   - `note.purged` → `deletionOperationId`が非nullのlocal処理は`ScopeCleanupAdmissionStore.assertOwner`を通す。localはremove、publicはpayloadの内部operation ID / routeVersion / projectionRevisionで`removeForPurge`を呼び、削除とoperation ackをatomicにする。move元の遅延eventはrouteVersion不一致で無視する
+   - `tag.assigned` / `tag.unassigned` → Note・タグ・projectionRevisionを同じscope read transactionで引き直す。publicは完全snapshotをrevision条件付きで置換する
+   - `tag.renamed` → 対象ノートを `TagAssignmentRepository.listByTag(tagId, { afterNoteId: null, limit: 200 })` で1ページだけ列挙し、1件につき決定的IDのlocal `projection.reprojectRequested`と、routeVersionを持たないpublic `publicProjection.reprojectRequested` outboxを同じscope UoWへ積む。200件なら `projection.tagFanOutContinued` を積む
+   - `tag.merged` / `tag.deleted` / `tag.unusedBatchDeleted` → 完了監査だけなので投影しない。merge/delete operationは各200件pageでassignment変更・projection revision bump・個別再投影taskを同一UoWへ保存済みである
+   - `projection.tagFanOutContinued` → 上と同じ列挙を `{ afterNoteId, limit: 200 }` で続きから行う。**tag assignmentを処理する継続の中でこの経路だけがカーソルを持つ**。再投影要求を積んでも対象行が検索結果から外れず、先頭から読み直すと同じページを永遠に読むためである。カーソルは**キーセット**であって `OFFSET` ではない（[domains/tag.md](../domains/tag.md) の `listByTag`、[domains/index.md](../domains/index.md) の「継続要求」）
+     - **0 件で返ったら継続を積まずに成功として返る。** 付与の件数がちょうど 200 の倍数のとき最後のページが空になるのが正常な終わり方であり、これを「進捗がないから失敗させる」と扱うと、正常完了を task failure として通知してしまう（[domains/index.md](../domains/index.md) の「継続要求」）。カーソルを持つこの経路では、空ページは失敗ではなく終端の合図である
+     - ファンアウトの進行中にタグそのものが削除された場合も同じ経路で止まる。`deleteTag` は付与を FK CASCADE で消すため、次のページが 0 件になって継続が終わる
+   - `projection.reprojectRequested` → current route、Note/tag、version付きIdentity/Workspace current stateを読み、local/publicとも `replaceSnapshotIfNewer` 1回で投影を作り直す。public requestに`expectedRouteVersion`がある場合だけcurrent routeとの不一致を古い要求として捨てる。tag pageのようにscope UoW内でrouteVersionを得られない要求はこれを省略し、global consumerが配送時のcurrent routeを解決してcurrent scope snapshotを投影する。旧scopeの遅延要求も移動先のcurrent stateを再投影するだけなので退行しない。writerが`incomparable`を返したら全sourceを読み直して1回再試行する
+   - `projection.authorRedactionRequested` → current routeを再解決する。purged/tombstoneならその結果を確認してuser coordination shardへackする。存続Noteでは`createdBy = userId`を確認し、著者を `{ displayName: "退会した利用者", handle: null }`、authorVersionを`redactionVersion`とした完全snapshotをlocal/publicのwriterで先に確定する。writer成功応答後にだけ別requestでuser coordination shardへplane別ackする。ack応答を失った場合は同じ要求を再実行し、保存済みredactionVersion以上なら投影writeをno-opにしてackを再送する。ack先行やcross-shard transactionは要求しない。move中やrouteVersion不一致はcurrent routeへ再配送し、別作成者なら不正要求として失敗させる
 
-**タグのファンアウトが投影を直接書かないのはなぜか。** 1 つのタグに付いたノートの数に上限はなく、1 件の投影は約 12 クエリを要する。直接書くと 1 メッセージで発行するクエリ数が対象件数に比例し、1 回の実行あたり 1,000 クエリという D1 の上限を超える（[ADR 018](../adr/018-query-budget.md)）。列挙と要求の投入だけなら、件数によらず 2 クエリ（列挙 1 + 多行 outbox INSERT 1）で終わる。これにより投影キューのどのメッセージも一定のクエリ数で収まり、バッチのメッセージ数を予算から逆算できるようになる。
-   - `identity.user.handleChanged` / `identity.user.profileUpdated` → `UserRepository.findById` で現在の状態を読み、表示名とハンドルの組を解決して `updateAuthor(userId, displayName, handle)` を呼ぶ。payload は変化の通知にとどまり投影に要る組を運ばないため、現在値はここで解決する（[domains/identity.md](../domains/identity.md)）。利用者が解決できない場合（退会と入れ替わった配送）は `identity.user.deleted` と同じ既定値 `updateAuthor(userId, "退会した利用者", null)` を書く
-   - `identity.user.deleted` → `updateAuthor(userId, "退会した利用者", null)`。退会者が作成したワークスペース所有ノートは残るため（AC-09）、著者表示だけを退会後の姿に置き換える。行は消さない（個人所有ノートの行は `deleteNotesForOwner` が発行する `note.purged` 経由で消える）
-   - `workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.profileUpdated` → `WorkspaceRepository.findById` で現在の状態を読み、名前・スラッグ・公開状態を解決して `updateWorkspace(workspaceId, name, slug, published)` を呼ぶ。こちらも payload は変化の通知にとどまるため、現在値はここで解決する（[domains/workspace.md](../domains/workspace.md)）。ワークスペースが解決できない場合（削除と入れ替わった配送）は何もせず返す — 対象行は `note.purged` 経由で消える
-   - `workspace.created` は購読しない。`createWorkspace`（[usecases/workspace.md](./workspace.md)）はノートを 1 件も作らないため、作成直後のワークスペースには投影対象の行が存在せず、`updateWorkspace` は必ず 0 行更新になるためである。同じ理由で `identity.user.created` も購読しない（本ユースケースが購読する Identity のイベントは `identity.user.handleChanged` / `identity.user.profileUpdated` / `identity.user.deleted` の 3 つ）
+`tag.renamed` の各ページでは、対象NoteごとのprojectionRevision bump、local再投影task、public Queueへrelayするoutbox requestを同じscope-local transactionで行う。merge/deleteは各operation page自身が同じことを行う。local/publicのtask IDはいずれも生成元operation/event ID・NoteId・projectionRevisionから決定的に導出し、kindが異なるため互いに衝突しない。
+
+**タグのファンアウトが投影を直接書かないのはなぜか。** 1 つのタグに付いたノート数に上限はなく、直接投影すると1 Alarm turn の CPU時間と event fan-out が対象件数に比例する。1ページ200件で local task を継続し、public 対象だけを個別Queue messageへ渡すことで、scope 間の並列性を保ったまま各実行の仕事量を一定にする。
+   - `identity.user.handleChanged` / `identity.user.profileUpdated` / `identity.user.deleted` → `NoteRouteFanOutReader.listByCreatedBy(userId, opaqueCursor, 200)`で全note shard合計200 routeを読む。各Noteへpublic `projection.reprojectRequested` を送り、同じpage内のscopeを重複排除して最大6 RPC並行でlocal `projection.authorRefreshRequested` を送る。次cursorがあればglobal continuationへ載せる。membership離脱済みworkspaceもrouteから発見できる。deleted Identityはversion付きtombstoneの「退会した利用者」を解決する
+   - `projection.authorRouteFanOutContinued` → payloadのopaque cursorを`listByCreatedBy`へ渡し、上と同じpage処理を続ける。nextCursorがなくなるまで同じidentityVersionを運ぶ
+   - local `projection.authorRefreshRequested` → current scopeの `note_search_created_by_note_idx` を200件ずつキーセットで読み、各Noteへlocal再投影taskを積む。200件なら同じscopeのcontinuationを積む。identityVersion以下の重複commandはno-opにする
+   - `workspace.slugChanged` / `workspace.published` / `workspace.unpublished` / `workspace.profileUpdated` → `NoteRouteFanOutReader.listByScope(scope, opaqueCursor, 200)`で全note shard合計200件ずつ読み、各Noteへpublic再投影、workspace scopeへlocal再投影pageを積む。payloadの表示値ではなくversion付きcurrent Workspace snapshotを使う
+   - `projection.workspaceRouteFanOutContinued` → payloadのopaque cursorを`listByScope`へ渡し、上と同じpage処理を続ける。nextCursorがなくなるまで同じworkspaceVersionを運ぶ
+   - `workspace.created` は購読しない。`createWorkspace` はノートを 1 件も作らず個別再投影の対象routeが0件だからである。同じ理由で `identity.user.created` も購読しない
    - 上記に現れない Note のイベント（`note.published` / `note.shareLinkReissued` / `note.sharePasswordChanged`）は購読しない。`note.published` は `note.visibilityChanged` と必ず併発するため投影は後者だけで足り、それ自身は監査用に残る（サイトマップも読み取りモデルから引くため専用の受け手を持たない。`listSitemapEntries`）。残る 2 つは投影列を 1 つも変えない
-2. どの分岐も payload の値ではなく `findById` で読み直した現在の状態を書くため、同じイベントを 2 回受け取っても、配送順が入れ替わって古いイベントが後着しても結果は変わらない。`identity.user.deleted` も同じ値を書き込む上書きであり、`deleteNotesForOwner` との到着順にも依存しない（対象行が既に消えていれば 0 行更新で成功する）。**この冪等性は並行実行までは覆わない**（冒頭の直列化の要件）
+3. どの分岐もcurrent routeとatomic snapshotを読む。重複・逆順・move前scopeの遅延配送はprocessed eventと世代ベクトルでno-opになる。ベクトルがincomparableなら再読込するため、Note/tagとIdentity/Workspaceの並行更新も退行しない
 
-`note_search` 本体・`note_search_tags`・FTS 索引の同期は `NoteProjectionWriter`（アダプター）の責務で、D1 の `batch()` による 1 バッチでアトミックに書く。ただし `updateAuthor` / `updateWorkspace` は FTS 対象列に触れないため FTS 更新は不要（[ADR 011](../adr/011-bigram-search.md)）。bigram 前処理済みのテキストは保存されないため、FTS の取り消しに渡す旧値は生テキスト列から再計算する（[ADR 017](../adr/017-content-size-budget.md)）。タグの 3 列（`note_search.tag_names` / `tag_display_names` と `note_search_tags`）を更新するのは `updateTags` だけで、`upsert` は触れない（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`、[database/index.md](../database/index.md) の「タグ列の同期契約」）。
+`note_search` 本体・タグ表・FTS 索引の同期は writer adapter の責務で、local は DO の `transactionSync()`、public は `replaceSnapshotIfNewer` の D1 `batch()` でアトミックに書く。本体・タグ・著者・workspaceを別writerへ分けない（[domains/note.md](../domains/note.md)、[database/index.md](../database/index.md)）。
 
 本文状態（`content_status`）とスタイル（`style_mode`）は `upsert` でしか更新されない。`note.awaitingIntegration` / `note.styleModeChanged` を購読しないと、`runConversion` が `processing → awaitingIntegration` に遷移させても投影は `processing` のまま残り、`countByContentStatus` を根拠とする `completeIntegrationOAuth`（[usecases/integration.md](./integration.md)）の「要 LLM 連携の N 件」の案内が常に 0 件になる。ED-11 のスタイル切り替えも一覧に反映されない。
 
@@ -1347,13 +1388,11 @@ type ProjectionRequest =
 
 ### 概要
 
-読み取りモデルを書き込みモデルから作り直す。運用操作。
-
-**このユースケースは読み取りモデルへ直接書かない。** 対象ノートを列挙して 1 件につき 1 件の再投影要求を投影キューへ積み、実際の書き込みは `projectNoteChanges` が行う。読み取りモデルの書き手を 1 つに保つためである（[ADR 016](../adr/016-projection-single-writer.md)）— 直接書くと、この運用操作と生きているイベント購読が並行し、単一ライターの前提が破れる。
+読み取りモデルを書き込みモデルから作り直す運用操作。local plane は指定した1つの scope object、public plane は global D1 の route 台帳を入口にする。全 Durable Object を列挙するAPIには依存しない。
 
 ### 入力DTO
 
-`ownerType: "user" | "workspace" | null`, `ownerId: string | null`, `batchSize: number`（既定 100）, `sweepOrphans: boolean`（既定 `true`）
+`plane: "local" | "public"`, `scope: ScopeKey | null`, `batchSize: number`（既定 100）, `sweepOrphans: boolean`（既定 `true`）
 
 ### 出力DTO
 
@@ -1362,17 +1401,15 @@ type ProjectionRequest =
 | `requestedCount` | `number` |
 | `sweptCount` | `number` |
 
-`requestedCount` は**再投影を要求した件数**であり、返った時点で投影は 1 件も終わっていない。進捗は投影キューの滞留で見る。
+`requestedCount` は再投影を要求した件数である。local の進捗は scope の `scheduled_tasks`、public の進捗は global projection Queue で見る。
 
 ### 処理フロー
 
-1. 対象の絞り込みに従って書き込みモデルを順に読む
-   - `ownerType` の指定がある → `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読む（ゴミ箱のノートも読み取りモデルに載るため `"all"`）
-   - `ownerType` が `null`（全件再構築） → `NoteRepository.listAll(cursor, batchSize)` を `NoteId` 順に読み進める。所有者を問わない全件走査はこのメソッドだけが担う（[domains/note.md](../domains/note.md) の `NoteRepository`）
-2. 読んだ `NoteId` ごとに `projection.reprojectRequested` を outbox へ積む。1 バッチにつき多行 INSERT 1 文で書き、クエリ数を件数に比例させない（[ADR 018](../adr/018-query-budget.md)）
-3. `sweepOrphans` が真なら、最後に**孤児行を掃除する**。書き込みモデルに対応するノートが存在しない `note_search` / `note_search_tags` / FTS 索引の行を削除する。投影の取りこぼしは `remove` の欠落としても現れるため、再投影だけでは読み取りモデルは正しくならない。全件再構築（`ownerType` が `null`）でないときは対象所有者の行に限る
+1. `plane = "local"` は `scope` 必須。`ScopeRouter` で対象 object を呼び、`NoteRepository.listByOwner(scope, "all", pagination)` を読む。NoteId ごとの local `projection.reprojectRequested` を `scheduled_tasks` に積む
+2. `plane = "public"` は `scope = null`。global D1 の `note_routes` を NoteId のキーセットカーソルで読み、active route ごとに `expectedRouteVersion` 付きの public `projection.reprojectRequested` を Queue へ積む。対象 DO が移動中でも consumer が current route を再解決する
+3. `sweepOrphans` が真なら、local は対象 scope の local projectionだけを正データと突合する。public は `public_note_search` を `note_routes` と突合し、route がない・tombstone・route version が古い行を削除する
 
-投影の実体（著者・ワークスペースの解決、`upsert` + `updateTags` の 2 呼び出し、FTS 索引の同期）は `projectNoteChanges` の `projection.reprojectRequested` 分岐が担う。`upsert` はタグの 3 列に触れないため、投影の再構築が 2 呼び出しの組になる点は変わらない（[domains/note.md](../domains/note.md) の `NoteProjectionWriter`）。
+投影の実体は `projectNoteChanges` が担う。local/publicとも本体・tags・FTS・version付き表示contextをまとめる `replaceSnapshotIfNewer` で再構築する。
 
 FTS 表そのものを作り直す場合（前処理関数を変えたときなど）は、先に表を再作成してから本ユースケースを走らせる。`INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` は contentless 構成では使えない（[ADR 017](../adr/017-content-size-budget.md)）。
 

@@ -90,7 +90,7 @@
 - `Job.renewAssemblyLease` が振る舞いに加わり、`reportProgress` は組み立て中の親の期限を動かさなくなる。`runBulkExport` の組み立て中の延長はこちらを呼ぶ。ここでも列は増えない
 - リース期間（葉 15 分 / batch 親 60 分）と `reapExpiredJobs` の実行間隔（5 分）が運用上の確定値になる。リーパーは `pruneJobHistory`（1 日 1 回）と同じワーカーロールに相乗りするが、起動間隔は別に持つ。デプロイ側の定期実行の設定もこの 2 つの間隔に合わせる
 - ジョブを登録する全 11 kind の経路が `scope` の導出規則に従う。対象を ID の並びで受け取る 3 経路（`requestBulkExport` / `requestBulkNoteOperation` / `requestBackup`）に、所有文脈の混在を弾く検査と `ValidationError("MIXED_OWNER_SCOPE")` が加わる
-- ジョブ履歴の削除（`pruneJobHistory`）は親を持たないジョブを起点にし、子は `parent_id` の CASCADE で一緒に消える。`reopenBatch` で親が `running` に戻ったまま保持期間を跨いでも、終端済みの子だけが消えて親が終端できなくなることはない
+- ジョブ履歴の削除（`pruneJobHistory`）は親を持たない終端Jobを同一UoWで`removing(operationId)`にclaimしてから、root/子のrouteをmanifestへ100件ずつ固定する。claim後はretry/worker result/reap/cancelをfamily全体で拒否し、`parent_id` のRESTRICT制約下で子を100件ずつ、最後にrootを消す。したがってmanifest構築中に`reopenBatch`で親が`running`へ戻る競合も、終端済みの子だけが消える状態も作らない
 - 失敗理由 `timeout` が「リース失効による回収」を含むようになり、利用者向け文言もそれを踏まえる
 - `runBulkExportItem` の追加により、生成物の保持期間が経路で分かれる（単体 PDF は 24 時間、一括ダウンロードの生成物は子・ZIP とも 7 日）。`exportNote` の PDF 再利用は残りの保持期間が 24 時間以内の artifact だけを拾うことでこの差を吸収し、単体エクスポートの「24 時間保持」の約束を経路によらず保つ（[ADR 005](./005-async-processing.md)、[usecases/note.md](../usecases/note.md) の `exportNote` の「再利用の範囲」）
 - 強制終端の 9 経路に、`Note.markConversionFailed` による `processing` ノートの回復と、終端させた batch 親の成功済みの子が持つ artifact の `deleteFiles` による回収が加わる。本文の失敗理由の語彙 `NoteFailureReason` に `canceled` が増える（`ConversionFailureReason` は変えない — 変換の実行がこの理由を返すことはないため）

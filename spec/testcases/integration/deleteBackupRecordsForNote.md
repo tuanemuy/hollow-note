@@ -9,4 +9,6 @@
 | 対象ノートの記録が 1 件もない | 処理する | 何もせず `deletedCount: 0` で成功として返る | |
 | 同じイベントを 2 回受け取る | 2 回処理する | 2 回目は削除対象がなく `deletedCount: 0` で終わり、結果は変わらない（冪等） | |
 | ワークスペース削除に伴う `note.purged` を受け取る | 処理する | ワークスペース所有ノートの記録もこの経路で削除される（`backup_records` は owner 列を持たず `noteId` 経由でしか特定できないため） | |
+| 記録が250件ある | 処理する | 100件ずつ`integration.noteDeleteContinued`で再開し、同じ`deletionOperationId`を保持する | |
+| personal account deletion由来 | 処理する | personal scopeのcleanup owner receipt一致時だけ削除する | |
 | 書き込みが失敗する | 処理する | `SystemError(DatabaseError)` が投げられ、再配送に委ねられる | |

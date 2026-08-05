@@ -16,3 +16,4 @@
 | OpenRouter を再連携した（`reconnected: true`） | 交換後に応答を確認する | `awaitingIntegrationCount: null` が返る（件数の取得は新規連携時のみ） | |
 | Google Drive を連携した | 交換後に応答を確認する | `awaitingIntegrationCount: null` が返る | |
 | プロバイダーとの通信が失敗する | 交換する | `SystemError(ExternalServiceError)` が投げられる | |
+| OAuth開始後にUserが`deleting`またはauth epoch更新済み | callbackを完了する | `ValidationError("ACCOUNT_UNAVAILABLE")`でConnectionをinsert/reconnectせず、account cleanup後へ資格情報を残さない | |

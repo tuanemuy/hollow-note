@@ -2,7 +2,7 @@
 
 ## ステータス
 
-承認済み
+superseded by [001. scope sharded data plane](../../.adr/001-scope-sharded-data-plane.md)
 
 ## コンテキスト
 
@@ -17,15 +17,15 @@
 **継続は、購読者を 1 つだけ持つ専用のイベントで運ぶ。** 受け取ったイベントの再投入はやめる。
 
 - 新設するのは 2 つ。どちらも**アプリケーション内部の継続要求**であって、ドメインで何かが起きたことを表すドメインイベントではない
-  - `note.ownerPurgeContinued { ownerType, ownerId }` — 購読者は `deleteNotesForOwner` のみ
-  - `storage.ownerDeleteContinued { ownerType, ownerId }` — 購読者は `deleteFilesByOwner` のみ
-- 初回の起動は従来どおり `identity.user.deleted` / `workspace.deleted` の購読で行う。1 バッチを処理して残りがあれば、そのバッチの最後の書き込みと**同じ Unit of Work で**継続要求を outbox に積む。2 回目以降は継続要求だけが回る
-- **カーソルは持たない**。対象は処理するそばから消えるため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。カーソルを持たせると、重複配送で 2 系列が並走したときに片方が飛ばした範囲を誰も拾わない形が作れてしまう
-- **進捗がなければ継続しない。** 1 バッチで 1 件も消せなかった場合（対象が残っているのに全件が失敗した場合）は継続要求を積まず、メッセージを失敗させる。キューの再試行と、それを使い切ったあとの DLQ に載せる。これがないと、恒久的に失敗する 1 件が列の先頭に居座って継続が無限に回る
+  - `note.ownerPurgeContinued { scope, deletionOperationId }` — 購読者は `deleteNotesForOwner` のみ
+  - `storage.ownerDeleteContinued { scope, deletionOperationId }` — 購読者は `deleteFilesByOwner` のみ
+- 初回の起動は `identity.user.deleted` / `workspace.deleted` 由来のscope cleanup commandで行う。1 バッチを処理して残りがあれば、そのバッチの最後の書き込みと**同じscope-local Unit of Workで**継続要求を`scheduled_tasks`へ積む。workspace削除ではadmission ownerを検証できるよう`deletionOperationId`を最後まで保持する
+- **カーソルは持たない**。処理そのものが対象を検索結果から外す（消す）ため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。カーソルを持たせると、重複配送で 2 系列が並走したときに片方が飛ばした範囲を誰も拾わない形が作れてしまう
+- **進捗がなければ継続しない。** 1 バッチで 1 件も消せなかった場合（対象が残っているのに全件が失敗した場合）は継続要求を積まず、メッセージを失敗させる。キューの再試行と、それを使い切ったあとの DLQ に載せる。これがないと、恒久的に失敗する 1 件が列の先頭に居座って継続が無限に回る。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る
 - 同じ形を、[ADR 018](./018-query-budget.md) が上限を課した他の継続にも使う
   - `projection.reprojectRequested { noteId }` — 購読者は `projectNoteChanges` のみ（[ADR 016](./016-projection-single-writer.md)）
-  - `projection.tagFanOutContinued { tagId, afterNoteId }` — 購読者は `projectNoteChanges` のみ。タグのリネーム / 統合が影響するノートの列挙を分割する。**こちらだけはカーソルを持つ**（対象のノートは消えないため、位置を覚えないと同じページを読み続ける）
-  - `job.terminationContinued { scopeType, scopeId, cause }` — 購読者は強制終端の後始末のみ
+  - `projection.tagFanOutContinued { tagId, afterNoteId }` — 購読者は `projectNoteChanges` のみ。タグのリネーム / 統合が影響するノートの列挙を分割する。このtag assignment fan-outはカーソルを持つ。根拠は「対象が消えないから」ではない（付与は `unassignTag` / `deleteTag` の CASCADE などで並行して消えうる）。**処理そのもの（再投影要求を積むこと）が対象を検索結果から外さない**ため、位置を覚えないと同じページを読み続けるからである。カーソルは必ず**キーセット**（`note_id > ?`）として解釈する（[domains/index.md](../domains/index.md) の「継続要求」）
+  - `job.terminationContinued { origin }` — 購読者は `continueForcedTermination` のみ。`origin` は**どの経路の続きか**を表す経路タグ付きの判別ユニオンで、その経路が網を引き直すのに要る引数（対象・スコープ・要求者・降格後のロール・プロバイダー）を添える。スコープだけを運ぶ形では、対象・要求者・`kind` で絞る 7 経路の続きが元より広い集合を終端させてしまう（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）
 
 継続要求は種別で見分けられる名前を持ち、**ドメインイベントの一覧とは別に列挙する**（[domains/index.md](../domains/index.md)）。イベントの語彙に混ぜると「何が起きたか」と「まだ仕事が残っている」が同じ表に並ぶ。
 

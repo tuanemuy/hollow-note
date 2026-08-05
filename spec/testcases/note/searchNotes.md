@@ -3,6 +3,8 @@
 | 前提条件 | 操作 | 期待結果 | 実装ステータス |
 |---|---|---|---|
 | 個人ノートが 5 件ある | 条件なしで検索する | 5 件が更新日時の降順で返る | |
+| 個人scopeを検索する | query先を確認する | ownerから決めた1つのscope DOの `LocalNoteQueryService` だけを呼び、global D1や他scopeへfan-outしない | |
+| workspace scopeを検索する | query先を確認する | workspace objectでmembershipを確認してから同じobjectのlocal FTSを読む | |
 | ノートが 0 件 | 検索する | 空配列と `count: 0` が返る | |
 | 本文に「設計」を含むノートがある | 「設計」で検索する | 該当ノートが返り、`highlightedExcerpt` に一致区間を `<mark>` で囲んだ抜粋が入る（FTS5 の `snippet()` / `highlight()` は使わない。それらが返すのは前処理済みの `title_fts` / `text_fts`、つまりビグラム列であり利用者に見せられない） | |
 | 同上 | ハイライトの求め方を確認する | 一致位置は読み取りモデルの生テキスト（`note_search.excerpt`、なければ `text` から窓を切り出す）に対し、検索語と同じ NFKC 正規化 + 小文字化だけ（ビグラム化はしない）を双方に適用した部分一致で求める | |
