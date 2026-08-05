@@ -24,6 +24,7 @@
 | 014 | [取り込み結果の供給元は帰属で割り、本文・Storage の記録・ジョブの申し送りに分ける](./014-import-result-provenance.md) |
 | 017 | [全文検索インデックスを contentless FTS5 にし、本文サイズに予算を設ける](./017-content-size-budget.md) |
 | 021 | [業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する](./021-scope-sharded-data-plane.md) |
+| 022 | [常設サイドバーを持たず、航法をスコープトークンとコマンドパレットに二重化する](./022-command-palette-navigation.md) |
 
 ## 前提依存マップ
 
@@ -45,3 +46,4 @@
 | 014 取り込み結果の供給元 | 依存なし | 情報の帰属に合わせて保存先を分ける |
 | 017 本文サイズの予算 | D1 と SQLite-backed DO の 1 行・1 値 2,000,000 バイト上限 | 本文を 800,000 バイトに制限し、FTS5 を contentless にする |
 | 021 scope shard | DO storage の object 私有性、D1、Queues、Alarms | scope-local transaction と global projection の境界を定める |
+| 022 サイドバーのない航法 | 本文が画面の大部分を占めること、`/jobs` が文脈を持たないこと | 行き先の帰属でスコープトークンとアカウントメニューを割り、パレット単独の入口を禁じる |
