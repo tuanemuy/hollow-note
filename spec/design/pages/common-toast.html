@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>共通 — トースト | Hollow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0); --color-accent-hover: oklch(43.9% 0 0); --color-accent-pressed: oklch(26.9% 0 0);
+    --color-accent-surface: oklch(97% 0 0); --color-accent-ink: oklch(26.9% 0 0);
+    --color-bg: #ffffff; --color-surface: #f5f5f7; --color-surface-hover: #ececef; --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f; --color-ink-secondary: #6e6e73; --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12); --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a; --color-success-surface: #e6f4ea; --color-warning: #a8580b; --color-warning-surface: #fdf3e7;
+    --color-error: #c43e3e; --color-error-surface: #fbebeb; --color-error-hover: #b03535; --color-error-pressed: #9a2e2e;
+    --color-info: var(--color-accent);
+    --color-status-private: #86868b; --color-status-link: #a8580b; --color-status-public: #1f8f3a;
+    --color-convert-working: var(--color-accent); --color-convert-awaiting: var(--color-warning);
+    --color-convert-failed: var(--color-error); --color-convert-done: var(--color-success);
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-comment: var(--color-ink-tertiary);
+    --code-function: #5b3da1; --code-number: #1d6fd6;
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-heading: var(--font-sans); --font-body: var(--font-sans);
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px); --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px); --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px); --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px); --text-3xl: clamp(24px, 4vw, 38px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.5; --leading-relaxed: 1.75;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-tight: -0.008em; --tracking-normal: -0.003em;
+    --space-0: 0; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+    --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+    --content-max: 680px; --list-max: 780px; --wide-max: 1100px; --palette-max: 620px;
+    --container-padding: clamp(16px, 4vw, 32px); --bar-height: 56px; --actionbar-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --icon-2xs: 11px; --icon-xs: 13px; --icon-sm: 14px; --icon-md: 18px;
+    --shadow-none: none; --shadow-xs: 0 1px 2px rgba(0,0,0,0.04); --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08); --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); --ease-decel: cubic-bezier(0, 0, 0.2, 1); --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+    --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 280ms;
+    --transition-default: all var(--duration-base) var(--ease-standard);
+    --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+    --transition-color: color var(--duration-fast) var(--ease-standard);
+    --opacity-disabled: 0.55; --opacity-pending: 0.6;
+    --bar-bg: rgba(255,255,255,0.82); --bar-blur: saturate(180%) blur(20px);
+    --bp-sm: 640px; --bp-md: 768px; --bp-lg: 1024px; --bp-xl: 1280px; --bp-2xl: 1536px;
+  }
+
+  html, body {
+    background: var(--color-surface); color: var(--color-ink); font-family: var(--font-body);
+    font-size: var(--text-base); line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+
+  .stage { padding: var(--space-8) var(--space-4) var(--space-16); max-width: 520px; margin: 0 auto; }
+  .stage-label { font-size: var(--text-xs); color: var(--color-ink-tertiary); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: var(--space-3); }
+  .stage-note { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-bottom: var(--space-6); }
+
+  /* ===== トースト: 白地 + 影 + アイコン色だけで意味を出す ===== */
+  .toast {
+    display: flex; align-items: flex-start; gap: var(--space-3);
+    background: var(--color-surface-elevated);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-md);
+    padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3);
+  }
+  .toast > .ico { color: var(--toast-accent, var(--color-accent)); flex-shrink: 0; margin-top: 2px; }
+  .toast-main { flex: 1; min-width: 0; }
+  .toast-text { font-size: var(--text-sm); color: var(--color-ink); }
+  .toast-sub { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: 2px; }
+  .toast-action { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--color-accent); padding: 2px var(--space-2); border-radius: var(--radius-sm); white-space: nowrap; flex-shrink: 0; }
+  .toast-action:hover { background: var(--color-surface-hover); }
+  .toast-close { width: 26px; height: 26px; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; color: var(--color-ink-tertiary); flex-shrink: 0; transition: var(--transition-bg), var(--transition-color); }
+  .toast-close:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+
+  .toast-success { --toast-accent: var(--color-success); }
+  .toast-warning { --toast-accent: var(--color-warning); }
+  .toast-error { --toast-accent: var(--color-error); }
+  /* modifier なし = neutral（無彩色） */
+
+  .spin { display: inline-block; width: 13px; height: 13px; border-radius: var(--radius-full); border: 1.5px solid var(--color-accent); border-top-color: transparent; animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== 配置のデモ ===== */
+  .placement { margin-top: var(--space-12); }
+  .frame {
+    position: relative; border: 1px solid var(--color-hairline-strong); border-radius: var(--radius-lg);
+    background: var(--color-bg); height: 240px; overflow: hidden;
+  }
+  .frame-bar { height: 40px; border-bottom: 1px solid var(--color-hairline); }
+  .frame-caption { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: var(--space-2); }
+  .stack-desktop { position: absolute; top: var(--space-3); right: var(--space-3); width: min(300px, 70%); }
+  .stack-mobile { position: absolute; bottom: var(--space-3); left: var(--space-3); right: var(--space-3); }
+  .stack-desktop .toast, .stack-mobile .toast { margin-bottom: var(--space-2); }
+  .stack-desktop .toast:last-child, .stack-mobile .toast:last-child { margin-bottom: 0; }
+
+  @media (min-width: 640px) {
+    .stage { padding: var(--space-10) var(--space-6) var(--space-16); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <p class="stage-label">トースト</p>
+  <p class="stage-note">一時的で、文脈に残す必要がない結果だけを載せる。白地とアイコンの色だけで意味を出し、塗りつぶし背景も左のセマンティックバーも使わない。既定は 4〜6 秒で自動的に消える。</p>
+
+  <!-- 成功 -->
+  <div class="toast toast-success" role="status" aria-live="polite">
+    <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+    <div class="toast-main"><div class="toast-text">「第14回 定例会議 議事録」を保存しました</div></div>
+    <button class="toast-close" aria-label="閉じる">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+
+  <!-- 成功 + 取り消しアクション -->
+  <div class="toast toast-success" role="status" aria-live="polite">
+    <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+    <div class="toast-main">
+      <div class="toast-text">3 件をゴミ箱へ移しました</div>
+      <div class="toast-sub">30 日以内なら元に戻せます</div>
+    </div>
+    <button class="toast-action">取り消す</button>
+  </div>
+
+  <!-- neutral: コピー -->
+  <div class="toast" role="status" aria-live="polite">
+    <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    <div class="toast-main"><div class="toast-text">共有リンクをコピーしました</div></div>
+  </div>
+
+  <!-- 進行中: ジョブ受付 -->
+  <div class="toast" role="status" aria-live="polite">
+    <span class="ico"><span class="spin" aria-hidden="true"></span></span>
+    <div class="toast-main">
+      <div class="toast-text">6 件の取り込みを開始しました</div>
+      <div class="toast-sub">この画面を離れても続きます</div>
+    </div>
+    <button class="toast-action">処理履歴</button>
+  </div>
+
+  <!-- 警告 -->
+  <div class="toast toast-warning" role="status" aria-live="polite">
+    <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <div class="toast-main">
+      <div class="toast-text">5 件のうち 1 件は取り込めませんでした</div>
+      <div class="toast-sub">パスワード保護された PDF が含まれています</div>
+    </div>
+    <button class="toast-action">詳細</button>
+  </div>
+
+  <!-- エラー: 手動で閉じる -->
+  <div class="toast toast-error" role="alert" aria-live="assertive">
+    <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+    <div class="toast-main">
+      <div class="toast-text">タグを付けられませんでした</div>
+      <div class="toast-sub">通信が不安定です。もう一度お試しください</div>
+    </div>
+    <button class="toast-action">再試行</button>
+    <button class="toast-close" aria-label="閉じる">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+
+  <div class="placement">
+    <p class="stage-label">配置（sm 以上）</p>
+    <div class="frame">
+      <div class="frame-bar"></div>
+      <div class="stack-desktop">
+        <div class="toast toast-success">
+          <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <div class="toast-main"><div class="toast-text">保存しました</div></div>
+        </div>
+        <div class="toast">
+          <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <div class="toast-main"><div class="toast-text">リンクをコピーしました</div></div>
+        </div>
+      </div>
+    </div>
+    <p class="frame-caption">右上に積む。上限を超えたら古いものから消える。</p>
+  </div>
+
+  <div class="placement">
+    <p class="stage-label">配置（sm 未満）</p>
+    <div class="frame">
+      <div class="frame-bar"></div>
+      <div class="stack-mobile">
+        <div class="toast toast-success">
+          <svg class="ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <div class="toast-main"><div class="toast-text">3 件をゴミ箱へ移しました</div></div>
+          <button class="toast-action">取り消す</button>
+        </div>
+      </div>
+    </div>
+    <p class="frame-caption">下端中央。下端操作バーがある画面では、そのバーの上に置く。</p>
+  </div>
+</div>
+
+</body>
+</html>

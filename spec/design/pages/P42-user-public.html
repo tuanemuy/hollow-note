@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>山田 一郎 (@ichiro-y) | Hollow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0); --color-accent-hover: oklch(43.9% 0 0); --color-accent-pressed: oklch(26.9% 0 0);
+    --color-accent-surface: oklch(97% 0 0); --color-accent-ink: oklch(26.9% 0 0);
+    --color-bg: #ffffff; --color-surface: #f5f5f7; --color-surface-hover: #ececef; --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f; --color-ink-secondary: #6e6e73; --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12); --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a; --color-success-surface: #e6f4ea; --color-warning: #a8580b; --color-warning-surface: #fdf3e7;
+    --color-error: #c43e3e; --color-error-surface: #fbebeb; --color-error-hover: #b03535; --color-error-pressed: #9a2e2e;
+    --color-info: var(--color-accent);
+    --color-status-private: #86868b; --color-status-link: #a8580b; --color-status-public: #1f8f3a;
+    --color-convert-working: var(--color-accent); --color-convert-awaiting: var(--color-warning);
+    --color-convert-failed: var(--color-error); --color-convert-done: var(--color-success);
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-comment: var(--color-ink-tertiary);
+    --code-function: #5b3da1; --code-number: #1d6fd6;
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-heading: var(--font-sans); --font-body: var(--font-sans);
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px); --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px); --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px); --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px); --text-3xl: clamp(24px, 4vw, 38px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.5; --leading-relaxed: 1.75;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-tight: -0.008em; --tracking-normal: -0.003em;
+    --space-0: 0; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+    --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+    --content-max: 680px; --list-max: 780px; --wide-max: 1100px; --palette-max: 620px;
+    --container-padding: clamp(16px, 4vw, 32px); --bar-height: 56px; --actionbar-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --icon-2xs: 11px; --icon-xs: 13px; --icon-sm: 14px; --icon-md: 18px;
+    --shadow-none: none; --shadow-xs: 0 1px 2px rgba(0,0,0,0.04); --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08); --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); --ease-decel: cubic-bezier(0, 0, 0.2, 1); --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+    --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 280ms;
+    --transition-default: all var(--duration-base) var(--ease-standard);
+    --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+    --transition-color: color var(--duration-fast) var(--ease-standard);
+    --opacity-disabled: 0.55; --opacity-pending: 0.6;
+    --bar-bg: rgba(255,255,255,0.82); --bar-blur: saturate(180%) blur(20px);
+    --bp-sm: 640px; --bp-md: 768px; --bp-lg: 1024px; --bp-xl: 1280px; --bp-2xl: 1536px;
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink); font-family: var(--font-body);
+    font-size: var(--text-base); line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  input { font-family: inherit; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+  .pub-bar {
+    position: sticky; top: 0; z-index: 60; height: var(--bar-height);
+    background: var(--bar-bg); backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur);
+    display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) { .pub-bar { background: var(--color-bg); } }
+  .brand { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-md); letter-spacing: var(--tracking-tightest); }
+  .bar-spacer { flex: 1; }
+  .pub-link { font-size: var(--text-sm); color: var(--color-ink-secondary); padding: var(--space-2); border-radius: var(--radius-md); white-space: nowrap; }
+  .pub-link:hover { color: var(--color-ink); background: var(--color-surface); }
+  .pub-cta { height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-pill); background: var(--color-accent); color: var(--color-bg); font-size: var(--text-sm); font-weight: var(--weight-medium); display: inline-flex; align-items: center; white-space: nowrap; transition: var(--transition-bg); }
+  .pub-cta:hover { background: var(--color-accent-hover); }
+
+  .page { max-width: var(--list-max); margin: 0 auto; padding: var(--space-10) var(--space-4) var(--space-16); }
+
+  /* 本人が見ているときのバナー */
+  .self-banner {
+    display: flex; gap: var(--space-3); align-items: flex-start;
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--color-info) 30%, transparent);
+    box-shadow: var(--shadow-xs); margin-bottom: var(--space-8);
+  }
+  .self-banner svg { color: var(--color-info); flex-shrink: 0; margin-top: 2px; }
+  .self-title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--color-info); margin-bottom: 2px; }
+  .self-body { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+
+  .profile { display: flex; gap: var(--space-4); align-items: flex-start; margin-bottom: var(--space-8); flex-wrap: wrap; }
+  .avatar-lg { width: 64px; height: 64px; border-radius: var(--radius-full); background: linear-gradient(135deg, #c9d3df 0%, #8e99a8 100%); color: var(--color-bg); font-size: var(--text-lg); font-weight: var(--weight-medium); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .profile-main { flex: 1; min-width: 240px; }
+  .profile-name { font-size: var(--text-2xl); font-weight: var(--weight-regular); letter-spacing: var(--tracking-tightest); line-height: var(--leading-snug); }
+  .profile-handle { font-size: var(--text-sm); color: var(--color-ink-tertiary); margin-top: var(--space-1); }
+  .profile-bio { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-top: var(--space-3); line-height: var(--leading-normal); }
+  .profile-stat { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: var(--space-3); }
+
+  .filters { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-6); }
+  .search { position: relative; flex: 1; min-width: 200px; }
+  .search input {
+    width: 100%; height: 36px; border: none; background: var(--color-surface);
+    border-radius: var(--radius-pill); padding: 0 var(--space-4) 0 34px;
+    font-size: var(--text-sm); color: var(--color-ink); transition: var(--transition-bg);
+  }
+  .search input::placeholder { color: var(--color-ink-tertiary); }
+  .search input:focus { background: var(--color-surface-hover); }
+  .search-ico { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--color-ink-tertiary); pointer-events: none; }
+  .chip { height: 30px; padding: 0 var(--space-3); border-radius: var(--radius-pill); background: var(--color-surface); font-size: var(--text-sm); color: var(--color-ink-secondary); display: inline-flex; align-items: center; gap: var(--space-1); transition: var(--transition-bg), var(--transition-color); }
+  .chip:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .chip[aria-pressed="true"] { background: var(--color-ink); color: var(--color-bg); }
+  .chip .n { font-size: var(--text-xs); opacity: 0.65; }
+
+  .group-label { font-size: var(--text-xs); color: var(--color-ink-tertiary); letter-spacing: 0.06em; text-transform: uppercase; padding: var(--space-6) var(--space-2) var(--space-2); }
+  .group-label:first-of-type { padding-top: 0; }
+
+  .item { display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); align-items: baseline; padding: var(--space-3) var(--space-2); border-radius: var(--radius-md); transition: var(--transition-bg); }
+  .item:hover { background: var(--color-surface-elevated); }
+  .item-main { min-width: 0; }
+  .item-title { font-size: var(--text-md); letter-spacing: var(--tracking-tight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-sub { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: 3px; display: flex; gap: var(--space-2); flex-wrap: wrap; }
+  .item-sub .sep { color: var(--color-hairline-strong); }
+  .item-date { font-size: var(--text-xs); color: var(--color-ink-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .empty { text-align: center; padding: var(--space-16) var(--space-4); }
+  .empty-ico { color: var(--color-ink-tertiary); margin-bottom: var(--space-4); display: inline-flex; }
+  .empty-title { font-size: var(--text-md); font-weight: var(--weight-medium); margin-bottom: var(--space-2); }
+  .empty-body { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+
+  .footer { border-top: 1px solid var(--color-hairline); padding: var(--space-8) var(--space-4); }
+  .footer-inner { max-width: var(--list-max); margin: 0 auto; display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .footer a:hover { color: var(--color-ink); text-decoration: underline; text-underline-offset: 3px; }
+  .footer .spacer { flex: 1; }
+
+  /* sm 未満: 公開ヘッダーを 1 行に収める（導線は減らさない） */
+  @media (max-width: 639px) {
+    .brand { font-size: 0; gap: 0; }
+    .pub-link { font-size: var(--text-xs); padding: var(--space-1); }
+    .pub-cta { height: 30px; padding: 0 var(--space-2); font-size: var(--text-xs); }
+  }
+
+  @media (min-width: 640px) {
+    .pub-bar { padding: 0 var(--space-6); }
+    .page { padding: var(--space-12) var(--space-6) var(--space-16); }
+    .footer { padding: var(--space-10) var(--space-6); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="pub-bar">
+  <a class="brand" href="#">
+    <svg width="26" height="16" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" role="img" aria-label="Hollow"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+    hollow
+  </a>
+  <div class="bar-spacer"></div>
+  <a class="pub-link" href="#">公開ノートを探す</a>
+  <a class="pub-cta" href="#">Hollow を開く</a>
+</header>
+
+<main class="page">
+  <!-- 本人が開いた場合だけ出る -->
+  <div class="self-banner" role="note">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+    <div>
+      <div class="self-title">これは外から見えている表示です</div>
+      <div class="self-body">公開に設定したノートだけが並びます。非公開・リンク限定のノートはここに出ません。</div>
+    </div>
+  </div>
+
+  <div class="profile">
+    <span class="avatar-lg" aria-hidden="true">YI</span>
+    <div class="profile-main">
+      <h1 class="profile-name">山田 一郎</h1>
+      <p class="profile-handle">@ichiro-y</p>
+      <p class="profile-bio">紙の資料をひたすら HTML にして残しています。設計と読書メモが中心。</p>
+      <p class="profile-stat">公開ノート 31 件</p>
+    </div>
+  </div>
+
+  <div class="filters">
+    <div class="search">
+      <svg class="search-ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="search" placeholder="このページ内で検索" aria-label="このページ内で検索">
+    </div>
+    <button class="chip" aria-pressed="true">#論文 <span class="n">9</span></button>
+    <button class="chip" aria-pressed="false">#調査 <span class="n">14</span></button>
+    <button class="chip" aria-pressed="false">#設計 <span class="n">6</span></button>
+  </div>
+
+  <section aria-label="公開ノート">
+    <h2 class="group-label">2026年8月</h2>
+
+    <a class="item" href="#">
+      <div class="item-main">
+        <div class="item-title">Attention Is All You Need — 読書メモ</div>
+        <div class="item-sub"><span>#論文</span><span>#調査</span><span class="sep">·</span><span>PDF から変換</span></div>
+      </div>
+      <span class="item-date">8月3日</span>
+    </a>
+
+    <h2 class="group-label">2026年7月</h2>
+
+    <a class="item" href="#">
+      <div class="item-main">
+        <div class="item-title">Cloudflare Workers 料金の調査メモ</div>
+        <div class="item-sub"><span>#調査</span><span class="sep">·</span><span>Markdown から変換</span></div>
+      </div>
+      <span class="item-date">7月28日</span>
+    </a>
+
+    <a class="item" href="#">
+      <div class="item-main">
+        <div class="item-title">ドキュメント変換パイプラインの設計メモ</div>
+        <div class="item-sub"><span>#設計</span><span class="sep">·</span><span>HTML をそのまま取り込み</span></div>
+      </div>
+      <span class="item-date">7月14日</span>
+    </a>
+
+    <a class="item" href="#">
+      <div class="item-main">
+        <div class="item-title">A Pattern Language を読みながら</div>
+        <div class="item-sub"><span>#論文</span><span class="sep">·</span><span>PDF から変換</span></div>
+      </div>
+      <span class="item-date">7月2日</span>
+    </a>
+
+    <h2 class="group-label">2026年6月</h2>
+
+    <a class="item" href="#">
+      <div class="item-main">
+        <div class="item-title">静かなインターフェースについての覚書</div>
+        <div class="item-sub"><span>#設計</span><span class="sep">·</span><span>Markdown から変換</span></div>
+      </div>
+      <span class="item-date">6月20日</span>
+    </a>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span>Hollow</span>
+    <span class="spacer"></span>
+    <a href="#">利用規約</a>
+    <a href="#">プライバシーポリシー</a>
+  </div>
+</footer>
+
+</body>
+</html>

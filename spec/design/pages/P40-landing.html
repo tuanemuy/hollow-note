@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hollow — あらゆるファイルを HTML にして残す</title>
+<meta name="description" content="PDF・Word・スライド・画像・音声を、読める HTML に変換して保存し、必要なぶんだけ共有できるサービス。">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0); --color-accent-hover: oklch(43.9% 0 0); --color-accent-pressed: oklch(26.9% 0 0);
+    --color-accent-surface: oklch(97% 0 0); --color-accent-ink: oklch(26.9% 0 0);
+    --color-bg: #ffffff; --color-surface: #f5f5f7; --color-surface-hover: #ececef; --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f; --color-ink-secondary: #6e6e73; --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12); --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a; --color-success-surface: #e6f4ea; --color-warning: #a8580b; --color-warning-surface: #fdf3e7;
+    --color-error: #c43e3e; --color-error-surface: #fbebeb; --color-error-hover: #b03535; --color-error-pressed: #9a2e2e;
+    --color-info: var(--color-accent);
+    --color-status-private: #86868b; --color-status-link: #a8580b; --color-status-public: #1f8f3a;
+    --color-convert-working: var(--color-accent); --color-convert-awaiting: var(--color-warning);
+    --color-convert-failed: var(--color-error); --color-convert-done: var(--color-success);
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-comment: var(--color-ink-tertiary);
+    --code-function: #5b3da1; --code-number: #1d6fd6;
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-heading: var(--font-sans); --font-body: var(--font-sans);
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px); --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px); --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px); --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px); --text-3xl: clamp(24px, 4vw, 38px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.5; --leading-relaxed: 1.75;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-tight: -0.008em; --tracking-normal: -0.003em;
+    --space-0: 0; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+    --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+    --content-max: 680px; --list-max: 780px; --wide-max: 1100px; --palette-max: 620px;
+    --container-padding: clamp(16px, 4vw, 32px); --bar-height: 56px; --actionbar-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --icon-2xs: 11px; --icon-xs: 13px; --icon-sm: 14px; --icon-md: 18px;
+    --shadow-none: none; --shadow-xs: 0 1px 2px rgba(0,0,0,0.04); --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08); --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); --ease-decel: cubic-bezier(0, 0, 0.2, 1); --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+    --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 280ms;
+    --transition-default: all var(--duration-base) var(--ease-standard);
+    --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+    --transition-color: color var(--duration-fast) var(--ease-standard);
+    --opacity-disabled: 0.55; --opacity-pending: 0.6;
+    --bar-bg: rgba(255,255,255,0.82); --bar-blur: saturate(180%) blur(20px);
+    --bp-sm: 640px; --bp-md: 768px; --bp-lg: 1024px; --bp-xl: 1280px; --bp-2xl: 1536px;
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink); font-family: var(--font-body);
+    font-size: var(--text-base); line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  input { font-family: inherit; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+  .pub-bar {
+    position: sticky; top: 0; z-index: 60; height: var(--bar-height);
+    background: var(--bar-bg); backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur);
+    display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) { .pub-bar { background: var(--color-bg); } }
+  .brand { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-md); letter-spacing: var(--tracking-tightest); }
+  .bar-spacer { flex: 1; }
+  .pub-link { font-size: var(--text-sm); color: var(--color-ink-secondary); padding: var(--space-2); border-radius: var(--radius-md); white-space: nowrap; }
+  .pub-link:hover { color: var(--color-ink); background: var(--color-surface); }
+  .pub-cta { height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-pill); background: var(--color-accent); color: var(--color-bg); font-size: var(--text-sm); font-weight: var(--weight-medium); display: inline-flex; align-items: center; white-space: nowrap; transition: var(--transition-bg); }
+  .pub-cta:hover { background: var(--color-accent-hover); }
+
+  .hero { max-width: var(--list-max); margin: 0 auto; padding: var(--space-16) var(--space-4) var(--space-12); }
+  .hero h1 {
+    font-size: clamp(30px, 6vw, 52px); font-weight: var(--weight-light);
+    letter-spacing: var(--tracking-tightest); line-height: 1.14; margin-bottom: var(--space-5);
+  }
+  .hero p { font-size: var(--text-md); color: var(--color-ink-secondary); line-height: var(--leading-normal); max-width: 46ch; margin-bottom: var(--space-8); }
+  .hero-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+  .btn {
+    height: 44px; padding: 0 var(--space-5); border-radius: var(--radius-pill);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+    background: var(--color-accent); color: var(--color-bg); transition: var(--transition-bg);
+  }
+  .btn:hover { background: var(--color-accent-hover); }
+  .btn:active { background: var(--color-accent-pressed); }
+  .btn.outline { background: var(--color-bg); color: var(--color-ink); border: 1px solid var(--color-hairline-strong); }
+  .btn.outline:hover { background: var(--color-surface); }
+
+  /* 変換の流れ: この製品の中核を 1 行で見せる */
+  .flow {
+    max-width: var(--list-max); margin: 0 auto; padding: 0 var(--space-4) var(--space-16);
+  }
+  .flow-inner {
+    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+    padding: var(--space-5); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg);
+  }
+  .flow-step { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--color-ink-secondary); }
+  .flow-step .kind { height: 20px; padding: 0 6px; border-radius: var(--radius-xs); background: var(--color-surface); color: var(--color-ink-tertiary); font-size: 10px; font-weight: var(--weight-semibold); letter-spacing: 0.04em; display: inline-flex; align-items: center; }
+  .flow-arrow { color: var(--color-hairline-strong); }
+  .flow-final { color: var(--color-ink); font-weight: var(--weight-medium); }
+
+  .search-cta { max-width: var(--list-max); margin: 0 auto; padding: 0 var(--space-4) var(--space-20); }
+  .search-label { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-bottom: var(--space-3); }
+  .hero-search { position: relative; }
+  .hero-search input {
+    width: 100%; height: 48px; border: 1px solid var(--color-hairline-strong);
+    border-radius: var(--radius-pill); padding: 0 var(--space-5) 0 44px;
+    font-size: var(--text-md); color: var(--color-ink); background: var(--color-bg);
+    transition: border-color var(--duration-fast) var(--ease-standard);
+  }
+  .hero-search input::placeholder { color: var(--color-ink-tertiary); }
+  .hero-search input:hover { border-color: var(--color-ink-tertiary); }
+  .hero-search input:focus { outline: none; box-shadow: var(--shadow-focus); border-color: transparent; }
+  .hero-ico { position: absolute; left: 17px; top: 50%; transform: translateY(-50%); color: var(--color-ink-tertiary); pointer-events: none; }
+
+  .points { max-width: var(--list-max); margin: 0 auto; padding: 0 var(--space-4) var(--space-20); display: grid; gap: var(--space-10); }
+  .point h2 { font-size: var(--text-xl); font-weight: var(--weight-medium); letter-spacing: var(--tracking-tighter); margin-bottom: var(--space-3); }
+  .point p { font-size: var(--text-sm); color: var(--color-ink-secondary); line-height: var(--leading-relaxed); max-width: 52ch; }
+  .point-note { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-2); }
+  .dot { width: 6px; height: 6px; border-radius: var(--radius-full); display: inline-block; }
+  .dot.private { background: var(--color-status-private); }
+  .dot.link { background: var(--color-status-link); }
+  .dot.public { background: var(--color-status-public); }
+
+  .closing { max-width: var(--list-max); margin: 0 auto; padding: 0 var(--space-4) var(--space-20); }
+  .closing-inner { border-top: 1px solid var(--color-ink); padding-top: var(--space-8); }
+  .closing h2 { font-size: var(--text-2xl); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); margin-bottom: var(--space-5); }
+
+  .footer { border-top: 1px solid var(--color-hairline); padding: var(--space-8) var(--space-4); }
+  .footer-inner { max-width: var(--list-max); margin: 0 auto; display: flex; gap: var(--space-4); flex-wrap: wrap; align-items: center; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .footer a:hover { color: var(--color-ink); text-decoration: underline; text-underline-offset: 3px; }
+  .footer .spacer { flex: 1; }
+
+  /* sm 未満: 公開ヘッダーを 1 行に収める（導線は減らさない） */
+  @media (max-width: 639px) {
+    .brand { font-size: 0; gap: 0; }
+    .pub-link { font-size: var(--text-xs); padding: var(--space-1); }
+    .pub-cta { height: 30px; padding: 0 var(--space-2); font-size: var(--text-xs); }
+  }
+
+  @media (min-width: 640px) {
+    .pub-bar { padding: 0 var(--space-6); }
+    .hero { padding: var(--space-20) var(--space-6) var(--space-12); }
+    .flow, .search-cta, .points, .closing { padding-left: var(--space-6); padding-right: var(--space-6); }
+    .footer { padding: var(--space-10) var(--space-6); }
+  }
+  @media (min-width: 1024px) {
+    .points { grid-template-columns: 1fr 1fr; gap: var(--space-12); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="pub-bar">
+  <a class="brand" href="#">
+    <svg width="26" height="16" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" role="img" aria-label="Hollow"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+    hollow
+  </a>
+  <div class="bar-spacer"></div>
+  <a class="pub-link" href="#">公開ノートを探す</a>
+  <a class="pub-link" href="#">サインイン</a>
+  <a class="pub-cta" href="#">はじめる</a>
+</header>
+
+<section class="hero">
+  <h1>あらゆるファイルを、<br>読める HTML にして残す。</h1>
+  <p>PDF・Word・スライド・スキャン画像・音声。開くたびにアプリを選ばされていた資料を、ブラウザで読める 1 枚の HTML に変えて保管します。見せる相手は、あとから選べます。</p>
+  <div class="hero-actions">
+    <a class="btn" href="#">無料ではじめる</a>
+    <a class="btn outline" href="#">公開ノートを見てみる</a>
+  </div>
+</section>
+
+<section class="flow" aria-label="変換の流れ">
+  <div class="flow-inner">
+    <span class="flow-step"><span class="kind">PDF</span></span>
+    <span class="flow-step"><span class="kind">DOCX</span></span>
+    <span class="flow-step"><span class="kind">PPTX</span></span>
+    <span class="flow-step"><span class="kind">M4A</span></span>
+    <span class="flow-step"><span class="kind">JPG</span></span>
+    <span class="flow-arrow" aria-hidden="true">→</span>
+    <span class="flow-step">テキスト抽出 / 文字起こし</span>
+    <span class="flow-arrow" aria-hidden="true">→</span>
+    <span class="flow-step">LLM で構造化</span>
+    <span class="flow-arrow" aria-hidden="true">→</span>
+    <span class="flow-step flow-final">HTML</span>
+  </div>
+</section>
+
+<section class="search-cta">
+  <p class="search-label">公開されているノートを検索できます</p>
+  <div class="hero-search">
+    <svg class="hero-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <label class="sr-only" for="q">公開ノートを検索</label>
+    <input id="q" type="search" placeholder="キーワードで検索">
+  </div>
+</section>
+
+<section class="points">
+  <div class="point">
+    <h2>元のファイルは消えない</h2>
+    <p>アップロードした元ファイルは、ノートがある限り保管されます。あとから別のモデルで作り直したくなっても、元に戻ってやり直せます。Google Drive に自動でバックアップすることもできます。</p>
+  </div>
+
+  <div class="point">
+    <h2>取り込んだ見た目は、そのまま固定される</h2>
+    <p>本文が参照している画像やスタイルシートは、取り込んだ時点の内容を保存します。配布元が消えても、中身が変わっても、あなたが見た形のまま残ります。取り込めなかったものは、理由つきで必ず表示します。</p>
+  </div>
+
+  <div class="point">
+    <h2>公開範囲は 3 段階</h2>
+    <p>1 件ずつ、非公開・リンクを知る人だけ・全体公開を切り替えられます。リンクにはパスワードもかけられます。</p>
+    <div class="point-note">
+      <span class="dot private" aria-hidden="true"></span>非公開
+      <span class="dot link" aria-hidden="true" style="margin-left:var(--space-2)"></span>リンクを知る人
+      <span class="dot public" aria-hidden="true" style="margin-left:var(--space-2)"></span>公開
+    </div>
+  </div>
+
+  <div class="point">
+    <h2>チームで同じ書庫を持てる</h2>
+    <p>ワークスペースを作れば、取り込んだ資料をメンバーで共有できます。閲覧だけのメンバーも招待できるので、読ませたい相手にアカウントの権限を渡しすぎずに済みます。</p>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="closing-inner">
+    <h2>まず 1 つ、投げ込んでみてください。</h2>
+    <div class="hero-actions">
+      <a class="btn" href="#">無料ではじめる</a>
+      <a class="btn outline" href="#">サインイン</a>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span>Hollow</span>
+    <span class="spacer"></span>
+    <a href="#">利用規約</a>
+    <a href="#">プライバシーポリシー</a>
+  </div>
+</footer>
+
+</body>
+</html>

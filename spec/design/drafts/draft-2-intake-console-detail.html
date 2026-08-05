@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>案2 取り込みコンソール — ノート詳細</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0);
+    --color-accent-hover: oklch(43.9% 0 0);
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-hover: #ececef;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a;
+    --color-warning: #a8580b;
+    --color-error: #c43e3e;
+    --color-status-private: #86868b;
+    --color-status-link: #a8580b;
+    --color-status-public: #1f8f3a;
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-function: #5b3da1; --code-number: #1d6fd6;
+
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px);
+    --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px);
+    --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px);
+    --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-normal: 1.5; --leading-relaxed: 1.7; --leading-snug: 1.35;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-normal: -0.003em;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+    --space-12: 48px; --space-16: 64px;
+
+    --rail-width: 60px; --inspector-width: 320px; --content-max: 720px; --header-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --duration-fast: 120ms;
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink);
+    font-family: var(--font-sans); font-size: var(--text-base);
+    line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+
+  .app { display: grid; grid-template-columns: 1fr; min-height: 100vh; }
+
+  /* Rail */
+  .rail {
+    display: none; background: var(--color-surface);
+    border-right: 1px solid var(--color-hairline);
+    padding: var(--space-3) 0 var(--space-4);
+    flex-direction: column; align-items: center; gap: var(--space-2);
+    position: sticky; top: 0; height: 100vh;
+  }
+  .rail-mark { color: var(--color-ink); margin-bottom: var(--space-3); }
+  .scope-btn {
+    width: 38px; height: 38px; border-radius: var(--radius-lg);
+    background: var(--color-bg); border: 1px solid var(--color-hairline);
+    font-size: var(--text-xs); font-weight: var(--weight-medium); color: var(--color-ink-secondary);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .scope-btn.active { background: var(--color-ink); border-color: var(--color-ink); color: #fff; }
+  .rail-sep { width: 22px; height: 1px; background: var(--color-hairline-strong); margin: var(--space-2) 0; }
+  .rail-foot { margin-top: auto; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: var(--radius-full);
+    background: linear-gradient(135deg, #c9d3df 0%, #8e99a8 100%);
+    color: #fff; font-size: 11px; font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  .main { min-width: 0; }
+
+  /* Topbar: このノートの操作行をそのまま載せる（コンソール的な作業台） */
+  .topbar {
+    position: sticky; top: 0; z-index: 40; min-height: var(--header-height);
+    display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+    padding: var(--space-2) var(--space-4);
+    background: rgba(255,255,255,0.9);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .back { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--color-ink-secondary); padding: 5px 8px; border-radius: var(--radius-sm); }
+  .back:hover { background: var(--color-surface); color: var(--color-ink); }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+  .btn {
+    height: 32px; padding: 0 11px; border-radius: var(--radius-md);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    background: var(--color-surface); transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .btn:hover { background: var(--color-surface-hover); }
+  .btn.primary { background: var(--color-accent); color: #fff; }
+  .btn.primary:hover { background: var(--color-accent-hover); }
+  .btn.ghost { background: transparent; color: var(--color-ink-secondary); }
+  .btn.ghost:hover { background: var(--color-surface); color: var(--color-ink); }
+  .status-pill {
+    height: 32px; padding: 0 11px; border-radius: var(--radius-md);
+    background: var(--color-surface); font-size: var(--text-sm);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: var(--radius-full); display: inline-block; }
+  .dot.private { background: var(--color-status-private); }
+  .dot.link { background: var(--color-status-link); }
+  .dot.public { background: var(--color-status-public); }
+  .topbar .label { display: none; }
+
+  /* Content column */
+  .reader { padding: var(--space-6) var(--space-4) var(--space-16); }
+  .doc { max-width: var(--content-max); margin: 0 auto; }
+
+  /* 変換の来歴ストリップ: 本文の直前に 1 行で置き、詳細はインスペクタ／展開へ */
+  .provenance {
+    display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+    font-size: var(--text-xs); color: var(--color-ink-tertiary);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-5);
+  }
+  .provenance .arrow { color: var(--color-hairline-strong); }
+  .provenance .src { color: var(--color-ink-secondary); font-weight: var(--weight-medium); }
+  .provenance .warnlink { margin-left: auto; color: var(--color-warning); }
+  .provenance .warnlink:hover { text-decoration: underline; }
+
+  .doc-title {
+    font-size: var(--text-2xl); font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tightest); line-height: 1.15; margin-bottom: var(--space-3);
+  }
+  .doc-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: var(--space-6); }
+  .tag-pill {
+    height: 24px; padding: 0 9px; border-radius: var(--radius-sm);
+    background: var(--color-surface); font-size: var(--text-xs); color: var(--color-ink-secondary);
+    display: inline-flex; align-items: center;
+  }
+  .tag-pill:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .tag-add { border: 1px dashed var(--color-hairline-strong); background: transparent; }
+
+  .content { font-size: var(--text-base); line-height: var(--leading-relaxed); }
+  .content h2 {
+    font-size: var(--text-xl); font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tighter); line-height: var(--leading-snug);
+    margin: var(--space-10) 0 var(--space-4); padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .content h3 { font-size: var(--text-lg); font-weight: var(--weight-semibold); margin: var(--space-8) 0 var(--space-3); }
+  .content p { margin-bottom: var(--space-4); }
+  .content ul { list-style: disc; padding-left: 1.4em; margin-bottom: var(--space-4); }
+  .content li { margin-bottom: var(--space-2); }
+  .content a { color: var(--color-accent); }
+  .content a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .content code { font-family: var(--font-mono); font-size: var(--text-mono); background: var(--color-surface); padding: 2px 5px; border-radius: var(--radius-xs); }
+  .content pre { font-family: var(--font-mono); font-size: var(--text-mono); background: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-4); overflow-x: auto; margin-bottom: var(--space-4); line-height: 1.6; }
+  .content pre code { background: none; padding: 0; }
+  .content blockquote { border-left: 3px solid var(--color-hairline-strong); padding-left: var(--space-4); color: var(--color-ink-secondary); margin-bottom: var(--space-4); }
+  .table-wrap { overflow-x: auto; margin-bottom: var(--space-4); }
+  .content table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+  .content th, .content td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-hairline); }
+  .content th { font-weight: var(--weight-semibold); color: var(--color-ink-secondary); }
+  .figure { margin-bottom: var(--space-5); }
+  .figure .ph { width: 100%; aspect-ratio: 16/9; border-radius: var(--radius-lg); background: var(--color-surface); display: flex; align-items: center; justify-content: center; color: var(--color-ink-tertiary); font-size: var(--text-sm); }
+  .figure figcaption { font-size: var(--text-sm); color: var(--color-ink-tertiary); margin-top: var(--space-2); }
+  .tok-key { color: var(--code-keyword); } .tok-str { color: var(--code-string); }
+  .tok-fn { color: var(--code-function); } .tok-num { color: var(--code-number); }
+
+  /* Inspector */
+  .inspector {
+    border-top: 1px solid var(--color-hairline);
+    background: var(--color-surface-elevated);
+    padding: var(--space-5) var(--space-4) var(--space-12);
+  }
+  .insp-tabs { display: flex; gap: var(--space-1); margin-bottom: var(--space-4); background: var(--color-surface); padding: 2px; border-radius: var(--radius-md); }
+  .insp-tabs button { flex: 1; padding: 6px 8px; border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: var(--weight-medium); color: var(--color-ink-secondary); }
+  .insp-tabs button.active { background: var(--color-bg); color: var(--color-ink); box-shadow: var(--shadow-xs); }
+  .insp-block { margin-bottom: var(--space-6); }
+  .insp-title {
+    font-size: var(--text-xs); color: var(--color-ink-tertiary);
+    letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: var(--space-3);
+    display: flex; align-items: center; gap: var(--space-2);
+  }
+  .insp-title .n { margin-left: auto; text-transform: none; letter-spacing: 0; color: var(--color-ink-secondary); }
+  .kv-row { display: grid; grid-template-columns: 84px 1fr; gap: var(--space-2); font-size: var(--text-sm); padding: 5px 0; align-items: baseline; }
+  .kv-key { color: var(--color-ink-tertiary); font-size: var(--text-xs); }
+  .kv-val { min-width: 0; word-break: break-word; }
+
+  .res { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2); align-items: start; padding: var(--space-2) 0; font-size: var(--text-sm); }
+  .res + .res { border-top: 1px solid var(--color-hairline); }
+  .res .ico { margin-top: 3px; color: var(--color-ink-tertiary); }
+  .res.ok .ico { color: var(--color-success); }
+  .res.warn .ico { color: var(--color-warning); }
+  .res-url { font-size: var(--text-xs); color: var(--color-ink-tertiary); word-break: break-all; }
+  .res-reason { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+
+  .alert {
+    display: flex; gap: var(--space-2); align-items: flex-start;
+    padding: var(--space-3); border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--alert-accent, var(--color-accent)) 30%, transparent);
+    background: var(--color-bg); margin-bottom: var(--space-4);
+  }
+  .alert-warning { --alert-accent: var(--color-warning); }
+  .alert svg { color: var(--alert-accent); flex-shrink: 0; margin-top: 2px; }
+  .alert-title { font-size: var(--text-xs); font-weight: var(--weight-semibold); color: var(--alert-accent); }
+  .alert-body { font-size: var(--text-xs); color: var(--color-ink-secondary); }
+
+  .job-row { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-2); align-items: center; font-size: var(--text-sm); padding: var(--space-2) 0; }
+  .job-row + .job-row { border-top: 1px solid var(--color-hairline); }
+  .job-sub { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+
+  @media (min-width: 640px) {
+    .topbar { padding: var(--space-2) var(--space-5); }
+    .topbar .label { display: inline; }
+    .reader { padding: var(--space-8) var(--space-6) var(--space-16); }
+    .inspector { padding: var(--space-6) var(--space-6) var(--space-12); }
+  }
+  @media (min-width: 1024px) {
+    .app { grid-template-columns: var(--rail-width) 1fr; }
+    .rail { display: flex; }
+    .reader { padding: var(--space-8) var(--space-8) var(--space-16); }
+  }
+  @media (min-width: 1280px) {
+    .app { grid-template-columns: var(--rail-width) minmax(0,1fr) var(--inspector-width); }
+    .main { grid-column: 2; }
+    .inspector {
+      grid-column: 3; grid-row: 1;
+      border-top: none; border-left: 1px solid var(--color-hairline);
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+      padding: var(--space-6) var(--space-5) var(--space-12);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <nav class="rail" aria-label="スコープ">
+    <svg class="rail-mark" width="28" height="17" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+    <button class="scope-btn" aria-label="個人">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>
+    </button>
+    <div class="rail-sep"></div>
+    <button class="scope-btn active" aria-label="デザインチーム" aria-current="true">DT</button>
+    <button class="scope-btn" aria-label="経理">経</button>
+    <button class="scope-btn" aria-label="Hollow 開発">H</button>
+    <div class="rail-foot"><div class="avatar">YI</div></div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <a class="back" href="#">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        デザインチーム / ノート
+      </a>
+      <div class="topbar-right">
+        <button class="status-pill"><span class="dot public"></span>公開
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-ink-tertiary)"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <button class="btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+          <span class="label">編集</span>
+        </button>
+        <button class="btn ghost">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span class="label">ダウンロード</span>
+        </button>
+        <button class="btn ghost" aria-label="その他の操作">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="reader">
+      <article class="doc">
+
+        <div class="provenance">
+          <span class="src">1706.03762.pdf</span>
+          <span class="arrow">→</span>
+          <span>テキスト抽出</span>
+          <span class="arrow">→</span>
+          <span>LLM で構造化</span>
+          <span class="arrow">→</span>
+          <span>HTML</span>
+          <a class="warnlink" href="#">未取り込み 4 件</a>
+        </div>
+
+        <h1 class="doc-title">Attention Is All You Need — 読書メモ</h1>
+        <div class="doc-tags">
+          <a class="tag-pill" href="#">#論文</a>
+          <a class="tag-pill" href="#">#調査</a>
+          <button class="tag-pill tag-add">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+
+        <div class="content">
+          <p>Transformer の原論文を読み直しながら、Multi-Head Attention の直感的な理解をまとめた。PDF から取り込んだ図はオブジェクトストレージに保存済みで、配布元が消えても表示は変わらない。</p>
+
+          <h2>1. 何を解いた論文か</h2>
+          <p>再帰も畳み込みも使わず、注意機構だけで系列変換を組み立てられることを示した。学習の並列化が効くので、同じ計算資源でより大きなモデルを回せる。</p>
+          <blockquote>We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.</blockquote>
+
+          <h2>2. Multi-Head Attention</h2>
+          <p>単一の注意で全部を担わせるのではなく、射影を分けて複数の「見方」を同時に走らせる。<code>d_model = 512</code> を 8 ヘッドに割ると、1 ヘッドあたり 64 次元になる。</p>
+          <pre><code><span class="tok-key">def</span> <span class="tok-fn">attention</span>(q, k, v, mask=<span class="tok-key">None</span>):
+    scores = q @ k.transpose(-<span class="tok-num">2</span>, -<span class="tok-num">1</span>) / math.sqrt(d_k)
+    <span class="tok-key">if</span> mask <span class="tok-key">is not</span> <span class="tok-key">None</span>:
+        scores = scores.masked_fill(mask == <span class="tok-num">0</span>, -<span class="tok-num">1e9</span>)
+    <span class="tok-key">return</span> softmax(scores, dim=-<span class="tok-num">1</span>) @ v</code></pre>
+
+          <figure class="figure">
+            <div class="ph">Figure 2 — Scaled Dot-Product Attention</div>
+            <figcaption>取り込み時に保存された図。元 URL が消えても表示され続ける。</figcaption>
+          </figure>
+
+          <h2>3. 位置エンコーディング</h2>
+          <p>系列の順序情報を持たない構造なので、正弦波で位置を埋め込む。学習可能な埋め込みでも性能はほぼ変わらないと付録に書かれている。</p>
+          <ul>
+            <li>偶数次元は <code>sin</code>、奇数次元は <code>cos</code></li>
+            <li>波長は 2π から 10000·2π の等比数列</li>
+            <li>学習時より長い系列にも外挿できることを狙った設計</li>
+          </ul>
+
+          <h2>4. 実験結果の読み方</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>モデル</th><th>EN-DE BLEU</th><th>学習コスト</th></tr></thead>
+              <tbody>
+                <tr><td>GNMT + RL</td><td>24.6</td><td>2.3 · 10<sup>19</sup></td></tr>
+                <tr><td>ConvS2S</td><td>25.16</td><td>9.6 · 10<sup>18</sup></td></tr>
+                <tr><td>Transformer (base)</td><td>27.3</td><td>3.3 · 10<sup>18</sup></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>注目すべきは BLEU の差より学習コストの桁。詳細は <a href="#">arxiv.org/abs/1706.03762</a> を参照。</p>
+        </div>
+      </article>
+    </div>
+  </div>
+
+  <!-- インスペクタ: 取り込み・共有・処理をノートの隣に常設する（コンソール的な作業台） -->
+  <aside class="inspector" aria-label="ノートの情報">
+    <div class="insp-tabs" role="tablist">
+      <button class="active" role="tab" aria-selected="true">取り込み</button>
+      <button role="tab" aria-selected="false">共有</button>
+      <button role="tab" aria-selected="false">処理</button>
+    </div>
+
+    <section class="insp-block">
+      <h2 class="insp-title">元ファイル</h2>
+      <div class="kv-row"><span class="kv-key">名前</span><span class="kv-val">1706.03762.pdf</span></div>
+      <div class="kv-row"><span class="kv-key">形式</span><span class="kv-val">PDF（テキスト層あり）· 2.2 MB</span></div>
+      <div class="kv-row"><span class="kv-key">変換</span><span class="kv-val">テキスト抽出 → LLM 構造化<br><span class="res-reason">anthropic/claude-sonnet-4.5</span></span></div>
+      <div class="kv-row"><span class="kv-key">バックアップ</span><span class="kv-val">Drive / Hollow Backup<br><span class="res-reason">8月3日 21:04</span></span></div>
+    </section>
+
+    <section class="insp-block">
+      <h2 class="insp-title">取り込み結果 <span class="n">14 件</span></h2>
+
+      <div class="alert alert-warning" role="note">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>
+          <div class="alert-title">スタイル 1 件を取り込めませんでした</div>
+          <div class="alert-body">装飾が失われています。「表示スタイル」で既定スタイルを当て直せます。</div>
+        </div>
+      </div>
+
+      <div class="res ok">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <div>画像 12 件を保存<div class="res-url">arxiv.org/…/figures/*.png</div></div>
+      </div>
+      <div class="res ok">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <div>スタイル 2 件を本文に埋め込み<div class="res-url">arxiv.org/static/base.css</div></div>
+      </div>
+      <div class="res warn">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>スタイル 1 件が取得できず<div class="res-url">cdn.example.org/paper-theme.css</div><div class="res-reason">404 · 装飾が失われています</div></div>
+      </div>
+      <div class="res warn">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>外部 URL のまま 3 件<div class="res-url">example.com/assets/… ほか 2 件</div><div class="res-reason">未取り込み</div></div>
+      </div>
+      <div class="res">
+        <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <div>除去した CSS 宣言<div class="res-reason"><code>position: fixed</code> 4 · <code>@import</code> 1</div></div>
+      </div>
+    </section>
+
+    <section class="insp-block">
+      <h2 class="insp-title">最近の処理</h2>
+      <div class="job-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <div>LLM で構造化<div class="job-sub">8月3日 20:58 · 41 秒</div></div>
+        <button class="btn ghost" style="height:26px;padding:0 8px;font-size:var(--text-xs)">詳細</button>
+      </div>
+      <div class="job-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <div>Drive にバックアップ<div class="job-sub">8月3日 21:04 · 6 秒</div></div>
+        <button class="btn ghost" style="height:26px;padding:0 8px;font-size:var(--text-xs)">詳細</button>
+      </div>
+    </section>
+  </aside>
+
+</div>
+
+</body>
+</html>

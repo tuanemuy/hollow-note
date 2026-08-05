@@ -24,6 +24,12 @@
 
 - [画面構成](./pages/index.md)
 
+## デザイン
+
+- [デザイン方針](./design/index.md) — UI 構造「集中とコマンド」× 様式「Apple Calm」
+- [デザイントークン](./design/tokens.md) — CSS カスタムプロパティの正典
+- 画面モック: `design/pages/*.html`（単一ファイルでブラウザ表示可能）
+
 ## 技術設計
 
 - [ドメイン一覧](./domains/index.md) — Identity / Workspace / Storage / Conversion / Note / Tag / Integration / Job / Usage

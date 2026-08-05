@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>案3 時間の書架 — ノート一覧</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0);
+    --color-accent-hover: oklch(43.9% 0 0);
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-hover: #ececef;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a;
+    --color-warning: #a8580b;
+    --color-error: #c43e3e;
+    --color-status-private: #86868b;
+    --color-status-link: #a8580b;
+    --color-status-public: #1f8f3a;
+
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px);
+    --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px);
+    --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-3xl: clamp(22px, 4vw, 40px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-normal: 1.5; --tracking-tightest: -0.022em; --tracking-normal: -0.003em;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+    --space-12: 48px; --space-16: 64px; --space-20: 80px;
+
+    --sidebar-width: 248px; --header-height: 64px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --duration-fast: 120ms;
+    --header-bg: rgba(255,255,255,0.85);
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink);
+    font-family: var(--font-sans); font-size: var(--text-base);
+    line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+
+  /* Header */
+  .header {
+    position: sticky; top: 0; z-index: 50; height: var(--header-height);
+    background: var(--header-bg); backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-3);
+  }
+  .menu-btn { width: 36px; height: 36px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; }
+  .menu-btn:hover { background: var(--color-surface); }
+  .logo { display: inline-flex; align-items: center; gap: 7px; font-size: 17px; letter-spacing: var(--tracking-tightest); }
+  .header-spacer { flex: 1; }
+  .search { position: relative; width: min(360px, 42vw); }
+  .search input {
+    width: 100%; height: 36px; border: none; background: var(--color-surface);
+    border-radius: var(--radius-pill); padding: 0 var(--space-4) 0 36px; font-size: var(--text-sm); font-family: inherit;
+  }
+  .search input:focus { outline: none; box-shadow: var(--shadow-focus); }
+  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--color-ink-tertiary); }
+  .pill-btn {
+    height: 36px; padding: 0 14px; border-radius: var(--radius-pill);
+    background: var(--color-surface); font-size: var(--text-sm); font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  }
+  .pill-btn:hover { background: var(--color-surface-hover); }
+  .pill-btn.primary { background: var(--color-accent); color: #fff; }
+  .pill-btn.primary:hover { background: var(--color-accent-hover); }
+  .avatar {
+    width: 32px; height: 32px; border-radius: var(--radius-full);
+    background: linear-gradient(135deg, #c9d3df 0%, #8e99a8 100%);
+    color: #fff; font-size: 11px; font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .header .label { display: none; }
+
+  .layout { display: grid; grid-template-columns: 1fr; min-height: calc(100vh - var(--header-height)); }
+
+  /* ---------- Sidebar: scope + 年月の帯 ---------- */
+  .sidebar { padding: var(--space-4) var(--space-3) var(--space-10); overflow-y: auto; }
+  .scope-current {
+    width: 100%; display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-3); border-radius: var(--radius-lg); background: var(--color-surface);
+    text-align: left; margin-bottom: var(--space-5);
+  }
+  .scope-current:hover { background: var(--color-surface-hover); }
+  .scope-badge {
+    width: 26px; height: 26px; border-radius: var(--radius-md); background: var(--color-ink);
+    color: #fff; font-size: 11px; font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .scope-meta { flex: 1; min-width: 0; }
+  .scope-name { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+  .scope-sub { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+
+  .side-title {
+    font-size: var(--text-xs); color: var(--color-ink-tertiary);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 0 var(--space-3); margin-bottom: var(--space-2);
+  }
+  .years { margin-bottom: var(--space-6); }
+  .year-head {
+    display: flex; align-items: baseline; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+  }
+  .year-head .n { margin-left: auto; font-size: var(--text-xs); color: var(--color-ink-tertiary); font-weight: var(--weight-regular); }
+  .months { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 0 var(--space-3) var(--space-3); }
+  .month {
+    position: relative; height: 30px; border-radius: var(--radius-sm);
+    font-size: var(--text-xs); color: var(--color-ink-secondary);
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .month:hover { background: var(--color-surface); color: var(--color-ink); }
+  .month.on { background: var(--color-ink); color: #fff; }
+  .month.empty { color: var(--color-hairline-strong); pointer-events: none; }
+  .month .bar {
+    position: absolute; left: 5px; right: 5px; bottom: 4px; height: 2px;
+    border-radius: 1px; background: var(--color-hairline-strong);
+  }
+  .month.on .bar { background: rgba(255,255,255,0.55); }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; padding: 7px var(--space-3);
+    border-radius: var(--radius-md); font-size: var(--text-sm); cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .nav-item:hover { background: var(--color-surface); }
+  .nav-item svg { color: var(--color-ink-secondary); flex-shrink: 0; }
+  .nav-item .count { margin-left: auto; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .side-group { margin-bottom: var(--space-6); }
+
+  /* ---------- Main ---------- */
+  .main { padding: var(--space-6) var(--space-4) var(--space-20); width: 100%; max-width: 1240px; margin: 0 auto; }
+
+  .lede { margin-bottom: var(--space-6); }
+  .lede h1 { font-size: var(--text-3xl); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); line-height: 1.08; }
+  .lede p { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-top: var(--space-2); }
+
+  /* 公開状態を航法の第一軸に置く */
+  .visibility-tabs {
+    display: flex; gap: var(--space-1); overflow-x: auto;
+    border-bottom: 1px solid var(--color-hairline); margin-bottom: var(--space-4);
+  }
+  .vtab {
+    position: relative; padding: var(--space-3) var(--space-3) var(--space-3) var(--space-1);
+    font-size: var(--text-sm); color: var(--color-ink-secondary);
+    display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  }
+  .vtab:hover { color: var(--color-ink); }
+  .vtab.on { color: var(--color-ink); font-weight: var(--weight-medium); }
+  .vtab.on::after { content: ""; position: absolute; left: var(--space-1); right: var(--space-3); bottom: -1px; height: 2px; background: var(--color-ink); }
+  .vtab .n { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .dot { width: 6px; height: 6px; border-radius: var(--radius-full); display: inline-block; }
+  .dot.private { background: var(--color-status-private); }
+  .dot.link { background: var(--color-status-link); }
+  .dot.public { background: var(--color-status-public); }
+
+  .util-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-8); }
+  .chip {
+    height: 28px; padding: 0 11px; border-radius: var(--radius-pill);
+    background: var(--color-surface); font-size: var(--text-sm);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .chip:hover { background: var(--color-surface-hover); }
+  .chip.active { background: var(--color-ink); color: #fff; }
+  .chip.ghost { background: transparent; border: 1px dashed var(--color-hairline-strong); color: var(--color-ink-secondary); }
+  .util-right { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+  .segmented { background: var(--color-surface); border-radius: 9px; padding: 2px; display: inline-flex; }
+  .segmented button { padding: 6px 10px; border-radius: 7px; font-size: var(--text-sm); display: inline-flex; align-items: center; }
+  .segmented button.active { background: var(--color-bg); box-shadow: var(--shadow-xs); }
+
+  /* ---------- 月ごとの束 ---------- */
+  .month-block { margin-bottom: var(--space-12); }
+  .month-rule {
+    display: flex; align-items: baseline; gap: var(--space-3);
+    padding-bottom: var(--space-3); margin-bottom: var(--space-5);
+    border-bottom: 1px solid var(--color-ink);
+  }
+  .month-label { font-size: clamp(20px, 3vw, 30px); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); line-height: 1; }
+  .month-year { font-size: var(--text-sm); color: var(--color-ink-tertiary); }
+  .month-count { margin-left: auto; font-size: var(--text-sm); color: var(--color-ink-tertiary); }
+
+  .tiles { display: grid; grid-template-columns: 1fr; gap: var(--space-5); }
+  .tile { cursor: pointer; }
+  .tile-shot {
+    position: relative; width: 100%; aspect-ratio: 4/3;
+    border: 1px solid var(--color-hairline); border-radius: var(--radius-lg);
+    background: var(--color-bg); overflow: hidden;
+    transition: border-color var(--duration-fast) var(--ease-standard);
+  }
+  .tile:hover .tile-shot { border-color: var(--color-hairline-strong); }
+  .shot-inner { padding: 14px 14px 0; display: grid; gap: 5px; }
+  .shot-inner .h { height: 7px; width: 62%; background: var(--color-hairline-strong); border-radius: 2px; margin-bottom: 4px; }
+  .shot-inner i { display: block; height: 3px; background: var(--color-hairline); border-radius: 2px; }
+  .shot-inner i:nth-child(4) { width: 88%; }
+  .shot-inner i:nth-child(7) { width: 70%; }
+  .shot-inner i:nth-child(8) { width: 94%; }
+  .shot-inner .blk { height: 34px; background: var(--color-surface); border-radius: var(--radius-sm); margin-top: 6px; }
+  .shot-kind {
+    position: absolute; left: 10px; bottom: 10px;
+    height: 19px; padding: 0 7px; border-radius: var(--radius-xs);
+    background: rgba(255,255,255,0.92); border: 1px solid var(--color-hairline);
+    font-size: 10px; font-weight: var(--weight-semibold); letter-spacing: 0.04em;
+    color: var(--color-ink-secondary); display: inline-flex; align-items: center;
+  }
+  .shot-state {
+    position: absolute; inset: 0; background: rgba(255,255,255,0.9);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: var(--space-2); font-size: var(--text-sm); color: var(--color-ink-secondary); text-align: center; padding: var(--space-4);
+  }
+  .shot-state .spin { width: 18px; height: 18px; border-radius: var(--radius-full); border: 2px solid var(--color-accent); border-top-color: transparent; animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .shot-state.await { color: var(--color-warning); }
+  .shot-state.failed { color: var(--color-error); }
+
+  .tile-body { padding-top: var(--space-3); }
+  .tile-day { font-size: var(--text-xs); color: var(--color-ink-tertiary); font-variant-numeric: tabular-nums; }
+  .tile-title { font-size: var(--text-md); font-weight: var(--weight-medium); letter-spacing: -0.01em; margin: 3px 0 5px; }
+  .tile-meta { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .tile-meta .sep { color: var(--color-hairline-strong); }
+
+  .backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.2); z-index: 90; }
+  .backdrop.open { display: block; }
+
+  @media (max-width: 1023px) {
+    .sidebar {
+      position: fixed; top: 0; bottom: 0; left: 0; width: 280px; background: var(--color-bg);
+      z-index: 100; transform: translateX(-100%);
+      transition: transform 280ms cubic-bezier(0.32,0.72,0,1);
+      box-shadow: var(--shadow-md); padding-top: var(--space-5);
+    }
+    .sidebar.open { transform: translateX(0); }
+  }
+  @media (min-width: 480px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (min-width: 640px) {
+    .header { padding: 0 var(--space-5); }
+    .header .label { display: inline; }
+    .main { padding: var(--space-8) var(--space-6) var(--space-20); }
+  }
+  @media (min-width: 1024px) {
+    .layout { grid-template-columns: var(--sidebar-width) 1fr; }
+    .menu-btn { display: none; }
+    .sidebar { border-right: 1px solid var(--color-hairline); position: sticky; top: var(--header-height); height: calc(100vh - var(--header-height)); padding-top: var(--space-5); }
+    .main { padding: var(--space-10) var(--space-8) var(--space-20); }
+    .tiles { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (min-width: 1440px) {
+    .tiles { grid-template-columns: repeat(4, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <button class="menu-btn" id="menuBtn" aria-label="メニューを開く">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+  </button>
+  <span class="logo">
+    <svg width="26" height="16" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+    hollow
+  </span>
+  <div class="header-spacer"></div>
+  <div class="search">
+    <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="search" placeholder="検索" aria-label="検索">
+  </div>
+  <button class="pill-btn primary">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    <span class="label">アップロード</span>
+  </button>
+  <div class="avatar">YI</div>
+</header>
+
+<div class="backdrop" id="backdrop"></div>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <button class="scope-current">
+      <span class="scope-badge">DT</span>
+      <span class="scope-meta">
+        <span class="scope-name">デザインチーム</span>
+        <span class="scope-sub">124 件 · 8.2 GB / 20 GB</span>
+      </span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-ink-tertiary)"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+
+    <!-- 年月の帯: 「いつ取り込んだか」を第一の航法にする -->
+    <div class="years">
+      <div class="side-title">作成月</div>
+
+      <div class="year-head">2026 <span class="n">97</span></div>
+      <div class="months">
+        <button class="month">1<span class="bar" style="opacity:.4"></span></button>
+        <button class="month">2<span class="bar" style="opacity:.5"></span></button>
+        <button class="month">3<span class="bar" style="opacity:.8"></span></button>
+        <button class="month">4<span class="bar" style="opacity:.3"></span></button>
+        <button class="month">5<span class="bar" style="opacity:.9"></span></button>
+        <button class="month">6<span class="bar" style="opacity:.6"></span></button>
+        <button class="month">7<span class="bar"></span></button>
+        <button class="month on">8<span class="bar"></span></button>
+        <button class="month empty">9</button>
+        <button class="month empty">10</button>
+        <button class="month empty">11</button>
+        <button class="month empty">12</button>
+      </div>
+
+      <div class="year-head">2025 <span class="n">27</span></div>
+      <div class="months">
+        <button class="month empty">1</button>
+        <button class="month empty">2</button>
+        <button class="month">3<span class="bar" style="opacity:.3"></span></button>
+        <button class="month">4<span class="bar" style="opacity:.4"></span></button>
+        <button class="month">5<span class="bar" style="opacity:.5"></span></button>
+        <button class="month">6<span class="bar" style="opacity:.3"></span></button>
+        <button class="month">7<span class="bar" style="opacity:.6"></span></button>
+        <button class="month">8<span class="bar" style="opacity:.4"></span></button>
+        <button class="month">9<span class="bar" style="opacity:.5"></span></button>
+        <button class="month">10<span class="bar" style="opacity:.7"></span></button>
+        <button class="month">11<span class="bar" style="opacity:.4"></span></button>
+        <button class="month">12<span class="bar" style="opacity:.6"></span></button>
+      </div>
+    </div>
+
+    <div class="side-group">
+      <div class="side-title">タグ</div>
+      <div class="nav-item">#議事録<span class="count">31</span></div>
+      <div class="nav-item">#調査<span class="count">22</span></div>
+      <div class="nav-item">#経営<span class="count">11</span></div>
+      <div class="nav-item" style="color:var(--color-ink-secondary)">すべてのタグ</div>
+    </div>
+
+    <div class="side-group">
+      <div class="nav-item">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2"/></svg>
+        処理履歴<span class="count">2</span>
+      </div>
+      <div class="nav-item">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        ゴミ箱<span class="count">3</span>
+      </div>
+      <div class="nav-item">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M4.6 15a1.65 1.65 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        設定
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="lede">
+      <h1>デザインチームの書庫</h1>
+      <p>124 件のノート · 8.2 GB / 20 GB · 処理中 2 件</p>
+    </div>
+
+    <!-- 公開状態を第一の軸に。「保存して・見せる」の状態を常に把握できる -->
+    <nav class="visibility-tabs" aria-label="公開状態">
+      <button class="vtab on">すべて <span class="n">124</span></button>
+      <button class="vtab"><span class="dot private"></span>非公開 <span class="n">78</span></button>
+      <button class="vtab"><span class="dot link"></span>リンクを知る人 <span class="n">15</span></button>
+      <button class="vtab"><span class="dot public"></span>公開 <span class="n">31</span></button>
+    </nav>
+
+    <div class="util-row">
+      <button class="chip active">#議事録</button>
+      <button class="chip ghost">＋ タグ</button>
+      <button class="chip ghost">形式 ▾</button>
+      <div class="util-right">
+        <div class="segmented" role="radiogroup" aria-label="表示形式">
+          <button role="radio" aria-checked="false" aria-label="リスト">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+          </button>
+          <button class="active" role="radio" aria-checked="true" aria-label="タイル">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          </button>
+          <button role="radio" aria-checked="false" aria-label="カレンダー">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <section class="month-block">
+      <div class="month-rule">
+        <span class="month-label">8月</span>
+        <span class="month-year">2026</span>
+        <span class="month-count">12 件</span>
+      </div>
+
+      <div class="tiles">
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="shot-state"><span class="spin"></span>文字起こし中 62%</div>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月5日 14:02</div>
+            <h3 class="tile-title">取材音声 — 8月4日 田中さん</h3>
+            <div class="tile-meta"><span class="dot private"></span>非公開<span class="sep">·</span>M4A 38.2 MB</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><i></i><i></i><i></i><i></i><div class="blk"></div></div>
+            <span class="shot-kind">DOCX</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月5日 11:04</div>
+            <h3 class="tile-title">第14回 定例会議 議事録</h3>
+            <div class="tile-meta"><span class="dot link"></span>リンクを知る人<span class="sep">·</span>#議事録</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><i></i></div>
+            <div class="shot-state await">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              要 LLM 連携
+            </div>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月5日 09:41</div>
+            <h3 class="tile-title">請求書スキャン 2026-07</h3>
+            <div class="tile-meta"><span class="dot private"></span>非公開<span class="sep">·</span>PDF（テキスト層なし）</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><div class="blk"></div><i></i><i></i><i></i></div>
+            <span class="shot-kind">PPTX</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月4日</div>
+            <h3 class="tile-title">2026年度 事業計画（第3版）</h3>
+            <div class="tile-meta"><span class="dot private"></span>非公開<span class="sep">·</span>#経営</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><div class="blk"></div><i></i><i></i></div>
+            <span class="shot-kind">PDF</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月3日</div>
+            <h3 class="tile-title">Attention Is All You Need — 読書メモ</h3>
+            <div class="tile-meta"><span class="dot public"></span>公開<span class="sep">·</span>#論文 #調査</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i></div>
+            <div class="shot-state failed">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              パスワード保護で失敗
+            </div>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">8月2日</div>
+            <h3 class="tile-title">登壇資料 — TanStack Start 入門</h3>
+            <div class="tile-meta"><span class="dot private"></span>非公開<span class="sep">·</span>PDF 6.8 MB</div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <section class="month-block">
+      <div class="month-rule">
+        <span class="month-label">7月</span>
+        <span class="month-year">2026</span>
+        <span class="month-count">23 件</span>
+      </div>
+
+      <div class="tiles">
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><i></i><div class="blk"></div></div>
+            <span class="shot-kind">MD</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">7月28日</div>
+            <h3 class="tile-title">Cloudflare Workers 料金の調査メモ</h3>
+            <div class="tile-meta"><span class="dot public"></span>公開<span class="sep">·</span>#調査</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><div class="blk"></div><i></i><i></i><i></i></div>
+            <span class="shot-kind">XLSX</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">7月24日</div>
+            <h3 class="tile-title">デザイントークン一覧</h3>
+            <div class="tile-meta"><span class="dot private"></span>非公開<span class="sep">·</span>#design</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="shot-kind">HTML</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">7月19日</div>
+            <h3 class="tile-title">競合サービスの機能比較（保存版）</h3>
+            <div class="tile-meta"><span class="dot link"></span>リンクを知る人<span class="sep">·</span>#調査</div>
+          </div>
+        </article>
+
+        <article class="tile">
+          <div class="tile-shot">
+            <div class="shot-inner"><div class="h"></div><i></i><i></i><i></i><div class="blk"></div><i></i></div>
+            <span class="shot-kind">DOCX</span>
+          </div>
+          <div class="tile-body">
+            <div class="tile-day">7月11日</div>
+            <h3 class="tile-title">第13回 定例会議 議事録</h3>
+            <div class="tile-meta"><span class="dot link"></span>リンクを知る人<span class="sep">·</span>#議事録</div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  const menuBtn = document.getElementById('menuBtn');
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('backdrop');
+  menuBtn.addEventListener('click', () => { sidebar.classList.add('open'); backdrop.classList.add('open'); });
+  backdrop.addEventListener('click', () => { sidebar.classList.remove('open'); backdrop.classList.remove('open'); });
+</script>
+
+</body>
+</html>

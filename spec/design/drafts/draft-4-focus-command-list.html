@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>案4 集中とコマンド — ノート一覧</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0);
+    --color-accent-hover: oklch(43.9% 0 0);
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-hover: #ececef;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a;
+    --color-warning: #a8580b;
+    --color-error: #c43e3e;
+    --color-status-private: #86868b;
+    --color-status-link: #a8580b;
+    --color-status-public: #1f8f3a;
+
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px);
+    --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px);
+    --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-3xl: clamp(22px, 4vw, 40px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-normal: 1.5; --tracking-tightest: -0.022em; --tracking-normal: -0.003em;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+    --space-12: 48px; --space-16: 64px; --space-20: 80px;
+
+    --content-max: 780px; --header-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --duration-fast: 120ms;
+    --header-bg: rgba(255,255,255,0.85);
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink);
+    font-family: var(--font-sans); font-size: var(--text-base);
+    line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+
+  /* ---------- 極薄トップバー（常設ナビは持たない） ---------- */
+  .bar {
+    position: sticky; top: 0; z-index: 50; height: var(--header-height);
+    background: var(--header-bg); backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: 0 var(--space-4);
+  }
+  .mark { color: var(--color-ink); flex-shrink: 0; }
+  .scope-token {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 28px; padding: 0 10px 0 6px; border-radius: var(--radius-pill);
+    background: var(--color-surface); font-size: var(--text-sm);
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .scope-token:hover { background: var(--color-surface-hover); }
+  .scope-badge {
+    width: 18px; height: 18px; border-radius: var(--radius-sm);
+    background: var(--color-ink); color: #fff; font-size: 9px;
+    font-weight: var(--weight-medium); display: inline-flex; align-items: center; justify-content: center;
+  }
+  .bar-spacer { flex: 1; }
+  .cmd-trigger {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    height: 30px; padding: 0 10px; border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    font-size: var(--text-sm); color: var(--color-ink-tertiary);
+    min-width: 0;
+  }
+  .cmd-trigger:hover { border-color: var(--color-hairline-strong); color: var(--color-ink-secondary); }
+  .cmd-trigger .kbd {
+    font-family: var(--font-mono); font-size: 10px;
+    border: 1px solid var(--color-hairline); border-radius: var(--radius-xs);
+    padding: 1px 4px; color: var(--color-ink-tertiary);
+  }
+  .cmd-trigger .t { display: none; }
+  .bar-btn { width: 30px; height: 30px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; color: var(--color-ink-secondary); }
+  .bar-btn:hover { background: var(--color-surface); color: var(--color-ink); }
+  .avatar {
+    width: 28px; height: 28px; border-radius: var(--radius-full);
+    background: linear-gradient(135deg, #c9d3df 0%, #8e99a8 100%);
+    color: #fff; font-size: 10px; font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* ---------- 進行中だけを 1 行で知らせる（常設パネルは持たない） ---------- */
+  .ticker {
+    display: flex; align-items: center; gap: var(--space-2);
+    max-width: var(--content-max); margin: 0 auto;
+    padding: var(--space-3) var(--space-4) 0;
+    font-size: var(--text-xs); color: var(--color-ink-tertiary);
+  }
+  .ticker .spin { width: 10px; height: 10px; border-radius: var(--radius-full); border: 1.5px solid var(--color-accent); border-top-color: transparent; animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ticker a { margin-left: auto; color: var(--color-ink-secondary); }
+  .ticker a:hover { color: var(--color-ink); text-decoration: underline; }
+
+  /* ---------- Main ---------- */
+  .page { max-width: var(--content-max); margin: 0 auto; padding: var(--space-8) var(--space-4) var(--space-20); }
+
+  .head { margin-bottom: var(--space-8); }
+  .head h1 { font-size: var(--text-3xl); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); line-height: 1.1; }
+  .head .sub { font-size: var(--text-sm); color: var(--color-ink-tertiary); margin-top: var(--space-2); }
+  .head .active-filters { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-4); }
+  .chip {
+    height: 26px; padding: 0 10px; border-radius: var(--radius-pill);
+    background: var(--color-surface); font-size: var(--text-sm); color: var(--color-ink-secondary);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .chip .x { color: var(--color-ink-tertiary); }
+  .chip:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  .chip.hint { background: transparent; color: var(--color-ink-tertiary); }
+  .kbd-inline { font-family: var(--font-mono); font-size: 10px; border: 1px solid var(--color-hairline); border-radius: var(--radius-xs); padding: 1px 4px; }
+
+  /* ---------- Quiet list ---------- */
+  .group-label {
+    font-size: var(--text-xs); color: var(--color-ink-tertiary);
+    letter-spacing: 0.06em; text-transform: uppercase;
+    padding: var(--space-6) 0 var(--space-2);
+  }
+  .group-label:first-of-type { padding-top: 0; }
+
+  .item {
+    display: grid; grid-template-columns: 1fr auto; align-items: baseline;
+    gap: var(--space-3); padding: var(--space-3) var(--space-2);
+    border-radius: var(--radius-md); cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .item:hover { background: var(--color-surface-elevated); }
+  .item-main { min-width: 0; }
+  .item-title-row { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+  .item-title {
+    font-size: var(--text-md); font-weight: var(--weight-regular); letter-spacing: -0.008em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .dot { width: 6px; height: 6px; border-radius: var(--radius-full); display: inline-block; flex-shrink: 0; align-self: center; }
+  .dot.private { background: var(--color-status-private); }
+  .dot.link { background: var(--color-status-link); }
+  .dot.public { background: var(--color-status-public); }
+  .item-sub { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: 3px; display: flex; gap: var(--space-2); flex-wrap: wrap; }
+  .item-sub .sep { color: var(--color-hairline-strong); }
+  .item-right { display: flex; align-items: center; gap: var(--space-2); }
+  .item-date { font-size: var(--text-xs); color: var(--color-ink-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .item-actions { display: none; }
+  .state { font-size: var(--text-xs); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .state.working { color: var(--color-accent); }
+  .state.await { color: var(--color-warning); }
+  .state.failed { color: var(--color-error); }
+
+  .load-more { display: block; width: 100%; text-align: center; padding: var(--space-5); font-size: var(--text-sm); color: var(--color-ink-tertiary); margin-top: var(--space-6); }
+  .load-more:hover { color: var(--color-ink); }
+
+  /* ---------- Command palette（この案の航法そのもの） ---------- */
+  .palette-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.14); z-index: 200; display: flex; align-items: flex-start; justify-content: center; padding: var(--space-4); }
+  .palette {
+    width: min(620px, 100%); margin-top: 8vh;
+    background: var(--color-bg); border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg); overflow: hidden;
+  }
+  .palette-input { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4); border-bottom: 1px solid var(--color-hairline); }
+  .palette-input input { flex: 1; border: none; outline: none; font-family: inherit; font-size: var(--text-md); background: none; color: var(--color-ink); min-width: 0; }
+  .palette-input input::placeholder { color: var(--color-ink-tertiary); }
+  .palette-scope { flex-shrink: 0; height: 24px; padding: 0 9px; border-radius: var(--radius-sm); background: var(--color-surface); font-size: var(--text-xs); color: var(--color-ink-secondary); display: inline-flex; align-items: center; gap: 5px; }
+  .palette-section { font-size: var(--text-xs); color: var(--color-ink-tertiary); letter-spacing: 0.06em; text-transform: uppercase; padding: var(--space-3) var(--space-4) var(--space-1); }
+  .palette-row {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-2) var(--space-4); font-size: var(--text-sm); cursor: pointer;
+  }
+  .palette-row:hover, .palette-row.on { background: var(--color-surface); }
+  .palette-row svg { color: var(--color-ink-tertiary); flex-shrink: 0; }
+  .palette-row .hint { margin-left: auto; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .palette-foot { display: flex; gap: var(--space-4); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--color-hairline); font-size: var(--text-xs); color: var(--color-ink-tertiary); flex-wrap: wrap; }
+  .palette-foot .k { font-family: var(--font-mono); border: 1px solid var(--color-hairline); border-radius: var(--radius-xs); padding: 1px 4px; margin-right: 4px; }
+
+  @media (min-width: 640px) {
+    .bar { padding: 0 var(--space-6); }
+    .cmd-trigger { width: 260px; }
+    .cmd-trigger .t { display: inline; flex: 1; text-align: left; }
+    .cmd-trigger .kbd { margin-left: auto; }
+    .ticker { padding: var(--space-4) var(--space-6) 0; }
+    .page { padding: var(--space-10) var(--space-6) var(--space-20); }
+    .item-actions { display: flex; gap: 2px; opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard); }
+    .item:hover .item-actions, .item:focus-within .item-actions { opacity: 1; }
+    .icon-btn { width: 26px; height: 26px; border-radius: var(--radius-pill); display: inline-flex; align-items: center; justify-content: center; color: var(--color-ink-tertiary); }
+    .icon-btn:hover { background: var(--color-surface-hover); color: var(--color-ink); }
+  }
+  @media (min-width: 1024px) {
+    .page { padding: var(--space-16) var(--space-6) var(--space-20); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <svg class="mark" width="26" height="16" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+  <button class="scope-token" aria-haspopup="listbox">
+    <span class="scope-badge">DT</span>
+    デザインチーム
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-ink-tertiary)"><polyline points="6 9 12 15 18 9"/></svg>
+  </button>
+  <div class="bar-spacer"></div>
+  <button class="cmd-trigger" id="openPalette">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <span class="t">検索・操作</span>
+    <span class="kbd">⌘K</span>
+  </button>
+  <button class="bar-btn" aria-label="アップロード">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+  </button>
+  <div class="avatar">YI</div>
+</div>
+
+<div class="ticker" role="status">
+  <span class="spin"></span>
+  2 件を変換中 — interview_0804.m4a ほか 1 件
+  <a href="#">処理履歴</a>
+</div>
+
+<main class="page">
+
+  <div class="head">
+    <h1>デザインチーム</h1>
+    <div class="sub">124 件のノート</div>
+    <div class="active-filters">
+      <button class="chip">#議事録 <span class="x">×</span></button>
+      <button class="chip">2026年8月 <span class="x">×</span></button>
+      <span class="chip hint"><span class="kbd-inline">⌘K</span> で絞り込み・移動・アップロード</span>
+    </div>
+  </div>
+
+  <div class="group-label">今日</div>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot private"></span>
+        <span class="item-title">取材音声 — 8月4日 田中さん</span>
+      </div>
+      <div class="item-sub">interview_0804.m4a<span class="sep">·</span>文字起こし → 構造化</div>
+    </div>
+    <div class="item-right">
+      <span class="state working"><span class="spin" style="width:9px;height:9px;border-width:1.4px"></span>62%</span>
+      <div class="item-actions">
+        <button class="icon-btn" aria-label="タグを追加"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <button class="icon-btn" aria-label="操作メニュー"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+      </div>
+      <span class="item-date">14:02</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot link"></span>
+        <span class="item-title">第14回 定例会議 議事録</span>
+      </div>
+      <div class="item-sub">#議事録 #定例<span class="sep">·</span>議事録_0805.docx</div>
+    </div>
+    <div class="item-right">
+      <div class="item-actions">
+        <button class="icon-btn" aria-label="タグを追加"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <button class="icon-btn" aria-label="操作メニュー"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+      </div>
+      <span class="item-date">11:04</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot private"></span>
+        <span class="item-title">請求書スキャン 2026-07</span>
+      </div>
+      <div class="item-sub">invoice_2026-07.pdf<span class="sep">·</span>テキスト層のない PDF</div>
+    </div>
+    <div class="item-right">
+      <span class="state await">要 LLM 連携</span>
+      <span class="item-date">09:41</span>
+    </div>
+  </article>
+
+  <div class="group-label">今週</div>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot private"></span>
+        <span class="item-title">2026年度 事業計画（第3版）</span>
+      </div>
+      <div class="item-sub">#経営<span class="sep">·</span>事業計画_v3.pptx · スライド 42 枚</div>
+    </div>
+    <div class="item-right">
+      <div class="item-actions">
+        <button class="icon-btn" aria-label="タグを追加"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <button class="icon-btn" aria-label="操作メニュー"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+      </div>
+      <span class="item-date">8月4日</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot public"></span>
+        <span class="item-title">Attention Is All You Need — 読書メモ</span>
+      </div>
+      <div class="item-sub">#論文 #調査<span class="sep">·</span>画像 12 件を取り込み</div>
+    </div>
+    <div class="item-right">
+      <div class="item-actions">
+        <button class="icon-btn" aria-label="タグを追加"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <button class="icon-btn" aria-label="操作メニュー"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+      </div>
+      <span class="item-date">8月3日</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot private"></span>
+        <span class="item-title">登壇資料 — TanStack Start 入門</span>
+      </div>
+      <div class="item-sub">slide.pdf<span class="sep">·</span>パスワード保護のため取り込めず</div>
+    </div>
+    <div class="item-right">
+      <span class="state failed">変換失敗</span>
+      <span class="item-date">8月2日</span>
+    </div>
+  </article>
+
+  <div class="group-label">7月</div>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot public"></span>
+        <span class="item-title">Cloudflare Workers 料金の調査メモ</span>
+      </div>
+      <div class="item-sub">#調査 #cloudflare<span class="sep">·</span>機械変換（LLM 未使用）</div>
+    </div>
+    <div class="item-right">
+      <span class="item-date">7月28日</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot private"></span>
+        <span class="item-title">デザイントークン一覧</span>
+      </div>
+      <div class="item-sub">#design<span class="sep">·</span>tokens.xlsx · 3 シート</div>
+    </div>
+    <div class="item-right">
+      <span class="item-date">7月24日</span>
+    </div>
+  </article>
+
+  <article class="item">
+    <div class="item-main">
+      <div class="item-title-row">
+        <span class="dot link"></span>
+        <span class="item-title">競合サービスの機能比較（保存版）</span>
+      </div>
+      <div class="item-sub">#調査<span class="sep">·</span>HTML をそのまま取り込み</div>
+    </div>
+    <div class="item-right">
+      <span class="item-date">7月19日</span>
+    </div>
+  </article>
+
+  <button class="load-more">さらに読み込む</button>
+</main>
+
+<!-- ⌘K パレット: 検索・スコープ移動・絞り込み・アップロードを 1 つの入口にまとめる -->
+<div class="palette-scrim" id="scrim">
+  <div class="palette" role="dialog" aria-modal="true" aria-label="コマンド">
+    <div class="palette-input">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" style="color:var(--color-ink-tertiary)"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <span class="palette-scope"><span class="scope-badge" style="width:14px;height:14px;font-size:8px">DT</span>デザインチーム</span>
+      <input type="text" value="議事" placeholder="検索、またはコマンド" autofocus>
+      <button class="bar-btn" id="closePalette" aria-label="閉じる">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="palette-section">ノート</div>
+    <div class="palette-row on">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      第14回 定例会議 <mark style="background:none;color:inherit;font-weight:var(--weight-semibold)">議事</mark>録
+      <span class="hint">今日</span>
+    </div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      第13回 定例会議 <mark style="background:none;color:inherit;font-weight:var(--weight-semibold)">議事</mark>録
+      <span class="hint">7月11日</span>
+    </div>
+
+    <div class="palette-section">絞り込み</div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      タグ <strong style="font-weight:var(--weight-semibold)">#議事録</strong> で絞り込む
+      <span class="hint">31 件</span>
+    </div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>
+      公開のノートだけ表示
+      <span class="hint">31 件</span>
+    </div>
+
+    <div class="palette-section">移動・操作</div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      ファイルをアップロード
+      <span class="hint">U</span>
+    </div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/></svg>
+      個人のノートへ切り替え
+      <span class="hint">86 件</span>
+    </div>
+    <div class="palette-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2"/></svg>
+      処理履歴を開く
+      <span class="hint">2 件 実行中</span>
+    </div>
+
+    <div class="palette-foot">
+      <span><span class="k">↑↓</span>移動</span>
+      <span><span class="k">↵</span>開く</span>
+      <span><span class="k">⌘↵</span>新しいタブ</span>
+      <span><span class="k">esc</span>閉じる</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const scrim = document.getElementById('scrim');
+  document.getElementById('openPalette').addEventListener('click', () => { scrim.style.display = 'flex'; });
+  document.getElementById('closePalette').addEventListener('click', () => { scrim.style.display = 'none'; });
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) scrim.style.display = 'none'; });
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); scrim.style.display = 'flex'; }
+    if (e.key === 'Escape') scrim.style.display = 'none';
+  });
+</script>
+
+</body>
+</html>

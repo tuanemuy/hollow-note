@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P-31 ワークスペース一般設定 — Hollow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0); --color-accent-hover: oklch(43.9% 0 0); --color-accent-pressed: oklch(26.9% 0 0);
+    --color-accent-surface: oklch(97% 0 0); --color-accent-ink: oklch(26.9% 0 0);
+    --color-bg: #ffffff; --color-surface: #f5f5f7; --color-surface-hover: #ececef; --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f; --color-ink-secondary: #6e6e73; --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12); --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a; --color-success-surface: #e6f4ea; --color-warning: #a8580b; --color-warning-surface: #fdf3e7;
+    --color-error: #c43e3e; --color-error-surface: #fbebeb; --color-error-hover: #b03535; --color-error-pressed: #9a2e2e;
+    --color-info: var(--color-accent);
+    --color-status-private: #86868b; --color-status-link: #a8580b; --color-status-public: #1f8f3a;
+    --color-convert-working: var(--color-accent); --color-convert-awaiting: var(--color-warning);
+    --color-convert-failed: var(--color-error); --color-convert-done: var(--color-success);
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-comment: var(--color-ink-tertiary);
+    --code-function: #5b3da1; --code-number: #1d6fd6;
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-heading: var(--font-sans); --font-body: var(--font-sans);
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px); --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px); --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px); --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px); --text-3xl: clamp(24px, 4vw, 38px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.5; --leading-relaxed: 1.75;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-tight: -0.008em; --tracking-normal: -0.003em;
+    --space-0: 0; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+    --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+    --content-max: 680px; --list-max: 780px; --wide-max: 1100px; --palette-max: 620px;
+    --container-padding: clamp(16px, 4vw, 32px); --bar-height: 56px; --actionbar-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --icon-2xs: 11px; --icon-xs: 13px; --icon-sm: 14px; --icon-md: 18px;
+    --shadow-none: none; --shadow-xs: 0 1px 2px rgba(0,0,0,0.04); --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08); --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); --ease-decel: cubic-bezier(0, 0, 0.2, 1); --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+    --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 280ms;
+    --transition-default: all var(--duration-base) var(--ease-standard);
+    --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+    --transition-color: color var(--duration-fast) var(--ease-standard);
+    --opacity-disabled: 0.55; --opacity-pending: 0.6;
+    --bar-bg: rgba(255,255,255,0.82); --bar-blur: saturate(180%) blur(20px);
+    --bp-sm: 640px; --bp-md: 768px; --bp-lg: 1024px; --bp-xl: 1280px; --bp-2xl: 1536px;
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink); font-family: var(--font-body);
+    font-size: var(--text-base); line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  input, textarea { font-family: inherit; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+  .bar {
+    position: sticky; top: 0; z-index: 60; height: var(--bar-height);
+    background: var(--bar-bg); backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur);
+    display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) { .bar { background: var(--color-bg); } }
+  .back { display: inline-flex; align-items: center; gap: var(--space-1); height: 32px; padding: 0 var(--space-2); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--color-ink-tertiary); transition: var(--transition-bg), var(--transition-color); }
+  .back:hover { background: var(--color-surface); color: var(--color-ink); }
+  .bar-spacer { flex: 1; }
+  .kbd { font-family: var(--font-mono); font-size: 10px; line-height: 1.4; border: 1px solid var(--color-hairline); border-radius: var(--radius-xs); padding: 1px 4px; color: var(--color-ink-tertiary); }
+  .cmd-trigger { display: inline-flex; align-items: center; gap: var(--space-2); height: 30px; padding: 0 var(--space-2); border-radius: var(--radius-md); border: 1px solid var(--color-hairline); font-size: var(--text-sm); color: var(--color-ink-tertiary); }
+  .cmd-trigger .t { display: none; }
+
+  .page { max-width: var(--list-max); margin: 0 auto; padding: var(--space-8) var(--space-4) var(--space-16); }
+  .page-title { font-size: var(--text-3xl); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); line-height: var(--leading-tight); display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
+  .scope-badge { width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--color-ink); color: var(--color-bg); font-size: var(--text-xs); font-weight: var(--weight-medium); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+  .tabs { display: flex; gap: var(--space-1); overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--color-hairline); margin-bottom: var(--space-8); }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { position: relative; padding: var(--space-3); font-size: var(--text-sm); color: var(--color-ink-secondary); white-space: nowrap; transition: var(--transition-color); }
+  .tab:hover { color: var(--color-ink); }
+  .tab[aria-current="page"] { color: var(--color-ink); font-weight: var(--weight-medium); }
+  .tab[aria-current="page"]::after { content: ""; position: absolute; left: var(--space-2); right: var(--space-2); bottom: -1px; height: 2px; background: var(--color-ink); }
+
+  .panel { border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: var(--space-5); margin-bottom: var(--space-6); }
+  .panel-title { font-size: var(--text-md); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); margin-bottom: var(--space-2); }
+  .panel-note { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-bottom: var(--space-5); }
+
+  .field { margin-bottom: var(--space-5); }
+  .field:last-child { margin-bottom: 0; }
+  .field-label { display: block; font-size: var(--text-sm); font-weight: var(--weight-medium); margin-bottom: var(--space-2); }
+  .field-hint { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: var(--space-2); }
+  .field-error { font-size: var(--text-xs); color: var(--color-error); margin-top: var(--space-2); }
+  .input, .textarea {
+    width: 100%; height: 40px; border: 1px solid var(--color-hairline-strong);
+    border-radius: var(--radius-md); padding: 0 var(--space-3);
+    font-size: var(--text-sm); color: var(--color-ink); background: var(--color-bg);
+    transition: border-color var(--duration-fast) var(--ease-standard);
+  }
+  .textarea { height: auto; min-height: 80px; padding: var(--space-3); line-height: var(--leading-normal); resize: vertical; }
+  .input:hover, .textarea:hover { border-color: var(--color-ink-tertiary); }
+  .input:focus, .textarea:focus { outline: none; box-shadow: var(--shadow-focus); border-color: transparent; }
+  .input:disabled, .textarea:disabled { background: var(--color-surface); color: var(--color-ink-tertiary); cursor: not-allowed; }
+  .input.invalid { border-color: var(--color-error); }
+
+  .prefixed { display: flex; align-items: center; }
+  .prefix {
+    height: 40px; display: inline-flex; align-items: center; padding: 0 var(--space-3);
+    border: 1px solid var(--color-hairline-strong); border-right: none;
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    background: var(--color-surface); color: var(--color-ink-tertiary); font-size: var(--text-sm); white-space: nowrap;
+  }
+  .prefixed .input { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
+
+  .icon-row { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+  .ws-icon { width: 56px; height: 56px; border-radius: var(--radius-lg); background: var(--color-ink); color: var(--color-bg); font-size: var(--text-lg); font-weight: var(--weight-medium); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+  .btn {
+    height: 40px; padding: 0 var(--space-4); border-radius: var(--radius-pill);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap;
+    background: var(--color-surface); color: var(--color-ink); transition: var(--transition-bg), var(--transition-color);
+  }
+  .btn:hover { background: var(--color-surface-hover); }
+  .btn.primary { background: var(--color-accent); color: var(--color-bg); }
+  .btn.primary:hover { background: var(--color-accent-hover); }
+  .btn.ghost { background: transparent; color: var(--color-ink-secondary); }
+  .btn.ghost:hover { background: var(--color-surface); color: var(--color-ink); }
+  .btn.sm { height: 32px; padding: 0 var(--space-3); font-size: var(--text-xs); }
+  .btn:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+  .btn:disabled:hover { background: var(--color-accent); }
+
+  .alert {
+    display: flex; gap: var(--space-3); align-items: flex-start;
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--alert-accent, var(--color-accent)) 30%, transparent);
+    box-shadow: var(--shadow-xs); margin-bottom: var(--space-5);
+  }
+  .alert-warning { --alert-accent: var(--color-warning); }
+  .alert-info { --alert-accent: var(--color-info); }
+  .alert > svg { color: var(--alert-accent); flex-shrink: 0; margin-top: 2px; }
+  .alert-title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--alert-accent); margin-bottom: 2px; }
+  .alert-body { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+
+  .actionbar {
+    position: sticky; bottom: 0; z-index: 50; background: var(--bar-bg);
+    backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur);
+    border-top: 1px solid var(--color-hairline); padding: var(--space-2) var(--space-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) { .actionbar { background: var(--color-bg); } }
+  .actionbar-inner { max-width: var(--list-max); margin: 0 auto; display: flex; align-items: center; gap: var(--space-2); }
+  .save-state { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .act-spacer { flex: 1; }
+
+  @media (min-width: 640px) {
+    .bar { padding: 0 var(--space-6); }
+    .cmd-trigger { width: 200px; }
+    .cmd-trigger .t { display: inline; flex: 1; text-align: left; }
+    .cmd-trigger .kbd { margin-left: auto; }
+    .page { padding: var(--space-10) var(--space-6) var(--space-16); }
+    .actionbar { padding: var(--space-2) var(--space-6); }
+  }
+  @media (min-width: 1024px) { .page { padding: var(--space-12) var(--space-6) var(--space-16); } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <a class="back" href="#">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+    デザインチーム
+  </a>
+  <div class="bar-spacer"></div>
+  <button class="cmd-trigger" aria-label="検索・操作（コマンド K）">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <span class="t">検索・操作</span>
+    <span class="kbd" aria-hidden="true">⌘K</span>
+  </button>
+</header>
+
+<main class="page">
+  <h1 class="page-title"><span class="scope-badge" aria-hidden="true">DT</span>デザインチーム</h1>
+
+  <nav class="tabs" aria-label="ワークスペース設定">
+    <a class="tab" href="#" aria-current="page">一般</a>
+    <a class="tab" href="#">メンバー</a>
+    <a class="tab" href="#">公開</a>
+    <a class="tab" href="#">削除</a>
+  </nav>
+
+  <section class="panel">
+    <h2 class="panel-title">基本情報</h2>
+    <p class="panel-note">メンバーと、公開ページを開いた人に表示されます。</p>
+
+    <div class="field">
+      <span class="field-label">アイコン</span>
+      <div class="icon-row">
+        <span class="ws-icon" aria-hidden="true">DT</span>
+        <button class="btn sm">画像を選ぶ</button>
+        <button class="btn sm ghost">削除</button>
+        <span class="field-hint">PNG / JPEG / WebP · 2 MB まで</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="wsName">名前</label>
+      <input class="input" id="wsName" type="text" value="デザインチーム" maxlength="50">
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="wsDesc">説明</label>
+      <textarea class="textarea" id="wsDesc" maxlength="300" placeholder="どんな資料を集めているか">プロダクトのデザイン資料・議事録・調査メモを集約しています。</textarea>
+      <p class="field-hint">300 文字まで</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">公開スラッグ</h2>
+    <p class="panel-note">公開ページの URL に使います。ワークスペースのノートを公開するには設定が必要です。</p>
+
+    <div class="alert alert-warning" role="note">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <div>
+        <div class="alert-title">スラッグを変えると古い URL は開けなくなります</div>
+        <div class="alert-body">公開ページとその中のノートのリンクがすべて変わります。変更前の URL は他のワークスペースが使えるようになります。</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="field-label" for="wsSlug">スラッグ</label>
+      <div class="prefixed">
+        <span class="prefix">hollow.app/w/</span>
+        <input class="input" id="wsSlug" type="text" value="design-team">
+      </div>
+      <p class="field-hint">半角英数字とハイフン · 3〜32 文字</p>
+    </div>
+  </section>
+</main>
+
+<div class="actionbar">
+  <div class="actionbar-inner">
+    <span class="save-state" role="status">最終保存 8月4日 17:20</span>
+    <div class="act-spacer"></div>
+    <button class="btn ghost">変更を取り消す</button>
+    <button class="btn primary" disabled>保存</button>
+  </div>
+</div>
+
+</body>
+</html>

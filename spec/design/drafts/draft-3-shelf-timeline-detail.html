@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>案3 時間の書架 — ノート詳細</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0);
+    --color-accent-hover: oklch(43.9% 0 0);
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-hover: #ececef;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a;
+    --color-warning: #a8580b;
+    --color-error: #c43e3e;
+    --color-status-private: #86868b;
+    --color-status-link: #a8580b;
+    --color-status-public: #1f8f3a;
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-function: #5b3da1; --code-number: #1d6fd6;
+
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px);
+    --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px);
+    --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-3xl: clamp(26px, 4.4vw, 44px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-normal: 1.5; --leading-relaxed: 1.7; --leading-snug: 1.35;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-normal: -0.003em;
+
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+    --space-12: 48px; --space-16: 64px; --space-20: 80px;
+
+    --content-max: 700px; --header-height: 60px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --duration-fast: 120ms;
+    --header-bg: rgba(255,255,255,0.85);
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink);
+    font-family: var(--font-sans); font-size: var(--text-base);
+    line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  ul { list-style: none; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+
+  .header {
+    position: sticky; top: 0; z-index: 50; height: var(--header-height);
+    background: var(--header-bg); backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: 0 var(--space-4);
+  }
+  .back { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--color-ink-secondary); padding: 6px 8px; border-radius: var(--radius-sm); }
+  .back:hover { background: var(--color-surface); color: var(--color-ink); }
+  .header-spacer { flex: 1; }
+  .pill-btn {
+    height: 34px; padding: 0 13px; border-radius: var(--radius-pill);
+    background: var(--color-surface); font-size: var(--text-sm); font-weight: var(--weight-medium);
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  }
+  .pill-btn:hover { background: var(--color-surface-hover); }
+  .pill-btn.ghost { background: transparent; color: var(--color-ink-secondary); }
+  .pill-btn.ghost:hover { background: var(--color-surface); color: var(--color-ink); }
+  .header .label { display: none; }
+
+  .page { max-width: var(--content-max); margin: 0 auto; padding: var(--space-8) var(--space-4) var(--space-20); }
+
+  /* エディトリアルな日付ヘッド: 「いつ取り込まれたか」を最上位の情報にする */
+  .datehead {
+    display: flex; align-items: flex-end; gap: var(--space-3);
+    padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-ink);
+    margin-bottom: var(--space-6);
+  }
+  .date-big { font-size: clamp(30px, 6vw, 52px); font-weight: var(--weight-light); letter-spacing: var(--tracking-tightest); line-height: 0.9; }
+  .date-side { font-size: var(--text-xs); color: var(--color-ink-tertiary); line-height: 1.4; padding-bottom: 4px; }
+  .date-scope { margin-left: auto; font-size: var(--text-xs); color: var(--color-ink-tertiary); padding-bottom: 4px; text-align: right; }
+
+  .doc-title {
+    font-size: var(--text-3xl); font-weight: var(--weight-regular);
+    letter-spacing: var(--tracking-tightest); line-height: 1.14; margin-bottom: var(--space-4);
+  }
+  .doc-tags { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-6); }
+  .tag-pill { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+  .tag-pill:hover { color: var(--color-ink); text-decoration: underline; text-underline-offset: 3px; }
+  .tag-add { font-size: var(--text-sm); color: var(--color-ink-tertiary); }
+
+  /* 共有バー: 公開の状態と URL を本文の直前に常設する（この案の主張） */
+  .sharebar {
+    display: grid; gap: var(--space-3);
+    padding: var(--space-4); margin-bottom: var(--space-8);
+    border: 1px solid var(--color-hairline); border-radius: var(--radius-lg);
+    background: var(--color-surface-elevated);
+  }
+  .share-line { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+  .share-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-sm); font-weight: var(--weight-medium); }
+  .dot { width: 7px; height: 7px; border-radius: var(--radius-full); display: inline-block; }
+  .dot.private { background: var(--color-status-private); }
+  .dot.link { background: var(--color-status-link); }
+  .dot.public { background: var(--color-status-public); }
+  .share-note { font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .share-actions { margin-left: auto; display: flex; gap: var(--space-2); }
+  .sm-btn {
+    height: 28px; padding: 0 10px; border-radius: var(--radius-pill);
+    font-size: var(--text-xs); color: var(--color-ink-secondary);
+    border: 1px solid var(--color-hairline); display: inline-flex; align-items: center; gap: 5px;
+  }
+  .sm-btn:hover { border-color: var(--color-hairline-strong); color: var(--color-ink); }
+  .url-row {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+    background: var(--color-bg); border: 1px solid var(--color-hairline);
+    font-size: var(--text-sm); color: var(--color-ink-secondary);
+  }
+  .url-row .u { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .url-row button { margin-left: auto; font-size: var(--text-xs); color: var(--color-accent); white-space: nowrap; }
+
+  .content { font-size: var(--text-base); line-height: var(--leading-relaxed); }
+  .content h2 {
+    font-size: var(--text-xl); font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tighter); line-height: var(--leading-snug);
+    margin: var(--space-10) 0 var(--space-4); padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .content h3 { font-size: var(--text-lg); font-weight: var(--weight-semibold); margin: var(--space-8) 0 var(--space-3); }
+  .content p { margin-bottom: var(--space-4); }
+  .content ul { list-style: disc; padding-left: 1.4em; margin-bottom: var(--space-4); }
+  .content li { margin-bottom: var(--space-2); }
+  .content a { color: var(--color-accent); }
+  .content a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .content code { font-family: var(--font-mono); font-size: var(--text-mono); background: var(--color-surface); padding: 2px 5px; border-radius: var(--radius-xs); }
+  .content pre { font-family: var(--font-mono); font-size: var(--text-mono); background: var(--color-surface); border-radius: var(--radius-lg); padding: var(--space-4); overflow-x: auto; margin-bottom: var(--space-4); line-height: 1.6; }
+  .content pre code { background: none; padding: 0; }
+  .content blockquote { border-left: 3px solid var(--color-hairline-strong); padding-left: var(--space-4); color: var(--color-ink-secondary); margin-bottom: var(--space-4); }
+  .table-wrap { overflow-x: auto; margin-bottom: var(--space-4); }
+  .content table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+  .content th, .content td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-hairline); }
+  .content th { font-weight: var(--weight-semibold); color: var(--color-ink-secondary); }
+  .figure { margin-bottom: var(--space-5); }
+  .figure .ph { width: 100%; aspect-ratio: 16/9; border-radius: var(--radius-lg); background: var(--color-surface); display: flex; align-items: center; justify-content: center; color: var(--color-ink-tertiary); font-size: var(--text-sm); }
+  .figure figcaption { font-size: var(--text-sm); color: var(--color-ink-tertiary); margin-top: var(--space-2); }
+  .tok-key { color: var(--code-keyword); } .tok-str { color: var(--code-string); }
+  .tok-fn { color: var(--code-function); } .tok-num { color: var(--code-number); }
+
+  /* 来歴は折りたたみ。読書を妨げず、必要な人だけが開く */
+  .colophon { margin-top: var(--space-16); padding-top: var(--space-6); border-top: 1px solid var(--color-ink); }
+  .colophon-title { font-size: var(--text-xs); color: var(--color-ink-tertiary); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: var(--space-4); }
+  .col-line { display: grid; grid-template-columns: 88px 1fr; gap: var(--space-3); font-size: var(--text-sm); padding: var(--space-2) 0; align-items: baseline; }
+  .col-key { color: var(--color-ink-tertiary); font-size: var(--text-xs); }
+
+  details.fold { border-top: 1px solid var(--color-hairline); margin-top: var(--space-4); }
+  details.fold > summary {
+    list-style: none; cursor: pointer; padding: var(--space-3) 0;
+    display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);
+  }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary .chev { transition: transform var(--duration-fast) var(--ease-standard); color: var(--color-ink-tertiary); }
+  details.fold[open] > summary .chev { transform: rotate(90deg); }
+  details.fold > summary .n { margin-left: auto; font-size: var(--text-xs); color: var(--color-ink-tertiary); }
+  .fold-body { padding: 0 0 var(--space-4) 22px; }
+  .res { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-3); align-items: start; font-size: var(--text-sm); padding: var(--space-2) 0; }
+  .res + .res { border-top: 1px solid var(--color-hairline); }
+  .res .ico { margin-top: 3px; color: var(--color-ink-tertiary); }
+  .res.ok .ico { color: var(--color-success); }
+  .res.warn .ico { color: var(--color-warning); }
+  .res-url { font-size: var(--text-xs); color: var(--color-ink-tertiary); word-break: break-all; }
+  .res-reason { font-size: var(--text-xs); color: var(--color-ink-tertiary); white-space: nowrap; }
+
+  .alert {
+    display: flex; gap: var(--space-3); align-items: flex-start;
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--color-warning) 30%, transparent);
+    box-shadow: var(--shadow-xs); margin: var(--space-3) 0;
+  }
+  .alert svg { color: var(--color-warning); flex-shrink: 0; margin-top: 2px; }
+  .alert-title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--color-warning); margin-bottom: 2px; }
+  .alert-body { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+
+  /* 前後のノートへ（時間軸の航法を詳細でも保つ） */
+  .neighbors { display: grid; grid-template-columns: 1fr; gap: var(--space-3); margin-top: var(--space-12); }
+  .neighbor { border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: var(--space-4); }
+  .neighbor:hover { border-color: var(--color-hairline-strong); }
+  .neighbor .dir { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-bottom: 4px; }
+  .neighbor .t { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+  .neighbor .d { font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-top: 3px; }
+
+  @media (min-width: 640px) {
+    .header { padding: 0 var(--space-6); }
+    .header .label { display: inline; }
+    .page { padding: var(--space-10) var(--space-6) var(--space-20); }
+    .neighbors { grid-template-columns: 1fr 1fr; }
+    .col-line { grid-template-columns: 108px 1fr; }
+  }
+  @media (min-width: 1024px) {
+    .page { padding: var(--space-12) var(--space-6) var(--space-20); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <a class="back" href="#">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    2026年8月
+  </a>
+  <div class="header-spacer"></div>
+  <button class="pill-btn">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+    <span class="label">編集</span>
+  </button>
+  <button class="pill-btn ghost">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <span class="label">ダウンロード</span>
+  </button>
+  <button class="pill-btn ghost" aria-label="その他の操作">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+  </button>
+</header>
+
+<main class="page">
+
+  <div class="datehead">
+    <span class="date-big">8.3</span>
+    <span class="date-side">2026<br>月曜日</span>
+    <span class="date-scope">デザインチーム<br>更新 8月4日 10:12</span>
+  </div>
+
+  <h1 class="doc-title">Attention Is All You Need — 読書メモ</h1>
+
+  <div class="doc-tags">
+    <a class="tag-pill" href="#">#論文</a>
+    <a class="tag-pill" href="#">#調査</a>
+    <button class="tag-add">＋ タグ</button>
+  </div>
+
+  <section class="sharebar" aria-label="公開範囲">
+    <div class="share-line">
+      <span class="share-state"><span class="dot public"></span>公開</span>
+      <span class="share-note">誰でも読めます。検索エンジンにも載ります。</span>
+      <span class="share-actions">
+        <button class="sm-btn">公開範囲を変える</button>
+      </span>
+    </div>
+    <div class="url-row">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-ink-tertiary);flex-shrink:0"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      <span class="u">hollow.app/n/9f3ab2</span>
+      <button>コピー</button>
+    </div>
+  </section>
+
+  <article class="content">
+    <p>Transformer の原論文を読み直しながら、Multi-Head Attention の直感的な理解をまとめた。PDF から取り込んだ図はオブジェクトストレージに保存済みで、配布元が消えても表示は変わらない。</p>
+
+    <h2>1. 何を解いた論文か</h2>
+    <p>再帰も畳み込みも使わず、注意機構だけで系列変換を組み立てられることを示した。学習の並列化が効くので、同じ計算資源でより大きなモデルを回せる。</p>
+    <blockquote>We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.</blockquote>
+
+    <h2>2. Multi-Head Attention</h2>
+    <p>単一の注意で全部を担わせるのではなく、射影を分けて複数の「見方」を同時に走らせる。<code>d_model = 512</code> を 8 ヘッドに割ると、1 ヘッドあたり 64 次元になる。</p>
+    <pre><code><span class="tok-key">def</span> <span class="tok-fn">attention</span>(q, k, v, mask=<span class="tok-key">None</span>):
+    scores = q @ k.transpose(-<span class="tok-num">2</span>, -<span class="tok-num">1</span>) / math.sqrt(d_k)
+    <span class="tok-key">if</span> mask <span class="tok-key">is not</span> <span class="tok-key">None</span>:
+        scores = scores.masked_fill(mask == <span class="tok-num">0</span>, -<span class="tok-num">1e9</span>)
+    <span class="tok-key">return</span> softmax(scores, dim=-<span class="tok-num">1</span>) @ v</code></pre>
+
+    <figure class="figure">
+      <div class="ph">Figure 2 — Scaled Dot-Product Attention</div>
+      <figcaption>取り込み時に保存された図。元 URL が消えても表示され続ける。</figcaption>
+    </figure>
+
+    <h2>3. 位置エンコーディング</h2>
+    <p>系列の順序情報を持たない構造なので、正弦波で位置を埋め込む。学習可能な埋め込みでも性能はほぼ変わらないと付録に書かれている。</p>
+    <ul>
+      <li>偶数次元は <code>sin</code>、奇数次元は <code>cos</code></li>
+      <li>波長は 2π から 10000·2π の等比数列</li>
+      <li>学習時より長い系列にも外挿できることを狙った設計</li>
+    </ul>
+
+    <h2>4. 実験結果の読み方</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>モデル</th><th>EN-DE BLEU</th><th>学習コスト</th></tr></thead>
+        <tbody>
+          <tr><td>GNMT + RL</td><td>24.6</td><td>2.3 · 10<sup>19</sup></td></tr>
+          <tr><td>ConvS2S</td><td>25.16</td><td>9.6 · 10<sup>18</sup></td></tr>
+          <tr><td>Transformer (base)</td><td>27.3</td><td>3.3 · 10<sup>18</sup></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>注目すべきは BLEU の差より学習コストの桁。詳細は <a href="#">arxiv.org/abs/1706.03762</a> を参照。</p>
+  </article>
+
+  <section class="colophon">
+    <h2 class="colophon-title">この HTML の来歴</h2>
+
+    <div class="col-line"><span class="col-key">元ファイル</span><span>1706.03762.pdf — PDF（テキスト層あり）· 2.2 MB</span></div>
+    <div class="col-line"><span class="col-key">変換</span><span>テキスト抽出 → LLM で構造化（anthropic/claude-sonnet-4.5）</span></div>
+    <div class="col-line"><span class="col-key">バックアップ</span><span>Google Drive / Hollow Backup — 8月3日 21:04</span></div>
+    <div class="col-line"><span class="col-key">作成</span><span>山田 一郎 · 2026年8月3日 20:58</span></div>
+
+    <details class="fold" open>
+      <summary>
+        <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        取り込んだ参照
+        <span class="n">画像 12 · スタイル 2</span>
+      </summary>
+      <div class="fold-body">
+        <div class="res ok">
+          <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <div>画像 12 件を保存<div class="res-url">arxiv.org/…/figures/*.png</div></div>
+          <span class="res-reason">保存済み</span>
+        </div>
+        <div class="res ok">
+          <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <div>スタイルシート 2 件を本文に埋め込み<div class="res-url">arxiv.org/static/base.css</div></div>
+          <span class="res-reason">埋め込み</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="fold">
+      <summary>
+        <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        取り込めなかったもの
+        <span class="n">4 件</span>
+      </summary>
+      <div class="fold-body">
+        <div class="alert" role="note">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>
+            <div class="alert-title">スタイルシート 1 件の装飾が失われています</div>
+            <div class="alert-body">「表示スタイル」で既定のスタイルを当て直せます。</div>
+          </div>
+        </div>
+        <div class="res warn">
+          <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>スタイルシート 1 件<div class="res-url">cdn.example.org/paper-theme.css</div></div>
+          <span class="res-reason">404</span>
+        </div>
+        <div class="res warn">
+          <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>外部 URL のまま残っている参照 3 件<div class="res-url">example.com/assets/… ほか 2 件</div></div>
+          <span class="res-reason">未取り込み</span>
+        </div>
+      </div>
+    </details>
+
+    <details class="fold">
+      <summary>
+        <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        安全のために取り除いた指定
+        <span class="n">5 件</span>
+      </summary>
+      <div class="fold-body">
+        <div class="res">
+          <svg class="ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <div><code>position: fixed</code> 4 件 · <code>@import</code> 1 件</div>
+          <span class="res-reason">除去済み</span>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <nav class="neighbors" aria-label="前後のノート">
+    <a class="neighbor" href="#">
+      <div class="dir">← 前（8月2日）</div>
+      <div class="t">登壇資料 — TanStack Start 入門</div>
+      <div class="d">PDF · 変換に失敗</div>
+    </a>
+    <a class="neighbor" href="#">
+      <div class="dir">次（8月4日）→</div>
+      <div class="t">2026年度 事業計画（第3版）</div>
+      <div class="d">PowerPoint · 42 スライド</div>
+    </a>
+  </nav>
+
+</main>
+
+</body>
+</html>

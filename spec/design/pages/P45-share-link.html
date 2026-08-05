@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>共有されたノート | Hollow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --color-accent: oklch(37.1% 0 0); --color-accent-hover: oklch(43.9% 0 0); --color-accent-pressed: oklch(26.9% 0 0);
+    --color-accent-surface: oklch(97% 0 0); --color-accent-ink: oklch(26.9% 0 0);
+    --color-bg: #ffffff; --color-surface: #f5f5f7; --color-surface-hover: #ececef; --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f; --color-ink-secondary: #6e6e73; --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12); --color-hairline-strong: rgba(60,60,67,0.18);
+    --color-success: #1f8f3a; --color-success-surface: #e6f4ea; --color-warning: #a8580b; --color-warning-surface: #fdf3e7;
+    --color-error: #c43e3e; --color-error-surface: #fbebeb; --color-error-hover: #b03535; --color-error-pressed: #9a2e2e;
+    --color-info: var(--color-accent);
+    --color-status-private: #86868b; --color-status-link: #a8580b; --color-status-public: #1f8f3a;
+    --color-convert-working: var(--color-accent); --color-convert-awaiting: var(--color-warning);
+    --color-convert-failed: var(--color-error); --color-convert-done: var(--color-success);
+    --code-keyword: #aa3e3e; --code-string: #2a8c4f; --code-comment: var(--color-ink-tertiary);
+    --code-function: #5b3da1; --code-number: #1d6fd6;
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    --font-heading: var(--font-sans); --font-body: var(--font-sans);
+    --text-xs: clamp(11px, 0.7vw + 9px, 12px); --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+    --text-base: clamp(14px, 1vw + 11px, 16px); --text-md: clamp(15px, 1vw + 12px, 17px);
+    --text-lg: clamp(17px, 1.2vw + 13px, 19px); --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+    --text-2xl: clamp(24px, 2vw + 16px, 30px); --text-3xl: clamp(24px, 4vw, 38px);
+    --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+    --weight-light: 300; --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600;
+    --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.5; --leading-relaxed: 1.75;
+    --tracking-tightest: -0.022em; --tracking-tighter: -0.014em; --tracking-tight: -0.008em; --tracking-normal: -0.003em;
+    --space-0: 0; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+    --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+    --content-max: 680px; --list-max: 780px; --wide-max: 1100px; --palette-max: 620px;
+    --container-padding: clamp(16px, 4vw, 32px); --bar-height: 56px; --actionbar-height: 56px;
+    --radius-xs: 4px; --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 16px;
+    --radius-pill: 980px; --radius-full: 9999px;
+    --icon-2xs: 11px; --icon-xs: 13px; --icon-sm: 14px; --icon-md: 18px;
+    --shadow-none: none; --shadow-xs: 0 1px 2px rgba(0,0,0,0.04); --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 8px 24px rgba(0,0,0,0.08); --shadow-lg: 0 16px 48px rgba(0,0,0,0.1);
+    --shadow-focus: 0 0 0 2px var(--color-accent);
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); --ease-decel: cubic-bezier(0, 0, 0.2, 1); --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+    --duration-fast: 120ms; --duration-base: 180ms; --duration-slow: 280ms;
+    --transition-default: all var(--duration-base) var(--ease-standard);
+    --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+    --transition-color: color var(--duration-fast) var(--ease-standard);
+    --opacity-disabled: 0.55; --opacity-pending: 0.6;
+    --bar-bg: rgba(255,255,255,0.82); --bar-blur: saturate(180%) blur(20px);
+    --bp-sm: 640px; --bp-md: 768px; --bp-lg: 1024px; --bp-xl: 1280px; --bp-2xl: 1536px;
+  }
+
+  html, body {
+    background: var(--color-bg); color: var(--color-ink); font-family: var(--font-body);
+    font-size: var(--text-base); line-height: var(--leading-normal); letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+  a { color: inherit; text-decoration: none; }
+  input { font-family: inherit; }
+  :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+
+  .pub-bar {
+    position: sticky; top: 0; z-index: 60; height: var(--bar-height);
+    background: var(--bar-bg); backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur);
+    display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) { .pub-bar { background: var(--color-bg); } }
+  .brand { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-md); letter-spacing: var(--tracking-tightest); }
+  .bar-spacer { flex: 1; }
+  .share-badge {
+    height: 24px; padding: 0 var(--space-2); border-radius: var(--radius-pill);
+    font-size: var(--text-xs); color: var(--color-status-link);
+    border: 1px solid color-mix(in oklab, var(--color-status-link) 30%, transparent);
+    display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap;
+  }
+  .dot { width: 6px; height: 6px; border-radius: var(--radius-full); display: inline-block; }
+  .dot.link { background: var(--color-status-link); }
+
+  .showcase-label { max-width: var(--content-max); margin: 0 auto; padding: var(--space-12) var(--space-4) var(--space-2); font-size: var(--text-xs); color: var(--color-ink-tertiary); letter-spacing: 0.06em; text-transform: uppercase; }
+  .showcase { border-top: 1px solid var(--color-hairline); }
+
+  /* ===== パスワード要求（初回描画は必ずここから） ===== */
+  .gate { max-width: 400px; margin: 0 auto; padding: var(--space-16) var(--space-4); text-align: center; }
+  .gate-ico { display: inline-flex; margin-bottom: var(--space-5); color: var(--color-ink-tertiary); }
+  .gate-title { font-size: var(--text-xl); font-weight: var(--weight-medium); letter-spacing: var(--tracking-tight); margin-bottom: var(--space-3); }
+  .gate-body { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-bottom: var(--space-6); }
+  .gate .input {
+    width: 100%; height: 44px; border: 1px solid var(--color-hairline-strong);
+    border-radius: var(--radius-md); padding: 0 var(--space-3);
+    font-size: var(--text-base); color: var(--color-ink); background: var(--color-bg); text-align: center;
+    transition: border-color var(--duration-fast) var(--ease-standard);
+  }
+  .gate .input:hover { border-color: var(--color-ink-tertiary); }
+  .gate .input:focus { outline: none; box-shadow: var(--shadow-focus); border-color: transparent; }
+  .gate .input.invalid { border-color: var(--color-error); }
+  .field-error { font-size: var(--text-xs); color: var(--color-error); margin-top: var(--space-2); }
+  .btn { width: 100%; height: 44px; border-radius: var(--radius-pill); font-size: var(--text-sm); font-weight: var(--weight-medium); display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); background: var(--color-accent); color: var(--color-bg); transition: var(--transition-bg); margin-top: var(--space-4); }
+  .btn:hover { background: var(--color-accent-hover); }
+  .btn:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+  .btn.inline { width: auto; height: 36px; padding: 0 var(--space-4); margin: 0; }
+  .btn.ghost { background: transparent; color: var(--color-ink-secondary); }
+  .btn.ghost:hover { background: var(--color-surface); color: var(--color-ink); }
+
+  /* ===== 表示 ===== */
+  .page { max-width: var(--content-max); margin: 0 auto; padding: var(--space-10) var(--space-4) var(--space-16); }
+  .kicker { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: var(--text-xs); color: var(--color-ink-tertiary); margin-bottom: var(--space-4); }
+  .kicker .sep { color: var(--color-hairline-strong); }
+  .doc-title { font-size: var(--text-3xl); font-weight: var(--weight-regular); letter-spacing: var(--tracking-tightest); line-height: 1.18; margin-bottom: var(--space-8); }
+  .content { font-size: var(--text-base); line-height: var(--leading-relaxed); }
+  .content h2 { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tighter); margin: var(--space-10) 0 var(--space-4); }
+  .content p { margin-bottom: var(--space-5); }
+  .content ul { list-style: disc; padding-left: 1.4em; margin-bottom: var(--space-5); }
+  .content li { margin-bottom: var(--space-2); }
+  .content code { font-family: var(--font-mono); font-size: var(--text-mono); background: var(--color-surface); padding: 2px 5px; border-radius: var(--radius-xs); }
+
+  .owner-note {
+    display: flex; gap: var(--space-3); align-items: flex-start;
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    border: 1px solid color-mix(in oklab, var(--color-info) 30%, transparent);
+    box-shadow: var(--shadow-xs); margin-bottom: var(--space-6);
+  }
+  .owner-note svg { color: var(--color-info); flex-shrink: 0; margin-top: 2px; }
+  .owner-title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--color-info); margin-bottom: 2px; }
+  .owner-body { font-size: var(--text-sm); color: var(--color-ink-secondary); }
+  .owner-actions { margin-top: var(--space-3); }
+
+  .actionbar { position: sticky; bottom: 0; z-index: 50; background: var(--bar-bg); backdrop-filter: var(--bar-blur); -webkit-backdrop-filter: var(--bar-blur); border-top: 1px solid var(--color-hairline); padding: var(--space-2) var(--space-4); }
+  @supports not (backdrop-filter: blur(1px)) { .actionbar { background: var(--color-bg); } }
+  .actionbar-inner { max-width: var(--content-max); margin: 0 auto; display: flex; align-items: center; gap: var(--space-2); }
+  .act { height: 36px; padding: 0 var(--space-3); border-radius: var(--radius-pill); font-size: var(--text-sm); color: var(--color-ink-secondary); display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; transition: var(--transition-bg), var(--transition-color); }
+  .act:hover { background: var(--color-surface); color: var(--color-ink); }
+  .act.solid { background: var(--color-surface); color: var(--color-ink); font-weight: var(--weight-medium); }
+  .act-spacer { flex: 1; }
+
+  /* ===== 見つかりません ===== */
+  .notfound { max-width: 420px; margin: 0 auto; padding: var(--space-16) var(--space-4); text-align: center; }
+  .nf-title { font-size: var(--text-xl); font-weight: var(--weight-medium); margin-bottom: var(--space-3); }
+  .nf-body { font-size: var(--text-sm); color: var(--color-ink-secondary); margin-bottom: var(--space-6); }
+
+  @media (min-width: 640px) {
+    .pub-bar { padding: 0 var(--space-6); }
+    .page { padding: var(--space-12) var(--space-6) var(--space-16); }
+    .showcase-label { padding-left: var(--space-6); padding-right: var(--space-6); }
+    .actionbar { padding: var(--space-2) var(--space-6); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="pub-bar">
+  <a class="brand" href="#">
+    <svg width="26" height="16" viewBox="0 0 26 16" fill="none" stroke="currentColor" stroke-width="1.4" role="img" aria-label="Hollow"><circle cx="9" cy="8" r="6.4"/><circle cx="17" cy="8" r="6.4"/></svg>
+    hollow
+  </a>
+  <div class="bar-spacer"></div>
+  <span class="share-badge"><span class="dot link" aria-hidden="true"></span>共有リンク</span>
+</header>
+
+<!-- 初回描画は必ずここから始まる。通過証はクライアントが保持し、要求ごとに明示的に載せる -->
+<p class="showcase-label">状態 1 — パスワード要求（初回描画は必ずここから）</p>
+<section class="showcase">
+  <main class="gate">
+    <span class="gate-ico">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </span>
+    <h1 class="gate-title">パスワードが必要です</h1>
+    <p class="gate-body">共有した人から教わったパスワードを入力してください。</p>
+    <form>
+      <label class="sr-only" for="pw">パスワード</label>
+      <input class="input" id="pw" type="password" autocomplete="off" autofocus>
+      <button class="btn" type="submit">開く</button>
+    </form>
+  </main>
+</section>
+
+<p class="showcase-label">状態 2 — パスワード誤り</p>
+<section class="showcase">
+  <main class="gate">
+    <span class="gate-ico">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </span>
+    <h1 class="gate-title">パスワードが必要です</h1>
+    <p class="gate-body">共有した人から教わったパスワードを入力してください。</p>
+    <form>
+      <label class="sr-only" for="pw2">パスワード</label>
+      <input class="input invalid" id="pw2" type="password" autocomplete="off" value="········" aria-describedby="pwErr">
+      <p class="field-error" id="pwErr">パスワードが違います</p>
+      <button class="btn" type="submit">開く</button>
+    </form>
+  </main>
+</section>
+
+<p class="showcase-label">状態 3 — 表示（通過後 / パスワードなし）</p>
+<section class="showcase">
+  <main class="page">
+    <div class="kicker">
+      <span>共有リンクで閲覧中</span><span class="sep">·</span>
+      <span>2026年8月5日</span><span class="sep">·</span>
+      <span>山田 一郎</span>
+    </div>
+    <h1 class="doc-title">第14回 定例会議 議事録</h1>
+    <article class="content">
+      <p>Q3 のロードマップ調整について。公開範囲の既定値を「非公開」に統一する方針で合意した。次回までに移行手順を整理する。</p>
+      <h2>決まったこと</h2>
+      <ul>
+        <li>取り込み時の既定の公開ステータスは <code>private</code> に統一する</li>
+        <li>既存ノートの公開範囲は変更しない（遡及しない）</li>
+        <li>ワークスペースの公開ページは、スラッグ設定後に有効化する</li>
+      </ul>
+    </article>
+  </main>
+  <div class="actionbar">
+    <div class="actionbar-inner">
+      <button class="act solid">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        ダウンロード
+      </button>
+      <div class="act-spacer"></div>
+    </div>
+  </div>
+</section>
+
+<p class="showcase-label">状態 4 — 権限保持者が開いた（編集導線を出す。公開ページ P-44 との違い）</p>
+<section class="showcase">
+  <main class="page">
+    <div class="owner-note" role="note">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      <div>
+        <div class="owner-title">あなたはこのノートを編集できます</div>
+        <div class="owner-body">共有リンクの見え方をそのまま確認しています。</div>
+        <div class="owner-actions"><a class="btn inline" href="#">Hollow で開く</a></div>
+      </div>
+    </div>
+    <div class="kicker">
+      <span>共有リンクで閲覧中</span><span class="sep">·</span><span>2026年8月5日</span>
+    </div>
+    <h1 class="doc-title">第14回 定例会議 議事録</h1>
+    <article class="content">
+      <p>Q3 のロードマップ調整について。公開範囲の既定値を「非公開」に統一する方針で合意した。</p>
+    </article>
+  </main>
+</section>
+
+<p class="showcase-label">状態 5 — 見つかりません（無効・再発行済み・削除・非公開化を区別しない）</p>
+<section class="showcase">
+  <main class="notfound">
+    <h1 class="nf-title">このリンクは開けません</h1>
+    <p class="nf-body">リンクが無効になっているか、URL が正しくありません。共有した人に確認してください。</p>
+    <a class="btn inline ghost" href="#">Hollow のトップへ</a>
+  </main>
+</section>
+
+</body>
+</html>
