@@ -356,7 +356,7 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 `inlineStylesheets(html, contents, unavailable)` が痕跡を遷移させる。`contents` の鍵は `data-stylesheet-href` の値、値は取得した CSS で、この痕跡は `data-imported-stylesheet` に属性を付け替えて中身に CSS を書き戻す。`unavailable` に含まれる URL の痕跡は `data-stylesheet-unavailable` に付け替え、中身は空のまま残す。どちらにも現れない痕跡は手を触れない（`data-stylesheet-href` のまま残り、次に取り込みを選んだ保存で対象になる）。
 
-**取得できなかった痕跡を要素ごと取り除かない**のは、それが「この URL のスタイルシートを取り込めず装飾を失った」という事実の唯一の記録になるからである。当初は取り除く決定だったが、その根拠は「空の痕跡を残すと以後の保存のたびに同じ参照取り込みジョブが登録され続ける」という再登録ループ 1 つだけであり、抽出の対象を `data-stylesheet-href` に限定した時点で失効している。
+**取得できなかった痕跡を要素ごと取り除かない**のは、それが「この URL のスタイルシートを取り込めず装飾を失った」という事実の唯一の記録になるからである。抽出対象は `data-stylesheet-href` に限定するため、取得不能の痕跡が参照取り込みジョブを再登録することはない。
 
 書き戻した CSS も本文の一部として ADR 013 の内容制約（`position: fixed` / `sticky` / `@import` の除去）を受けるため、呼び出し側は結果を `process` に通してから保存する。`process` は 3 つの属性をいずれも許可リストの内側の `data-*` としてそのまま通し、痕跡の状態を巻き戻さない（`data-imported-stylesheet` を `data-stylesheet-href` に戻すことはない）。`rewriteReferences` は URL を URL に写す差し替えであって内容の埋め込みには使えず、`editTextNodes` は要素を追加しないため、この操作は独立したメソッドとして持つ。
 

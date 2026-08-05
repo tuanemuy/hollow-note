@@ -295,7 +295,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 5. `activateReplacement`を呼び、D1 1 transactionで旧routeを`revoked`、新routeを`active`にする。local失敗時は新reservationを`abandon`し、応答喪失は同じoperation IDで再開する
 6. 新routeのactive化後にメールを送る
 
-このユースケースは**メール送信を伴うため転送境界のレート制限の対象である**（[presentation/index.md](../presentation/index.md)）。`inviteMember` 経由で呼ばれる場合は手前の手順 4 が在庫の上限で守るが、直接呼ばれる経路にはその検査がない — 同じ招待に対する再送を繰り返しても `pending` の件数は増えないため、在庫の上限では止まらない。しきい値は `inviteMember` と同じ**ワークスペース × 発行者で 10 回 / 60 秒**（既定値。正典は [presentation/index.md](../presentation/index.md) の「レート制限」）で、Workers の Rate Limiting binding で数える（[ADR 020](../adr/020-coordination-state.md)）。
+このユースケースは**メール送信を伴うため転送境界のレート制限の対象である**（[presentation/index.md](../presentation/index.md)）。`inviteMember` 経由で呼ばれる場合は手前の手順 4 が在庫の上限で守るが、直接呼ばれる経路にはその検査がない — 同じ招待に対する再送を繰り返しても `pending` の件数は増えないため、在庫の上限では止まらない。しきい値は `inviteMember` と同じ**ワークスペース × 発行者で 10 回 / 60 秒**（既定値。正典は [presentation/index.md](../presentation/index.md) の「レート制限」）で、Workers の Rate Limiting binding で数える。
 
 ### エラーケース
 

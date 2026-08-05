@@ -15,7 +15,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
-- **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる（[ADR 018](../adr/018-query-budget.md)）
+- **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
 - **原子性**: global D1 の非集約更新は単一 SQL 文、scope 内の複数更新は `transactionSync` で行う。D1 と scope DO、または2つの scope DOを1 transactionに含めない
 - **scope 検証**: scope table の `owner_type / owner_id` または `scope_type / scope_id` は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する
 
@@ -266,7 +266,7 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `expires_at` | integer | NOT NULL |
 
 - **インデックス**: `login_attempts_expires_idx` (`expires_at`, `key`) — 同一expiryを安定keysetで回収する
-- **ロックの状態は列に持たない**。ロックは `failure_count` と `last_failed_at` から `LoginThrottlePolicy.evaluate` が導出する（[domains/identity.md](../domains/identity.md)）。保存しないのは、失敗回数の加算を単一の SQL 文にするためである — 書き込む値が読んだ値に依存しなければ「読んでから書く」形を避けられ、しきい値の規則を SQL に持ち込まずに済む（[ADR 020](../adr/020-coordination-state.md)）
+- **ロックの状態は列に持たない**。ロックは `failure_count` と `last_failed_at` から `LoginThrottlePolicy.evaluate` が導出する（[domains/identity.md](../domains/identity.md)）。保存しないのは、失敗回数の加算を単一の SQL 文にするためである — 書き込む値が読んだ値に依存していなければ「読んでから書く」形を避けられ、しきい値の規則を SQL に持ち込まずに済む
 - 加算は次の 1 文で行う。返る値がそのまま `LoginAttemptStore.recordFailure` の戻り値になる
 
 ```sql
@@ -854,13 +854,12 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - 検索語が複数の run に分かれる場合（クエリ構築で AND に結ばれる単位）は run ごとに一致を探し、見つかったものをすべて囲む。切り出す窓は最初の一致を基準に取る
 - NFKC は文字数を変えうるため、正規化と同時に**正規化後の位置 → 元テキストの位置**の写像を作り、切り出しとハイライトの区間は元テキストの位置で決める。返す文字列は常に元テキストの一部であり、正規化済みテキストを利用者に返してはならない
 - キーワード未指定のときは `null`（型のとおり）。一致が 1 つも見つからないとき（境界をまたぐ偽陽性など、後述の「既知の限界」に当たる行）も `null` とし、画面は素の `excerpt` を出す
-- `highlightedExcerpt` は型のとおり 1 本の文字列で返す。`excerpt` / `text` は本文から抽出した**平文**なので、まず HTML エスケープしてから一致区間を `<mark>` … `</mark>` で囲む。標識を入れる側がエスケープまで責任を持つことで、表示層はこの値だけを HTML として描ける（素の `excerpt` は従来どおり平文として扱う）
+- `highlightedExcerpt` は型のとおり 1 本の文字列で返す。`excerpt` / `text` は本文から抽出した**平文**なので、まず HTML エスケープしてから一致区間を `<mark>` … `</mark>` で囲む。標識を入れる側がエスケープまで責任を持つことで、表示層はこの値だけを HTML として描ける（素の `excerpt` は平文として扱う）
 
-#### 移行と再構築
+#### 再構築
 
-- trigram + トリガー同期の旧構成からの移行は、トリガー 3 本の `DROP TRIGGER` → FTS 表の再作成（contentless 構成）→ `rebuildNoteProjection` の順で行う
 - `tag_display_names` のような投影列の追加は、既定値付きで列を足してから `rebuildNoteProjection` の完全snapshot置換で埋める
-- **`INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` は contentless では使えない**（読み直す content 表がない）。一括再構築は FTS 表を作り直したうえで、`rebuildNoteProjection` が 1 件ずつ積む再投影要求で埋め直す（[ADR 016](../adr/016-projection-single-writer.md)）。`INSERT INTO note_search_fts(note_search_fts) VALUES('integrity-check')` は使えるが、検査できるのは索引の内部整合性だけで、`note_search` との一致は検査できない。両者の一致は `rebuildNoteProjection` の孤児掃除が担う
+- **`INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` は contentless では使えない**（読み直す content 表がない）。一括再構築は FTS 表を作り直したうえで、`rebuildNoteProjection` が 1 件ずつ積む再投影要求で埋め直す。`INSERT INTO note_search_fts(note_search_fts) VALUES('integrity-check')` は使えるが、検査できるのは索引の内部整合性だけで、`note_search` との一致は検査できない。両者の一致は `rebuildNoteProjection` の孤児掃除が担う
 
 #### 既知の限界
 

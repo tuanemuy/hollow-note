@@ -1,22 +1,15 @@
 # 013. HTML のサニタイズは許可リスト方式で行い、規則の正典を 1 か所に置く
 
-## ステータス
-
-承認済み
-
 ## コンテキスト
 
 本文の正データはサニタイズ済みの HTML 断片 1 つである（[ADR 006](./006-html-content-model.md)）。その本文は取り込み時に外部から与えられた任意の HTML であり、公開ページ（P-44）としてサイトマップ経由で検索エンジンにインデックスされる（[pages/index.md](../pages/index.md) の E-01）。つまり、攻撃者が任意の HTML を本サービスの正規ドメイン上に置ける設計になっている。
 
-にもかかわらず、サニタイズの規則についてレビューで確認できた事実は次のとおりだった。
+サニタイズには次の脅威と制約がある。
 
-1. 規則は ADR 006 の「`script`、イベントハンドラー属性、危険なスキームの URL を除去し、除去した内容を利用者に提示する」の 1 行だけであり、これは**否認リスト**である。`spec/` / `docs/` / `CLAUDE.md` の全体を検索しても、許可リスト・CSP・`sandbox`・`srcdoc`・`<base>`・`<form>` に関する記述は 1 件も存在しなかった
-2. 否認リストであることは既にテストフィクスチャに現れている。[manual-tests/export.md](../manual-tests/export.md) の「表現困難ノート」（23 行目・64 行目）は「`iframe` 相当のブロックがサニタイズを生き延びて本文に保持され、書き出しにまで到達する」ことを前提に書かれている。`<iframe>` は未定義なのではなく、**暗黙に許可**されている
-3. `<iframe srcdoc="...">` は、`<script>` を要素として除去するだけのサニタイザーを**属性値の中を通り抜けて**スクリプト実行に至らせる。要素単位で列挙して落とす方式は、属性値の中に第二の HTML 文書が入る経路を構造的に塞げない
-4. [ADR 007](./007-default-style-isolation.md) の `styleMode` 自動判定（18 行目）は `style` 要素と `link rel=stylesheet` を検出条件にしており、これらがサニタイズ後も残る前提になっている。サニタイズの規則を変えると、この判定の入力が何であるかも同時に決めなければならない
-5. **Shadow DOM が隔離するのはセレクタのスコープであって、レイアウトではない**。シャドウツリー内の `position: fixed` はビューポートを基準に配置されるため、インラインの `<style>` 1 個で公開ページの全面を覆うオーバーレイを描ける。外部 CSS を必要としない。攻撃者は正規ドメイン上にフィッシング画面を置けることになる
-6. 一方で、次の 2 つは成立しない。**CSS による情報漏洩**はシャドウツリー内に攻撃者自身のノート本文しか存在しないため抜き取る対象がなく、**PDF 書き出し経由の攻撃**は `PdfRenderer` が「外部リソースの取得は行わず、埋め込み済みの参照だけを描画する」（[domains/note.md](../domains/note.md)）と既に定めているため成立しない。この 2 つを根拠にしない
-7. 外部参照については緩和策が既にある。[scenario/import.md](../scenario/import.md) の IM-05 が画像・動画・スタイルシートの参照を変換時に検出し、`importExternalReferences`（[usecases/storage.md](../usecases/storage.md)）が取得して内部 URL に差し替え、`ExternalFetchPolicy`（[domains/storage.md](../domains/storage.md)）が SSRF 対策まで持つ。ただしこの経路は防御としては数えられない。`updateNoteBody` の `importReferences` は任意フィールドで指定しなければ外部 URL がそのまま残り、取得に失敗した参照も元の URL のまま残り、`ExternalReference` は `{ url, attribute, elementName }` という属性ベースの形なので `<style>@import url(...)</style>` や `style="background:url(...)"` は構造上そもそも抽出できない
+1. `<iframe srcdoc="...">` は、`<script>` を要素として除去するだけのサニタイザーを属性値の中から迂回できる。要素単位の否認リストでは、属性値に第二の HTML 文書が入る経路を構造的に塞げない
+2. [ADR 007](./007-default-style-isolation.md) の `styleMode` 自動判定は `style` 要素と `link rel=stylesheet` を検出条件にするため、サニタイズ前後のどちらを入力にするかを定める必要がある
+3. **Shadow DOM が隔離するのはセレクタのスコープであって、レイアウトではない**。シャドウツリー内の `position: fixed` はビューポートを基準に配置され、インラインの `<style>` 1 個で公開ページ全面を覆える
+4. 外部参照の内部化は防御境界にならない。取得しない選択や取得失敗では外部 URL が残り、属性ベースの `ExternalReference` では `<style>@import url(...)</style>` や `style="background:url(...)"` を抽出できない
 
 要するに、危険なものを列挙して落とす方針では、列挙から漏れた `<iframe>` が仕様の別の場所で「保持される前提」として固まるところまで進んでいた。列挙する対象を逆にする必要がある。
 
@@ -24,7 +17,7 @@
 
 ### 許可リスト方式にする
 
-サニタイズは**許可リスト方式**とする。許可する要素・属性・URL スキームを明示的に列挙し、**列挙にないものはすべて除去する**。除去した内容を利用者に提示する点は従来どおり維持する。
+サニタイズは**許可リスト方式**とする。許可する要素・属性・URL スキームを明示的に列挙し、**列挙にないものはすべて除去する**。除去した内容は利用者に提示する。
 
 線引きの原則は「**本文は文書としての HTML である**」とする。ノートは読み物であり、見出し・段落・リスト・表・コード・引用・強調・リンク・画像・動画・音声・ルビによって表現できる。埋め込み・入力・遷移制御・スクリプトは文書の表現力に属さないため、許可しない。
 
@@ -74,7 +67,7 @@
 | ナビゲーション（`href`, `cite`） | `https:`, `http:`, `mailto:`, `tel:`、およびフラグメント・ルート相対・相対パス |
 | リソース参照（`src`, `srcset`, `poster`） | `https:`, `http:`、およびルート相対・相対パス、加えて `data:` のうち `image/png` / `image/jpeg` / `image/gif` / `image/webp` に限る |
 
-`data:` をリソース参照にのみ、かつラスタ画像の MIME に限って許可するのは、`data:text/html` と `data:image/svg+xml` がスクリプトを運べるためである（[scenario/import.md](../scenario/import.md) の IM-05 が `data:` URI の埋め込みを前提にしているので、全面禁止にはしない）。`javascript:`、`vbscript:`、`file:`、`blob:`、および上記に該当しないすべてのスキームは除去する。イベントハンドラー属性（`on*`）の除去も従来どおり維持する。
+`data:` をリソース参照にのみ、かつラスタ画像の MIME に限って許可するのは、`data:text/html` と `data:image/svg+xml` がスクリプトを運べるためである（[scenario/import.md](../scenario/import.md) の IM-05 が `data:` URI の埋め込みを前提にしているので、全面禁止にはしない）。`javascript:`、`vbscript:`、`file:`、`blob:`、および上記に該当しないすべてのスキームとイベントハンドラー属性（`on*`）は除去する。
 
 ### 明示的に許可しないもの
 
@@ -97,7 +90,7 @@
 
 サニタイズは取り込み時に走り、参照の取得はそのあとの非同期ジョブが行うため、`<link>` を除去するだけでは元の URL が両者のあいだで失われ、この決定は実行できない。そこで **`HtmlProcessor.process` は `<link rel="stylesheet" href="…">` を同じ位置の空の `<style data-stylesheet-href="元の URL">` に置き換える**（`style` 要素と `data-*` 属性はどちらも上の許可リストの内側にある）。元の位置に置くのはカスケード順が `<link>` の並びに依存するためである。痕跡は `data-*` 属性に URL を持つ通常の要素なので、`extractExternalReferences` は他の外部参照と同じ `ExternalReference` の形で返せ、参照取り込みジョブを登録するかどうかの判定も 1 つの規則のままで済む。書き戻しは `HtmlProcessor.inlineStylesheets` が行う。契約の詳細は [domains/note.md](../domains/note.md) の `HtmlProcessor` を正とする。
 
-**取得の結果は痕跡の属性名で表す**（[ADR 014](./014-import-result-provenance.md)）。当初この ADR は「取得できなかった場合は参照ごと落とす」と決めていたが、その根拠は「空の痕跡を残すと以後の保存のたびに同じ参照取り込みジョブが登録され続ける」という再登録ループ 1 つだけだった。抽出の対象を `data-stylesheet-href` に限定すれば、別名の痕跡はループを起こさない。そこで禁止のほうを取り下げ、3 状態を属性名で区別する。
+**取得の結果は痕跡の属性名で表す**（[ADR 014](./014-import-result-provenance.md)）。抽出対象を `data-stylesheet-href` に限定し、取り込み済み・取得不能の痕跡を再登録しないまま 3 状態を区別する。
 
 | 状態 | 本文中の表現 | `extractExternalReferences` が拾うか |
 | --- | --- | --- |
@@ -157,13 +150,12 @@ CSS を一切持ち込ませなければ、`position: fixed` によるオーバ�
 
 「一般的なサニタイザーの既定に従う」とだけ書く案。仕様の記述量はほぼゼロで済む。しかし既定集合はライブラリごとに異なり、版によっても変わるため、**仕様として参照できる固定点にならない**。実際に多くのライブラリは既定で `<style>` を落とすので、そのまま採ると ADR 007 の `preserve` が壊れる。ライブラリの選定は実装の判断に残しつつ、集合そのものは仕様側で定義する。不採用。
 
-## 影響
+## 関連する設計
 
-- `HtmlProcessor.process` の契約が変わる。否認リストの適用から、許可リストの適用と CSS の宣言単位の検査を含む処理になる。壊れた HTML を例外にせず補正して返す点、1 度の走査で派生情報を取り出す点は変えない
-- `RemovedNode` の報告内容が増える。許可リストから外れた要素・属性、許可されないスキームの URL に加えて、CSS から落とした宣言・規則も報告対象になる。`kind` に CSS 由来の除去を表す値が要る（[domains/note.md](../domains/note.md)）。利用者に提示する件数が従来より増えるため、除去の一覧は分類ごとに畳める形が要る
-- [manual-tests/export.md](../manual-tests/export.md) の「表現困難ノート」（23 行目・64 行目）は `iframe` 相当のブロックがサニタイズを生き延びる前提であり、**この決定と矛盾するため差し替えが必要**である。Markdown で表現できない要素は、許可リストの内側にあるもの（表の入れ子、`ruby`、`details` など）に置き換える
-- [testcases/note/updateNoteBody.md](../testcases/note/updateNoteBody.md) のサニタイズのテストケースは `script` / `onclick` / `javascript:` の 3 項目しか覆っていない。許可リストからの除去、`iframe srcdoc`、`base`、`form`、`position: fixed`、`@import`、`data:` スキームの選別を含む形に拡充が要る
-- `importExternalReferences` は、スタイルシートの参照について取得した CSS を `<style>` としてインライン化する経路に変わる。`<link>` の `href` を書き換える経路はなくなる。取得の結果は痕跡の属性名（`data-imported-stylesheet` / `data-stylesheet-unavailable`）で表す（[ADR 014](./014-import-result-provenance.md)）
-- `styleMode` の自動判定はサニタイズ前の入力を見る。ADR 007 の検出条件（`style` 要素 / `link rel=stylesheet` / 意味のある量の `style` 属性）は変えずに済む
-- 公開ページに CSP を敷く決定が presentation 層に降りる。ヘッダーの具体は [presentation/index.md](../presentation/index.md) が持つ
+- `HtmlProcessor.process` は許可リストと CSS の宣言単位の検査を適用し、壊れた HTML は補正して返す
+- `RemovedNode` は要素・属性・URL に加えて、除去した CSS 宣言・規則も分類して報告する（[domains/note.md](../domains/note.md)）
+- サニタイズのテストは許可リスト、`iframe srcdoc`、`base`、`form`、`position: fixed`、`@import`、`data:` スキームの選別を含む
+- `importExternalReferences` は取得したスタイルシートを `<style>` としてインライン化し、結果を痕跡の属性名で表す（[ADR 014](./014-import-result-provenance.md)）
+- `styleMode` の自動判定はサニタイズ前の入力を見る
+- 公開ページの CSP は [presentation/index.md](../presentation/index.md) を正典とする
 - 本文の外部参照が `<style>` の中の `url()` として残る経路は、この ADR では塞がらない（`ExternalReference` が属性ベースであるため）。サニタイズはこの穴を前提にせず、CSP の `style-src` / `img-src` / `font-src` を併用する

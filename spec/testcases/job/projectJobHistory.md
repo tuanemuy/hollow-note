@@ -25,4 +25,3 @@
 | 同じeventが再配送される | 処理する | 条件付きupsert/removeにより結果は変わらない | |
 | `JobFailure.detail`がある | 投影を読む | `failure_detail`を含む表示snapshotが復元できる | |
 | 全scopeからJob eventがburstする | 投影する | requestedBy hash shardへ分散し、同じ利用者の親子は1 shardでsourceVersion順に更新される | |
-| job_historyを旧単一DBからshardへ移行中 | eventとremoveを処理する | 旧新へ条件付きdual-writeし、read mergeはJobId重複排除、removeは両方へ適用する | |

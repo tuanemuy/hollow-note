@@ -172,7 +172,7 @@ WorkspaceAction =
 | `createNote`, `editNote`, `deleteNote`, `changeNoteVisibility`, `moveNote`, `manageTags`, `viewTrash` | editor |
 | `manageMembers`, `manageWorkspace`, `publishWorkspace`, `deleteWorkspace` | owner |
 
-**バックアップ専用の action を置かない**。元ファイルの Drive バックアップは editor を要する（[ADR 004](../adr/004-workspace-roles.md) のロール表）が、`WorkspaceAction` に `backupNote` は加えず `editNote` で判定する。バックアップが editor 側にあるのは、`BackupRecord` がノートに紐づく共有状態であり、既存記録が別のメンバーのものなら所有者ごと付け替わるためで、「ノートの内容の扱いに関わる決定を書き換える」という点で `editNote` とまったく同じ理由による。要求する最小ロールも判定に使う情報も同じ action を 2 つに割ると、片方だけを変える改訂で表が食い違う。実際 `requestBackup`（[usecases/integration.md](../usecases/integration.md)）は `NoteAccessPolicy` の `canEdit` を呼んでおり、この表は `canEdit` の中で引かれる。降格時に取り消すジョブの `kind` → 要ロールの対応（[usecases/workspace.md](../usecases/workspace.md) の `changeMemberRole`）でも `driveBackup` / `bulkBackup` は `editNote` を根拠に editor 側へ置いている。
+**バックアップ専用の action を置かない**。元ファイルの Drive バックアップは editor を要する（[ADR 004](../adr/004-workspace-roles.md) のロール表）が、`WorkspaceAction` に `backupNote` は加えず `editNote` で判定する。バックアップが editor 側にあるのは、`BackupRecord` がノートに紐づく共有状態であり、既存記録が別のメンバーのものなら所有者ごと付け替わるためで、「ノートの内容の扱いに関わる決定を書き換える」という点で `editNote` とまったく同じ理由による。要求する最小ロールも判定に使う情報も同じ action を 2 つに割ると、片方だけを変更したときに表が食い違う。実際 `requestBackup`（[usecases/integration.md](../usecases/integration.md)）は `NoteAccessPolicy` の `canEdit` を呼んでおり、この表は `canEdit` の中で引かれる。降格時に取り消すジョブの `kind` → 要ロールの対応（[usecases/workspace.md](../usecases/workspace.md) の `changeMemberRole`）でも `driveBackup` / `bulkBackup` は `editNote` を根拠に editor 側へ置いている。
 
 同じ理由で、生成物を作るだけでノート側に何も書かない PDF ダウンロード・一括ダウンロードには `downloadNote` を使い、専用の action を置かない。
 

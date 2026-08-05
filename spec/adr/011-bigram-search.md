@@ -1,23 +1,19 @@
 # 011. 全文検索は書き込み時前処理による bigram 方式で行う
 
-## ステータス
-
-承認済み（FTS 表の構成は [ADR 017](./017-content-size-budget.md)、local / public の物理配置とwriter契約は [021](./021-scope-sharded-data-plane.md) が改訂。前処理・クエリ構築・タグ絞り込みの決定は本 ADR のまま）
-
 ## コンテキスト
 
-読み取りモデル `note_search` の全文検索（[ADR 009](./009-read-models.md)）は、当初 FTS5 の `trigram` トークナイザーで構成していた。しかし実機検証で 2 つの欠陥が確認された。
+読み取りモデル `note_search` の全文検索（[ADR 009](./009-read-models.md)）には、日本語の 2 文字検索と NFKC 正規化が必要である。FTS5 の `trigram` トークナイザーには次の制約がある。
 
 1. trigram は 3 文字未満のクエリに 1 行も返さない。検索仕様は「2 文字で有効」を求めており、「東京」「猫」のような短い日本語クエリが全滅する
 2. 全角英数を取り逃す。trigram は NFKC 正規化を行わないため、「ＡＢＣ」を含む本文が「ABC」で引けない
 
-日本語の部分一致・2 文字クエリ・関連度順ページングをすべて満たすトークナイズ方式を選び直す必要がある。
+日本語の部分一致・2 文字クエリ・関連度順ページングをすべて満たすトークナイズ方式が必要になる。
 
-あわせて、タグの AND 絞り込みも当初は `note_search.tag_names`（連結したタグ名）への MATCH で行っていたが、こちらも実機検証で偽陽性（「日本」で「日本語」タグのノートがヒットする）と偽陰性（トークナイザーの最小長を下回る 1〜2 文字のタグが引けない）の両方が確認された。全文検索とタグ絞り込みは求める一致の意味が異なる（前者は部分一致、後者は完全一致）ため、同じ索引で兼ねられるかを判断し直す必要がある。
+タグの AND 絞り込みを連結したタグ名への MATCH で行うと、「日本」で「日本語」タグのノートがヒットする偽陽性と、短いタグを引けない偽陰性が生じる。全文検索は部分一致、タグ絞り込みは完全一致であり、同じ索引では兼ねない。
 
 ## 決定
 
-trigram トークナイザーを廃止し、書き込み時前処理 + FTS5(unicode61) の bigram 方式を採用する。
+書き込み時前処理 + FTS5(unicode61) の bigram 方式を採用する。
 
 - 前処理は次の順序の単一の純関数として定義し、書き込み側とクエリ側で完全に共有する
   1. NFKC 正規化（全角英数・半角カナを解決）
@@ -26,10 +22,10 @@ trigram トークナイザーを廃止し、書き込み時前処理 + FTS5(unic
   4. CJK run（2 文字以上）は重なりビグラム化（「東京都」→「東京 京都」）、1 文字 run は unigram、非 CJK は空白区切りでそのまま
 - CJK 文字クラスは Hiragana U+3040–309F、Katakana U+30A0–30FF（長音 `ー` 含む）、Katakana Phonetic Extensions U+31F0–31FF、CJK Unified U+4E00–9FFF、Ext A U+3400–4DBF、CJK Compatibility U+F900–FAFF、および U+3005 `々`・U+3006 `〆`（「佐々木」の分断防止）とする。半角カナ・全角英数は NFKC が先に解決する
 - クエリは前処理後、run ごとに二重引用符で包んだフレーズ（内部の `"` は `""` に倍化し、FTS5 演算子の無力化を兼ねる）とし、run 間は AND で結ぶ。全滅時はキーワードなし扱い。英数字トークンには前方一致（`word*`）を付与する
-- external content は「前処理済み列を content に指定する」変種とする。`note_search` に `title_fts` / `text_fts` / `tag_names_fts` 列を追加し、`note_search_fts = fts5(title_fts, text_fts, tag_names_fts, content='note_search', content_rowid='rowid', tokenize='unicode61')` とする。生テキスト列を content に指定すると `'rebuild'` でインデックスが全損する（実測）ため禁止する
+- FTS5 は contentless 構成とし、前処理済みテキストは索引内だけに保持する。表構成と再構築規則は [ADR 017](./017-content-size-budget.md) に従う
 - SQL トリガーによる同期は廃止し、アダプター管理とする。`NoteProjectionWriter.replaceSnapshotIfNewer` が FTS 同期（`'delete'` → INSERT）まで責任を持ち、`note_search` 本体・タグ・FTS・表示contextを1transaction/batchで書く
 - 関連度順の列重みはタイトル > タグ名 > 本文（例: `bm25(fts, 5.0, 1.0, 3.0)`。具体値は実装時に調整可）
-- 2 文字クエリは公開全体検索を含む全検索で有効になる。1 文字は従来どおり `QUERY_TOO_SHORT` / null 落としとする
+- 2 文字クエリは公開全体検索を含む全検索で有効とする。1 文字は `QUERY_TOO_SHORT` / null 落としとする
 
 ### タグの AND 絞り込みは FTS ではなく専用表への JOIN で行う
 
@@ -53,9 +49,8 @@ FTS 表 1 つで全文検索とタグ絞り込みを兼ねられ、表もイン�
 
 ## 影響
 
-- `note_search` に前処理済み列（`title_fts` / `text_fts` / `tag_names_fts`）が加わり、`note_search_fts` の定義が変わる。FTS5 仮想テーブルと raw SQL は Drizzle スキーマ外のマイグレーションで管理する
-- 移行はトリガー DROP → FTS 表再作成 → `rebuildNoteProjection` の順で行う。再構築には `INSERT INTO note_search_fts(note_search_fts) VALUES('rebuild')` が使え、`integrity-check` を運用手順に含める
-- 検索結果のハイライト（`NoteSummary.highlightedExcerpt`。OR-03 手順 3）の生成手段が変わる。content が前処理済み列になったため FTS5 の `snippet()` / `highlight()` はビグラム列を返し、trigram + 生テキスト content の旧構成のようにそのまま使うことはできない。FTS は「どの行が一致したか」だけを担い、一致位置は生テキスト列（`note_search.excerpt` / `text`）に同じ NFKC + 小文字化を適用した照合でアダプターが求める（[database/index.md](../database/index.md) の「ハイライトと抜粋の生成」）
+- FTS5 仮想テーブルと raw SQL は Drizzle スキーマ外で管理する
+- FTS は「どの行が一致したか」だけを担い、一致位置は生テキスト列（`note_search.excerpt` / `text`）に同じ NFKC + 小文字化を適用した照合でアダプターが求める（[database/index.md](../database/index.md) の「ハイライトと抜粋の生成」）
 - 既知の限界として次を明文化する（テストケースは「ヒットしてよい」側で書く）
   - 句読点・空白のみの境界をまたぐ偽陽性がある（「日本。本語」が「日本語」にヒットする。bm25 で下位に沈む）
   - 英単語の中間部分一致は失われる（`flare` で Cloudflare は引けない。前方一致 `cloud*` は可能）

@@ -34,7 +34,7 @@ claimはrootのexpected versionと終端状態を条件に、manifest header作�
 
 - kind では分けない。15 分は**キューのコンシューマーの壁時計の上限そのもの**であり（[platform/index.md](../platform/index.md)）、実行体を持つジョブがこれを超えて生き続けることは原理的にない。最も重い実行（LLM 構造化を伴う変換・再生成）もこの中で終わる必要があり、長い処理は `Job.reportProgress` で次の配送へリースを引き継ぐ。PDF 書き出しの実行時間の上限もこの 15 分であり、`ExportTicket` の有効期間 30 分（[usecases/note.md](./note.md)）は「実行時間の上限に余裕を足した値」としてこれと整合する
 - 親の進捗リース 60 分は「子 1 件の実行時間の上限より長く取る」（[domains/job.md](../domains/job.md)）を満たす最小の桁で、子の報告が途絶えてから親が回収されるまでの猶予でもある。こちらは実行体ではなく**一括操作全体の進み具合**を表すため、壁時計の上限とは無関係である
-- **組み立てリースだけは 15 分**である（[ADR 015](../adr/015-cloudflare-runtime.md) が ADR 012 の 60 分を改訂した）。組み立て（`runBulkExport` の ZIP 生成）を実行するのはキューのコンシューマーであり、壁時計 15 分で必ず強制終了される。60 分にしても組み立てが長く生きられるわけではなく、死んだ組み立てワーカーの親が最大 60 分滞留するだけになる
+- **組み立てリースは 15 分**である。組み立て（`runBulkExport` の ZIP 生成）を実行するのはキューのコンシューマーであり、壁時計 15 分で必ず強制終了される。60 分にしても組み立てが長く生きられるわけではなく、死んだ組み立てワーカーの親が最大 60 分滞留するだけになる
 - 進捗リースと組み立てリースは `jobs.lease_expires_at` の 1 列を共有し、`attempts` の 0 / 1 以上で主体を区別する（[domains/job.md](../domains/job.md)）。期間が違うのは、期限を張り直す主体が違うためである — 組み立て中の親（`attempts >= 1`）のリースは `reportProgress` では延びず、延ばせるのは実行権を持つワーカーの `renewAssemblyLease` だけである
 - `reapExpiredJobs` は各 scope object の Alarm で起動する。active Job を保存するたびに最も早い `leaseExpiresAt`（遅くとも5分後）へ Alarm を設定し、回収後も active Job があれば次を設定する。全scopeを5分ごとに走査するglobal Cronは置かない
 - `pruneJobHistory` も Job を持つscopeだけが日次taskを自己スケジュールする

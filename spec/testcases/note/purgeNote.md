@@ -18,7 +18,7 @@
 | 通常purgeが`purging`切替後に応答を失う | 再送する | routeに保存済みoperation ID/phaseを再利用し、新しいpurge operationを作らない | |
 | personal cleanup対象がactive Noteでactorは`DeletingUser` | 内部purgeする | cleanup ownerとscope/owner一致を確認し、trashed/active User制約を要求せず削除する | |
 | workspace cleanupでWorkspace/Membership行が既に削除済み | 内部purgeする | manifest ownerとNote owner一致から続行し、削除済みMembershipを要求しない | |
-| 通常利用者がactive Noteをpurgeする | 実行する | 従来どおり`NOTE_NOT_TRASHED`で拒否する | |
+| 通常利用者がactive Noteをpurgeする | 実行する | `NOTE_NOT_TRASHED`で拒否する | |
 | 完全削除後 | 読み取りモデルを確認する | Note の `projectNoteChanges` が該当の行を削除する | |
 | 完全削除後 | 使用量を確認する | Usage の `applyStorageDelta` で保存容量とノート件数が減る | |
 | Drive にバックアップがある | 完全削除する | Drive 上のファイルは残る（記録だけが消える） | |

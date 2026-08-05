@@ -22,7 +22,7 @@ HTTP 境界で下す決定を 1 か所に集める。扱うのは資格情報の
 
 **値の正典は「その値が意味を持つ層」に置く**。有効期間はドメイン（`Session.ttlMs` / `AuthTokenPurpose.ttlMs`）、しきい値はドメインサービス（`LoginThrottlePolicy`）、秘密と鍵は本文書の `AppConfig` に置く。本文書がすべての値を集める台帳になるのではない — 集めると転送手段を変えるたびにドメインの決定を書き換えることになり、この文書が存在する理由そのものと反する。`AppConfig` が持つのは「配備ごとに変わり、コードにも仕様にも書けないもの」だけである。
 
-本文書は**ブラウザと HTTP の水準で閉じる決定**を書く。実行基盤に属する決定（どのストアで数えるか、発信元をどのヘッダーから取るか等）は [ADR 015](../adr/015-cloudflare-runtime.md) / [ADR 020](../adr/020-coordination-state.md) で確定しており、値の正典は [platform/index.md](../platform/index.md) にある。本文書はそこを参照し、**要件**（何が保証されなければならないか）を持つ。
+本文書は**ブラウザと HTTP の水準で閉じる決定**を書く。実行基盤に属する決定（どのストアで数えるか、発信元をどのヘッダーから取るか等）と値の正典は [platform/index.md](../platform/index.md) にある。本文書はそこを参照し、**要件**（何が保証されなければならないか）を持つ。
 
 ---
 
@@ -89,7 +89,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 
 `SecretCipher` と `ShareTokenProtector` の鍵が単一でないのは、暗号化した値がデータベースに残り続けるためである。署名付きの値は最長でも 24 時間で入れ替わるので鍵を 1 本ずつ差し替えればよいが、暗号化された資格情報と共有トークンは交換前の版で書かれた行が残る。鍵を交換したあとも**用途ごとの旧版を保持し続ける**必要があり、保持をやめた版の行を読むと `SystemError(DataIntegrityError)` になる。旧版をいつ捨てられるかは再暗号化が全行に行き渡ったかで決まる運用上の判断で、設計としては「保持が要る」ことだけを定める。
 
-`clientKey`（発信元を表す文字列）は `AppConfig` に持たない。材料が **`CF-Connecting-IP` ヘッダー**に確定したためである（[ADR 020](../adr/020-coordination-state.md)）— 配備ごとに変わる値ではなく、コードに書ける決定になった。
+`clientKey`（発信元を表す文字列）は `AppConfig` に持たない。材料は **`CF-Connecting-IP` ヘッダー**であり、配備ごとに変わる値ではない。
 
 ### 3 者の比較
 
@@ -216,7 +216,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 `THROTTLED` / `LOCKED` / `RATE_LIMITED` は同じ 429 に対応づくが、コードとしては分けたまま残す。**ステータス表の側の整理は上表 1 行に畳んだ時点で完了しており**、上の「増やすときは」の基準はステータスの例外を増やすときのものであってコードを統合する基準ではない。
 
 - `THROTTLED`（待機。待機秒数を添える）と `LOCKED`（一時的なロック。解除時刻と**パスワード再設定への導線**を添える）は、利用者に出す文言と次の一手が違う（[scenario/account.md](../scenario/account.md)）。1 コードに畳んで待機秒数だけで区別しようとすると、画面が「60 秒を超えるかどうか」で分岐することになり、その 60 秒は `LoginThrottlePolicy` の待機上限（[domains/identity.md](../domains/identity.md)）の写しになる。本文書の冒頭が避けようとした「同じ決定が複数の文書に散る」形そのものである
-- `RATE_LIMITED` は**転送境界の粗いレート制限**（サインアップ・匿名の PDF 書き出し・公開検索・招待の発行）に限って使う。数える仕組みが違い（Rate Limiting binding はロケーション単位で結果整合）、解除までの時間の供給元も持たないため、`THROTTLED` と同じ保証を持てない。この保証の差がそのまま仕組みを分けた理由でもある（[ADR 020](../adr/020-coordination-state.md)）
+- `RATE_LIMITED` は**転送境界の粗いレート制限**（サインアップ・匿名の PDF 書き出し・公開検索・招待の発行）に限って使う。数える仕組みが違い（Rate Limiting binding はロケーション単位で結果整合）、解除までの時間の供給元も持たないため、`THROTTLED` と同じ保証を持てない。この保証の差がそのまま仕組みを分けた理由でもある
 
 名前から `LOGIN_` を外したのは、共有リンクのパスワード照合（`verifySharePassword`）が同じ `LoginThrottlePolicy` を使うためである。サインインだけの語彙ではない。
 
@@ -234,7 +234,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 
 ### 対象
 
-**要求される保証で 2 系統に分かれる**。正確な計数を要するもの（施錠）は D1 の原子的な加算で数え、粗く抑えれば足りるものは Workers の Rate Limiting binding で数える（[ADR 020](../adr/020-coordination-state.md)）。
+**要求される保証で 2 系統に分かれる**。正確な計数を要するもの（施錠）は D1 の原子的な加算で数え、粗く抑えれば足りるものは Workers の Rate Limiting binding で数える。
 
 | 対象 | 数える単位 | 仕組み | 既定のしきい値 |
 | --- | --- | --- | --- |
@@ -247,13 +247,13 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 
 しきい値は `AppConfig` から供給する（配備の規模で変わるため）。上表は既定値である。窓が 60 秒に揃うのは binding が 10 秒か 60 秒しか受け付けないためで、Rate Limiting binding はロケーション単位で数えるので**実効の上限は Cloudflare のロケーション数だけ緩む**。粗い上限としてこれを受け入れる（下記「要件」の 1 が求める正確さは施錠の側にだけ掛かる）。
 
-`clientKey`（発信元）は **`CF-Connecting-IP`** から導く。Cloudflare が自分で設定し、クライアントが送った同名のヘッダーを上書きするため詐称できない。`X-Forwarded-For` は詐称できるので使わない（[ADR 020](../adr/020-coordination-state.md)）。
+`clientKey`（発信元）は **`CF-Connecting-IP`** から導く。Cloudflare が自分で設定し、クライアントが送った同名のヘッダーを上書きするため詐称できない。`X-Forwarded-For` は詐称できるので使わない。
 
 **招待の未処理件数の上限はここに含めない**。`inviteMember` が持つ「24 時間に 50 件」（[usecases/workspace.md](../usecases/workspace.md)）は時間あたりの要求数ではなく**未処理の招待の在庫**に対する上限であり、招待が 1 件受諾されるか取り消されればその場で枠が空く。待てば解けるとは限らず、解除までの時間も出せない（`countPendingIssuedSince` は件数しか返さない。[domains/workspace.md](../domains/workspace.md)）。したがって別のコード `INVITATION_LIMIT_REACHED` を割り当て、下の要件 3 の対象から外す。ステータスは 429 のままとする — 受け手にとっては「今は受け付けられないが、状況が変われば通る」ことを示すのがもっとも近い。
 
 ### 要件
 
-1. **失敗回数の加算はロストアップデートを起こしてはならない。** 素朴に「読んでから書く」形で実装すると、並行した失敗が同じ `failure_count` を読んで同じ値を書き、**攻撃者は要求を並列化するだけで施錠を回避できる**。しきい値の設計（3 回目から待機、10 回で 15 分ロック）がどれだけ精密でも、加算が数えられなければ意味を持たない。**この要件は `LoginAttemptStore.recordFailure` を単一の原子的な操作とすることで満たす**（[domains/identity.md](../domains/identity.md) の契約、[ADR 020](../adr/020-coordination-state.md)）。D1 では `INSERT … ON CONFLICT DO UPDATE SET failure_count = failure_count + 1 … RETURNING` の 1 文にあたる
+1. **失敗回数の加算はロストアップデートを起こしてはならない。** 素朴に「読んでから書く」形で実装すると、並行した失敗が同じ `failure_count` を読んで同じ値を書き、**攻撃者は要求を並列化するだけで施錠を回避できる**。しきい値の設計（3 回目から待機、10 回で 15 分ロック）がどれだけ精密でも、加算が数えられなければ意味を持たない。**この要件は `LoginAttemptStore.recordFailure` を単一の原子的な操作とすることで満たす**（[domains/identity.md](../domains/identity.md) の契約）。D1 では `INSERT … ON CONFLICT DO UPDATE SET failure_count = failure_count + 1 … RETURNING` の 1 文にあたる
 2. 判定と加算は同じ鍵の上で直列化されること。加算が 1 文に収まっていれば、同じ鍵の行に対する更新は保存先が直列化する。判定に使う読み取り（`get`）が古い値を返しても、その試行の失敗は必ず数えられるため施錠は追いつく
 3. 制限に掛かったことを示す応答は 429 とする（前節のコードによる例外）。解除までの時間を添えられるかは経路で異なる。
    - `THROTTLED` / `LOCKED`（`LoginThrottlePolicy` 由来）は**必ず添える**。`ThrottleDecision` が `waitMs` / `until` を持つため供給元がある
@@ -266,7 +266,6 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 ## 関連文書
 
 - [実行基盤の設計](../platform/index.md) — `clientKey` の材料・レート制限の実現手段・基盤の実上限
-- [ADR 020. 調整状態は D1 に置き、原子性を単一 SQL 文で与える](../adr/020-coordination-state.md) — 本節のレート制限の実現手段
 - [ADR 013. HTML のサニタイズ方針](../adr/013-html-sanitization-policy.md) — 本文の許可リスト。本文書の CSP と多層防御の関係にある
 - [ADR 007. 既定スタイルと Shadow DOM による隔離](../adr/007-default-style-isolation.md) — 公開ページの本文描画
 - [ADR 010. 匿名の PDF エクスポートと署名チケット](../adr/010-anonymous-export-and-ticket.md) — `ExportTicket` とレート制限の委譲元

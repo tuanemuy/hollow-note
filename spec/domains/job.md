@@ -268,7 +268,7 @@ Job = QueuedJob | RunningJob | SucceededJob | FailedJob | CanceledJob
 
 batch 親の `leaseExpiresAt` は 1 本しかなく、「子の報告が届き続けている」ことを表す進捗リースと、「ZIP を組み立てている」ことを表す実行権のリースが同じ列を共有する。主体は `attempts`（`beginAssembly` でしか増えない）で区別できるが、期限まで共有すると、組み立て中のワーカーが落ちたあとに `updateBatchProgress`（遅れて届く・重複配送される子の終了報告）の `reportProgress` が期限だけを延ばし続け、`beginAssembly` は `LeaseActive` で弾かれ `reapExpiredJobs` の対象にもならない親が生まれる（`running` のまま永久に終端しない）。
 
-これを防ぐため、**組み立て中の親（`target.type === "batch"` かつ `attempts >= 1`）のリースは `reportProgress` では延長しない**。この状態の期限を延ばせるのは、実行権を持つ組み立てワーカーが呼ぶ `renewAssemblyLease` だけである。子の終了報告が遅れて・重複して届いた場合も `reportProgress` は進捗だけを作り直す。結果、組み立てワーカーが落ちればリースは必ず失効し、`beginAssembly` の再取得か `expire` による回収に戻る。組み立てを始める前の親（`attempts === 0`）は従来どおり `reportProgress` でリースが延びる。
+これを防ぐため、**組み立て中の親（`target.type === "batch"` かつ `attempts >= 1`）のリースは `reportProgress` では延長しない**。この状態の期限を延ばせるのは、実行権を持つ組み立てワーカーが呼ぶ `renewAssemblyLease` だけである。子の終了報告が遅れて・重複して届いた場合も `reportProgress` は進捗だけを作り直す。結果、組み立てワーカーが落ちればリースは必ず失効し、`beginAssembly` の再取得か `expire` による回収に戻る。組み立てを始める前の親（`attempts === 0`）は `reportProgress` でリースが延びる。
 
 この規則の帰結として、組み立て中の親は必ず終端に至る（ワーカーが完了すれば `succeeded`、落ちればリース失効で `reapExpiredJobs` が `failed`（`timeout`）に回収する）。組み立て中の親に対する子の再試行（`retryFailedChildren`）を受け付けず終端後の `reopenBatch` に合流させられるのは、この「必ず終端する」性質があるからである（[usecases/job.md](../usecases/job.md) の `retryFailedChildren`）。
 

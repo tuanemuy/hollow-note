@@ -325,7 +325,7 @@ ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kin
 
 `attemptTtlMs` をロック期間の 15 分より十分長く取るのは、ロック中の記録が期限切れで消えるとロックが早期に解除され、失敗回数を捨てて総当たりを続けられてしまうため。逆に無期限にしないのは、`pruneExpiredAuthState` が回収できない行が溜まり続けるのを避けるためで、成功時は期限を待たず `clear` で即座に消す。
 
-**ロックを保存せず導出するのはなぜか**。失敗回数の加算は並行した試行に対して原子的でなければならず（下記 `LoginAttemptStore` の契約）、原子性を単一の SQL 文で与えるには**書き込む値が読んだ値に依存してはならない**（[ADR 020](../adr/020-coordination-state.md)）。`lockedUntil` を保存すると、その値が `failureCount` から計算される以上、しきい値の判定をアダプターの SQL に持ち込むことになる。導出に変えれば、しきい値の規則はこのドメインサービスの 1 か所に残る。
+**ロックを保存せず導出するのはなぜか**。失敗回数の加算は並行した試行に対して原子的でなければならず（下記 `LoginAttemptStore` の契約）、原子性を単一の SQL 文で与えるには**書き込む値が読んだ値に依存してはならない**。`lockedUntil` を保存すると、その値が `failureCount` から計算される以上、しきい値の判定をアダプターの SQL に持ち込むことになる。導出に変えれば、しきい値の規則はこのドメインサービスの 1 か所に残る。
 
 振る舞いは保存していたときと変わらない。ロック中は照合そのものを行わないので `lastFailedAt` は 10 回目で凍り、ロックは 10 回目の失敗から 15 分で解ける。解けたあとは `failureCount` が 10 のままなので待機は上限の 60 秒になり、次の失敗で `lastFailedAt` が更新されて再びロックに入る。
 
@@ -481,7 +481,7 @@ interface LoginAttemptStore {
 
 **契約: `recordFailure` は単一の原子的な操作でなければならない。読んでから書く実装を禁ずる。** `login_attempts`（[database/index.md](../database/index.md)）は集約ルートではないため楽観ロックが掛からず、素朴に実装すると並行した失敗が同じ `failureCount` を読んで同じ値を書き、要求を並列化するだけで施錠を回避できる。`LoginThrottlePolicy` のしきい値（3 回目から待機、10 回で 15 分ロック）はこの契約が満たされて初めて意味を持つ。
 
-D1 ではこの契約を `INSERT … ON CONFLICT DO UPDATE SET failure_count = failure_count + 1, last_failed_at = ?, expires_at = ? RETURNING failure_count, last_failed_at` の 1 文で満たす（[ADR 020](../adr/020-coordination-state.md)）。ロックの判定は書き込む値に含まれないため、しきい値の規則が SQL に漏れない。要件の正典は [presentation/index.md](../presentation/index.md) のレート制限の節。
+D1 ではこの契約を `INSERT … ON CONFLICT DO UPDATE SET failure_count = failure_count + 1, last_failed_at = ?, expires_at = ? RETURNING failure_count, last_failed_at` の 1 文で満たす。ロックの判定は書き込む値に含まれないため、しきい値の規則が SQL に漏れない。要件の正典は [presentation/index.md](../presentation/index.md) のレート制限の節。
 
 **エラーケース**: `SystemError(DatabaseError)`
 

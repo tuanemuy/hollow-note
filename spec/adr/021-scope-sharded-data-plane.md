@@ -1,14 +1,10 @@
 # 021. 業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する
 
-## ステータス
-
-承認済み
-
 ## コンテキスト
 
-現行設計は、Identity から Note / Job / Usage、公開全文検索までを 1 つの D1 に置く。単一トランザクションでドメインをまたぐ後始末を束ねられ、全文検索と全体横断の問い合わせも素直に書ける一方、書き込み処理と 10 GB の容量上限を全利用者で共有する。D1 の read replication は読み取りを分散できるが、書き込みは 1 つの primary に集まる。
+業務データの大半は `user` または `workspace` の所有 scope を持ち、一覧・タグ・クォータ・ジョブの選択述語も scope で閉じている。通常の読み書きと非同期処理は scope 数に比例して拡張できる必要があり、全利用者の書き込み処理と容量を 1 つの database で共有しない。
 
-業務データの大半は `user` または `workspace` の所有 scope を持ち、一覧・タグ・クォータ・ジョブの選択述語も scope で閉じている。ここを水平分割すれば、通常の読み書きと非同期処理を scope 数に比例して拡張できる。一方、Durable Object の SQLite storage はオブジェクトごとに私有され、別オブジェクトを JOIN したり、複数オブジェクトと D1 を 1 トランザクションに束ねたりできない。公開全文検索、グローバルな一意性、個人と workspace 間のノート移動、利用者削除は別の整合性設計を要する。
+Durable Object の SQLite storage はオブジェクトごとに私有され、別オブジェクトを JOIN したり、複数オブジェクトと D1 を 1 トランザクションに束ねたりできない。公開全文検索、グローバルな一意性、個人と workspace 間のノート移動、利用者削除には、scope-local transaction と global coordination の境界が必要になる。
 
 ## 決定
 
@@ -30,7 +26,7 @@ type ScopeKey =
 
 scope 内のコマンドは `ScopeUnitOfWorkProvider.run(scope, fn)` で同じ Durable Object に送る。コールバックが触れられる repository は渡した `scope` に属するものだけで、別 scope や D1 を入れ子にしない。membership の変更、対象 scope のジョブ終端、`processing` のノートの回復、生成物 metadata の回収は workspace object 内の 1 トランザクションに束ねる。
 
-R2 のオブジェクト本体は従来どおりトランザクション外であり、scope 内の metadata を先に更新して outbox から実体を回収する。
+R2 のオブジェクト本体はトランザクション外であり、scope 内の metadata を先に更新して outbox から実体を回収する。
 
 ### D1 をグローバル制御面と公開読み取り面に限定する
 
@@ -91,13 +87,13 @@ Queues は外部 I/O を伴う job の並行実行、global D1 projection、メ�
 
 各 scope object は `scheduled_tasks` に outbox relay、lease reaping、継続要求、期限切れ metadata の回収予定を保存し、最も早い時刻に 1 つの alarm を設定する。alarm handler は期限到来分を上限件数だけ処理し、残りがあれば次の alarm を設定する。Queue 送信後・送信済み記録前の停止は重複配送になり、event ID / operation ID で吸収する。
 
-global D1 の outbox は従来どおり relay worker と Queue で配送する。全 scope object を列挙する cron は設けない。
+global D1 の outbox は relay worker と Queue で配送する。全 scope object を列挙する cron は設けない。
 
 ### 上限と予算を保存先ごとに適用する
 
 D1 と SQLite-backed Durable Objects に共通する 1 行 2 MB、1 bound value 2 MB、100 parameters、SQL statement 100 KB の制約は維持する。したがって本文上限と contentless FTS の判断は変えない。
 
-D1 の 1 Worker invocation あたり 1,000 query、設計予算 500 は global plane を触る実行だけに適用する。scope-local operation の分割単位は、DO の CPU、alarm / Queue の壁時計、1 回に生成する event 数、R2 / 外部接続数から決める。既存の 100 件上限は、強制終端・回収・継続の最大作業量として維持するが、根拠を D1 query 数から 1 回の CPU と event fan-out の上限へ変更する。
+D1 の 1 Worker invocation あたり 1,000 query、設計予算 500 は global plane を触る実行だけに適用する。scope-local operation の分割単位は、DO の CPU、alarm / Queue の壁時計、1 回に生成する event 数、R2 / 外部接続数から決める。強制終端・回収・継続は 1 回につき最大 100 件とする。
 
 ## 検討した代替案
 
@@ -121,14 +117,13 @@ scope-local data は自然に分割できる。しかし公開全文検索、サ
 
 hot workspace 内も分散できるが、タグ、一覧、クォータ、強制終端、bulk operation が多数 object の fan-out になる。現在の主要な不変条件と問い合わせは owner scope で閉じるため、粒度が細かすぎる。
 
-## 影響
+## 関連する設計
 
-- `spec/adr/015-cloudflare-runtime.md` の「D1 を主データベースとし DO を採らない」を supersede する
-- `spec/adr/016-projection-single-writer.md` の単一 D1 全投影を前提とする決定を supersede し、scope-local projection と global public projection に分ける
-- `spec/adr/018-query-budget.md` の予算適用範囲を global D1 に限定する
-- `spec/adr/019-owner-cleanup-continuation.md` の scope-local 継続を Queue から local outbox + alarm に移す
-- `spec/adr/020-coordination-state.md` の「すべて D1」を supersede し、調整対象と正データの scope に置く
-- ADR 012 の lease / reaper は Queue を残すため維持する。reaper の起動主体だけを global cron から scope alarm に変える
-- ADR 017 の本文サイズ予算は DO SQL にも同じ硬い上限があるため維持する
-- private search はscopeごとに水平分割される。global planeは50/60/70%の段階的actionを持ち、note transaction groupはNoteId hash、job historyはrequestedBy hash、membershipはUserId hash、uniqueness keyはnormalized value hashへdual-write/backfillして切り替える
-- 1つの巨大workspaceは1objectの上限を超えて水平分割できない。この版ではforeground優先、scope Job admission lease同時4、Alarm予算、Retry-Afterとscope容量50/60/70% actionで保護する
+- scope-local projection は正データと同じ transaction、global public projection は Queue 経由で更新する
+- D1 query 予算は global plane に適用し、scope-local task は CPU・壁時計・event fan-out から分割単位を決める
+- scope-local の継続は `scheduled_tasks` と Alarm、global projection と外部 I/O は Queue で運ぶ
+- 調整状態は守る正データと同じ整合性境界に置く
+- Job の lease / attempt は Queue の少なくとも 1 回配送に備えて維持し、reaper は scope Alarm が起動する
+- 本文サイズの予算は D1 と SQLite-backed DO に共通する上限として適用する
+- private search は scope ごとに水平分割する。global plane は 50 / 60 / 70% の段階的 action を持ち、note transaction group は NoteId hash、job history は requestedBy hash、membership は UserId hash、uniqueness key は normalized value hash で分割する
+- 1 つの巨大 workspace は 1 object の上限を超えて水平分割しない。foreground 優先、scope Job admission lease 同時 4、Alarm 予算、Retry-After、scope 容量 50 / 60 / 70% action で保護する
