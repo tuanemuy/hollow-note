@@ -4,7 +4,6 @@ Guidance for coding agents working in this repository.
 
 ## Principles
 
-- Treat `spec/` as the canonical description of the system as it exists now. Write requirements and design in present tense; do not keep progress logs, review artifacts, dated revisions, superseded decisions, or migration notes from an unimplemented design. Git history is the record of how the specification changed.
 - Prioritize type safety; lean on TypeScript's type system fully.
 - Prefer stateless, pure functional code in domain / application layers. Adapter classes are fine when they encapsulate a single external resource and keep mutable state internal.
 - Make illegal states unrepresentable at the type level before falling back to runtime checks.
