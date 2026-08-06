@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hollow — アイコン × Wordmark（Helvetica / Avenir × 大小文字）v7</title>
+<style>
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --color-accent: oklch(37.1% 0 0);
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+    --radius-lg: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); letter-spacing: -0.003em; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 64px 24px; }
+
+  header.page { margin-bottom: 40px; }
+  header.page h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 400; letter-spacing: -0.022em; margin: 0 0 12px; }
+  header.page p { margin: 0; max-width: 66ch; color: var(--color-ink-secondary); line-height: 1.7; font-size: 15px; }
+
+  .card { border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); background: var(--color-surface-elevated); margin-bottom: 24px; overflow: hidden; }
+  .card .head { padding: 24px 28px 18px; }
+  .head .titleline { display: flex; align-items: baseline; gap: 10px; }
+  .head .titleline h2 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.014em; }
+  .head .titleline .jp { font-size: 13px; color: var(--color-ink-tertiary); }
+  .card.fresh .titleline h2::before { content: "NEW"; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: #fff; background: var(--color-ink); padding: 2px 7px; border-radius: 980px; margin-right: 8px; vertical-align: 2px; }
+
+  .grouplabel { font-size: 12px; font-weight: 600; color: var(--color-ink-secondary); letter-spacing: 0.02em; padding: 18px 28px 2px; border-top: 1px solid var(--color-hairline); }
+  .grouplabel + .band { border-top: none; }
+
+  /* light / dark 横並び比較 */
+  .band { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--color-hairline); }
+  .band .pane { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 38px 24px; min-height: 140px; }
+  .band .pane.light { background: var(--color-bg); color: var(--color-ink); }
+  .band .pane.dark  { background: var(--color-ink); color: #ffffff; }
+  .band .pane svg { width: 50px; height: 50px; flex: none; display: block; }
+  .band .wm-band { font-size: 40px; font-weight: 400; letter-spacing: -0.022em; color: currentColor; white-space: nowrap; }
+
+  .lk { display: flex; align-items: center; gap: 18px; padding: 20px 28px; border-top: 1px solid var(--color-hairline); }
+  .lk svg.ic { width: 42px; height: 42px; flex: none; color: var(--color-ink); display: block; }
+  .lk .wm { color: var(--color-ink); white-space: nowrap; line-height: 1.05; }
+  .lk .note { margin-left: auto; font-size: 12px; color: var(--color-ink-tertiary); text-align: right; flex: none; }
+
+  .openings { display: flex; gap: 24px; align-items: flex-start; padding: 18px 28px; border-top: 1px solid var(--color-hairline); color: var(--color-ink); }
+  .openings .label { font-size: 11px; color: var(--color-ink-tertiary); align-self: center; }
+  .openings .o { display: grid; justify-items: center; gap: 6px; }
+  .openings .o svg { width: 40px; height: 40px; }
+  .openings .o small { font-size: 10px; color: var(--color-ink-tertiary); }
+
+  .applist { display: flex; gap: 12px; align-items: center; padding: 18px 28px 24px; border-top: 1px solid var(--color-hairline); }
+  .applist .label { font-size: 11px; color: var(--color-ink-tertiary); margin-right: 4px; }
+  .tile { width: 52px; height: 52px; border-radius: 13px; display: grid; place-items: center; }
+  .tile svg { width: 29px; height: 29px; }
+  .tile.dark { background: var(--color-ink); color: #fff; }
+  .tile.light { background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-hairline); }
+
+  /* fonts */
+  .f-helv { font-family: "Helvetica Neue", Arial, sans-serif; }
+  .f-aven { font-family: "Avenir Next", "Avenir", sans-serif; }
+
+  /* wordmark cases */
+  .lc { font-weight: 400; letter-spacing: -0.022em; font-size: 40px; }
+  .uc { font-weight: 400; letter-spacing: 0.18em; text-transform: uppercase; font-size: 31px; padding-left: 0.18em; }
+
+  .footer { margin-top: 16px; padding-top: 26px; border-top: 1px solid var(--color-hairline); color: var(--color-ink-secondary); font-size: 13px; line-height: 1.7; }
+  .footer code { font-family: var(--font-mono); background: var(--color-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page">
+    <h1>Hollow — アイコン × Wordmark v7</h1>
+    <p>各アイコンは <b>上段に light / dark の横並び比較</b>、<b>下段に Helvetica Neue / Avenir Next ×（小文字 / 大文字）の 4 パターン</b>の lockup。フォントは macOS 標準で表示されるもの（環境で見え方が変わる）。単色・差し色なし、Wordmark は weight 400。大文字は字間を開いて可読性を確保している。</p>
+  </header>
+
+  <!-- ============ 1. Ensō ============ -->
+  <section class="card">
+    <div class="head"><div class="titleline"><h2>Ensō</h2><span class="jp">円相 — 開いた一筆の円</span></div></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm-band f-aven">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm-band f-aven">hollow</span></div>
+    </div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm f-helv lc">hollow</span><span class="note">Helvetica Neue / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm f-helv uc">hollow</span><span class="note">Helvetica Neue / UPPERCASE</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm f-aven lc">hollow</span><span class="note">Avenir Next / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg><span class="wm f-aven uc">hollow</span><span class="note">Avenir Next / UPPERCASE</span></div>
+    <div class="applist"><span class="label">App icon</span>
+      <div class="tile dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg></div>
+      <div class="tile light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M18.5 17.4 A8.5 8.5 0 1 1 20.5 12.7"/></svg></div>
+    </div>
+  </section>
+
+  <!-- ============ 2. Vesica ============ -->
+  <section class="card">
+    <div class="head"><div class="titleline"><h2>Vesica</h2><span class="jp">重なりが生む空白＝繋がり</span></div></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm-band f-aven">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm-band f-aven">hollow</span></div>
+    </div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-helv lc">hollow</span><span class="note">Helvetica Neue / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-helv uc">hollow</span><span class="note">Helvetica Neue / UPPERCASE</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-aven lc">hollow</span><span class="note">Avenir Next / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-aven uc">hollow</span><span class="note">Avenir Next / UPPERCASE</span></div>
+    <div class="applist"><span class="label">App icon</span>
+      <div class="tile dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg></div>
+      <div class="tile light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg></div>
+    </div>
+  </section>
+
+  <!-- ============ 3. Open Frame ============ -->
+  <section class="card fresh">
+    <div class="head"><div class="titleline"><h2>Open Frame</h2><span class="jp">余白の枠 — 空のノート</span></div></div>
+
+    <div class="grouplabel">上開き × Wordmark</div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm-band f-aven">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm-band f-aven">hollow</span></div>
+    </div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm f-helv lc">hollow</span><span class="note">Helvetica Neue / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm f-helv uc">hollow</span><span class="note">Helvetica Neue / UPPERCASE</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm f-aven lc">hollow</span><span class="note">Avenir Next / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><span class="wm f-aven uc">hollow</span><span class="note">Avenir Next / UPPERCASE</span></div>
+
+    <div class="grouplabel">右開き × Wordmark</div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm-band f-aven">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm-band f-aven">hollow</span></div>
+    </div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm f-helv lc">hollow</span><span class="note">Helvetica Neue / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm f-helv uc">hollow</span><span class="note">Helvetica Neue / UPPERCASE</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm f-aven lc">hollow</span><span class="note">Avenir Next / lowercase</span></div>
+    <div class="lk"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><span class="wm f-aven uc">hollow</span><span class="note">Avenir Next / UPPERCASE</span></div>
+    <div class="openings"><span class="label">開き位置</span>
+      <div class="o"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg><small>上</small></div>
+      <div class="o"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg><small>右</small></div>
+      <div class="o"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg><small>なし（閉）</small></div>
+    </div>
+    <div class="applist"><span class="label">App icon / 上</span>
+      <div class="tile dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg></div>
+      <div class="tile light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4 H17 A3 3 0 0 1 20 7 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H10"/></svg></div>
+      <span class="label" style="margin-left:16px">右</span>
+      <div class="tile dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg></div>
+      <div class="tile light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14 V17 A3 3 0 0 1 17 20 H7 A3 3 0 0 1 4 17 V7 A3 3 0 0 1 7 4 H17 A3 3 0 0 1 20 7 V10"/></svg></div>
+    </div>
+  </section>
+
+  <p class="footer">
+    全 4 アイコン × {Helvetica Neue, Avenir Next} × {lowercase, UPPERCASE} = 各 4 パターンの lockup。気に入った「アイコン × フォント × 大小文字」1 組を指定してくれれば、字間・プロポーションを詰めて lockup を確定し、<code>.svg</code> 化＋favicon 一式（<code>favicon.ico</code> / <code>apple-touch-icon</code> / <code>og:image</code> / <code>mask-icon</code>）まで仕上げる。
+  </p>
+</div>
+</body>
+</html>

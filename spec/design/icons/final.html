@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hollow — 確定案（Vesica / Avenir Next / lowercase）</title>
+<style>
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-elevated: #fbfbfd;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+    --radius-lg: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); letter-spacing: -0.003em; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 64px 24px; }
+  h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 400; letter-spacing: -0.022em; margin: 0 0 8px; }
+  .sub { color: var(--color-ink-secondary); font-size: 15px; margin: 0 0 44px; }
+  .sub b { color: var(--color-ink); font-weight: 600; }
+
+  .sec { margin-bottom: 40px; }
+  .sec h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin: 0 0 16px; }
+
+  .band { display: grid; grid-template-columns: 1fr 1fr; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-hairline); }
+  .band .pane { display: flex; align-items: center; justify-content: center; gap: 20px; padding: 52px 24px; min-height: 170px; }
+  .band .pane.light { background: var(--color-bg); color: var(--color-ink); }
+  .band .pane.dark  { background: var(--color-ink); color: #fff; }
+  .band .pane svg { width: 56px; height: 56px; flex: none; }
+  .wm { font-family: "Avenir Next","Avenir",sans-serif; font-weight: 400; letter-spacing: -0.022em; color: currentColor; white-space: nowrap; }
+  .band .wm { font-size: 46px; }
+
+  .row { display: flex; align-items: center; gap: 40px; flex-wrap: wrap; }
+  .stacked { display: grid; justify-items: center; gap: 12px; color: var(--color-ink); }
+  .stacked svg { width: 48px; height: 48px; }
+  .stacked .wm { font-size: 22px; }
+
+  .tile { border-radius: 22%; display: grid; place-items: center; }
+  .tile.dark { background: var(--color-ink); color: #fff; }
+  .tile.light { background: var(--color-surface); color: var(--color-ink); }
+  .t-app { width: 96px; height: 96px; }
+  .t-app svg { width: 54px; height: 54px; }
+
+  .favs { display: flex; align-items: flex-end; gap: 26px; color: var(--color-ink); }
+  .fav { display: grid; justify-items: center; gap: 8px; }
+  .fav small { font-size: 10px; color: var(--color-ink-tertiary); }
+
+  .files { font-size: 13px; line-height: 1.9; color: var(--color-ink-secondary); }
+  .files code { font-family: var(--font-mono); background: var(--color-surface); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Hollow — 確定案</h1>
+  <p class="sub"><b>Vesica</b> mark ×　Wordmark <b>Avenir Next / lowercase / weight 400</b>。単色・差し色なし、線画 1.5px（<code style="font-family:var(--font-mono)">currentColor</code>）。</p>
+
+  <!-- 主ロックアップ light/dark -->
+  <section class="sec">
+    <h2>Primary lockup（light / dark）</h2>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm">hollow</span></div>
+    </div>
+  </section>
+
+  <!-- 縦積み + アプリアイコン -->
+  <section class="sec">
+    <h2>Stacked lockup ／ App icon</h2>
+    <div class="row">
+      <div class="stacked">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg>
+        <span class="wm">hollow</span>
+      </div>
+      <div class="tile dark t-app"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg></div>
+      <div class="tile light t-app"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg></div>
+    </div>
+  </section>
+
+  <!-- favicon サイズ -->
+  <section class="sec">
+    <h2>favicon サイズ確認</h2>
+    <div class="favs">
+      <div class="fav"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><small>48</small></div>
+      <div class="fav"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><small>32</small></div>
+      <div class="fav"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><small>24</small></div>
+      <div class="fav"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><small>16</small></div>
+    </div>
+  </section>
+
+  <!-- 成果物 -->
+  <section class="sec">
+    <h2>マスターファイル</h2>
+    <div class="files">
+      <code>hollow-mark.svg</code> — Vesica マーク（<code>currentColor</code>。アプリ内 inline 用）<br>
+      <code>hollow-mark-ink.svg</code> — 同（色固定 <code>#1d1d1f</code>。favicon / OG ラスタライズの元）<br>
+      <code>hollow-lockup.svg</code> — 横組みロックアップ（wordmark は要アウトライン化）<br>
+      <code>proposals.html</code> — 検討した全案（保持）／ <code>index.md</code> — 決定の記録
+    </div>
+  </section>
+</div>
+</body>
+</html>

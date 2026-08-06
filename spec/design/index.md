@@ -295,7 +295,7 @@ Hollow — あらゆるファイルを HTML に変換して保存・共有する
 - **イラスト**: 空状態のみ、グレースケール ＋ 無彩色アクセントの線画。多色・キャラクター系は使わない
 - **アバター**: 円形（`--radius-full`）、`linear-gradient(135deg, #c9d3df 0%, #8e99a8 100%)` のフォールバック
 - **本文の画像**: `--radius-lg`、`width: 100%; height: auto;`、本文幅に収める。`loading="lazy"` / `decoding="async"` を基本、`object-fit: cover` を既定にしトリミングが重要要素を切らないアスペクト比（16/9, 4/3, 1/1）を選ぶ
-- **ブランド**: マークは Vesica（二円の重なり）。上部バーではマーク単体、公開ヘッダーとランディングではマーク ＋ wordmark のロックアップを使う
+- **ブランド**: マークは Vesica（二円の重なり）。上部バーではマーク単体、公開ヘッダーとランディングではマーク ＋ wordmark のロックアップを使う。マスター SVG と wordmark の決定は [`icons/index.md`](./icons/index.md)
 
 ---
 
@@ -377,7 +377,9 @@ UI に出る文字列は、**機能と結果を説明する文**に統一する�
 
 ## 14. 参照
 
-- [`tokens.md`](./tokens.md) — CSS カスタムプロパティの正準定義- [`drafts/draft-4-focus-command-list.html`](./drafts/draft-4-focus-command-list.html) — 採用構造（P-10 一覧）のドラフト
+- [`tokens.md`](./tokens.md) — CSS カスタムプロパティの正準定義
+- [`icons/index.md`](./icons/index.md) — ブランドマーク / wordmark の決定とマスター SVG
+- [`drafts/draft-4-focus-command-list.html`](./drafts/draft-4-focus-command-list.html) — 採用構造（P-10 一覧）のドラフト
 - [`drafts/draft-4-focus-command-detail.html`](./drafts/draft-4-focus-command-detail.html) — 採用構造（P-11 詳細）のドラフト
 - [`../pages/index.md`](../pages/index.md) — 全画面の機能仕様（共通レイアウト L-01〜L-03 が到達性の正典）
 - [`../scenario/index.md`](../scenario/index.md) — シナリオ

@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hollow — Wordmark 候補（案B：オープン幾何学サンセリフ）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500&family=Urbanist:wght@300;400;500&family=Outfit:wght@300;400;500&family=Montserrat:wght@300;400;500&family=Poppins:wght@300;400;500&family=Manrope:wght@300;400;500&family=DM+Sans:wght@300;400;500&family=Lexend:wght@300;400;500&family=Sora:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-ink: #1d1d1f;
+    --color-ink-secondary: #6e6e73;
+    --color-ink-tertiary: #86868b;
+    --color-hairline: rgba(60,60,67,0.12);
+    --font-sans: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+    --radius-lg: 12px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); letter-spacing: -0.003em; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 64px 24px 120px; }
+  h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 400; letter-spacing: -0.022em; margin: 0 0 8px; }
+  .sub { color: var(--color-ink-secondary); font-size: 15px; line-height: 1.7; margin: 0 0 12px; max-width: 720px; }
+  .sub b { color: var(--color-ink); font-weight: 600; }
+  code { font-family: var(--font-mono); background: var(--color-surface); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+
+  .note { border-left: 3px solid var(--color-hairline); padding: 4px 0 4px 16px; margin: 0 0 48px; color: var(--color-ink-secondary); font-size: 13.5px; line-height: 1.75; max-width: 760px; }
+
+  /* 参照（本物 Avenir Next：Mac で開くと CoreText が解決） */
+  .ref { margin-bottom: 56px; }
+  .ref h2, .card h3 { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin: 0 0 14px; }
+
+  .card { margin-bottom: 40px; padding-bottom: 40px; border-bottom: 1px solid var(--color-hairline); }
+  .card:last-child { border-bottom: none; }
+  .card-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 0 0 16px; }
+  .card-head h3 { margin: 0; }
+  .card-head .name { font-size: 17px; font-weight: 600; color: var(--color-ink); letter-spacing: -0.01em; }
+  .card-head .desc { font-size: 13px; color: var(--color-ink-secondary); }
+  .card-head .lic { font-size: 11px; color: var(--color-ink-tertiary); font-family: var(--font-mono); }
+  .card-head .tr { font-size: 11px; color: var(--color-ink-tertiary); font-family: var(--font-mono); }
+  .card-head .pick { font-size: 11px; font-weight: 600; color: #fff; background: var(--color-ink); padding: 2px 8px; border-radius: 999px; letter-spacing: 0.02em; }
+
+  /* light / dark ロックアップ band */
+  .band { display: grid; grid-template-columns: 1fr 1fr; border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--color-hairline); }
+  .band .pane { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 44px 24px; min-height: 150px; }
+  .band .pane.light { background: var(--color-bg); color: var(--color-ink); }
+  .band .pane.dark  { background: var(--color-ink); color: #fff; }
+  .band .pane svg { width: 50px; height: 50px; flex: none; }
+  .band .wm { font-size: 44px; }
+
+  /* wordmark 基底。tracking と既定 weight はフォント別クラス（.f-*）で個別に上書き。 */
+  .wm { color: currentColor; white-space: nowrap; font-weight: 400; letter-spacing: 0; }
+
+  /* === フォント別：font-family ＋ Avenir のリズムに寄せた個別トラッキング ＋ 既定 weight ===
+     素のサイドベアリングが各フォントで違うため、一律ではなく font ごとに振る。 */
+  /* weight は据え置き（混在）。tracking のみフォント別に Avenir のリズムへ寄せる。
+     300 の軽量フォントは字面が締まって見えるぶん、tracking はやや開け気味に補正。 */
+  .f-avenir     { font-family: "Avenir Next","Avenir",sans-serif; letter-spacing: -0.006em; }
+  .f-jost       { font-family: "Jost";       letter-spacing:  0.002em; }   /* 素が詰まり気味 → 開ける */
+  .f-urbanist   { font-family: "Urbanist";   letter-spacing: -0.006em; }   /* Avenir に近い → ほぼ同値 */
+  .f-outfit     { font-family: "Outfit";     letter-spacing: -0.006em; font-weight: 300; }
+  .f-poppins    { font-family: "Poppins";    letter-spacing: -0.012em; font-weight: 300; }  /* 字幅広い → 詰める */
+  .f-montserrat { font-family: "Montserrat"; letter-spacing: -0.012em; }   /* 字幅広い → 詰める */
+  .f-manrope    { font-family: "Manrope";    letter-spacing: -0.006em; }
+  .f-dmsans     { font-family: "DM Sans";    letter-spacing: -0.004em; font-weight: 300; }
+  .f-lexend     { font-family: "Lexend";     letter-spacing: -0.018em; font-weight: 300; }  /* 設計上ルーズ → 詰める */
+  .f-sora       { font-family: "Sora";       letter-spacing: -0.014em; font-weight: 300; }  /* 均等幅で広い → 詰める */
+
+  /* OG プレビュー（1200x630 比率・配信物想定の白基調） */
+  .og-wrap { margin-top: 16px; }
+  .og { aspect-ratio: 1200 / 630; width: 100%; max-width: 560px; background: #fff; border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); display: grid; place-content: center; justify-items: center; gap: 14px; }
+  .og .lock { display: flex; align-items: center; gap: 14px; color: var(--color-ink); }
+  .og .lock svg { width: 42px; height: 42px; }
+  .og .lock .wm { font-size: 40px; }
+  .og .tag { font-size: 15px; color: var(--color-ink-secondary); letter-spacing: 0; font-weight: 400; }
+
+  /* ウェイト比較 */
+  .weights { margin-top: 16px; display: flex; align-items: baseline; gap: 32px; flex-wrap: wrap; color: var(--color-ink); }
+  .weights .w { display: grid; gap: 2px; }
+  .weights .w small { font-size: 10px; color: var(--color-ink-tertiary); font-family: var(--font-mono); }
+  .weights .w .wm { font-size: 30px; }
+  .row2 { display: grid; grid-template-columns: 1fr 560px; gap: 28px; align-items: start; }
+  @media (max-width: 920px) { .row2 { grid-template-columns: 1fr; } .og { max-width: none; } }
+
+  /* 一覧比較（同サイズ・左揃え・縦積みで字形をスキャン） */
+  .compare { margin: 0 0 64px; border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); overflow: hidden; }
+  .compare h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-ink-tertiary); margin: 0; padding: 16px 24px; border-bottom: 1px solid var(--color-hairline); background: var(--color-surface); }
+  .cmp-row { display: grid; grid-template-columns: 116px 1fr; align-items: center; gap: 8px; padding: 18px 24px; border-bottom: 1px solid var(--color-hairline); }
+  .cmp-row:last-child { border-bottom: none; }
+  .cmp-row.is-ref { background: #fbfbfd; }
+  .cmp-row .label { display: grid; gap: 2px; }
+  .cmp-row .label b { font-size: 12px; font-weight: 600; color: var(--color-ink); letter-spacing: -0.01em; }
+  .cmp-row .label small { font-size: 10px; color: var(--color-ink-tertiary); font-family: var(--font-mono); }
+  .cmp-row .lock { display: flex; align-items: center; gap: 16px; color: var(--color-ink); }
+  .cmp-row .lock svg { width: 38px; height: 38px; flex: none; }
+  .cmp-row .lock .wm { font-size: 40px; }
+  .compare[data-theme="dark"] { background: var(--color-ink); }
+  .compare[data-theme="dark"] .cmp-row { border-color: rgba(255,255,255,0.12); }
+  .compare[data-theme="dark"] .cmp-row.is-ref { background: #2a2a2c; }
+  .compare[data-theme="dark"] .cmp-row .lock { color: #fff; }
+  .compare[data-theme="dark"] .cmp-row .label b { color: #fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Hollow — Wordmark 候補（案B）</h1>
+  <p class="sub"><b>Vesica</b> mark は据え置き。Wordmark を <b>Avenir Next（Apple プロプラ・配布/埋め込み不可）</b> から <b>埋め込み可能なオープン幾何学サンセリフ</b>へ置換する案の比較。狙いは <b>OG 画像のフォント焼き込みを再現可能・ライセンス安全</b>にすること。</p>
+  <p class="note">
+    現状の <code>og-image.png</code> は ImageMagick→librsvg→fontconfig 経由でラスタライズされ、<b>fontconfig が macOS の Avenir Next を解決できず汎用 sans の Bold にフォールバック</b>している（SVG は <code>font-weight 400</code> 指定なのに実物は極太）。案 B はこれを解消する。<br>
+    下記候補はいずれも <b>SIL Open Font License</b>。採用したら Web フォント（self-host）として同梱し、OG はその実フォントで焼き込む（or グリフをアウトライン化）。<br>
+    <b>weight は据え置き</b>（Outfit / Poppins / DM Sans / Lexend / Sora = 300、他 = 400）。見た目を現行 Avenir に寄せる調整は<b>トラッキング側で実施</b>（素のサイドベアリングが各フォントで違うため一律にはせず、Avenir のリズムへ寄せた値を <code>.f-*</code> クラスに付与）。各カードに weight / tracking を表示。<br>
+    ※ このページは Google Fonts から候補を読み込み。<b>最上段の「参照」だけは macOS の本物 Avenir Next を呼ぶ</b>ので、Mac で開くと目標形と各候補を直接比較できる。
+  </p>
+
+  <!-- 一覧比較（一目で字形を見比べる：同サイズ・左揃え・縦積み） -->
+  <section class="compare">
+    <h2>一覧比較 — light（同サイズ・weight 据え置き・トラッキングを Avenir リズムへ）</h2>
+    <div class="cmp-row is-ref"><div class="label"><b>Avenir Next</b><small>ref / 400</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-avenir">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Jost</b><small>400 · +.002</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-jost">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Urbanist</b><small>400 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-urbanist">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Outfit</b><small>300 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-outfit">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Poppins</b><small>300 · −.012</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-poppins">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Montserrat</b><small>400 · −.012</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-montserrat">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Manrope</b><small>400 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-manrope">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>DM Sans</b><small>300 · −.004</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-dmsans">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Lexend</b><small>300 · −.018</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-lexend">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Sora</b><small>300 · −.014</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-sora">hollow</span></div></div>
+  </section>
+
+  <section class="compare" data-theme="dark">
+    <h2 style="background:#2a2a2c;color:#a1a1a6;border-color:rgba(255,255,255,0.12)">一覧比較 — dark</h2>
+    <div class="cmp-row is-ref"><div class="label"><b>Avenir Next</b><small>ref / 400</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-avenir">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Jost</b><small>400 · +.002</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-jost">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Urbanist</b><small>400 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-urbanist">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Outfit</b><small>300 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-outfit">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Poppins</b><small>300 · −.012</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-poppins">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Montserrat</b><small>400 · −.012</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-montserrat">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Manrope</b><small>400 · −.006</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-manrope">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>DM Sans</b><small>300 · −.004</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-dmsans">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Lexend</b><small>300 · −.018</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-lexend">hollow</span></div></div>
+    <div class="cmp-row"><div class="label"><b>Sora</b><small>300 · −.014</small></div><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-sora">hollow</span></div></div>
+  </section>
+
+  <!-- 参照: 本物 Avenir Next（macOS のみ実フォント） -->
+  <section class="ref">
+    <h2>参照 — 現行ターゲット（Avenir Next / weight 400・macOS のみ実表示）</h2>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-avenir">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-avenir">hollow</span></div>
+    </div>
+  </section>
+
+  <!-- ===== 候補 ===== -->
+
+  <!-- Jost -->
+  <section class="card">
+    <div class="card-head"><span class="name f-jost">Jost</span><span class="pick">Avenir/Futura 系で最有力</span><span class="desc">Futura リバイバル。純幾何学・真円 o・先の尖る w。最も Avenir/Futura らしい。</span><span class="tr">400 · tracking +.002em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-jost">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-jost">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-jost" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-jost" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-jost" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-jost">hollow</span></div><span class="tag" style="font-family:'Jost'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Urbanist -->
+  <section class="card">
+    <div class="card-head"><span class="name f-urbanist">Urbanist</span><span class="pick">Avenir に最も近い</span><span class="desc">低コントラスト幾何学。Avenir 直系の設計思想で、丸みと均質さが近い。</span><span class="tr">400 · tracking −.006em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-urbanist">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-urbanist">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-urbanist" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-urbanist" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-urbanist" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-urbanist">hollow</span></div><span class="tag" style="font-family:'Urbanist'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Outfit -->
+  <section class="card">
+    <div class="card-head"><span class="name f-outfit" style="font-weight:600">Outfit</span><span class="desc">均質で素直な幾何学サンセリフ。クセが少なく端正。UI とも好相性。</span><span class="tr">300 · tracking −.006em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-outfit">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-outfit">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-outfit" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-outfit" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-outfit" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-outfit">hollow</span></div><span class="tag" style="font-family:'Outfit'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Poppins -->
+  <section class="card">
+    <div class="card-head"><span class="name f-poppins" style="font-weight:600">Poppins</span><span class="desc">真円ベースの幾何学。丸く親しみやすいが、やや主張強め・幅広め。</span><span class="tr">300 · tracking −.012em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-poppins">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-poppins">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-poppins" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-poppins" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-poppins" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-poppins">hollow</span></div><span class="tag" style="font-family:'Poppins'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Montserrat -->
+  <section class="card">
+    <div class="card-head"><span class="name f-montserrat" style="font-weight:600">Montserrat</span><span class="desc">Gotham 系の幾何学グロテスク。安定感があり視認性高め。やや一般的。</span><span class="tr">400 · tracking −.012em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-montserrat">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-montserrat">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-montserrat" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-montserrat" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-montserrat" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-montserrat">hollow</span></div><span class="tag" style="font-family:'Montserrat'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Manrope -->
+  <section class="card">
+    <div class="card-head"><span class="name f-manrope" style="font-weight:600">Manrope</span><span class="desc">幾何学×グロテスクのハイブリッド。モダンで中立的、可読性が高い。</span><span class="tr">400 · tracking −.006em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-manrope">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-manrope">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-manrope" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-manrope" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-manrope" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-manrope">hollow</span></div><span class="tag" style="font-family:'Manrope'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- DM Sans -->
+  <section class="card">
+    <div class="card-head"><span class="name f-dmsans" style="font-weight:600">DM Sans</span><span class="desc">低コントラスト幾何学。小さめのx-height で落ち着いた印象。UI 寄り。</span><span class="tr">300 · tracking −.004em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-dmsans">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-dmsans">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-dmsans" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-dmsans" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-dmsans" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-dmsans">hollow</span></div><span class="tag" style="font-family:'DM Sans'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Lexend -->
+  <section class="card">
+    <div class="card-head"><span class="name f-lexend" style="font-weight:600">Lexend</span><span class="desc">可読性研究ベースのヒューマニスト寄り。広めの字面で穏やか。</span><span class="tr">300 · tracking −.018em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-lexend">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-lexend">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-lexend" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-lexend" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-lexend" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-lexend">hollow</span></div><span class="tag" style="font-family:'Lexend'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+  <!-- Sora -->
+  <section class="card">
+    <div class="card-head"><span class="name f-sora" style="font-weight:600">Sora</span><span class="desc">テック寄りの幾何学。やや角張り・等幅感のある均質さ。硬質な印象。</span><span class="tr">300 · tracking −.014em</span><span class="lic">OFL · Google Fonts</span></div>
+    <div class="band">
+      <div class="pane light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-sora">hollow</span></div>
+      <div class="pane dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-sora">hollow</span></div>
+    </div>
+    <div class="row2">
+      <div class="weights">
+        <div class="w"><span class="wm f-sora" style="font-weight:300">hollow</span><small>300</small></div>
+        <div class="w"><span class="wm f-sora" style="font-weight:400">hollow</span><small>400</small></div>
+        <div class="w"><span class="wm f-sora" style="font-weight:500">hollow</span><small>500</small></div>
+      </div>
+      <div class="og-wrap"><div class="og"><div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="9" cy="12" r="6.5"/><circle cx="15" cy="12" r="6.5"/></svg><span class="wm f-sora">hollow</span></div><span class="tag" style="font-family:'Sora'">A quiet, personal text archive</span></div></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // 各 wordmark の実幅を測り、Avenir 参照と同じ advance 幅になる letter-spacing を逆算して適用する。
+  // 目分量ではなく実測で「hollow」の横幅を揃える（フォント別のサイドベアリング差を吸収）。
+  (function () {
+    var FONTS = [
+      { cls: "f-jost",       fam: "'Jost'",       wt: 400 },
+      { cls: "f-urbanist",   fam: "'Urbanist'",   wt: 400 },
+      { cls: "f-outfit",     fam: "'Outfit'",     wt: 300 },
+      { cls: "f-poppins",    fam: "'Poppins'",    wt: 300 },
+      { cls: "f-montserrat", fam: "'Montserrat'", wt: 400 },
+      { cls: "f-manrope",    fam: "'Manrope'",    wt: 400 },
+      { cls: "f-dmsans",     fam: "'DM Sans'",    wt: 300 },
+      { cls: "f-lexend",     fam: "'Lexend'",     wt: 300 },
+      { cls: "f-sora",       fam: "'Sora'",       wt: 300 },
+    ];
+    var EM = 400; // 測定用フォントサイズ(px)
+    var probe = document.createElement("span");
+    probe.textContent = "hollow";
+    probe.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:nowrap;font-size:" +
+      EM + "px;line-height:1;";
+    document.body.appendChild(probe);
+
+    function ratio(fam, wt, lsEm) {
+      probe.style.fontFamily = fam;
+      probe.style.fontWeight = wt;
+      probe.style.letterSpacing = lsEm * EM + "px";
+      return probe.getBoundingClientRect().width / EM; // em 単位の advance 幅
+    }
+
+    function fmt(ls) {
+      return (ls >= 0 ? "+" : "−") + Math.abs(ls).toFixed(3).replace(/^0/, "") + "em";
+    }
+
+    function fit() {
+      var target = ratio("'Avenir Next','Avenir',sans-serif", 400, 0); // 揃える目標幅(Avenir)
+      var css = "";
+      var applied = {};
+      FONTS.forEach(function (f) {
+        var r0 = ratio(f.fam, f.wt, 0);
+        var r1 = ratio(f.fam, f.wt, 0.05); // letter-spacing の幅への寄与(傾き)を実測
+        var slope = (r1 - r0) / 0.05;
+        var ls = slope ? (target - r0) / slope : 0;
+        ls = Math.max(-0.16, Math.min(0.16, ls)); // 安全クランプ
+        applied[f.cls] = ls;
+        css += "." + f.cls + "{letter-spacing:" + ls.toFixed(4) + "em}\n";
+      });
+      var style = document.createElement("style");
+      style.textContent = css;
+      document.head.appendChild(style);
+      probe.remove();
+
+      // ラベルを実測値に更新（一覧の small ＋ 各カードの .tr）
+      document.querySelectorAll(".cmp-row").forEach(function (row) {
+        var wm = row.querySelector(".wm");
+        var small = row.querySelector(".label small");
+        if (!wm || !small) return;
+        var cls = [].slice.call(wm.classList).find(function (c) { return c in applied; });
+        if (!cls) return;
+        var wt = small.textContent.split("·")[0].trim();
+        small.textContent = wt + " · " + fmt(applied[cls]);
+      });
+      Object.keys(applied).forEach(function (cls) {
+        var name = document.querySelector(".card-head .name." + cls);
+        if (!name) return;
+        var tr = name.parentNode.querySelector(".tr");
+        if (tr) tr.textContent = tr.textContent.split("·")[0].trim() + " · auto " + fmt(applied[cls]);
+      });
+    }
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(fit);
+    } else {
+      window.addEventListener("load", fit);
+    }
+  })();
+</script>
+</body>
+</html>
