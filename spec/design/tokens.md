@@ -70,7 +70,7 @@ Hollow の UI で使用する CSS カスタムプロパティの正準定義。
 | 状態 | プロパティ | 値 |
 |------|-----------|-----|
 | 変換中 / 待機中 | `--color-convert-working` | `var(--color-accent)` |
-| 要 LLM 連携 | `--color-convert-awaiting` | `var(--color-warning)` |
+| 要 AI 連携 | `--color-convert-awaiting` | `var(--color-warning)` |
 | 変換失敗 | `--color-convert-failed` | `var(--color-error)` |
 | 変換完了 | `--color-convert-done` | `var(--color-success)` |
 
