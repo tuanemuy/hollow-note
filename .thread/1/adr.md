@@ -289,3 +289,80 @@ spec/domains/index.md の契約文は状態機械の骨格を定めるが、(1) 
 ### Consequences
 - 良い点: 「工数の山」とされた 2 ストアが実行形の契約（適合テスト）として固定され、#11 / 削除スライスが同じ判定に載る。
 - トレードオフ: 上記の確定は仕様の解釈であり、削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として調整する（spec-sync 候補）。なお `SystemErrorCode` に契約 JSDoc が言う `ExternalServiceError` が存在しないため、ShareTokenProtector の失敗（未知 keyVersion / 破損暗号文）は `DataIntegrityError` に写した（spec-sync 候補としてメモ）。
+
+## ADR-018: NoteProjectionRevisionStore を ScopeUnitOfWorkContext に載せる
+
+### Status
+Accepted
+
+### Context
+spec/usecases/note.md 共通節は「投影対象状態を変える全 UoW は正データ保存と同じ transaction で `NoteProjectionRevisionStore.bump(noteId)` を行う」と定めるが、steps.md ステップ2 の `ScopeUnitOfWorkContext` は `{noteRepository, noteRevisionRepository, cleanupAdmission, collectEvents}` で bump の経路がない。コンテナ側の scope-bound ポートを UoW コールバック内から呼ぶ方法は memory 実装（ALS がトランザクションを拾う）では動くが、実バックエンドで同一トランザクション性が保証されない。
+
+### Decision
+`ScopeUnitOfWorkContext` に `noteProjectionRevisionStore` を追加し、`createBlankNote` は UoW 内で bump → `Note.createBlank(projectionRevision)`（ADR-011）を実行する。steps.md の context 列挙は「後続スライスで追加」と明記しており、その拡張点に載せる。
+
+### Consequences
+- 良い点: revision 採番と正データ書き込みの同一トランザクション性が契約（context の形）として強制される。
+- トレードオフ: なし（後続の updateBody 等も同じ経路を使う）。
+
+## ADR-019: コンテナは UoW 外ポートを明示し、読み取りは `Pick` で write メソッドを型的に落とす
+
+### Status
+Accepted
+
+### Context
+steps.md ステップ8 は RequestContainer に「各読み取りポート」を置くとだけ記す。フルのリポジトリを載せると UoW 外での書き込みを型が許してしまい、「リポジトリは UoW 内でのみ触る」原則が JSDoc 頼みになる。一方 spec が UoW 外と定める書き込みポート（IdentityUniqueDirectory の予約サガ、NoteRouteStore の route サガ、LoginAttemptStore の原子カウンター、SessionRepository の期限切れ best-effort delete）はフルシグネチャで必要。
+
+### Decision
+RequestContainer に `userReader` / `identityReader` / `sessionReader` / `authTokenReader` / `noteReaderFor(scope)` を `Pick<Repository, 読み取りメソッド>`（sessionReader のみ best-effort `deleteById` を含む）として載せ、UoW 外書き込みが仕様であるポート（identityUniqueDirectory / noteRouteStore / loginAttemptStore）はフルポートで載せる。WorkerContainer には `maintenanceRunStore` / `routingGenerations` / `authStateSweeps`（4表共通の `ExpirySweep` 形）を追加。memory 配線の合成は `application/di/memoryRuntime.ts`（composition root として adapters を import してよい層）に置き、serverNode DI とテストハーネス（`__tests__/helpers.ts`）が同じ配線を共有する。
+
+### Consequences
+- 良い点: 「UoW 外の書き込みはこの列挙だけ」という spec の境界が container の型に写り、テストも本番配線そのもので走る。
+- トレードオフ: 後続スライスで読み取りメソッドが増えるたび `Pick` の列挙を広げる差分が出る。
+
+## ADR-020: pruneExpiredAuthState の in-process 実行モデル
+
+### Status
+Accepted
+
+### Context
+CF 実装では cron が continuation task を Queue に発行し lane を非同期に消化するが、本スライスは queue 配線を持たない（runner 配線自体が後続スライス）。また `advanceOrAck` は次 lane の (generation, shardId) しか返さず、別 shard を auto-claim した場合その table/cursor 位置が観測できない。
+
+### Decision
+- cron 分岐は claim した lane をその invocation 内で完走する（1 command = 1表 100 件の粒度と checkpoint は維持、invocation 予算 100 commands）。表の失敗は `advanceOrAck(completed: false)` で cursor を保った解放とし、他 lane は進む。invocation 内の全 sweep が失敗した場合のみ `SystemError(DatabaseError)`（spec の「4 つすべての削除が失敗」の invocation 単位の読み）。
+- `advanceOrAck` が別 shard を auto-claim した場合は一旦 `completed: false` で解放し `claimLanes` で位置つきに取り直す。同一 shard の次表は kind の表列ヒントで導出する。
+- lease owner はプロセス定数 `PRUNE_LEASE_OWNER`（relay worker の workerId と同型）とし、テストが「死んだ invocation の claim」を演出できるよう export する。クラッシュ回復は「次 cron の再 lease + continuation 入力の再送」で成立し、テスト（TC-174）でその形を固定した。
+
+### Consequences
+- 良い点: TC-identity-150..178 の全行が queue なしで検証可能。CF スライスは cron 分岐の「完走ループ」を Queue 発行に置き換えるだけで同じ store 契約に載る。
+- トレードオフ: cron が同期的に全 lane を掃くため in-process では invocation が長くなり得る（予算 100 commands で抑制）。
+
+## ADR-021: 認証ユースケースの応答形状の確定（decoy userId / fieldErrors / alreadyVerified の sessionToken）
+
+### Status
+Accepted
+
+### Context
+(1) signUpWithPassword は既存メールでも「応答は未登録のときと同じ」を要求するが、出力 DTO に userId が含まれる。既存 user の id を返すと存在が漏れる。(2) THROTTLED / LOCKED は待機秒数・解除時刻を「添える」必要があるが、`ValidationError` の構造化ペイロードは `fieldErrors` しかない。(3) verifyEmail の出力表は `sessionToken: string` だが、alreadyVerified 経路は「セッションを発行しない」。
+
+### Decision
+(1) 既存メール経路は idGenerator で decoy userId を採番して返す。(2) 待機秒数は `fieldErrors.waitSeconds`、解除時刻は `fieldErrors.unlockAt`（ISO 文字列）として載せ、presentation はここから表示を組む。(3) `VerifyEmailView.sessionToken` は `string | null` とし、alreadyVerified で null（spec の出力表は表現不能 — spec-sync 候補としてメモ）。
+
+### Consequences
+- 良い点: 応答同一性・エラー詳細の運搬・非発行経路がすべて型で表現される。
+- トレードオフ: fieldErrors を「フィールドエラー以外」に使う軽い流用（コード側の規約で運用）。
+
+## ADR-022: createBlank のタイトル由来は entity 内で導出する（空→auto）
+
+### Status
+Accepted
+
+### Context
+spec/domains/note.md の `createBlank` シグネチャは `title: string` だが、usecases/note.md と TC-note-058 は「省略時は 無題 / 由来 auto、指定時は manual」を要求する。ステップ4 実装は一律 `NoteTitle.manual` で、省略時の origin が manual になっていた。
+
+### Decision
+シグネチャは spec どおり `title: string` のまま、`createBlank` 内で trim 後空なら `NoteTitle.auto("")`（=無題/auto）、非空なら `NoteTitle.manual` を導出する。usecase は不正タイトルを route 予約前に検証してからサガに入る（spec の手順順序: title 構築 → reserve）。
+
+### Consequences
+- 良い点: TC-note-058/059 が満たされ、後続の変換結果によるタイトル差し替え（auto のみ上書き可）が正しく機能する。
+- トレードオフ: なし。

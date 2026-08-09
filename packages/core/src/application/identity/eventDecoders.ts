@@ -1,0 +1,169 @@
+import type {
+  IdentityAddedEvent,
+  IdentityPasswordChangedEvent,
+  IdentityRemovedEvent,
+  UserCreatedEvent,
+  UserDeletedEvent,
+  UserEmailVerifiedEvent,
+  UserHandleChangedEvent,
+  UserProfileUpdatedEvent,
+} from "@repo/core/domain/identity/events";
+import {
+  DisplayName,
+  Handle,
+  IdentityId,
+  UserId,
+} from "@repo/core/domain/identity/valueObject";
+import { z } from "zod";
+import { buildEventDecoder } from "../events/buildDecoder";
+
+/**
+ * Wire decoders for the identity events (ADR-013: decoders live in the
+ * application layer). Each schema is `.strict()` so a payload with
+ * extra keys — a schema-skewed row — fails as
+ * `SystemError(DataIntegrityError)` instead of passing silently.
+ */
+
+const identityKindSchema = z.enum(["password", "oauth"]);
+
+export const identityEventDecoders = {
+  "identity.user.created": buildEventDecoder<
+    UserCreatedEvent,
+    { userId: string }
+  >(
+    "identity.user.created",
+    z.object({ userId: z.string().min(1) }).strict(),
+    (parsed) => ({ userId: UserId.create(parsed.userId) }),
+  ),
+
+  "identity.user.emailVerified": buildEventDecoder<
+    UserEmailVerifiedEvent,
+    { userId: string }
+  >(
+    "identity.user.emailVerified",
+    z.object({ userId: z.string().min(1) }).strict(),
+    (parsed) => ({ userId: UserId.create(parsed.userId) }),
+  ),
+
+  "identity.user.profileUpdated": buildEventDecoder<
+    UserProfileUpdatedEvent,
+    { userId: string; displayName: string }
+  >(
+    "identity.user.profileUpdated",
+    z
+      .object({ userId: z.string().min(1), displayName: z.string().min(1) })
+      .strict(),
+    (parsed) => ({
+      userId: UserId.create(parsed.userId),
+      displayName: DisplayName.create(parsed.displayName),
+    }),
+  ),
+
+  "identity.user.handleChanged": buildEventDecoder<
+    UserHandleChangedEvent,
+    {
+      userId: string;
+      previousHandle: string | null;
+      currentHandle: string | null;
+    }
+  >(
+    "identity.user.handleChanged",
+    z
+      .object({
+        userId: z.string().min(1),
+        previousHandle: z.string().min(1).nullable(),
+        currentHandle: z.string().min(1).nullable(),
+      })
+      .strict(),
+    (parsed) => ({
+      userId: UserId.create(parsed.userId),
+      previousHandle:
+        parsed.previousHandle === null
+          ? null
+          : Handle.create(parsed.previousHandle),
+      currentHandle:
+        parsed.currentHandle === null
+          ? null
+          : Handle.create(parsed.currentHandle),
+    }),
+  ),
+
+  "identity.user.deleted": buildEventDecoder<
+    UserDeletedEvent,
+    { userId: string; deletionOperationId: string }
+  >(
+    "identity.user.deleted",
+    z
+      .object({
+        userId: z.string().min(1),
+        deletionOperationId: z.string().min(1),
+      })
+      .strict(),
+    (parsed) => ({
+      userId: UserId.create(parsed.userId),
+      deletionOperationId: parsed.deletionOperationId,
+    }),
+  ),
+
+  "identity.identity.added": buildEventDecoder<
+    IdentityAddedEvent,
+    { identityId: string; userId: string; kind: "password" | "oauth" }
+  >(
+    "identity.identity.added",
+    z
+      .object({
+        identityId: z.string().min(1),
+        userId: z.string().min(1),
+        kind: identityKindSchema,
+      })
+      .strict(),
+    (parsed) => ({
+      identityId: IdentityId.create(parsed.identityId),
+      userId: UserId.create(parsed.userId),
+      kind: parsed.kind,
+    }),
+  ),
+
+  "identity.identity.removed": buildEventDecoder<
+    IdentityRemovedEvent,
+    {
+      identityId: string;
+      userId: string;
+      kind: "password" | "oauth";
+      providerAccountKey: string | null;
+      operationId: string;
+    }
+  >(
+    "identity.identity.removed",
+    z
+      .object({
+        identityId: z.string().min(1),
+        userId: z.string().min(1),
+        kind: identityKindSchema,
+        providerAccountKey: z.string().min(1).nullable(),
+        operationId: z.string().min(1),
+      })
+      .strict(),
+    (parsed) => ({
+      identityId: IdentityId.create(parsed.identityId),
+      userId: UserId.create(parsed.userId),
+      kind: parsed.kind,
+      providerAccountKey: parsed.providerAccountKey,
+      operationId: parsed.operationId,
+    }),
+  ),
+
+  "identity.identity.passwordChanged": buildEventDecoder<
+    IdentityPasswordChangedEvent,
+    { identityId: string; userId: string }
+  >(
+    "identity.identity.passwordChanged",
+    z
+      .object({ identityId: z.string().min(1), userId: z.string().min(1) })
+      .strict(),
+    (parsed) => ({
+      identityId: IdentityId.create(parsed.identityId),
+      userId: UserId.create(parsed.userId),
+    }),
+  ),
+} as const;

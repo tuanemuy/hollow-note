@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import process from "node:process";
 import { installContainerStore } from "@repo/core/application/di/containerStore";
 import {
+  bindNodeRelayTrigger,
   createNodeRequestContainer,
   createNodeWorkerContainer,
   readNodeRequestServerConfig,
@@ -35,9 +36,9 @@ installContainerStore({ getStore: () => storage.getStore() });
  * Boots node-runtime resources (env → worker runner → request factory)
  * and returns a fetch handler plus a shutdown hook.
  *
- * Transitional wiring (Issue #1 step 1): the stub DI containers carry no
- * persistence, so the app serves an empty shell until step 8 wires the
- * in-memory adapters.
+ * Persistence is the in-memory reference backend (ADR-002): request and
+ * worker containers share one process-wide store, and a restart starts
+ * blank by design.
  */
 export type NodeServerBoot = Readonly<{
   fetch: (request: Request) => Promise<Response>;
@@ -55,9 +56,12 @@ export async function boot(): Promise<NodeServerBoot> {
   const runner = createNodeWorkerRunner({
     container: workerContainer,
     logger,
-    // Replace with the application's domain-event subscriber.
+    // No event subscriber exists in the walking-skeleton slice; the
+    // consumer role stays a no-op until a projection consumer lands.
     consumerHandler: async () => {},
   });
+  // Commits kick the relay immediately instead of waiting for the tick.
+  bindNodeRelayTrigger(runner.relayTrigger);
   runner.start();
 
   const config = readNodeRequestServerConfig(env);

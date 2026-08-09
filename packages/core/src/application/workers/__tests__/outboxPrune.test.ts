@@ -54,6 +54,33 @@ function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
     idempotencyStore: {
       markProcessed: vi.fn(async () => true),
     },
+    maintenanceRunStore: {
+      beginOrResumeKind: vi.fn(async () => ({
+        runId: "run",
+        asOf: new Date(0),
+        result: "started" as const,
+      })),
+      claimLanes: vi.fn(async () => []),
+      checkpointLane: vi.fn(async () => {}),
+      advanceOrAck: vi.fn(async () => ({ next: null, runCompleted: false })),
+      recoverLease: vi.fn(async () => false),
+      pruneCompleted: vi.fn(async () => ({ removed: 0, nextCursor: null })),
+    },
+    routingGenerations: ["gen-1"],
+    authStateSweeps: {
+      sessions: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
+      auth_tokens: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
+      login_attempts: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
+      oauth_flow_states: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
+    },
     clock: overrides.clock ?? { now: () => new Date(0) },
     idGenerator: {
       next: () => "00000000-0000-7000-8000-000000000000",

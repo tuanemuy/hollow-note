@@ -4,6 +4,7 @@ import type { IdentityRepository } from "@repo/core/domain/identity/ports/identi
 import type { IdentityUniqueDirectory } from "@repo/core/domain/identity/ports/identityUniqueDirectory";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
+import type { NoteProjectionRevisionStore } from "@repo/core/domain/note/ports/noteProjectionRevisionStore";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { NoteRevisionRepository } from "@repo/core/domain/note/ports/noteRevisionRepository";
 import type { ScopeCleanupAdmissionStore } from "../ports/scopeCleanupAdmissionStore";
@@ -40,11 +41,17 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * `cleanupAdmission` is bound to the same scope — every normal write
  * entry point calls `assertWritable` (and `assertActorWritable` where an
  * actor is involved) before mutating.
+ *
+ * `noteProjectionRevisionStore` lives on the context because the spec
+ * requires `bump(noteId)` to share the transaction with the
+ * authoritative-data write whose event carries the revision
+ * (spec/usecases/note.md 共通節).
  */
 export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly noteRepository: NoteRepository;
   readonly noteRevisionRepository: NoteRevisionRepository;
   readonly cleanupAdmission: ScopeCleanupAdmissionStore;
+  readonly noteProjectionRevisionStore: NoteProjectionRevisionStore;
 }
 
 /**

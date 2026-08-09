@@ -3,7 +3,11 @@ import {
   type EventDecoder,
   EventId,
 } from "@repo/core/domain/common/event";
+import type { IdentityEvent } from "@repo/core/domain/identity/events";
+import type { NoteEvent } from "@repo/core/domain/note/events";
 import type { WorkerContainer } from "../di/types";
+import { identityEventDecoders } from "../identity/eventDecoders";
+import { noteEventDecoders } from "../note/eventDecoders";
 import type { OutboxEntry, OutboxFailure } from "../ports/outboxRepository";
 
 // Delivery is at-least-once with NO ordering guarantee. Per-row failures
@@ -38,10 +42,9 @@ export type EventDispatcher = (
   events: readonly DomainEvent[],
 ) => Promise<readonly EventDispatchOutcome[]>;
 
-// Transitional stub (Issue #1 step 1): the todo events left with the
-// reference implementation. Step 7 rebinds this union (and the default
-// registry below) to the Identity + Note event sets.
-type AllDomainEvents = never;
+// The closed union of every event the outbox may carry. Add a domain's
+// event union here before registering its decoders below.
+type AllDomainEvents = IdentityEvent | NoteEvent;
 
 export type DefaultEventDecoderRegistry = {
   readonly [K in AllDomainEvents["type"]]: EventDecoder<
@@ -55,8 +58,10 @@ export type DefaultEventDecoderRegistry = {
 // its decoder.
 export type EventDecoderRegistry = Partial<DefaultEventDecoderRegistry>;
 
-export const defaultEventDecoderRegistry =
-  {} satisfies DefaultEventDecoderRegistry;
+export const defaultEventDecoderRegistry = {
+  ...identityEventDecoders,
+  ...noteEventDecoders,
+} satisfies DefaultEventDecoderRegistry;
 
 export type ProcessOutboxEventsOptions = {
   batchSize?: number;

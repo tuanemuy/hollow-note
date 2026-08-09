@@ -200,12 +200,19 @@ export const Note = {
     }>,
     now: Date,
   ): WithEventDrafts<ActiveNote, NoteEvent> => {
+    // An omitted title takes the "無題" placeholder with an `auto` origin
+    // so a later conversion result may still rename it; a supplied title
+    // is a user decision and stays `manual` (spec/usecases/note.md).
+    const trimmedTitle = params.title.trim();
     const note: ActiveNote = {
       lifecycle: "active",
       id: NoteId.create(params.id),
       owner: params.owner,
       createdBy: params.createdBy,
-      title: NoteTitle.manual(params.title),
+      title:
+        trimmedTitle.length === 0
+          ? NoteTitle.auto("")
+          : NoteTitle.manual(trimmedTitle),
       content: {
         status: "ready",
         html: NoteHtml.empty(),

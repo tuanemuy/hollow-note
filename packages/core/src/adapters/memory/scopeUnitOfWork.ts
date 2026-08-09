@@ -6,6 +6,7 @@ import type { ScopeKey } from "../../application/scope";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import type { MemoryUnitOfWorkOptions } from "./globalUnitOfWork";
+import { createMemoryNoteProjectionRevisionStore } from "./repositories/noteProjection";
 import { createMemoryNoteRepository } from "./repositories/noteRepository";
 import { createMemoryNoteRevisionRepository } from "./repositories/noteRevisionRepository";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
@@ -39,6 +40,8 @@ export function createMemoryScopeUnitOfWorkProvider(
           noteRevisionRepository:
             createMemoryNoteRevisionRepository(scopeStore),
           cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore),
+          noteProjectionRevisionStore:
+            createMemoryNoteProjectionRevisionStore(scopeStore),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, () => backend.mintEventId()),
