@@ -1,73 +1,85 @@
+/* Tailwind v4 theme mapping over the Hollow tokens (spec/design/tokens.md). */
 @theme {
   /* Colors */
-  --color-primary-lighter: var(--color-primary-lighter);
-  --color-primary-light: var(--color-primary-light);
-  --color-primary: var(--color-primary);
-  --color-primary-dark: var(--color-primary-dark);
-  --color-primary-darker: var(--color-primary-darker);
   --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-pressed: var(--color-accent-pressed);
+  --color-accent-surface: var(--color-accent-surface);
+  --color-accent-ink: var(--color-accent-ink);
 
-  --color-neutral-50: var(--color-neutral-50);
-  --color-neutral-100: var(--color-neutral-100);
-  --color-neutral-150: var(--color-neutral-150);
-  --color-neutral-200: var(--color-neutral-200);
-  --color-neutral-250: var(--color-neutral-250);
-  --color-neutral-300: var(--color-neutral-300);
-  --color-neutral-350: var(--color-neutral-350);
-  --color-neutral-400: var(--color-neutral-400);
-  --color-neutral-450: var(--color-neutral-450);
-  --color-neutral-500: var(--color-neutral-500);
-  --color-neutral-550: var(--color-neutral-550);
-  --color-neutral-600: var(--color-neutral-600);
-  --color-neutral-650: var(--color-neutral-650);
-  --color-neutral-700: var(--color-neutral-700);
-  --color-neutral-750: var(--color-neutral-750);
-  --color-neutral-800: var(--color-neutral-800);
-  --color-neutral-850: var(--color-neutral-850);
-  --color-neutral-900: var(--color-neutral-900);
+  --color-bg: var(--color-bg);
+  --color-surface: var(--color-surface);
+  --color-surface-hover: var(--color-surface-hover);
+  --color-surface-elevated: var(--color-surface-elevated);
+  --color-ink: var(--color-ink);
+  --color-ink-secondary: var(--color-ink-secondary);
+  --color-ink-tertiary: var(--color-ink-tertiary);
+  --color-hairline: var(--color-hairline);
+  --color-hairline-strong: var(--color-hairline-strong);
 
   --color-success: var(--color-success);
+  --color-success-surface: var(--color-success-surface);
   --color-warning: var(--color-warning);
+  --color-warning-surface: var(--color-warning-surface);
   --color-error: var(--color-error);
+  --color-error-surface: var(--color-error-surface);
+  --color-error-hover: var(--color-error-hover);
+  --color-error-pressed: var(--color-error-pressed);
   --color-info: var(--color-info);
 
-  --color-bg-page: var(--color-bg-page);
-  --color-bg-card: var(--color-bg-card);
-  --color-bg-section: var(--color-bg-section);
+  --color-status-private: var(--color-status-private);
+  --color-status-link: var(--color-status-link);
+  --color-status-public: var(--color-status-public);
+
+  --color-convert-working: var(--color-convert-working);
+  --color-convert-awaiting: var(--color-convert-awaiting);
+  --color-convert-failed: var(--color-convert-failed);
+  --color-convert-done: var(--color-convert-done);
 
   /* Typography */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
   --font-heading: var(--font-heading);
   --font-body: var(--font-body);
 
   --text-xs: var(--text-xs);
   --text-sm: var(--text-sm);
   --text-base: var(--text-base);
+  --text-md: var(--text-md);
   --text-lg: var(--text-lg);
   --text-xl: var(--text-xl);
   --text-2xl: var(--text-2xl);
   --text-3xl: var(--text-3xl);
+  --text-mono: var(--text-mono);
 
   --leading-tight: var(--leading-tight);
+  --leading-snug: var(--leading-snug);
   --leading-normal: var(--leading-normal);
+  --leading-relaxed: var(--leading-relaxed);
 
-  /* Spacing */
-  --spacing-xs: var(--space-xs);
-  --spacing-sm: var(--space-sm);
-  --spacing-md: var(--space-md);
-  --spacing-lg: var(--space-lg);
-  --spacing-xl: var(--space-xl);
-  --spacing-2xl: var(--space-2xl);
-  --spacing-section: var(--space-section);
+  --tracking-tightest: var(--tracking-tightest);
+  --tracking-tighter: var(--tracking-tighter);
+  --tracking-tight: var(--tracking-tight);
+  --tracking-normal: var(--tracking-normal);
 
-  /* Misc */
+  /* Radius */
+  --radius-xs: var(--radius-xs);
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-pill: var(--radius-pill);
   --radius-full: var(--radius-full);
 
+  /* Shadow */
+  --shadow-xs: var(--shadow-xs);
   --shadow-sm: var(--shadow-sm);
   --shadow-md: var(--shadow-md);
   --shadow-lg: var(--shadow-lg);
+  --shadow-focus: var(--shadow-focus);
 
-  --transition-default: var(--transition-default);
+  /* Motion */
+  --ease-standard: var(--ease-standard);
+  --ease-decel: var(--ease-decel);
+  --ease-accel: var(--ease-accel);
 }

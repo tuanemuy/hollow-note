@@ -1,73 +1,156 @@
+/* Hollow デザイントークン。正典は spec/design/tokens.md（§11 ルート定義の最終形）。 */
 :root {
-  /* Colors */
-  --color-primary-lighter: oklch(0.95 0.03 250);
-  --color-primary-light: oklch(0.85 0.08 250);
-  --color-primary: oklch(0.6 0.18 250);
-  --color-primary-dark: oklch(0.45 0.18 250);
-  --color-primary-darker: oklch(0.3 0.15 250);
-  --color-accent: oklch(0.7 0.2 30);
+  /* Color: brand */
+  --color-accent: oklch(37.1% 0 0);
+  --color-accent-hover: oklch(43.9% 0 0);
+  --color-accent-pressed: oklch(26.9% 0 0);
+  --color-accent-surface: oklch(97% 0 0);
+  --color-accent-ink: oklch(26.9% 0 0);
 
-  --color-neutral-50: oklch(0.98 0 0);
-  --color-neutral-100: oklch(0.96 0 0);
-  --color-neutral-150: oklch(0.93 0 0);
-  --color-neutral-200: oklch(0.9 0 0);
-  --color-neutral-250: oklch(0.86 0 0);
-  --color-neutral-300: oklch(0.82 0 0);
-  --color-neutral-350: oklch(0.76 0 0);
-  --color-neutral-400: oklch(0.7 0 0);
-  --color-neutral-450: oklch(0.64 0 0);
-  --color-neutral-500: oklch(0.58 0 0);
-  --color-neutral-550: oklch(0.52 0 0);
-  --color-neutral-600: oklch(0.46 0 0);
-  --color-neutral-650: oklch(0.4 0 0);
-  --color-neutral-700: oklch(0.34 0 0);
-  --color-neutral-750: oklch(0.28 0 0);
-  --color-neutral-800: oklch(0.22 0 0);
-  --color-neutral-850: oklch(0.18 0 0);
-  --color-neutral-900: oklch(0.14 0 0);
+  /* Color: neutral */
+  --color-bg: #ffffff;
+  --color-surface: #f5f5f7;
+  --color-surface-hover: #ececef;
+  --color-surface-elevated: #fbfbfd;
+  --color-ink: #1d1d1f;
+  --color-ink-secondary: #6e6e73;
+  --color-ink-tertiary: #86868b;
+  --color-hairline: rgba(60, 60, 67, 0.12);
+  --color-hairline-strong: rgba(60, 60, 67, 0.18);
 
-  --color-success: oklch(0.7 0.18 150);
-  --color-warning: oklch(0.8 0.17 80);
-  --color-error: oklch(0.62 0.22 25);
-  --color-info: oklch(0.7 0.15 230);
+  /* Color: semantic */
+  --color-success: #1f8f3a;
+  --color-success-surface: #e6f4ea;
+  --color-warning: #a8580b;
+  --color-warning-surface: #fdf3e7;
+  --color-error: #c43e3e;
+  --color-error-surface: #fbebeb;
+  --color-error-hover: #b03535;
+  --color-error-pressed: #9a2e2e;
+  --color-info: var(--color-accent);
 
-  --color-bg-page: oklch(0.99 0 0);
-  --color-bg-card: oklch(1 0 0);
-  --color-bg-section: oklch(0.97 0 0);
+  /* Color: publish status */
+  --color-status-private: #86868b;
+  --color-status-link: #a8580b;
+  --color-status-public: #1f8f3a;
+
+  /* Color: convert status */
+  --color-convert-working: var(--color-accent);
+  --color-convert-awaiting: var(--color-warning);
+  --color-convert-failed: var(--color-error);
+  --color-convert-done: var(--color-success);
+
+  /* Color: code */
+  --code-keyword: #aa3e3e;
+  --code-string: #2a8c4f;
+  --code-comment: var(--color-ink-tertiary);
+  --code-function: #5b3da1;
+  --code-number: #1d6fd6;
 
   /* Typography */
-  --font-heading: "Inter", "Noto Sans JP", serif;
-  --font-body: "Inter", "Noto Sans JP", sans-serif;
+  --font-sans:
+    "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+    Meiryo, sans-serif;
+  --font-mono:
+    "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-heading: var(--font-sans);
+  --font-body: var(--font-sans);
 
-  --text-xs: clamp(0.75rem, 0.7rem + 0.2vw, 0.8125rem);
-  --text-sm: clamp(0.875rem, 0.82rem + 0.25vw, 0.9375rem);
-  --text-base: clamp(1rem, 0.95rem + 0.3vw, 1.0625rem);
-  --text-lg: clamp(1.125rem, 1.05rem + 0.4vw, 1.25rem);
-  --text-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);
-  --text-2xl: clamp(1.5rem, 1.3rem + 0.8vw, 1.875rem);
-  --text-3xl: clamp(1.875rem, 1.6rem + 1.2vw, 2.5rem);
+  --text-xs: clamp(11px, 0.7vw + 9px, 12px);
+  --text-sm: clamp(12px, 0.8vw + 10px, 13px);
+  --text-base: clamp(14px, 1vw + 11px, 16px);
+  --text-md: clamp(15px, 1vw + 12px, 17px);
+  --text-lg: clamp(17px, 1.2vw + 13px, 19px);
+  --text-xl: clamp(20px, 1.4vw + 14px, 24px);
+  --text-2xl: clamp(24px, 2vw + 16px, 30px);
+  --text-3xl: clamp(24px, 4vw, 38px);
+  --text-mono: clamp(12.5px, 0.6vw + 11px, 13.5px);
+
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
 
   --leading-tight: 1.2;
-  --leading-normal: 1.6;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  --tracking-tightest: -0.022em;
+  --tracking-tighter: -0.014em;
+  --tracking-tight: -0.008em;
+  --tracking-normal: -0.003em;
 
   /* Spacing */
-  --space-xs: 0.25rem;
-  --space-sm: 0.5rem;
-  --space-md: 1rem;
-  --space-lg: 1.5rem;
-  --space-xl: 2.5rem;
-  --space-2xl: 4rem;
-  --space-section: clamp(3rem, 5vw, 6rem);
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
 
-  /* Misc */
-  --radius-sm: 0.25rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 1rem;
+  /* Layout */
+  --content-max: 680px;
+  --list-max: 780px;
+  --wide-max: 1100px;
+  --palette-max: 620px;
+  --container-padding: clamp(16px, 4vw, 32px);
+  --bar-height: 56px;
+  --actionbar-height: 56px;
+
+  /* Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 980px;
   --radius-full: 9999px;
 
-  --shadow-sm: 0 1px 2px 0 oklch(0 0 0 / 0.05);
-  --shadow-md: 0 4px 8px -2px oklch(0 0 0 / 0.1);
-  --shadow-lg: 0 12px 24px -6px oklch(0 0 0 / 0.15);
+  /* Icon (dense sub-16px glyphs; 16/20/24 are specified directly) */
+  --icon-2xs: 11px;
+  --icon-xs: 13px;
+  --icon-sm: 14px;
+  --icon-md: 18px;
 
-  --transition-default: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* Shadow */
+  --shadow-none: none;
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.1);
+  --shadow-focus: 0 0 0 2px var(--color-accent);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decel: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accel: cubic-bezier(0.4, 0, 1, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+  --transition-default: all var(--duration-base) var(--ease-standard);
+  --transition-bg: background-color var(--duration-fast) var(--ease-standard);
+  --transition-color: color var(--duration-fast) var(--ease-standard);
+
+  /* State */
+  --opacity-disabled: 0.55;
+  --opacity-pending: 0.6;
+
+  /* Bars */
+  --bar-bg: rgba(255, 255, 255, 0.82);
+  --bar-blur: saturate(180%) blur(20px);
+
+  /* Breakpoints (参照用。メディアクエリには数値リテラルを書く) */
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+  --bp-2xl: 1536px;
 }

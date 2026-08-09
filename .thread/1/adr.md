@@ -366,3 +366,49 @@ spec/domains/note.md の `createBlank` シグネチャは `title: string` だが
 ### Consequences
 - 良い点: TC-note-058/059 が満たされ、後続の変換結果によるタイトル差し替え（auto のみ上書き可）が正しく機能する。
 - トレードオフ: なし。
+
+## ADR-023: P-11 の Shadow DOM は宣言的 template + クライアント側 attachShadow 昇格で描画する
+
+### Status
+Accepted
+
+### Context
+spec は本文の Declarative Shadow DOM 描画を求めるが、本テンプレートの P-11 は per-fragment streaming（RSC Flight payload をクライアントが `use()` で解決）で届く。`<template shadowrootmode>` が shadow root になるのは **HTML パーサーが処理した場合のみ**で、Flight payload から DOM API で構築された template は inert なまま残り、本文が表示されない。
+
+### Decision
+`NoteBody`（"use client"）が `<template shadowrootmode="open">` をマークアップとして出しつつ、effect で「shadow root 未生成 + template 残存」を検出したら `attachShadow` + content 移植で昇格させる。HTML パースされた経路（将来の公開ページ SSR）では宣言的にそのまま機能し、Flight 経路では effect が同じ結果に収束する。ホストは `position: relative` を持つ（絶対配置の包含ブロック化は描画側の責務 — spec/presentation/index.md）。styleMode "default" の既定スタイルは shadow 内 `<style>` として注入し、トークンは CSS カスタムプロパティ経由で継承させる。
+
+### Consequences
+- 良い点: P-44/P-45（SSR で HTML パースされる公開ページ）と同じマークアップ形が使い回せる。
+- トレードオフ: Flight 経路では本文表示に JS が必須（P-11 は認証必須画面のため許容）。React types に `shadowrootmode` が無く、props をキャストで通している。
+
+## ADR-024: セッション Cookie の期限は `Session.ttlMs` から再導出する
+
+### Status
+Accepted
+
+### Context
+Cookie の寿命は `Session.expiresAt` に一致させる規定（spec/presentation/index.md）だが、`SignInView` / `VerifyEmailView` は `sessionToken` のみで行の `expiresAt` を返さない（spec の出力表どおり）。
+
+### Decision
+presentation の `sessionCookieExpiry(now)` が `now + Session.ttlMs`（domain 所有の定数）で期限を再導出して Cookie に付ける。行の作成時刻とのずれはミリ秒オーダーで、常に Cookie 側が先に切れる方向。view への `expiresAt` 追加は spec-sync 候補としてメモ。
+
+### Consequences
+- 良い点: domain の TTL 定数が唯一の正のまま、view の形を spec から逸脱させない。
+- トレードオフ: TTL がスライディングになった場合はこの導出が成立しなくなる（その時点で view に expiresAt を載せる）。
+
+## ADR-025: kind タグの運搬は class 同一性に依存させない（構造判定 + RSC fragment 内での NOT_FOUND 解決）
+
+### Status
+Accepted
+
+### Context
+実装時に 2 つの経路で kind タグ付き serialized error が失われた。(1) dev サーバーは ssr / rsc / server-fn split の並行モジュールグラフを持ち、`AppServerError` のクラスが複製されるため、serialization adapter の `instanceof` テストが別グラフ生成のインスタンスに false を返し、組み込み ShallowErrorPlugin（message のみ保持）に落ちて全エラーが `unknown` に縮退した。(2) RSC fragment（NoteDetail）内で throw した `NotFoundError` は Flight のエラーチャネルで素の Error に再構築され、route の errorComponent では kind を判別できない。
+
+### Decision
+(1) `appServerErrorAdapter` の `test`・`errorResponseMiddleware`・`extractSerializedError` を `instanceof` から構造判定（`isAppServerErrorShaped`: Error ∧ `serialized` が kind タグ付き構造）へ変更する。CLAUDE.md の「presentation は構造的に serialize する（instanceof 列挙をしない）」の適用範囲を自クラスにも広げた形。
+(2) 存在判定（NOT_FOUND）は fragment 自身の描画結果として解決する — `NoteDetail`（RSC）が NotFoundError を catch して P-46 の見つかりません表示を返し、それ以外の失敗のみ throw して route の error boundary（再試行つき汎用表示）へ流す。
+
+### Consequences
+- 良い点: kind タグがビルド構成（モジュールグラフの分割数）に依存せず届く。NOT_FOUND 表示がストリーミングでもフルリロードでも同一。
+- トレードオフ: `serialized` という形を偶然持つ Error を誤検出しうる（kind の閉集合検査で実質排除）。fragment 内 catch は「エラーは境界で」の原則の限定的な例外（Flight がタグを運べないことが根拠）。

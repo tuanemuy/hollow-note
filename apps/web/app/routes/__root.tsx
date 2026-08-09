@@ -7,6 +7,7 @@ import {
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 import { createServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
+import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
 import { sanitizeRouteError } from "@/presentation/errorDisplay";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { buildHead } from "@/presentation/head";
@@ -14,9 +15,12 @@ import appCss from "../styles/index.css?url";
 
 // Server fns only reachable from `"use client"` components miss the
 // rsc manifest (frozen before the client build phase). Pull their
-// provider modules into a server-rendered route to register them —
-// the new action modules are added here as their pages land (Issue #1
-// step 9).
+// provider modules into a server-rendered route to register them.
+import "@/components/auth/SignUpForm/action";
+import "@/components/auth/SignInForm/action";
+import "@/components/auth/VerifyEmailPanel/action";
+import "@/components/layout/AccountMenu/action";
+import "@/components/note/CreateNoteButton/action";
 
 export const loadAppContext = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
@@ -47,19 +51,20 @@ export const Route = createRootRoute({
     return { meta, links: [...baseLinks, ...links] };
   },
   component: RootComponent,
-  errorComponent: ({ error }) => (
-    <RootDocument>
-      <div>
-        <h1>Something went wrong</h1>
-        <pre>{sanitizeRouteError(error)}</pre>
-      </div>
-    </RootDocument>
-  ),
+  // P-46: 到達できない URL と想定外の失敗の共通表示。存在の有無・権限の
+  // 有無を区別しない（spec/pages/index.md#P-46）。原文 message は UI に
+  // 出さず、ログ側にだけ残す。
+  errorComponent: ({ error }) => {
+    sanitizeRouteError(error);
+    return (
+      <RootDocument>
+        <ServerErrorState />
+      </RootDocument>
+    );
+  },
   notFoundComponent: () => (
     <RootDocument>
-      <div>
-        <h1>404 Not Found</h1>
-      </div>
+      <NotFoundState />
     </RootDocument>
   ),
 });

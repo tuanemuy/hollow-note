@@ -14,7 +14,7 @@ export function Skeleton({ className = "" }: SkeletonProps) {
   return (
     <span
       aria-hidden="true"
-      className={`block animate-pulse rounded bg-neutral-200 motion-reduce:animate-none ${className}`}
+      className={`block animate-pulse rounded-sm bg-surface-hover motion-reduce:animate-none ${className}`}
     />
   );
 }

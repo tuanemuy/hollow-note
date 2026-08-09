@@ -47,6 +47,29 @@ export type NodeServerBoot = Readonly<{
   shutdown: () => Promise<void>;
 }>;
 
+// サービス全体の応答の既定として敷くセキュリティヘッダー
+// (spec/presentation/index.md#公開ページのセキュリティヘッダー)。
+// CSP は本文由来の危険を抑える 4 指令の最小集合 — script-src / style-src
+// の絞り込みはフレームワーク出力の形に依存するため公開閲覧スライスで
+// 詰める。Referrer-Policy はクロスオリジンへパスを送らない方針の実現。
+const SECURITY_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ["X-Content-Type-Options", "nosniff"],
+  ["Referrer-Policy", "strict-origin-when-cross-origin"],
+  [
+    "Content-Security-Policy",
+    "frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'self'",
+  ],
+];
+
+function withSecurityHeaders(response: Response): Response {
+  for (const [name, value] of SECURITY_HEADERS) {
+    if (!response.headers.has(name)) {
+      response.headers.set(name, value);
+    }
+  }
+  return response;
+}
+
 export async function boot(): Promise<NodeServerBoot> {
   const env = readNodeServerEnv();
   const logger = ConsoleLogger;
@@ -75,7 +98,10 @@ export async function boot(): Promise<NodeServerBoot> {
   const fetch = async (request: Request): Promise<Response> => {
     const container = createNodeRequestContainer(config);
     const entry = await entryPromise;
-    return storage.run(container, async () => entry.fetch(request));
+    const response = await storage.run(container, async () =>
+      entry.fetch(request),
+    );
+    return withSecurityHeaders(response);
   };
 
   const port = Number.parseInt(env.PORT ?? "3000", 10);

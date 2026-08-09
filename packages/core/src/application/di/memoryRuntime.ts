@@ -83,7 +83,9 @@ export function createMemoryRuntime(
     },
   };
 
-  const mailSender = createMemoryMailSender();
+  // The logger is what makes the dev flow completable: the verification
+  // link is only observable through the `mail.sent` log line.
+  const mailSender = createMemoryMailSender(ConsoleLogger);
   const sessionRepository = createMemorySessionRepository(backend);
   const authTokenRepository = createMemoryAuthTokenRepository(backend);
   const loginAttemptStore = createMemoryLoginAttemptStore(backend);
