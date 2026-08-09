@@ -1,17 +1,23 @@
-// Deliberately separate from `./serverCloudflare.ts` so the CF entry
-// never pulls libSQL / node-only imports and vice versa. Both factories
-// return the same `RequestContainer` / `WorkerContainer` shapes.
+// Transitional stub wiring (Issue #1 step 1): the libSQL adapter left with
+// the reference implementation, and the in-memory adapters arrive in step 6.
+// Until step 8 rewires this factory against `adapters/memory/`, the request
+// container carries a unit-of-work provider that rejects on use and the
+// worker container runs against an empty in-process outbox, so the app
+// boots as an empty shell with the relay/prune loops idling harmlessly.
 
-import type { Database } from "@repo/core/adapters/libsql/client";
-import { LibsqlIdempotencyStore } from "@repo/core/adapters/libsql/repositories/idempotencyStore";
-import { LibsqlOutboxRepository } from "@repo/core/adapters/libsql/repositories/outboxRepository";
-import { LibsqlUnitOfWorkProvider } from "@repo/core/adapters/libsql/unitOfWork";
 import { content } from "@repo/core/config";
+import type { EventId } from "@repo/core/domain/common/event";
 import { z } from "zod";
+import type { UnitOfWorkProvider } from "../execution/unitOfWork";
 import { SystemClock } from "../ports/clock";
+import type { IdempotencyStore } from "../ports/idempotencyStore";
 import { UuidV7Generator } from "../ports/idGenerator";
 import { ConsoleLogger } from "../ports/logger";
-import { NoopRelayTrigger, type RelayTrigger } from "../ports/relayTrigger";
+import type {
+  ClaimPendingArgs,
+  OutboxEntry,
+  OutboxRepository,
+} from "../ports/outboxRepository";
 import type { TuningEnv } from "./env";
 import type {
   AppConfig,
@@ -20,14 +26,7 @@ import type {
   WorkerContainer,
 } from "./types";
 
-/**
- * Node-side env shape. `DATABASE_URL` follows the libSQL URL grammar
- * (`file:`, `:memory:`, `libsql:`, ...).
- */
 export type NodeServerEnv = Readonly<{
-  DATABASE_URL: string;
-  DATABASE_AUTH_TOKEN?: string | undefined;
-  DATABASE_ENCRYPTION_KEY?: string | undefined;
   APP_URL: string;
   PORT?: string | undefined;
   HOSTNAME?: string | undefined;
@@ -38,9 +37,6 @@ export type NodeServerEnv = Readonly<{
 }>;
 
 const nodeServerEnvSchema = z.object({
-  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
-  DATABASE_AUTH_TOKEN: z.string().min(1).optional(),
-  DATABASE_ENCRYPTION_KEY: z.string().min(1).optional(),
   APP_URL: z.string().min(1, "APP_URL is required"),
   PORT: z.string().optional(),
   HOSTNAME: z.string().optional(),
@@ -85,25 +81,41 @@ function buildSharedDeps(): SharedDeps {
   };
 }
 
-/**
- * Request-path config. `db` and `relayTrigger` are resolved once at
- * boot and reused across requests (no per-request binding like CF's D1).
- */
-export type NodeRequestServerConfig = AppConfig &
-  Readonly<{
-    db: Database;
-    relayTrigger: RelayTrigger;
-  }>;
+const stubUnitOfWorkProvider: UnitOfWorkProvider = {
+  run(): Promise<never> {
+    return Promise.reject(
+      new Error(
+        "UnitOfWorkProvider is not wired yet — replaced by the memory adapters in Issue #1 step 8",
+      ),
+    );
+  },
+};
+
+const stubOutboxRepository: OutboxRepository = {
+  async save(): Promise<void> {},
+  async claimPending(_args: ClaimPendingArgs): Promise<readonly OutboxEntry[]> {
+    return [];
+  },
+  async finalize(): Promise<void> {},
+  async pruneProcessed(): Promise<{ deleted: number }> {
+    return { deleted: 0 };
+  },
+};
+
+const stubIdempotencyStore: IdempotencyStore = {
+  async markProcessed(_id: EventId): Promise<{ alreadyProcessed: boolean }> {
+    return { alreadyProcessed: false };
+  },
+};
+
+export type NodeRequestServerConfig = AppConfig;
 
 export function readNodeRequestServerConfig(
   env: NodeServerEnv,
-  bindings: { db: Database; relayTrigger?: RelayTrigger },
 ): NodeRequestServerConfig {
   return {
     ...content,
     appUrl: env.APP_URL,
-    db: bindings.db,
-    relayTrigger: bindings.relayTrigger ?? NoopRelayTrigger,
   };
 }
 
@@ -111,28 +123,18 @@ export function readNodeRequestServerConfig(
 export function createNodeRequestContainer(
   config: NodeRequestServerConfig,
 ): RequestContainer {
-  const { db: _db, relayTrigger: _relayTrigger, ...appConfig } = config;
   return {
     ...buildSharedDeps(),
-    config: appConfig satisfies AppConfig,
-    unitOfWorkProvider: new LibsqlUnitOfWorkProvider(
-      config.db,
-      SystemClock,
-      UuidV7Generator,
-      config.relayTrigger,
-    ),
+    config,
+    unitOfWorkProvider: stubUnitOfWorkProvider,
   };
 }
 
 /** Build the worker-scoped container for the Node runtime. */
-export function createNodeWorkerContainer(db: Database): WorkerContainer {
+export function createNodeWorkerContainer(): WorkerContainer {
   return {
     ...buildSharedDeps(),
-    outboxRepository: new LibsqlOutboxRepository(
-      db,
-      UuidV7Generator,
-      SystemClock,
-    ),
-    idempotencyStore: new LibsqlIdempotencyStore(db, SystemClock),
+    outboxRepository: stubOutboxRepository,
+    idempotencyStore: stubIdempotencyStore,
   };
 }

@@ -10,7 +10,6 @@
     "includes": [
       "apps/**",
       "packages/**",
-      "infra/**",
       "*.ts",
       "*.mjs",
       "*.json",
@@ -28,7 +27,6 @@
     "includes": [
       "apps/**",
       "packages/**",
-      "infra/**",
       "!**/components/ui/**",
       "!**/styles/**",
       "!**/templates/**"

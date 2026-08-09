@@ -1,12 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
-import {
-  applyPragmas,
-  createLibsqlClient,
-  getDatabase,
-} from "@repo/core/adapters/libsql/client";
 import { installContainerStore } from "@repo/core/application/di/containerStore";
 import {
   createNodeRequestContainer,
@@ -39,8 +32,12 @@ if (import.meta.hot) {
 installContainerStore({ getStore: () => storage.getStore() });
 
 /**
- * Boots node-runtime resources (env → libSQL → worker runner → request
- * factory) and returns a fetch handler plus a shutdown hook.
+ * Boots node-runtime resources (env → worker runner → request factory)
+ * and returns a fetch handler plus a shutdown hook.
+ *
+ * Transitional wiring (Issue #1 step 1): the stub DI containers carry no
+ * persistence, so the app serves an empty shell until step 8 wires the
+ * in-memory adapters.
  */
 export type NodeServerBoot = Readonly<{
   fetch: (request: Request) => Promise<Response>;
@@ -53,44 +50,17 @@ export async function boot(): Promise<NodeServerBoot> {
   const env = readNodeServerEnv();
   const logger = ConsoleLogger;
 
-  // libSQL's embedded driver fails to open a `file:` URL whose parent
-  // directory does not exist; pre-create it so a fresh clone boots.
-  if (env.DATABASE_URL.startsWith("file:")) {
-    const filePath = env.DATABASE_URL.slice("file:".length);
-    const parent = path.dirname(path.resolve(process.cwd(), filePath));
-    fs.mkdirSync(parent, { recursive: true });
-  }
-
-  const client = createLibsqlClient({
-    url: env.DATABASE_URL,
-    ...(env.DATABASE_AUTH_TOKEN !== undefined
-      ? { authToken: env.DATABASE_AUTH_TOKEN }
-      : {}),
-    ...(env.DATABASE_ENCRYPTION_KEY !== undefined
-      ? { encryptionKey: env.DATABASE_ENCRYPTION_KEY }
-      : {}),
-  });
-  const isMemory = env.DATABASE_URL === ":memory:";
-  await applyPragmas(client, isMemory ? { wal: false } : {});
-  const db = getDatabase(client);
-
-  const workerContainer = createNodeWorkerContainer(db);
+  const workerContainer = createNodeWorkerContainer();
 
   const runner = createNodeWorkerRunner({
     container: workerContainer,
     logger,
     // Replace with the application's domain-event subscriber.
     consumerHandler: async () => {},
-    cleanup: async () => {
-      client.close();
-    },
   });
   runner.start();
 
-  const config = readNodeRequestServerConfig(env, {
-    db,
-    relayTrigger: runner.relayTrigger,
-  });
+  const config = readNodeRequestServerConfig(env);
 
   // `@tanstack/react-start/server-entry` only resolves once the framework
   // bundle is ready; defer the import to the first request.
@@ -131,7 +101,7 @@ const defaultExport = {
 };
 
 // Boot lazily so importing this module for type resolution (e.g. inside
-// the vite plugin's server-entry probe) does not trigger DB I/O.
+// the vite plugin's server-entry probe) does not trigger side effects.
 let bootPromise: Promise<NodeServerBoot> | null = null;
 function getOrStartBoot(): Promise<NodeServerBoot> {
   if (bootPromise === null) {

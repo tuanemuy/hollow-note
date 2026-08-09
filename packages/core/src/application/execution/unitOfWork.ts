@@ -1,8 +1,9 @@
 import type { EventDraft } from "@repo/core/domain/common/event";
-import type { TodoRepository } from "@repo/core/domain/todo/ports/todoRepository";
 
+// Transitional stub (Issue #1 step 1): the todo-bound context was removed
+// with the reference implementation. Step 2 replaces this with the
+// two-plane Global/Scope unit-of-work providers.
 export interface UnitOfWorkContext {
-  todoRepository: TodoRepository;
   /**
    * Enqueue domain event drafts for outbox flush at commit time.
    *
