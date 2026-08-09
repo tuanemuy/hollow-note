@@ -14,7 +14,7 @@ import { signInSchema } from "../schema";
  */
 export const signInFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(signInSchema))
+  .validator(validateInput(signInSchema))
   .handler(async ({ data }) => {
     const [{ container, module }, { resolveClientKey }, session] =
       await Promise.all([

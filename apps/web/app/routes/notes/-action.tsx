@@ -28,7 +28,7 @@ const noteDetailInputSchema = z.object({
 
 export const renderNoteDetail = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(noteDetailInputSchema))
+  .validator(validateInput(noteDetailInputSchema))
   .handler(async ({ data }) => {
     const [{ NoteDetail }, { requireSession }] = await Promise.all([
       import("@/components/note/NoteDetail"),

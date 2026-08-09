@@ -44,7 +44,7 @@ packages/core/src/
 │       └── __tests__/
 ├── presentation/
 │   ├── errorResponse.ts             AppServerError, serializeError, extractSerializedError, httpStatusFor
-│   ├── errorResponseMiddleware.ts   errorResponseMiddleware (wraps inputValidator + handler)
+│   ├── errorResponseMiddleware.ts   errorResponseMiddleware (wraps validator + handler)
 │   ├── errorDisplay.ts            displayError, sanitizeRouteError
 │   └── validator.ts               validateInput(schema) — transport-boundary shape check
 └── adapters/

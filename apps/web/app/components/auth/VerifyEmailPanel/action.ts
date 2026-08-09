@@ -12,7 +12,7 @@ import { verifyEmailSchema } from "../schema";
  */
 export const verifyEmailFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(verifyEmailSchema))
+  .validator(validateInput(verifyEmailSchema))
   .handler(async ({ data }) => {
     const [{ container, module }, session] = await Promise.all([
       loadServerDeps(

@@ -11,7 +11,7 @@ import {
   serializeError,
 } from "./errorResponse";
 
-// Wraps the entire server-function pipeline so throws from `inputValidator`
+// Wraps the entire server-function pipeline so throws from `validator`
 // and the handler land in the same catch. Setting the response status from
 // inside the handler alone would miss validator throws (they fire before
 // `.handler` runs), and the constructor of `AppServerError` can't touch the

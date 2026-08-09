@@ -25,7 +25,7 @@ class InputValidationError extends CodedError {
 
 // Structural / DoS guard at the transport boundary. Business invariants live in
 // value-object factories — keeping Zod out of application/domain also keeps
-// this safe to run inside the client bundle `inputValidator` enters.
+// this safe to run inside the client bundle `validator` enters.
 export function validateInput<T extends ZodType>(schema: T) {
   return (input: unknown): z.infer<T> => {
     const parsed = schema.safeParse(input);

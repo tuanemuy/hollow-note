@@ -67,7 +67,7 @@ The example above `await`s the RSC payload in the loader, so navigation blocks u
 // bridge — return the UNRESOLVED promise (do not await renderServerComponent)
 export const renderTodoList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(paginationSchema))
+  .validator(validateInput(paginationSchema))
   .handler(async ({ data }) => {
     const { TodoList } = await import("@/components/todo/TodoList");
     return { TodoList: renderServerComponent(<TodoList pagination={data} />) };
@@ -125,7 +125,7 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { z } from "zod";
 
 const getPostRsc = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ postId: z.string() }))
+  .validator(z.object({ postId: z.string() }))
   .handler(async ({ data }) => {
     const post = await loadPost(data.postId);
     const src = await createCompositeComponent<{
@@ -206,7 +206,7 @@ Use this when you want to inject client interactivity into server-rendered marku
 import { createCompositeComponent } from "@tanstack/react-start/rsc";
 
 const getPostCard = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ postId: z.string() }))
+  .validator(z.object({ postId: z.string() }))
   .handler(async ({ data }) => {
     const post = await loadPost(data.postId);
     const src = await createCompositeComponent<{
@@ -280,7 +280,7 @@ A server function (mutation / GET loader bridge) must **always have the chain fr
 // ✅ correct — complete the chain at the call site
 export const createTodoFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(createTodoSchema))
+  .validator(validateInput(createTodoSchema))
   .handler(async ({ data }) => {
     const { container, module } = await loadServerDeps(
       () => import("@repo/core/application/todo/createTodo"),
@@ -292,7 +292,7 @@ export const createTodoFn = createServerFn({ method: "POST" })
 // breaks the build because TanStack Start's RSC plugin can't trace the chain root.
 import { defineServerFn } from "@/presentation/serverFn";
 export const createTodoFn = defineServerFn
-  .inputValidator(validateInput(createTodoSchema))
+  .validator(validateInput(createTodoSchema))
   .handler(/* ... */);
 ```
 
@@ -305,12 +305,12 @@ The fact that `serverData` **does not take a schema** is a deliberate design cho
 | Input source | Validation point | wrapper |
 |---|---|---|
 | URL search params | route's `validateSearch: schema.parse` | `serverData` (receives the value trusting the type) |
-| Forwarding from a parent server fn | parent fn's `inputValidator(schema)` | `serverData` (receives the value trusting the type) |
-| Direct POST from the client | `serverAction`'s `inputValidator(schema)` | `serverAction` |
+| Forwarding from a parent server fn | parent fn's `validator(schema)` | `serverData` (receives the value trusting the type) |
+| Direct POST from the client | `serverAction`'s `validator(schema)` | `serverAction` |
 
 > **Convention**: `serverData` is **for internal calls only**. Any place that handles external input (URL / form / fetch) must **always finish transport validation with either `validateSearch` or `serverAction` before** passing arguments to a loader via `serverData`. Do not run Zod again right before the usecase (the VO factory re-validates the same constraints, so it would be a duplicate and would diverge from CLAUDE.md's "validate at the boundaries").
 
-Example: `apps/web/app/routes/todo/index.tsx` normalizes the URL into the Pagination type with `validateSearch: paginationSearchSchema.parse`, then `renderTodoList` (a server fn) re-validates the transport with `inputValidator(paginationSchema)` → passes a typed value to the server component `TodoList`, and `loadTodos(pagination)` (wrapped with `serverData`) **merely trusts** that type. Of the three stages, validation is confined to **the first two transport boundaries**, and the internal `serverData` is a noop.
+Example: `apps/web/app/routes/todo/index.tsx` normalizes the URL into the Pagination type with `validateSearch: paginationSearchSchema.parse`, then `renderTodoList` (a server fn) re-validates the transport with `validator(paginationSchema)` → passes a typed value to the server component `TodoList`, and `loadTodos(pagination)` (wrapped with `serverData`) **merely trusts** that type. Of the three stages, validation is confined to **the first two transport boundaries**, and the internal `serverData` is a noop.
 
 ### Exception where calling `getContainer()` directly is allowed
 
@@ -388,7 +388,7 @@ import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware"
 
 const renderPostDetail = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(z.object({ postId: z.string() }))
+  .validator(z.object({ postId: z.string() }))
   .handler(async ({ data }) => {
     const { PostDetail, getPostTitle } = await import(
       "@/components/post/PostDetail"
@@ -421,7 +421,7 @@ function PostPage() {
 - **Place the shared shell (Header / Sidebar / Dialog mount, etc.) in the parent route's `component`. Do not include the shell in the arguments to the leaf's `renderServerComponent(...)`.** If you do, the shell gets swapped out along with the entire RSC tree and remounted on every transition, and client state such as sidebar open/close is lost and flickers. Pass only leaf-specific content into the RSC payload. Reference implementations: `apps/web/app/components/todo/TodoShell/` and `apps/web/app/routes/todo/{route,about,index}.tsx`.
 - Since `staleTime` remains in effect even after navigation, the cache can be reused when you return to the same URL.
 - When you want to force a refetch, use `useRouter().invalidate()` on the client.
-- Input validation uses `.inputValidator(...)`. **Do not use the old API `.validator(...)`.**
+- Input validation uses `.validator(...)`. **Do not use the old API `.validator(...)`.**
 
 ## Shared server logic (authentication helper)
 
@@ -457,7 +457,7 @@ The `import "@tanstack/react-start/server-only";` at the top of the file is a ma
 
 ## Server Function (mutation)
 
-Consolidate state-changing operations into `createServerFn({ method: "POST" })`. For reads, use `createServerFn({ method: "GET" })`, expressing whether there are side effects via the method. For both, always prepend `.middleware([errorResponseMiddleware])`, and have the same middleware catch throws from **both** `inputValidator` and the handler and convert them into the `AppServerError` envelope and an HTTP status. The client wraps it with `useServerFn(fn)` and then passes it directly to React 19's **`useActionState` / `useTransition` / `useOptimistic`**. A generic hook (a `useServerAction`-style wrapper) is intentionally not provided — abstract only when a second concrete pattern appears.
+Consolidate state-changing operations into `createServerFn({ method: "POST" })`. For reads, use `createServerFn({ method: "GET" })`, expressing whether there are side effects via the method. For both, always prepend `.middleware([errorResponseMiddleware])`, and have the same middleware catch throws from **both** `validator` and the handler and convert them into the `AppServerError` envelope and an HTTP status. The client wraps it with `useServerFn(fn)` and then passes it directly to React 19's **`useActionState` / `useTransition` / `useOptimistic`**. A generic hook (a `useServerAction`-style wrapper) is intentionally not provided — abstract only when a second concrete pattern appears.
 
 ### Division of input-validation responsibility
 
@@ -465,7 +465,7 @@ Input validation happens in **only 2 places**. The usecase is not involved.
 
 | Layer | Responsibility |
 |---|---|
-| Transport boundary (`inputValidator`) | shape / DoS check. Only whether the JSON matches the expected signature |
+| Transport boundary (`validator`) | shape / DoS check. Only whether the JSON matches the expected signature |
 | Domain VO factory (`TodoTitle.create`, etc.) | The final gate for business invariants |
 
 The usecase **trusts the static type of the input and focuses on applying domain logic**. When the VO factory throws a `BusinessRuleError`, it reaches the client as-is in the envelope (`{ kind: "business" }`).
@@ -476,7 +476,7 @@ Why not run Zod in the usecase:
 - Placing validation in the usecase mixes Zod / domain modules into the application layer, creating friction with CLAUDE.md's dependency direction (application → domain).
 - Shape checking is the transport's responsibility. Once it arrives as a type, the usecase may trust it.
 
-Because `createServerFn`'s `inputValidator` runs on both client and server, the schema statically imported from it **must not pull in `@repo/core/domain/*` or `@repo/core/application/*` at all**. Keep the schema presentation-independent in `apps/web/app/components/${domain}/schema.ts`.
+Because `createServerFn`'s `validator` runs on both client and server, the schema statically imported from it **must not pull in `@repo/core/domain/*` or `@repo/core/application/*` at all**. Keep the schema presentation-independent in `apps/web/app/components/${domain}/schema.ts`.
 
 ```typescript
 // apps/web/app/components/todo/schema.ts
@@ -539,7 +539,7 @@ import { createTodoSchema } from "../schema";
 
 export const createTodoFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(createTodoSchema))
+  .validator(validateInput(createTodoSchema))
   .handler(async ({ data }) => {
     const { container, module } = await loadServerDeps(
       () => import("@repo/core/application/todo/createTodo"),
@@ -848,7 +848,7 @@ An exception thrown by `createServerFn`'s `handler` reaches the client, but if i
 - `appServerErrorAdapter` (registered with `createStart` in `apps/web/app/start.ts`) — a serialization adapter that preserves the class identity of `AppServerError` across a Seroval roundtrip. **It runs only at boundaries via `createServerFn(...).middleware([errorResponseMiddleware])`**. Via direct `fetch` / an RSC error frame / a custom transport, the adapter does not run, and the client receives a plain Error/object (a remnant) that holds `serialized` as an own property
 - `serializeError(error)` — folds Business / NotFound / Validation, etc. into a `SerializedError` (`{ kind, code, message, retryable?, fieldErrors? }`)
 - `extractSerializedError(error)` — extracts the `SerializedError` on the client side. Three-stage detection: (1) `instanceof AppServerError` (the adapter-passed path) → (2) structural `serialized` remnant detection (the adapter-not-passed path) → (3) `serializeError` fallback. **UI code must always go through this function. Using `instanceof AppServerError` for branching becomes false on the adapter-not-passed path and breaks silently**
-- `errorResponseMiddleware` (`apps/web/app/presentation/errorResponseMiddleware.ts`) — wraps the entire server function (both `inputValidator` and the handler) to apply the above and set the HTTP status from `SerializedErrorKind`. TanStack Router's `redirect()` / `notFound()` sentinels are rethrown as-is. **Write `createServerFn(...).middleware([errorResponseMiddleware])` directly at the call site** (pre-applying via a separate module is not allowed because it breaks the RSC plugin's static rewrite)
+- `errorResponseMiddleware` (`apps/web/app/presentation/errorResponseMiddleware.ts`) — wraps the entire server function (both `validator` and the handler) to apply the above and set the HTTP status from `SerializedErrorKind`. TanStack Router's `redirect()` / `notFound()` sentinels are rethrown as-is. **Write `createServerFn(...).middleware([errorResponseMiddleware])` directly at the call site** (pre-applying via a separate module is not allowed because it breaks the RSC plugin's static rewrite)
 
 (`apps/web/app/presentation/errorResponse.ts`).
 
@@ -871,7 +871,7 @@ try {
 ## Summary: must-haves for the current `@tanstack/react-start`
 
 - Vite: the three-plugin setup of `tanstackStart({ srcDirectory: "app", rsc: { enabled: true } })` + `rsc()` (`@vitejs/plugin-rsc`) + `viteReact()`
-- Server function validation: **`.inputValidator(...)`** (`.validator(...)` is the old API)
+- Server function validation: **`.validator(...)`** (`.validator(...)` is the old API)
 - RSC high-level APIs: `renderServerComponent` / `createCompositeComponent` / `CompositeComponent`
 - server-only boundary: place `import "@tanstack/react-start/server-only";` at the top of the DI container and server helpers. Do not place it in server function definition files that client components import; enter the server-only side via a dynamic import inside the handler
 - Calling a server function from the client: **wrap it with `useServerFn(fn)`** (with automatic redirect handling)

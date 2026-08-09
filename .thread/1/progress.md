@@ -1,0 +1,70 @@
+# 進捗メモ — Issue #1（ステップ12: 仕上げ）
+
+最終検証はすべて緑: `pnpm typecheck` / `pnpm lint:fix`（fix なし）/ `pnpm format`（差分なし）/ `pnpm test:unit`（388 件）/ `pnpm build`。マニュアルテスト（testing.md の全項目 + エッジケース）は前チャンクで e2e スモークとして完走済み。仕上げでの `inputValidator` → `validator` 改名（後述）は TanStack Start 内部で同一オプションに写る純粋なエイリアスであり、改名後に typecheck / test:unit / build と本番ビルドのルート応答（`/` `/signin` `/terms` 200、`/_serverFn/*` 到達）を再確認した。
+
+## ステップ12 で実施した追加変更
+
+- `createServerFn().inputValidator()` の deprecation 追随: `@tanstack/start-client-core` 1.170 で `inputValidator` が `@deprecated Use "validator" instead` になったため、呼び出し 4 箇所（`SignUpForm/action.ts` / `SignInForm/action.ts` / `VerifyEmailPanel/action.ts` / `routes/notes/-action.tsx`）を `.validator()` へ改名し、presentation のコメント 3 箇所と `docs/{frontend,backend}_implementation_example.md` 内の記載も追随させた。挙動は同一（フレームワーク側は両キーを同じ値に設定し `validator` を優先読み取り）。
+
+## Issue コメント用: 見送り・縮退・期待値変更の一覧
+
+実装フェーズの成果物として整理。Issue #1 のチェックリスト消化コメントに転記する（本チャンクでは投稿していない）。
+
+### 見送った ADP 行（基準は ADR-006: 外部技術結合 + 本スライスに実行経路も TC もない）
+
+- ADP-note-001..007 — HtmlProcessor / PdfRenderer / NoteExportComposer。取り込み・編集・書き出しスライスで対応 TC とともに実装。
+- ADP-note-050..054 — NoteMovePort。移動スライスで実装。
+- ADP-identity-033/034 — SignInOAuthClient。startOAuthFlow / completeOAuthSignIn が本スライス外で、実装本体は OAuth プロトコル結合。OAuth スライスで実装。
+- いずれもポート定義（DOM 行）は本スライスで実装済み。永続化ストア系（AccountDeletionManifestStore 全 14 メソッド / ScopeCleanupAdmissionStore の削除フロー系を含む）はシナリオで実行されなくても memory 実装 + 適合テストまで実施済み。
+
+### 見送った PAGE 行（UI 上は対応要素を出さない。無効ボタンの placeholder も作らない）
+
+- PAGE-p01-003 / PAGE-p02-003 — Google OAuth（startOAuthFlow が本スライス外）。
+- PAGE-p02-004 — パスワード再設定（P-04 が本スライス外）。
+- PAGE-p02-006 — 確認メール再送（resendVerificationEmail が本スライス外）。
+- PAGE-p11-008/010/011/013 — styleMode 変更 / 再生成 / バックアップ / ゴミ箱（対応 UC が本スライス外）。
+
+### 見送った TC 行
+
+- TC-note-055..057,066 / TC-note-166,167,174,175 — workspace 権限・viewer/editor 前提（スライス #3）。
+- TC-note-179..186 — references / storage / conversion 前提（取り込みスライス）。
+- TC-note-188,189 — getPublicNote / getSharedNote（公開閲覧スライス）。
+- TC-identity-256..258 — invitation 前提（スライス #3）。
+- TC-identity-260 — RATE_LIMITED（レート制限バインディングは CF スライス）。
+
+### スコープ外として実施しなかったもの
+
+- `pruneExpiredAuthState` のランタイム配線 — usecase とテストは実装済みだが、Node runner へのスケジュール登録と continuation コマンドのルーティングは行っていない（runner の pruner 役は `pruneOutbox` のみ、consumer no-op。配線は CF cron スライス）。
+- サインアウトの UC-identity-009 本体 — UI のサインアウトは Cookie 破棄のみの presentation glue（ADR-008）。セッション行は期限まで残り prune が回収する。
+- createBlankNote / getNote の workspace 分岐 — `WORKSPACE_NOT_FOUND` 返却まで（権限評価はスライス #3）。
+
+### 縮退（仕様との既知の差分）
+
+- LOCKED 表示の「パスワード再設定への導線」は文言のみでリンクなし（P-04 不在のため）。
+- セッション Cookie の `Secure` 属性は dev（http）でのみ条件付き無効化（spec は無条件付与。本番ビルド + https では付与される）。
+
+### マニュアルテストで skip / 期待値変更した手順
+
+- account.md TC-02 手順2 の空状態 — アップロード導線を除き新規作成導線のみで判定（アップロードは本スライス外・placeholder 禁止方針）。
+- account.md AC-01 異常系「確認前の再サインアップ → 確認メール再送」 — 再送されず既存アカウント通知メールになるのが正（spec 内部不整合。usecase / TC-identity-255 側を正とした）。
+- editing.md — ED-01 の新規作成部分のみ実行（エディタ・自動保存はスライス #7）。
+- organize.md — OR-11 のみ実行。
+
+## spec-sync 対象の集約
+
+plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同期候補。
+
+- spec/scenario/account.md AC-01 異常系の「確認メール再送」 — usecases/identity.md と TC-identity-255（既存アカウント通知メール）に合わせて改訂（plan.md リスク欄）。
+- spec/domains/identity.md の `IdentityErrorCode` enum — `IdentityLimitExceeded` の記載漏れを追記（steps.md 設計節）。
+- spec/domains/note.md の `Note.createBlank` / `createFromUpload` に `projectionRevision`、`moveTo` に `routeVersion` 引数を追記（ADR-011）。
+- ShareTokenProtector の失敗エラー — 契約 JSDoc が言う `ExternalServiceError` が `SystemErrorCode` に存在せず `DataIntegrityError` に写した（ADR-017）。
+- `VerifyEmailView.sessionToken` — alreadyVerified 経路のため `string | null`（spec の出力表は表現不能 — ADR-021）。
+- `SignInView` / `VerifyEmailView` への `expiresAt` 追加検討 — 現状は presentation が `Session.ttlMs` から Cookie 期限を再導出（ADR-024）。
+- ScopeCleanupAdmissionStore / AccountDeletionManifestStore の状態機械の解釈確定分 — 削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として spec に反映（ADR-017）。
+- **CLAUDE.md の全面改訂**（前チャンクからの申し送り。ステップ12 に記載がないため実装せず記録）: 旧 4 ランタイム構成（Cloudflare / AWS / GCP のエントリ・DI・docs 参照）、todo 参照実装（`apps/web/app/components/todo/` / `routes/todo/` / `TodoBoard`）、`infra/*` ワークスペース、`docs/runtime_{cloudflare,aws,gcp}.md`、`serverAction` の `inputValidator` 記述が現状（Node + memory 一本、Identity / Note ドメイン、`.validator()`）と乖離している。
+- docs/backend_implementation_example.md / docs/frontend_implementation_example.md — Todo ドメイン前提の実装例のまま（`di/serverCloudflare.ts` / `TodoEvent` / `createTodoFn` 等）。パターン自体は現行実装と同型だが、例示を Identity / Note ベースへ差し替えるか「歴史的な例」と明記する改訂が必要。`.inputValidator` の記載のみ本チャンクで `.validator` へ機械的に追随済み。
+
+## フォローアップ
+
+- Issue #1 への見送り一覧コメントの投稿（上記「Issue コメント用」節を転記。チェックリストの消化率確定と同時に行う）。
+- 開発マシンにステップ11 チャンクの `pnpm dev`（port 3000）が残存していたため、本チャンクの本番スモークは port 3100 で実施した。残存プロセスは停止していない（他セッションの所有物のため）。

@@ -13,7 +13,7 @@ export const PAGINATION_DEFAULT_LIMIT = 20;
 const pageField = z.number().int().min(1).max(PAGINATION_MAX_PAGE);
 const limitField = z.number().int().min(1).max(PAGINATION_MAX_LIMIT);
 
-// Strict numeric schema for server-function `inputValidator`. RPC payloads
+// Strict numeric schema for server-function `validator`. RPC payloads
 // arrive already typed (JSON), so no coercion is needed; bad payloads must
 // fail loud rather than silently fall back to defaults.
 export const paginationSchema = z.object({

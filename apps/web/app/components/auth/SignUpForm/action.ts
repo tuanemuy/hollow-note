@@ -11,7 +11,7 @@ import { signUpSchema } from "../schema";
  */
 export const signUpFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .inputValidator(validateInput(signUpSchema))
+  .validator(validateInput(signUpSchema))
   .handler(async ({ data }) => {
     const { container, module } = await loadServerDeps(
       () => import("@repo/core/application/identity/signUpWithPassword"),
