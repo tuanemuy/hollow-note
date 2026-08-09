@@ -1,0 +1,149 @@
+# Inventory — usecase
+
+生成元: `spec/usecases/`（最終同期: 2026-08-09）
+
+| ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
+| --- | --- | --- | --- |
+| UC-conversion-001 | `runConversion` | `spec/usecases/conversion.md#runConversion` | 冪等・リース規則に従って形式、パスワード保護、連携、方針、LLM クォータを判定し、変換済み本文・参照取り込み・要求公開範囲・ジョブ結果を整合して保存する。対象不在、連携不足・失効、機械抽出不可、未対応形式、クォータ超過、変換失敗、強制終端を仕様どおり区別する |
+| UC-conversion-002 | `requestRegeneration` | `spec/usecases/conversion.md#requestRegeneration` | 編集権限、元ファイルまたはバックアップ、指示、重複ジョブを検査し、ローカルファイルで LLM 必須の場合だけ未連携・失効を事前判定して、ノート所有文脈の再生成ジョブを登録する |
+| UC-conversion-003 | `runRegeneration` | `spec/usecases/conversion.md#runRegeneration` | 実行前の版を保持し、ローカルまたは Drive バックアップから再変換して成功時だけ本文を差し替える。失敗時は既存本文を保持し、連携不足・失効、対象不在、パスワード保護、クォータ超過、競合をジョブへ記録する |
+| UC-conversion-004 | `planConversionForUpload` | `spec/usecases/conversion.md#planConversionForUpload` | ファイル形式と LLM 能力から変換方針、LLM 要否、本文初期状態を返し、パスワード保護を他の方針より優先して失敗状態にする |
+| UC-identity-001 | `signUpWithPassword` | `spec/usecases/identity.md#signUpWithPassword` | 規約、メール、パスワード、表示名を検証し、一意予約を経て利用者と認証手段を作る。通常は確認トークンを発行し、適合する招待経由では確認済み利用者とセッションを作る。存在秘匿、競合、送信失敗、レート制限を扱う |
+| UC-identity-002 | `verifyEmail` | `spec/usecases/identity.md#verifyEmail` | locator 付き確認トークンを単回消費して利用者を有効化し、同一 UoW でセッションを発行する。使用済みの並行要求は `alreadyVerified` に収束させ、用途違い、期限切れ、世代不一致を拒否する |
+| UC-identity-003 | `resendVerificationEmail` | `spec/usecases/identity.md#resendVerificationEmail` | 未確認利用者に限り発行間隔を守って既存確認トークンを置換し、commit 後に確認メールを送る。利用者不在、確認済み、制限中は存在を漏らさず成功として返す |
+| UC-identity-004 | `signInWithPassword` | `spec/usecases/identity.md#signInWithPassword` | 発信元とメールの鍵で待機・施錠を判定し、資格情報を照合して有効利用者に current epoch のセッションを発行する。認証失敗、未確認、削除中、待機、ロックを区別し、失敗加算を原子的に行う |
+| UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代を 10 分保存して認可 URL を返す |
+| UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を単回消費し、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。未確認、別利用者への紐づき、上限、削除中を拒否する |
+| UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | link intent の OAuth state と認証世代を検査し、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する |
+| UC-identity-008 | `authenticateSession` | `spec/usecases/identity.md#authenticateSession` | locator とハッシュからセッションと利用者を読み、期限、有効状態、認証世代を検査して利用者射影を返す。すべての無効要因を `UNAUTHENTICATED` に畳み、認証時にセッションを書き換えない |
+| UC-identity-009 | `signOut` | `spec/usecases/identity.md#signOut` | セッショントークンから対象行を解決して存在すれば削除し、形式不正・不在を含め常に成功として返す |
+| UC-identity-010 | `signOutOtherSessions` | `spec/usecases/identity.md#signOutOtherSessions` | 現在のセッションを検証し、利用者の認証世代を進めつつ現在のセッションだけ新世代へ追随させ、他セッションを即時失効させて旧世代行の有界回収を開始する |
+| UC-identity-011 | `requestPasswordReset` | `spec/usecases/identity.md#requestPasswordReset` | 有効利用者の password identity の有無に応じたメールを送り、既存 reset token を置換して current epoch の単回トークンを発行する。不在や無効状態でも同じ成功応答にする |
+| UC-identity-012 | `resetPassword` | `spec/usecases/identity.md#resetPassword` | 有効な未消費 reset token を検査・消費して password identity を作成または更新し、認証世代を進めて全セッションを即時失効させる。並行消費は token not found に収束させる |
+| UC-identity-013 | `addPasswordIdentity` | `spec/usecases/identity.md#addPasswordIdentity` | 有効利用者の現在の認証手段集合を再検査し、password identity がなく総数上限内の場合だけ強度検証済みパスワード手段を追加する |
+| UC-identity-014 | `changePassword` | `spec/usecases/identity.md#changePassword` | 現在のセッションとパスワードを再認証して password identity を更新し、認証世代を進めながら現在のセッションだけ残し、他のセッション・旧世代トークンを失効・回収する |
+| UC-identity-015 | `removeIdentity` | `spec/usecases/identity.md#removeIdentity` | 本人の認証手段で最後の 1 件でないことを確認して削除し、OAuth provider account の一意予約を正データ削除後に冪等解放する。再要求は receipt から成功へ収束させる |
+| UC-identity-016 | `listIdentities` | `spec/usecases/identity.md#listIdentities` | 利用者の最大 8 件の認証手段を秘密情報なしで射影し、2 件以上なら削除可能として返す |
+| UC-identity-017 | `updateProfile` | `spec/usecases/identity.md#updateProfile` | 表示名、自己紹介、アイコン URL、公開ハンドルを検証し、ハンドルの一意予約・切替・旧値解放とプロフィール更新イベントを整合して保存する。未確認、重複、予約語、版競合を拒否する |
+| UC-identity-018 | `getPublicProfile` | `spec/usecases/identity.md#getPublicProfile` | 公開ハンドルを正規化して directory と UserId shard から確認済み利用者の公開情報を返し、形式違反・不在・未確認を同じ not found に畳む |
+| UC-identity-019 | `listPublicProfiles` | `spec/usecases/identity.md#listPublicProfiles` | 個人所有の公開ノートを持つ利用者だけを public author projection からページングし、current user 情報でハンドルを解決してサイトマップ用の公開プロフィールを返す |
+| UC-identity-020 | `deleteAccount` | `spec/usecases/identity.md#deleteAccount` | 確認入力と冪等 request ID から削除 operation を開始し、認証世代と全通常書き込みを閉じる barrier、membership・著者 route manifest、rollback、scope cleanup、認証残渣・一意予約・PII の解放、投影 redaction、tombstone 化を有界・再開可能に統括する。唯一 owner 等では破壊前に rejected へ戻す |
+| UC-identity-021 | `pruneExpiredAuthState` | `spec/usecases/identity.md#pruneExpiredAuthState` | 固定 as-of と maintenance run により全 routing generation の session、auth token、login attempt、OAuth state を shard・表ごとに 100 件ずつ冪等回収し、部分失敗を隔離して継続・完了管理する |
+| UC-integration-001 | `startIntegrationOAuth` | `spec/usecases/integration.md#startIntegrationOAuth` | 有効利用者と provider、同一オリジン遷移先を検査し、認証世代付き state・PKCE を保存して OpenRouter または Drive の認可 URL を返す。Google identity があれば Drive の login hint に使う |
+| UC-integration-002 | `completeIntegrationOAuth` | `spec/usecases/integration.md#completeIntegrationOAuth` | OAuth state を単回消費し、コード、必要 scope、Drive refresh token、疎通を検査して暗号化資格情報を接続または再接続する。OpenRouter 新規接続時は LLM 待ちノート件数を返す |
+| UC-integration-003 | `listConnections` | `spec/usecases/integration.md#listConnections` | 利用者の接続状態・アカウント表示・最終利用・設定を資格情報なしで返し、未接続 provider も disconnected として補完する |
+| UC-integration-004 | `disconnectIntegration` | `spec/usecases/integration.md#disconnectIntegration` | provider の revoke を best effort で行い、複数 scope の依存ジョブを有界に強制終端・後始末してから connection を削除する accepted operation を冪等に進める。不在でも completed operation を返す |
+| UC-integration-005 | `listAvailableModels` | `spec/usecases/integration.md#listAvailableModels` | OpenRouter 接続を解決・更新し、失効を保存して再連携要求にし、モデル catalog を用途別能力で絞る。catalog 障害時は既定モデルだけで成功する |
+| UC-integration-006 | `updateModelPreference` | `spec/usecases/integration.md#updateModelPreference` | OpenRouter 接続に対して用途別モデル設定を検証・保存し、未接続、値違反、provider 不一致を拒否する |
+| UC-integration-007 | `listDriveFolders` | `spec/usecases/integration.md#listDriveFolders` | Drive 接続資格情報を解決・必要なら更新し、失効を保存したうえで parent 配下の folder 候補を返す。未接続・失効・権限不足を区別する |
+| UC-integration-008 | `updateBackupSetting` | `spec/usecases/integration.md#updateBackupSetting` | Drive folder の存在・書込権限を確認し、自動バックアップには folder 必須という不変条件を守って設定とイベントを保存する |
+| UC-integration-009 | `requestBackup` | `spec/usecases/integration.md#requestBackup` | source scope 内のノートを route・編集権限・元ファイルで選別して理由付き skipped を返し、1 件は単体、複数は親子の Drive backup ジョブとして同一 scope に登録する。未接続、対象ゼロ、重複を拒否する |
+| UC-integration-010 | `runBackup` | `spec/usecases/integration.md#runBackup` | リース・冪等規則に従い、要求者の Drive 接続と folder を解決して元ファイルを upload し、checksum・記録所有者に応じて backup record を作成・置換・skip する。失効、容量、権限、通信、対象不在をジョブ結果へ写す |
+| UC-integration-011 | `fetchBackupForRegeneration` | `spec/usecases/integration.md#fetchBackupForRegeneration` | backup record の所有者の Drive 資格情報を使い、接続・失効・外部ファイル存在を検査して再生成用 stream と metadata を返す |
+| UC-integration-012 | `listBackupStates` | `spec/usecases/integration.md#listBackupStates` | 許可済みノート ID 群の backup records をまとめて読み、ノートごとの有無、閲覧 URL、日時を返す |
+| UC-integration-013 | `deleteBackupRecordsForNote` | `spec/usecases/integration.md#deleteBackupRecordsForNote` | note purge に追随し、cleanup owner を検査しながら backup records を 100 件ずつ冪等削除・継続し、Drive 上の実ファイルは残す |
+| UC-integration-014 | `failActiveJobsForExpiredIntegration` | `spec/usecases/integration.md#failActiveJobsForExpiredIntegration` | current scope で provider 依存の active child jobs を 100 件ずつ `providerAuthFailed` にし、batch 親を直接終端せず、変換中本文の回復を含む強制終端後始末を同一 UoW で行う |
+| UC-integration-015 | `deleteIntegrationsForUser` | `spec/usecases/integration.md#deleteIntegrationsForUser` | account deletion の global または scope cleanup として revoke を best effort で試み、connections または backup records を 100 件ずつ削除・継続して ack する。Drive ファイルは残す |
+| UC-job-001 | `listJobs` | `spec/usecases/job.md#listJobs` | requester の global job history を状態・種別・親のみでページングし、進捗、子集計、失敗、申し送り、artifact、再試行・取消可否を射影する。匿名ジョブは含めない |
+| UC-job-002 | `getJobDetail` | `spec/usecases/job.md#getJobDetail` | JobId から scope を復元し、scope-local 正データで requester 所有を確認して親と子一覧・集計を返す。history projection は認可に使わない |
+| UC-job-003 | `retryJob` | `spec/usecases/job.md#retryJob` | 所有する failed job の対象・権限・連携原因・family claim を再検査して retry する。bulkExport 親は全子終端かつ成功ありの場合だけ assembly を reopen し、子の retry では親進捗と古い artifact を整合して更新する |
+| UC-job-004 | `retryFailedChildren` | `spec/usecases/job.md#retryFailedChildren` | batch 親の全ページから failed children を選別・個別検査して retry し、親を current summary から reopen または進捗更新する。assembly 中・canceled 親・再試行対象ゼロを拒否する |
+| UC-job-005 | `cancelJob` | `spec/usecases/job.md#cancelJob` | requester 所有の cancelable job を終端し、親なら queued children も取消し、変換中本文の回復と既存 artifact 回収を同一 UoW で行う |
+| UC-job-006 | `updateBatchProgress` | `spec/usecases/job.md#updateBatchProgress` | child terminal event ごとに current children を再集計して親の進捗・リース・終端を更新し、bulkExport で成功子がある場合は終端せず ready-to-assemble を発行する。重複 event に対して冪等にする |
+| UC-job-007 | `dispatchJob` | `spec/usecases/job.md#dispatchJob` | enqueued または ready-to-assemble event の scope と JobId を検証し、batch 親の通常 enqueue は送らず、それ以外を唯一の dispatcher 経路から queue へ送る |
+| UC-job-008 | `reapExpiredJobs` | `spec/usecases/job.md#reapExpiredJobs` | current scope の lease 失効 running jobs を最大 100 件ずつ expire し、変換中本文を timeout へ回復して admission を解放する。行単位の競合・失敗を隔離し、batch 親も回収する |
+| UC-job-009 | `projectJobHistory` | `spec/usecases/job.md#projectJobHistory` | scope-local Job events と対象削除 events から requester 別 global history、target reverse route、removal tombstone を version 条件付きで更新・削除し、manifest と 100 件継続で配送逆順・応答喪失へ収束させる |
+| UC-job-010 | `pruneJobHistory` | `spec/usecases/job.md#pruneJobHistory` | scope-local では保持期限を過ぎた terminal root family を claim・manifest 化して 100 件ずつ正データと history を削除し、global では maintenance run で removal・target tombstone を shard ごとに回収する |
+| UC-job-011 | `deleteJobsForRequester` | `spec/usecases/job.md#deleteJobsForRequester` | account deletion の current scope で requester の job families を claim・manifest state machine により正データ、reverse route、global history まで削除し、incomplete family がなくなるまで ack を返さない |
+| UC-job-012 | `continueForcedTermination` | `spec/usecases/job.md#continueForcedTermination` | origin path から current scope の対象 query、遷移、本文失敗理由を再導出し、active jobs を 100 件ずつ強制終端・後始末して必要時だけ同じ continuation を積む。対象ゼロは正常終了とする |
+| UC-note-001 | `createBlankNote` | `spec/usecases/note.md#createBlankNote` | owner と workspace 作成権限、title を検証し、global route を予約して scope-local blank note を保存後に route を active 化する。失敗・応答喪失は operation ID で回復する |
+| UC-note-002 | `getNote` | `spec/usecases/note.md#getNote` | route と閲覧者文脈を解決し、本文、権限、owner、headings、限定公開 URL を射影する。ready 本文では保管ファイル・本文痕跡・取得記録から参照取り込み状況を合成する |
+| UC-note-003 | `getSharedNote` | `spec/usecases/note.md#getSharedNote` | locator 付き share token を scope へ解決して hash を照合し、SharePass と閲覧者権限を評価する。保護時は title・本文を伏せた password-required を返し、無効・非公開化・削除を not found に畳む |
+| UC-note-004 | `verifySharePassword` | `spec/usecases/note.md#verifySharePassword` | share token hash と発信元の鍵で待機・施錠を検査し、限定公開 password を照合して SharePass を発行する。失敗加算を原子的に行い、待機と lock を共通 `THROTTLED` にする |
+| UC-note-005 | `getPublicNote` | `spec/usecases/note.md#getPublicNote` | public active note を著者・workspace・metadata とともに返す。非公開・限定公開・完全削除は not found、公開のまま trash は gone とし、退会著者は tombstone 表示にする |
+| UC-note-006 | `searchNotes` | `spec/usecases/note.md#searchNotes` | current owner scope と閲覧権限を確認し、keyword、正規化 tags、作成月・timezone、sort、lifecycle、pagination を local query service へ渡して一覧と件数を返す |
+| UC-note-007 | `searchPublicNotes` | `spec/usecases/note.md#searchPublicNotes` | 公開 owner filter、keyword、正規化 tags、UTC 更新日範囲、署名 cursor を検証し、全 public shards を横断して公開ノートを検索する。短すぎる無 owner query、範囲不正、rate limit を拒否する |
+| UC-note-008 | `countNotesByCreationDate` | `spec/usecases/note.md#countNotesByCreationDate` | owner の閲覧権限と timezone 月範囲を解決し、ノートがある月と指定月の日別作成件数を current scope の query service から返す |
+| UC-note-009 | `updateNoteBody` | `spec/usecases/note.md#updateNoteBody` | 編集権限・active lifecycle・変換 lock・版を検査し、HTML を sanitize して現本文の revision と更新本文を保存する。既定で外部参照取り込みを要求し、同一 note の active job へ相乗りまたは新規登録する |
+| UC-note-010 | `applyTextNodeEdits` | `spec/usecases/note.md#applyTextNodeEdits` | ready 本文の指定 text nodes を期待値付きで編集し、結果を再 sanitize・派生情報再計算して revision と本文を保存する。全 edits が skipped なら版を作らず成功する |
+| UC-note-011 | `renameNote` | `spec/usecases/note.md#renameNote` | 編集権限、title 規則、expected version を検査して manual title を保存し、競合を返す |
+| UC-note-012 | `changeNoteStyleMode` | `spec/usecases/note.md#changeNoteStyleMode` | 編集権限と `default` または `preserve` を検査して style mode と投影更新 event を保存する |
+| UC-note-013 | `moveNote` | `spec/usecases/note.md#moveNote` | source・target scope の route、権限、membership version、tag relocation を固定し、distributed operation で source freeze、target stage・credit、route switch、source retire・debit、projection refresh を再開可能に実行する。switch 前だけ abort する |
+| UC-note-014 | `changeNoteVisibility` | `spec/usecases/note.md#changeNoteVisibility` | 公開変更権限と本文を検査し、public では owner の handle・slug を要求し、unlisted では locator 付き share link を作成または休眠 link を再利用して visibility を保存する |
+| UC-note-015 | `setSharePassword` | `spec/usecases/note.md#setSharePassword` | 限定公開 note に限り、共有 password を強度検証・hash 化して設定・変更・解除する |
+| UC-note-016 | `reissueShareLink` | `spec/usecases/note.md#reissueShareLink` | 限定公開変更権限を検査し、新しい locator 付き token、hash、保護済み token で share link を置換して旧 link を無効化する |
+| UC-note-017 | `trashNote` | `spec/usecases/note.md#trashNote` | 削除権限と版を検査し、除外 job 以外の note-target active jobs を強制終端・後始末してから note を trash にする。既 trash は成功とし、100 件時は continuation を積む |
+| UC-note-018 | `restoreNote` | `spec/usecases/note.md#restoreNote` | 削除権限と expected version を確認して trashed note を active に戻し、visibility を保持してイベントを保存する |
+| UC-note-019 | `purgeNote` | `spec/usecases/note.md#purgeNote` | user request または scope cleanup の認可・版を固定し、route を purging にして local note を削除、購読者の後始末、public projection remove ack、30 日 tombstone まで forward recovery する。破壊開始前の競合だけ abort する |
+| UC-note-020 | `emptyTrash` | `spec/usecases/note.md#emptyTrash` | current owner の delete 権限と trash 件数を確認し、50 件以下は各 current version で同期 purge、51 件以上は 500 件単位の bulk purge jobs を登録して、完了済み件数と予約件数を mode で区別する |
+| UC-note-021 | `purgeExpiredTrash` | `spec/usecases/note.md#purgeExpiredTrash` | current scope の保持期限超過 notes を最大 100 件ずつ内部 purge operation へ進め、個別失敗を隔離し、残件または次期限に Alarm を設定する |
+| UC-note-022 | `deleteNotesForOwner` | `spec/usecases/note.md#deleteNotesForOwner` | scope cleanup owner を各 page で検査し、owner の active・trashed notes を 100 件ずつ scopeCleanup purge へ進め、専用 continuation と全 purge tombstone 完了確認で冪等に ack する |
+| UC-note-023 | `listNoteRevisions` | `spec/usecases/note.md#listNoteRevisions` | 編集権限を確認し、最新 20 revisions と作成者表示を shard batch reader で解決して返す |
+| UC-note-024 | `restoreNoteRevision` | `spec/usecases/note.md#restoreNoteRevision` | note 所属 revision と版を検査し、現本文を restore revision として保存後、対象 HTML を再 sanitize して title・style・本文を復元し、必要なら参照取り込みを登録する |
+| UC-note-025 | `exportNote` | `spec/usecases/note.md#exportNote` | note ID または share token と password pass で毎回閲覧権限を評価し、ready 本文を HTML・Markdown は即時生成する。PDF は十分な TTL の同版 artifact 再利用、active job 相乗り、新規 job の順で選び、署名 ExportTicket を返す |
+| UC-note-026 | `runNoteExport` | `spec/usecases/note.md#runNoteExport` | 冪等・リース規則に従って ready note を PDF 描画し、24 時間の artifact を保管して job を成功させる。対象不在、描画・保管失敗、timeout、強制終端競合を仕様どおり処理する |
+| UC-note-027 | `getExportStatus` | `spec/usecases/note.md#getExportStatus` | 30 分 ticket と note 閲覧権限を再検査し、job または file の状態を返す。成功 job は artifact の note・存在・期限を検証して file ticket に差し替え、失効・不在を明示する |
+| UC-note-028 | `downloadExportArtifact` | `spec/usecases/note.md#downloadExportArtifact` | file ticket の署名・期限・種別、note 閲覧権限、artifact の note・存在・期限を再検査し、5 分の download URL を発行する |
+| UC-note-029 | `requestBulkExport` | `spec/usecases/note.md#requestBulkExport` | source scope 内最大 500 notes を route、閲覧権限、ready 本文で選別して skipped を返し、サイズ上限と user-global 実行 slot を検査して同一 scope に親子 export jobs を登録する |
+| UC-note-030 | `runBulkExportItem` | `spec/usecases/note.md#runBulkExportItem` | child job のリース・権限・本文を再検査し、指定形式を生成して 7 日 artifact と job success を同一 UoW で保存する。対象・権限・生成・保管・競合を job failure へ写す |
+| UC-note-031 | `runBulkExport` | `spec/usecases/note.md#runBulkExport` | 全 children terminal かつ成功ありの bulkExport 親について assembly lease の実行権を取得し、成功 artifacts と失敗一覧を ZIP 化して 7 日 artifact と親 success を保存する。重複、再開、timeout、強制終端を扱う |
+| UC-note-032 | `requestBulkNoteOperation` | `spec/usecases/note.md#requestBulkNoteOperation` | source scope 内最大 500 notes を操作別権限で選別し、公開 handle・移動先・warnings を事前検査して、tag・visibility・move・trash・内部 purge の親子 jobs を同一 scope に登録する |
+| UC-note-033 | `runBulkNoteOperationItem` | `spec/usecases/note.md#runBulkNoteOperationItem` | child job のリースと requester 権限を再検査し、tag 付脱、visibility、move、trash、purge の各 usecase を適切な version・除外 job ID で呼び、冪等成功または理由付き job failure にする |
+| UC-note-034 | `listSitemapEntries` | `spec/usecases/note.md#listSitemapEntries` | 全 public shards の公開 note IDs と更新日時を署名 cursor で merge・page してサイトマップ用に返す |
+| UC-note-035 | `projectNoteChanges` | `spec/usecases/note.md#projectNoteChanges` | local または public plane で current route と Note・tags・Identity・Workspace の atomic snapshot を読み、世代ベクトル付き projection を更新・削除する。tag、author、workspace の fan-out と redaction を有界・冪等 continuation で処理する |
+| UC-note-036 | `rebuildNoteProjection` | `spec/usecases/note.md#rebuildNoteProjection` | 指定 local scope または global active routes を page し、note ごとの再投影要求を積み、任意で正データと合わない orphan projections を削除する |
+| UC-storage-001 | `startBulkUpload` | `spec/usecases/storage.md#startBulkUpload` | 最大 100 files と合計容量、owner 権限、公開 handle、file acceptance、storage quota を検査し、宣言情報から暫定 LLM 件数を返して conversion batch 親を対象所有 scope に登録する |
+| UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る |
+| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す |
+| UC-storage-004 | `storeAvatar` | `spec/usecases/storage.md#storeAvatar` | 本人または workspace 管理権限と avatar 制約を検査し、新 avatar 保存と旧 avatar metadata 削除を同一 UoW で行う。容量 quota は意図的に拒否条件にしない |
+| UC-storage-005 | `issueDownloadUrl` | `spec/usecases/storage.md#issueDownloadUrl` | 入力 scope の file だけを読み、owner 本人または workspace download 権限、artifact 期限を検査して 5 分の download URL を返す |
+| UC-storage-006 | `importExternalReferences` | `spec/usecases/storage.md#importExternalReferences` | referenceImport job の冪等・リース規則に従い、ready 本文の外部 resources と stylesheet 痕跡を SSRF・件数・size・timeout 予算内で最大 6 並行取得し、resources は保管・差替え、CSS は sanitize・inline 化する。本文、試行記録、removed CSS、job を同一 UoW で保存する |
+| UC-storage-007 | `deleteFiles` | `spec/usecases/storage.md#deleteFiles` | file IDs の存在する metadata だけを同一 UoW の共有削除手順で削除し、object key と cleanup operation を含む fileDeleted events を発行して実体削除へ委ねる |
+| UC-storage-008 | `deleteStoredObjects` | `spec/usecases/storage.md#deleteStoredObjects` | fileDeleted events の object keys を外部 storage から一括冪等削除し、不在を成功、一部失敗を再配送対象として返す。処理済み記録は先行保存しない |
+| UC-storage-009 | `collectExpiredArtifacts` | `spec/usecases/storage.md#collectExpiredArtifacts` | current scope の期限切れ ephemeral files を最大 100 件ずつ deleteFiles し、残件または次の期限へ Alarm を合わせる |
+| UC-storage-010 | `collectOrphanMedia` | `spec/usecases/storage.md#collectOrphanMedia` | current scope で作成から 30 日超の media を最大 100 件ずつ調べ、所属 note 本文から参照されない、または note 不在の files を削除して日次・即時継続を設定する |
+| UC-storage-011 | `relocateFilesForNote` | `spec/usecases/storage.md#relocateFilesForNote` | move Saga の phase ごとに source・media・reference metadata を snapshot、同一 object key の target stage、R2 delete event なしの source retire として冪等移送する。artifact は移さない |
+| UC-storage-012 | `deleteFilesForNote` | `spec/usecases/storage.md#deleteFilesForNote` | note purge に追随し、cleanup owner を検査して source・media・reference files と reference import records を各 100 件ずつ削除・継続し、artifact を対象外にする |
+| UC-storage-013 | `deleteFilesByOwner` | `spec/usecases/storage.md#deleteFilesByOwner` | scope cleanup owner を各 UoW で検査し、owner files を最大 100 件ずつ metadata delete と fileDeleted event 発行へ進め、残件時だけ専用 continuation を同一 UoW で積む |
+| UC-tag-001 | `assignTag` | `spec/usecases/tag.md#assignTag` | primary note route と current scope の編集権限・lifecycle を検査し、tag name を正規化して既存または新 tag を使い、note あたり上限・operation lock・重複を守って assignment と projection revision event を保存する |
+| UC-tag-002 | `unassignTag` | `spec/usecases/tag.md#unassignTag` | current note scope と編集権限を検査し、存在する assignment を operation lock 下で削除して projection revision event を保存する。不在 assignment は成功にする |
+| UC-tag-003 | `listTagsWithUsage` | `spec/usecases/tag.md#listTagsWithUsage` | current tag scope の閲覧権限を確認し、keyword・sort・pagination で usage count・last used 付き tags と管理可否を返す |
+| UC-tag-004 | `suggestTags` | `spec/usecases/tag.md#suggestTags` | current scope の閲覧権限を確認し、prefix 付き候補または空 prefix の利用頻度上位 tags を limit 内で返す |
+| UC-tag-005 | `renameTag` | `spec/usecases/tag.md#renameTag` | scope・管理権限・operation lock と新 tag name を検査し、同名衝突時は merge confirmation を返すか mergeTags を呼び、非衝突時は rename を保存する |
+| UC-tag-006 | `mergeTags` | `spec/usecases/tag.md#mergeTags` | 同一 scope の別 tags を lock して pending operation を開始し、source assignments を 200 件ずつ target へ付替え・重複整理・各 note 再投影要求にして、残件ゼロで source tag を削除し完了する |
+| UC-tag-007 | `deleteTag` | `spec/usecases/tag.md#deleteTag` | 管理権限下で tag を lock して pending operation を開始し、assignments を 200 件ずつ削除・各 note 再投影要求にして、残件ゼロで tag を削除し完了する |
+| UC-tag-008 | `deleteUnusedTags` | `spec/usecases/tag.md#deleteUnusedTags` | 管理権限下で pending operation を開始し、operation lock がなく削除時点で assignment ゼロの tags を 200 件ずつ削除・監査 event 化して累計と完了を保存する |
+| UC-tag-009 | `getTagOperation` | `spec/usecases/tag.md#getTagOperation` | current scope と管理権限を確認し、tag operation の pending・completed・failed・aborted、処理件数、確定影響件数を返す |
+| UC-tag-010 | `retryTagOperation` | `spec/usecases/tag.md#retryTagOperation` | failed operation を同じ ID・lock・task payload で retry し、未適用の場合だけ abort と task 削除・lock 解放を許可する。部分適用済み abort を拒否する |
+| UC-tag-011 | `listTagsForNotes` | `spec/usecases/tag.md#listTagsForNotes` | 呼出元が認可済みの note IDs について assignments と tag names を一括解決し、note ごとの tags を返す |
+| UC-tag-012 | `relocateAssignmentsForNote` | `spec/usecases/tag.md#relocateAssignmentsForNote` | move Saga の phase ごとに source assignments を portable snapshot 化し、target 同名 tags へ stage または drop し、route switch 後に source assignments を冪等削除する |
+| UC-tag-013 | `deleteAssignmentsForNote` | `spec/usecases/tag.md#deleteAssignmentsForNote` | note purge に追随し、cleanup owner を検査して assignments を 200 件ずつ冪等削除し、満杯時だけ同一 UoW に continuation を積む |
+| UC-tag-014 | `deleteTagsForScope` | `spec/usecases/tag.md#deleteTagsForScope` | scope cleanup owner を検査し、assignments を 200 件ずつ消し切ってから tags を 100 件ずつ削除し、operation・lock 行を縮約して完了する |
+| UC-usage-001 | `getUsageSnapshot` | `spec/usecases/usage.md#getUsageSnapshot` | personal storage・LLM usage と membership directory の editor 以上 workspace を 20 件ずつ最大 6 RPC で読み、各 workspace の available・unavailable を分離して表示用 level と最新時刻を返す |
+| UC-usage-002 | `ensureUploadAllowed` | `spec/usecases/usage.md#ensureUploadAllowed` | subject storage quota と必要時の当月 LLM usage を読み、不在は初期値として扱って追加 bytes・calls が上限内か純粋に判定する。レコードは作らない |
+| UC-usage-003 | `applyStorageDelta` | `spec/usecases/usage.md#applyStorageDelta` | current scope の file・note events または move phase を同一 UoW の idempotency key で単回化し、artifact を除外して bytes・note count を加減算する。競合は最大 5 回再適用し、削除済み subject を減算で復活させない |
+| UC-usage-004 | `consumeLlmCall` | `spec/usecases/usage.md#consumeLlmCall` | 当月 usage を初期化または読み、上限検査後 calls を消費して headroom を返す。競合は最大 5 回再適用し、上限 event を発行する。後続変換失敗でも消費は戻さない |
+| UC-usage-005 | `recalculateStorageUsage` | `spec/usecases/usage.md#recalculateStorageUsage` | owner の artifact を除く file size 合計と全 note count を正データから再計算し、storage quota 集計値を置換する |
+| UC-usage-006 | `initializeQuota` | `spec/usecases/usage.md#initializeQuota` | user・workspace 作成 event に対し、subject 主キーの quota が不在の場合だけ初期行を作り、重複作成は既存として成功する |
+| UC-usage-007 | `deleteQuota` | `spec/usecases/usage.md#deleteQuota` | scope cleanup owner を検査して storage quota を削除し、user では LLM usage を 100 件ずつ削除・継続してから cleanup ack を付ける。不在・遅延減算でも行を復活させない |
+| UC-workspace-001 | `resolveWorkspaceAccess` | `spec/usecases/workspace.md#resolveWorkspaceAccess` | current workspace scope の存在と membership を読み、workspace 情報と owner・editor・viewer または null role を返す。削除済みは not found にする |
+| UC-workspace-002 | `createWorkspace` | `spec/usecases/workspace.md#createWorkspace` | user の owner 数上限と name・description・slug を検査し、slug reservation を経て workspace と owner membership を同一 scope に作り、global membership・workspace directories を operation ID で active 化する |
+| UC-workspace-003 | `updateWorkspaceProfile` | `spec/usecases/workspace.md#updateWorkspaceProfile` | manageWorkspace 権限と profile 値を検査し、name・description・avatar URL を更新して name 変更時の projection refresh event を保存する |
+| UC-workspace-004 | `changeWorkspaceSlug` | `spec/usecases/workspace.md#changeWorkspaceSlug` | manageWorkspace 権限と slug を検査・一意予約し、workspace 正データ保存後に directory と reservation を切り替えて旧 slug を解放する。公開中の解除を拒否する |
+| UC-workspace-005 | `publishWorkspace` | `spec/usecases/workspace.md#publishWorkspace` | publish 権限と slug を検査し、冪等に published へ変更して public URL と公開 note 件数を返す。0 件でも成功する |
+| UC-workspace-006 | `unpublishWorkspace` | `spec/usecases/workspace.md#unpublishWorkspace` | publish 権限を検査して冪等に private へ変更し、slug は再公開用に保持する |
+| UC-workspace-007 | `deleteWorkspace` | `spec/usecases/workspace.md#deleteWorkspace` | delete 権限と confirmation name を検査し、通常 mutation を閉じる operation を開始する。active jobs 終端、membership・invitation manifest と local cleanup、directory redaction・slug release・全 global ack、manifest compact を有界・再開可能に進める |
+| UC-workspace-008 | `inviteMember` | `spec/usecases/workspace.md#inviteMember` | manageMembers 権限、email、role、既存 membership、未処理招待在庫を検査し、同 email pending は resend を呼び、なければ token route を予約して invitation を保存・active 化後にメールを送る |
+| UC-workspace-009 | `resendInvitation` | `spec/usecases/workspace.md#resendInvitation` | manageMembers 権限と pending invitation を確認し、新 token route を予約して期限と token を更新後、旧 route revoke と新 route active を原子的に切り替えてメール送信する。転送境界 rate limit を受ける |
+| UC-workspace-010 | `revokeInvitation` | `spec/usecases/workspace.md#revokeInvitation` | manageMembers 権限と pending invitation を確認して local 正データを revoke し、commit 後に global token route を同じ operation ID で revoke する |
+| UC-workspace-011 | `getInvitationPreview` | `spec/usecases/workspace.md#getInvitationPreview` | active token route から invitation と workspace を解決し、期限・状態・既存 membership を判定して workspace、role、inviter、email と preview state を返す |
+| UC-workspace-012 | `acceptInvitation` | `spec/usecases/workspace.md#acceptInvitation` | token と pending invitation を検査し、UserId shard で active user と membership edge activation claim を確保後、scope-local で invitation accept と membership を保存し、directory active・route consume へ収束させる |
+| UC-workspace-013 | `listMembers` | `spec/usecases/workspace.md#listMembers` | membership を持つ閲覧者に workspace members を page し、UserId shard の表示情報、owner count、管理可否を返す |
+| UC-workspace-014 | `listPendingInvitations` | `spec/usecases/workspace.md#listPendingInvitations` | manageMembers 権限を確認して pending invitations を page し、現在時刻から期限切れ表示を算出して返す |
+| UC-workspace-015 | `listUserWorkspaces` | `spec/usecases/workspace.md#listUserWorkspaces` | user の active directory edges を最大 20 件の keyset page で読み、最大 6 shard 並行で workspace directory を解決し、active・unavailable を区別して返す |
+| UC-workspace-016 | `changeMemberRole` | `spec/usecases/workspace.md#changeMemberRole` | manageMembers 権限、対象、自己変更禁止、owner 維持、account deletion・move lock を検査し、降格で許可されなくなる requester jobs を 100 件ずつ終端・後始末して role 更新と同一 UoW に保存する |
+| UC-workspace-017 | `removeMember` | `spec/usecases/workspace.md#removeMember` | manageMembers 権限、自己除名禁止、owner 維持、operation lock を検査し、directory edge を removing にして対象 user の jobs 終端・artifact 回収・membership 削除・Job と backup residue cleanup 後に edge を削除する |
+| UC-workspace-018 | `leaveWorkspace` | `spec/usecases/workspace.md#leaveWorkspace` | current membership、owner 維持、account deletion・move lock を検査し、edge を removing にして本人 requester jobs の終端・membership と residue cleanup 後に edge を削除する |
+| UC-workspace-019 | `listPublicWorkspaces` | `spec/usecases/workspace.md#listPublicWorkspaces` | 全 workspace directory shards の published active entries を署名 cursor で merge・deduplicate し、slug と更新日時を site map 用に page する |
+| UC-workspace-020 | `getPublicWorkspace` | `spec/usecases/workspace.md#getPublicWorkspace` | slug を正規化し、active reservation と published directory から公開 workspace 情報を返す。形式違反・不在・private を同じ not found に畳む |
+| UC-workspace-021 | `deleteMembershipsForUser` | `spec/usecases/workspace.md#deleteMembershipsForUser` | account deletion が指定した current workspace scope で operation を冪等化し、最後の owner を再検査して対象 user の jobs 終端、著者投影置換、membership 削除を完了し、global edge 削除用 ack を返す |
