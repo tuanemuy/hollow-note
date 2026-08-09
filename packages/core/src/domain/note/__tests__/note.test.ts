@@ -1,0 +1,403 @@
+import { isBusinessRuleError } from "@repo/core/domain/error";
+import {
+  PasswordHash,
+  TokenHash,
+  UserId,
+} from "@repo/core/domain/identity/valueObject";
+import { StoredFileId } from "@repo/core/domain/storage/valueObject";
+import { describe, expect, it } from "vitest";
+import { NoteErrorCode } from "../errorCode";
+import { Note } from "../note";
+import { NoteRevision } from "../noteRevision";
+import { NoteOwner, ShareLink } from "../valueObject";
+
+const T0 = new Date(0);
+const at = (ms: number) => new Date(ms);
+const DAY = 24 * 60 * 60 * 1000;
+
+const creator = UserId.create("u1");
+const owner = NoteOwner.user(creator);
+
+const makeLink = (token: string, passwordHash: string | null = null) =>
+  ShareLink.create({
+    tokenHash: TokenHash.create(token),
+    protectedToken: { cipherText: `enc(${token})`, keyVersion: 1 },
+    password:
+      passwordHash === null
+        ? null
+        : { hash: PasswordHash.create(passwordHash), updatedAt: T0 },
+    issuedAt: T0,
+  });
+
+const blank = (nowMs = 0) =>
+  Note.createBlank(
+    { id: "n1", owner, createdBy: creator, title: "", projectionRevision: 1 },
+    at(nowMs),
+  ).entity;
+
+const processingNote = () =>
+  Note.createFromUpload(
+    {
+      id: "n2",
+      owner,
+      createdBy: creator,
+      title: "report.pdf",
+      sourceFileId: StoredFileId.create("f1"),
+      initialContent: { status: "processing" },
+      styleMode: "preserve",
+      projectionRevision: 1,
+    },
+    T0,
+  ).entity;
+
+const codeOf = (fn: () => unknown): string | null => {
+  try {
+    fn();
+    return null;
+  } catch (error) {
+    return isBusinessRuleError(error) ? error.code : null;
+  }
+};
+
+describe("Note.createBlank", () => {
+  it("creates a private, active note with an empty ready body and default style", () => {
+    const { entity, eventDrafts } = Note.createBlank(
+      { id: "n1", owner, createdBy: creator, title: "", projectionRevision: 7 },
+      T0,
+    );
+    expect(entity.lifecycle).toBe("active");
+    expect(entity.title.value).toBe("無題");
+    expect(entity.content).toMatchObject({ status: "ready", html: "" });
+    if (entity.content.status === "ready") {
+      expect(entity.content.text).toBe("");
+      expect(entity.content.headings).toEqual([]);
+    }
+    expect(entity.visibility).toEqual({
+      status: "private",
+      dormantShareLink: null,
+    });
+    expect(entity.styleMode).toBe("default");
+    expect(entity.sourceFileId).toBeNull();
+    expect(entity.version).toBe(0);
+    expect(eventDrafts).toHaveLength(1);
+    expect(eventDrafts[0]?.type).toBe("note.created");
+    expect(eventDrafts[0]?.payload).toMatchObject({
+      noteId: "n1",
+      createdBy: "u1",
+      sourceFileId: null,
+      projectionRevision: 7,
+    });
+  });
+
+  it("keeps a provided title", () => {
+    const { entity } = Note.createBlank(
+      {
+        id: "n1",
+        owner,
+        createdBy: creator,
+        title: " My note ",
+        projectionRevision: 1,
+      },
+      T0,
+    );
+    expect(entity.title.value).toBe("My note");
+  });
+});
+
+describe("Note.createFromUpload", () => {
+  it("takes the initial content state as-is and names the title auto", () => {
+    const note = processingNote();
+    expect(note.content.status).toBe("processing");
+    expect(note.title.origin).toBe("auto");
+    expect(note.sourceFileId).toBe("f1");
+    expect(note.visibility.status).toBe("private");
+  });
+});
+
+describe("Note.rename / changeStyleMode", () => {
+  it("rename normalizes through NoteTitle and emits note.renamed", () => {
+    const { entity, eventDrafts } = Note.rename(blank(), "  ", at(1));
+    expect(entity.title.value).toBe("無題");
+    expect(entity.title.origin).toBe("manual");
+    expect(eventDrafts[0]?.type).toBe("note.renamed");
+  });
+
+  it("changeStyleMode validates the mode", () => {
+    const { entity, eventDrafts } = Note.changeStyleMode(
+      blank(),
+      "preserve",
+      at(1),
+    );
+    expect(entity.styleMode).toBe("preserve");
+    expect(eventDrafts[0]?.type).toBe("note.styleModeChanged");
+    expect(codeOf(() => Note.changeStyleMode(blank(), "shiny", at(1)))).toBe(
+      NoteErrorCode.InvalidStyleMode,
+    );
+  });
+});
+
+describe("Note visibility transitions", () => {
+  it("makeUnlisted requires a ready body", () => {
+    expect(
+      codeOf(() => Note.makeUnlisted(processingNote(), makeLink("t1"), T0)),
+    ).toBe(NoteErrorCode.CannotPublishEmptyNote);
+    expect(codeOf(() => Note.makePublic(processingNote(), T0))).toBe(
+      NoteErrorCode.CannotPublishEmptyNote,
+    );
+  });
+
+  it("makeUnlisted uses the new link when no dormant link exists, and requires one", () => {
+    const link = makeLink("t1");
+    const { entity, eventDrafts } = Note.makeUnlisted(blank(), link, at(1));
+    expect(entity.visibility).toEqual({ status: "unlisted", shareLink: link });
+    expect(eventDrafts[0]?.type).toBe("note.visibilityChanged");
+    expect(eventDrafts[0]?.payload).toMatchObject({
+      previous: "private",
+      current: "unlisted",
+    });
+    expect(codeOf(() => Note.makeUnlisted(blank(), null, at(1)))).toBe(
+      NoteErrorCode.ShareLinkRequired,
+    );
+  });
+
+  it("returning to unlisted revives the dormant link instead of the new one", () => {
+    const original = makeLink("t1", "pw");
+    const unlisted = Note.makeUnlisted(blank(), original, at(1)).entity;
+    const hidden = Note.makePrivate(unlisted, at(2)).entity;
+    expect(hidden.visibility).toMatchObject({
+      status: "private",
+      dormantShareLink: original,
+    });
+    const revived = Note.makeUnlisted(hidden, makeLink("t2"), at(3)).entity;
+    expect(revived.visibility).toEqual({
+      status: "unlisted",
+      shareLink: original,
+    });
+  });
+
+  it("makePublic strips the share password and emits visibilityChanged + published", () => {
+    const unlisted = Note.makeUnlisted(
+      blank(),
+      makeLink("t1", "pw"),
+      at(1),
+    ).entity;
+    const { entity, eventDrafts } = Note.makePublic(unlisted, at(2));
+    expect(entity.visibility.status).toBe("public");
+    if (entity.visibility.status === "public") {
+      expect(entity.visibility.publishedAt).toEqual(at(2));
+      expect(entity.visibility.dormantShareLink?.password).toBeNull();
+    }
+    expect(eventDrafts.map((d) => d.type)).toEqual([
+      "note.visibilityChanged",
+      "note.published",
+    ]);
+  });
+});
+
+describe("Note.reissueShareLink / setSharePassword", () => {
+  it("reissue keeps the existing password while swapping the token", () => {
+    const unlisted = Note.makeUnlisted(
+      blank(),
+      makeLink("t1", "pw"),
+      at(1),
+    ).entity;
+    const { entity, eventDrafts } = Note.reissueShareLink(
+      unlisted,
+      makeLink("t2"),
+      at(2),
+    );
+    expect(entity.visibility.status).toBe("unlisted");
+    if (entity.visibility.status === "unlisted") {
+      expect(entity.visibility.shareLink.tokenHash).toBe("t2");
+      expect(entity.visibility.shareLink.password?.hash).toBe("pw");
+    }
+    expect(eventDrafts[0]?.type).toBe("note.shareLinkReissued");
+  });
+
+  it("both refuse non-unlisted notes with NotUnlisted", () => {
+    expect(
+      codeOf(() => Note.reissueShareLink(blank(), makeLink("t2"), at(1))),
+    ).toBe(NoteErrorCode.NotUnlisted);
+    expect(
+      codeOf(() =>
+        Note.setSharePassword(blank(), PasswordHash.create("pw"), at(1)),
+      ),
+    ).toBe(NoteErrorCode.NotUnlisted);
+  });
+
+  it("setSharePassword stamps updatedAt=now and null clears the password", () => {
+    const unlisted = Note.makeUnlisted(blank(), makeLink("t1"), at(1)).entity;
+    const protectedNote = Note.setSharePassword(
+      unlisted,
+      PasswordHash.create("pw"),
+      at(2),
+    ).entity;
+    if (protectedNote.visibility.status === "unlisted") {
+      expect(protectedNote.visibility.shareLink.password).toEqual({
+        hash: "pw",
+        updatedAt: at(2),
+      });
+    }
+    const cleared = Note.setSharePassword(protectedNote, null, at(3)).entity;
+    if (cleared.visibility.status === "unlisted") {
+      expect(cleared.visibility.shareLink.password).toBeNull();
+    }
+  });
+});
+
+describe("Note.trash / restore", () => {
+  it("trash stamps trashedAt and purgeAfter = trashedAt + 30 days", () => {
+    const { entity, eventDrafts } = Note.trash(blank(), at(1000));
+    expect(entity.lifecycle).toBe("trashed");
+    expect(entity.trashedAt).toEqual(at(1000));
+    expect(entity.purgeAfter).toEqual(at(1000 + 30 * DAY));
+    expect(eventDrafts[0]?.type).toBe("note.trashed");
+  });
+
+  it("restore returns to active, preserving visibility and style", () => {
+    const unlisted = Note.makeUnlisted(blank(), makeLink("t1"), at(1)).entity;
+    const trashed = Note.trash(unlisted, at(2)).entity;
+    const { entity, eventDrafts } = Note.restore(trashed, at(3));
+    expect(entity.lifecycle).toBe("active");
+    expect(entity.visibility.status).toBe("unlisted");
+    expect("trashedAt" in entity).toBe(false);
+    expect(eventDrafts[0]?.type).toBe("note.restored");
+  });
+});
+
+describe("Note.moveTo", () => {
+  it("is a no-op without events for the same owner", () => {
+    const note = blank();
+    const { entity, eventDrafts } = Note.moveTo(note, owner, 3, at(1));
+    expect(entity).toBe(note);
+    expect(eventDrafts).toHaveLength(0);
+  });
+
+  it("emits note.moved with the previous owner on a real move", () => {
+    const other = NoteOwner.user(UserId.create("u2"));
+    const { entity, eventDrafts } = Note.moveTo(blank(), other, 3, at(1));
+    expect(entity.owner).toEqual(other);
+    expect(eventDrafts[0]?.type).toBe("note.moved");
+    expect(eventDrafts[0]?.payload).toMatchObject({
+      previousOwner: owner,
+      currentOwner: other,
+      routeVersion: 3,
+    });
+  });
+});
+
+describe("Note.markConversionFailed / markAwaitingIntegration", () => {
+  it("records the failure reason", () => {
+    const { entity, eventDrafts } = Note.markConversionFailed(
+      processingNote(),
+      "canceled",
+      at(1),
+    );
+    expect(entity.content).toEqual({ status: "failed", reason: "canceled" });
+    expect(eventDrafts[0]?.type).toBe("note.conversionFailed");
+  });
+
+  it("moves to awaitingIntegration", () => {
+    const { entity, eventDrafts } = Note.markAwaitingIntegration(
+      processingNote(),
+      at(1),
+    );
+    expect(entity.content).toEqual({ status: "awaitingIntegration" });
+    expect(eventDrafts[0]?.type).toBe("note.awaitingIntegration");
+  });
+});
+
+describe("NoteRevision.capture", () => {
+  it("captures a ready body", () => {
+    const revision = NoteRevision.capture(
+      { id: "r1", note: blank(), createdBy: creator, reason: "manualEdit" },
+      at(1),
+    );
+    expect(revision.noteId).toBe("n1");
+    expect(revision.reason).toBe("manualEdit");
+  });
+
+  it("rejects a non-ready body with CannotCaptureEmptyContent", () => {
+    expect(
+      codeOf(() =>
+        NoteRevision.capture(
+          {
+            id: "r1",
+            note: processingNote(),
+            createdBy: creator,
+            reason: "manualEdit",
+          },
+          at(1),
+        ),
+      ),
+    ).toBe(NoteErrorCode.CannotCaptureEmptyContent);
+  });
+});
+
+describe("Note.reconstruct", () => {
+  it("round-trips a trashed unlisted note", () => {
+    const note = Note.reconstruct({
+      id: "n1",
+      ownerType: "user",
+      ownerId: "u1",
+      createdBy: "u1",
+      title: "T",
+      titleOrigin: "manual",
+      contentStatus: "ready",
+      html: "<p>x</p>",
+      text: "x",
+      excerpt: "x",
+      headings: [{ level: 1, text: "x", anchorId: "a" }],
+      visibilityStatus: "unlisted",
+      shareLink: {
+        tokenHash: "t1",
+        cipherText: "c",
+        keyVersion: 1,
+        passwordHash: "pw",
+        passwordUpdatedAt: T0,
+        issuedAt: T0,
+      },
+      styleMode: "default",
+      lifecycle: "trashed",
+      trashedAt: at(1),
+      purgeAfter: at(1 + 30 * DAY),
+      version: 4,
+      createdAt: T0,
+      updatedAt: at(1),
+    });
+    expect(note.lifecycle).toBe("trashed");
+    expect(note.visibility.status).toBe("unlisted");
+  });
+
+  it("rejects a public note carrying a share password", () => {
+    expect(() =>
+      Note.reconstruct({
+        id: "n1",
+        ownerType: "user",
+        ownerId: "u1",
+        createdBy: "u1",
+        title: "T",
+        titleOrigin: "manual",
+        contentStatus: "ready",
+        html: "",
+        text: "",
+        excerpt: "",
+        visibilityStatus: "public",
+        publishedAt: T0,
+        dormantShareLink: {
+          tokenHash: "t1",
+          cipherText: "c",
+          keyVersion: 1,
+          passwordHash: "pw",
+          passwordUpdatedAt: T0,
+          issuedAt: T0,
+        },
+        styleMode: "default",
+        lifecycle: "active",
+        version: 1,
+        createdAt: T0,
+        updatedAt: T0,
+      }),
+    ).toThrowError();
+  });
+});

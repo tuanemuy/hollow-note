@@ -52,7 +52,7 @@ function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
     outboxRepository:
       overrides.outboxRepository ?? makeStubOutboxRepository({ deleted: 0 }),
     idempotencyStore: {
-      markProcessed: vi.fn(async () => ({ alreadyProcessed: false })),
+      markProcessed: vi.fn(async () => true),
     },
     clock: overrides.clock ?? { now: () => new Date(0) },
     idGenerator: {

@@ -167,3 +167,63 @@ steps.md ステップ1 の削除・スタブ列挙は主要ファイルを挙げ
 ### Consequences
 - 良い点: ステップ1 完了時点で typecheck / build / lint / unit テストが全て緑。CI も参照切れ script を呼ばない。
 - トレードオフ: CF 復帰（#11）時に infra/cloudflare（Pulumi + wrangler レンダリング）と CI マトリクスを git 履歴から再構築する。空シェル期間中は UoW を呼ぶ経路が実行時エラーになる（到達経路は存在しない）。
+
+## ADR-010: NoteRouteStore 系ポートは domain/note/ports ではなく application/ports に置く
+
+### Status
+Accepted
+
+### Context
+steps.md ステップ4 の対象ファイル列挙は noteRouteStore / noteRouteFanOutReader / shareTokenProtector / noteMovePort を `domain/note/ports/` に含めるが、spec/domains/note.md はこれらを「NoteRouteStore / NoteMovePort（application ports）」と明記し、`ShareTokenProtector` も application port と記述する。実際 `NoteRoute` / `NoteMovePort` は `ScopeKey`（steps.md 設計節で `application/scope.ts` に置くと確定済みのアプリケーション共通型）に型依存するため、domain 配下に置くと domain → application の依存が生じ、CLAUDE.md の内向き依存原則に反する。
+
+### Decision
+noteRouteStore / noteRouteFanOutReader / shareTokenProtector / noteMovePort の 4 ファイルは `packages/core/src/application/ports/` に置く。シグネチャは spec/domains/note.md のとおり（DOM-note-051..070 は充足）。その他の Note ポート（repository / query / projection 系）は `ScopeKey` に依存しないため steps どおり `domain/note/ports/` に置く。
+
+### Consequences
+- 良い点: 依存方向が保たれ、spec の「application ports」という位置づけとも一致する。
+- トレードオフ: steps.md のファイル列挙と物理配置が 4 ファイル分ずれる（本 ADR が根拠）。
+
+## ADR-011: 投影世代・route 版はドメインメソッドの引数として受け取る
+
+### Status
+Accepted
+
+### Context
+spec/domains/note.md のイベント表は `note.created` payload に `projectionRevision`、`note.moved` payload に `routeVersion` を含めるが、これらの値の採番者はドメインではない（projectionRevision は `NoteProjectionRevisionStore.bump`、routeVersion は `NoteRouteStore`）。一方エンティティの `createBlank` / `createFromUpload` / `moveTo` はイベントドラフトを自身で組み立てるため、値の供給経路が spec のメソッドシグネチャに存在しない。
+
+### Decision
+`Note.createBlank` / `createFromUpload` の params に `projectionRevision: number` を、`Note.moveTo` に `routeVersion: number` 引数を追加する。ユースケース（ステップ7 以降）が UoW 内で採番した値を渡す。application 側でドラフトを後から書き換える enrichment 方式は、ドラフト型の不変性と「ドメインがイベントの形の正本」という原則を崩すため採らない。
+
+### Consequences
+- 良い点: イベント payload が spec どおりの形で型付けされ、ドメインは純粋関数のまま。
+- トレードオフ: spec のメソッド表に無い引数が 2 箇所増える（spec-sync 候補としてメモ）。
+
+## ADR-012: 他ドメイン参照は最小 VO スタブで満たす（Storage / Conversion / Job）
+
+### Status
+Accepted
+
+### Context
+Note は `StoredFileId`（sourceFileId・purged payload）、`ConversionFailureReason` / `InitialContentState`（NoteFailureReason・createFromUpload）、`JobId`（NoteMovePort.excludingJobId）に型依存するが、Storage / Conversion / Job ドメインは後続スライス。steps.md は Workspace についてのみ「最小 VO を新設」と指示し、他は言及がない。
+
+### Decision
+Workspace 最小 VO と同じ扱いで `domain/storage/valueObject.ts`（StoredFileId）、`domain/conversion/valueObject.ts`（ConversionFailureReason / InitialContentState — spec/domains/conversion.md の値列挙どおり）、`domain/job/valueObject.ts`（JobId）を新設する。各ファイルの JSDoc に「本体は後続スライス」と明記。`NoteMoveSnapshot` は spec に具体的なフィールド列挙が無いため、`migrationId` のみを持つ意図的に不透明な型とし、確定は移動スライスに委ねる。
+
+### Consequences
+- 良い点: `sourceFileId: string` のような型弱化を避け、依存方向（Note → Storage/Conversion、application → Job）は spec の表どおり。
+- トレードオフ: 後続スライスがこれらのファイルを本実装で上書きする際、既存 import はそのまま生きる（互換な拡張のみ許される）。
+
+## ADR-013: ドメインイベントのデコーダーは application 層（ステップ7）に置く
+
+### Status
+Accepted
+
+### Context
+steps.md ステップ3 の記述は `domain/identity/events.ts` に「+ decoder」と読めるが、デコーダー基盤 `application/events/buildDecoder.ts` は zod と `SystemError`（application/errors）に依存する。domain からこれを import すると依存方向が逆転する。todo 参照実装でもデコーダーは `application/todo/eventDecoders` にあり、steps.md ステップ7 の対象ファイルにも `application/{identity,note}/eventDecoders.ts` が明記されている。
+
+### Decision
+ステップ3〜4 の domain `events.ts` はイベント型 + ドラフトファクトリのみとし、デコーダーはステップ7 の `application/{identity,note}/eventDecoders.ts` で実装する。
+
+### Consequences
+- 良い点: domain の framework-free / 依存方向が保たれ、todo 参照実装のパターンと一致する。
+- トレードオフ: なし（ステップ7 の担当者は eventDecoders 未実装であることを前提に作業する）。

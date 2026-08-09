@@ -8,7 +8,10 @@
 import { content } from "@repo/core/config";
 import type { EventId } from "@repo/core/domain/common/event";
 import { z } from "zod";
-import type { UnitOfWorkProvider } from "../execution/unitOfWork";
+import type {
+  GlobalUnitOfWorkProvider,
+  ScopeUnitOfWorkProvider,
+} from "../execution/unitOfWork";
 import { SystemClock } from "../ports/clock";
 import type { IdempotencyStore } from "../ports/idempotencyStore";
 import { UuidV7Generator } from "../ports/idGenerator";
@@ -81,13 +84,22 @@ function buildSharedDeps(): SharedDeps {
   };
 }
 
-const stubUnitOfWorkProvider: UnitOfWorkProvider = {
+const notWired = (name: string): Promise<never> =>
+  Promise.reject(
+    new Error(
+      `${name} is not wired yet — replaced by the memory adapters in Issue #1 step 8`,
+    ),
+  );
+
+const stubGlobalUnitOfWorkProvider: GlobalUnitOfWorkProvider = {
   run(): Promise<never> {
-    return Promise.reject(
-      new Error(
-        "UnitOfWorkProvider is not wired yet — replaced by the memory adapters in Issue #1 step 8",
-      ),
-    );
+    return notWired("GlobalUnitOfWorkProvider");
+  },
+};
+
+const stubScopeUnitOfWorkProvider: ScopeUnitOfWorkProvider = {
+  run(): Promise<never> {
+    return notWired("ScopeUnitOfWorkProvider");
   },
 };
 
@@ -103,8 +115,8 @@ const stubOutboxRepository: OutboxRepository = {
 };
 
 const stubIdempotencyStore: IdempotencyStore = {
-  async markProcessed(_id: EventId): Promise<{ alreadyProcessed: boolean }> {
-    return { alreadyProcessed: false };
+  async markProcessed(_consumer: string, _eventId: EventId): Promise<boolean> {
+    return true;
   },
 };
 
@@ -126,7 +138,8 @@ export function createNodeRequestContainer(
   return {
     ...buildSharedDeps(),
     config,
-    unitOfWorkProvider: stubUnitOfWorkProvider,
+    globalUnitOfWorkProvider: stubGlobalUnitOfWorkProvider,
+    scopeUnitOfWorkProvider: stubScopeUnitOfWorkProvider,
   };
 }
 

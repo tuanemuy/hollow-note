@@ -1,4 +1,7 @@
-import type { UnitOfWorkProvider } from "../execution/unitOfWork";
+import type {
+  GlobalUnitOfWorkProvider,
+  ScopeUnitOfWorkProvider,
+} from "../execution/unitOfWork";
 import type { Clock } from "../ports/clock";
 import type { IdempotencyStore } from "../ports/idempotencyStore";
 import type { IdGenerator } from "../ports/idGenerator";
@@ -39,7 +42,8 @@ export type SharedDeps = Readonly<{
 export type RequestContainer = SharedDeps &
   Readonly<{
     config: AppConfig;
-    unitOfWorkProvider: UnitOfWorkProvider;
+    globalUnitOfWorkProvider: GlobalUnitOfWorkProvider;
+    scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
   }>;
 
 /**

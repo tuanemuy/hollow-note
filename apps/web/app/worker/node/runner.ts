@@ -71,9 +71,11 @@ export function createNodeWorkerRunner(
     handler: async (event: DomainEvent) => {
       // Idempotency check before the handler keeps consumers from
       // double-firing on redelivery.
-      const { alreadyProcessed } =
-        await container.idempotencyStore.markProcessed(event.id);
-      if (alreadyProcessed) {
+      const firstDelivery = await container.idempotencyStore.markProcessed(
+        "node-consumer",
+        event.id,
+      );
+      if (!firstDelivery) {
         container.logger.info(
           `[queue] skipping redelivery of ${event.type} ${event.id}`,
           { eventId: event.id },
