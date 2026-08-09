@@ -1,0 +1,98 @@
+import type { AccountDeletionManifestStore } from "../../application/ports/accountDeletionManifestStore";
+import type {
+  GlobalMaintenanceRunStore,
+  MaintenanceKind,
+} from "../../application/ports/globalMaintenanceRunStore";
+import type { IdempotencyStore } from "../../application/ports/idempotencyStore";
+import type { NoteRouteFanOutReader } from "../../application/ports/noteRouteFanOutReader";
+import type { NoteRouteStore } from "../../application/ports/noteRouteStore";
+import type { OAuthStateStore } from "../../application/ports/oauthStateStore";
+import type { OutboxRepository } from "../../application/ports/outboxRepository";
+import type { ScopeCleanupAdmissionStore } from "../../application/ports/scopeCleanupAdmissionStore";
+import type { ScopeRouter } from "../../application/ports/scopeRouter";
+import type { ScopeKey } from "../../application/scope";
+import type { AuthTokenRepository } from "../../domain/identity/ports/authTokenRepository";
+import type { IdentityRepository } from "../../domain/identity/ports/identityRepository";
+import type { IdentityUniqueDirectory } from "../../domain/identity/ports/identityUniqueDirectory";
+import type { LoginAttemptStore } from "../../domain/identity/ports/loginAttemptStore";
+import type { SessionRepository } from "../../domain/identity/ports/sessionRepository";
+import type { UserBatchReader } from "../../domain/identity/ports/userBatchReader";
+import type { UserRepository } from "../../domain/identity/ports/userRepository";
+import type { UserId } from "../../domain/identity/valueObject";
+import type { LocalNoteProjectionWriter } from "../../domain/note/ports/localNoteProjectionWriter";
+import type { LocalNoteQueryService } from "../../domain/note/ports/localNoteQueryService";
+import type { NoteProjectionRevisionStore } from "../../domain/note/ports/noteProjectionRevisionStore";
+import type { NoteProjectionSnapshotReader } from "../../domain/note/ports/noteProjectionSnapshotReader";
+import type { NoteRepository } from "../../domain/note/ports/noteRepository";
+import type { NoteRevisionRepository } from "../../domain/note/ports/noteRevisionRepository";
+import type { PublicNoteProjectionWriter } from "../../domain/note/ports/publicNoteProjectionWriter";
+import type { PublicNoteQueryService } from "../../domain/note/ports/publicNoteQueryService";
+import type { WorkspaceId } from "../../domain/workspace/valueObject";
+import type { TestClock } from "./testClock";
+
+export type ConformanceBackendOptions = Readonly<{
+  maintenanceShardIds?: readonly string[];
+  maintenanceTablesByKind?: Partial<Record<MaintenanceKind, readonly string[]>>;
+}>;
+
+/** Scope-plane ports bound to one `ScopeKey`. */
+export type ScopedConformancePorts = Readonly<{
+  noteRepository: NoteRepository;
+  noteRevisionRepository: NoteRevisionRepository;
+  scopeCleanupAdmissionStore: ScopeCleanupAdmissionStore;
+  localNoteProjectionWriter: LocalNoteProjectionWriter;
+  noteProjectionSnapshotReader: NoteProjectionSnapshotReader;
+  noteProjectionRevisionStore: NoteProjectionRevisionStore;
+  localNoteQueryService: LocalNoteQueryService;
+}>;
+
+export type MembershipEdgeSeedInput = Readonly<{
+  edgeKey: string;
+  workspaceId: WorkspaceId;
+  edgeState: "active" | "removing" | "pending";
+  membershipId: string | null;
+}>;
+
+/**
+ * Everything a backend must provide to run the shared port-conformance
+ * suites. `adapters/memory` is the reference implementation; the D1/DO
+ * backend (Issue #11) implements the same factory and imports the same
+ * suites.
+ *
+ * Suites always obtain a **fresh** backend per test via the factory, so
+ * implementations must not share state across factory calls.
+ */
+export type ConformanceBackend = Readonly<{
+  clock: TestClock;
+  userRepository: UserRepository;
+  identityRepository: IdentityRepository;
+  sessionRepository: SessionRepository;
+  authTokenRepository: AuthTokenRepository;
+  identityUniqueDirectory: IdentityUniqueDirectory;
+  userBatchReader: UserBatchReader;
+  loginAttemptStore: LoginAttemptStore;
+  oauthStateStore: OAuthStateStore;
+  idempotencyStore: IdempotencyStore;
+  outboxRepository: OutboxRepository;
+  noteRouteStore: NoteRouteStore;
+  noteRouteFanOutReader: NoteRouteFanOutReader;
+  scopeRouter: ScopeRouter;
+  accountDeletionManifestStore: AccountDeletionManifestStore;
+  globalMaintenanceRunStore: GlobalMaintenanceRunStore;
+  publicNoteProjectionWriter: PublicNoteProjectionWriter;
+  publicNoteQueryService: PublicNoteQueryService;
+  forScope(scope: ScopeKey): ScopedConformancePorts;
+  /**
+   * Seeds workspace membership edges for `appendMembershipPage` until the
+   * Workspace domain exists (slice #3). Optional — suites skip the
+   * page-content cases when a backend cannot seed.
+   */
+  seedMembershipEdges?(
+    userId: UserId,
+    edges: readonly MembershipEdgeSeedInput[],
+  ): Promise<void>;
+}>;
+
+export type MakeConformanceBackend = (
+  options?: ConformanceBackendOptions,
+) => ConformanceBackend | Promise<ConformanceBackend>;

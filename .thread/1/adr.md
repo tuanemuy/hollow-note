@@ -227,3 +227,65 @@ steps.md ステップ3 の記述は `domain/identity/events.ts` に「+ decoder�
 ### Consequences
 - 良い点: domain の framework-free / 依存方向が保たれ、todo 参照実装のパターンと一致する。
 - トレードオフ: なし（ステップ7 の担当者は eventDecoders 未実装であることを前提に作業する）。
+
+## ADR-014: memory アダプターのトランザクションは「スナップショット差し替え」ではなく undo ログ + AsyncLocalStorage で実装する
+
+### Status
+Accepted
+
+### Context
+steps.md 設計節は UoW を「スナップショット + 差し替えのトランザクション模倣」と記述する。しかし全テーブルのスナップショット復元は、UoW の外で発行される原子的操作（`NoteRouteStore.reserveCreate`、`LoginAttemptStore.recordFailure`、`OAuthStateStore.take` — いずれも仕様上 UoW に属さない）が open な UoW と交錯した場合、無関係な確定済み書き込みをロールバックで失う。
+
+### Decision
+`MemoryBackend` の全テーブルを `MemTable`（mutation 時に undo エントリーを記録する Map ラッパー）とし、トランザクション文脈を `AsyncLocalStorage` で運ぶ。UoW の callback と同じ async 文脈から発行された書き込みだけが undo ログに載り、失敗時は逆順 undo で「その UoW 自身の書き込みだけ」を巻き戻す。別文脈からの書き込み（UoW 外ポート）は直接適用され、並行ロールバックの影響を受けない。`run` のネストは ALS の文脈検査で拒否し（両平面共有）、UoW 同士は promise チェーンの mutex で直列化して single-writer 分離を近似する。EventId は `collectEvents` のバッファー時に採番し、outbox flush は同一トランザクション内（flush 失敗も巻き戻る）、relayTrigger.kick は commit 後のみ。
+
+### Consequences
+- 良い点: UoW の原子性と UoW 外ポートの独立性が両立する。ネスト禁止が実行時に強制され、適合テストで検証できる。
+- トレードオフ: 行は「必ず新オブジェクトを set する」immutable-row 規約が前提（in-place 変更は undo が効かない）。mutex 直列化のため長時間の UoW は他をブロックする（メモリー実装では許容）。
+
+## ADR-015: `ValidationError` を application/errors に追加する
+
+### Status
+Accepted
+
+### Context
+`NoteRouteFanOutReader` / `PublicNoteQueryService` の契約 JSDoc は改竄・失効 cursor に `ValidationError("INVALID_PAGINATION")` を要求するが、application 層に ValidationError クラスが存在しなかった（presentation の `InputValidationError` は transport 境界専用）。ステップ7 の `authenticateSession` も `ValidationError("UNAUTHENTICATED")` を要求する。
+
+### Decision
+`application/errors.ts` に `ValidationError`（kind: "validation"、任意の `fieldErrors`）を追加する。serialized 形は presentation の `SerializedValidationError` と構造互換で、httpStatus マッピングは既存の "validation" kind に載る。
+
+### Consequences
+- 良い点: cursor 契約が実装・検証可能になり、ステップ7 が同じクラスを使える。
+- トレードオフ: transport-shape 違反（presentation）と runtime 規則違反（application）が同じ kind を共有する — コードで区別する運用。
+
+## ADR-016: GlobalMaintenanceRunStore の lane は (generation, shardId) 単位で表列を内部順走する
+
+### Status
+Accepted
+
+### Context
+`advanceOrAck` のシグネチャは (generation, shardId, completed) しか受けず、戻り値の `next` も {generation, shardId}。lane を (generation, shardId, table) の三つ組にすると、同一シャードの複数表 lane を `advanceOrAck` が識別できない。また shard / 表の集合はポート契約に現れないアダプター責務。
+
+### Decision
+lane = (generation, shardId) とし、各 lane が kind ごとに設定された表列（`maintenanceTablesByKind`、in-memory 既定: authStatePrune = auth_tokens / sessions / login_attempts / oauth_flow_states）を tableIndex で順走する。`advanceOrAck(completed: true)` は次表へ進む（next = 同一 shard）か、表が尽きれば shard を done にして次の pending shard を原子的に claim して返す。`completed: false` は claim を解放し cursor を保持する（lease 喪失からの keyset 継続）。shard 集合は `MemoryBackendOptions.maintenanceShardIds`（既定 1 shard）で、適合スイートはトポロジーを factory オプションで注入して複数 shard 入力を検証する。
+
+### Consequences
+- 良い点: ポートのシグネチャと矛盾なく「lane claim・checkpoint・shard ack + 次 claim の原子性」「active lane ≤ 6」を実装・検証できる。D1 実装も同じトポロジー注入で同スイートに載る。
+- トレードオフ: 同一シャード内の表は並列に掃けない（仕様の読みとして許容。1 continuation = 1 シャード 1 表とは整合）。
+
+## ADR-017: ScopeCleanupAdmissionStore / AccountDeletionManifestStore の状態機械の未確定点を次のとおり確定する
+
+### Status
+Accepted
+
+### Context
+spec/domains/index.md の契約文は状態機械の骨格を定めるが、(1) finalize に必要な receipt の集合、(2) phase と header 状態の対応、(3) markCompleted の前提、(4) membership page の供給元（Workspace ドメインはスライス #3）が明文化されていない。
+
+### Decision
+- `ScopeCleanupAdmissionStore.markCompleted` は 8 component（job/note/tag/storage/backup/usage/localProjection/outbox）全 ack を要求し、未達は ConflictError。barrier receipt は completed 後も `pruneCompleted`（retainUntil 経過）まで残り、writes は閉じたまま。
+- `AccountDeletionManifestStore` の finalize 必須 receipt は personalAbort を除く 5 種（personalCleanup / authResidue / externalConnections / jobHistory / uniquenessRelease）。`claimPending` は release phase のみ rollingBack を要求し、prepare / cleanup / redaction は built を要求する。`allRequiredAcknowledged` = membership の prepare+cleanup ack ∧ authorRoute の local+public redaction ack ∧ 必須 receipt 集合。`allRollbackReleased` = prepare-dispatched な membership item 全件の release ack（仕様どおり ack ではなく dispatched 基準）。compaction は成功系で allRequiredAcknowledged、rollback 系で allRollbackReleased を前提とする。
+- membership edge の供給元は memory backend のプレースホルダー表（slice #3 が正規化）。適合スイートは `ConformanceBackend.seedMembershipEdges`（任意メソッド）で seed できるバックエンドにだけ page 内容ケースを実行する。
+
+### Consequences
+- 良い点: 「工数の山」とされた 2 ストアが実行形の契約（適合テスト）として固定され、#11 / 削除スライスが同じ判定に載る。
+- トレードオフ: 上記の確定は仕様の解釈であり、削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として調整する（spec-sync 候補）。なお `SystemErrorCode` に契約 JSDoc が言う `ExternalServiceError` が存在しないため、ShareTokenProtector の失敗（未知 keyVersion / 破損暗号文）は `DataIntegrityError` に写した（spec-sync 候補としてメモ）。
