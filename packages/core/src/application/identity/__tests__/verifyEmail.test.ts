@@ -14,7 +14,7 @@ const HOUR_MS = 60 * 60 * 1000;
 // issue's checklist, so coverage focuses on the end-to-end-critical paths
 // of spec/testcases/identity/verifyEmail.md.
 describe("verifyEmail", () => {
-  it("activates the user, consumes the token, and issues a usable session", async () => {
+  it("TC-identity-294: activates the user, consumes the token, and issues a usable session", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
 
@@ -38,7 +38,7 @@ describe("verifyEmail", () => {
     expect(authenticated.userId).toBe(userId);
   });
 
-  it("succeeds at 23h59m (expiry boundary)", async () => {
+  it("TC-identity-295: succeeds at 23h59m (expiry boundary)", async () => {
     const h = createTestHarness();
     const { verificationToken } = await signUpPending(h);
     h.clock.advance(24 * HOUR_MS - 60 * 1000);
@@ -49,7 +49,7 @@ describe("verifyEmail", () => {
     expect(view.alreadyVerified).toBe(false);
   });
 
-  it("rejects at 24h with TokenExpired and keeps the user pending", async () => {
+  it("TC-identity-296: rejects at 24h with TokenExpired and keeps the user pending", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
     h.clock.advance(24 * HOUR_MS);
@@ -67,7 +67,7 @@ describe("verifyEmail", () => {
     expect(h.backend.sessions.size).toBe(0);
   });
 
-  it("returns alreadyVerified without a session for a consumed token", async () => {
+  it("TC-identity-297: returns alreadyVerified without a session for a consumed token", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
     await verifyEmail({
@@ -88,7 +88,7 @@ describe("verifyEmail", () => {
     expect(h.backend.sessions.size).toBe(sessionsAfterFirst);
   });
 
-  it("rejects an unknown token", async () => {
+  it("TC-identity-298: rejects an unknown token", async () => {
     const h = createTestHarness();
     await signUpPending(h);
     const forged = `${Buffer.from("nobody", "utf8").toString("base64url")}.secret123`;
@@ -100,7 +100,7 @@ describe("verifyEmail", () => {
     );
   });
 
-  it("rejects a token whose purpose is password_reset", async () => {
+  it("TC-identity-299: rejects a token whose purpose is password_reset", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
     const stored = h.backend.authTokens.values()[0];
@@ -123,7 +123,7 @@ describe("verifyEmail", () => {
     );
   });
 
-  it("rejects when the user has been deleted", async () => {
+  it("TC-identity-300: rejects when the user has been deleted", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
     overwriteUser(h, userId, (user) => {
@@ -148,7 +148,7 @@ describe("verifyEmail", () => {
     );
   });
 
-  it("rejects a stale-epoch token even though its physical row remains", async () => {
+  it("TC-identity-301: rejects a stale-epoch token even though its physical row remains", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
     overwriteUser(h, userId, (user) => ({
@@ -167,7 +167,7 @@ describe("verifyEmail", () => {
     expect(h.backend.sessions.size).toBe(0);
   });
 
-  it("resolves a concurrent double-consume to one winner and one alreadyVerified", async () => {
+  it("TC-identity-302/303/304: resolves a concurrent double-consume to one winner and one alreadyVerified", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
 

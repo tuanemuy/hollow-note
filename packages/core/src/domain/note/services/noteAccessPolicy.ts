@@ -45,6 +45,24 @@ export interface NoteAccessPolicy {
 
 const NO_CREDENTIAL: ShareCredential = { tokenHash: null, pass: null };
 
+// Constant-time equality over token hashes (spec/domains/note.md:
+// "復号せずに入力全体のハッシュを定数時間比較する"). Both sides are
+// hashes, so a timing leak could only reveal the stored hash — not
+// amplifiable into a token without a preimage — but the spec mandates
+// constant time, and a pure loop keeps the domain framework-free
+// (no node:crypto). The early length exit only leaks the hash length,
+// which is fixed by the hashing scheme.
+const constantTimeHashEquals = (a: TokenHash, b: TokenHash): boolean => {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+};
+
 const READ_ONLY_ACCESS: NoteAccess = {
   kind: "granted",
   canEdit: false,
@@ -106,7 +124,10 @@ export function createNoteAccessPolicy(
       if (
         note.visibility.status === "unlisted" &&
         credential.tokenHash !== null &&
-        credential.tokenHash === note.visibility.shareLink.tokenHash
+        constantTimeHashEquals(
+          credential.tokenHash,
+          note.visibility.shareLink.tokenHash,
+        )
       ) {
         const link = note.visibility.shareLink;
         if (
@@ -137,7 +158,7 @@ export function createNoteAccessPolicy(
       if (pass === null || link.password === null) {
         return false;
       }
-      if (pass.tokenHash !== link.tokenHash) {
+      if (!constantTimeHashEquals(pass.tokenHash, link.tokenHash)) {
         return false;
       }
       if (now.getTime() - pass.issuedAt.getTime() >= SharePass.ttlMs) {

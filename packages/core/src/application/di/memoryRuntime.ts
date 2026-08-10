@@ -76,6 +76,12 @@ export function createMemoryRuntime(
   const { shareTokenKeyRing, routingGenerations, ...backendOptions } = options;
   const backend = new MemoryBackend(backendOptions);
 
+  // The key ring must share the backend's lifetime: minting it per
+  // request would bind "version 1" to a fresh key on every request, so
+  // a value protected in one request could never be revealed in another
+  // (the 版→鍵 mapping of spec/presentation/index.md).
+  const keyRing = shareTokenKeyRing ?? ephemeralKeyRing();
+
   let boundTrigger: RelayTrigger | null = null;
   const relayTrigger: RelayTrigger = {
     kick(): void {
@@ -131,9 +137,7 @@ export function createMemoryRuntime(
         mailSender,
         passwordHasher: createScryptPasswordHasher(),
         secureTokenGenerator: createNodeSecureTokenGenerator(),
-        shareTokenProtector: createWebCryptoShareTokenProtector(
-          shareTokenKeyRing ?? ephemeralKeyRing(),
-        ),
+        shareTokenProtector: createWebCryptoShareTokenProtector(keyRing),
       };
     },
     createWorkerContainer(): WorkerContainer {

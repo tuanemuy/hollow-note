@@ -69,19 +69,13 @@ export function createNodeWorkerRunner(
 
   const consumerDispatch: EventDispatcher = createInMemoryQueueDispatcher({
     handler: async (event: DomainEvent) => {
-      // Idempotency check before the handler keeps consumers from
-      // double-firing on redelivery.
-      const firstDelivery = await container.idempotencyStore.markProcessed(
-        "node-consumer",
-        event.id,
-      );
-      if (!firstDelivery) {
-        container.logger.info(
-          `[queue] skipping redelivery of ${event.type} ${event.id}`,
-          { eventId: event.id },
-        );
-        return;
-      }
+      // No duplicate suppression here: `IdempotencyStore` is reserved
+      // for non-commutative subscribers, and its record must share a
+      // unit of work with the subscriber's main effect
+      // (application/ports/idempotencyStore.ts). A real consumer owns
+      // that pairing inside its own usecase — a standalone
+      // `markProcessed` in this dispatch loop would commit the record
+      // without any effect and violate the contract.
       container.logger.info(`[queue] received ${event.type} ${event.id}`, {
         event,
       });

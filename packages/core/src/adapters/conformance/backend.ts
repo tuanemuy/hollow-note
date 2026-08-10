@@ -1,3 +1,7 @@
+import type {
+  GlobalUnitOfWorkProvider,
+  ScopeUnitOfWorkProvider,
+} from "../../application/execution/unitOfWork";
 import type { AccountDeletionManifestStore } from "../../application/ports/accountDeletionManifestStore";
 import type {
   GlobalMaintenanceRunStore,
@@ -64,6 +68,14 @@ export type MembershipEdgeSeedInput = Readonly<{
  */
 export type ConformanceBackend = Readonly<{
   clock: TestClock;
+  globalUnitOfWork: GlobalUnitOfWorkProvider;
+  scopeUnitOfWork: ScopeUnitOfWorkProvider;
+  /**
+   * Relay kicks observed since backend creation. The factory wires a
+   * counting `RelayTrigger` into both unit-of-work providers so the
+   * shared UoW suite can assert "kick after commit only".
+   */
+  relayKickCount(): number;
   userRepository: UserRepository;
   identityRepository: IdentityRepository;
   sessionRepository: SessionRepository;

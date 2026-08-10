@@ -377,9 +377,32 @@ async function runCron(
     }
     if (!laneDone) {
       // Budget exhausted mid-lane; the checkpointed cursor lets the next
-      // invocation (or a continuation task) resume.
+      // invocation (or a continuation task) resume — but only after the
+      // claim is released, since `claimLanes` never returns claimed
+      // lanes and the same-owner cron renews the lease every run, so an
+      // unreleased lane would stay stuck forever.
       workRemains = true;
+      await maintenanceRunStore.advanceOrAck({
+        runId,
+        leaseOwner: PRUNE_WORKER_ID,
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: false,
+      });
     }
+  }
+
+  // Symmetric with the per-lane failure path: a budget break exits the
+  // loop with claimed-but-untouched lanes still queued. Release them
+  // (cursor intact) so the next invocation can re-claim via `claimLanes`.
+  for (const lane of laneQueue) {
+    await maintenanceRunStore.advanceOrAck({
+      runId,
+      leaseOwner: PRUNE_WORKER_ID,
+      generation: lane.generation,
+      shardId: lane.shardId,
+      completed: false,
+    });
   }
 
   if (failures > 0 && successes === 0) {

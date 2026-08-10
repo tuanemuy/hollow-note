@@ -412,3 +412,95 @@ Accepted
 ### Consequences
 - 良い点: kind タグがビルド構成（モジュールグラフの分割数）に依存せず届く。NOT_FOUND 表示がストリーミングでもフルリロードでも同一。
 - トレードオフ: `serialized` という形を偶然持つ Error を誤検出しうる（kind の閉集合検査で実質排除）。fragment 内 catch は「エラーは境界で」の原則の限定的な例外（Flight がタグを運べないことが根拠）。
+
+## ADR-026: crypto / Intl 系アダプターは当面 `adapters/memory/` に同居させる
+
+### Status
+Proposed
+
+### Context
+`passwordHasher` / `secureTokenGenerator` / `shareTokenProtector` / `timeZoneResolver` は memory バックエンドの永続化契約とは無関係な Node crypto / Intl 実装で、CLAUDE.md の「adapters はプロバイダーごとのグループ」の切り方からは `adapters/node/` 等に分かれるのが素直（レビュー W-007）。一方、本スライスのランタイムは Node + memory の一本で、いま移動しても得るものは import パスの整理だけで波及は大きい。
+
+### Decision
+移動は行わず `adapters/memory/` 同居のまま維持し、本 ADR を配置根拠の記録とする。CF スライス（Issue #11）でこれらを再利用するタイミングで `adapters/node/`（または `adapters/crypto/`）への分離を再検討する。
+
+### Consequences
+- 良い点: 本スライスでの import 波及ゼロ。分離判断を「複数バックエンドが実在する」時点まで遅延できる。
+- トレードオフ: `adapters/memory` からの crypto 実装 import は誤解を招きうる（`createNodeSecureTokenGenerator` の命名と本 ADR で緩和）。
+
+## ADR-027: パスワード認証のタイミング防御と scrypt 検証ガード
+
+### Status
+Proposed
+
+### Context
+(1) トークンハッシュ比較が非定数時間で、spec はタイミングセーフ比較を明記する（W-003）。ただし domain は framework-free で Node crypto に依存できない。(2) 未登録メール・パスワード identity なしの分岐は scrypt verify（数十 ms 級）を実行せず即 false になり、応答時間で登録有無が列挙できる（W-023）。(3) scrypt verify が保存ハッシュ由来のコストパラメータ（N/r/p/salt）を無制限に受け入れ、DB 改竄・移行事故時に 1 レコードで巨大メモリ確保が起きうる（W-024）。
+
+### Decision
+- 定数時間比較はドメイン内の純関数として実装する。長さ非依存の全バイト XOR 蓄積で crypto プリミティブを要さず、domain の framework-free を維持する。
+- ダミー verify は throttle gate の**後**に配置し、未登録メール経路の所要時間のみを登録済み経路に揃える。LOCKED / THROTTLED 応答は等時化しない — gate 自体がメール登録有無に依存せず発動するため時間差が登録有無を漏らさず、TC-220（throttle 応答の即時性）とも整合する。
+- scrypt verify に上限ガードを入れる: `N ≤ 2^17`・`r ≤ 16`・`p ≤ 4`・salt 16 バイト一致。範囲外は false を返す。将来ハッシュコストを引き上げる際はこのガード値を連動更新する。
+
+### Consequences
+- 良い点: サインアップ側の応答同一化（decoy userId）と対称なタイミング防御がサインインにも揃う。検証は defense-in-depth として DB 内容を信頼しない。
+- トレードオフ: 未登録メール経路にも scrypt 1 回分の CPU コストがかかる。ガード値はコストパラメータ変更時の連動更新ポイントが 1 箇所増える。
+
+## ADR-028: サインアウトはフル遷移で router キャッシュを物理破棄する
+
+### Status
+Proposed
+
+### Context
+TanStack Router のキャッシュ（staleTime 設定下の loader データ）は SPA 遷移では残存し、サインアウト後に前利用者のデータが表示されうる（B-001）。選択的 invalidate はキャッシュ全域の追跡が必要で漏れやすい。
+
+### Decision
+サインアウトは `window.location.assign` によるフル遷移とし、ブラウザレベルでページを破棄して router キャッシュ・メモリ上の状態を物理的に消す。
+
+### Consequences
+- 良い点: 前利用者データの残存経路が構造的に消える。invalidate 対象の列挙が不要。
+- トレードオフ: サインアウトだけ SPA 遷移でなくなる（認証境界の遷移としては許容）。
+
+## ADR-029: RSC ストリーミングフラグメントは `renderServerFragment` 経由を規約とする
+
+### Status
+Proposed
+
+### Context
+RSC fragment 内で throw されたエラーは Flight のエラーチャネルを通り、server-fn 境界の redaction（構造的 serialize + 詳細の秘匿）を迂回して生のメッセージがクライアントへ届きうる（W-021）。fragment 生成の呼び出し形が自由なままだと、経路ごとに redaction の有無が変わる。
+
+### Decision
+ストリーミングフラグメントの生成は `renderServerFragment` ヘルパー経由を規約とする。ヘルパーが redaction boundary（エラーの構造変換）とサーバーログ敷設を一手に担い、直接 `renderServerComponent` を呼ぶ経路を作らない。
+
+### Consequences
+- 良い点: server-fn 境界と同等のエラー秘匿・ログがストリーミング経路にも揃い、新規 fragment が規約に乗るだけで安全側になる。
+- トレードオフ: ヘルパー 1 段の間接化。規約は lint で強制されず、レビューで守る。
+
+## ADR-030: THROTTLED / LOCKED 表示は deadline 導出不能時に秒数を発明しない
+
+### Status
+Proposed
+
+### Context
+THROTTLED / LOCKED の待機情報は `fieldErrors.waitSeconds` / `fieldErrors.unlockAt`（ADR-021）から表示を組むが、payload の欠落・parse 失敗の可能性があり、旧実装の状態モデルはこの場合の表示が未定義だった（W-015）。
+
+### Decision
+SignInForm の状態は Phase の直和で表現し、待機表示は受信 payload から導出した deadline のみを正とする。導出・parse に失敗した場合は具体的な秒数・時刻を表示しない縮退（汎用の「時間をおいて再試行」文言）とし、クライアント側で秒数を発明・推定しない。
+
+### Consequences
+- 良い点: 不正確なカウントダウン表示（ゼロ到達後も拒否される等）が構造的に起きない。
+- トレードオフ: payload 欠落時の案内は具体性を失う（サーバーが正しい payload を返す限り到達しない経路）。
+
+## ADR-031: ConformanceBackend 契約に UoW とリレー起動の観測点を追加する
+
+### Status
+Proposed
+
+### Context
+UnitOfWork まわりの契約（トランザクション境界・イベント enqueue・リレー起動）が適合スイートの検証対象外で、バックエンド差し替え時に最重要の契約が無検証だった（W-009）。基盤スライスである本 PR で共有スイート化する判断を採った。
+
+### Decision
+`ConformanceBackend` の契約を `globalUnitOfWork` / `scopeUnitOfWork` / `relayKickCount` で拡張し、UoW の実行とリレー起動回数を適合スイートから観測可能にする。将来の D1 / DO backend はこの契約を満たすために counting RelayTrigger の配線が必要になる。
+
+### Consequences
+- 良い点: バックエンド差し替えの最重要契約（UoW + outbox 起動）が適合スイートで機械検証される。
+- トレードオフ: backend 実装の必須提供物が増え、D1/DO 側は観測用配線（counting RelayTrigger）を追加で組む必要がある。

@@ -99,11 +99,11 @@ export type ProcessOutboxEventsOptions = {
 const RELAY_WORKER_ID = crypto.randomUUID();
 
 export const DEFAULT_BATCH_SIZE = 100;
-// Quarantine after 2 publish attempts. The consumer-side queue then
-// owns redelivery (`max_retries` in wrangler.toml [env.consumer]), so
-// the total user-visible retry count is the product of the two — keep
-// this low to avoid the multiplication producing surprising attempt
-// counts.
+// Quarantine after 2 publish attempts. The consumer-side dispatcher
+// (the Node runner's in-memory queue today, a hosted queue's redelivery
+// policy on other runtimes) then owns redelivery, so the total
+// user-visible retry count is the product of the two — keep this low to
+// avoid the multiplication producing surprising attempt counts.
 export const DEFAULT_MAX_ATTEMPTS = 2;
 export const DEFAULT_LEASE_MS = 5 * 60 * 1000; // 5 min
 export const DEFAULT_MAX_ITERATIONS = 10;

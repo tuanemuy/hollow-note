@@ -1,4 +1,6 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
+import type { PasswordIdentity } from "@repo/core/domain/identity/identity";
+import type { PasswordHasher } from "@repo/core/domain/identity/ports/passwordHasher";
 import { IdentityPolicy } from "@repo/core/domain/identity/services/identityPolicy";
 import {
   type LoginAttempt,
@@ -9,6 +11,7 @@ import { Session } from "@repo/core/domain/identity/session";
 import {
   Email,
   LoginAttemptKey,
+  type PasswordHash,
   PlainPassword,
 } from "@repo/core/domain/identity/valueObject";
 import type { RequestContainer } from "../di/types";
@@ -37,6 +40,21 @@ const locked = (until: Date): ValidationError =>
   new ValidationError("LOCKED", "Too many failed attempts; sign-in is locked", {
     unlockAt: [until.toISOString()],
   });
+
+// Timing equalization against user enumeration: every failure path
+// that skips the real hash verification (unknown email, deleted user,
+// no password identity, weak input password) performs one verify
+// against a dummy hash so the response time does not reveal whether
+// the email is registered — mirroring signUpWithPassword's uniform
+// response. The dummy hash is computed lazily once per process; its
+// verify outcome is discarded.
+const DUMMY_PASSWORD = "timing-equalizer-0nly";
+let dummyHash: Promise<PasswordHash> | null = null;
+const verifyAgainstDummy = async (hasher: PasswordHasher): Promise<false> => {
+  dummyHash ??= hasher.hash(PlainPassword.create(DUMMY_PASSWORD));
+  await hasher.verify(PlainPassword.create(DUMMY_PASSWORD), await dummyHash);
+  return false;
+};
 
 const rejectionFor = (decision: ThrottleDecision): ValidationError | null => {
   switch (decision.kind) {
@@ -92,14 +110,15 @@ export async function signInWithPassword({
   const versioned = userId !== null ? await userReader.findById(userId) : null;
   const user = versioned?.entity ?? null;
 
+  let matchedIdentity: PasswordIdentity | null = null;
   const verified = await (async (): Promise<boolean> => {
     if (user === null || user.status === "deleted") {
-      return false;
+      return verifyAgainstDummy(passwordHasher);
     }
     const identities = await identityReader.listByUserId(user.id);
     const passwordIdentity = IdentityPolicy.findPassword(identities);
     if (passwordIdentity === null) {
-      return false;
+      return verifyAgainstDummy(passwordHasher);
     }
     // Sign-in must not surface WeakPassword: an input that fails the
     // password rules can never match a stored hash, so it collapses to
@@ -109,20 +128,23 @@ export async function signInWithPassword({
       plain = PlainPassword.create(input.password);
     } catch (error) {
       if (error instanceof BusinessRuleError) {
-        return false;
+        return verifyAgainstDummy(passwordHasher);
       }
       throw error;
     }
+    matchedIdentity = passwordIdentity;
     return passwordHasher.verify(plain, passwordIdentity.passwordHash);
   })();
 
   if (!verified) {
     throw await recordAndClassifyFailure(container, key, now);
   }
-  // `user` is non-null here — a missing user cannot verify.
-  if (user === null) {
+  // Both are non-null here — verification requires a user and a
+  // password identity.
+  if (user === null || matchedIdentity === null) {
     throw invalidCredentials();
   }
+  const matched: PasswordIdentity = matchedIdentity;
   if (user.status === "pending") {
     // Not recorded: the credentials are correct and a resend fixes it.
     throw new ValidationError("EMAIL_NOT_VERIFIED", "Email is not verified");
@@ -148,6 +170,19 @@ export async function signInWithPassword({
       throw fresh !== null && fresh.entity.status === "deleting"
         ? new ValidationError("ACCOUNT_DELETING", "Account is being deleted")
         : invalidCredentials();
+    }
+    // The PasswordIdentity used for verification is re-read too: if a
+    // password change committed between the hash check and this UoW,
+    // the identity's version moved and the old password must not mint
+    // a session (spec/usecases/identity.md 認証資格発行と削除開始の直列化).
+    const freshIdentities = await ctx.identityRepository.listByUserId(user.id);
+    const freshPassword = IdentityPolicy.findPassword(freshIdentities);
+    if (
+      freshPassword === null ||
+      freshPassword.id !== matched.id ||
+      freshPassword.version !== matched.version
+    ) {
+      throw invalidCredentials();
     }
     await ctx.sessionRepository.insert(
       Session.create(

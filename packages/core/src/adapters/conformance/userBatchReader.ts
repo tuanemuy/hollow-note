@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { isSystemError } from "../../application/errors";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 import { makePendingUser, userId } from "./fixtures";
 
@@ -32,6 +33,23 @@ export function describeUserBatchReaderContract(
 
     it("ADP-identity-005: an empty input resolves to an empty map", async () => {
       expect((await backend.userBatchReader.resolveMany([])).size).toBe(0);
+    });
+
+    it("ADP-identity-005: resolveMany accepts exactly 100 ids and rejects 101 (spec/domains/identity.md 入力最大100)", async () => {
+      const now = backend.clock.now();
+      await backend.userRepository.insert(makePendingUser(1, now));
+
+      const atLimit = await backend.userBatchReader.resolveMany(
+        Array.from({ length: 100 }, (_, i) => userId(i + 1)),
+      );
+      expect(atLimit.size).toBe(1);
+      expect(atLimit.get(userId(1))?.entity.id).toBe(userId(1));
+
+      await expect(
+        backend.userBatchReader.resolveMany(
+          Array.from({ length: 101 }, (_, i) => userId(i + 1)),
+        ),
+      ).rejects.toSatisfy(isSystemError);
     });
   });
 }

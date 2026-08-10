@@ -223,5 +223,20 @@ export function describeNoteRouteStoreContract(
       expect(resolved.size).toBe(1);
       expect(resolved.get(noteId(1))?.state).toBe("active");
     });
+
+    it("ADP-note-036: resolveMany accepts exactly 500 ids and rejects 501 (spec/domains/note.md 最大500)", async () => {
+      await activated(1);
+
+      const atLimit = await store.resolveMany(
+        Array.from({ length: 500 }, (_, i) => noteId(i + 1)),
+      );
+      expect(atLimit.size).toBe(1);
+      expect(atLimit.get(noteId(1))?.state).toBe("active");
+
+      await expectConflict(
+        store.resolveMany(Array.from({ length: 501 }, (_, i) => noteId(i + 1))),
+        "NOTE_ROUTE_BATCH_TOO_LARGE",
+      );
+    });
   });
 }

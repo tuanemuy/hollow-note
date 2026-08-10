@@ -218,9 +218,12 @@ export function describeAccountDeletionManifestStoreContract(
       await store().appendMembershipPage("op-live", null, 100);
     });
 
-    it("ADP-common-013/017/020: membership pages fix edges and drive prepare/release (seeded backend)", async () => {
+    it("ADP-common-013/017/020: membership pages fix edges and drive prepare/release (seeded backend)", async (ctx) => {
       const seed = backend.seedMembershipEdges;
       if (seed === undefined) {
+        // Report as skipped, not passed: a backend that cannot seed
+        // membership edges has not verified this contract.
+        ctx.skip();
         return;
       }
       await seed.call(backend, userId(1), [

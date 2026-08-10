@@ -13,7 +13,7 @@
 ### 見送った ADP 行（基準は ADR-006: 外部技術結合 + 本スライスに実行経路も TC もない）
 
 - ADP-note-001..007 — HtmlProcessor / PdfRenderer / NoteExportComposer。取り込み・編集・書き出しスライスで対応 TC とともに実装。
-- ADP-note-050..054 — NoteMovePort。移動スライスで実装。
+- ADP-note-050..054 — NoteMovePort。移動スライスで実装。`NoteMoveSnapshot` の中身（spec/domains/note.md が定める snapshot フィールド定義: Note / Revision / tag 名 / StoredFile metadata / BackupRecord / Usage delta）の実装も移動スライスに含む（W-002）。
 - ADP-identity-033/034 — SignInOAuthClient。startOAuthFlow / completeOAuthSignIn が本スライス外で、実装本体は OAuth プロトコル結合。OAuth スライスで実装。
 - いずれもポート定義（DOM 行）は本スライスで実装済み。永続化ストア系（AccountDeletionManifestStore 全 14 メソッド / ScopeCleanupAdmissionStore の削除フロー系を含む）はシナリオで実行されなくても memory 実装 + 適合テストまで実施済み。
 
@@ -60,7 +60,9 @@ plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同�
 - ShareTokenProtector の失敗エラー — 契約 JSDoc が言う `ExternalServiceError` が `SystemErrorCode` に存在せず `DataIntegrityError` に写した（ADR-017）。
 - `VerifyEmailView.sessionToken` — alreadyVerified 経路のため `string | null`（spec の出力表は表現不能 — ADR-021）。
 - `SignInView` / `VerifyEmailView` への `expiresAt` 追加検討 — 現状は presentation が `Session.ttlMs` から Cookie 期限を再導出（ADR-024）。
-- ScopeCleanupAdmissionStore / AccountDeletionManifestStore の状態機械の解釈確定分 — 削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として spec に反映（ADR-017）。
+- ScopeCleanupAdmissionStore / AccountDeletionManifestStore の状態機械の解釈確定分 — 削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として spec に反映（ADR-017）。AccountDeletionManifestStore の `allRollbackReleased` と `personalAbort` receipt の関係（spec/domains/index.md の receipt 集合解釈 — rollback の正本に receipt を含めるか release ack のみか）も削除スライスで確定する（W-026）。
+- `PROVIDER_ACCOUNT_ALREADY_LINKED` の担保箇所の確定 — memory では provider-account 一意性を IdentityUniqueDirectory 側で担保しており、IdentityRepository は契約上の `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を送出しない。OAuth スライスで repo 層に担保を実装するか、契約を IdentityUniqueDirectory 側へ寄せる旨を spec/domains/identity.md で確定（W-028）。
+- resolveMany の上限超過時挙動の spec 明文化 — UserBatchReader は `SystemError` で reject、NoteRouteStore は `ConflictError("NOTE_ROUTE_BATCH_TOO_LARGE")`。適合テストで契約化済みの挙動を spec/domains 側にも明記する（W-013）。
 - **CLAUDE.md の全面改訂**（前チャンクからの申し送り。ステップ12 に記載がないため実装せず記録）: 旧 4 ランタイム構成（Cloudflare / AWS / GCP のエントリ・DI・docs 参照）、todo 参照実装（`apps/web/app/components/todo/` / `routes/todo/` / `TodoBoard`）、`infra/*` ワークスペース、`docs/runtime_{cloudflare,aws,gcp}.md`、`serverAction` の `inputValidator` 記述が現状（Node + memory 一本、Identity / Note ドメイン、`.validator()`）と乖離している。
 - docs/backend_implementation_example.md / docs/frontend_implementation_example.md — Todo ドメイン前提の実装例のまま（`di/serverCloudflare.ts` / `TodoEvent` / `createTodoFn` 等）。パターン自体は現行実装と同型だが、例示を Identity / Note ベースへ差し替えるか「歴史的な例」と明記する改訂が必要。`.inputValidator` の記載のみ本チャンクで `.validator` へ機械的に追随済み。
 

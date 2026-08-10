@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { displayError } from "@/presentation/errorDisplay";
@@ -12,7 +11,6 @@ import { signOutFn } from "./action";
  * （placeholder 禁止）。
  */
 export function AccountMenu({ displayName }: { displayName: string }) {
-  const router = useRouter();
   const signOut = useServerFn(signOutFn);
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -42,7 +40,11 @@ export function AccountMenu({ displayName }: { displayName: string }) {
       try {
         await signOut({});
         setOpen(false);
-        router.history.push("/");
+        // Full navigation, not a router push: it tears down the router
+        // instance and its cached loader data (RSC payloads included), so
+        // nothing from the signed-out session can be served to the next
+        // user under `staleTime: Infinity`.
+        window.location.assign("/");
       } catch (e) {
         setError(displayError(e));
       }
@@ -51,10 +53,12 @@ export function AccountMenu({ displayName }: { displayName: string }) {
 
   return (
     <div ref={rootRef} className="relative">
+      {/* Disclosure, not an ARIA menu: a menu role promises full
+          arrow-key/focus management, which a one-item popover doesn't
+          implement — `aria-expanded` alone keeps the contract honest. */}
       <button
         type="button"
         aria-label="アカウントメニュー"
-        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         className="inline-flex size-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
@@ -67,16 +71,12 @@ export function AccountMenu({ displayName }: { displayName: string }) {
         </span>
       </button>
       {open ? (
-        <div
-          role="menu"
-          className="absolute top-full right-0 z-50 mt-2 min-w-44 rounded-lg border border-hairline bg-bg py-2 shadow-sm"
-        >
+        <div className="absolute top-full right-0 z-50 mt-2 min-w-44 rounded-lg border border-hairline bg-bg py-2 shadow-sm">
           <div className="truncate px-4 py-1.5 text-xs text-ink-tertiary">
             {displayName}
           </div>
           <button
             type="button"
-            role="menuitem"
             disabled={isPending}
             onClick={onSignOut}
             className="block w-full px-4 py-2 text-left text-sm text-ink transition-colors hover:bg-surface disabled:opacity-55"

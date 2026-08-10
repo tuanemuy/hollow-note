@@ -18,13 +18,6 @@ Tests are classified along two axes: **layer × purpose**. The whole suite curre
 - **Shape**: `describeXxxContract(name, makeBackend)` parameterized suites. The memory backend runs them from `adapters/memory/__tests__/`; a future D1/DO backend imports the same suites and must pass identically.
 - **Aim**: the contract text of `spec/domains/*.md` as an executable form. This is what lets usecase tests trust the memory adapters.
 
-### Property-based (fast-check)
-
-- **Targets**: value-object invariants, entity state transitions, and edge cases that fail under random input.
-- **Dependencies**: `fast-check` (devDependency).
-- **When to use**: boundary values, state transitions, invariants (monotonic increase of `version`). Keep custom arbitraries to the bare minimum, and use combinations of `fc.string()` / `fc.integer()` for anything that can be written that way.
-- **Naming**: `**/__tests__/<target>.property.test.ts`.
-
 ## Fake policy
 
 Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).

@@ -17,6 +17,7 @@ import { describePublicNoteQueryServiceContract } from "../../conformance/public
 import { describeScopeCleanupAdmissionStoreContract } from "../../conformance/scopeCleanupAdmissionStore";
 import { describeScopeRouterContract } from "../../conformance/scopeRouter";
 import { describeSessionRepositoryContract } from "../../conformance/sessionRepository";
+import { describeUnitOfWorkContract } from "../../conformance/unitOfWork";
 import { describeUserBatchReaderContract } from "../../conformance/userBatchReader";
 import { describeUserRepositoryContract } from "../../conformance/userRepository";
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
@@ -26,6 +27,7 @@ import { makeMemoryConformanceBackend } from "./conformanceBackend";
 // own factory.
 const BACKEND = "memory";
 
+describeUnitOfWorkContract(BACKEND, makeMemoryConformanceBackend);
 describeUserRepositoryContract(BACKEND, makeMemoryConformanceBackend);
 describeIdentityRepositoryContract(BACKEND, makeMemoryConformanceBackend);
 describeSessionRepositoryContract(BACKEND, makeMemoryConformanceBackend);

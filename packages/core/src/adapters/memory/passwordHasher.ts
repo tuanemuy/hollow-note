@@ -15,6 +15,16 @@ const SCRYPT_P = 1;
 const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
 
+// Upper bounds on the cost parameters parsed out of a stored hash.
+// Only our own `hash()` writes these strings, but verifying trusts DB
+// content — without a ceiling a tampered or corrupted row could make a
+// single verify allocate huge memory / burn CPU (`maxmem` scales with
+// N*r). Bounds leave generous headroom above the current cost so
+// parameters can still be raised without invalidating this guard.
+const MAX_SCRYPT_N = 2 ** 17;
+const MAX_SCRYPT_R = 16;
+const MAX_SCRYPT_P = 4;
+
 const derive = (
   password: string,
   salt: Buffer,
@@ -75,13 +85,20 @@ export function createScryptPasswordHasher(): PasswordHasher {
       if (
         !Number.isInteger(n) ||
         !Number.isInteger(r) ||
-        !Number.isInteger(p)
+        !Number.isInteger(p) ||
+        n < 2 ||
+        (n & (n - 1)) !== 0 ||
+        n > MAX_SCRYPT_N ||
+        r < 1 ||
+        r > MAX_SCRYPT_R ||
+        p < 1 ||
+        p > MAX_SCRYPT_P
       ) {
         return false;
       }
       const salt = Buffer.from(saltRaw ?? "", "base64url");
       const expected = Buffer.from(keyRaw ?? "", "base64url");
-      if (expected.length !== KEY_LENGTH) {
+      if (salt.length !== SALT_LENGTH || expected.length !== KEY_LENGTH) {
         return false;
       }
       const actual = await derive(password, salt, n, r, p);

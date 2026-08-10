@@ -433,21 +433,95 @@ describe("pruneExpiredAuthState", () => {
 
   it("TC-identity-171: resharded generations are processed with at most 6 active lanes and no cursor mixing", async () => {
     const h = createTestHarness({
-      maintenanceShardIds: Array.from({ length: 8 }, (_, i) => `shard-${i}`),
+      // The spec's maximum reshard shape: old + new generations over 16
+      // shards each = 32 lanes total.
+      maintenanceShardIds: Array.from({ length: 16 }, (_, i) => `shard-${i}`),
       routingGenerations: ["gen-old", "gen-new"],
     });
     const past = new Date(h.clock.now().getTime() - 1);
     for (let i = 0; i < 5; i += 1) {
       seedSession(h, past);
     }
-    const view = await cron(h);
-    expect(view.sessions).toBe(5);
+
+    // Observe the claimed-lane high-water mark and every requested claim
+    // limit across the whole run.
+    const realStore = h.workerContainer.maintenanceRunStore;
+    const claimLimits: number[] = [];
+    let peakActiveLanes = 0;
+    const measure = (): void => {
+      for (const run of h.backend.maintenanceRuns.values()) {
+        const active = run.lanes.filter(
+          (lane) => lane.status === "claimed",
+        ).length;
+        peakActiveLanes = Math.max(peakActiveLanes, active);
+      }
+    };
+    const spyingStore: typeof realStore = {
+      ...realStore,
+      async claimLanes(runId, leaseOwner, limit) {
+        claimLimits.push(limit);
+        const claimed = await realStore.claimLanes(runId, leaseOwner, limit);
+        measure();
+        return claimed;
+      },
+      async advanceOrAck(input) {
+        const result = await realStore.advanceOrAck(input);
+        measure();
+        return result;
+      },
+    };
+    const container = {
+      ...h.workerContainer,
+      maintenanceRunStore: spyingStore,
+    };
+
+    // 32 lanes exceed one invocation's command budget: keep invoking the
+    // same hour's cron until the run reports no remaining work.
+    let sessionsDeleted = 0;
+    for (let invocations = 0; ; invocations += 1) {
+      expect(invocations).toBeLessThan(10);
+      const view = await pruneExpiredAuthState({
+        container,
+        input: { type: "cron" },
+      });
+      sessionsDeleted += view.sessions;
+      if (!view.continued) {
+        break;
+      }
+    }
+
+    expect(sessionsDeleted).toBe(5);
     const run = h.backend.maintenanceRuns.values()[0];
     expect(run?.status).toBe("completed");
     expect(new Set(run?.lanes.map((lane) => lane.generation))).toEqual(
       new Set(["gen-old", "gen-new"]),
     );
-    expect(run?.lanes).toHaveLength(16);
+    expect(run?.lanes).toHaveLength(32);
+    // Concurrency caps from the spec: never more than 6 active lanes,
+    // and no single claim asks for more than 6.
+    expect(peakActiveLanes).toBeGreaterThan(0);
+    expect(peakActiveLanes).toBeLessThanOrEqual(6);
+    expect(claimLimits.length).toBeGreaterThan(0);
+    expect(Math.max(...claimLimits)).toBeLessThanOrEqual(6);
+  });
+
+  it("a budget-exhausted cron releases every claimed lane before returning", async () => {
+    // 32 lanes x 4 tables = 128 commands exceed the 100-command budget,
+    // so the first cron must break mid-run. Its claimed lanes have to be
+    // released on the way out: `claimLanes` never returns claimed lanes
+    // and the same-owner cron renews the lease each run, so a lane left
+    // claimed would be stuck forever.
+    const h = createTestHarness({
+      maintenanceShardIds: Array.from({ length: 16 }, (_, i) => `shard-${i}`),
+      routingGenerations: ["gen-old", "gen-new"],
+    });
+    const view = await cron(h);
+    expect(view.continued).toBe(true);
+    for (const run of h.backend.maintenanceRuns.values()) {
+      expect(
+        run.lanes.filter((lane) => lane.status === "claimed"),
+      ).toHaveLength(0);
+    }
   });
 
   it("TC-identity-172: a second cron against a live foreign lease is a no-op", async () => {

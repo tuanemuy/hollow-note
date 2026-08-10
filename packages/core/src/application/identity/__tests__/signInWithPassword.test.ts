@@ -2,6 +2,7 @@ import {
   isValidationError,
   type ValidationError,
 } from "@repo/core/application/errors";
+import { Version } from "@repo/core/domain/common/version";
 import { Identity } from "@repo/core/domain/identity/identity";
 import { LoginThrottlePolicy } from "@repo/core/domain/identity/services/loginThrottlePolicy";
 import type { DeletingUser } from "@repo/core/domain/identity/user";
@@ -83,7 +84,7 @@ describe("signInWithPassword", () => {
     expect(await h.container.loginAttemptStore.get(keyFor())).toBeNull();
   });
 
-  it("TC-identity-214 / TC-identity-229: a wrong password fails as INVALID_CREDENTIALS and the failure is always counted", async () => {
+  it("TC-identity-214: a wrong password fails as INVALID_CREDENTIALS and the failure is counted", async () => {
     const h = createTestHarness();
     await signUpVerified(h);
     const error = await captureValidation(signIn(h, "wrong-password1"));
@@ -93,10 +94,106 @@ describe("signInWithPassword", () => {
     ).toBe(1);
   });
 
+  it("TC-identity-229: a stale get that loosens the verdict still has its failure counted, so the lock catches up", async () => {
+    const h = createTestHarness();
+    await signUpVerified(h);
+    // The store is actually at the lock threshold...
+    await recordFailures(h, 10);
+
+    // ...but step 2's get returns a stale pre-lock snapshot.
+    const staleGet = {
+      ...h.container,
+      loginAttemptStore: {
+        ...h.container.loginAttemptStore,
+        async get() {
+          return { key: keyFor(), failureCount: 0, lastFailedAt: null };
+        },
+      },
+    };
+    const error = await captureValidation(
+      signInWithPassword({
+        container: staleGet,
+        input: { email: EMAIL, password: "wrong-password1", clientKey: CLIENT },
+      }),
+    );
+    // The stale get let the attempt through the gate, but step 4's
+    // atomic recordFailure counted it against the authoritative store
+    // and its post-increment re-evaluation locks in the same attempt.
+    expect(error.code).toBe("LOCKED");
+    const attempt = await h.container.loginAttemptStore.get(keyFor());
+    expect(attempt?.failureCount).toBe(11);
+    const followUp = await captureValidation(signIn(h, DEFAULT_PASSWORD));
+    expect(followUp.code).toBe("LOCKED");
+  });
+
   it("TC-identity-215: an unregistered email is indistinguishable from a wrong password", async () => {
     const h = createTestHarness();
     const error = await captureValidation(signIn(h, DEFAULT_PASSWORD));
     expect(error.code).toBe("INVALID_CREDENTIALS");
+  });
+
+  it("timing equalization: an unregistered email still runs exactly one hash verification", async () => {
+    const h = createTestHarness();
+    let verifyCalls = 0;
+    const spying = {
+      ...h.container,
+      passwordHasher: {
+        hash: h.container.passwordHasher.hash,
+        verify: async (
+          ...args: Parameters<typeof h.container.passwordHasher.verify>
+        ) => {
+          verifyCalls += 1;
+          return h.container.passwordHasher.verify(...args);
+        },
+      },
+    };
+    const error = await captureValidation(
+      signInWithPassword({
+        container: spying,
+        input: { email: EMAIL, password: DEFAULT_PASSWORD, clientKey: CLIENT },
+      }),
+    );
+    expect(error.code).toBe("INVALID_CREDENTIALS");
+    // The dummy-hash verify equalizes response time with the registered
+    // case, so the timing does not reveal whether the email exists.
+    expect(verifyCalls).toBe(1);
+  });
+
+  it("a password change committing between verification and the final UoW is denied by the version re-check", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+    const sessionsBefore = h.backend.sessions.size;
+    const racing = {
+      ...h.container,
+      passwordHasher: {
+        hash: h.container.passwordHasher.hash,
+        verify: async (
+          ...args: Parameters<typeof h.container.passwordHasher.verify>
+        ) => {
+          const result = await h.container.passwordHasher.verify(...args);
+          // Simulate a concurrent changePassword committing after the
+          // hash check but before the final UoW: the stored identity's
+          // version moves on.
+          for (const [id, identity] of h.backend.identities.entries()) {
+            if (identity.userId === userId && identity.kind === "password") {
+              h.backend.identities.set(id, {
+                ...identity,
+                version: Version.next(identity.version),
+              });
+            }
+          }
+          return result;
+        },
+      },
+    };
+    const error = await captureValidation(
+      signInWithPassword({
+        container: racing,
+        input: { email: EMAIL, password: DEFAULT_PASSWORD, clientKey: CLIENT },
+      }),
+    );
+    expect(error.code).toBe("INVALID_CREDENTIALS");
+    expect(h.backend.sessions.size).toBe(sessionsBefore);
   });
 
   it("TC-identity-216: a Google-only user cannot password sign-in", async () => {

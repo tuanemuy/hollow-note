@@ -2,7 +2,7 @@
 
 import type { NoteHeadingView } from "@repo/core/application/note/view";
 import type React from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * P-11 の本文描画。本文 HTML は Shadow DOM に隔離する（ADR 007 /
@@ -65,6 +65,10 @@ export function NoteBody({
   headings: readonly NoteHeadingView[];
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Once the effect owns the shadow root, the `<template>` leaves the
+  // render output via this flag — React unmounts it itself, so the vDOM
+  // never diverges from the real DOM (no imperative `template.remove()`).
+  const [promoted, setPromoted] = useState(false);
 
   const css =
     styleMode === "default" ? DEFAULT_CONTENT_CSS : MINIMAL_CONTENT_CSS;
@@ -73,19 +77,13 @@ export function NoteBody({
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) return;
-    const template = host.querySelector("template[shadowrootmode]");
-    if (host.shadowRoot === null && template instanceof HTMLTemplateElement) {
-      // Client-inserted markup: promote the inert template to a real
-      // shadow root (declarative parsing only happens in the HTML parser).
-      host
-        .attachShadow({ mode: "open" })
-        .appendChild(template.content.cloneNode(true));
-      template.remove();
-    } else if (host.shadowRoot !== null) {
-      // Re-render with new content (e.g. router invalidation).
-      host.shadowRoot.innerHTML = shadowHtml;
-      template?.remove();
-    }
+    // Client-inserted markup keeps the template inert (declarative
+    // parsing only happens in the HTML parser), so attach here; if the
+    // parser already attached one, reuse it. Either way the shadow root
+    // is the single write target from now on.
+    const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadowRoot.innerHTML = shadowHtml;
+    setPromoted(true);
   }, [shadowHtml]);
 
   const scrollToHeading = (anchorId: string) => {
@@ -134,7 +132,7 @@ export function NoteBody({
         </details>
       ) : null}
       <div ref={hostRef} className="relative">
-        <template {...shadowTemplateProps(shadowHtml)} />
+        {promoted ? null : <template {...shadowTemplateProps(shadowHtml)} />}
       </div>
     </>
   );

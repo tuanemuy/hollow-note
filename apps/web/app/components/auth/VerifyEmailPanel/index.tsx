@@ -54,6 +54,18 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
     })();
   }, [token, verify, router]);
 
+  // The whole flow is an automatic POST with no user action, so a live
+  // region is the only cue assistive technology gets. It must be mounted
+  // BEFORE the outcome arrives and stay mounted across phases — swapping
+  // content inside a persistent region is what makes it announce.
+  return (
+    <div role="status" aria-live="polite">
+      <PhaseResult phase={phase} />
+    </div>
+  );
+}
+
+function PhaseResult({ phase }: { phase: Phase }) {
   switch (phase.kind) {
     case "processing":
       return (
@@ -61,7 +73,6 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
           icon={<Spinner />}
           title="メールアドレスを確認しています"
           body="数秒で終わります。"
-          role="status"
         />
       );
     case "succeeded":
@@ -120,20 +131,14 @@ function Result({
   title,
   body,
   actions,
-  role,
 }: {
   icon: ReactNode;
   title: string;
   body: string;
   actions?: ReactNode;
-  role?: "status";
 }) {
   return (
-    <div
-      className="text-center"
-      role={role}
-      aria-live={role === "status" ? "polite" : undefined}
-    >
+    <div className="text-center">
       <span className="mb-5 inline-flex">{icon}</span>
       <h1 className="mb-3 text-xl font-medium tracking-tight leading-snug">
         {title}

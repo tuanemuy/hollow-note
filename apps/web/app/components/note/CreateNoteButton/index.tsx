@@ -1,6 +1,6 @@
 "use client";
 
-import { useNavigate } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useState, useTransition } from "react";
 import { displayError } from "@/presentation/errorDisplay";
@@ -18,7 +18,7 @@ export function CreateNoteButton({
   variant?: "primary" | "toolbar";
   label?: string;
 }) {
-  const navigate = useNavigate();
+  const router = useRouter();
   const create = useServerFn(createBlankNoteFn);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +28,11 @@ export function CreateNoteButton({
       try {
         const { noteId } = await create({});
         setError(null);
-        await navigate({ to: "/notes/$noteId", params: { noteId } });
+        // Reconcile before leaving: `/notes` keeps `staleTime: Infinity`
+        // in production, so without this the list cached before the
+        // mutation would never show the new note.
+        await router.invalidate();
+        await router.navigate({ to: "/notes/$noteId", params: { noteId } });
       } catch (e) {
         setError(displayError(e));
       }

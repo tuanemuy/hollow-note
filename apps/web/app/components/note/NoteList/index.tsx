@@ -102,6 +102,19 @@ function EmptyState() {
       <div className="mt-6 flex justify-center">
         <CreateNoteButton label="白紙から書く" />
       </div>
+      {/* spec/pages/index.md#P-10: 空状態はパレットの存在を伝える唯一の
+          場なので省略しない。パレット本体は後続スライスのため、案内は
+          上部バーの disabled トリガーと同じ「準備中」の表記に留める
+          （文言はモック P10-notes-empty.html の teach ブロックが正）。 */}
+      <div className="mx-auto mt-8 max-w-[380px] rounded-lg bg-surface px-4 py-3 text-left">
+        <p className="text-xs font-medium text-ink-secondary">キーボード操作</p>
+        <p className="mt-2 flex items-start gap-2 text-sm text-ink-secondary">
+          <kbd className="mt-px shrink-0 rounded-xs border border-hairline bg-bg px-1.5 py-px font-mono text-[10px] leading-[1.6] text-ink-secondary">
+            ⌘K
+          </kbd>
+          <span>検索・絞り込み・アップロード（準備中）</span>
+        </p>
+      </div>
     </div>
   );
 }

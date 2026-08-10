@@ -88,11 +88,12 @@ function RetryButton() {
   return (
     // Full reload keeps the retry safe (a fresh GET) regardless of what
     // failed — no mutation is replayed.
-    <a
-      href=""
+    <button
+      type="button"
+      onClick={() => window.location.reload()}
       className={`${buttonBase} bg-accent text-bg hover:bg-accent-hover active:bg-accent-pressed`}
     >
       再試行
-    </a>
+    </button>
   );
 }

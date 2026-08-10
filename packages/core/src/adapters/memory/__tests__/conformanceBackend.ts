@@ -6,6 +6,7 @@ import type {
   MembershipEdgeSeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
+import { createMemoryGlobalUnitOfWorkProvider } from "../globalUnitOfWork";
 import { createMemoryAccountDeletionManifestStore } from "../repositories/accountDeletionManifestStore";
 import { createMemoryAuthTokenRepository } from "../repositories/authTokenRepository";
 import { createMemoryGlobalMaintenanceRunStore } from "../repositories/globalMaintenanceRunStore";
@@ -32,6 +33,7 @@ import { createMemorySessionRepository } from "../repositories/sessionRepository
 import { createMemoryUserBatchReader } from "../repositories/userBatchReader";
 import { createMemoryUserRepository } from "../repositories/userRepository";
 import { createMemoryScopeRouter } from "../scopeRouter";
+import { createMemoryScopeUnitOfWorkProvider } from "../scopeUnitOfWork";
 import { MemoryBackend } from "../store";
 
 /** Conformance-backend factory over a fresh `MemoryBackend` per call. */
@@ -48,8 +50,21 @@ export function makeMemoryConformanceBackend(
       ? { maintenanceTablesByKind: options.maintenanceTablesByKind }
       : {}),
   });
+  let relayKicks = 0;
+  const relayTrigger = {
+    kick: () => {
+      relayKicks += 1;
+    },
+  };
   return {
     clock,
+    globalUnitOfWork: createMemoryGlobalUnitOfWorkProvider(backend, {
+      relayTrigger,
+    }),
+    scopeUnitOfWork: createMemoryScopeUnitOfWorkProvider(backend, {
+      relayTrigger,
+    }),
+    relayKickCount: () => relayKicks,
     userRepository: createMemoryUserRepository(backend),
     identityRepository: createMemoryIdentityRepository(backend),
     sessionRepository: createMemorySessionRepository(backend),

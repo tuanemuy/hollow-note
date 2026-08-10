@@ -32,6 +32,44 @@ describe("createScryptPasswordHasher (ADP-identity-027/028)", () => {
       ),
     ).toBe(false);
   });
+
+  it("rejects stored hashes with out-of-range cost parameters or salt length", async () => {
+    const password = PlainPassword.create("correct-horse-1");
+    const hash = await hasher.hash(password);
+    const [, n, r, p, salt, key] = hash.split("$");
+    const forged = (parts: {
+      n?: string;
+      r?: string;
+      p?: string;
+      salt?: string;
+    }) =>
+      [
+        "scrypt",
+        parts.n ?? n,
+        parts.r ?? r,
+        parts.p ?? p,
+        parts.salt ?? salt,
+        key,
+      ].join("$") as Parameters<typeof hasher.verify>[1];
+
+    // N over the cap / not a power of two.
+    expect(await hasher.verify(password, forged({ n: String(2 ** 20) }))).toBe(
+      false,
+    );
+    expect(await hasher.verify(password, forged({ n: "12345" }))).toBe(false);
+    // r / p over their caps.
+    expect(await hasher.verify(password, forged({ r: "64" }))).toBe(false);
+    expect(await hasher.verify(password, forged({ p: "16" }))).toBe(false);
+    // Salt length mismatch.
+    expect(
+      await hasher.verify(
+        password,
+        forged({ salt: randomBytes(8).toString("base64url") }),
+      ),
+    ).toBe(false);
+    // The unforged hash still verifies.
+    expect(await hasher.verify(password, hash)).toBe(true);
+  });
 });
 
 describe("createNodeSecureTokenGenerator (ADP-identity-029..032)", () => {
