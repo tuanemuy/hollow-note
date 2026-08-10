@@ -3,7 +3,6 @@ import { z } from "zod";
 import { SignInForm } from "@/components/auth/SignInForm";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { safeRedirectPath } from "@/presentation/auth";
-import { sanitizeRouteError } from "@/presentation/errorDisplay";
 import { buildHead } from "@/presentation/head";
 
 // `redirect` は同一オリジンのパスだけを受け入れる（オープンリダイレクト
@@ -23,17 +22,8 @@ export const Route = createFileRoute("/signin")({
     });
     return { meta, links };
   },
+  // errorComponent は置かない: 失敗は root の P-46 共通表示へ委譲する。
   component: SignInPage,
-  errorComponent: ({ error }) => (
-    <AuthLayout>
-      <div role="alert">
-        <h1 className="text-xl font-medium">エラーが発生しました</h1>
-        <p className="mt-3 text-sm text-ink-secondary">
-          {sanitizeRouteError(error)}
-        </p>
-      </div>
-    </AuthLayout>
-  ),
 });
 
 function SignInPage() {

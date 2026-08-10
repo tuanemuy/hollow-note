@@ -8,7 +8,7 @@ import {
   type UserId,
 } from "@repo/core/domain/identity/valueObject";
 import type { RequestContainer } from "../di/types";
-import { ValidationError } from "../errors";
+import { isConflictError, ValidationError } from "../errors";
 import type { ServiceArgs } from "../types";
 import type { SignUpView } from "./view";
 
@@ -28,6 +28,41 @@ export type SignUpWithPasswordInput = Readonly<{
 /** TTL of the email uniqueness reservation while the sign-up UoW runs. */
 const EMAIL_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
+/** Conflict code of `IdentityUniqueDirectory` for the `email` kind. */
+const EMAIL_CONFLICT_CODE = "EMAIL_ALREADY_USED";
+
+/**
+ * The response every already-claimed address gets: an
+ * `existingAccountNotice` mail and a decoy id, byte-identical in shape
+ * to a fresh registration. Mail failures are logged only — surfacing
+ * them would put the branch back on the wire.
+ */
+async function existingAccountResponse(
+  container: RequestContainer,
+  email: string,
+): Promise<SignUpView> {
+  const { mailSender, config, idGenerator, logger } = container;
+  try {
+    await mailSender.send({
+      to: email,
+      template: {
+        kind: "existingAccountNotice",
+        signInUrl: `${config.appUrl}/signin`,
+      },
+      locale: "ja",
+    });
+  } catch (cause) {
+    logger.error("[signUpWithPassword] existing-account notice failed", {
+      cause,
+    });
+  }
+  return {
+    userId: idGenerator.next(),
+    emailVerificationRequired: true,
+    sessionToken: null,
+  };
+}
+
 /**
  * Registers a new user with email + password and sends the verification
  * mail (UC-identity-001, spec/usecases/identity.md#signupwithpassword).
@@ -35,7 +70,10 @@ const EMAIL_RESERVATION_TTL_MS = 10 * 60 * 1000;
  * Already-registered addresses are indistinguishable from fresh ones in
  * the response: no user is created, an `existingAccountNotice` mail is
  * sent instead, and the returned `userId` is a decoy id minted for shape
- * parity only.
+ * parity only. Both the body and the cost are equalized — the password
+ * is hashed before the directory is consulted, and a `reserve` that
+ * loses the uniqueness race answers with the same notice rather than a
+ * conflict.
  *
  * Persistence choreography: `reserve` the email key → global UoW
  * (User + PasswordIdentity + email-verification AuthToken under the
@@ -71,32 +109,19 @@ export async function signUpWithPassword({
   const password = PlainPassword.create(input.password);
   DisplayName.create(input.displayName);
 
+  // Hashed before the directory lookup so both branches pay the same
+  // scrypt cost. Sign-up carries no throttle, so a hash that ran only on
+  // the fresh-email path would make response time a cheap registration
+  // oracle — the very thing the uniform body below exists to prevent.
+  const passwordHash = await passwordHasher.hash(password);
+
   const existingUserId = await identityUniqueDirectory.resolve("email", email);
   if (existingUserId !== null) {
-    try {
-      await mailSender.send({
-        to: email,
-        template: {
-          kind: "existingAccountNotice",
-          signInUrl: `${config.appUrl}/signin`,
-        },
-        locale: "ja",
-      });
-    } catch (cause) {
-      logger.error("[signUpWithPassword] existing-account notice failed", {
-        cause,
-      });
-    }
-    return {
-      userId: idGenerator.next(),
-      emailVerificationRequired: true,
-      sessionToken: null,
-    };
+    return existingAccountResponse(container, email);
   }
 
   const now = clock.now();
   const operationId = idGenerator.next();
-  const passwordHash = await passwordHasher.hash(password);
 
   const created = User.create(
     { id: idGenerator.next(), email, displayName: input.displayName },
@@ -104,13 +129,26 @@ export async function signUpWithPassword({
   );
   const user = created.entity;
 
-  await identityUniqueDirectory.reserve({
-    kind: "email",
-    normalizedKey: email,
-    userId: user.id,
-    operationId,
-    expiresAt: new Date(now.getTime() + EMAIL_RESERVATION_TTL_MS),
-  });
+  try {
+    await identityUniqueDirectory.reserve({
+      kind: "email",
+      normalizedKey: email,
+      userId: user.id,
+      operationId,
+      expiresAt: new Date(now.getTime() + EMAIL_RESERVATION_TTL_MS),
+    });
+  } catch (error) {
+    // `resolve` deliberately ignores `reserved` rows, so the lookup
+    // above misses both a concurrent sign-up and an orphaned
+    // reservation left by a failed commit (up to EMAIL_RESERVATION_TTL_MS).
+    // Letting the conflict through would answer 409 — with the
+    // normalized address in its message — exactly where the response is
+    // contracted to be indistinguishable, so it joins the notice path.
+    if (isConflictError(error) && error.code === EMAIL_CONFLICT_CODE) {
+      return existingAccountResponse(container, email);
+    }
+    throw error;
+  }
 
   const verification = secureTokenGenerator.issueForUser(user.id);
 

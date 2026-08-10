@@ -9,10 +9,13 @@ import {
   extractSerializedError,
   type SerializedError,
 } from "@/presentation/errorResponse";
+import { emailFormatError } from "../fieldValidation";
 import {
+  fieldErrorClass,
   fieldLabelClass,
   footLinkClass,
   inputClass,
+  inputInvalidClass,
   submitButtonClass,
 } from "../formStyles";
 import { signInFn } from "./action";
@@ -95,10 +98,15 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
   const router = useRouter();
   const signIn = useServerFn(signInFn);
   const emailId = useId();
+  const emailErrorId = `${emailId}-error`;
   const passwordId = useId();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+
+  const emailError = emailFormatError(email);
+  const shownEmailError = emailTouched ? emailError : null;
 
   const [state, formAction, isPending] = useActionState<
     { phase: Phase },
@@ -107,17 +115,19 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
     async () => {
       try {
         await signIn({ data: { email, password } });
-        // Drop every cached match before leaving: the router instance
-        // survives sign-in, so under `staleTime: Infinity` a previous
-        // session's RSC payloads would otherwise still be served fresh.
-        await router.invalidate();
-        // `redirectTo` is a validated same-origin path but not a typed
-        // route id, so it goes through the history API.
-        router.history.push(redirectTo);
-        return { phase: { kind: "idle" } };
       } catch (error) {
         return { phase: classify(extractSerializedError(error)) };
       }
+      // Reconcile and leave OUTSIDE the try: the session cookie is already
+      // issued, so a failure here is not a sign-in failure. Reporting it as
+      // one would invite a resubmit that fixes nothing.
+      await router.invalidate().catch(() => {
+        console.error("Sign-in reconcile failed");
+      });
+      // `redirectTo` is a validated same-origin path but not a typed
+      // route id, so it goes through the history API.
+      router.history.push(redirectTo);
+      return { phase: { kind: "idle" } };
     },
     { phase: { kind: "idle" } },
   );
@@ -134,11 +144,18 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
         : null;
   const waiting = deadline !== null && deadline.getTime() > now;
 
+  // Depends on `deadline` only — re-subscribing on every tick would tear
+  // down and rebuild the interval each second. The timer stops itself once
+  // the deadline passes.
   useEffect(() => {
-    if (deadline === null || deadline.getTime() <= now) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    if (deadline === null || deadline.getTime() <= Date.now()) return;
+    const timer = setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+      if (deadline.getTime() <= current) clearInterval(timer);
+    }, 1000);
     return () => clearInterval(timer);
-  }, [deadline, now]);
+  }, [deadline]);
 
   const disabled = isPending || waiting;
 
@@ -163,8 +180,18 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
             value={email}
             disabled={disabled}
             onChange={(e) => setEmail(e.target.value)}
-            className={inputClass}
+            onBlur={() => setEmailTouched(true)}
+            aria-invalid={shownEmailError !== null}
+            aria-describedby={emailErrorId}
+            className={`${inputClass} ${shownEmailError !== null ? inputInvalidClass : ""}`}
           />
+          <p
+            id={emailErrorId}
+            className={`${fieldErrorClass} empty:hidden`}
+            aria-live="polite"
+          >
+            {shownEmailError}
+          </p>
         </div>
         <div className="mb-4">
           <label className={fieldLabelClass} htmlFor={passwordId}>
@@ -183,7 +210,7 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
         </div>
         <button
           type="submit"
-          disabled={disabled || email.length === 0 || password.length === 0}
+          disabled={disabled || emailError !== null || password.length === 0}
           className={`${submitButtonClass} mt-2`}
         >
           {isPending ? "サインイン中..." : "サインイン"}
@@ -216,14 +243,25 @@ function PhaseAlert({
       // A known deadline that has passed means the wait is over — the
       // inputs are re-enabled, so the alert has nothing left to say.
       if (phase.until !== null && !waiting) return null;
+      // The countdown rewrites this text every second. `status` (polite)
+      // keeps it out of the assertive queue — spec/design/index.md §9
+      // reserves `assertive` for errors that must interrupt.
       return (
-        <Alert tone="warning" title="しばらく待ってからお試しください">
+        <Alert
+          tone="warning"
+          title="しばらく待ってからお試しください"
+          role="status"
+        >
           {phase.until !== null
             ? `続けて失敗したため、あと ${remainingSeconds(phase.until, now)} 秒はサインインを受け付けられません。`
             : "続けて失敗したため、サインインを一時的に受け付けられません。少し待ってからもう一度お試しください。"}
         </Alert>
       );
     case "locked":
+      // Same rule as throttled: once the known unlock time has passed the
+      // inputs are back, so an alert saying sign-in is stopped would
+      // contradict the screen.
+      if (phase.unlockAt !== null && !waiting) return null;
       return (
         <Alert tone="error" title="サインインを一時的に停止しました">
           {phase.unlockAt !== null

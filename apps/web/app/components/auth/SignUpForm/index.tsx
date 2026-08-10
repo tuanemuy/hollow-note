@@ -9,6 +9,7 @@ import {
   extractSerializedError,
   type SerializedError,
 } from "@/presentation/errorResponse";
+import { emailFormatError } from "../fieldValidation";
 import {
   fieldErrorClass,
   fieldLabelClass,
@@ -19,7 +20,6 @@ import {
 } from "../formStyles";
 import {
   DISPLAY_NAME_MAX_LENGTH,
-  EMAIL_MAX_LENGTH,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
 } from "../schema";
@@ -44,17 +44,6 @@ const initialFields: Fields = {
   displayName: "",
   termsAccepted: false,
 };
-
-function emailError(value: string): string | null {
-  if (value.length === 0) return "メールアドレスを入力してください";
-  if (
-    value.length > EMAIL_MAX_LENGTH ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-  ) {
-    return "メールアドレスの形式が正しくありません";
-  }
-  return null;
-}
 
 function passwordError(value: string): string | null {
   if (value.length === 0) return "パスワードを入力してください";
@@ -99,9 +88,13 @@ export function SignUpForm() {
   const emailId = useId();
   const passwordId = useId();
   const displayNameId = useId();
+  const emailErrorId = `${emailId}-error`;
+  const passwordErrorId = `${passwordId}-error`;
+  const passwordHintId = `${passwordId}-hint`;
+  const displayNameErrorId = `${displayNameId}-error`;
 
   const errors = {
-    email: emailError(fields.email),
+    email: emailFormatError(fields.email),
     password: passwordError(fields.password),
     displayName: displayNameError(fields.displayName),
   };
@@ -184,13 +177,19 @@ export function SignUpForm() {
             onChange={(e) => setFields({ ...fields, email: e.target.value })}
             onBlur={() => setTouched((t) => ({ ...t, email: true }))}
             aria-invalid={showError("email") !== null}
+            aria-describedby={emailErrorId}
             className={`${inputClass} ${showError("email") !== null ? inputInvalidClass : ""}`}
           />
-          {showError("email") !== null ? (
-            <p className={fieldErrorClass} aria-live="polite">
-              {showError("email")}
-            </p>
-          ) : null}
+          {/* The live region stays mounted and only its content is swapped:
+              a region that appears together with its text is not announced
+              by most screen readers. */}
+          <p
+            id={emailErrorId}
+            className={`${fieldErrorClass} empty:hidden`}
+            aria-live="polite"
+          >
+            {showError("email")}
+          </p>
         </div>
 
         <div className="mb-4">
@@ -207,6 +206,7 @@ export function SignUpForm() {
             onChange={(e) => setFields({ ...fields, password: e.target.value })}
             onBlur={() => setTouched((t) => ({ ...t, password: true }))}
             aria-invalid={showError("password") !== null}
+            aria-describedby={`${passwordErrorId} ${passwordHintId}`}
             className={`${inputClass} ${showError("password") !== null ? inputInvalidClass : ""}`}
           />
           <div className="mt-2 flex gap-[3px]" aria-hidden="true">
@@ -230,15 +230,18 @@ export function SignUpForm() {
               強度: {strength.label}
             </p>
           ) : null}
-          {showError("password") !== null ? (
-            <p className={fieldErrorClass} aria-live="polite">
-              {showError("password")}
-            </p>
-          ) : (
-            <p className="mt-2 text-xs text-ink-tertiary">
+          <p
+            id={passwordErrorId}
+            className={`${fieldErrorClass} empty:hidden`}
+            aria-live="polite"
+          >
+            {showError("password")}
+          </p>
+          {showError("password") === null ? (
+            <p id={passwordHintId} className="mt-2 text-xs text-ink-tertiary">
               {PASSWORD_MIN_LENGTH} 文字以上で、英字と数字の両方を含めます
             </p>
-          )}
+          ) : null}
         </div>
 
         <div className="mb-4">
@@ -257,13 +260,16 @@ export function SignUpForm() {
             }
             onBlur={() => setTouched((t) => ({ ...t, displayName: true }))}
             aria-invalid={showError("displayName") !== null}
+            aria-describedby={displayNameErrorId}
             className={`${inputClass} ${showError("displayName") !== null ? inputInvalidClass : ""}`}
           />
-          {showError("displayName") !== null ? (
-            <p className={fieldErrorClass} aria-live="polite">
-              {showError("displayName")}
-            </p>
-          ) : null}
+          <p
+            id={displayNameErrorId}
+            className={`${fieldErrorClass} empty:hidden`}
+            aria-live="polite"
+          >
+            {showError("displayName")}
+          </p>
         </div>
 
         <label className="my-5 flex cursor-pointer items-start gap-3">

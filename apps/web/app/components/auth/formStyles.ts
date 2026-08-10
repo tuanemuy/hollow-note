@@ -12,6 +12,4 @@ export const fieldLabelClass = "mb-2 block text-sm font-medium";
 
 export const fieldErrorClass = "mt-2 text-xs text-error";
 
-export const fieldHintClass = "mt-2 text-xs text-ink-tertiary";
-
 export const footLinkClass = "text-accent hover:underline underline-offset-3";

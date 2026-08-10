@@ -138,6 +138,14 @@ export type ExpirySweep = Readonly<{
  * outbox or sweeps expiry tables does so through the ports directly
  * without a unit of work (spec: the per-table deletes must not share a
  * cross-cutting transaction).
+ *
+ * `idempotencyStore` is therefore unreachable from the current worker
+ * roles (only the conformance suite exercises it): its contract requires
+ * `markProcessed` to share a unit of work with the subscriber's main
+ * effect (`application/ports/idempotencyStore.ts`). The unit-of-work
+ * providers get added to this container at the moment the first
+ * non-commutative consumer lands — never call `markProcessed` outside a
+ * unit of work to work around their absence.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{

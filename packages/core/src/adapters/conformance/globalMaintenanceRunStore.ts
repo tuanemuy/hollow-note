@@ -251,5 +251,30 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(swept.removed).toBe(1);
       expect(swept.nextCursor).toBeNull();
     });
+
+    it("ADP-common-031: pruneCompleted caps a page at 100 runs (spec/domains/index.md 最大100件)", async () => {
+      for (let i = 0; i < 101; i++) {
+        const runId = `run-${String(i).padStart(3, "0")}`;
+        await begin(runId, "owner-a");
+        for (const lane of await store.claimLanes(runId, "owner-a", 6)) {
+          await completeLane(runId, "owner-a", lane.generation, lane.shardId);
+        }
+      }
+
+      backend.clock.advance(30 * DAY_MS);
+      const first = await store.pruneCompleted(
+        backend.clock.now(),
+        null,
+        1_000,
+      );
+      expect(first.removed).toBe(100);
+      expect(first.nextCursor).not.toBeNull();
+      const second = await store.pruneCompleted(
+        backend.clock.now(),
+        first.nextCursor,
+        1_000,
+      );
+      expect(second).toEqual({ removed: 1, nextCursor: null });
+    });
   });
 }

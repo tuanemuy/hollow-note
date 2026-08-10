@@ -15,8 +15,12 @@
     overflow-x: hidden;
   }
 
+  /* The transparent outline is invisible in normal rendering (the ring is
+     the box-shadow) but forced-colors mode drops box-shadows and repaints
+     outlines with a system color — so this is what keeps focus visible in
+     Windows high contrast. */
   :focus-visible {
-    outline: none;
+    outline: 2px solid transparent;
     box-shadow: var(--shadow-focus);
     border-radius: inherit;
   }

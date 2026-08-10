@@ -83,11 +83,14 @@ export function AccountMenu({ displayName }: { displayName: string }) {
           >
             {isPending ? "サインアウト中..." : "サインアウト"}
           </button>
-          {error !== null ? (
-            <p className="px-4 py-1.5 text-xs text-error" aria-live="polite">
-              {error}
-            </p>
-          ) : null}
+          {/* Kept mounted for as long as the panel is open so the region
+              exists before the failure arrives. */}
+          <p
+            className="px-4 py-1.5 text-xs text-error empty:hidden"
+            aria-live="polite"
+          >
+            {error}
+          </p>
         </div>
       ) : null}
     </div>

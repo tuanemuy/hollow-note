@@ -62,9 +62,14 @@ plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同�
 - `SignInView` / `VerifyEmailView` への `expiresAt` 追加検討 — 現状は presentation が `Session.ttlMs` から Cookie 期限を再導出（ADR-024）。
 - ScopeCleanupAdmissionStore / AccountDeletionManifestStore の状態機械の解釈確定分 — 削除スライス実装時に usecase 側と齟齬が出れば適合スイート側を正として spec に反映（ADR-017）。AccountDeletionManifestStore の `allRollbackReleased` と `personalAbort` receipt の関係（spec/domains/index.md の receipt 集合解釈 — rollback の正本に receipt を含めるか release ack のみか）も削除スライスで確定する（W-026）。
 - `PROVIDER_ACCOUNT_ALREADY_LINKED` の担保箇所の確定 — memory では provider-account 一意性を IdentityUniqueDirectory 側で担保しており、IdentityRepository は契約上の `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を送出しない。OAuth スライスで repo 層に担保を実装するか、契約を IdentityUniqueDirectory 側へ寄せる旨を spec/domains/identity.md で確定（W-028）。
-- resolveMany の上限超過時挙動の spec 明文化 — UserBatchReader は `SystemError` で reject、NoteRouteStore は `ConflictError("NOTE_ROUTE_BATCH_TOO_LARGE")`。適合テストで契約化済みの挙動を spec/domains 側にも明記する（W-013）。
+- resolveMany の上限超過時挙動の spec 明文化 — UserBatchReader（100件）・NoteRouteStore（500件）とも `SystemError(DatabaseError)` で reject に統一済み（R2-TS-W-002。上限超過は呼び出し側のプログラミングエラーであり並行状態の衝突ではないため、409 になる `ConflictError` は不適当。造語だった `NOTE_ROUTE_BATCH_TOO_LARGE` は廃止）。両ポートの `Error contract:` 行と適合スイートは統一後の内容。spec/domains/{identity,note}.md 側にも明記する（W-013）。
+- spec/presentation/index.md の「公開ページのセキュリティヘッダー」表に `Cache-Control: private, no-store` を追記 — `apps/web/app/server.node.ts` の `SECURITY_HEADERS` へ既定として追加済み（R2-SC-W-203。GET server function + Cookie 認証の応答に freshness 指示が無く、前段キャッシュに他人の応答を配られうるため）。公開ノートだけ緩める方針は公開閲覧スライスで確定する。
 - **CLAUDE.md の全面改訂**（前チャンクからの申し送り。ステップ12 に記載がないため実装せず記録）: 旧 4 ランタイム構成（Cloudflare / AWS / GCP のエントリ・DI・docs 参照）、todo 参照実装（`apps/web/app/components/todo/` / `routes/todo/` / `TodoBoard`）、`infra/*` ワークスペース、`docs/runtime_{cloudflare,aws,gcp}.md`、`serverAction` の `inputValidator` 記述が現状（Node + memory 一本、Identity / Note ドメイン、`.validator()`）と乖離している。
 - docs/backend_implementation_example.md / docs/frontend_implementation_example.md — Todo ドメイン前提の実装例のまま（`di/serverCloudflare.ts` / `TodoEvent` / `createTodoFn` 等）。パターン自体は現行実装と同型だが、例示を Identity / Note ベースへ差し替えるか「歴史的な例」と明記する改訂が必要。`.inputValidator` の記載のみ本チャンクで `.validator` へ機械的に追随済み。
+- TC-identity-261 の改訂 — `spec/testcases/identity/signUpWithPassword.md` と `spec/inventory/test.md:400` は「同一メールの並行2要求で片方は `ConflictError("EMAIL_ALREADY_USED")`」と規定しているが、実装は応答同一化（ユーザー列挙耐性・AC-15）を優先し、一意性違反を `IdentityUniqueDirectory` のポート契約として保持したまま `signUpWithPassword` が一律応答へ畳む形にした。TC-261 の期待結果を「利用者はちょうど1人・応答 shape は同一・decoy id は別値」へ改訂する必要がある。
+- 文字数の数え方の明文化 — `spec/domains/note.md` の「200文字以内」「100文字以内」が UTF-16 コード単位である旨を明記する必要がある（実装は `.length` で検査し、切り詰めはサロゲートペアを割らない）。
+- `spec/design/tokens.md §10` のフォーカスリング改訂 — accent 背景でフォーカスリングが判別できない（`--shadow-focus` が同色）。トークン定義そのものの改訂（内側リング/オフセット）と `spec/design/pages/*.html` モック群への波及が必要。加えて `apps/web/app/components/auth/formStyles.ts` の `inputClass` に残る `focus:outline-none` が forced-colors 対策を打ち消す件も同じ改訂に含める。
+- `spec/pages/` の L-02 要件 — サインイン済みで `/terms` `/privacy` を訪れても「サインイン / はじめる」CTA が出続ける。`PublicShell.signedIn` は到達しない分岐だったため prop ごと削除した。サインイン済み利用者への CTA 抑止を要件とするなら spec 側で起こし直す必要がある。
 
 ## フォローアップ
 

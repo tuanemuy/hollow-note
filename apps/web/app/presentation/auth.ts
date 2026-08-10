@@ -2,6 +2,9 @@ import type { AuthenticatedUserView } from "@repo/core/application/identity/view
 import { redirect } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { errorResponseMiddleware } from "./errorResponseMiddleware";
+import { safeRedirectPath } from "./redirect";
+
+export { safeRedirectPath };
 
 /**
  * Session probe for route guards. GET because it is purely read-only
@@ -15,22 +18,6 @@ export const sessionUserFn = createServerFn({ method: "GET" })
     const { sessionUserOrNull } = await import("@/presentation/session");
     return sessionUserOrNull();
   });
-
-/**
- * Open-redirect guard: only same-origin absolute paths survive
- * (`//evil.example` and scheme-ful values fall back to `/notes`).
- */
-export function safeRedirectPath(value: string | undefined | null): string {
-  if (
-    typeof value === "string" &&
-    value.startsWith("/") &&
-    !value.startsWith("//") &&
-    !value.includes("\\")
-  ) {
-    return value;
-  }
-  return "/notes";
-}
 
 /**
  * `beforeLoad` guard for app routes: resolves the session user or

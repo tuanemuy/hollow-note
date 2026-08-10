@@ -4,6 +4,7 @@ import {
 } from "@repo/core/application/errors";
 import { isBusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "@repo/core/domain/identity/errorCode";
+import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "../../__tests__/helpers";
 import { signUpWithPassword } from "../signUpWithPassword";
@@ -203,21 +204,94 @@ describe("signUpWithPassword", () => {
     ).toBe(true);
   });
 
-  it("TC-identity-261: two concurrent sign-ups for the same email — one wins, the other conflicts", async () => {
+  it("TC-identity-261: two concurrent sign-ups for the same email — one wins, the other takes the uniform existing-email response", async () => {
     const h = createTestHarness();
-    const results = await Promise.allSettled([
+    const [first, second] = await Promise.all([
       signUpWithPassword({ container: h.container, input: VALID }),
       signUpWithPassword({ container: h.container, input: VALID }),
     ]);
 
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    const reason = (rejected[0] as PromiseRejectedResult).reason;
-    expect(isConflictError(reason)).toBe(true);
-    expect((reason as { code: string }).code).toBe("EMAIL_ALREADY_USED");
+    // Uniqueness still admits exactly one user; what changed is that the
+    // loser no longer learns it lost — a 409 in this window would expose
+    // the address the uniform response is contracted to hide.
     expect(h.backend.users.size).toBe(1);
+    expect(first.userId).not.toBe(second.userId);
+    for (const view of [first, second]) {
+      expect(view.emailVerificationRequired).toBe(true);
+      expect(view.sessionToken).toBeNull();
+    }
+    const kinds = h.mailSender
+      .sent()
+      .map((message) => message.template.kind)
+      .sort();
+    expect(kinds).toEqual(["emailVerification", "existingAccountNotice"]);
+
+    // The directory itself still raises the spec'd conflict; the usecase
+    // is the only place that folds it into the uniform response.
+    await expect(
+      h.container.identityUniqueDirectory.reserve({
+        kind: "email",
+        normalizedKey: "user@example.com",
+        userId: UserId.create("someone-else"),
+        operationId: "late-op",
+        expiresAt: new Date(h.clock.now().getTime() + 60_000),
+      }),
+    ).rejects.toSatisfy(
+      (error) => isConflictError(error) && error.code === "EMAIL_ALREADY_USED",
+    );
+  });
+
+  it("timing equalization: an already-registered email hashes the password exactly like a fresh one", async () => {
+    const h = createTestHarness();
+    let hashCalls = 0;
+    const counting = {
+      ...h.container,
+      passwordHasher: {
+        hash: async (
+          ...args: Parameters<typeof h.container.passwordHasher.hash>
+        ) => {
+          hashCalls += 1;
+          return h.container.passwordHasher.hash(...args);
+        },
+        verify: h.container.passwordHasher.verify,
+      },
+    };
+
+    await signUpWithPassword({ container: counting, input: VALID });
+    const fresh = hashCalls;
+    await signUpWithPassword({ container: counting, input: VALID });
+    const existing = hashCalls - fresh;
+
+    // Sign-up carries no throttle, so an unhashed existing-email branch
+    // would make response time a free registration oracle.
+    expect(fresh).toBe(1);
+    expect(existing).toBe(fresh);
+  });
+
+  it("an orphaned email reservation answers with the uniform notice instead of a conflict", async () => {
+    const h = createTestHarness();
+    // What a sign-up whose commit failed and whose release was lost
+    // leaves behind for up to the 10-minute reservation TTL. `resolve`
+    // ignores reserved rows, so the lookup misses and `reserve` is where
+    // the collision surfaces.
+    await h.container.identityUniqueDirectory.reserve({
+      kind: "email",
+      normalizedKey: "user@example.com",
+      userId: UserId.create("orphan-user"),
+      operationId: "orphan-op",
+      expiresAt: new Date(h.clock.now().getTime() + 10 * 60 * 1000),
+    });
+
+    const view = await signUpWithPassword({
+      container: h.container,
+      input: VALID,
+    });
+    expect(view.emailVerificationRequired).toBe(true);
+    expect(view.sessionToken).toBeNull();
+    expect(h.backend.users.size).toBe(0);
+    expect(h.mailSender.sent().map((message) => message.template.kind)).toEqual(
+      ["existingAccountNotice"],
+    );
   });
 
   it("TC-identity-262: a commit failure after the reservation releases it, so the email is not permanently blocked", async () => {

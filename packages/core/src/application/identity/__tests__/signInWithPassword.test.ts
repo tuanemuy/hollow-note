@@ -50,6 +50,26 @@ const captureValidation = async (
   throw new Error("expected a ValidationError");
 };
 
+/** Container whose hasher counts `verify` calls but behaves normally. */
+function countingVerify(h: TestHarness) {
+  let calls = 0;
+  return {
+    container: {
+      ...h.container,
+      passwordHasher: {
+        hash: h.container.passwordHasher.hash,
+        verify: async (
+          ...args: Parameters<typeof h.container.passwordHasher.verify>
+        ) => {
+          calls += 1;
+          return h.container.passwordHasher.verify(...args);
+        },
+      },
+    },
+    verifyCalls: () => calls,
+  };
+}
+
 async function recordFailures(
   h: TestHarness,
   count: number,
@@ -132,31 +152,96 @@ describe("signInWithPassword", () => {
     expect(error.code).toBe("INVALID_CREDENTIALS");
   });
 
-  it("timing equalization: an unregistered email still runs exactly one hash verification", async () => {
+  it("timing equalization: the unregistered and registered failure paths run the same number of hash verifications", async () => {
     const h = createTestHarness();
-    let verifyCalls = 0;
-    const spying = {
+    await signUpVerified(h);
+
+    // Equalization is a comparison, not an absolute: asserting only the
+    // unregistered side would stay green if the registered side started
+    // verifying twice, which is exactly how the oracle reopens.
+    const registered = countingVerify(h);
+    const registeredError = await captureValidation(
+      signInWithPassword({
+        container: registered.container,
+        input: { email: EMAIL, password: "wrong-password1", clientKey: CLIENT },
+      }),
+    );
+    const unknown = countingVerify(h);
+    const unknownError = await captureValidation(
+      signInWithPassword({
+        container: unknown.container,
+        input: {
+          email: "nobody@example.com",
+          password: "wrong-password1",
+          clientKey: CLIENT,
+        },
+      }),
+    );
+
+    expect(registeredError.code).toBe("INVALID_CREDENTIALS");
+    expect(unknownError.code).toBe("INVALID_CREDENTIALS");
+    expect(unknown.verifyCalls()).toBe(registered.verifyCalls());
+    expect(unknown.verifyCalls()).toBe(1);
+  });
+
+  it("a failing dummy hash still answers INVALID_CREDENTIALS and is not memoized", async () => {
+    const h = createTestHarness();
+    let hashCalls = 0;
+    const flaky = {
       ...h.container,
       passwordHasher: {
-        hash: h.container.passwordHasher.hash,
-        verify: async (
-          ...args: Parameters<typeof h.container.passwordHasher.verify>
+        hash: async (
+          ...args: Parameters<typeof h.container.passwordHasher.hash>
         ) => {
-          verifyCalls += 1;
-          return h.container.passwordHasher.verify(...args);
+          hashCalls += 1;
+          if (hashCalls === 1) {
+            throw new Error("scrypt could not allocate memory");
+          }
+          return h.container.passwordHasher.hash(...args);
         },
+        verify: h.container.passwordHasher.verify,
       },
     };
-    const error = await captureValidation(
+
+    // A rejected derivation must not escape: if it did, the unregistered
+    // paths would answer 500 while known emails answer 422 — the
+    // enumeration oracle the equalization exists to close, pinned for
+    // the hasher's lifetime by the memo.
+    const first = await captureValidation(
       signInWithPassword({
-        container: spying,
+        container: flaky,
         input: { email: EMAIL, password: DEFAULT_PASSWORD, clientKey: CLIENT },
       }),
     );
-    expect(error.code).toBe("INVALID_CREDENTIALS");
-    // The dummy-hash verify equalizes response time with the registered
-    // case, so the timing does not reveal whether the email exists.
-    expect(verifyCalls).toBe(1);
+    expect(first.code).toBe("INVALID_CREDENTIALS");
+
+    const second = await captureValidation(
+      signInWithPassword({
+        container: flaky,
+        input: {
+          email: EMAIL,
+          password: DEFAULT_PASSWORD,
+          clientKey: "client-b",
+        },
+      }),
+    );
+    expect(second.code).toBe("INVALID_CREDENTIALS");
+    // The failure freed the memo slot, so the second attempt re-derived.
+    expect(hashCalls).toBe(2);
+
+    const third = await captureValidation(
+      signInWithPassword({
+        container: flaky,
+        input: {
+          email: EMAIL,
+          password: DEFAULT_PASSWORD,
+          clientKey: "client-c",
+        },
+      }),
+    );
+    expect(third.code).toBe("INVALID_CREDENTIALS");
+    // ...and the successful derivation is memoized from then on.
+    expect(hashCalls).toBe(2);
   });
 
   it("a password change committing between verification and the final UoW is denied by the version re-check", async () => {

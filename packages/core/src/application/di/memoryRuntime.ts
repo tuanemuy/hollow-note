@@ -92,6 +92,11 @@ export function createMemoryRuntime(
   // The logger is what makes the dev flow completable: the verification
   // link is only observable through the `mail.sent` log line.
   const mailSender = createMemoryMailSender(ConsoleLogger);
+  // One hasher per runtime, not per request: `signInWithPassword` memoizes
+  // its timing-equalization dummy hash per hasher instance, so a fresh
+  // instance on every request would re-derive that scrypt hash on every
+  // unauthenticated attempt.
+  const passwordHasher = createScryptPasswordHasher();
   const sessionRepository = createMemorySessionRepository(backend);
   const authTokenRepository = createMemoryAuthTokenRepository(backend);
   const loginAttemptStore = createMemoryLoginAttemptStore(backend);
@@ -135,7 +140,7 @@ export function createMemoryRuntime(
         authTokenReader: authTokenRepository,
         noteReaderFor,
         mailSender,
-        passwordHasher: createScryptPasswordHasher(),
+        passwordHasher,
         secureTokenGenerator: createNodeSecureTokenGenerator(),
         shareTokenProtector: createWebCryptoShareTokenProtector(keyRing),
       };

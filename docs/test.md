@@ -51,4 +51,4 @@ Coverage numbers are not enforced. Rules of thumb:
 - **Domain**: aim for ~100%. Logic is local and easy to fully cover, and a missing test translates directly into a broken invariant.
 - **Application**: per spec TC row — the implemented rows of `spec/testcases/` are the checklist, named in the tests.
 - **Adapters**: per conformance-suite case; add a case to the shared suite (not a backend-local test) when a contract gap is found.
-- **Frontend**: the bare minimum. The server function's wire-type boundary and UI logic are broadly covered by the framework primitives.
+- **Frontend**: the bare minimum. The server function's wire-type boundary and UI logic are broadly covered by the framework primitives. The exception is the pure functions of `apps/web/app/presentation/` (status mapping, redaction, the open-redirect guard): no framework is involved and they encode closed spec lists, so they carry unit tests under `apps/web/app/presentation/__tests__/`.

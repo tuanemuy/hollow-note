@@ -421,7 +421,7 @@ function PostPage() {
 - **Place the shared shell (Header / Sidebar / Dialog mount, etc.) in the parent route's `component`. Do not include the shell in the arguments to the leaf's `renderServerComponent(...)`.** If you do, the shell gets swapped out along with the entire RSC tree and remounted on every transition, and client state such as sidebar open/close is lost and flickers. Pass only leaf-specific content into the RSC payload. Reference implementations: `apps/web/app/components/todo/TodoShell/` and `apps/web/app/routes/todo/{route,about,index}.tsx`.
 - Since `staleTime` remains in effect even after navigation, the cache can be reused when you return to the same URL.
 - When you want to force a refetch, use `useRouter().invalidate()` on the client.
-- Input validation uses `.validator(...)`. **Do not use the old API `.validator(...)`.**
+- Input validation uses `.validator(...)`. **Do not use the old API `.inputValidator(...)`.**
 
 ## Shared server logic (authentication helper)
 
@@ -871,7 +871,7 @@ try {
 ## Summary: must-haves for the current `@tanstack/react-start`
 
 - Vite: the three-plugin setup of `tanstackStart({ srcDirectory: "app", rsc: { enabled: true } })` + `rsc()` (`@vitejs/plugin-rsc`) + `viteReact()`
-- Server function validation: **`.validator(...)`** (`.validator(...)` is the old API)
+- Server function validation: **`.validator(...)`** (`.inputValidator(...)` is the old API)
 - RSC high-level APIs: `renderServerComponent` / `createCompositeComponent` / `CompositeComponent`
 - server-only boundary: place `import "@tanstack/react-start/server-only";` at the top of the DI container and server helpers. Do not place it in server function definition files that client components import; enter the server-only side via a dynamic import inside the handler
 - Calling a server function from the client: **wrap it with `useServerFn(fn)`** (with automatic redirect handling)

@@ -1,13 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { User } from "../../domain/identity/user";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
-import {
-  makeBlankNote,
-  makePendingUser,
-  noteId,
-  scopeOf,
-  userId,
-} from "./fixtures";
+import { makeBlankNote, noteId, scopeOf, userId } from "./fixtures";
 
 /**
  * Shared conformance suite for the unit-of-work planes (ADP-common-003).
@@ -15,7 +9,15 @@ import {
  * Covers: commit of entity writes plus the transactional outbox flush
  * (relay kicked after commit only), full rollback of a failed callback
  * including buffered events, scope binding, the nesting prohibition
- * (same-plane and cross-plane), and serialization of concurrent runs.
+ * (same-plane and cross-plane), and the observable outcome of concurrent
+ * runs.
+ *
+ * Deliberately backend-agnostic about *how* concurrency is resolved: the
+ * contract is per-run atomicity and one relay kick per commit, never a
+ * callback interleaving order. The in-memory backend serializes runs
+ * behind a mutex (ADR-014); a real transactional backend does not, and
+ * both satisfy this suite. Order-sensitive assertions belong in a
+ * backend-local test (`adapters/memory/__tests__/unitOfWork.test.ts`).
  */
 export function describeUnitOfWorkContract(
   backendName: string,
@@ -27,6 +29,16 @@ export function describeUnitOfWorkContract(
     beforeEach(async () => {
       backend = await makeBackend();
     });
+
+    const createUser = (n: number, now: Date) =>
+      User.create(
+        {
+          id: `user-${n}`,
+          email: `u${n}@example.com`,
+          displayName: `User ${n}`,
+        },
+        now,
+      );
 
     it("ADP-common-003: commits entity writes and flushes collected events to the outbox, then kicks the relay", async () => {
       const now = backend.clock.now();
@@ -133,32 +145,51 @@ export function describeUnitOfWorkContract(
       ).toBeNull();
     });
 
-    it("ADP-common-003: concurrent unit of works serialize instead of interleaving", async () => {
+    it("ADP-common-003: concurrent unit of works each commit atomically and kick the relay once", async () => {
       const now = backend.clock.now();
-      const order: string[] = [];
 
       await Promise.all([
         backend.globalUnitOfWork.run(async (ctx) => {
-          order.push("first:start");
-          await ctx.userRepository.insert(makePendingUser(1, now));
+          const created = createUser(1, now);
+          await ctx.userRepository.insert(created.entity);
+          ctx.collectEvents(created.eventDrafts);
           await Promise.resolve();
-          order.push("first:end");
         }),
         backend.globalUnitOfWork.run(async (ctx) => {
-          order.push("second:start");
-          await ctx.userRepository.insert(makePendingUser(2, now));
-          order.push("second:end");
+          const created = createUser(2, now);
+          await ctx.userRepository.insert(created.entity);
+          ctx.collectEvents(created.eventDrafts);
         }),
       ]);
 
-      expect(order).toEqual([
-        "first:start",
-        "first:end",
-        "second:start",
-        "second:end",
-      ]);
       expect(await backend.userRepository.findById(userId(1))).not.toBeNull();
       expect(await backend.userRepository.findById(userId(2))).not.toBeNull();
+      expect(backend.relayKickCount()).toBe(2);
+    });
+
+    it("ADP-common-003: a failed run concurrent with a successful one rolls back only its own writes", async () => {
+      const now = backend.clock.now();
+
+      const results = await Promise.allSettled([
+        backend.globalUnitOfWork.run(async (ctx) => {
+          const created = createUser(1, now);
+          await ctx.userRepository.insert(created.entity);
+          ctx.collectEvents(created.eventDrafts);
+          await Promise.resolve();
+          throw new Error("boom");
+        }),
+        backend.globalUnitOfWork.run(async (ctx) => {
+          const created = createUser(2, now);
+          await ctx.userRepository.insert(created.entity);
+          ctx.collectEvents(created.eventDrafts);
+        }),
+      ]);
+
+      expect(results[0]?.status).toBe("rejected");
+      expect(results[1]?.status).toBe("fulfilled");
+      expect(await backend.userRepository.findById(userId(1))).toBeNull();
+      expect(await backend.userRepository.findById(userId(2))).not.toBeNull();
+      expect(backend.relayKickCount()).toBe(1);
     });
   });
 }

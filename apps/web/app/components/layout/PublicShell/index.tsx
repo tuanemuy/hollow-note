@@ -9,11 +9,9 @@ import { BrandMark } from "@/components/ui/BrandMark";
  */
 type PublicShellProps = {
   children: ReactNode;
-  /** サインイン済みで訪れた場合にアプリへ戻る導線を出す。 */
-  signedIn?: boolean;
 };
 
-export function PublicShell({ children, signedIn = false }: PublicShellProps) {
+export function PublicShell({ children }: PublicShellProps) {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="flex h-[var(--bar-height)] items-center gap-2 px-4 sm:px-6">
@@ -26,29 +24,18 @@ export function PublicShell({ children, signedIn = false }: PublicShellProps) {
           <span className="text-sm font-medium">hollow</span>
         </Link>
         <div className="min-w-2 flex-1" />
-        {signedIn ? (
-          <Link
-            to="/notes"
-            className="inline-flex h-8 items-center rounded-pill bg-accent px-4 text-sm font-medium text-bg transition-colors hover:bg-accent-hover"
-          >
-            ノート一覧へ
-          </Link>
-        ) : (
-          <>
-            <Link
-              to="/signin"
-              className="inline-flex h-8 items-center rounded-md px-3 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
-            >
-              サインイン
-            </Link>
-            <Link
-              to="/signup"
-              className="inline-flex h-8 items-center rounded-pill bg-accent px-4 text-sm font-medium text-bg transition-colors hover:bg-accent-hover"
-            >
-              はじめる
-            </Link>
-          </>
-        )}
+        <Link
+          to="/signin"
+          className="inline-flex h-8 items-center rounded-md px-3 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
+        >
+          サインイン
+        </Link>
+        <Link
+          to="/signup"
+          className="inline-flex h-8 items-center rounded-pill bg-accent px-4 text-sm font-medium text-bg transition-colors hover:bg-accent-hover"
+        >
+          はじめる
+        </Link>
       </header>
       <div className="flex-1">{children}</div>
       <footer className="border-t border-hairline">

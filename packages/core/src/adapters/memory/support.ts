@@ -91,10 +91,10 @@ export function createOccRepository<
 }
 
 /**
- * One bounded pass of a `(expiresAt, id)`-ordered expiry sweep. Rows
- * whose `expiresAt <= now` are deleted in id-keyset order starting after
- * `cursor`; the keyset (never an OFFSET) keeps concurrent deletions from
- * skipping rows.
+ * One bounded pass of an expiry sweep. `expiresAt <= now` is a filter
+ * predicate, not part of the ordering: rows are ordered and paged by the
+ * table key alone, starting after `cursor`. The keyset (never an OFFSET)
+ * keeps concurrent deletions from skipping rows.
  */
 export function deleteExpiredPage<V>(
   table: MemTable<V>,

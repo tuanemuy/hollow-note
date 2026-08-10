@@ -504,3 +504,100 @@ UnitOfWork まわりの契約（トランザクション境界・イベント en
 ### Consequences
 - 良い点: バックエンド差し替えの最重要契約（UoW + outbox 起動）が適合スイートで機械検証される。
 - トレードオフ: backend 実装の必須提供物が増え、D1/DO 側は観測用配線（counting RelayTrigger）を追加で組む必要がある。
+
+## ADR-032: 「文字数」は UTF-16 コード単位で数え、切り詰めはサロゲートペアを割らない
+
+### Status
+Proposed
+
+### Context
+spec/domains/note.md は Excerpt を「200 文字」、`NoteHeading.text` を「100 文字以内（超過分は切り捨てる）」と書くが、「文字」の単位を定義していない。実装は `String.prototype.slice`（UTF-16 コード単位）で切っていたため、境界に非 BMP 文字が来ると単独サロゲートで終わる文字列を作れた（R2-DM-W-001）。この値は `NoteProjectionEntry.excerpt` として読み取りモデル・FTS・`highlightedExcerpt` の材料になり、単独サロゲートは正当な UTF-8 に符号化できないため保存・シリアライズ時に破損しうる。修正の選択肢は (a) コードポイント単位へ寄せる、(b) コード単位を維持しつつ境界補正のみ入れる、の 2 つだった。
+
+### Decision
+(b) を採る。数え方の正は UTF-16 コード単位のままとし、切り詰め（`Excerpt.fromText` / `NoteHeading.create`）は末尾が high surrogate になった場合に 1 単位戻す補正を入れて、常に妥当な文字列を返す。(a) を採らないのは、`Excerpt.create` の上限検査が `value.length`（コード単位）である以上、切り詰めだけコードポイント単位にすると絵文字主体の抜粋が最大でコード単位 400 に達し、`Excerpt.create` 側で `ContentTooLarge` を投げる新たな欠陥が生まれるため。上限検査ごとコードポイント単位へ寄せる案は、行サイズ保証（ADR-017）の根拠であるバイト長上界の再計算を伴うため本スライスでは採らない。
+
+### Consequences
+- 良い点: 値オブジェクトの「常に妥当な値を返す」責務が守られ、切り詰めと上限検査の単位が一致する。バイト長上界の議論に触れない最小の修正で済む。
+- トレードオフ: 絵文字主体のテキストでは「200 文字」が見かけ上 100 字程度になる（コード単位という定義に忠実な帰結）。spec に単位の明記がないままなので、単位を「UTF-16 コード単位」と書き足すのは spec-sync 候補。
+
+## ADR-033: サインアップの一意性違反は応答に出さない — 契約はポート、畳み込みはユースケース
+
+### Status
+Proposed
+
+### Context
+`signUpWithPassword` は既登録メールでも新規メールでも同一応答（通知メール送信 + decoy userId）を返すことを docstring で保証し、AC-15（ユーザー列挙耐性）の根拠になっている。ところが `IdentityUniqueDirectory.resolve` は `reserved` 行を返さない設計のため、直前のサインアップが UoW 失敗で reservation（TTL 10 分）を残した場合や同一メールの並行 2 要求では decoy 経路に入らず、`reserve` の `ConflictError("EMAIL_ALREADY_USED")` がそのまま応答へ透過する（R2-SC-W-204）。一方 `spec/testcases/identity/signUpWithPassword.md` と `spec/inventory/test.md:400` の TC-identity-261 は、まさにこの並行 2 要求で片方が `ConflictError("EMAIL_ALREADY_USED")` になることを期待値として規定しており、docstring の保証・AC-15 と正面から衝突していた。
+
+### Decision
+一意性契約とその応答表現を層で分担する。
+
+- `IdentityUniqueDirectory` は従来どおり `reserve` の衝突で `ConflictError("EMAIL_ALREADY_USED")` を投げる。これはポート契約として保持し、適合スイートで検証し続ける（アダプター差し替えの検証対象として必要）。
+- `signUpWithPassword` はこれを捕捉し、既登録メール経路と同一の応答（`existingAccountNotice` + decoy userId）へ畳む。列挙耐性はユースケース層の責務とする。
+
+TC-identity-261 の期待値は「並行 2 要求のいずれも同一応答を返し、実ユーザーは 1 件だけ作られる」へ改訂が必要。spec/testcases と spec/inventory の該当行の改訂は spec-sync 対象として記録する。
+
+### Consequences
+- 良い点: 「ポートは一意性を強制する」「ユースケースは列挙耐性を守る」という責務が分離され、両方をそれぞれの層のテストで検証できる。競合窓（reservation 残存・並行要求）が応答から消える。
+- トレードオフ: spec の TC 行が実装より古い状態が一時的に残る（spec-sync まで）。ユースケースに例外捕捉が 1 箇所増える（「境界でのみ catch」の原則に対しては、応答同一化という明示的な保証を守るための限定的な catch と位置づける）。
+
+## ADR-034: タイミング均等化のダミーハッシュは PasswordHasher 単位に memo し、失敗しても false を返す
+
+### Status
+Proposed
+
+### Context
+ADR-027 のダミー verify は、未登録メール経路にも scrypt 1 回分の時間を負わせて所要時間を揃える。実装はモジュールレベル変数に `hash()` の promise を memo していたが、これは 2 つの問題を持っていた（R2-UA-W-001 / R2-SC-W-202 / R2-TS-W-006）。(1) memo が `PasswordHasher` インスタンスと無関係なので、テストやマルチテナントで別 hasher を渡しても最初の 1 個のハッシュが使い回される。(2) スロットに入るのが promise なので、`hash()` が一度でも reject（scrypt はメモリ逼迫時に error コールバックを呼ぶ）すると rejected promise が恒久的に居座り、以後は未登録メール・password identity なし・弱パスワードだけが 422 ではなく 500 を返すようになる。ADR-027 で塞いだ「登録済みか否か」がステータスコードで逆に露出し、しかも再起動まで直らない。
+
+### Decision
+- ダミーハッシュは `PasswordHasher` インスタンスを鍵にした `WeakMap` で memo する。hasher の寿命に memo が従属し、hasher が捨てられれば memo も回収される。
+- `PasswordHasher` は DI でランタイム単位のシングルトンとする。per-request 生成にすると未認証試行のたびに scrypt 導出が走り、均等化のためのコストが DoS 面になる（ADR-026 の crypto アダプター配線と同じ寿命規律）。
+- `verifyAgainstDummy` は「失敗しても必ず false を返す」契約とし、`hash` / `verify` の失敗時はキャッシュを空に戻して次回リトライ可能にする。タイミング均等化は best-effort な防御であり、認証判定の結果を変えてよい根拠にはならない。
+
+### Consequences
+- 良い点: 均等化の失敗がステータスコードのオラクルに反転しない。プロセス寿命の恒久劣化が構造的に起きない。定常状態では hasher あたり scrypt 導出 1 回だけ。
+- トレードオフ: 失敗が続く環境ではダミー verify が毎回リトライして遅くなる（均等化の目的からは許容 — 遅い側に揃う）。ダミーハッシュの生成失敗はメトリクスに出ないため、ログ観測点は別途必要。
+
+## ADR-035: 適合スイートは観測可能な結果だけを契約化する（ADR-003 / ADR-031 の補足）
+
+### Status
+Proposed
+
+### Context
+ADR-031 で UoW とリレー起動を `ConformanceBackend` の契約に加えた結果、共有スイートに「並行 2 本の `globalUnitOfWork.run` が `first:start, first:end, second:start, second:end` の順に実行される」という厳密な順序 assert が入った（R2-UA-W-002 / R2-TS-W-001）。これは memory アダプターがプロセス内 async mutex で全 UoW を直列化している実装特性であって、`spec/domains/index.md` の UoW 契約は「1 scope object の repository と local outbox だけを公開する」「入れ子にしない」しか要求していない。global 平面の実バックエンドである D1 には対話型トランザクションがなくバッチ flush になるため、コールバックの実行を交錯させても仕様上正しいのにこのケースで落ちる。
+
+### Decision
+共有適合スイートが契約化するのは、ポート利用者から観測可能な結果だけに限る。具体的には、両方の commit が確定すること・途中状態が他方から観測されないこと・relay kick が各 1 回であること。実行順序・分離の実現手段（mutex による直列化か、バッチ flush か、楽観制御か）は契約から外し、バックエンド固有のローカルテストへ置く。ADR-003 の「スイート自体を契約の実行形とする」方針は維持したうえで、その粒度をこの ADR で確定する。
+
+### Consequences
+- 良い点: Issue #11 の D1 / DO バックエンドが、仕様上正しい実装のまま共有スイートを通せる。「契約」と「実装特性」の境界がスイートの構造として現れる。
+- トレードオフ: memory アダプターの直列化保証は共有スイートでは検証されなくなり、ローカルテストが落ちれば失う。新規ケースを共有スイートに足す際は「観測可能な結果か」の判断が毎回必要になる（レビューで守る規律）。
+
+## ADR-036: ポートのバッチ上限超過は `SystemError(DatabaseError)` に統一する
+
+### Status
+Proposed
+
+### Context
+`resolveMany` 系のバッチ上限超過に対し、`UserBatchReader` は `SystemError(DatabaseError)`、`NoteRouteStore` は `ConflictError("NOTE_ROUTE_BATCH_TOO_LARGE")` を返しており、構造的に同一の違反が 500 系と 409 系に分かれたまま共有スイートで両方とも凍結されていた（R2-TS-W-002）。`NOTE_ROUTE_BATCH_TOO_LARGE` は spec のどこにも存在しない造語コードで、`ConflictError` は presentation で 409 になるため「並行状態の衝突」を意味してしまう。加えて両ポートの `Error contract:` 行のどちらも上限超過に触れておらず、D1 実装者がポート定義だけを読んでこの契約に到達する経路がなかった。
+
+### Decision
+バッチ上限超過は `SystemError(DatabaseError)` に統一する。入力上限の超過は並行状態の衝突ではなく呼び出し側のプログラミングエラーであり、利用者への再試行案内も意味を持たないため、`ConflictError`（409 / 並行衝突専用）は不適切。造語コード `NOTE_ROUTE_BATCH_TOO_LARGE` は廃止する。両ポート定義の `Error contract:` 行に上限超過の 1 行を追加し、契約がポート定義だけで読み取れる状態にする。
+
+### Consequences
+- 良い点: 同型の違反が同一のエラー種別にマップされ、`ConflictError` の意味（並行衝突）が濁らない。D1 実装者がポート定義から契約に到達できる。
+- トレードオフ: 上限超過が 500 系になるため、呼び出し側の実装ミスが監視上「システム障害」として計上される（本来そうあるべき扱いだが、アラート閾値の設計時に留意が必要）。
+
+## ADR-037: サーバー由来の文字列は UI に描画しない — 表示文言は `code` 辞書から引く
+
+### Status
+Proposed
+
+### Context
+`errorDisplay.renderErrorMessage` の `business` 分岐が `error.message` をそのまま返し、`validation` 分岐が `field: message` を返していたため、`BusinessRuleError(INVALID_EMAIL, "Invalid email address")` や zod の英語文言・内部フィールド名がそのまま画面に出ていた（R2-FE-W-001。SignInForm / SignUpForm / CreateNoteButton / AccountMenu の 4 箇所）。spec/design/index.md §9 は「内部 stack / 原文 message / 内部エラーコードは UI に出さない」、§10 は「文言は日本語の説明文に統一し、文言辞書は 1 箇所」と定めており、実装が spec に違反していた（spec 側は正しい）。
+
+### Decision
+表示文言は `presentation/errorDisplay.ts` の辞書で `code` から引き、辞書にない `code` は `kind` の共通文言へ倒す。`SerializedError.message` / `fieldErrors` の値を描画に使う経路は作らない。両者はログ・デバッグのための情報であって表示用ではない、という区別を実装規約として固定する（`fieldErrors` は ADR-021 / ADR-030 のとおり「どのフィールドか」「待機秒数はいくつか」という構造化データの取り出し元としてのみ使い、値そのものを文字列として出さない）。この規約は spec/design §9/§10 の実装側での言い換えであり、spec の改訂は不要。
+
+### Consequences
+- 良い点: 英語原文・内部コード・内部フィールド名の画面露出が構造的に消える。新しいエラーコードを増やしても、辞書漏れは「共通文言に倒れる」という安全側の縮退になる。
+- トレードオフ: エラーコードを増やすたびに辞書の追記が要る（漏れても壊れないが具体性を失う）。辞書に載らないコードは利用者から見て区別がつかなくなるため、頻出コードの取りこぼしはレビューで拾う必要がある。規約は lint で強制されない。

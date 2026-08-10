@@ -76,8 +76,37 @@ export const NoteTitle = {
 };
 
 const CONTENT_MAX_BYTES = 800_000;
-const utf8ByteLength = (value: string): number =>
-  new TextEncoder().encode(value).length;
+
+const utf8Encoder = new TextEncoder();
+
+/**
+ * A UTF-16 code unit encodes to at most 3 UTF-8 bytes (a surrogate pair
+ * spends 2 units on 4 bytes), so `length * 3` is a sound upper bound —
+ * below it no encoding pass is needed. The check runs on every
+ * `Note.reconstruct`, so avoiding a throwaway 800 KB `Uint8Array` per
+ * read matters more than the branch.
+ */
+const exceedsUtf8Bytes = (value: string, max: number): boolean =>
+  value.length * 3 > max && utf8Encoder.encode(value).length > max;
+
+/**
+ * Cuts at UTF-16 code units, never inside a surrogate pair: a lone
+ * surrogate has no UTF-8 encoding, so `TextEncoder` would replace it
+ * with U+FFFD and `JSON.stringify` would emit an unpaired escape once
+ * the value reaches the read model. Staying in code units (rather than
+ * code points) keeps the result inside the same `length` budget the
+ * corresponding `create` guard enforces.
+ */
+const truncateWithoutSplittingPair = (value: string, max: number): string => {
+  if (value.length <= max) {
+    return value;
+  }
+  const last = value.charCodeAt(max - 1);
+  const next = value.charCodeAt(max);
+  const splitsPair =
+    last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+  return value.slice(0, splitsPair ? max - 1 : max);
+};
 
 /**
  * Sanitized HTML fragment. Producers are `HtmlProcessor` results and
@@ -87,7 +116,7 @@ const utf8ByteLength = (value: string): number =>
 export type NoteHtml = string & { readonly [noteHtmlBrand]: true };
 export const NoteHtml = {
   create: (value: string): NoteHtml => {
-    if (utf8ByteLength(value) > CONTENT_MAX_BYTES) {
+    if (exceedsUtf8Bytes(value, CONTENT_MAX_BYTES)) {
       throw new BusinessRuleError(
         NoteErrorCode.ContentTooLarge,
         `Note HTML exceeds ${CONTENT_MAX_BYTES} bytes`,
@@ -106,7 +135,7 @@ export const NoteHtml = {
 export type PlainTextContent = string & { readonly [plainTextBrand]: true };
 export const PlainTextContent = {
   create: (value: string): PlainTextContent => {
-    if (utf8ByteLength(value) > CONTENT_MAX_BYTES) {
+    if (exceedsUtf8Bytes(value, CONTENT_MAX_BYTES)) {
       throw new BusinessRuleError(
         NoteErrorCode.ContentTooLarge,
         `Plain text exceeds ${CONTENT_MAX_BYTES} bytes`,
@@ -130,7 +159,10 @@ export const Excerpt = {
     return value as Excerpt;
   },
   fromText: (text: string, max: number = EXCERPT_MAX_LENGTH): Excerpt =>
-    text.slice(0, Math.min(max, EXCERPT_MAX_LENGTH)) as Excerpt,
+    truncateWithoutSplittingPair(
+      text,
+      Math.min(max, EXCERPT_MAX_LENGTH),
+    ) as Excerpt,
 };
 
 const HEADING_TEXT_MAX_LENGTH = 100;
@@ -165,7 +197,7 @@ export const NoteHeading = {
     }
     return {
       level: params.level,
-      text: params.text.slice(0, HEADING_TEXT_MAX_LENGTH),
+      text: truncateWithoutSplittingPair(params.text, HEADING_TEXT_MAX_LENGTH),
       anchorId: params.anchorId,
     };
   },

@@ -33,7 +33,10 @@ export type NoteRoute = Readonly<{
  *
  * Error contract: `ConflictError("STALE_SCOPE_ROUTE")` (routeVersion CAS
  * miss), `ConflictError` (state-machine violation / foreign operation),
- * `NotFoundError("NOTE_NOT_FOUND")`, `SystemError(DatabaseError)`.
+ * `NotFoundError("NOTE_NOT_FOUND")`, `SystemError(DatabaseError)` — the
+ * latter also covers a `resolveMany` batch over the 500-id cap, which is
+ * a caller programming error rather than a concurrent-state conflict
+ * (same contract as `UserBatchReader.resolveMany`).
  */
 export interface NoteRouteStore {
   /** Externally readable routes only (`reserved` / `purging` do not resolve). */

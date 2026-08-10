@@ -8,6 +8,7 @@ import {
   type ThrottleDecision,
 } from "@repo/core/domain/identity/services/loginThrottlePolicy";
 import { Session } from "@repo/core/domain/identity/session";
+import type { User } from "@repo/core/domain/identity/user";
 import {
   Email,
   LoginAttemptKey,
@@ -46,15 +47,44 @@ const locked = (until: Date): ValidationError =>
 // no password identity, weak input password) performs one verify
 // against a dummy hash so the response time does not reveal whether
 // the email is registered — mirroring signUpWithPassword's uniform
-// response. The dummy hash is computed lazily once per process; its
-// verify outcome is discarded.
+// response. The dummy hash is derived lazily once per hasher instance;
+// its verify outcome is discarded.
 const DUMMY_PASSWORD = "timing-equalizer-0nly";
-let dummyHash: Promise<PasswordHash> | null = null;
+
+// Memoized per hasher instance rather than per module: the entry is
+// reachable only through the hasher it was derived with, so a container
+// (or a test) that swaps the port cannot inherit another one's hash.
+const dummyHashes = new WeakMap<PasswordHasher, Promise<PasswordHash>>();
+
+/**
+ * Burns one verification against a throw-away hash and always resolves
+ * to `false`.
+ *
+ * Never throws: equalization is a best-effort defence and must not be
+ * able to convert a credential rejection into a system error. If it
+ * could, the paths that call it (unknown email, no password identity,
+ * weak input) would answer 500 while the known-email path answers 422 —
+ * exactly the enumeration oracle this exists to close. A failed
+ * derivation also clears the memo so one transient scrypt error cannot
+ * pin a rejected promise for the hasher's lifetime.
+ */
 const verifyAgainstDummy = async (hasher: PasswordHasher): Promise<false> => {
-  dummyHash ??= hasher.hash(PlainPassword.create(DUMMY_PASSWORD));
-  await hasher.verify(PlainPassword.create(DUMMY_PASSWORD), await dummyHash);
+  try {
+    const plain = PlainPassword.create(DUMMY_PASSWORD);
+    const pending = dummyHashes.get(hasher) ?? hasher.hash(plain);
+    dummyHashes.set(hasher, pending);
+    await hasher.verify(plain, await pending);
+  } catch {
+    dummyHashes.delete(hasher);
+  }
   return false;
 };
+
+type VerificationOutcome =
+  | Readonly<{ verified: false }>
+  | Readonly<{ verified: true; user: User; identity: PasswordIdentity }>;
+
+const NOT_VERIFIED: VerificationOutcome = { verified: false };
 
 const rejectionFor = (decision: ThrottleDecision): ValidationError | null => {
   switch (decision.kind) {
@@ -108,17 +138,19 @@ export async function signInWithPassword({
 
   const userId = await identityUniqueDirectory.resolve("email", email);
   const versioned = userId !== null ? await userReader.findById(userId) : null;
-  const user = versioned?.entity ?? null;
+  const candidate = versioned?.entity ?? null;
 
-  let matchedIdentity: PasswordIdentity | null = null;
-  const verified = await (async (): Promise<boolean> => {
-    if (user === null || user.status === "deleted") {
-      return verifyAgainstDummy(passwordHasher);
+  // The outcome carries the user and the identity it was verified
+  // against, so "verified" and "we know which credentials matched" are
+  // one value instead of a boolean plus two nullable bindings.
+  const outcome = await (async (): Promise<VerificationOutcome> => {
+    if (candidate === null || candidate.status === "deleted") {
+      return verifyAgainstDummy(passwordHasher).then(() => NOT_VERIFIED);
     }
-    const identities = await identityReader.listByUserId(user.id);
+    const identities = await identityReader.listByUserId(candidate.id);
     const passwordIdentity = IdentityPolicy.findPassword(identities);
     if (passwordIdentity === null) {
-      return verifyAgainstDummy(passwordHasher);
+      return verifyAgainstDummy(passwordHasher).then(() => NOT_VERIFIED);
     }
     // Sign-in must not surface WeakPassword: an input that fails the
     // password rules can never match a stored hash, so it collapses to
@@ -128,23 +160,23 @@ export async function signInWithPassword({
       plain = PlainPassword.create(input.password);
     } catch (error) {
       if (error instanceof BusinessRuleError) {
-        return verifyAgainstDummy(passwordHasher);
+        return verifyAgainstDummy(passwordHasher).then(() => NOT_VERIFIED);
       }
       throw error;
     }
-    matchedIdentity = passwordIdentity;
-    return passwordHasher.verify(plain, passwordIdentity.passwordHash);
+    const matches = await passwordHasher.verify(
+      plain,
+      passwordIdentity.passwordHash,
+    );
+    return matches
+      ? { verified: true, user: candidate, identity: passwordIdentity }
+      : NOT_VERIFIED;
   })();
 
-  if (!verified) {
+  if (!outcome.verified) {
     throw await recordAndClassifyFailure(container, key, now);
   }
-  // Both are non-null here — verification requires a user and a
-  // password identity.
-  if (user === null || matchedIdentity === null) {
-    throw invalidCredentials();
-  }
-  const matched: PasswordIdentity = matchedIdentity;
+  const { user, identity: matched } = outcome;
   if (user.status === "pending") {
     // Not recorded: the credentials are correct and a resend fixes it.
     throw new ValidationError("EMAIL_NOT_VERIFIED", "Email is not verified");

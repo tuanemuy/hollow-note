@@ -16,12 +16,14 @@ const ROWS = [
 export function NoteListSkeleton() {
   return (
     <main
-      role="status"
       aria-busy="true"
-      aria-live="polite"
       className="mx-auto max-w-[var(--list-max)] px-4 pt-8 pb-20 sm:px-6 sm:pt-10 lg:pt-16"
     >
-      <span className="sr-only">ノートを読み込んでいます</span>
+      {/* `role="status"` sits on the announcement, not on `<main>` — the
+          role would otherwise replace the main landmark. */}
+      <span role="status" className="sr-only">
+        ノートを読み込んでいます
+      </span>
       <div className="mb-6">
         <Skeleton className="h-9 w-24" />
         <Skeleton className="mt-2 h-4 w-32" />

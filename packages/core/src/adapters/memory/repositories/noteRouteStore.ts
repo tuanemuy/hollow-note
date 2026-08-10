@@ -1,4 +1,9 @@
-import { ConflictError, NotFoundError } from "../../../application/errors";
+import {
+  ConflictError,
+  NotFoundError,
+  SystemError,
+  SystemErrorCode,
+} from "../../../application/errors";
 import type {
   NoteRoute,
   NoteRouteStore,
@@ -78,9 +83,12 @@ export function createMemoryNoteRouteStore(
     },
 
     async resolveMany(noteIds): Promise<ReadonlyMap<NoteId, NoteRoute>> {
+      // Exceeding the batch cap is a caller programming error, not a
+      // concurrent-state conflict — same contract as
+      // `UserBatchReader.resolveMany`.
       if (noteIds.length > MAX_RESOLVE_MANY) {
-        throw new ConflictError(
-          "NOTE_ROUTE_BATCH_TOO_LARGE",
+        throw new SystemError(
+          SystemErrorCode.DatabaseError,
           `resolveMany accepts at most ${MAX_RESOLVE_MANY} ids`,
         );
       }

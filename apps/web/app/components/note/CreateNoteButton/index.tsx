@@ -25,17 +25,27 @@ export function CreateNoteButton({
 
   const onClick = () => {
     startTransition(async () => {
+      let noteId: string;
       try {
-        const { noteId } = await create({});
-        setError(null);
-        // Reconcile before leaving: `/notes` keeps `staleTime: Infinity`
-        // in production, so without this the list cached before the
-        // mutation would never show the new note.
-        await router.invalidate();
-        await router.navigate({ to: "/notes/$noteId", params: { noteId } });
+        noteId = (await create({})).noteId;
       } catch (e) {
         setError(displayError(e));
+        return;
       }
+      setError(null);
+      // Reconcile and leave OUTSIDE the try: the note already exists, so a
+      // failure here must not read as "creation failed" — that invites a
+      // retry that creates a second note.
+      // `/notes` keeps `staleTime: Infinity` in production, so without the
+      // invalidate the list cached before the mutation would never show it.
+      await router.invalidate().catch(() => {
+        console.error("Note list reconcile failed");
+      });
+      await router
+        .navigate({ to: "/notes/$noteId", params: { noteId } })
+        .catch(() => {
+          console.error("Navigation to the new note failed");
+        });
     });
   };
 
@@ -68,11 +78,11 @@ export function CreateNoteButton({
         </svg>
         {isPending ? "作成中..." : label}
       </button>
-      {error !== null ? (
-        <span className="text-xs text-error" aria-live="polite">
-          {error}
-        </span>
-      ) : null}
+      {/* Kept mounted so the region exists before the failure arrives —
+          a live region that appears with its text is not announced. */}
+      <span className="text-xs text-error empty:hidden" aria-live="polite">
+        {error}
+      </span>
     </span>
   );
 }

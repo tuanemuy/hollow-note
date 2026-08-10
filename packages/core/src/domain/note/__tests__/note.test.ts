@@ -1,4 +1,4 @@
-import { isBusinessRuleError } from "@repo/core/domain/error";
+import { isBusinessRuleError, RehydrationError } from "@repo/core/domain/error";
 import {
   PasswordHash,
   TokenHash,
@@ -9,7 +9,17 @@ import { describe, expect, it } from "vitest";
 import { NoteErrorCode } from "../errorCode";
 import { Note } from "../note";
 import { NoteRevision } from "../noteRevision";
-import { NoteOwner, ShareLink } from "../valueObject";
+import type { ProcessedHtml } from "../ports/htmlProcessor";
+import {
+  Excerpt,
+  MAX_HEADINGS_PER_NOTE,
+  NoteHeading,
+  NoteHtml,
+  NoteOwner,
+  NoteTitle,
+  PlainTextContent,
+  ShareLink,
+} from "../valueObject";
 
 const T0 = new Date(0);
 const at = (ms: number) => new Date(ms);
@@ -111,6 +121,142 @@ describe("Note.createFromUpload", () => {
     expect(note.title.origin).toBe("auto");
     expect(note.sourceFileId).toBe("f1");
     expect(note.visibility.status).toBe("private");
+  });
+});
+
+const titledNote = (title: string) =>
+  Note.createBlank(
+    { id: "n1", owner, createdBy: creator, title, projectionRevision: 1 },
+    T0,
+  ).entity;
+
+const conversionResult = (
+  title: NoteTitle | null,
+  headingCount = 1,
+): Parameters<typeof Note.applyConversionResult>[1] => ({
+  html: NoteHtml.create("<p>converted</p>"),
+  text: PlainTextContent.create("converted"),
+  excerpt: Excerpt.fromText("converted"),
+  headings: Array.from({ length: headingCount }, (_, i) =>
+    NoteHeading.create({ level: 2, text: `H${i}`, anchorId: `h-${i}` }),
+  ),
+  styleMode: "preserve",
+  title,
+});
+
+const processedHtml = (headingCount = 2): ProcessedHtml => ({
+  html: NoteHtml.create("<h2>Edited</h2><p>body</p>"),
+  text: PlainTextContent.create("Edited body"),
+  excerpt: Excerpt.fromText("Edited body"),
+  hasDecoration: false,
+  headings: Array.from({ length: headingCount }, (_, i) => ({
+    level: 2,
+    text: `H${i}`,
+    anchorId: `h-${i}`,
+  })),
+  removed: [],
+});
+
+describe("Note.applyConversionResult", () => {
+  it("replaces an auto title and emits note.renamed alongside note.contentUpdated", () => {
+    const note = blank();
+    expect(note.title.origin).toBe("auto");
+    const { entity, eventDrafts } = Note.applyConversionResult(
+      note,
+      conversionResult(NoteTitle.auto("Converted")),
+      at(5),
+    );
+    expect(entity.title).toEqual({ value: "Converted", origin: "auto" });
+    expect(entity.content).toMatchObject({
+      status: "ready",
+      html: "<p>converted</p>",
+      text: "converted",
+      excerpt: "converted",
+    });
+    expect(entity.styleMode).toBe("preserve");
+    expect(entity.version).toBe(note.version + 1);
+    expect(entity.updatedAt).toEqual(at(5));
+    expect(eventDrafts.map((d) => d.type)).toEqual([
+      "note.contentUpdated",
+      "note.renamed",
+    ]);
+    expect(eventDrafts[1]?.payload).toMatchObject({
+      noteId: "n1",
+      title: { value: "Converted", origin: "auto" },
+    });
+  });
+
+  it("keeps a manual title and emits note.contentUpdated only", () => {
+    const note = titledNote("My note");
+    expect(note.title.origin).toBe("manual");
+    const { entity, eventDrafts } = Note.applyConversionResult(
+      note,
+      conversionResult(NoteTitle.auto("Converted")),
+      at(5),
+    );
+    expect(entity.title).toEqual({ value: "My note", origin: "manual" });
+    expect(eventDrafts.map((d) => d.type)).toEqual(["note.contentUpdated"]);
+  });
+
+  it("keeps the current title when the result carries none", () => {
+    const { entity, eventDrafts } = Note.applyConversionResult(
+      blank(),
+      conversionResult(null),
+      at(5),
+    );
+    expect(entity.title.value).toBe("無題");
+    expect(eventDrafts.map((d) => d.type)).toEqual(["note.contentUpdated"]);
+  });
+
+  it("caps the headings at 200, dropping the 201st", () => {
+    const { entity } = Note.applyConversionResult(
+      blank(),
+      conversionResult(null, MAX_HEADINGS_PER_NOTE + 1),
+      at(5),
+    );
+    if (entity.content.status !== "ready") {
+      throw new Error("expected a ready body");
+    }
+    expect(entity.content.headings).toHaveLength(MAX_HEADINGS_PER_NOTE);
+    expect(entity.content.headings.at(-1)?.anchorId).toBe(
+      `h-${MAX_HEADINGS_PER_NOTE - 1}`,
+    );
+  });
+});
+
+describe("Note.updateBody", () => {
+  it("builds a ready body from the processed HTML and emits note.contentUpdated", () => {
+    const note = processingNote();
+    const { entity, eventDrafts } = Note.updateBody(
+      note,
+      processedHtml(),
+      at(7),
+    );
+    expect(entity.content).toEqual({
+      status: "ready",
+      html: "<h2>Edited</h2><p>body</p>",
+      text: "Edited body",
+      excerpt: "Edited body",
+      headings: [
+        { level: 2, text: "H0", anchorId: "h-0" },
+        { level: 2, text: "H1", anchorId: "h-1" },
+      ],
+    });
+    expect(entity.version).toBe(note.version + 1);
+    expect(entity.updatedAt).toEqual(at(7));
+    expect(eventDrafts.map((d) => d.type)).toEqual(["note.contentUpdated"]);
+  });
+
+  it("caps the headings at 200, dropping the 201st", () => {
+    const { entity } = Note.updateBody(
+      blank(),
+      processedHtml(MAX_HEADINGS_PER_NOTE + 1),
+      at(7),
+    );
+    if (entity.content.status !== "ready") {
+      throw new Error("expected a ready body");
+    }
+    expect(entity.content.headings).toHaveLength(MAX_HEADINGS_PER_NOTE);
   });
 });
 
@@ -369,7 +515,7 @@ describe("Note.reconstruct", () => {
     expect(note.visibility.status).toBe("unlisted");
   });
 
-  it("rejects a public note carrying a share password", () => {
+  it("rejects a public note carrying a password-bearing dormant link with RehydrationError", () => {
     expect(() =>
       Note.reconstruct({
         id: "n1",
@@ -398,6 +544,40 @@ describe("Note.reconstruct", () => {
         createdAt: T0,
         updatedAt: T0,
       }),
-    ).toThrowError();
+    ).toThrowError(RehydrationError);
+  });
+
+  it("accepts a public note whose dormant link carries no password", () => {
+    const note = Note.reconstruct({
+      id: "n1",
+      ownerType: "user",
+      ownerId: "u1",
+      createdBy: "u1",
+      title: "T",
+      titleOrigin: "manual",
+      contentStatus: "ready",
+      html: "",
+      text: "",
+      excerpt: "",
+      visibilityStatus: "public",
+      publishedAt: T0,
+      dormantShareLink: {
+        tokenHash: "t1",
+        cipherText: "c",
+        keyVersion: 1,
+        passwordHash: null,
+        passwordUpdatedAt: null,
+        issuedAt: T0,
+      },
+      styleMode: "default",
+      lifecycle: "active",
+      version: 1,
+      createdAt: T0,
+      updatedAt: T0,
+    });
+    expect(note.visibility).toMatchObject({
+      status: "public",
+      dormantShareLink: { tokenHash: "t1", password: null },
+    });
   });
 });

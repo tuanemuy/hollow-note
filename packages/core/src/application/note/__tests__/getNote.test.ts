@@ -159,7 +159,7 @@ describe("getNote", () => {
 
   it("TC-note-172: the owner can read a trashed note", async () => {
     const h = createTestHarness();
-    const now = new Date();
+    const now = h.clock.now();
     const noteId = await seedNote(h, {
       lifecycle: "trashed",
       trashedAt: now,
@@ -171,7 +171,7 @@ describe("getNote", () => {
 
   it("TC-note-173: someone else's trashed note is NOTE_NOT_FOUND", async () => {
     const h = createTestHarness();
-    const now = new Date();
+    const now = h.clock.now();
     const noteId = await seedNote(h, {
       lifecycle: "trashed",
       trashedAt: now,

@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { VerifyEmailPanel } from "@/components/auth/VerifyEmailPanel";
 import { AuthLayout } from "@/components/layout/AuthLayout";
-import { sanitizeRouteError } from "@/presentation/errorDisplay";
 import { buildHead } from "@/presentation/head";
 
 // GET はこのページの描画だけで状態を変更しない（ADR-007）。token の欠落・
@@ -22,17 +21,8 @@ export const Route = createFileRoute("/verify-email")({
     });
     return { meta, links };
   },
+  // errorComponent は置かない: 失敗は root の P-46 共通表示へ委譲する。
   component: VerifyEmailPage,
-  errorComponent: ({ error }) => (
-    <AuthLayout>
-      <div role="alert">
-        <h1 className="text-xl font-medium">エラーが発生しました</h1>
-        <p className="mt-3 text-sm text-ink-secondary">
-          {sanitizeRouteError(error)}
-        </p>
-      </div>
-    </AuthLayout>
-  ),
 });
 
 function VerifyEmailPage() {

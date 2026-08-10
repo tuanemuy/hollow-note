@@ -7,12 +7,14 @@ import { Skeleton } from "@/components/ui/Skeleton";
 export function NoteDetailSkeleton() {
   return (
     <main
-      role="status"
       aria-busy="true"
-      aria-live="polite"
       className="mx-auto max-w-[var(--content-max)] px-4 pt-10 pb-16 sm:px-6"
     >
-      <span className="sr-only">ノートを読み込んでいます</span>
+      {/* `role="status"` sits on the announcement, not on `<main>` — the
+          role would otherwise replace the main landmark. */}
+      <span role="status" className="sr-only">
+        ノートを読み込んでいます
+      </span>
       <div className="mb-4 flex items-center gap-2">
         <Skeleton className="h-3 w-14" />
         <Skeleton className="h-3 w-24" />

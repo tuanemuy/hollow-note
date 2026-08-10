@@ -113,6 +113,24 @@ export function describeScopeCleanupAdmissionStoreContract(
       await store.assertWritable();
     });
 
+    it("ADP-common-011: pruneCompleted clamps an over-cap limit to the 100-row page cap", async () => {
+      await store.beginPersonalAccountDeletion("op-1", userId(1));
+      for (const component of ALL_COMPONENTS) {
+        await store.acknowledgePersonalComponent("op-1", component);
+      }
+      const retainUntil = new Date(
+        backend.clock.now().getTime() + 120 * DAY_MS,
+      );
+      await store.markCompleted("op-1", retainUntil);
+
+      // A scope holds at most one receipt, so the cap can never be
+      // saturated here; what the contract pins is that an over-cap limit
+      // is accepted and clamped rather than honoured verbatim.
+      const removed = await store.pruneCompleted(retainUntil, 1_000);
+      expect(removed).toBeLessThanOrEqual(100);
+      expect(removed).toBe(1);
+    });
+
     it("ADP-common-011: a running receipt has no expiry and is never pruned", async () => {
       await store.beginPersonalAccountDeletion("op-1", userId(1));
       backend.clock.advance(365 * DAY_MS);

@@ -9,7 +9,10 @@ import type { UserId } from "../valueObject";
  * and the higher-version row wins per UserId. Routing is direct from the
  * input ids — never a full shard scan.
  *
- * Error contract: `SystemError(DatabaseError)`.
+ * Error contract: `SystemError(DatabaseError)` — including an input over
+ * the 100-id cap, which is a caller programming error rather than a
+ * concurrent-state conflict (same contract as
+ * `NoteRouteStore.resolveMany`).
  */
 export interface UserBatchReader {
   resolveMany(

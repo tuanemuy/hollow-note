@@ -46,8 +46,9 @@ const DEFAULT_RELAY_INTERVAL_MS = 60_000;
 const DEFAULT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Single-process orchestrator for the four CF workers (relay, consumer,
- * pruner, dlq). `start()` registers timers + signal handlers,
+ * Single-process orchestrator for the four background roles of the Node
+ * runtime (relay, consumer, pruner, dlq). `start()` registers timers +
+ * signal handlers,
  * `relayTrigger.kick()` schedules an out-of-band relay tick collapsed
  * with concurrent kicks, `stop()` drains in-flight work and runs
  * `cleanup`. All three are idempotent.

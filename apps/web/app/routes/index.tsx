@@ -1,7 +1,6 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { PublicShell } from "@/components/layout/PublicShell";
 import { sessionUserFn } from "@/presentation/auth";
-import { sanitizeRouteError } from "@/presentation/errorDisplay";
 import { buildHead } from "@/presentation/head";
 
 /**
@@ -22,15 +21,9 @@ export const Route = createFileRoute("/")({
     const { meta, links } = buildHead(config, { path: "/" });
     return { meta, links };
   },
+  // errorComponent は置かない: 失敗は root の P-46 共通表示へ委譲する
+  // （spec/pages/index.md#P-46、AC-19）。
   component: LandingPage,
-  errorComponent: ({ error }) => (
-    <div role="alert" className="p-8">
-      <h1 className="text-xl font-medium">エラーが発生しました</h1>
-      <p className="mt-3 text-sm text-ink-secondary">
-        {sanitizeRouteError(error)}
-      </p>
-    </div>
-  ),
 });
 
 function LandingPage() {

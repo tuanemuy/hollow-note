@@ -34,14 +34,9 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
     if (token === null || started.current) return;
     started.current = true;
     void (async () => {
+      let signedIn: boolean;
       try {
-        const result = await verify({ data: { token } });
-        if (result.signedIn) {
-          setPhase({ kind: "succeeded" });
-          await router.navigate({ to: "/notes" });
-        } else {
-          setPhase({ kind: "alreadyVerified" });
-        }
+        signedIn = (await verify({ data: { token } })).signedIn;
       } catch (error) {
         const serialized = extractSerializedError(error);
         setPhase(
@@ -50,7 +45,22 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
             ? { kind: "expired" }
             : { kind: "invalid" },
         );
+        return;
       }
+      if (!signedIn) {
+        setPhase({ kind: "alreadyVerified" });
+        return;
+      }
+      setPhase({ kind: "succeeded" });
+      // Verification issues a session cookie, so this is an auth-state
+      // change like sign-in and reconciles the same way. Both steps sit
+      // outside the try: the confirmation already succeeded.
+      await router.invalidate().catch(() => {
+        console.error("Post-verification reconcile failed");
+      });
+      await router.navigate({ to: "/notes" }).catch(() => {
+        console.error("Navigation after verification failed");
+      });
     })();
   }, [token, verify, router]);
 

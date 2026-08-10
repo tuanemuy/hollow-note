@@ -2,9 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import process from "node:process";
 import { installContainerStore } from "@repo/core/application/di/containerStore";
 import {
+  readPruneTuning,
+  readRelayTuning,
+} from "@repo/core/application/di/env";
+import {
   bindNodeRelayTrigger,
   createNodeRequestContainer,
   createNodeWorkerContainer,
+  nodeServerEnvToTuningEnv,
   readNodeRequestServerConfig,
   readNodeServerEnv,
 } from "@repo/core/application/di/serverNode";
@@ -52,9 +57,16 @@ export type NodeServerBoot = Readonly<{
 // CSP は本文由来の危険を抑える 4 指令の最小集合 — script-src / style-src
 // の絞り込みはフレームワーク出力の形に依存するため公開閲覧スライスで
 // 詰める。Referrer-Policy はクロスオリジンへパスを送らない方針の実現。
+// Cache-Control は既定を no-store に倒す: SSR HTML も GET の server
+// function 応答も Cookie 認証で利用者固有になるため、freshness 指示が
+// 無いと前段の CDN / プロキシが他人の応答を配りうる。静的アセットは
+// フレームワークが自前の Cache-Control を付けるので、既存値を上書き
+// しない `withSecurityHeaders` の実装と共存する。公開ノートだけ緩める
+// のは公開閲覧スライスで。
 const SECURITY_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["X-Content-Type-Options", "nosniff"],
   ["Referrer-Policy", "strict-origin-when-cross-origin"],
+  ["Cache-Control", "private, no-store"],
   [
     "Content-Security-Policy",
     "frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'self'",
@@ -76,12 +88,17 @@ export async function boot(): Promise<NodeServerBoot> {
 
   const workerContainer = createNodeWorkerContainer();
 
+  const tuningEnv = nodeServerEnvToTuningEnv(env);
   const runner = createNodeWorkerRunner({
     container: workerContainer,
     logger,
     // No event subscriber exists in the walking-skeleton slice; the
     // consumer role stays a no-op until a projection consumer lands.
     consumerHandler: async () => {},
+    tuning: {
+      relayOptions: readRelayTuning(tuningEnv),
+      outboxRetentionMs: readPruneTuning(tuningEnv).retentionMs,
+    },
   });
   // Commits kick the relay immediately instead of waiting for the tick.
   bindNodeRelayTrigger(runner.relayTrigger);

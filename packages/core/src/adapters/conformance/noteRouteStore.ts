@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { isSystemError } from "../../application/errors";
 import type { NoteRouteStore } from "../../application/ports/noteRouteStore";
 import { ScopeKey } from "../../application/scope";
 import { expectConflict, expectNotFound } from "./asserts";
@@ -233,10 +234,11 @@ export function describeNoteRouteStoreContract(
       expect(atLimit.size).toBe(1);
       expect(atLimit.get(noteId(1))?.state).toBe("active");
 
-      await expectConflict(
+      // Over the cap is a caller programming error, so `SystemError` —
+      // not a `ConflictError` (which presentation maps to 409).
+      await expect(
         store.resolveMany(Array.from({ length: 501 }, (_, i) => noteId(i + 1))),
-        "NOTE_ROUTE_BATCH_TOO_LARGE",
-      );
+      ).rejects.toSatisfy(isSystemError);
     });
   });
 }

@@ -12,6 +12,10 @@ import {
   StyleMode,
 } from "../valueObject";
 
+/** A UTF-8 round trip is lossless exactly when no lone surrogate remains. */
+const isWellFormed = (value: string): boolean =>
+  new TextDecoder().decode(new TextEncoder().encode(value)) === value;
+
 const codeOf = (fn: () => unknown): string | null => {
   try {
     fn();
@@ -81,6 +85,21 @@ describe("Excerpt", () => {
       NoteErrorCode.ContentTooLarge,
     );
   });
+
+  it("fromText never cuts a non-BMP character in half", () => {
+    // The emoji straddles the boundary: units 199/200 of a 201-unit string.
+    const excerpt = Excerpt.fromText(`${"a".repeat(199)}😀`);
+    expect(excerpt).toHaveLength(199);
+    expect(isWellFormed(excerpt)).toBe(true);
+    expect(() => Excerpt.create(excerpt)).not.toThrow();
+  });
+
+  it("fromText keeps a non-BMP character that ends exactly on the boundary", () => {
+    const excerpt = Excerpt.fromText(`${"a".repeat(198)}😀${"b".repeat(10)}`);
+    expect(excerpt).toHaveLength(200);
+    expect(excerpt.endsWith("😀")).toBe(true);
+    expect(isWellFormed(excerpt)).toBe(true);
+  });
 });
 
 describe("NoteHeading", () => {
@@ -91,6 +110,16 @@ describe("NoteHeading", () => {
       anchorId: "h-1",
     });
     expect(heading.text).toHaveLength(100);
+  });
+
+  it("never cuts a non-BMP character in half when truncating", () => {
+    const heading = NoteHeading.create({
+      level: 2,
+      text: `${"x".repeat(99)}😀`,
+      anchorId: "h-1",
+    });
+    expect(heading.text).toHaveLength(99);
+    expect(isWellFormed(heading.text)).toBe(true);
   });
 
   it("rejects level out of 1-6 and an empty anchor", () => {

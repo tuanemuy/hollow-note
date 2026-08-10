@@ -218,6 +218,104 @@ export function describeAccountDeletionManifestStoreContract(
       await store().appendMembershipPage("op-live", null, 100);
     });
 
+    it("ADP-common-017/022: claimPending and compactItems cap a page at 100 items (spec/domains/index.md 最大100件)", async () => {
+      await store().begin("op-1", userId(1));
+      await store().appendAuthorRoutePage(
+        "op-1",
+        Array.from({ length: 101 }, (_, i) => ({
+          noteId: noteId(i + 1),
+          routeVersion: 1,
+        })),
+        null,
+      );
+      await store().markBuilt("op-1");
+
+      expect(
+        await store().claimPending("op-1", "redaction", 1_000),
+      ).toHaveLength(100);
+
+      for (;;) {
+        const pending = await store().claimPending("op-1", "redaction", 1_000);
+        if (pending.length === 0) break;
+        const keys = pending.map((item) => item.key);
+        await store().acknowledge("op-1", keys, "localRedaction");
+        await store().acknowledge("op-1", keys, "publicRedaction");
+      }
+      for (const receipt of FINALIZE_RECEIPTS) {
+        await store().acknowledgeReceipt("op-1", receipt);
+      }
+
+      expect(await store().compactItems("op-1", 1_000)).toEqual({
+        removed: 100,
+        remaining: true,
+      });
+      expect(await store().compactItems("op-1", 1_000)).toEqual({
+        removed: 1,
+        remaining: false,
+      });
+    });
+
+    it("ADP-common-025: pruneTerminal caps a page at 100 manifests (spec/domains/index.md 最大100件)", async () => {
+      for (let i = 0; i < 101; i++) {
+        const operationId = `op-${String(i).padStart(3, "0")}`;
+        await store().begin(operationId, userId(1));
+        await store().markBuilt(operationId);
+        for (const receipt of FINALIZE_RECEIPTS) {
+          await store().acknowledgeReceipt(operationId, receipt);
+        }
+        const terminalAt = backend.clock.now();
+        await store().markCompleted(
+          operationId,
+          terminalAt,
+          new Date(terminalAt.getTime() + 120 * DAY_MS),
+        );
+      }
+      backend.clock.advance(120 * DAY_MS);
+
+      const first = await store().pruneTerminal(
+        backend.clock.now(),
+        null,
+        1_000,
+      );
+      expect(first.removed).toBe(100);
+      expect(first.nextCursor).not.toBeNull();
+      const second = await store().pruneTerminal(
+        backend.clock.now(),
+        first.nextCursor,
+        1_000,
+      );
+      expect(second).toEqual({ removed: 1, nextCursor: null });
+    });
+
+    it("ADP-common-013: appendMembershipPage caps a page at 100 edges (seeded backend)", async (ctx) => {
+      const seed = backend.seedMembershipEdges;
+      if (seed === undefined) {
+        ctx.skip();
+        return;
+      }
+      await seed.call(
+        backend,
+        userId(1),
+        Array.from({ length: 101 }, (_, i) => ({
+          edgeKey: `edge-${String(i).padStart(3, "0")}`,
+          workspaceId: WorkspaceId.create(`ws-${i}`),
+          edgeState: "active" as const,
+          membershipId: `membership-${i}`,
+        })),
+      );
+      await store().begin("op-1", userId(1));
+
+      const first = await store().appendMembershipPage("op-1", null, 1_000);
+      expect(first.count).toBe(100);
+      expect(first.nextCursor).toBe("edge-099");
+      const second = await store().appendMembershipPage(
+        "op-1",
+        first.nextCursor,
+        1_000,
+      );
+      expect(second).toEqual({ count: 1, nextCursor: null });
+    });
+
     it("ADP-common-013/017/020: membership pages fix edges and drive prepare/release (seeded backend)", async (ctx) => {
       const seed = backend.seedMembershipEdges;
       if (seed === undefined) {
