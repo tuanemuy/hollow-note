@@ -1,6 +1,6 @@
 // `IdentityLimitExceeded` is missing from the enum in
 // spec/domains/identity.md while `IdentityPolicy.ensureAddable` requires
-// it — treated as a spec omission (spec-sync noted in Issue #1).
+// it — treated as a spec omission.
 export const IdentityErrorCode = {
   InvalidId: "IDENTITY_INVALID_ID",
   InvalidEmail: "IDENTITY_INVALID_EMAIL",

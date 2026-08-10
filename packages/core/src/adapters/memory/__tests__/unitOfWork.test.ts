@@ -4,10 +4,9 @@ import { makePendingUser, userId } from "../../conformance/fixtures";
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
 
 // Backend-local, NOT part of the shared conformance suite: mutex
-// serialization is the in-memory approximation of transaction isolation
-// (ADR-014). A real transactional backend (D1/DO, Issue #11) interleaves
-// callbacks and must still be correct, so the shared suite asserts only
-// per-run atomicity.
+// serialization is the in-memory approximation of transaction isolation.
+// A real transactional backend (D1/DO) interleaves callbacks and must
+// still be correct, so the shared suite asserts only per-run atomicity.
 describe("memory global unit of work serialization (ADR-014)", () => {
   let backend: ConformanceBackend;
 

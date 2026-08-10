@@ -98,8 +98,8 @@ describe("getNote", () => {
       canDelete: true,
       canChangeVisibility: true,
     });
-    // Deliberately no assertion on `references` content here (plan.md):
-    // the report is structurally empty in this slice.
+    // Deliberately no assertion on `references` content here: the report
+    // is structurally empty in this slice.
   });
 
   it("TC-note-168: someone else's private note collapses to NOTE_NOT_FOUND", async () => {

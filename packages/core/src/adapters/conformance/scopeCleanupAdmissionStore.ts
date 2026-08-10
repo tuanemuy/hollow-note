@@ -123,12 +123,10 @@ export function describeScopeCleanupAdmissionStoreContract(
       );
       await store.markCompleted("op-1", retainUntil);
 
-      // Unlike the paged stores, this one keeps a single receipt per
-      // scope, so `limit` has nothing to truncate and a limit-ignoring
-      // backend is indistinguishable here. All this pins is that an
-      // over-cap limit is accepted rather than rejected — the port
-      // contract ("at most `limit` receipts per pass") names no 100-row
-      // page cap, so there is no clamp to verify.
+      // One receipt per scope leaves `limit` nothing to truncate, so a
+      // limit-ignoring backend is indistinguishable here. All this pins
+      // is that an over-cap limit is accepted rather than rejected: the
+      // port contract names no page cap, so there is no clamp to verify.
       expect(await store.pruneCompleted(retainUntil, 1_000)).toBe(1);
     });
 

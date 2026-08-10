@@ -16,8 +16,8 @@ import { makeBlankNote, noteId, scopeOf, userId } from "./fixtures";
  * contract is per-run atomicity, all-or-nothing visibility to a
  * concurrent run, and one relay kick per commit — never a callback
  * interleaving order. The in-memory backend serializes runs behind a
- * mutex (ADR-014); a real transactional backend does not, and both
- * satisfy this suite. Order-sensitive assertions belong in a
+ * mutex; a real transactional backend does not, and both satisfy this
+ * suite. Order-sensitive assertions belong in a
  * backend-local test (`adapters/memory/__tests__/unitOfWork.test.ts`).
  */
 export function describeUnitOfWorkContract(

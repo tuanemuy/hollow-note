@@ -82,7 +82,6 @@ export function createNoteAccessPolicy(
 ): NoteAccessPolicy {
   const policy: NoteAccessPolicy = {
     evaluate: (note, viewer, credential, now) => {
-      // 1. Ownership.
       if (viewer.kind === "user") {
         if (note.owner.type === "user" && note.owner.userId === viewer.userId) {
           return {
@@ -111,16 +110,12 @@ export function createNoteAccessPolicy(
           };
         }
       }
-      // 2. Trash barrier: viewers not settled by ownership never reach a
-      // trashed note.
       if (note.lifecycle === "trashed") {
         return { kind: "denied" };
       }
-      // 3. Public.
       if (note.visibility.status === "public") {
         return READ_ONLY_ACCESS;
       }
-      // 4. Unlisted with a matching token.
       if (
         note.visibility.status === "unlisted" &&
         credential.tokenHash !== null &&
@@ -138,7 +133,6 @@ export function createNoteAccessPolicy(
         }
         return READ_ONLY_ACCESS;
       }
-      // 5. Everything else.
       return { kind: "denied" };
     },
 

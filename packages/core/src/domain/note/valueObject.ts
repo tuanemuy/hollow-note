@@ -62,7 +62,6 @@ const makeTitle = (raw: string, origin: NoteTitleOrigin): NoteTitle => {
       `Note title exceeds maximum length (${TITLE_MAX_LENGTH})`,
     );
   }
-  // An empty title never throws — it falls back to the placeholder.
   return { value: trimmed.length === 0 ? UNTITLED : trimmed, origin };
 };
 

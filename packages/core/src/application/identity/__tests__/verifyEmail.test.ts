@@ -10,9 +10,8 @@ import { overwriteUser, signUpPending } from "./authFlowHelpers";
 
 const HOUR_MS = 60 * 60 * 1000;
 
-// verifyEmail is glue for AC-01 (ADR-005): its TC rows are outside this
-// issue's checklist, so coverage focuses on the end-to-end-critical paths
-// of spec/testcases/identity/verifyEmail.md.
+// verifyEmail is glue for AC-01 (ADR-005), so coverage focuses on the
+// end-to-end-critical paths of spec/testcases/identity/verifyEmail.md.
 describe("verifyEmail", () => {
   it("TC-identity-294: activates the user, consumes the token, and issues a usable session", async () => {
     const h = createTestHarness();

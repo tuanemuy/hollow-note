@@ -21,7 +21,6 @@ const NOTE_INACCESSIBLE_MESSAGE =
  * 文言は §9 の 2 部構成（何が起きたか + 何をすればいいか）に従う。
  */
 const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
-  // 認証・セッション
   UNAUTHENTICATED:
     "サインインが必要です。サインインしてからもう一度お試しください。",
   INVALID_CREDENTIALS:
@@ -37,7 +36,6 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   RATE_LIMITED:
     "操作の回数が上限に達しました。少し待ってからもう一度お試しください。",
 
-  // 登録・プロフィール
   TERMS_NOT_ACCEPTED:
     "利用規約とプライバシーポリシーへの同意が必要です。チェックを入れてからもう一度お試しください。",
   IDENTITY_INVALID_EMAIL:
@@ -47,7 +45,6 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   IDENTITY_WEAK_PASSWORD:
     "パスワードの条件を満たしていません。8 文字以上で、英字と数字の両方を含めてください。",
 
-  // メール確認トークン
   IDENTITY_TOKEN_EXPIRED:
     "この確認リンクは期限が切れています。もう一度サインアップすると、案内が届きます。",
   AUTH_TOKEN_NOT_FOUND:
@@ -55,7 +52,6 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   AUTH_TOKEN_ALREADY_CONSUMED:
     "このリンクはすでに使われています。そのままサインインしてください。",
 
-  // ノート
   NOTE_NOT_FOUND: NOTE_INACCESSIBLE_MESSAGE,
   NOTE_GONE: "このノートは削除されています。ノート一覧からお探しください。",
   NOTE_ACCESS_DENIED: NOTE_INACCESSIBLE_MESSAGE,
@@ -64,7 +60,6 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   NOTE_CONTENT_TOO_LARGE:
     "内容が上限を超えています。分割してからもう一度お試しください。",
 
-  // 競合
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 };
 

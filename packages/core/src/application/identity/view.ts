@@ -15,7 +15,7 @@ export type SignUpView = Readonly<{
  * `sessionToken` is `null` on the `alreadyVerified` replay path — a
  * consumed token never issues a second session (spec/usecases/identity.md
  * verifyEmail 手順3; the spec's output table types it as non-null, which
- * cannot represent that path — noted as a spec-sync candidate).
+ * cannot represent that path).
  */
 export type VerifyEmailView = Readonly<{
   userId: string;

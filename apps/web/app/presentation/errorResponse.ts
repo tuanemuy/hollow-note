@@ -180,7 +180,7 @@ function asSerializedError(value: unknown): SerializedError | null {
  * hosts several module graphs (ssr / rsc / server-fn split), each with
  * its own copy of this class, so an instance built by the middleware in
  * one graph fails `instanceof` against another graph's class — which
- * silently downgraded every thrown error to seroval's shallow
+ * silently downgrades every thrown error to seroval's shallow
  * message-only Error. Structural detection is graph-independent.
  */
 export function isAppServerErrorShaped(

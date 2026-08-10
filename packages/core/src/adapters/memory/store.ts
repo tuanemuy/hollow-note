@@ -254,7 +254,7 @@ export type ManifestItemRow =
 
 /**
  * Placeholder source for `AccountDeletionManifestStore.appendMembershipPage`
- * until the Workspace domain lands in slice #3. The table key is opaque:
+ * until the Workspace domain lands. The table key is opaque:
  * the page scan filters on the `userId` field and orders by `edgeKey`, so
  * a seeder may key rows however it likes as long as keys stay unique.
  */

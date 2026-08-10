@@ -9,9 +9,8 @@ import { buildHead } from "@/presentation/head";
 import { renderNoteList } from "./-action";
 
 export const Route = createFileRoute("/notes/")({
-  // Streaming loader (todo 参照実装のパターン): unresolved RSC promise を
-  // 転送し、Suspense + Deferred が受ける。鮮度は各ミューテーションの
-  // `router.invalidate()` が担う。
+  // 無期限で持てるのは、鮮度を各ミューテーションの `router.invalidate()`
+  // が担うため。
   staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
   beforeLoad: async ({ location }) => {
     const user = await requireAuthenticated(location.href);

@@ -6,18 +6,10 @@ import { FakeLogger } from "../../__tests__/fakes";
 import { pruneOutbox } from "../outboxPrune";
 
 /**
- * Unit tests for `pruneOutbox`.
- *
- * The worker is just a thin orchestrator around the repository — these tests
- * pin the contract:
- *
- * - Cutoff = `clock.now() - retentionMs`, computed exactly once.
- * - Repository receives that cutoff as a `Date`.
- * - Result count is forwarded verbatim.
- * - An info log line is emitted with structured metadata.
- *
- * No DB is touched; the `OutboxRepository` is faked through a vitest mock so
- * we can assert exactly which `Date` reaches the adapter.
+ * The worker is a thin orchestrator around the repository, so the
+ * `OutboxRepository` is faked through a vitest mock instead of a DB —
+ * that is what lets these tests assert exactly which `Date` cutoff
+ * reaches the adapter.
  */
 
 function makeFixedClock(at: Date): Clock {
@@ -94,7 +86,7 @@ function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
 describe("pruneOutbox", () => {
   it("computes the cutoff as clock.now() - retentionMs and forwards it to the repository", async () => {
     const now = new Date("2026-04-27T12:00:00Z");
-    const retentionMs = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const retentionMs = 7 * 24 * 60 * 60 * 1000;
     let received: Date | undefined;
     const outboxRepository = makeStubOutboxRepository({
       deleted: 3,

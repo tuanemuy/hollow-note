@@ -5,8 +5,8 @@ import { BrandMark } from "@/components/ui/BrandMark";
 /**
  * L-01 アプリシェル（最小形、spec/pages/index.md#L-01）。上部バーに
  * マーク・スコープトークン（本スライスは個人固定）・パレットトリガー
- * （未機能 — ステップ11 の指定どおり disabled で置く）・アカウント
- * メニューを載せる。アップロード・ティッカーは対応機能が本スライス外。
+ * （未機能のため disabled で置く）・アカウントメニューを載せる。
+ * アップロード・ティッカーは対応機能が本スライス外。
  */
 export function AppShell({
   displayName,

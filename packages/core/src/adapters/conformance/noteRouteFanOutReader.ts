@@ -106,7 +106,6 @@ export function describeNoteRouteFanOutReaderContract(
           expiresAt,
         });
       };
-      // note 4 stays reserved; note 5 is mid-move, note 6 is mid-purge.
       await reserve(4);
       await reserve(5);
       await backend.noteRouteStore.activateCreate({

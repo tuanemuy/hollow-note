@@ -6,5 +6,4 @@ export const content: Omit<AppConfig, "appUrl"> = {
   defaultDescription:
     "あらゆるファイルをHTMLに変換して保存・共有するサービス。",
   themeColor: "#ffffff",
-  // twitterHandle: "@example",
 };

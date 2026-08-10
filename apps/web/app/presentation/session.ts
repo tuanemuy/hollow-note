@@ -16,9 +16,8 @@ import { loadServerDeps } from "./serverAction";
  *
  * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside
  * dev (the spec mandates it unconditionally; dev over plain http is the
- * one accepted degradation — recorded in the Issue #1 deferral list),
- * no `Domain`, and `Expires` = the session's server-side expiry so the
- * cookie never outlives the row.
+ * one accepted degradation), no `Domain`, and `Expires` = the session's
+ * server-side expiry so the cookie never outlives the row.
  */
 const SESSION_COOKIE_NAME = "hollow_session";
 
@@ -89,10 +88,10 @@ export function clearPendingVerificationCookie(): void {
 }
 
 /**
- * The usecase views expose `sessionToken` but not the row's `expiresAt`
- * (spec-sync candidate — ADR-024), so the cookie expiry is re-derived
- * from the same domain constant. The sub-second skew against the row
- * only ever makes the cookie the earlier of the two.
+ * The usecase views expose `sessionToken` but not the row's `expiresAt`,
+ * so the cookie expiry is re-derived from the same domain constant. The
+ * sub-second skew against the row only ever makes the cookie the earlier
+ * of the two.
  */
 export function sessionCookieExpiry(now: Date): Date {
   return new Date(now.getTime() + Session.ttlMs);

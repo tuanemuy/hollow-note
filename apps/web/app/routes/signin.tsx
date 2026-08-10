@@ -22,8 +22,6 @@ export const Route = createFileRoute("/signin")({
     });
     return { meta, links };
   },
-  // errorComponent は置かない: 失敗は router.tsx の
-  // `defaultErrorComponent`（P-46 共通表示）へ委譲する。
   component: SignInPage,
 });
 

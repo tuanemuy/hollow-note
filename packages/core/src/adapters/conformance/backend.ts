@@ -59,9 +59,8 @@ export type MembershipEdgeSeedInput = Readonly<{
 
 /**
  * Everything a backend must provide to run the shared port-conformance
- * suites. `adapters/memory` is the reference implementation; the D1/DO
- * backend (Issue #11) implements the same factory and imports the same
- * suites.
+ * suites. `adapters/memory` is the reference implementation; a D1/DO
+ * backend implements the same factory and imports the same suites.
  *
  * Suites always obtain a **fresh** backend per test via the factory, so
  * implementations must not share state across factory calls.
@@ -96,8 +95,8 @@ export type ConformanceBackend = Readonly<{
   forScope(scope: ScopeKey): ScopedConformancePorts;
   /**
    * Seeds workspace membership edges for `appendMembershipPage` until the
-   * Workspace domain exists (slice #3). Optional — suites skip the
-   * page-content cases when a backend cannot seed.
+   * Workspace domain exists. Optional — suites skip the page-content
+   * cases when a backend cannot seed.
    */
   seedMembershipEdges?(
     userId: UserId,

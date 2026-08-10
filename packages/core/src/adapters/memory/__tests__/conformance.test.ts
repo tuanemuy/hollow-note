@@ -23,8 +23,7 @@ import { describeUserRepositoryContract } from "../../conformance/userRepository
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
 
 // The full shared port-conformance suite run against the in-memory
-// backend. Issue #11's D1/DO backend imports the same suites with its
-// own factory.
+// backend. A D1/DO backend imports the same suites with its own factory.
 const BACKEND = "memory";
 
 describeUnitOfWorkContract(BACKEND, makeMemoryConformanceBackend);

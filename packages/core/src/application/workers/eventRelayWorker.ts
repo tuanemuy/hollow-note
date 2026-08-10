@@ -105,26 +105,15 @@ export const DEFAULT_BATCH_SIZE = 100;
 // user-visible retry count is the product of the two — keep this low to
 // avoid the multiplication producing surprising attempt counts.
 export const DEFAULT_MAX_ATTEMPTS = 2;
-export const DEFAULT_LEASE_MS = 5 * 60 * 1000; // 5 min
+export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_MAX_ITERATIONS = 10;
-const MAX_BACKOFF_MS = 60 * 60 * 1000; // 1h ceiling
+const MAX_BACKOFF_MS = 60 * 60 * 1000;
 
 // Exponential backoff with a 30s base and a 1h cap. `attempts` is
-// 1-based (the value after the increment in `planFailure`). Schedule:
-//
-//   attempts | delay
-//   ---------|-------
-//   1        | 30s
-//   2        | 60s
-//   3        | 2m
-//   4        | 4m
-//   5        | 8m
-//   6        | 16m
-//   7        | 32m
-//   8+       | 1h (capped)
-//
-// With `DEFAULT_MAX_ATTEMPTS = 2`, only `attempts=1` actually fires;
-// the table matters when callers raise `maxAttempts`.
+// 1-based (the value after the increment in `planFailure`), so the first
+// retry waits 30s. With `DEFAULT_MAX_ATTEMPTS = 2` only that first delay
+// ever fires; the rest of the curve matters when callers raise
+// `maxAttempts`.
 const defaultBackoffMs = (attempts: number): number =>
   Math.min(2 ** Math.max(attempts - 1, 0) * 30_000, MAX_BACKOFF_MS);
 

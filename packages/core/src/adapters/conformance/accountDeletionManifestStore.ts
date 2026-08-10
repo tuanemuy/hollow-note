@@ -21,7 +21,7 @@ const FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
  * command-key claiming, and terminal retention.
  *
  * Membership-page content cases run only when the backend provides
- * `seedMembershipEdges` (the Workspace domain arrives in slice #3).
+ * `seedMembershipEdges`; the Workspace domain does not exist yet.
  */
 export function describeAccountDeletionManifestStoreContract(
   backendName: string,

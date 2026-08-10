@@ -67,7 +67,6 @@ describe("createScryptPasswordHasher (ADP-identity-027/028)", () => {
         forged({ salt: randomBytes(8).toString("base64url") }),
       ),
     ).toBe(false);
-    // The unforged hash still verifies.
     expect(await hasher.verify(password, hash)).toBe(true);
   });
 });
