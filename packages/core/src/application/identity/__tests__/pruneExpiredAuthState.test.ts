@@ -581,11 +581,16 @@ describe("pruneExpiredAuthState", () => {
     expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
   });
 
-  it("a lane whose release fails is reported as unfinished work, not as a completed run", async () => {
-    // `PRUNE_LEASE_OWNER` is a process constant, so this process's next
-    // cron renews its own lease and the lapsed-lease reclaim never fires
-    // for a lane it failed to hand back. Reporting `continued: false`
-    // there would claim the run is done while a lane stays claimed.
+  it("a failing lane release is logged rather than thrown, and leaves the lane claimed with the run still unfinished", async () => {
+    // The release runs on the way out, including out of a throw whose own
+    // cause makes the release fail too, so it must not rethrow — the run
+    // still returns its view. What it must not do is hide the
+    // consequence: the lane stays `claimed`, and `PRUNE_LEASE_OWNER`
+    // being a process constant means this process's next cron renews its
+    // own lease, so the lapsed-lease reclaim never fires for it.
+    // `continued: true` here is produced by the unnamable-next-table path
+    // this fixture reuses, not by the release failure — the assignment in
+    // `releaseLane`'s catch is defensive and has no observable path yet.
     const h = createTestHarness({
       maintenanceTablesByKind: {
         authStatePrune: ["oauth_flow_states", "sessions"],

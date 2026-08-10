@@ -248,7 +248,9 @@ async function runCron(
       // so the failure is not rethrown. It still has to be reported as
       // unfinished work: `PRUNE_LEASE_OWNER` is a process constant, so
       // this process's next cron renews its own lease and the lapsed-lease
-      // reclaim never fires for a lane it failed to hand back.
+      // reclaim never fires for a lane it failed to hand back. Defensive
+      // today — every current call site already marks work remaining, so
+      // only a future one could observe this.
       workRemains = true;
       logger.error("[pruneExpiredAuthState] lane release failed", {
         cause,
