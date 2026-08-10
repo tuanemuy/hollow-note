@@ -6,6 +6,7 @@ import type { LoginAttemptStore } from "@repo/core/domain/identity/ports/loginAt
 import type { PasswordHasher } from "@repo/core/domain/identity/ports/passwordHasher";
 import type { SecureTokenGenerator } from "@repo/core/domain/identity/ports/secureTokenGenerator";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
+import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
@@ -24,6 +25,7 @@ import type { IdGenerator } from "../ports/idGenerator";
 import type { Logger } from "../ports/logger";
 import type { MailSender } from "../ports/mailSender";
 import type { NoteRouteStore } from "../ports/noteRouteStore";
+import type { OAuthStateStore } from "../ports/oauthStateStore";
 import type { ObjectStorage } from "../ports/objectStorage";
 import type { OutboxRepository } from "../ports/outboxRepository";
 import type { ScopeRouter } from "../ports/scopeRouter";
@@ -103,7 +105,13 @@ export type UsageReader = Readonly<{
  * the spec places outside the transaction: the uniqueness-reservation
  * saga (`identityUniqueDirectory`), the note-route saga
  * (`noteRouteStore`), the atomic login-attempt counter
- * (`loginAttemptStore`), and the pure read views above.
+ * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
+ * atomic step (`oauthStateStore`), and the pure read views above.
+ *
+ * `oauthDevMode` is not a port but the one flag the composition root
+ * publishes about its own OAuth wiring (ADR-021): the dev consent route
+ * reads it instead of `process.env`, so no request-path code inspects
+ * the environment directly.
  *
  * Intentionally does NOT carry `outboxRepository` or `idempotencyStore`:
  * those are worker concerns. A request that needs to enqueue a domain
@@ -118,6 +126,9 @@ export type RequestContainer = SharedDeps &
     noteRouteStore: NoteRouteStore;
     identityUniqueDirectory: IdentityUniqueDirectory;
     loginAttemptStore: LoginAttemptStore;
+    oauthStateStore: OAuthStateStore;
+    signInOAuthClient: SignInOAuthClient;
+    oauthDevMode: boolean;
     userReader: UserReader;
     identityReader: IdentityReader;
     sessionReader: SessionReader;

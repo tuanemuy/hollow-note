@@ -706,3 +706,127 @@ Proposed
 ### Consequences
 - 良い点: 三態とクールダウンの実装が 1 本になり、P-02 / P-03 で挙動がずれない。テーマ C（P-01 / P-02 の Google 導線）が `SignInForm` を触っても再送側と衝突しない。
 - トレードオフ: `components/auth/SignInForm/` の所有ステップ（12）が、ステップ 12 の対象ファイル一覧に無いディレクトリを 1 つ増やす。後続テーマ（15 / 17）は `SignInForm/index.tsx` の `PhaseAlert` に追記するだけでよく、再送側には触れない。
+
+---
+
+## ADR-033: `packages/core` の no-barrel 規約に合わせ、OAuth アダプターの選択は `adapters/oauth/signInOAuthClient.ts` が持つ
+
+### Status
+Accepted
+
+### Context
+steps.md ステップ 13 は `adapters/oauth/{googleSignInOAuthClient.ts,devSignInOAuthClient.ts,index.ts}` を対象ファイルに挙げていたが、`@repo/core` の `exports` は `"./*": "./src/*.ts"` の 1 行だけで、`@repo/core/adapters/oauth` は `src/adapters/oauth.ts` に解決される。ディレクトリの `index.ts` は import できない（CLAUDE.md「there is no barrel to import from」）。
+
+### Decision
+選択規則（`OAuthRuntimeConfig` と `createSignInOAuthClient`）は `packages/core/src/adapters/oauth/signInOAuthClient.ts` に置き、`@repo/core/adapters/oauth/signInOAuthClient` として import する。S256 導出だけは両アダプターが共有するので `adapters/oauth/pkce.ts` に分ける（`signInOAuthClient.ts` に置くと、それを import する 2 つのアダプターとの間で循環になる）。
+
+### Consequences
+- 良い点: 既存の「1 サブパス = 1 ファイル」の解決規則を崩さない。
+- トレードオフ: steps.md のファイル名と 1 つずれる。後続で OAuth アダプターを増やす場合も `index.ts` は作らない。
+
+---
+
+## ADR-034: `SystemError(ExternalServiceError)` は既存 enum の `EXTERNAL_API_ERROR` に写す
+
+### Status
+Accepted
+
+### Context
+spec/domains/identity.md の `SignInOAuthClient` は通信失敗を `SystemError(ExternalServiceError)` と書くが、`application/errors.ts` の `SystemErrorCode` に `ExternalServiceError` は無く、外部サービス起因の枠は `ExternalApiError`（`EXTERNAL_API_ERROR`、retryable）である。
+
+### Decision
+新しいコードを足さず `SystemErrorCode.ExternalApiError` を使う。名前は違うが意味（外部サービスとの通信・応答の失敗、再試行可能）は同じで、コードを 2 つ持つと presentation の分類が二重になる。spec 側の呼称ずれはステップ 34 の spec-sync 候補として記録する。
+
+### Consequences
+- 良い点: 既存の retryable 判定・HTTP マッピングにそのまま乗る。
+- トレードオフ: spec の文字列と実コードの enum 名が一致しない期間が残る。
+
+---
+
+## ADR-035: sub-operation ID は sha256 ではなく構成で導出する
+
+### Status
+Accepted
+
+### Context
+spec/usecases/identity.md「Identity uniqueness の物理shard境界」は `reservationOperationId = sha256(parentOperationId + ":" + kind + ":" + normalizedKey)` を規定する。しかしこの導出はユースケース（`application/identity/uniqueness.ts`）が行うもので、application 層に SHA-256 の実装（`node:crypto` か WebCrypto）を持ち込むことになる。application 層は横断的関心事をポート越しに扱う規約で、ハッシュを渡すためだけのポートを 1 本増やすのも過剰である。
+
+### Decision
+`${parentOperationId}:${kind}:${normalizedKey}` の構成で導出する。要求されている性質は「決定的であること」と「同一 parent 内で kind / key ごとに異なること」の 2 つだけで、`kind` は `:` を含まない閉じた列挙、自由文字列である `normalizedKey` は最後に来るため、構成だけで一意性は保たれる。
+
+### Consequences
+- 良い点: application 層がハッシュ実装を持たずに済み、応答喪失後の再導出も同じ値になる。
+- トレードオフ: 予約行の `operation_id` 列が固定長でなくなる（実バックエンドでは最大 ~320 文字を見込む必要がある）。spec の記述との差はステップ 34 の spec-sync 候補として記録する。ステップ 20 / 23 / 30 も同じヘルパーを使うので、変えるなら 1 箇所で変えられる。
+
+---
+
+## ADR-036: OAuth コールバックのディスパッチャーを application に置き、ユースケースは spec の入力 DTO を保つ
+
+### Status
+Accepted
+
+### Context
+ADR-007 は「ルート側は state を取り出して 1 本の server function に渡し、application 側のディスパッチャーが intent でユースケースを選ぶ」と決めた。しかし `OAuthStateStore.take` は原子的な取り出し + 削除で、覗き見る手段が無い。一方 spec の `completeOAuthSignIn` / `linkOAuthIdentity` の入力 DTO はどちらも `{ state, code }` で、自分で `take` する形になっている。ディスパッチャーが先に `take` すると、ユースケースの入力 DTO を spec から変えることになる。
+
+### Decision
+2 つの入口を持たせる。
+
+- `application/identity/completeOAuthCallback.ts` — ルートが呼ぶディスパッチャー。`take` して `intent` で分岐し、`provider` がパスと一致しなければ `OAUTH_STATE_INVALID`。
+- `completeOAuthSignIn({ state, code })` — spec どおりの入口。自分で `take` し、`intent !== "signIn"` なら `OAUTH_STATE_INVALID`。本体は `completeOAuthSignInForFlow(container, flow, code)` に切り出し、ディスパッチャーはこちらを呼ぶ。
+
+1 回の要求で `take` が走るのは常に 1 回だけ（入口はどちらか一方）で、二重消費は起きない。
+
+### Consequences
+- 良い点: TC-identity-024..038 は spec の入力 DTO のまま検証でき、ルートは ADR-007 の形（1 本の server function → intent 分岐）を保つ。ステップ 20 は `linkIdentity` の case を差し替えるだけで済む。
+- トレードオフ: 同じ処理への入口が 2 つある。`completeOAuthSignInForFlow` を直接呼んでよいのはディスパッチャーだけ、という規約が JSDoc にしか無い。
+
+---
+
+## ADR-037: dev IdP の認可コードは署名しない
+
+### Status
+Accepted
+
+### Context
+dev IdP の同意画面（`apps/web`）が作る認可コードを、dev アダプター（`packages/core`）が復号する。両者は同一プロセスだが SSR / RSC で**別のモジュールグラフ**に載る（`server.node.ts` が ALS を `globalThis` に固定しているのはこのため）ので、モジュールレベルのランダム鍵で HMAC を付けると書き手と読み手で鍵が食い違う。
+
+### Decision
+コードは `base64url(JSON)` の素の封筒にし、署名を持たせない。改竄耐性の代わりに (a) 厳格なスキーマ検査（壊れた値は `OAUTH_CODE_INVALID`）と (b) **PKCE 検証**を置く: 封筒に認可要求の `code_challenge` を載せ、`exchangeCode` が `deriveCodeChallenge(codeVerifier)` と突き合わせる。これにより「リダイレクトから盗んだ code だけでは交換できない」という本番と同じ性質が dev でも成立する。
+
+### Consequences
+- 良い点: 鍵の受け渡し経路を作らずに済み、PKCE の往復が dev でも実際に検証される（適合スイートの `offline` 側がこれを固定する）。
+- トレードオフ: dev IdP のコードは誰でも組み立てられる。`OAUTH_DEV_MODE` が真の環境でしか通らず、その環境は production と併用できない（ADR-003）ため許容する。
+
+---
+
+## ADR-038: P-05 の「キャンセル」はコールバック画面に留まり、サインインへは明示のリンクで戻す
+
+### Status
+Accepted
+
+### Context
+モック P05-oauth-callback.html の状態 2（キャンセル）は、コールバック画面に留まって「元の画面に戻る」ボタンを出す形になっている。一方 `spec/manual-tests/account.md` TC-40 手順 2 の期待結果は「サインイン画面に戻り、キャンセルされたことが示される」で、自動遷移とも読める。自動遷移にすると、キャンセルの事実を伝えるために `/signin` に検索パラメーターを足し、`SignInForm` にその表示を足すことになる（`SignInForm` はステップ 12 の所有で、ステップ 15 は追記のみの約束）。
+
+### Decision
+モックに従い、コールバック画面（P-05）にキャンセル状態を出し、主導線として `/signin` へのリンク「サインインに戻る」を置く。`/signin` 側には何も足さない。
+
+### Consequences
+- 良い点: 所有ステップの約束を破らずに済み、P-05 の 5 状態がすべて 1 画面に収まる。
+- トレードオフ: TC-40 手順 2 の「サインイン画面に戻り」はワンクリック挟む形になる。マニュアルテスト実行時はこの読み替えで判定する。
+
+---
+
+## ADR-039: `startOAuthFlow` の `linkIdentity` は非 active な主体を `UnauthorizedError("UNAUTHENTICATED")` で断る
+
+### Status
+Accepted
+
+### Context
+TC-identity-266 は「削除開始済みまたは削除済みの利用者が `intent: "linkIdentity"` で開始する」→「OAuth state を作らず、認証済み利用者として扱わない」を求めるが、spec の `startOAuthFlow` エラー表には該当行が無い（未知プロバイダーと `INVALID_REDIRECT` の 2 行だけ）。
+
+### Decision
+`UnauthorizedError("UNAUTHENTICATED")` を投げる。期待結果の文言そのもの（「認証済み利用者として扱わない」）であり、presentation では 401 に写って既存の「サインインが必要です」に収束する。`pending` も同じ扱いにする（メール未確認の利用者は認証済みの主体ではない）。
+
+### Consequences
+- 良い点: 状態を漏らさず、既存のエラー表示辞書をそのまま使える。
+- トレードオフ: spec のエラー表に行が 1 つ増える（ステップ 34 の spec-sync 候補）。

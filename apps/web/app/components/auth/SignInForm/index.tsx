@@ -18,6 +18,7 @@ import {
   inputInvalidClass,
   submitButtonClass,
 } from "../formStyles";
+import { OAuthButton } from "../OAuthButton";
 import { ResendVerificationForm } from "../ResendVerificationForm";
 import { signInFn } from "./action";
 
@@ -234,6 +235,8 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
           {isPending ? "サインイン中..." : "サインイン"}
         </button>
       </form>
+
+      <OAuthButton provider="google" redirectTo={redirectTo} />
 
       <p className="mt-8 text-center text-sm text-ink-secondary">
         アカウントがまだですか？{" "}

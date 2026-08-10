@@ -9,6 +9,7 @@ import {
   bindNodeRelayTrigger,
   createNodeRequestContainer,
   createNodeWorkerContainer,
+  initNodeRuntime,
   nodeServerEnvToTuningEnv,
   readNodeRequestServerConfig,
   readNodeServerEnv,
@@ -85,6 +86,9 @@ function withSecurityHeaders(response: Response): Response {
 
 export async function boot(): Promise<NodeServerBoot> {
   const env = readNodeServerEnv();
+  // Before any container: the runtime is a process-wide singleton, so the
+  // first `create*Container` call would otherwise freeze env-less defaults.
+  initNodeRuntime(env);
   const logger = ConsoleLogger;
 
   const workerContainer = createNodeWorkerContainer();

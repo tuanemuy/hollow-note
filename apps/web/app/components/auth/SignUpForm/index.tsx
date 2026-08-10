@@ -18,6 +18,7 @@ import {
   inputInvalidClass,
   submitButtonClass,
 } from "../formStyles";
+import { OAuthButton } from "../OAuthButton";
 import {
   DISPLAY_NAME_MAX_LENGTH,
   PASSWORD_MAX_LENGTH,
@@ -319,6 +320,8 @@ export function SignUpForm() {
           {isPending ? "送信中..." : "アカウントを作る"}
         </button>
       </form>
+
+      <OAuthButton provider="google" redirectTo={null} />
 
       <p className="mt-8 text-center text-sm text-ink-secondary">
         アカウントをお持ちですか？{" "}

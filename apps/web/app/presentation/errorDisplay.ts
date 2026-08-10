@@ -52,6 +52,25 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   AUTH_TOKEN_ALREADY_CONSUMED:
     "このリンクはすでに使われています。そのままサインインしてください。",
 
+  OAUTH_STATE_INVALID:
+    "認可の手続きが途中で切れました。もう一度サインインからやり直してください。",
+  OAUTH_CODE_INVALID:
+    "認可の手続きを完了できませんでした。もう一度サインインからやり直してください。",
+  OAUTH_EMAIL_UNVERIFIED:
+    "メールアドレスが確認されていないため、この方法ではサインインできません。プロバイダー側でメールアドレスを確認してからお試しください。",
+  EXISTING_ACCOUNT_UNVERIFIED:
+    "このメールアドレスは登録済みですが、確認が済んでいません。確認メールのリンクを開いてからお試しください。",
+  ACCOUNT_UNAVAILABLE:
+    "このアカウントは使用できません。削除の処理が完了するまでサインインできません。",
+  PROVIDER_ACCOUNT_ALREADY_LINKED:
+    "この外部アカウントは別の利用者に紐づいています。別のアカウントでお試しください。",
+  IDENTITY_LIMIT_EXCEEDED:
+    "登録できるログイン方法は 8 件までです。使っていない方法を解除してからお試しください。",
+  INVALID_REDIRECT:
+    "遷移先が正しくありません。もう一度最初からお試しください。",
+  USER_REQUIRED:
+    "サインインが必要です。サインインしてからもう一度お試しください。",
+
   NOTE_NOT_FOUND: NOTE_INACCESSIBLE_MESSAGE,
   NOTE_GONE: "このノートは削除されています。ノート一覧からお探しください。",
   NOTE_ACCESS_DENIED: NOTE_INACCESSIBLE_MESSAGE,

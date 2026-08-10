@@ -18,6 +18,8 @@ import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
+import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
+import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -64,6 +66,16 @@ const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
   path: '/notes/$noteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthCallbackProviderRoute = AuthCallbackProviderRouteImport.update({
+  id: '/auth/callback/$provider',
+  path: '/auth/callback/$provider',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DevOauthAuthorizeRoute = DevOauthAuthorizeRouteImport.update({
+  id: '/dev/oauth/authorize',
+  path: '/dev/oauth/authorize',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -75,6 +87,8 @@ export interface FileRoutesByFullPath {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/notes/': typeof NotesIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -86,6 +100,8 @@ export interface FileRoutesByTo {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/notes': typeof NotesIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -98,6 +114,8 @@ export interface FileRoutesById {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/notes/': typeof NotesIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -111,6 +129,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/notes/'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -122,6 +142,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/notes'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   id:
     | '__root__'
     | '/'
@@ -133,6 +155,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/notes/'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -145,6 +169,8 @@ export interface RootRouteChildren {
   VerifyEmailRoute: typeof VerifyEmailRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
   NotesIndexRoute: typeof NotesIndexRoute
+  AuthCallbackProviderRoute: typeof AuthCallbackProviderRoute
+  DevOauthAuthorizeRoute: typeof DevOauthAuthorizeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -212,6 +238,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesNoteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/callback/$provider': {
+      id: '/auth/callback/$provider'
+      path: '/auth/callback/$provider'
+      fullPath: '/auth/callback/$provider'
+      preLoaderRoute: typeof AuthCallbackProviderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dev/oauth/authorize': {
+      id: '/dev/oauth/authorize'
+      path: '/dev/oauth/authorize'
+      fullPath: '/dev/oauth/authorize'
+      preLoaderRoute: typeof DevOauthAuthorizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -225,6 +265,8 @@ const rootRouteChildren: RootRouteChildren = {
   VerifyEmailRoute: VerifyEmailRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
   NotesIndexRoute: NotesIndexRoute,
+  AuthCallbackProviderRoute: AuthCallbackProviderRoute,
+  DevOauthAuthorizeRoute: DevOauthAuthorizeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

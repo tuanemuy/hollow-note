@@ -58,6 +58,8 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | Variable              | Required | Default                 | Purpose                                                                             |
 | --------------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
 | `APP_URL`             | yes      | `http://localhost:3000` | Public origin used to build absolute URLs (verification links, share URLs).         |
+| `OAUTH_DEV_MODE`      | see below | —                      | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Refused together with `NODE_ENV=production`. |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | see below | — | Google OpenID Connect credentials. Authorized redirect URI: `${APP_URL}/auth/callback/google`. |
 | `PORT`                | no       | `3000`                  | HTTP listener port.                                                                 |
 | `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
 | `OUTBOX_BATCH_SIZE`   | no       | `100`                   | Max outbox rows claimed per relay tick.                                             |
@@ -65,6 +67,16 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | `OUTBOX_MAX_ATTEMPTS` | no       | `2`                     | Per-event max attempts before quarantine (`failed_at` stamp).                       |
 | `OUTBOX_RETENTION_MS` | no       | `604800000` (7 days)    | Retention window before processed outbox rows are pruned.                           |
 | `MEMORY_MAIL_LOG_ACTION_URL` | no | `false`              | `true` logs the action URL (verification link, raw token) on `mail.sent`. Manual testing only. |
+
+### Choosing an OAuth identity provider
+
+Boot picks exactly one sign-in provider and **fails if it cannot** — there is no silent fallback to a fake:
+
+1. `OAUTH_DEV_MODE=true` → the loopback dev IdP. It serves its own consent screen at `/dev/oauth/authorize` (the route 404s whenever the flag is off), so the approve *and* cancel paths of the OAuth flow are reachable without Google credentials. Combining it with `NODE_ENV=production` is a startup error.
+2. Otherwise `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` → real Google.
+3. Neither → startup error.
+
+If you already have an `apps/web/.env` from an earlier revision, **add `OAUTH_DEV_MODE=true` to it**; without one of the two setups the server no longer boots.
 
 The share-token encryption key ring is minted fresh at process start (ephemeral AES-256-GCM key). Existing share URLs therefore survive only as long as the process — consistent with the rest of the in-memory model.
 

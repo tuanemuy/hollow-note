@@ -35,6 +35,10 @@ import {
   MemoryBackend,
   type MemoryBackendOptions,
 } from "@repo/core/adapters/memory/store";
+import {
+  createSignInOAuthClient,
+  type OAuthRuntimeConfig,
+} from "@repo/core/adapters/oauth/signInOAuthClient";
 import { ConsoleLogger } from "../ports/logger";
 import type { RelayTrigger } from "../ports/relayTrigger";
 import type { ScopeKey } from "../scope";
@@ -51,6 +55,13 @@ export type MemoryRuntimeOptions = MemoryBackendOptions &
   Readonly<{
     shareTokenKeyRing?: ShareTokenKeyRing;
     routingGenerations?: readonly string[];
+    /**
+     * Which sign-in identity provider to talk to (ADR-003). Defaults to
+     * the loopback dev IdP: the selection rules and their startup guards
+     * belong to the runtime env schema (`di/serverNode.ts`), not here —
+     * `createTestHarness` has no env and must stay constructible.
+     */
+    oauth?: OAuthRuntimeConfig;
   }>;
 
 export type MemoryRuntime = Readonly<{
@@ -81,7 +92,12 @@ const ephemeralKeyRing = (): ShareTokenKeyRing => ({
 export function createMemoryRuntime(
   options: MemoryRuntimeOptions = {},
 ): MemoryRuntime {
-  const { shareTokenKeyRing, routingGenerations, ...backendOptions } = options;
+  const {
+    shareTokenKeyRing,
+    routingGenerations,
+    oauth = { mode: "dev" },
+    ...backendOptions
+  } = options;
   const backend = new MemoryBackend(backendOptions);
 
   // The key ring must share the backend's lifetime: minting it per
@@ -154,6 +170,11 @@ export function createMemoryRuntime(
         noteRouteStore: createMemoryNoteRouteStore(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
         loginAttemptStore,
+        oauthStateStore,
+        // Built per container because the dev IdP's consent screen lives
+        // under the app's own origin, which only `config` knows.
+        signInOAuthClient: createSignInOAuthClient(oauth, config.appUrl),
+        oauthDevMode: oauth.mode === "dev",
         userReader: createMemoryUserRepository(backend),
         identityReader: createMemoryIdentityRepository(backend),
         sessionReader: sessionRepository,

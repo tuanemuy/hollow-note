@@ -22,6 +22,8 @@ import "@/components/auth/VerifyEmailPanel/action";
 import "@/components/auth/ResendVerificationForm/action";
 import "@/components/layout/AccountMenu/action";
 import "@/components/note/CreateNoteButton/action";
+import "@/routes/auth/-action";
+import "@/routes/dev/-action";
 
 export const loadAppContext = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])

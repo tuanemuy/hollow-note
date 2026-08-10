@@ -1,29 +1,80 @@
+import type { OAuthRuntimeConfig } from "@repo/core/adapters/oauth/signInOAuthClient";
 import { content } from "@repo/core/config";
 import { z } from "zod";
 import type { RelayTrigger } from "../ports/relayTrigger";
 import type { TuningEnv } from "./env";
-import { createMemoryRuntime, type MemoryRuntime } from "./memoryRuntime";
+import {
+  createMemoryRuntime,
+  type MemoryRuntime,
+  type MemoryRuntimeOptions,
+} from "./memoryRuntime";
 import type { AppConfig, RequestContainer, WorkerContainer } from "./types";
 
 export type NodeServerEnv = Readonly<{
   APP_URL: string;
   PORT?: string | undefined;
   HOSTNAME?: string | undefined;
+  NODE_ENV?: string | undefined;
+  OAUTH_DEV_MODE?: string | undefined;
+  GOOGLE_OAUTH_CLIENT_ID?: string | undefined;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string | undefined;
   OUTBOX_BATCH_SIZE?: string | undefined;
   OUTBOX_LEASE_MS?: string | undefined;
   OUTBOX_MAX_ATTEMPTS?: string | undefined;
   OUTBOX_RETENTION_MS?: string | undefined;
 }>;
 
-const nodeServerEnvSchema = z.object({
-  APP_URL: z.string().min(1, "APP_URL is required"),
-  PORT: z.string().optional(),
-  HOSTNAME: z.string().optional(),
-  OUTBOX_BATCH_SIZE: z.string().optional(),
-  OUTBOX_LEASE_MS: z.string().optional(),
-  OUTBOX_MAX_ATTEMPTS: z.string().optional(),
-  OUTBOX_RETENTION_MS: z.string().optional(),
-});
+const isTrue = (value: string | undefined): boolean => value === "true";
+
+const nonEmpty = (value: string | undefined): value is string =>
+  value !== undefined && value.length > 0;
+
+/**
+ * Boot-time OAuth provider selection (ADR-003). Expressed as a refinement
+ * of the env schema — not inside `createMemoryRuntime` — because the
+ * runtime is also built by `createTestHarness`, which has no env and must
+ * never be able to fail these rules.
+ */
+const OAUTH_SETUP_HINT =
+  "add `OAUTH_DEV_MODE=true` to apps/web/.env for local development, or set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET";
+
+const nodeServerEnvSchema = z
+  .object({
+    APP_URL: z.string().min(1, "APP_URL is required"),
+    PORT: z.string().optional(),
+    HOSTNAME: z.string().optional(),
+    NODE_ENV: z.string().optional(),
+    OAUTH_DEV_MODE: z.string().optional(),
+    GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+    GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+    OUTBOX_BATCH_SIZE: z.string().optional(),
+    OUTBOX_LEASE_MS: z.string().optional(),
+    OUTBOX_MAX_ATTEMPTS: z.string().optional(),
+    OUTBOX_RETENTION_MS: z.string().optional(),
+  })
+  .superRefine((env, ctx) => {
+    if (isTrue(env.OAUTH_DEV_MODE)) {
+      if (env.NODE_ENV === "production") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["OAUTH_DEV_MODE"],
+          message:
+            "OAUTH_DEV_MODE=true cannot be combined with NODE_ENV=production: the dev identity provider signs anyone in",
+        });
+      }
+      return;
+    }
+    if (
+      !nonEmpty(env.GOOGLE_OAUTH_CLIENT_ID) ||
+      !nonEmpty(env.GOOGLE_OAUTH_CLIENT_SECRET)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["OAUTH_DEV_MODE"],
+        message: `No OAuth identity provider is configured: ${OAUTH_SETUP_HINT}`,
+      });
+    }
+  });
 
 /**
  * Validates `process.env`-shaped input against the Node-runtime surface.
@@ -75,8 +126,44 @@ type RuntimeSlot = { [RUNTIME_SYMBOL]?: MemoryRuntime };
 
 function memoryRuntime(): MemoryRuntime {
   const slot = globalThis as unknown as RuntimeSlot;
+  // Reached before `initNodeRuntime` only outside the server entry point
+  // (unit tests, tooling probes); those get the same defaults the env
+  // schema would have produced for a development machine.
   slot[RUNTIME_SYMBOL] ??= createMemoryRuntime();
   return slot[RUNTIME_SYMBOL];
+}
+
+/** Projection of {@link NodeServerEnv} to the runtime's construction options. */
+export function nodeServerEnvToRuntimeOptions(
+  env: NodeServerEnv,
+): MemoryRuntimeOptions {
+  return { oauth: readOAuthRuntimeConfig(env) };
+}
+
+function readOAuthRuntimeConfig(env: NodeServerEnv): OAuthRuntimeConfig {
+  if (isTrue(env.OAUTH_DEV_MODE)) {
+    return { mode: "dev" };
+  }
+  // The schema already refused every env that reaches here without both
+  // credentials, so the fallbacks are unreachable rather than lenient.
+  return {
+    mode: "google",
+    clientId: env.GOOGLE_OAUTH_CLIENT_ID ?? "",
+    clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? "",
+  };
+}
+
+/**
+ * Builds the process-wide runtime from validated env. Called once at the
+ * very top of `server.node.ts#boot`, before any container is created —
+ * the runtime is a `globalThis` singleton, so a container built earlier
+ * would pin the env-less defaults for the rest of the process.
+ */
+export function initNodeRuntime(env: NodeServerEnv): void {
+  const slot = globalThis as unknown as RuntimeSlot;
+  slot[RUNTIME_SYMBOL] ??= createMemoryRuntime(
+    nodeServerEnvToRuntimeOptions(env),
+  );
 }
 
 /**

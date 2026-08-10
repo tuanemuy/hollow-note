@@ -52,6 +52,31 @@ export const toAuthenticatedUserView = (
   avatarUrl: user.avatarUrl,
 });
 
+export type StartOAuthFlowView = Readonly<{
+  authorizationUrl: string;
+}>;
+
+/**
+ * `created` distinguishes "this sign-in registered the account" from
+ * "it attached to (or reused) an existing one" — the callback screen
+ * has nothing else to tell the two apart.
+ */
+export type CompleteOAuthSignInView = Readonly<{
+  userId: string;
+  sessionToken: string;
+  redirectTo: string | null;
+  created: boolean;
+}>;
+
+/**
+ * Result of the one callback route, tagged with the intent the flow was
+ * started for (ADR-007). The later intents (`linkIdentity`,
+ * `integration`) answer with their own shapes, which is why this is a
+ * union rather than the sign-in view alone.
+ */
+export type OAuthCallbackView = Readonly<{ intent: "signIn" }> &
+  CompleteOAuthSignInView;
+
 export type PruneExpiredAuthStateView = Readonly<{
   sessions: number;
   authTokens: number;
