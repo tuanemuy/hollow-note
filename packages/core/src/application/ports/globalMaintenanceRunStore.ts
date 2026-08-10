@@ -27,6 +27,14 @@ export type MaintenanceLane = Readonly<{
  * the caller re-runs the DELETE idempotently with the same input cursor
  * before checkpointing. Only the holder of the 10-minute lease may
  * advance progress; `recoverLease` lets an owner reclaim a lapsed lease.
+ * Since `claimLanes` only ever hands out `pending` lanes, reclaiming a
+ * *lapsed* lease — through `recoverLease` or the `"resumed"` branch of
+ * `beginOrResumeKind` — must also return that run's `claimed` lanes to
+ * `pending`, keeping each lane's table and cursor so the new owner
+ * resumes from the same keyset; otherwise the dead owner's lanes stay
+ * claimed forever and the run can never complete. A lease that is still
+ * live is being renewed by its working owner, so its lanes keep their
+ * claim in both paths.
  * Completed runs are retained 30 days, then reclaimed via the
  * `(expiresAt, runId)` keyset in pages of at most 100.
  *

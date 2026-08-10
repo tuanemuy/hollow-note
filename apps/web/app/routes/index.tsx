@@ -21,7 +21,8 @@ export const Route = createFileRoute("/")({
     const { meta, links } = buildHead(config, { path: "/" });
     return { meta, links };
   },
-  // errorComponent は置かない: 失敗は root の P-46 共通表示へ委譲する
+  // errorComponent は置かない: 失敗は router.tsx の
+  // `defaultErrorComponent`（P-46 共通表示）へ委譲する
   // （spec/pages/index.md#P-46、AC-19）。
   component: LandingPage,
 });

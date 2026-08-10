@@ -167,7 +167,7 @@ describe("verifyEmail", () => {
     expect(h.backend.sessions.size).toBe(0);
   });
 
-  it("TC-identity-302/303/304: resolves a concurrent double-consume to one winner and one alreadyVerified", async () => {
+  it("TC-identity-302 / TC-identity-303 / TC-identity-304: resolves a concurrent double-consume to one winner and one alreadyVerified", async () => {
     const h = createTestHarness();
     const { userId, verificationToken } = await signUpPending(h);
 

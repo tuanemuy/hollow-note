@@ -2,7 +2,7 @@
 
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useActionState, useId, useState } from "react";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { displayError } from "@/presentation/errorDisplay";
 import {
@@ -92,6 +92,7 @@ export function SignUpForm() {
   const passwordErrorId = `${passwordId}-error`;
   const passwordHintId = `${passwordId}-hint`;
   const displayNameErrorId = `${displayNameId}-error`;
+  const doneHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   const errors = {
     email: emailFormatError(fields.email),
@@ -124,10 +125,23 @@ export function SignUpForm() {
     { error: null, done: false },
   );
 
+  // The completion panel replaces the whole form, so the submit button that
+  // had focus unmounts and focus falls to `<body>`. Screen-reader users would
+  // hear nothing at all; moving focus to the new heading announces it and
+  // keeps the next Tab in the right place (a live region can't do that here,
+  // because the announcing container unmounts along with the form).
+  useEffect(() => {
+    if (state.done) doneHeadingRef.current?.focus();
+  }, [state.done]);
+
   if (state.done) {
     return (
       <div>
-        <h1 className="text-center text-2xl font-normal tracking-tightest leading-snug">
+        <h1
+          ref={doneHeadingRef}
+          tabIndex={-1}
+          className="text-center text-2xl font-normal tracking-tightest leading-snug"
+        >
           確認メールを送信しました
         </h1>
         <p className="mt-3 mb-8 text-center text-sm text-ink-secondary">
@@ -180,14 +194,11 @@ export function SignUpForm() {
             aria-describedby={emailErrorId}
             className={`${inputClass} ${showError("email") !== null ? inputInvalidClass : ""}`}
           />
-          {/* The live region stays mounted and only its content is swapped:
-              a region that appears together with its text is not announced
-              by most screen readers. */}
-          <p
-            id={emailErrorId}
-            className={`${fieldErrorClass} empty:hidden`}
-            aria-live="polite"
-          >
+          {/* The live region stays mounted — and stays in the accessibility
+              tree, so no `display: none` while empty — and only its content
+              is swapped: a region that appears together with its text is not
+              announced by most screen readers. */}
+          <p id={emailErrorId} className={fieldErrorClass} aria-live="polite">
             {showError("email")}
           </p>
         </div>
@@ -232,7 +243,7 @@ export function SignUpForm() {
           ) : null}
           <p
             id={passwordErrorId}
-            className={`${fieldErrorClass} empty:hidden`}
+            className={fieldErrorClass}
             aria-live="polite"
           >
             {showError("password")}
@@ -265,7 +276,7 @@ export function SignUpForm() {
           />
           <p
             id={displayNameErrorId}
-            className={`${fieldErrorClass} empty:hidden`}
+            className={fieldErrorClass}
             aria-live="polite"
           >
             {showError("displayName")}

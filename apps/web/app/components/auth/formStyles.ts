@@ -10,6 +10,10 @@ export const submitButtonClass =
 
 export const fieldLabelClass = "mb-2 block text-sm font-medium";
 
-export const fieldErrorClass = "mt-2 text-xs text-error";
+// The error slot is a permanently mounted live region, so the margin is
+// conditional instead of the element: hiding it while empty would take it
+// out of the accessibility tree, and text inserted into a node that was not
+// in that tree is not announced.
+export const fieldErrorClass = "not-empty:mt-2 text-xs text-error";
 
 export const footLinkClass = "text-accent hover:underline underline-offset-3";

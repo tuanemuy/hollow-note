@@ -6,9 +6,15 @@ import { verifyEmailSchema } from "../schema";
 
 /**
  * P-03 メール確認のトークン消費。GET 描画から分離した POST（ADR-007）:
- * 単回消費トークンを状態変更 GET で消費しない。成功経路はセッション
- * Cookie をこの応答で焼き込む。使用済みトークンの再訪
+ * 単回消費トークンを状態変更 GET で消費しない。使用済みトークンの再訪
  * （`alreadyVerified`）はセッションを発行しない。
+ *
+ * セッション Cookie は「確認を要求したブラウザー」にのみ焼く
+ * （ADR-038）: `signUpFn` が残した確認待ち Cookie の `userId` が
+ * トークンの持ち主と一致することが条件で、一致しなければ確認自体は
+ * 成立させたうえでセッションを出さない。これがないと、攻撃者が自分の
+ * 確認リンクを被害者に踏ませるだけで被害者のブラウザーに攻撃者の
+ * セッションが焼ける（login CSRF）。
  */
 export const verifyEmailFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -24,14 +30,15 @@ export const verifyEmailFn = createServerFn({ method: "POST" })
       container,
       input: { token: data.token },
     });
-    if (view.sessionToken !== null) {
+    const requestedHere =
+      session.readPendingVerificationUserId() === view.userId;
+    const signedIn = view.sessionToken !== null && requestedHere;
+    if (view.sessionToken !== null && requestedHere) {
       session.setSessionCookie(
         view.sessionToken,
         session.sessionCookieExpiry(container.clock.now()),
       );
+      session.clearPendingVerificationCookie();
     }
-    return {
-      alreadyVerified: view.alreadyVerified,
-      signedIn: view.sessionToken !== null,
-    };
+    return { alreadyVerified: view.alreadyVerified, signedIn };
   });

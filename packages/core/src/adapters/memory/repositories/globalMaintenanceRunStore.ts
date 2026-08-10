@@ -22,6 +22,20 @@ const commandKeyOf = (
   lane: Pick<MaintenanceLaneRow, "generation" | "shardId" | "tableIndex">,
 ): string => `${runId}:${lane.generation}:${lane.shardId}:${lane.tableIndex}`;
 
+/**
+ * A lapsed lease means the previous owner is gone (crash, invocation
+ * timeout), and `claimLanes` only ever hands out `pending` lanes — so a
+ * lane it left `claimed` would never become workable again and the run
+ * could never complete. Reclaiming keeps the table position and cursor,
+ * so the new owner resumes from the same keyset.
+ */
+const reclaimLapsedLanes = (
+  lanes: readonly MaintenanceLaneRow[],
+): readonly MaintenanceLaneRow[] =>
+  lanes.map((lane) =>
+    lane.status === "claimed" ? { ...lane, status: "pending" } : lane,
+  );
+
 const foreignLease = (runId: string): ConflictError =>
   new ConflictError(
     "MAINTENANCE_LEASE_HELD",
@@ -94,10 +108,8 @@ export function createMemoryGlobalMaintenanceRunStore(
         .values()
         .find((run) => run.kind === input.kind && run.status === "running");
       if (running !== undefined) {
-        if (
-          running.leaseOwner !== input.leaseOwner &&
-          running.leaseUntil.getTime() > now.getTime()
-        ) {
+        const lapsed = running.leaseUntil.getTime() <= now.getTime();
+        if (running.leaseOwner !== input.leaseOwner && !lapsed) {
           return {
             runId: running.runId,
             asOf: running.asOf,
@@ -108,6 +120,9 @@ export function createMemoryGlobalMaintenanceRunStore(
           ...running,
           leaseOwner: input.leaseOwner,
           leaseUntil: input.leaseUntil,
+          // A live lease means the same owner is still working: its
+          // in-flight lanes must keep their claim.
+          lanes: lapsed ? reclaimLapsedLanes(running.lanes) : running.lanes,
         });
         return {
           runId: running.runId,
@@ -286,7 +301,14 @@ export function createMemoryGlobalMaintenanceRunStore(
       if (run.leaseOwner !== leaseOwner && !lapsed) {
         return false;
       }
-      table.set(runId, { ...run, leaseOwner, leaseUntil });
+      table.set(runId, {
+        ...run,
+        leaseOwner,
+        leaseUntil,
+        // Extending a live lease is a heartbeat by the working owner;
+        // only a lapsed lease releases the abandoned claims.
+        lanes: lapsed ? reclaimLapsedLanes(run.lanes) : run.lanes,
+      });
       return true;
     },
 

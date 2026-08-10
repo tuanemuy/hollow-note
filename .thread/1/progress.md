@@ -55,6 +55,7 @@
 plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同期候補。
 
 - spec/scenario/account.md AC-01 異常系の「確認メール再送」 — usecases/identity.md と TC-identity-255（既存アカウント通知メール）に合わせて改訂（plan.md リスク欄）。
+- **メール確認の着地状態に「確認済み・サインインが必要」を追加**（ADR-038 / R3-SC-B-301）— セッション発行を確認要求元ブラウザーに束縛したため、別端末・別ブラウザーで確認リンクを開いた場合は「メール確認は成立するがサインイン状態にはならない」経路が生まれた。反映先は 3 か所: `spec/scenario/account.md` AC-01#5（「確認リンク → サインイン状態でノート一覧」に同一ブラウザー条件を付す）、同 AC-02#2（確認後のサインイン導線）、`spec/pages/index.md#P-03` の状態直和（処理中 / 成功 / **確認済み・サインインが必要** / 使用済み / 期限切れ / 無効 / 一時障害）。あわせて P-03 に一時障害（`failed`、system / unknown の再試行導線）の状態も無い（R3-FE-W-004）。
 - spec/domains/identity.md の `IdentityErrorCode` enum — `IdentityLimitExceeded` の記載漏れを追記（steps.md 設計節）。
 - spec/domains/note.md の `Note.createBlank` / `createFromUpload` に `projectionRevision`、`moveTo` に `routeVersion` 引数を追記（ADR-011）。
 - ShareTokenProtector の失敗エラー — 契約 JSDoc が言う `ExternalServiceError` が `SystemErrorCode` に存在せず `DataIntegrityError` に写した（ADR-017）。
@@ -67,6 +68,7 @@ plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同�
 - **CLAUDE.md の全面改訂**（前チャンクからの申し送り。ステップ12 に記載がないため実装せず記録）: 旧 4 ランタイム構成（Cloudflare / AWS / GCP のエントリ・DI・docs 参照）、todo 参照実装（`apps/web/app/components/todo/` / `routes/todo/` / `TodoBoard`）、`infra/*` ワークスペース、`docs/runtime_{cloudflare,aws,gcp}.md`、`serverAction` の `inputValidator` 記述が現状（Node + memory 一本、Identity / Note ドメイン、`.validator()`）と乖離している。
 - docs/backend_implementation_example.md / docs/frontend_implementation_example.md — Todo ドメイン前提の実装例のまま（`di/serverCloudflare.ts` / `TodoEvent` / `createTodoFn` 等）。パターン自体は現行実装と同型だが、例示を Identity / Note ベースへ差し替えるか「歴史的な例」と明記する改訂が必要。`.inputValidator` の記載のみ本チャンクで `.validator` へ機械的に追随済み。
 - TC-identity-261 の改訂 — `spec/testcases/identity/signUpWithPassword.md` と `spec/inventory/test.md:400` は「同一メールの並行2要求で片方は `ConflictError("EMAIL_ALREADY_USED")`」と規定しているが、実装は応答同一化（ユーザー列挙耐性・AC-15）を優先し、一意性違反を `IdentityUniqueDirectory` のポート契約として保持したまま `signUpWithPassword` が一律応答へ畳む形にした。TC-261 の期待結果を「利用者はちょうど1人・応答 shape は同一・decoy id は別値」へ改訂する必要がある。
+- **TC-identity-174 の期待挙動の変更**（ADR-039 / ADP-common-030）— 「lease 失効後は continuation コマンドの再投入で同じ lane を再開する」から「次の cron が失効 lane を自動回収して run を完走する」へ変わった（リース失効時に `claimed` lane が cursor / table 位置を保ったまま `pending` へ戻るのがポート契約になったため）。`spec/inventory/test.md:313` の期待結果「同じ run/table/cursor position を新 owner が claim し、重複 run を作らず完了まで進める」とは整合するが、テスト実装が検証している経路（回収の起点）が変わっているので、`spec/testcases/identity/pruneExpiredAuthState.md` の TC-identity-174 記述が continuation 前提になっていないか確認し、必要なら追随させる。
 - 文字数の数え方の明文化 — `spec/domains/note.md` の「200文字以内」「100文字以内」が UTF-16 コード単位である旨を明記する必要がある（実装は `.length` で検査し、切り詰めはサロゲートペアを割らない）。
 - `spec/design/tokens.md §10` のフォーカスリング改訂 — accent 背景でフォーカスリングが判別できない（`--shadow-focus` が同色）。トークン定義そのものの改訂（内側リング/オフセット）と `spec/design/pages/*.html` モック群への波及が必要。加えて `apps/web/app/components/auth/formStyles.ts` の `inputClass` に残る `focus:outline-none` が forced-colors 対策を打ち消す件も同じ改訂に含める。
 - `spec/pages/` の L-02 要件 — サインイン済みで `/terms` `/privacy` を訪れても「サインイン / はじめる」CTA が出続ける。`PublicShell.signedIn` は到達しない分岐だったため prop ごと削除した。サインイン済み利用者への CTA 抑止を要件とするなら spec 側で起こし直す必要がある。

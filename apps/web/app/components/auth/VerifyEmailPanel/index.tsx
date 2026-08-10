@@ -2,7 +2,14 @@
 
 import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { footLinkClass } from "../formStyles";
 import { verifyEmailFn } from "./action";
@@ -10,17 +17,23 @@ import { verifyEmailFn } from "./action";
 /**
  * P-03 メール確認（spec/pages/index.md#P-03、モック P03-verify-email.html）。
  * GET は「処理中」を描画するだけで、マウント後にトークンを POST して消費
- * する（ADR-007）。状態: 処理中 / 成功（/notes へ遷移）/ 期限切れ /
- * 使用済み（サインインへ）/ 無効。再送導線は resendVerificationEmail が
- * 本スライス外のため出さない。
+ * する（ADR-007）。状態: 処理中 / 成功（/notes へ遷移）/ 確認済み・サイン
+ * インが必要 / 期限切れ / 使用済み（サインインへ）/ 無効 / 一時障害。
+ * 再送導線は resendVerificationEmail が本スライス外のため出さない。
+ *
+ * `verifiedSignInRequired` は「確認は成立したがセッションは出なかった」
+ * 状態（ADR-038）。別端末でリンクを開いた正当な利用者がここへ落ちる。
+ * `alreadyVerified`（トークンが使用済み）とは原因が違うので別状態にする。
  */
 
 type Phase =
   | { kind: "processing" }
   | { kind: "succeeded" }
+  | { kind: "verifiedSignInRequired" }
   | { kind: "alreadyVerified" }
   | { kind: "expired" }
-  | { kind: "invalid" };
+  | { kind: "invalid" }
+  | { kind: "failed"; message: string };
 
 export function VerifyEmailPanel({ token }: { token: string | null }) {
   const router = useRouter();
@@ -28,27 +41,44 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>(
     token === null ? { kind: "invalid" } : { kind: "processing" },
   );
-  const started = useRef(false);
+  const [attempt, setAttempt] = useState(0);
+  // One POST per `attempt`, so neither StrictMode's double-invoked effect
+  // nor an unstable `verify` identity can consume the one-shot token
+  // twice. Only `retry` advances the counter.
+  const started = useRef(-1);
 
   useEffect(() => {
-    if (token === null || started.current) return;
-    started.current = true;
+    if (token === null || started.current === attempt) return;
+    started.current = attempt;
     void (async () => {
-      let signedIn: boolean;
+      let result: { signedIn: boolean; alreadyVerified: boolean };
       try {
-        signedIn = (await verify({ data: { token } })).signedIn;
+        result = await verify({ data: { token } });
       } catch (error) {
         const serialized = extractSerializedError(error);
-        setPhase(
+        if (
           serialized.kind === "business" &&
-            serialized.code === "IDENTITY_TOKEN_EXPIRED"
-            ? { kind: "expired" }
-            : { kind: "invalid" },
-        );
+          serialized.code === "IDENTITY_TOKEN_EXPIRED"
+        ) {
+          setPhase({ kind: "expired" });
+        } else if (
+          serialized.kind === "system" ||
+          serialized.kind === "unknown"
+        ) {
+          // A transient outage says nothing about the link — telling the
+          // visitor it is broken would send them off asking for a resend.
+          setPhase({ kind: "failed", message: renderErrorMessage(serialized) });
+        } else {
+          setPhase({ kind: "invalid" });
+        }
         return;
       }
-      if (!signedIn) {
-        setPhase({ kind: "alreadyVerified" });
+      if (!result.signedIn) {
+        setPhase(
+          result.alreadyVerified
+            ? { kind: "alreadyVerified" }
+            : { kind: "verifiedSignInRequired" },
+        );
         return;
       }
       setPhase({ kind: "succeeded" });
@@ -62,7 +92,12 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
         console.error("Navigation after verification failed");
       });
     })();
-  }, [token, verify, router]);
+  }, [token, verify, router, attempt]);
+
+  const retry = useCallback(() => {
+    setPhase({ kind: "processing" });
+    setAttempt((value) => value + 1);
+  }, []);
 
   // The whole flow is an automatic POST with no user action, so a live
   // region is the only cue assistive technology gets. It must be mounted
@@ -70,12 +105,18 @@ export function VerifyEmailPanel({ token }: { token: string | null }) {
   // content inside a persistent region is what makes it announce.
   return (
     <div role="status" aria-live="polite">
-      <PhaseResult phase={phase} />
+      <PhaseResult phase={phase} onRetry={retry} />
     </div>
   );
 }
 
-function PhaseResult({ phase }: { phase: Phase }) {
+function PhaseResult({
+  phase,
+  onRetry,
+}: {
+  phase: Phase;
+  onRetry: () => void;
+}) {
   switch (phase.kind) {
     case "processing":
       return (
@@ -92,6 +133,15 @@ function PhaseResult({ phase }: { phase: Phase }) {
           title="確認できました"
           body="メールアドレスが確認されました。そのまま使い始められます。"
           actions={<PrimaryLink to="/notes">Hollow を開く</PrimaryLink>}
+        />
+      );
+    case "verifiedSignInRequired":
+      return (
+        <Result
+          icon={<CheckIcon className="text-success" />}
+          title="メールアドレスを確認しました"
+          body="サインインすると使い始められます。"
+          actions={<PrimaryLink to="/signin">サインインへ</PrimaryLink>}
         />
       );
     case "alreadyVerified":
@@ -133,6 +183,19 @@ function PhaseResult({ phase }: { phase: Phase }) {
           }
         />
       );
+    case "failed":
+      return (
+        <Result
+          icon={<AlertIcon className="text-warning" />}
+          title="確認を完了できませんでした"
+          body={phase.message}
+          actions={
+            <button type="button" onClick={onRetry} className={primaryClass}>
+              もう一度試す
+            </button>
+          }
+        />
+      );
   }
 }
 
@@ -161,6 +224,9 @@ function Result({
   );
 }
 
+const primaryClass =
+  "inline-flex h-10 items-center justify-center rounded-pill bg-accent px-5 text-sm font-medium text-bg transition-colors hover:bg-accent-hover active:bg-accent-pressed";
+
 function PrimaryLink({
   to,
   children,
@@ -169,10 +235,7 @@ function PrimaryLink({
   children: ReactNode;
 }) {
   return (
-    <Link
-      to={to}
-      className="inline-flex h-10 items-center justify-center rounded-pill bg-accent px-5 text-sm font-medium text-bg transition-colors hover:bg-accent-hover active:bg-accent-pressed"
-    >
+    <Link to={to} className={primaryClass}>
       {children}
     </Link>
   );
@@ -223,6 +286,27 @@ function ClockIcon({ className }: { className?: string }) {
     >
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="7.5" x2="12" y2="13" />
+      <line x1="12" y1="16.5" x2="12" y2="16.5" />
     </svg>
   );
 }

@@ -13,10 +13,11 @@ import { makeBlankNote, noteId, scopeOf, userId } from "./fixtures";
  * runs.
  *
  * Deliberately backend-agnostic about *how* concurrency is resolved: the
- * contract is per-run atomicity and one relay kick per commit, never a
- * callback interleaving order. The in-memory backend serializes runs
- * behind a mutex (ADR-014); a real transactional backend does not, and
- * both satisfy this suite. Order-sensitive assertions belong in a
+ * contract is per-run atomicity, all-or-nothing visibility to a
+ * concurrent run, and one relay kick per commit — never a callback
+ * interleaving order. The in-memory backend serializes runs behind a
+ * mutex (ADR-014); a real transactional backend does not, and both
+ * satisfy this suite. Order-sensitive assertions belong in a
  * backend-local test (`adapters/memory/__tests__/unitOfWork.test.ts`).
  */
 export function describeUnitOfWorkContract(
@@ -165,6 +166,42 @@ export function describeUnitOfWorkContract(
       expect(await backend.userRepository.findById(userId(1))).not.toBeNull();
       expect(await backend.userRepository.findById(userId(2))).not.toBeNull();
       expect(backend.relayKickCount()).toBe(2);
+    });
+
+    it("ADP-common-003: a concurrent run never observes a half-written run", async () => {
+      const now = backend.clock.now();
+      const observed: number[] = [];
+
+      await Promise.all([
+        backend.globalUnitOfWork.run(async (ctx) => {
+          const first = createUser(1, now);
+          await ctx.userRepository.insert(first.entity);
+          // Suspension points between the two writes: a backend that
+          // publishes writes before commit lets the reader in right here.
+          for (let i = 0; i < 5; i += 1) {
+            await Promise.resolve();
+          }
+          const second = createUser(2, now);
+          await ctx.userRepository.insert(second.entity);
+        }),
+        backend.globalUnitOfWork.run(async (ctx) => {
+          for (let i = 0; i < 5; i += 1) {
+            const [first, second] = await Promise.all([
+              ctx.userRepository.findById(userId(1)),
+              ctx.userRepository.findById(userId(2)),
+            ]);
+            observed.push((first === null ? 0 : 1) + (second === null ? 0 : 1));
+          }
+        }),
+      ]);
+
+      // All or nothing — a 1 means the writer's intermediate state was
+      // visible. Serializing the runs (in-memory) and isolating them
+      // (a transactional backend) both satisfy this.
+      expect(observed).toHaveLength(5);
+      for (const seen of observed) {
+        expect([0, 2]).toContain(seen);
+      }
     });
 
     it("ADP-common-003: a failed run concurrent with a successful one rolls back only its own writes", async () => {

@@ -235,6 +235,61 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(await store.claimLanes("run-1", "owner-b", 6)).toHaveLength(2);
     });
 
+    it("ADP-common-030: a lapsed lease returns the previous owner's claimed lanes to the claimable pool", async () => {
+      await begin("run-1", "owner-a");
+      const [first] = await store.claimLanes("run-1", "owner-a", 6);
+      if (first === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: first.generation,
+        shardId: first.shardId,
+        table: first.table,
+        cursor: "cursor-42",
+        asOf: first.asOf,
+        nextCommandKey: "command-2",
+      });
+
+      // While the lease is live the lanes stay with their owner, even for
+      // that same owner's next invocation.
+      expect((await begin("run-2", "owner-a")).result).toBe("resumed");
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+
+      // owner-a is gone (crash / invocation timeout) and its lease lapses:
+      // the lanes must become claimable again, or the run can never
+      // complete.
+      backend.clock.advance(LEASE_MS + 1);
+      expect((await begin("run-3", "owner-b")).result).toBe("resumed");
+      const reclaimed = await store.claimLanes("run-1", "owner-b", 6);
+      expect(reclaimed.map((lane) => lane.shardId).sort()).toEqual([
+        "s1",
+        "s2",
+      ]);
+      // The reclaimed lane resumes from the checkpointed keyset.
+      const resumedLane = reclaimed.find(
+        (lane) => lane.shardId === first.shardId,
+      );
+      expect(resumedLane?.cursor).toBe("cursor-42");
+      expect(resumedLane?.table).toBe(first.table);
+    });
+
+    it("ADP-common-030: recoverLease also returns the lapsed owner's claimed lanes", async () => {
+      await begin("run-1", "owner-a");
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(2);
+
+      backend.clock.advance(LEASE_MS + 1);
+      expect(
+        await store.recoverLease(
+          "run-1",
+          "owner-b",
+          new Date(backend.clock.now().getTime() + LEASE_MS),
+        ),
+      ).toBe(true);
+      expect(await store.claimLanes("run-1", "owner-b", 6)).toHaveLength(2);
+    });
+
     it("ADP-common-031: pruneCompleted reclaims runs after the 30-day retention, by keyset", async () => {
       await begin("run-1", "owner-a");
       const lanes = await store.claimLanes("run-1", "owner-a", 6);

@@ -101,9 +101,9 @@ const hourBucketOf = (instant: Date): string => {
  *
  * Runtime wiring note: no scheduler invokes this yet — the Node runner's
  * pruner role remains `pruneOutbox`, and the cron / queue wiring lands
- * with the Cloudflare slice. In-process, a crashed invocation's claimed
- * lane is recovered by re-invoking the continuation input after the next
- * `cron` re-leases the lapsed run.
+ * with the Cloudflare slice. A crashed invocation's claimed lane is
+ * recovered by the next `cron`: re-leasing the lapsed run returns its
+ * abandoned lanes to the claimable pool, cursor intact.
  */
 export async function pruneExpiredAuthState({
   container,
@@ -231,6 +231,29 @@ async function runCron(
   let commands = 0;
   let workRemains = false;
 
+  const releaseLane = async (
+    lane: Readonly<{ generation: string; shardId: string }>,
+  ): Promise<void> => {
+    try {
+      await maintenanceRunStore.advanceOrAck({
+        runId,
+        leaseOwner: PRUNE_WORKER_ID,
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: false,
+      });
+    } catch (cause) {
+      // The release runs on the way out, including out of a throw whose
+      // own cause (a lapsed or stolen lease) makes the release fail too.
+      // Nothing is left to salvage here beyond the record.
+      logger.error("[pruneExpiredAuthState] lane release failed", {
+        cause,
+        generation: lane.generation,
+        shardId: lane.shardId,
+      });
+    }
+  };
+
   const laneQueue: MaintenanceLane[] = [
     ...(await maintenanceRunStore.claimLanes(
       runId,
@@ -239,52 +262,27 @@ async function runCron(
     )),
   ];
 
-  while (laneQueue.length > 0) {
-    if (commands >= MAX_COMMANDS_PER_INVOCATION) {
-      workRemains = true;
-      break;
-    }
-    const lane = laneQueue.shift();
-    if (lane === undefined) {
-      break;
-    }
-    if (!isAuthStateTable(lane.table)) {
-      logger.error("[pruneExpiredAuthState] unknown sweep table", {
-        table: lane.table,
-      });
-      failures += 1;
-      await maintenanceRunStore.advanceOrAck({
-        runId,
-        leaseOwner: PRUNE_WORKER_ID,
-        generation: lane.generation,
-        shardId: lane.shardId,
-        completed: false,
-      });
-      workRemains = true;
-      continue;
-    }
+  // The lane taken out of the queue for processing: still claimed, and
+  // no longer reachable through `laneQueue`, so the exit path below has
+  // to release it too.
+  let inFlight: MaintenanceLane | null = null;
 
-    let cursor = lane.cursor;
-    const table = lane.table;
-    let laneDone = false;
-    while (!laneDone && commands < MAX_COMMANDS_PER_INVOCATION) {
-      commands += 1;
-      let page: Awaited<ReturnType<ExpirySweep["deleteExpired"]>>;
-      try {
-        page = await container.authStateSweeps[table].deleteExpired(
-          asOf,
-          cursor,
-          PAGE_LIMIT,
-        );
-      } catch (cause) {
-        logger.error("[pruneExpiredAuthState] table sweep failed", {
-          cause,
-          table,
-          shardId: lane.shardId,
+  try {
+    while (laneQueue.length > 0) {
+      if (commands >= MAX_COMMANDS_PER_INVOCATION) {
+        workRemains = true;
+        break;
+      }
+      const lane = laneQueue.shift();
+      if (lane === undefined) {
+        break;
+      }
+      inFlight = lane;
+      if (!isAuthStateTable(lane.table)) {
+        logger.error("[pruneExpiredAuthState] unknown sweep table", {
+          table: lane.table,
         });
         failures += 1;
-        // Back off this lane only: release the claim with the cursor
-        // preserved so a later invocation resumes the same keyset.
         await maintenanceRunStore.advanceOrAck({
           runId,
           leaseOwner: PRUNE_WORKER_ID,
@@ -292,53 +290,95 @@ async function runCron(
           shardId: lane.shardId,
           completed: false,
         });
+        inFlight = null;
         workRemains = true;
-        laneDone = true;
         continue;
       }
-      successes += 1;
-      counts[table] += page.deleted;
-      if (page.nextCursor !== null) {
-        await maintenanceRunStore.checkpointLane({
+
+      let cursor = lane.cursor;
+      const table = lane.table;
+      let laneDone = false;
+      while (!laneDone && commands < MAX_COMMANDS_PER_INVOCATION) {
+        commands += 1;
+        let page: Awaited<ReturnType<ExpirySweep["deleteExpired"]>>;
+        try {
+          page = await container.authStateSweeps[table].deleteExpired(
+            asOf,
+            cursor,
+            PAGE_LIMIT,
+          );
+        } catch (cause) {
+          logger.error("[pruneExpiredAuthState] table sweep failed", {
+            cause,
+            table,
+            shardId: lane.shardId,
+          });
+          failures += 1;
+          // Back off this lane only: release the claim with the cursor
+          // preserved so a later invocation resumes the same keyset.
+          await maintenanceRunStore.advanceOrAck({
+            runId,
+            leaseOwner: PRUNE_WORKER_ID,
+            generation: lane.generation,
+            shardId: lane.shardId,
+            completed: false,
+          });
+          workRemains = true;
+          laneDone = true;
+          continue;
+        }
+        successes += 1;
+        counts[table] += page.deleted;
+        if (page.nextCursor !== null) {
+          await maintenanceRunStore.checkpointLane({
+            runId,
+            leaseOwner: PRUNE_WORKER_ID,
+            generation: lane.generation,
+            shardId: lane.shardId,
+            table,
+            cursor: page.nextCursor,
+            asOf,
+            nextCommandKey: commandKeyOf(
+              runId,
+              { generation: lane.generation, shardId: lane.shardId, table },
+              page.nextCursor,
+            ),
+          });
+          cursor = page.nextCursor;
+          continue;
+        }
+        const advanced = await maintenanceRunStore.advanceOrAck({
           runId,
           leaseOwner: PRUNE_WORKER_ID,
           generation: lane.generation,
           shardId: lane.shardId,
-          table,
-          cursor: page.nextCursor,
-          asOf,
-          nextCommandKey: commandKeyOf(
-            runId,
-            { generation: lane.generation, shardId: lane.shardId, table },
-            page.nextCursor,
-          ),
+          completed: true,
         });
-        cursor = page.nextCursor;
-        continue;
-      }
-      const advanced = await maintenanceRunStore.advanceOrAck({
-        runId,
-        leaseOwner: PRUNE_WORKER_ID,
-        generation: lane.generation,
-        shardId: lane.shardId,
-        completed: true,
-      });
-      if (advanced.next === null) {
-        laneDone = true;
-        continue;
-      }
-      const next = advanced.next;
-      if (
-        next.generation === lane.generation &&
-        next.shardId === lane.shardId
-      ) {
-        // Same shard, next table: the queue re-enters through claimLanes
-        // only for released lanes, so re-derive the position by
-        // releasing and re-claiming — except the store contract says the
-        // next table of the same lane starts at a null cursor.
-        const currentIndex = SWEEP_ORDER_HINT.indexOf(table);
-        const nextTable = SWEEP_ORDER_HINT[currentIndex + 1];
-        if (nextTable !== undefined) {
+        if (advanced.next === null) {
+          laneDone = true;
+          continue;
+        }
+        const next = advanced.next;
+        if (
+          next.generation === lane.generation &&
+          next.shardId === lane.shardId
+        ) {
+          // Same shard, next table: the queue re-enters through claimLanes
+          // only for released lanes, so re-derive the position by
+          // releasing and re-claiming — except the store contract says the
+          // next table of the same lane starts at a null cursor.
+          const currentIndex = SWEEP_ORDER_HINT.indexOf(table);
+          const nextTable = SWEEP_ORDER_HINT[currentIndex + 1];
+          if (nextTable === undefined) {
+            // The hint could not name the lane's new table (a run
+            // snapshotted under a different table set). The lane stays
+            // claimed unless it is released here, so hand it back and let
+            // a later invocation re-derive its position from `claimLanes`.
+            await releaseLane(lane);
+            workRemains = true;
+            laneDone = true;
+            continue;
+          }
           laneQueue.push({
             generation: lane.generation,
             shardId: lane.shardId,
@@ -355,54 +395,58 @@ async function runCron(
               null,
             ),
           });
+          laneDone = true;
+          continue;
         }
+        // A different shard was auto-claimed by the ack. Its persisted
+        // position (a previously released lane keeps its table/cursor) is
+        // not observable through `advanceOrAck`, so release it and
+        // re-claim through `claimLanes`, which returns full positions.
+        await maintenanceRunStore.advanceOrAck({
+          runId,
+          leaseOwner: PRUNE_WORKER_ID,
+          generation: next.generation,
+          shardId: next.shardId,
+          completed: false,
+        });
+        laneQueue.push(
+          ...(await maintenanceRunStore.claimLanes(runId, PRUNE_WORKER_ID, 1)),
+        );
         laneDone = true;
+      }
+      if (!laneDone) {
+        // Budget exhausted mid-lane; the checkpointed cursor lets the next
+        // invocation (or a continuation task) resume — but only after the
+        // claim is released, since `claimLanes` never returns claimed
+        // lanes and the same-owner cron renews the lease every run, so an
+        // unreleased lane would stay stuck forever.
+        workRemains = true;
+        await maintenanceRunStore.advanceOrAck({
+          runId,
+          leaseOwner: PRUNE_WORKER_ID,
+          generation: lane.generation,
+          shardId: lane.shardId,
+          completed: false,
+        });
+      }
+      inFlight = null;
+    }
+  } finally {
+    // Every lane still claimed on the way out has to be handed back
+    // (cursor intact): a budget break leaves untouched lanes queued, and
+    // a throw from a lane operation abandons the one in flight. Both
+    // would otherwise stay claimed forever, since `claimLanes` never
+    // returns a claimed lane.
+    const abandoned = inFlight === null ? laneQueue : [inFlight, ...laneQueue];
+    const released = new Set<string>();
+    for (const lane of abandoned) {
+      const key = `${lane.generation} ${lane.shardId}`;
+      if (released.has(key)) {
         continue;
       }
-      // A different shard was auto-claimed by the ack. Its persisted
-      // position (a previously released lane keeps its table/cursor) is
-      // not observable through `advanceOrAck`, so release it and
-      // re-claim through `claimLanes`, which returns full positions.
-      await maintenanceRunStore.advanceOrAck({
-        runId,
-        leaseOwner: PRUNE_WORKER_ID,
-        generation: next.generation,
-        shardId: next.shardId,
-        completed: false,
-      });
-      laneQueue.push(
-        ...(await maintenanceRunStore.claimLanes(runId, PRUNE_WORKER_ID, 1)),
-      );
-      laneDone = true;
+      released.add(key);
+      await releaseLane(lane);
     }
-    if (!laneDone) {
-      // Budget exhausted mid-lane; the checkpointed cursor lets the next
-      // invocation (or a continuation task) resume — but only after the
-      // claim is released, since `claimLanes` never returns claimed
-      // lanes and the same-owner cron renews the lease every run, so an
-      // unreleased lane would stay stuck forever.
-      workRemains = true;
-      await maintenanceRunStore.advanceOrAck({
-        runId,
-        leaseOwner: PRUNE_WORKER_ID,
-        generation: lane.generation,
-        shardId: lane.shardId,
-        completed: false,
-      });
-    }
-  }
-
-  // Symmetric with the per-lane failure path: a budget break exits the
-  // loop with claimed-but-untouched lanes still queued. Release them
-  // (cursor intact) so the next invocation can re-claim via `claimLanes`.
-  for (const lane of laneQueue) {
-    await maintenanceRunStore.advanceOrAck({
-      runId,
-      leaseOwner: PRUNE_WORKER_ID,
-      generation: lane.generation,
-      shardId: lane.shardId,
-      completed: false,
-    });
   }
 
   if (failures > 0 && successes === 0) {

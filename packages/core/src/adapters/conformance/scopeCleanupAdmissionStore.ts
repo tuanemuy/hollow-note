@@ -113,7 +113,7 @@ export function describeScopeCleanupAdmissionStoreContract(
       await store.assertWritable();
     });
 
-    it("ADP-common-011: pruneCompleted clamps an over-cap limit to the 100-row page cap", async () => {
+    it("ADP-common-011: pruneCompleted accepts an over-cap limit (one scope holds at most one receipt, so no page cap can bind)", async () => {
       await store.beginPersonalAccountDeletion("op-1", userId(1));
       for (const component of ALL_COMPONENTS) {
         await store.acknowledgePersonalComponent("op-1", component);
@@ -123,12 +123,13 @@ export function describeScopeCleanupAdmissionStoreContract(
       );
       await store.markCompleted("op-1", retainUntil);
 
-      // A scope holds at most one receipt, so the cap can never be
-      // saturated here; what the contract pins is that an over-cap limit
-      // is accepted and clamped rather than honoured verbatim.
-      const removed = await store.pruneCompleted(retainUntil, 1_000);
-      expect(removed).toBeLessThanOrEqual(100);
-      expect(removed).toBe(1);
+      // Unlike the paged stores, this one keeps a single receipt per
+      // scope, so `limit` has nothing to truncate and a limit-ignoring
+      // backend is indistinguishable here. All this pins is that an
+      // over-cap limit is accepted rather than rejected — the port
+      // contract ("at most `limit` receipts per pass") names no 100-row
+      // page cap, so there is no clamp to verify.
+      expect(await store.pruneCompleted(retainUntil, 1_000)).toBe(1);
     });
 
     it("ADP-common-011: a running receipt has no expiry and is never pruned", async () => {

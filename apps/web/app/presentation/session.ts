@@ -1,4 +1,5 @@
 import { Session } from "@repo/core/domain/identity/session";
+import { AuthTokenPurpose } from "@repo/core/domain/identity/valueObject";
 import {
   deleteCookie,
   getCookie,
@@ -21,6 +22,14 @@ import { loadServerDeps } from "./serverAction";
  */
 const SESSION_COOKIE_NAME = "hollow_session";
 
+/**
+ * Marks the browser that asked for a verification mail (ADR-038). The
+ * value is the `userId` the sign-up response projected; `verifyEmail`
+ * only issues a session when it matches the token's owner, so following
+ * somebody else's verification link can never sign the visitor in.
+ */
+const PENDING_VERIFICATION_COOKIE_NAME = "hollow_pending_verification";
+
 const isProduction = (): boolean => process.env.NODE_ENV === "production";
 
 export function readSessionToken(): string | null {
@@ -40,6 +49,38 @@ export function setSessionCookie(token: string, expiresAt: Date): void {
 
 export function clearSessionCookie(): void {
   deleteCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    secure: isProduction(),
+  });
+}
+
+export function readPendingVerificationUserId(): string | null {
+  const value = getCookie(PENDING_VERIFICATION_COOKIE_NAME);
+  return value !== undefined && value !== "" ? value : null;
+}
+
+/**
+ * Written on **every** sign-up response, including the one a duplicate
+ * e-mail gets: `SignUpView.userId` is a decoy there, so an unconditional
+ * write keeps the cookie's presence and shape from becoming a user
+ * enumeration oracle.
+ */
+export function setPendingVerificationCookie(userId: string, now: Date): void {
+  setCookie(PENDING_VERIFICATION_COOKIE_NAME, userId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    secure: isProduction(),
+    expires: new Date(
+      now.getTime() + AuthTokenPurpose.ttlMs("email_verification"),
+    ),
+  });
+}
+
+export function clearPendingVerificationCookie(): void {
+  deleteCookie(PENDING_VERIFICATION_COOKIE_NAME, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",

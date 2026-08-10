@@ -524,6 +524,63 @@ describe("pruneExpiredAuthState", () => {
     }
   });
 
+  it("a lane operation that throws still releases the in-flight and queued lanes", async () => {
+    const h = createTestHarness({
+      maintenanceShardIds: ["shard-0", "shard-1", "shard-2", "shard-3"],
+    });
+    const past = new Date(h.clock.now().getTime() - 1);
+    // More than one page, so the first lane reaches `checkpointLane`.
+    for (let i = 0; i < 150; i += 1) {
+      seedAuthToken(h, past);
+    }
+    const realStore = h.workerContainer.maintenanceRunStore;
+    const container = {
+      ...h.workerContainer,
+      maintenanceRunStore: {
+        ...realStore,
+        async checkpointLane(): Promise<void> {
+          // What a lapsed lease looks like from the usecase's side.
+          throw new Error("checkpoint down");
+        },
+      },
+    };
+
+    await expect(
+      pruneExpiredAuthState({ container, input: { type: "cron" } }),
+    ).rejects.toThrow("checkpoint down");
+    for (const run of h.backend.maintenanceRuns.values()) {
+      expect(
+        run.lanes.filter((lane) => lane.status === "claimed"),
+      ).toHaveLength(0);
+    }
+  });
+
+  it("a lane whose next table the sweep order cannot name is released, not left claimed", async () => {
+    // A run snapshotted under a table set the usecase's order hint does
+    // not continue: acking the first table leaves the lane on a table the
+    // hint cannot name.
+    const h = createTestHarness({
+      maintenanceTablesByKind: {
+        authStatePrune: ["oauth_flow_states", "sessions"],
+      },
+    });
+    seedSession(h, new Date(h.clock.now().getTime() - 1));
+
+    const first = await cron(h);
+    expect(first.continued).toBe(true);
+    for (const run of h.backend.maintenanceRuns.values()) {
+      expect(
+        run.lanes.filter((lane) => lane.status === "claimed"),
+      ).toHaveLength(0);
+    }
+
+    // The released lane keeps its position, so the next cron finishes it.
+    const second = await cron(h);
+    expect(second.sessions).toBe(1);
+    expect(second.continued).toBe(false);
+    expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
+  });
+
   it("TC-identity-172: a second cron against a live foreign lease is a no-op", async () => {
     const h = createTestHarness();
     const now = h.clock.now();
@@ -569,12 +626,15 @@ describe("pruneExpiredAuthState", () => {
     expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
   });
 
-  it("TC-identity-174: after a lapsed lease the next cron re-leases and the continuation resumes the claimed lane", async () => {
+  it("TC-identity-174: after a lapsed lease the next cron reclaims the abandoned lane at its position and completes the run", async () => {
     const h = createTestHarness();
     const now = h.clock.now();
-    seedAuthToken(h, new Date(now.getTime() - 1));
+    for (let i = 0; i < 150; i += 1) {
+      seedAuthToken(h, new Date(now.getTime() - 1));
+    }
     const store = h.workerContainer.maintenanceRunStore;
-    // A dead invocation began the run and claimed the lane, then vanished.
+    // A dead invocation began the run, claimed the lane, swept one page,
+    // then vanished with the lane still claimed at its cursor.
     const begin = await store.beginOrResumeKind({
       candidateRunId: "run-tc174",
       kind: "authStatePrune",
@@ -584,21 +644,10 @@ describe("pruneExpiredAuthState", () => {
       leaseUntil: new Date(now.getTime() + 10 * MINUTE_MS),
     });
     const [lane] = await store.claimLanes(begin.runId, PRUNE_LEASE_OWNER, 1);
-    if (lane === undefined) {
-      throw new Error("expected a claimed lane");
+    if (lane === undefined || lane.table !== "auth_tokens") {
+      throw new Error("expected the auth_tokens lane");
     }
-
-    h.clock.advance(11 * MINUTE_MS);
-    // The next cron re-leases the lapsed run (no duplicate run).
-    await cron(h);
-    expect(
-      h.backend.maintenanceRuns
-        .values()
-        .filter((run) => run.kind === "authStatePrune"),
-    ).toHaveLength(1);
-
-    // The redelivered continuation resumes at the same position.
-    let view = await pruneExpiredAuthState({
+    const swept = await pruneExpiredAuthState({
       container: h.workerContainer,
       input: {
         type: "identity.authStatePruneContinued",
@@ -610,23 +659,24 @@ describe("pruneExpiredAuthState", () => {
         asOf: begin.asOf,
       },
     });
-    expect(view.authTokens).toBe(1);
-    // Drive the remaining tables to completion through continuations.
-    const tables = ["sessions", "login_attempts", "oauth_flow_states"] as const;
-    for (const table of tables) {
-      view = await pruneExpiredAuthState({
-        container: h.workerContainer,
-        input: {
-          type: "identity.authStatePruneContinued",
-          runId: begin.runId,
-          generation: lane.generation,
-          shardId: lane.shardId,
-          table,
-          cursor: null,
-          asOf: begin.asOf,
-        },
-      });
-    }
+    expect(swept.authTokens).toBe(100);
+    expect(
+      h.backend.maintenanceRuns
+        .get(begin.runId)
+        ?.lanes.filter((row) => row.status === "claimed"),
+    ).toHaveLength(1);
+
+    h.clock.advance(11 * MINUTE_MS);
+    // The next cron re-leases the lapsed run (no duplicate run) and takes
+    // the abandoned lane back at its stored table and cursor.
+    const view = await cron(h);
+    expect(
+      h.backend.maintenanceRuns
+        .values()
+        .filter((run) => run.kind === "authStatePrune"),
+    ).toHaveLength(1);
+    expect(view.authTokens).toBe(50);
+    expect(h.backend.authTokens.size).toBe(0);
     expect(view.continued).toBe(false);
     expect(h.backend.maintenanceRuns.get(begin.runId)?.status).toBe(
       "completed",

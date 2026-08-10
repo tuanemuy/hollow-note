@@ -84,9 +84,11 @@ export function AccountMenu({ displayName }: { displayName: string }) {
             {isPending ? "サインアウト中..." : "サインアウト"}
           </button>
           {/* Kept mounted for as long as the panel is open so the region
-              exists before the failure arrives. */}
+              exists before the failure arrives. It must stay in the
+              accessibility tree too, so only the padding is conditional —
+              hiding it while empty would keep the insertion silent. */}
           <p
-            className="px-4 py-1.5 text-xs text-error empty:hidden"
+            className="px-4 text-xs text-error not-empty:py-1.5"
             aria-live="polite"
           >
             {error}

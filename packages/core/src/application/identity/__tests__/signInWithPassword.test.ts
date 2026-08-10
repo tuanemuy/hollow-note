@@ -85,7 +85,7 @@ async function recordFailures(
 }
 
 describe("signInWithPassword", () => {
-  it("TC-identity-213: correct credentials issue a session and reset the failure count", async () => {
+  it("TC-identity-213 / TC-identity-232: correct credentials issue a session and clear the failure record", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
     await signIn(h, "wrong-password1").catch(() => undefined);

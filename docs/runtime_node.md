@@ -31,7 +31,7 @@ There is none — by design. `packages/core/src/application/di/memoryRuntime.ts`
 
 The backend is a regular adapter, not a fake: it passes the shared port-conformance suites (`packages/core/src/adapters/conformance/`) that any future real backend must also pass. See `docs/test.md`.
 
-Verification-mail links are printed to the server log by the memory `MailSender` (`mail.sent` lines carry the `actionUrl`), so the sign-up → verify flow can be completed locally without a mail provider.
+Verification-mail links can be printed to the server log by the memory `MailSender`, so the sign-up → verify flow can be completed locally without a mail provider. This is **opt-in**: set `MEMORY_MAIL_LOG_ACTION_URL=true` and the `mail.sent` lines gain an `actionUrl` field. Leave it off otherwise — the verification URL embeds the raw one-shot token, and consuming it issues a session, so log access alone is enough to take over a freshly registered account.
 
 ## Environment variables
 
@@ -46,6 +46,7 @@ Verification-mail links are printed to the server log by the memory `MailSender`
 | `OUTBOX_LEASE_MS`     | no       | `300000`                | Lease window (ms) before a stuck claim becomes reclaimable.                         |
 | `OUTBOX_MAX_ATTEMPTS` | no       | `2`                     | Per-event max attempts before quarantine (`failed_at` stamp).                       |
 | `OUTBOX_RETENTION_MS` | no       | `604800000` (7 days)    | Retention window before processed outbox rows are pruned.                           |
+| `MEMORY_MAIL_LOG_ACTION_URL` | no | `false`              | `true` logs the action URL (verification link, raw token) on `mail.sent`. Manual testing only. |
 
 The share-token encryption key ring is minted fresh at process start (ephemeral AES-256-GCM key). Existing share URLs therefore survive only as long as the process — consistent with the rest of the in-memory model.
 
@@ -80,8 +81,12 @@ The runtime is **single-process by construction**: state lives in the process he
 
 The application uses the `ConsoleLogger` port (`packages/core/src/application/ports/logger.ts`) — every log line goes to stdout / stderr as JSON-ish objects. Notable lines:
 
-- `mail.sent` — memory mail deliveries, including the actionable URL (verification link).
+- `mail.sent` — memory mail deliveries. Carries `actionUrl` (the verification link, raw token included) only when `MEMORY_MAIL_LOG_ACTION_URL=true`.
 - `[outbox] quarantining event …` — the DLQ surface.
+
+## Deployment conditions
+
+**Behind a reverse proxy, replace the `clientKey` supplier.** `apps/web/app/presentation/clientKey.ts` returns the socket-derived request IP; `X-Forwarded-For` is deliberately not trusted because it is client-forgeable. Put a TLS terminator or load balancer in front of the process and every request then reports the proxy's address, so all clients collapse onto one `clientKey`. The login throttle is keyed `signIn:{email}:{clientKey}`, so it inverts from a defence into an attack: any visitor can fail ten sign-ins against a known e-mail and lock that account for 15 minutes, repeatably. A proxied deployment must supply the real client address there (a trusted-proxy hop setting is a follow-up issue; the Cloudflare slice replaces the module with `CF-Connecting-IP`).
 
 ## Known limitations
 

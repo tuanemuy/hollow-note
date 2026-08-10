@@ -4,6 +4,11 @@ import {
   type SerializedErrorKind,
 } from "@/presentation/errorResponse";
 
+// P-46（spec/pages/index.md）は「不在」と「権限なし」を同一表示に収斂させる。
+// 文言を共有することで、辞書側から権限の有無が漏れる経路を塞ぐ。
+const NOTE_INACCESSIBLE_MESSAGE =
+  "このノートは見つかりません。URL が変わったか、削除された可能性があります。";
+
 /**
  * UI に出るエラー文言の唯一の辞書（spec/design/index.md §9・§10）。
  *
@@ -51,10 +56,9 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "このリンクはすでに使われています。そのままサインインしてください。",
 
   // ノート
-  NOTE_NOT_FOUND:
-    "このノートは見つかりません。URL が変わったか、削除された可能性があります。",
+  NOTE_NOT_FOUND: NOTE_INACCESSIBLE_MESSAGE,
   NOTE_GONE: "このノートは削除されています。ノート一覧からお探しください。",
-  NOTE_ACCESS_DENIED: "このノートを開く権限がありません。",
+  NOTE_ACCESS_DENIED: NOTE_INACCESSIBLE_MESSAGE,
   NOTE_IS_TRASHED:
     "このノートはゴミ箱にあります。元に戻してからもう一度お試しください。",
   NOTE_CONTENT_TOO_LARGE:
@@ -78,7 +82,12 @@ const MESSAGE_BY_KIND: Readonly<Record<SerializedErrorKind, string>> = {
 };
 
 export function renderErrorMessage(error: SerializedError): string {
-  const byCode = error.code !== null ? MESSAGE_BY_CODE[error.code] : undefined;
+  // `code` はサーバー由来の任意文字列なので、`Object.prototype` 由来の
+  // メンバー（"constructor" 等）を辞書のヒットとして拾わないようにする。
+  const byCode =
+    error.code !== null && Object.hasOwn(MESSAGE_BY_CODE, error.code)
+      ? MESSAGE_BY_CODE[error.code]
+      : undefined;
   return byCode ?? MESSAGE_BY_KIND[error.kind];
 }
 

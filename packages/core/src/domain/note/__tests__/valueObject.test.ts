@@ -100,6 +100,12 @@ describe("Excerpt", () => {
     expect(excerpt.endsWith("😀")).toBe(true);
     expect(isWellFormed(excerpt)).toBe(true);
   });
+
+  it("fromText yields an empty excerpt for a non-positive max", () => {
+    const text = "a".repeat(1000);
+    expect(Excerpt.fromText(text, 0)).toBe("");
+    expect(Excerpt.fromText(text, -5)).toBe("");
+  });
 });
 
 describe("NoteHeading", () => {

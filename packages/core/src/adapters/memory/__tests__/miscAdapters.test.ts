@@ -1,31 +1,56 @@
 import { describe, expect, it } from "vitest";
+import type { Logger } from "../../../application/ports/logger";
 import { createMemoryMailSender } from "../mailSender";
 import { createIntlTimeZoneResolver } from "../timeZoneResolver";
 
 describe("createMemoryMailSender (ADP-common-032)", () => {
-  it("records deliveries and logs the action URL", async () => {
+  const message = {
+    to: "u1@example.com",
+    template: {
+      kind: "emailVerification",
+      verifyUrl: "https://app.test/verify-email?token=t",
+      expiresAt: new Date("2026-01-02T00:00:00Z"),
+    },
+    locale: "ja",
+  } as const;
+
+  const recordingLogger = (sink: unknown[]): Logger => ({
+    info: (_message, meta) => sink.push(meta),
+    warn: () => undefined,
+    error: () => undefined,
+  });
+
+  it("records deliveries and logs the action URL when opted in", async () => {
     const logged: unknown[] = [];
-    const sender = createMemoryMailSender({
-      info: (_message, meta) => logged.push(meta),
-      warn: () => undefined,
-      error: () => undefined,
+    const sender = createMemoryMailSender(recordingLogger(logged), {
+      logActionUrl: true,
     });
 
-    await sender.send({
-      to: "u1@example.com",
-      template: {
-        kind: "emailVerification",
-        verifyUrl: "https://app.test/verify-email?token=t",
-        expiresAt: new Date("2026-01-02T00:00:00Z"),
-      },
-      locale: "ja",
-    });
+    await sender.send(message);
 
     expect(sender.sent()).toHaveLength(1);
     expect(sender.sent()[0]?.to).toBe("u1@example.com");
     expect(logged[0]).toMatchObject({
       template: "emailVerification",
       actionUrl: "https://app.test/verify-email?token=t",
+    });
+  });
+
+  it("omits the action URL by default — the raw token must not reach logs", async () => {
+    const logged: unknown[] = [];
+    const sender = createMemoryMailSender(recordingLogger(logged), {
+      logActionUrl: false,
+    });
+
+    await sender.send(message);
+
+    expect(logged[0]).toMatchObject({
+      to: "u1@example.com",
+      template: "emailVerification",
+    });
+    expect(logged[0]).not.toHaveProperty("actionUrl");
+    expect(sender.sent()[0]?.template).toMatchObject({
+      verifyUrl: "https://app.test/verify-email?token=t",
     });
   });
 });

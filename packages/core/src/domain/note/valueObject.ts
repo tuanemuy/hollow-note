@@ -98,14 +98,18 @@ const exceedsUtf8Bytes = (value: string, max: number): boolean =>
  * corresponding `create` guard enforces.
  */
 const truncateWithoutSplittingPair = (value: string, max: number): string => {
-  if (value.length <= max) {
+  // `slice` reads a negative end as an offset from the tail, which would
+  // turn "cut to `limit`" into "drop the last `|limit|` units" and return
+  // an over-cap value.
+  const limit = Math.max(0, max);
+  if (value.length <= limit) {
     return value;
   }
-  const last = value.charCodeAt(max - 1);
-  const next = value.charCodeAt(max);
+  const last = value.charCodeAt(limit - 1);
+  const next = value.charCodeAt(limit);
   const splitsPair =
     last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
-  return value.slice(0, splitsPair ? max - 1 : max);
+  return value.slice(0, splitsPair ? limit - 1 : limit);
 };
 
 /**
@@ -159,10 +163,12 @@ export const Excerpt = {
     return value as Excerpt;
   },
   fromText: (text: string, max: number = EXCERPT_MAX_LENGTH): Excerpt =>
-    truncateWithoutSplittingPair(
-      text,
-      Math.min(max, EXCERPT_MAX_LENGTH),
-    ) as Excerpt,
+    Excerpt.create(
+      truncateWithoutSplittingPair(
+        text,
+        Math.max(0, Math.min(max, EXCERPT_MAX_LENGTH)),
+      ),
+    ),
 };
 
 const HEADING_TEXT_MAX_LENGTH = 100;

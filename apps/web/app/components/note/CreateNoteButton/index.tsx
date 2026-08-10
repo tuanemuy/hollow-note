@@ -55,7 +55,7 @@ export function CreateNoteButton({
       : "inline-flex h-[30px] items-center gap-1 rounded-md px-2 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55";
 
   return (
-    <span className="inline-flex flex-col items-start gap-1">
+    <span className="inline-flex flex-col items-start">
       <button
         type="button"
         onClick={onClick}
@@ -78,9 +78,10 @@ export function CreateNoteButton({
         </svg>
         {isPending ? "作成中..." : label}
       </button>
-      {/* Kept mounted so the region exists before the failure arrives —
-          a live region that appears with its text is not announced. */}
-      <span className="text-xs text-error empty:hidden" aria-live="polite">
+      {/* Kept mounted — and kept in the accessibility tree, so no
+          `display: none` while empty — because a live region that appears
+          with its text is not announced. Only the margin is conditional. */}
+      <span className="text-xs text-error not-empty:mt-1" aria-live="polite">
         {error}
       </span>
     </span>
