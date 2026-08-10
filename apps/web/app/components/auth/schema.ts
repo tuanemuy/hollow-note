@@ -27,6 +27,10 @@ export const signInSchema = z.object({
   password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
 });
 
+export const resendVerificationSchema = z.object({
+  email: z.string().trim().min(1).max(EMAIL_MAX_LENGTH),
+});
+
 export const verifyEmailSchema = z.object({
   // Generous ceiling: the opaque token is `base64url(userId).secret`.
   token: z.string().min(1).max(512),

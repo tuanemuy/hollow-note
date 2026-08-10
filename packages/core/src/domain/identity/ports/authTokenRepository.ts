@@ -1,5 +1,5 @@
 import type { PrunePage } from "@repo/core/domain/common/pagination";
-import type { AuthToken } from "../authToken";
+import type { AuthToken, PendingAuthToken } from "../authToken";
 import type { AuthTokenPurpose, TokenHash, UserId } from "../valueObject";
 
 /**
@@ -19,6 +19,17 @@ export interface AuthTokenRepository {
     userId: UserId,
     tokenHash: TokenHash,
   ): Promise<AuthToken | null>;
+  /**
+   * The at-most-one live token of the pair, per the partial unique index
+   * on (`user_id`, `purpose`) over `status = 'pending'`
+   * (spec/database/index.md#auth_tokens). It is the only reading of when
+   * a token was last issued to a user, which is what the resend interval
+   * of `resendVerificationEmail` is measured from.
+   */
+  findPendingByUserAndPurpose(
+    userId: UserId,
+    purpose: AuthTokenPurpose,
+  ): Promise<PendingAuthToken | null>;
   save(token: AuthToken): Promise<void>;
   deleteByUserAndPurpose(
     userId: UserId,

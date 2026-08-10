@@ -18,13 +18,15 @@ import {
   inputInvalidClass,
   submitButtonClass,
 } from "../formStyles";
+import { ResendVerificationForm } from "../ResendVerificationForm";
 import { signInFn } from "./action";
 
 /**
  * P-02 サインイン（spec/pages/index.md#P-02、モック P02-signin.html）。
  * 状態: 入力 / 認証失敗（共通文言）/ 未確認 / 待機中（THROTTLED、残秒を
  * 数えて再開）/ ロック中（LOCKED、解除時刻 + 再設定の文言のみ — P-04 は
- * 本スライス外）/ 送信中。Google・再送・再設定導線は出さない。
+ * 本スライス外）/ 送信中。未確認からは確認メールを再送できる
+ * （PAGE-p02-006）。Google・再設定導線は出さない。
  *
  * 失敗後の画面は単一の `Phase` 直和で持ち、THROTTLED の残り時間は
  * deadline からの導出にする。サーバー側の判定が正で、この時間はあくまで
@@ -181,7 +183,7 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
           with its text is not announced. Swapping the content of a region
           that was already there is what makes it speak. */}
       <div ref={alertRef} tabIndex={-1} role="status" aria-live="polite">
-        <PhaseAlert phase={phase} now={now} waiting={waiting} />
+        <PhaseAlert phase={phase} now={now} waiting={waiting} email={email} />
       </div>
 
       <form action={formAction} noValidate>
@@ -247,10 +249,12 @@ function PhaseAlert({
   phase,
   now,
   waiting,
+  email,
 }: {
   phase: Phase;
   now: number;
   waiting: boolean;
+  email: string;
 }) {
   // Every alert here renders with `role="note"` (no role attribute): the
   // caller already wraps them in one persistent `role="status"` region, and
@@ -323,8 +327,9 @@ function PhaseAlert({
           tone="warning"
           title="メールアドレスの確認が済んでいません"
           role="note"
+          actions={<ResendVerificationForm email={email} variant="compact" />}
         >
-          登録時に送った確認メールのリンクを開いてください。
+          登録時に送った確認メールのリンクを開いてください。届いていない場合は送り直せます。
         </Alert>
       );
     case "accountDeleting":

@@ -23,6 +23,14 @@ export type VerifyEmailView = Readonly<{
   alreadyVerified: boolean;
 }>;
 
+/**
+ * Deliberately empty. `resendVerificationEmail` answers identically for
+ * every state of the address (spec/adr/028-account-enumeration-resistance.md),
+ * so there is no field it could carry that would not also be the oracle
+ * the uniform response exists to remove — not even "a mail went out".
+ */
+export type ResendVerificationEmailView = Readonly<Record<string, never>>;
+
 export type SignInView = Readonly<{
   userId: string;
   sessionToken: string;

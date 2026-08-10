@@ -665,3 +665,44 @@ Proposed
 ### Consequences
 - 良い点: ステップ 9 がテーマ E / F / G / H を待たずに完結し、各テーマは自分のルートを足すだけでよい。タブの href が 1 箇所に集まっているので、差し替えも 1 ファイルで済む。
 - トレードオフ: 4 ルートが揃うまでタブ遷移はフルナビゲーションになる（ルーターキャッシュを使わない）。差し替えを忘れると設定タブだけ体感が重いままになるので、ステップ 34 の確認項目として記録する。
+
+## ADR-031: 再送の 60 秒間隔は pending トークンの `createdAt` から測る
+
+### Status
+Proposed
+
+### Context
+`spec/usecases/identity.md` の `resendVerificationEmail` 手順 2 は「直近 60 秒以内に同じ利用者へ発行していれば何もせず返す」と定めるが、現行の `AuthTokenRepository`（spec/domains/identity.md のポート定義そのまま）には最後の発行時刻を読む手段が無い。`findByTokenHash` は平文トークンを持つ側の経路で、再送の要求者はそれを持たない。`deleteByUserAndPurpose` は件数しか返さない。選択肢は (a) ポートに pending トークンの読み取りを足す、(b) `LoginAttemptStore` を汎用スロットルとして流用する、(c) 間隔制限を実装しない。
+
+### Decision
+(a) を採り、`AuthTokenRepository.findPendingByUserAndPurpose(userId, purpose): Promise<PendingAuthToken | null>` を足す。`auth_tokens` は (`user_id`, `purpose`) に対し `status = 'pending'` の部分 UNIQUE を持つ（spec/database/index.md）ので、この読み取りは高々 1 行で定義が一意に決まり、その `createdAt` が「最後にトークンを発行した時刻」そのものになる。
+
+判定は**同一 UoW の中**で行う（spec 手順 2 は UoW の前に置いているが、手順 4 の再検査と同じ transaction に入れる）。pending 行の読み取り・置き換え・新規発行が 1 つの transaction に収まっていないと、並行する再送が「どちらも間隔を満たす」と判断して 2 件目の pending 行を作り、部分 UNIQUE 制約に触れる。
+
+(b) は失敗カウンターの意味を曲げるうえ、`pruneExpiredAuthState` の `login_attempts` 掃除と干渉する。(c) は AC-3 と TC-identity-195/196 を落とす。
+
+`resendVerificationEmail` の応答は空の DTO（`ResendVerificationEmailView = Readonly<Record<string, never>>`）にする。「メールを送ったか」を返した時点で列挙耐性（spec/adr/028）が壊れるので、返せるフィールドが 1 つも無いことを型で示す。
+
+### Consequences
+- 良い点: 間隔判定の材料が実データ 1 か所（pending トークン行）に定まり、別表の状態と食い違わない。適合スイート 1 本で全バックエンドに同じ意味を課せる。
+- トレードオフ: `spec/domains/identity.md` の `AuthTokenRepository` 定義に無いメソッドを実装が持つことになる。ステップ 34 の spec-sync 候補として記録する（ポート定義とテストケース表の両方に追記が要る）。
+- 追随: 同じ 60 秒規則をパスワード再設定へ広げる場合（テーマ D）は、`purpose: "password_reset"` で同じメソッドを呼べばよい。
+
+## ADR-032: 再送導線は P-02 / P-03 が共有する 1 つの island に置く
+
+### Status
+Proposed
+
+### Context
+確認メールの再送は P-03（期限切れ・無効）と P-02（未確認）の 2 か所から出る（PAGE-p03-003 / PAGE-p02-006）。両者は「アドレスを知っているか」だけが違う: P-02 はサインインフォームに入力済みのアドレスがあり、P-03 はメールのリンクから来た訪問者なのでアドレスを知らない（モック P03 のボタンだけでは送信先が決まらない）。一方で「送信中 / 送信済み / クールダウン中」の三態とクールダウンの秒読みは完全に同じで、2 か所に複製すると片方だけ挙動が古くなる。
+
+### Decision
+`apps/web/app/components/auth/ResendVerificationForm/` を新設し、両ページがこれを使う。`email` prop が `string` ならボタンだけを、`null` ならメール入力欄付きで描画する。`variant`（`primary` / `outline` / `compact`）でモックの 3 種のボタン形を出し分ける。server function（`resendVerificationFn`）もこのディレクトリが持ち、`__root.tsx` の副作用 import は 1 行で済む。
+
+クールダウンは**クライアント側の 60 秒タイマー**として表示する。usecase は列挙耐性のため全経路で同じ空の成功を返し、間隔にかかったかどうかを応答に載せない（ADR-031）ので、サーバーから残り時間を受け取る経路は原理的に無い。表示はあくまで案内で、早すぎる再送は無送信の成功になるだけである。
+
+このコンポーネントは自前の live region を持たない。呼び出し元（P-03 の結果パネル・P-02 のアラート枠）が既に常設の `role="status"` の中にこれを置いており、入れ子の live region は同じ文言を二重に読み上げさせるため。秒読みだけは `aria-hidden` にして、毎秒の読み上げを止める。
+
+### Consequences
+- 良い点: 三態とクールダウンの実装が 1 本になり、P-02 / P-03 で挙動がずれない。テーマ C（P-01 / P-02 の Google 導線）が `SignInForm` を触っても再送側と衝突しない。
+- トレードオフ: `components/auth/SignInForm/` の所有ステップ（12）が、ステップ 12 の対象ファイル一覧に無いディレクトリを 1 つ増やす。後続テーマ（15 / 17）は `SignInForm/index.tsx` の `PhaseAlert` に追記するだけでよく、再送側には触れない。

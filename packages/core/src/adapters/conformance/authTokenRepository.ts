@@ -78,6 +78,38 @@ export function describeAuthTokenRepositoryContract(
       expect(conflicts).toHaveLength(1);
     });
 
+    it("ADR-031: findPendingByUserAndPurpose yields the single live row of the pair", async () => {
+      const now = backend.clock.now();
+      const consumedSource = makeAuthToken(
+        1,
+        userId(1),
+        "email_verification",
+        now,
+      );
+      await backend.authTokenRepository.insert(consumedSource);
+      await backend.authTokenRepository.save(
+        AuthToken.consume(consumedSource, now),
+      );
+      const pending = makeAuthToken(2, userId(1), "email_verification", now);
+      await backend.authTokenRepository.insert(pending);
+      await backend.authTokenRepository.insert(
+        makeAuthToken(3, userId(2), "email_verification", now),
+      );
+
+      expect(
+        await backend.authTokenRepository.findPendingByUserAndPurpose(
+          userId(1),
+          "email_verification",
+        ),
+      ).toEqual(pending);
+      expect(
+        await backend.authTokenRepository.findPendingByUserAndPurpose(
+          userId(1),
+          "password_reset",
+        ),
+      ).toBeNull();
+    });
+
     it("ADP-identity-024: deleteByUserAndPurpose is purpose-scoped and bounded", async () => {
       const now = backend.clock.now();
       await backend.authTokenRepository.insert(
