@@ -21,9 +21,27 @@ pnpm start                 # tsx apps/web/scripts/listen.node.ts — boots @hono
 
 The flow:
 
-1. `vite build --config vite.config.node.ts` writes a fetch-handler bundle to `apps/web/dist/server/server.node.js`.
+1. `vite build --config vite.config.node.ts` writes a fetch-handler bundle to `apps/web/dist/server/server.node.js` and the browser build to `apps/web/dist/client/`.
 2. `apps/web/scripts/listen.node.ts` loads `dotenv`, dynamically imports the bundle, calls its `boot()` to construct the memory runtime + DI containers + worker runner, then registers the handler with `@hono/node-server`.
 3. SIGTERM / SIGINT triggers the shutdown sequence described below.
+
+## Static assets
+
+`vite dev` serves the browser build itself, so static serving is a production-only concern. `apps/web/scripts/listen.node.ts` puts a small file handler in front of the app's fetch handler: a `GET` / `HEAD` whose path resolves to a real file under `dist/client` is answered from disk, everything else falls through to the app. The client root is derived from whichever server-entry candidate resolved, so a deployment that ships `dist/` as its own root (`server/` + `client/` siblings) works unchanged.
+
+Headers differ from the app's by design:
+
+| Response          | `Cache-Control`                          | Other                                    |
+| ----------------- | ---------------------------------------- | ---------------------------------------- |
+| `/assets/*`       | `public, max-age=31536000, immutable`    | `nosniff`, content-type from extension   |
+| other static file | `public, max-age=0, must-revalidate`     | `nosniff`, content-type from extension   |
+| app responses     | `private, no-store` (+ CSP, Referrer-Policy, nosniff) | see `apps/web/app/server.node.ts` |
+
+Vite content-hashes everything under `assets/`, so those URLs are safe to pin forever; files copied verbatim from `apps/web/public/` keep their name across deploys and must be revalidated. The app's `private, no-store` default deliberately does **not** reach static files — it exists because SSR HTML and GET server-function responses are user-specific, which a hashed bundle is not.
+
+Putting a CDN or reverse proxy in front of the process is the expected production shape; the handler here is the floor, not a replacement for one.
+
+`apps/web/public/` does not exist yet, so the brand assets `__root.tsx` links (`/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/site.webmanifest`, `/og-image.png`) 404 in every mode, `pnpm dev` included. Dropping the files into that directory is all that is needed — vite copies them to `dist/client/` and the handler above serves them.
 
 ## Persistence model
 
