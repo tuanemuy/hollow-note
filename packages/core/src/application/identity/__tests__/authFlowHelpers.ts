@@ -1,4 +1,4 @@
-import type { User } from "@repo/core/domain/identity/user";
+import type { DeletingUser, User } from "@repo/core/domain/identity/user";
 import type { TestHarness } from "../../__tests__/helpers";
 import { signUpWithPassword } from "../signUpWithPassword";
 import { verifyEmail } from "../verifyEmail";
@@ -19,6 +19,22 @@ export function latestVerificationToken(h: TestHarness): string {
     }
   }
   throw new Error("no verification mail was sent");
+}
+
+/** Extracts the plaintext token from the latest password-reset mail. */
+export function latestPasswordResetToken(h: TestHarness): string {
+  const mails = h.mailSender.sent();
+  for (let i = mails.length - 1; i >= 0; i -= 1) {
+    const template = mails[i]?.template;
+    if (template?.kind === "passwordReset") {
+      const url = new URL(template.resetUrl);
+      const token = url.searchParams.get("token");
+      if (token !== null) {
+        return token;
+      }
+    }
+  }
+  throw new Error("no password reset mail was sent");
 }
 
 export async function signUpPending(
@@ -50,6 +66,25 @@ export async function signUpVerified(
     throw new Error("expected a session from verification");
   }
   return { userId, sessionToken: verified.sessionToken };
+}
+
+/** Moves an active user to `deleting` without running `deleteAccount`. */
+export function markDeleting(
+  h: TestHarness,
+  userId: string,
+  deletionOperationId = "deletion-1",
+): void {
+  overwriteUser(h, userId, (user) => {
+    if (user.status !== "active") {
+      throw new Error(`user ${userId} is not active`);
+    }
+    const deleting: DeletingUser = {
+      ...user,
+      status: "deleting",
+      deletionOperationId,
+    };
+    return deleting;
+  });
 }
 
 /** Direct row rewrite for states no usecase in this slice can produce. */

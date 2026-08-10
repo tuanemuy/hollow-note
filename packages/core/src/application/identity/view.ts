@@ -84,3 +84,16 @@ export type PruneExpiredAuthStateView = Readonly<{
   oauthFlowStates: number;
   continued: boolean;
 }>;
+
+/**
+ * Deliberately empty, for the same reason as
+ * `ResendVerificationEmailView`: every state of the address — unknown,
+ * deleting, password-less, throttled, mailed — answers identically
+ * (spec/adr/028-account-enumeration-resistance.md), so there is no field
+ * it could carry that would not reintroduce the oracle.
+ */
+export type RequestPasswordResetView = Readonly<Record<string, never>>;
+
+export type ResetPasswordView = Readonly<{
+  userId: string;
+}>;

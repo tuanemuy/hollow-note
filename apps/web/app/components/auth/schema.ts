@@ -35,3 +35,12 @@ export const verifyEmailSchema = z.object({
   // Generous ceiling: the opaque token is `base64url(userId).secret`.
   token: z.string().min(1).max(512),
 });
+
+export const requestPasswordResetSchema = z.object({
+  email: z.string().trim().min(1).max(EMAIL_MAX_LENGTH),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(512),
+  newPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
+});

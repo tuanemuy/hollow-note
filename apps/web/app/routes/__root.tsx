@@ -20,6 +20,7 @@ import "@/components/auth/SignUpForm/action";
 import "@/components/auth/SignInForm/action";
 import "@/components/auth/VerifyEmailPanel/action";
 import "@/components/auth/ResendVerificationForm/action";
+import "@/components/auth/ResetPasswordPanel/action";
 import "@/components/layout/AccountMenu/action";
 import "@/components/note/CreateNoteButton/action";
 import "@/routes/auth/-action";

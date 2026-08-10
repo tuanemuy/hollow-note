@@ -830,3 +830,71 @@ TC-identity-266 は「削除開始済みまたは削除済みの利用者が `in
 ### Consequences
 - 良い点: 状態を漏らさず、既存のエラー表示辞書をそのまま使える。
 - トレードオフ: spec のエラー表に行が 1 つ増える（ステップ 34 の spec-sync 候補）。
+
+---
+
+## ADR-040: パスワード再設定の server function は `ResetPasswordPanel` が持つ
+
+### Status
+Accepted
+
+### Context
+steps.md ステップ 17 の対象ファイルは「`routes/-action` 相当（新規）」だが、`/reset-password` は入れ子の無い単独ルートなので、置き場は `apps/web/app/routes/-action.tsx`（routes 直下）になる。これは「ルート群のディレクトリが自分の action を持つ」という `routes/auth/-action.tsx` / `routes/notes/-action.tsx` / `routes/dev/-action.tsx` の形と違い、routes 直下の全ルートで共有される名前になってしまう。
+
+### Decision
+`requestPasswordResetFn` / `resetPasswordFn` を `apps/web/app/components/auth/ResetPasswordPanel/action.ts` に置く。P-04 の 2 モードは 1 つの island（`ResetPasswordPanel`）が所有しており、`VerifyEmailPanel/action.ts` / `ResendVerificationForm/action.ts` と同じ「island が自分の server function を持つ」形になる。`__root.tsx` の副作用 import も 1 行で済む。
+
+### Consequences
+- 良い点: 既存 2 パターン（ルート群 / island）のうち実態に合う方を選べ、routes 直下に共有名の action モジュールを作らずに済む。
+- トレードオフ: steps.md のファイル名と 1 つずれる。
+
+---
+
+## ADR-041: `requestPasswordReset` にも 60 秒の発行間隔を適用する
+
+### Status
+Accepted
+
+### Context
+TC-identity-192 は「同じメールアドレスへの要求が短時間に連続する」→「レート制限がかかり、メールは送られず成功として返る」を求めるが、`spec/usecases/identity.md` の `requestPasswordReset` 手順にはレート制限の材料が書かれていない（エラー表に「レート制限 → 何もせず成功として返る」の 1 行があるだけ）。`LoginAttemptStore` を流用する案は失敗カウンターの意味を曲げる。
+
+### Decision
+ADR-031 の「追随」節どおり、`AuthTokenRepository.findPendingByUserAndPurpose(userId, "password_reset")` の `createdAt` から 60 秒を測る。判定は発行 UoW の中で行う（`resendVerificationEmail` と同一の形）。応答は列挙耐性のため全経路で同じ空の DTO なので、間隔にかかったかどうかは載せない。
+
+### Consequences
+- 良い点: 確認メール再送と再設定申請で間隔判定の材料・置き場所・境界（59 秒 / 61 秒）が 1 つになる。
+- トレードオフ: 60 秒という値の正典が spec ではなく実装（2 ユースケースの定数）にある。ステップ 34 の spec-sync 候補に、`requestPasswordReset` 手順への間隔規則の追記として載せる。
+
+---
+
+## ADR-042: `resetPassword` の成功応答でセッション Cookie を破棄する
+
+### Status
+Accepted
+
+### Context
+`resetPassword` は成功時に `authEpoch` を進めるので、実行したブラウザー自身のセッション（サインイン中にロック解除目的で再設定した場合）も同時に失効する。usecase は `userId` しか返さず、Cookie は presentation の関心なので、破棄する主体を決める必要がある。
+
+### Decision
+`resetPasswordFn`（POST）が成功後に `session.clearSessionCookie()` を呼ぶ。GET ではないので #1 の CSRF 規約（読み取り経路が認証状態を変えない）に触れない。island 側は成功後に `router.invalidate()` して、キャッシュ済みの認証状態を捨てる。
+
+### Consequences
+- 良い点: 認証できない値を送り続けるブラウザーが残らず、P-04 の実行成功から「サインインへ」への導線が実態と一致する。
+- トレードオフ: `completeOAuthCallbackFn` に続いて Cookie を触る server function が 1 つ増える（破棄側なので発行の一元性は崩れない）。
+
+---
+
+## ADR-043: P-04 の強度表示は目安に留め、送信の可否はドメイン条件だけで決める
+
+### Status
+Accepted
+
+### Context
+モック P04 状態 3 は 4 本のバーと「強さ: 十分」を出すが、強度の定義は spec に無い。合否を決めるのは `PlainPassword`（8〜128 字・英字と数字を各 1 つ以上、違反は `BusinessRuleError(WeakPassword)`）だけである。
+
+### Decision
+バーは「ドメイン条件を満たしたうえでどれだけ余裕があるか」を 4 段階で見せる目安とし、score 0 =「ドメイン条件未達」でのみ送信ボタンを止める。長さ 12 / 16 と記号・大小混在で 1 段ずつ上がる。クライアント側の判定は表示のためだけで、正は常にサーバー側の VO 構築。
+
+### Consequences
+- 良い点: 画面の判定とサーバーの判定が食い違わず（クライアントが通したものはサーバーも通る）、TC-identity-208 の `WeakPassword` はサーバー由来のまま検証できる。
+- トレードオフ: 段階の刻み方は仕様ではなく実装の判断なので、デザイン側の指定が入ったら差し替える。
