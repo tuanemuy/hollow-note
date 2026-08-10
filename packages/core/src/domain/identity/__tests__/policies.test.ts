@@ -2,6 +2,7 @@ import { isBusinessRuleError } from "@repo/core/domain/error";
 import { describe, expect, it } from "vitest";
 import { IdentityErrorCode } from "../errorCode";
 import { Identity } from "../identity";
+import { AccountDeletionRetryPolicy } from "../services/accountDeletionRetryPolicy";
 import { AccountLinkingPolicy } from "../services/accountLinkingPolicy";
 import { IdentityPolicy } from "../services/identityPolicy";
 import { User } from "../user";
@@ -128,5 +129,26 @@ describe("AccountLinkingPolicy.decide", () => {
       kind: "refuse",
       reason: "existingUserUnavailable",
     });
+  });
+});
+
+describe("AccountDeletionRetryPolicy", () => {
+  it("TC-identity-052: admits the ninth attempt only while fewer than 8 terminal rows are retained", () => {
+    expect(
+      codeOf(() => AccountDeletionRetryPolicy.ensureRetryable(7)),
+    ).toBeNull();
+    expect(codeOf(() => AccountDeletionRetryPolicy.ensureRetryable(8))).toBe(
+      IdentityErrorCode.AccountDeletionRetryLimitExceeded,
+    );
+    expect(codeOf(() => AccountDeletionRetryPolicy.ensureRetryable(9))).toBe(
+      IdentityErrorCode.AccountDeletionRetryLimitExceeded,
+    );
+  });
+
+  it("counts over a 120-day window", () => {
+    const now = new Date("2026-05-01T00:00:00.000Z");
+    expect(AccountDeletionRetryPolicy.windowStart(now).toISOString()).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
   });
 });

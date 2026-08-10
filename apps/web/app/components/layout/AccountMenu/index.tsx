@@ -2,12 +2,16 @@
 
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { SETTINGS_TABS } from "@/components/layout/SettingsTabs";
 import { displayError } from "@/presentation/errorDisplay";
 import { signOutFn } from "./action";
 
+/** 設定の入口はタブ列の先頭（P-21 プロフィール設定）。 */
+const SETTINGS_ENTRY_HREF = SETTINGS_TABS[0].href;
+
 /**
- * L-01 アカウントメニュー（最小形）。本スライスの項目はサインアウトのみ
- * — プロフィール・処理履歴・設定は対応画面が未実装のため並べない
+ * L-01 アカウントメニュー（最小形）。項目は設定とサインアウトのみ —
+ * プロフィール・処理履歴は対応画面が未実装のため並べない
  * （placeholder 禁止）。
  */
 export function AccountMenu({ displayName }: { displayName: string }) {
@@ -75,6 +79,15 @@ export function AccountMenu({ displayName }: { displayName: string }) {
           <div className="truncate px-4 py-1.5 text-xs text-ink-tertiary">
             {displayName}
           </div>
+          {/* 通常のリンク（`Link` ではない）: 遷移先の `/settings/profile`
+              を作るのはプロフィール設定のスライスで、型付き `to` はその
+              ルートが生成された後にしか書けない。 */}
+          <a
+            href={SETTINGS_ENTRY_HREF}
+            className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
+          >
+            設定
+          </a>
           <button
             type="button"
             disabled={isPending}

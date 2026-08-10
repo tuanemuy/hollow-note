@@ -16,6 +16,7 @@ import {
 } from "@repo/core/domain/identity/valueObject";
 import { z } from "zod";
 import { buildEventDecoder } from "../events/buildDecoder";
+import type { UserAuthResidueCleanupContinuedEvent } from "./continuations";
 
 /**
  * Wire decoders for the identity events. Decoders live in the application
@@ -164,6 +165,32 @@ export const identityEventDecoders = {
     (parsed) => ({
       identityId: IdentityId.create(parsed.identityId),
       userId: UserId.create(parsed.userId),
+    }),
+  ),
+
+  "identity.userAuthResidueCleanupContinued": buildEventDecoder<
+    UserAuthResidueCleanupContinuedEvent,
+    {
+      userId: string;
+      authEpoch: number;
+      table: "sessions" | "authTokens";
+      deletionOperationId: string | null;
+    }
+  >(
+    "identity.userAuthResidueCleanupContinued",
+    z
+      .object({
+        userId: z.string().min(1),
+        authEpoch: z.number().int().nonnegative(),
+        table: z.enum(["sessions", "authTokens"]),
+        deletionOperationId: z.string().min(1).nullable(),
+      })
+      .strict(),
+    (parsed) => ({
+      userId: UserId.create(parsed.userId),
+      authEpoch: parsed.authEpoch,
+      table: parsed.table,
+      deletionOperationId: parsed.deletionOperationId,
     }),
   ),
 } as const;

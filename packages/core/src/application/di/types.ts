@@ -8,19 +8,26 @@ import type { SecureTokenGenerator } from "@repo/core/domain/identity/ports/secu
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
+import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
+import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
 import type {
   GlobalUnitOfWorkProvider,
   ScopeUnitOfWorkProvider,
 } from "../execution/unitOfWork";
+import type { AccountDeletionManifestStore } from "../ports/accountDeletionManifestStore";
 import type { Clock } from "../ports/clock";
+import type { DistributedOperationStore } from "../ports/distributedOperationStore";
 import type { GlobalMaintenanceRunStore } from "../ports/globalMaintenanceRunStore";
 import type { IdempotencyStore } from "../ports/idempotencyStore";
+import type { IdentityRemovalReceiptStore } from "../ports/identityRemovalReceiptStore";
 import type { IdGenerator } from "../ports/idGenerator";
 import type { Logger } from "../ports/logger";
 import type { MailSender } from "../ports/mailSender";
 import type { NoteRouteStore } from "../ports/noteRouteStore";
+import type { ObjectStorage } from "../ports/objectStorage";
 import type { OutboxRepository } from "../ports/outboxRepository";
 import type { ScopeRouter } from "../ports/scopeRouter";
+import type { ScopeTaskQueue } from "../ports/scopeTaskQueue";
 import type { ShareTokenProtector } from "../ports/shareTokenProtector";
 import type { ScopeKey } from "../scope";
 
@@ -63,11 +70,29 @@ export type SessionReader = Pick<
   "findByTokenHash" | "deleteById"
 >;
 export type AuthTokenReader = Pick<AuthTokenRepository, "findByTokenHash">;
+/**
+ * Read view over the deletion control plane. Progress polling runs after
+ * the session is gone, so it must not travel through a write unit of
+ * work; the `Pick` is what keeps it a read.
+ */
+export type DeletionOperationReader = Pick<
+  DistributedOperationStore,
+  "findByOperationId"
+>;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
   NoteRepository,
   "findById" | "listByOwner" | "countByOwner"
 >;
+/**
+ * Scope-bound read view over the usage aggregates for the usage screen.
+ * `find` yields a version token, which is why the write methods are
+ * dropped: displaying usage must not become a path to writing it.
+ */
+export type UsageReader = Readonly<{
+  storageQuota: Pick<StorageQuotaRepository, "find" | "listBySubjects">;
+  llmUsage: Pick<LlmUsageRepository, "find">;
+}>;
 
 /**
  * Request-path container. Provided to usecases (mutations must run
@@ -97,7 +122,9 @@ export type RequestContainer = SharedDeps &
     identityReader: IdentityReader;
     sessionReader: SessionReader;
     authTokenReader: AuthTokenReader;
+    deletionOperationReader: DeletionOperationReader;
     noteReaderFor: (scope: ScopeKey) => NoteReader;
+    usageReaderFor: (scope: ScopeKey) => UsageReader;
     mailSender: MailSender;
     passwordHasher: PasswordHasher;
     secureTokenGenerator: SecureTokenGenerator;
@@ -139,19 +166,36 @@ export type ExpirySweep = Readonly<{
  * without a unit of work (spec: the per-table deletes must not share a
  * cross-cutting transaction).
  *
- * `idempotencyStore` is therefore unreachable from the current worker
- * roles (only the conformance suite exercises it): its contract requires
- * `markProcessed` to share a unit of work with the subscriber's main
- * effect (`application/ports/idempotencyStore.ts`). The unit-of-work
- * providers get added to this container at the moment the first
- * non-commutative consumer lands — never call `markProcessed` outside a
- * unit of work to work around their absence.
+ * Both unit-of-work providers are here because the subscriber registry
+ * (`application/workers/subscribers.ts`) runs real consumers whose
+ * effects are transactional. `idempotencyStore` is reachable through
+ * them: its contract requires `markProcessed` to share a unit of work
+ * with the subscriber's main effect
+ * (`application/ports/idempotencyStore.ts`) — never call it outside one.
+ * Subscribers whose effect is intrinsically idempotent (delete /
+ * overwrite) skip the store and document that basis instead.
+ *
+ * The remaining ports are the ones today's subscribers touch outside a
+ * unit of work: reservation release reads the removal receipt and frees
+ * the directory key, and the deletion manifest collects global receipts.
+ * `scopeTaskQueue` is the runner's only way to learn which scopes have
+ * continuation work due (ADR-005) — it reads, and the claim still
+ * happens inside each scope's unit of work. `objectStorage` is here
+ * because reclaiming an object is the subscriber's job, after the
+ * metadata row it belonged to is already gone.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{
+    globalUnitOfWorkProvider: GlobalUnitOfWorkProvider;
+    scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
     outboxRepository: OutboxRepository;
     idempotencyStore: IdempotencyStore;
     maintenanceRunStore: GlobalMaintenanceRunStore;
+    identityUniqueDirectory: IdentityUniqueDirectory;
+    identityRemovalReceiptStore: IdentityRemovalReceiptStore;
+    accountDeletionManifestStore: AccountDeletionManifestStore;
+    scopeTaskQueue: ScopeTaskQueue;
+    objectStorage: ObjectStorage;
     routingGenerations: readonly string[];
     authStateSweeps: Readonly<Record<AuthStateTable, ExpirySweep>>;
   }>;

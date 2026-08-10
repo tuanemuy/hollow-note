@@ -4,20 +4,27 @@ import {
   createMemoryMailSender,
   type MemoryMailSender,
 } from "@repo/core/adapters/memory/mailSender";
+import { createMemoryObjectStorage } from "@repo/core/adapters/memory/objectStorage";
 import { createScryptPasswordHasher } from "@repo/core/adapters/memory/passwordHasher";
+import { createMemoryAccountDeletionManifestStore } from "@repo/core/adapters/memory/repositories/accountDeletionManifestStore";
 import { createMemoryAuthTokenRepository } from "@repo/core/adapters/memory/repositories/authTokenRepository";
+import { createMemoryDistributedOperationStore } from "@repo/core/adapters/memory/repositories/distributedOperationStore";
 import { createMemoryGlobalMaintenanceRunStore } from "@repo/core/adapters/memory/repositories/globalMaintenanceRunStore";
 import { createMemoryIdempotencyStore } from "@repo/core/adapters/memory/repositories/idempotencyStore";
+import { createMemoryIdentityRemovalReceiptStore } from "@repo/core/adapters/memory/repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "@repo/core/adapters/memory/repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "@repo/core/adapters/memory/repositories/identityUniqueDirectory";
+import { createMemoryLlmUsageRepository } from "@repo/core/adapters/memory/repositories/llmUsageRepository";
 import { createMemoryLoginAttemptStore } from "@repo/core/adapters/memory/repositories/loginAttemptStore";
 import { createMemoryNoteRepository } from "@repo/core/adapters/memory/repositories/noteRepository";
 import { createMemoryNoteRouteStore } from "@repo/core/adapters/memory/repositories/noteRouteStore";
 import { createMemoryOAuthStateStore } from "@repo/core/adapters/memory/repositories/oauthStateStore";
 import { createMemoryOutboxRepository } from "@repo/core/adapters/memory/repositories/outboxRepository";
 import { createMemorySessionRepository } from "@repo/core/adapters/memory/repositories/sessionRepository";
+import { createMemoryStorageQuotaRepository } from "@repo/core/adapters/memory/repositories/storageQuotaRepository";
 import { createMemoryUserRepository } from "@repo/core/adapters/memory/repositories/userRepository";
 import { createMemoryScopeRouter } from "@repo/core/adapters/memory/scopeRouter";
+import { createMemoryScopeTaskQueue } from "@repo/core/adapters/memory/scopeTaskQueue";
 import { createMemoryScopeUnitOfWorkProvider } from "@repo/core/adapters/memory/scopeUnitOfWork";
 import { createNodeSecureTokenGenerator } from "@repo/core/adapters/memory/secureTokenGenerator";
 import {
@@ -36,6 +43,7 @@ import type {
   NoteReader,
   RequestContainer,
   SharedDeps,
+  UsageReader,
   WorkerContainer,
 } from "./types";
 
@@ -102,6 +110,9 @@ export function createMemoryRuntime(
   const authTokenRepository = createMemoryAuthTokenRepository(backend);
   const loginAttemptStore = createMemoryLoginAttemptStore(backend);
   const oauthStateStore = createMemoryOAuthStateStore(backend);
+  const distributedOperationStore =
+    createMemoryDistributedOperationStore(backend);
+  const objectStorage = createMemoryObjectStorage(backend);
 
   const sharedDeps: SharedDeps = {
     clock: backend.clock,
@@ -113,6 +124,14 @@ export function createMemoryRuntime(
 
   const noteReaderFor = (scope: ScopeKey): NoteReader =>
     createMemoryNoteRepository(backend.scope(scope));
+
+  const usageReaderFor = (scope: ScopeKey): UsageReader => {
+    const scopeStore = backend.scope(scope);
+    return {
+      storageQuota: createMemoryStorageQuotaRepository(scopeStore),
+      llmUsage: createMemoryLlmUsageRepository(scopeStore),
+    };
+  };
 
   return {
     backend,
@@ -139,7 +158,9 @@ export function createMemoryRuntime(
         identityReader: createMemoryIdentityRepository(backend),
         sessionReader: sessionRepository,
         authTokenReader: authTokenRepository,
+        deletionOperationReader: distributedOperationStore,
         noteReaderFor,
+        usageReaderFor,
         mailSender,
         passwordHasher,
         secureTokenGenerator: createNodeSecureTokenGenerator(),
@@ -149,9 +170,25 @@ export function createMemoryRuntime(
     createWorkerContainer(): WorkerContainer {
       return {
         ...sharedDeps,
+        globalUnitOfWorkProvider: createMemoryGlobalUnitOfWorkProvider(
+          backend,
+          {
+            relayTrigger,
+          },
+        ),
+        scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(backend, {
+          relayTrigger,
+        }),
         outboxRepository: createMemoryOutboxRepository(backend),
         idempotencyStore: createMemoryIdempotencyStore(backend),
         maintenanceRunStore: createMemoryGlobalMaintenanceRunStore(backend),
+        identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
+        identityRemovalReceiptStore:
+          createMemoryIdentityRemovalReceiptStore(backend),
+        accountDeletionManifestStore:
+          createMemoryAccountDeletionManifestStore(backend),
+        scopeTaskQueue: createMemoryScopeTaskQueue(backend),
+        objectStorage,
         routingGenerations: routingGenerations ?? ["gen-1"],
         authStateSweeps: {
           sessions: sessionRepository,

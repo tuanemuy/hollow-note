@@ -3,17 +3,23 @@ import type {
   ScopeUnitOfWorkProvider,
 } from "../../application/execution/unitOfWork";
 import type { AccountDeletionManifestStore } from "../../application/ports/accountDeletionManifestStore";
+import type { AppliedOperationStore } from "../../application/ports/appliedOperationStore";
+import type { DistributedOperationStore } from "../../application/ports/distributedOperationStore";
 import type {
   GlobalMaintenanceRunStore,
   MaintenanceKind,
 } from "../../application/ports/globalMaintenanceRunStore";
 import type { IdempotencyStore } from "../../application/ports/idempotencyStore";
+import type { IdentityRemovalReceiptStore } from "../../application/ports/identityRemovalReceiptStore";
 import type { NoteRouteFanOutReader } from "../../application/ports/noteRouteFanOutReader";
 import type { NoteRouteStore } from "../../application/ports/noteRouteStore";
 import type { OAuthStateStore } from "../../application/ports/oauthStateStore";
+import type { ObjectStorage } from "../../application/ports/objectStorage";
 import type { OutboxRepository } from "../../application/ports/outboxRepository";
 import type { ScopeCleanupAdmissionStore } from "../../application/ports/scopeCleanupAdmissionStore";
 import type { ScopeRouter } from "../../application/ports/scopeRouter";
+import type { ScopeTaskQueue } from "../../application/ports/scopeTaskQueue";
+import type { ScopeTaskScheduler } from "../../application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "../../application/scope";
 import type { AuthTokenRepository } from "../../domain/identity/ports/authTokenRepository";
 import type { IdentityRepository } from "../../domain/identity/ports/identityRepository";
@@ -31,6 +37,9 @@ import type { NoteRepository } from "../../domain/note/ports/noteRepository";
 import type { NoteRevisionRepository } from "../../domain/note/ports/noteRevisionRepository";
 import type { PublicNoteProjectionWriter } from "../../domain/note/ports/publicNoteProjectionWriter";
 import type { PublicNoteQueryService } from "../../domain/note/ports/publicNoteQueryService";
+import type { StoredFileRepository } from "../../domain/storage/ports/storedFileRepository";
+import type { LlmUsageRepository } from "../../domain/usage/ports/llmUsageRepository";
+import type { StorageQuotaRepository } from "../../domain/usage/ports/storageQuotaRepository";
 import type { WorkspaceId } from "../../domain/workspace/valueObject";
 import type { TestClock } from "./testClock";
 
@@ -48,6 +57,11 @@ export type ScopedConformancePorts = Readonly<{
   noteProjectionSnapshotReader: NoteProjectionSnapshotReader;
   noteProjectionRevisionStore: NoteProjectionRevisionStore;
   localNoteQueryService: LocalNoteQueryService;
+  scopeTaskScheduler: ScopeTaskScheduler;
+  appliedOperationStore: AppliedOperationStore;
+  storageQuotaRepository: StorageQuotaRepository;
+  llmUsageRepository: LlmUsageRepository;
+  storedFileRepository: StoredFileRepository;
 }>;
 
 export type MembershipEdgeSeedInput = Readonly<{
@@ -80,6 +94,8 @@ export type ConformanceBackend = Readonly<{
   sessionRepository: SessionRepository;
   authTokenRepository: AuthTokenRepository;
   identityUniqueDirectory: IdentityUniqueDirectory;
+  identityRemovalReceiptStore: IdentityRemovalReceiptStore;
+  distributedOperationStore: DistributedOperationStore;
   userBatchReader: UserBatchReader;
   loginAttemptStore: LoginAttemptStore;
   oauthStateStore: OAuthStateStore;
@@ -88,6 +104,8 @@ export type ConformanceBackend = Readonly<{
   noteRouteStore: NoteRouteStore;
   noteRouteFanOutReader: NoteRouteFanOutReader;
   scopeRouter: ScopeRouter;
+  scopeTaskQueue: ScopeTaskQueue;
+  objectStorage: ObjectStorage;
   accountDeletionManifestStore: AccountDeletionManifestStore;
   globalMaintenanceRunStore: GlobalMaintenanceRunStore;
   publicNoteProjectionWriter: PublicNoteProjectionWriter;

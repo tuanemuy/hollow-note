@@ -13,12 +13,20 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
  * the same operation's call — both must be idempotent for the same
  * `operationId`.
  *
+ * Tearing a durable claim down is the mirrored two-phase move:
+ * `beginRelease` marks the `active` row `releasing`, then `release` drops
+ * it. It is keyed by `normalizedKey` rather than by the reservation's
+ * `operationId` because the operation that created the claim is long
+ * past and its id cannot be re-derived by the operation freeing it.
+ *
  * Error contract: `ConflictError("EMAIL_ALREADY_USED")` /
  * `ConflictError("HANDLE_ALREADY_USED")` /
  * `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` when the key is held
  * by another user, `SystemError(DatabaseError)` otherwise.
  */
 export interface IdentityUniqueDirectory {
+  /** Resolves the owner of a durable (`active`) claim; a key that is
+   * merely reserved or already `releasing` resolves to `null`. */
   resolve(
     kind: IdentityUniqueKind,
     normalizedKey: string,
@@ -33,5 +41,21 @@ export interface IdentityUniqueDirectory {
     }>,
   ): Promise<void>;
   activate(operationId: string, expectedUserVersion: number): Promise<void>;
+  /**
+   * Moves the owner's durable claim to `releasing` and re-keys the row to
+   * the releasing operation, so the following `release(operationId)` can
+   * find it. A missing row or a row held by another user is a no-op — a
+   * release request can never take a key away from its owner.
+   */
+  beginRelease(
+    input: Readonly<{
+      kind: IdentityUniqueKind;
+      normalizedKey: string;
+      expectedUserId: UserId;
+      operationId: string;
+    }>,
+  ): Promise<void>;
+  /** Drops the operation's `reserved` and `releasing` rows. Activated
+   * claims are untouched — freeing one goes through `beginRelease`. */
   release(operationId: string): Promise<void>;
 }

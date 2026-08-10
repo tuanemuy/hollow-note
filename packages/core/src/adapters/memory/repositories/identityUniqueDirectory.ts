@@ -42,7 +42,8 @@ export function createMemoryIdentityUniqueDirectory(
       normalizedKey: string,
     ): Promise<UserId | null> {
       const row = table.get(rowKey(kind, normalizedKey));
-      // Reserved rows are not durable claims yet — they never resolve.
+      // Reserved rows are not durable claims yet, and releasing rows are
+      // claims already being torn down — neither resolves.
       return row !== undefined && row.state === "active" ? row.userId : null;
     },
 
@@ -115,9 +116,30 @@ export function createMemoryIdentityUniqueDirectory(
       }
     },
 
+    async beginRelease(input): Promise<void> {
+      const key = rowKey(input.kind, input.normalizedKey);
+      const row = table.get(key);
+      if (
+        row === undefined ||
+        row.userId !== input.expectedUserId ||
+        row.state === "reserved"
+      ) {
+        return;
+      }
+      // Re-keying to the releasing operation is what lets the paired
+      // `release(operationId)` find the row: the reservation's original
+      // operation id belongs to a past operation and cannot be re-derived.
+      table.set(key, {
+        ...row,
+        state: "releasing",
+        operationId: input.operationId,
+        expiresAt: null,
+      });
+    },
+
     async release(operationId: string): Promise<void> {
       for (const [key, row] of rowsByOperation(operationId)) {
-        if (row.state === "reserved") {
+        if (row.state === "reserved" || row.state === "releasing") {
           table.delete(key);
         }
       }

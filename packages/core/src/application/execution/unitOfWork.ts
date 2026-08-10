@@ -7,7 +7,15 @@ import type { UserRepository } from "@repo/core/domain/identity/ports/userReposi
 import type { NoteProjectionRevisionStore } from "@repo/core/domain/note/ports/noteProjectionRevisionStore";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { NoteRevisionRepository } from "@repo/core/domain/note/ports/noteRevisionRepository";
+import type { StoredFileRepository } from "@repo/core/domain/storage/ports/storedFileRepository";
+import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
+import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
+import type { AccountDeletionManifestStore } from "../ports/accountDeletionManifestStore";
+import type { AppliedOperationStore } from "../ports/appliedOperationStore";
+import type { DistributedOperationStore } from "../ports/distributedOperationStore";
+import type { IdentityRemovalReceiptStore } from "../ports/identityRemovalReceiptStore";
 import type { ScopeCleanupAdmissionStore } from "../ports/scopeCleanupAdmissionStore";
+import type { ScopeTaskScheduler } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 
 /**
@@ -26,6 +34,14 @@ export interface UnitOfWorkContextBase {
 /**
  * Global-plane transaction context: the identity aggregates and the
  * uniqueness directory that live in global storage.
+ *
+ * `identityRemovalReceiptStore` lives here because removing an identity
+ * has to write the row deletion, the retention receipt, and the outbox
+ * event in one transaction (spec/usecases/identity.md `removeIdentity`
+ * 手順 3). The two account-deletion stores are here for the same reason:
+ * admission creates the operation in the transaction that moves the user
+ * to `deleting`, and the terminal prune drops the manifest header and
+ * the operation together.
  */
 export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly userRepository: UserRepository;
@@ -33,6 +49,9 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly sessionRepository: SessionRepository;
   readonly authTokenRepository: AuthTokenRepository;
   readonly identityUniqueDirectory: IdentityUniqueDirectory;
+  readonly identityRemovalReceiptStore: IdentityRemovalReceiptStore;
+  readonly distributedOperationStore: DistributedOperationStore;
+  readonly accountDeletionManifestStore: AccountDeletionManifestStore;
 }
 
 /**
@@ -45,13 +64,22 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * `noteProjectionRevisionStore` lives on the context because the spec
  * requires `bump(noteId)` to share the transaction with the
  * authoritative-data write whose event carries the revision
- * (spec/usecases/note.md 共通節).
+ * (spec/usecases/note.md 共通節). `scopeTaskScheduler` is here for the
+ * same reason: a continuation must be stored in the transaction of the
+ * turn it follows, or a lost response drops the rest of the work.
+ * `appliedOperationStore` likewise records a cleanup command in the
+ * transaction that applies it, so a redelivery cannot apply it twice.
  */
 export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly noteRepository: NoteRepository;
   readonly noteRevisionRepository: NoteRevisionRepository;
   readonly cleanupAdmission: ScopeCleanupAdmissionStore;
   readonly noteProjectionRevisionStore: NoteProjectionRevisionStore;
+  readonly scopeTaskScheduler: ScopeTaskScheduler;
+  readonly appliedOperationStore: AppliedOperationStore;
+  readonly storageQuotaRepository: StorageQuotaRepository;
+  readonly llmUsageRepository: LlmUsageRepository;
+  readonly storedFileRepository: StoredFileRepository;
 }
 
 /**

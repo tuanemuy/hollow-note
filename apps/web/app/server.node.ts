@@ -15,6 +15,7 @@ import {
 } from "@repo/core/application/di/serverNode";
 import type { RequestContainer } from "@repo/core/application/di/types";
 import { ConsoleLogger } from "@repo/core/application/ports/logger";
+import { dispatchDomainEvent } from "@repo/core/application/workers/subscribers";
 import { createNodeWorkerRunner } from "@/worker/node/runner";
 
 // SSR and RSC are separate module graphs in the same process; pin the
@@ -92,9 +93,10 @@ export async function boot(): Promise<NodeServerBoot> {
   const runner = createNodeWorkerRunner({
     container: workerContainer,
     logger,
-    // No event subscriber exists in the walking-skeleton slice; the
-    // consumer role stays a no-op until a projection consumer lands.
-    consumerHandler: async () => {},
+    // Every delivered event goes through the subscriber registry — the
+    // consumer role owns no routing of its own.
+    consumerHandler: async (event) =>
+      dispatchDomainEvent(event, workerContainer),
     tuning: {
       relayOptions: readRelayTuning(tuningEnv),
       outboxRetentionMs: readPruneTuning(tuningEnv).retentionMs,

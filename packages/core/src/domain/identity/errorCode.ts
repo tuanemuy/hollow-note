@@ -14,6 +14,8 @@ export const IdentityErrorCode = {
   LastIdentityCannotBeRemoved: "IDENTITY_LAST_IDENTITY_CANNOT_BE_REMOVED",
   PasswordIdentityAlreadyExists: "IDENTITY_PASSWORD_IDENTITY_ALREADY_EXISTS",
   IdentityLimitExceeded: "IDENTITY_LIMIT_EXCEEDED",
+  AccountDeletionRetryLimitExceeded:
+    "IDENTITY_ACCOUNT_DELETION_RETRY_LIMIT_EXCEEDED",
 } as const;
 
 export type IdentityErrorCode =

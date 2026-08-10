@@ -6,11 +6,16 @@ import type { ScopeKey } from "../../application/scope";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import type { MemoryUnitOfWorkOptions } from "./globalUnitOfWork";
+import { createMemoryAppliedOperationStore } from "./repositories/appliedOperationStore";
+import { createMemoryLlmUsageRepository } from "./repositories/llmUsageRepository";
 import { createMemoryNoteProjectionRevisionStore } from "./repositories/noteProjection";
 import { createMemoryNoteRepository } from "./repositories/noteRepository";
 import { createMemoryNoteRevisionRepository } from "./repositories/noteRevisionRepository";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
 import { createMemoryScopeCleanupAdmissionStore } from "./repositories/scopeCleanupAdmissionStore";
+import { createMemoryScopeTaskScheduler } from "./repositories/scopeTaskScheduler";
+import { createMemoryStorageQuotaRepository } from "./repositories/storageQuotaRepository";
+import { createMemoryStoredFileRepository } from "./repositories/storedFileRepository";
 import type { MemoryBackend } from "./store";
 
 /**
@@ -42,6 +47,12 @@ export function createMemoryScopeUnitOfWorkProvider(
           cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore),
           noteProjectionRevisionStore:
             createMemoryNoteProjectionRevisionStore(scopeStore),
+          scopeTaskScheduler: createMemoryScopeTaskScheduler(scopeStore),
+          appliedOperationStore: createMemoryAppliedOperationStore(scopeStore),
+          storageQuotaRepository:
+            createMemoryStorageQuotaRepository(scopeStore),
+          llmUsageRepository: createMemoryLlmUsageRepository(scopeStore),
+          storedFileRepository: createMemoryStoredFileRepository(scopeStore),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, () => backend.mintEventId()),

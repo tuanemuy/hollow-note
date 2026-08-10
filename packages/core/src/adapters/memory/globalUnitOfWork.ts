@@ -5,7 +5,10 @@ import type {
 import type { RelayTrigger } from "../../application/ports/relayTrigger";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
+import { createMemoryAccountDeletionManifestStore } from "./repositories/accountDeletionManifestStore";
 import { createMemoryAuthTokenRepository } from "./repositories/authTokenRepository";
+import { createMemoryDistributedOperationStore } from "./repositories/distributedOperationStore";
+import { createMemoryIdentityRemovalReceiptStore } from "./repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "./repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "./repositories/identityUniqueDirectory";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
@@ -43,6 +46,12 @@ export function createMemoryGlobalUnitOfWorkProvider(
           sessionRepository: createMemorySessionRepository(backend),
           authTokenRepository: createMemoryAuthTokenRepository(backend),
           identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
+          identityRemovalReceiptStore:
+            createMemoryIdentityRemovalReceiptStore(backend),
+          distributedOperationStore:
+            createMemoryDistributedOperationStore(backend),
+          accountDeletionManifestStore:
+            createMemoryAccountDeletionManifestStore(backend),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, () => backend.mintEventId()),

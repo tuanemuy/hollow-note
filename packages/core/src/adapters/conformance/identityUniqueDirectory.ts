@@ -163,5 +163,90 @@ export function describeIdentityUniqueDirectoryContract(
         backend.identityUniqueDirectory.activate("op-unknown", 0),
       );
     });
+
+    const beginRelease = (
+      operationId: string,
+      expectedUserId = userId(1),
+      key = "a@example.com",
+    ): Promise<void> =>
+      backend.identityUniqueDirectory.beginRelease({
+        kind: "email",
+        normalizedKey: key,
+        expectedUserId,
+        operationId,
+      });
+
+    it("ADP-identity-009: beginRelease then release frees an activated claim for another user", async () => {
+      await reserveEmail("op-1");
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+
+      await beginRelease("release-1");
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBeNull();
+
+      await backend.identityUniqueDirectory.release("release-1");
+      await reserveEmail("op-2", userId(2));
+      await backend.identityUniqueDirectory.activate("op-2", 0);
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBe(userId(2));
+    });
+
+    it("ADP-identity-009: a releasing key stays blocked for another user until release", async () => {
+      await reserveEmail("op-1");
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+      await beginRelease("release-1");
+
+      await expectConflict(
+        reserveEmail("op-2", userId(2)),
+        "EMAIL_ALREADY_USED",
+      );
+
+      await backend.identityUniqueDirectory.release("release-1");
+      await reserveEmail("op-2", userId(2));
+    });
+
+    it("ADP-identity-009: beginRelease and release are idempotent for the same operation", async () => {
+      await reserveEmail("op-1");
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+
+      await beginRelease("release-1");
+      await beginRelease("release-1");
+      await backend.identityUniqueDirectory.release("release-1");
+      await backend.identityUniqueDirectory.release("release-1");
+
+      await reserveEmail("op-2", userId(2));
+      await backend.identityUniqueDirectory.activate("op-2", 0);
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBe(userId(2));
+    });
+
+    it("ADP-identity-009: beginRelease by a non-owner leaves the claim intact", async () => {
+      await reserveEmail("op-1");
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+
+      await beginRelease("release-1", userId(2));
+      await backend.identityUniqueDirectory.release("release-1");
+
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBe(userId(1));
+    });
+
+    it("ADP-identity-009: beginRelease on an unknown key is a no-op", async () => {
+      await beginRelease("release-1", userId(1), "absent@example.com");
+      await backend.identityUniqueDirectory.release("release-1");
+
+      await reserveEmail("op-1", userId(2), "absent@example.com");
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+      expect(
+        await backend.identityUniqueDirectory.resolve(
+          "email",
+          "absent@example.com",
+        ),
+      ).toBe(userId(2));
+    });
   });
 }
