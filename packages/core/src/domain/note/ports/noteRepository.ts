@@ -25,6 +25,12 @@ export interface NoteRepository extends TransactionalRepository<Note, NoteId> {
     owner: NoteOwner,
     lifecycle: NoteLifecycleFilter,
   ): Promise<number>;
+  /**
+   * Ordered `updatedAt DESC, id DESC`. The `id` tiebreak is what makes the
+   * order total: offset paging over a partial order lets a row repeat on
+   * one page and vanish from the next, which would make the projection
+   * rebuild that enumerates through here drop notes without failing.
+   */
   listByOwner(
     owner: NoteOwner,
     lifecycle: NoteLifecycleFilter,

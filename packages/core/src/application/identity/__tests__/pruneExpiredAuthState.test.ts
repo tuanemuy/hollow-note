@@ -581,6 +581,55 @@ describe("pruneExpiredAuthState", () => {
     expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
   });
 
+  it("a lane whose release fails is reported as unfinished work, not as a completed run", async () => {
+    // `PRUNE_LEASE_OWNER` is a process constant, so this process's next
+    // cron renews its own lease and the lapsed-lease reclaim never fires
+    // for a lane it failed to hand back. Reporting `continued: false`
+    // there would claim the run is done while a lane stays claimed.
+    const h = createTestHarness({
+      maintenanceTablesByKind: {
+        authStatePrune: ["oauth_flow_states", "sessions"],
+      },
+    });
+    seedSession(h, new Date(h.clock.now().getTime() - 1));
+    const realStore = h.workerContainer.maintenanceRunStore;
+    const container = {
+      ...h.workerContainer,
+      maintenanceRunStore: {
+        ...realStore,
+        async advanceOrAck(
+          input: Parameters<typeof realStore.advanceOrAck>[0],
+        ) {
+          if (!input.completed) {
+            throw new Error("release down");
+          }
+          return realStore.advanceOrAck(input);
+        },
+      },
+    };
+
+    const view = await pruneExpiredAuthState({
+      container,
+      input: { type: "cron" },
+    });
+
+    expect(view.continued).toBe(true);
+    expect(
+      h.logger
+        .byLevel("error")
+        .some((entry) =>
+          entry.message.includes("[pruneExpiredAuthState] lane release failed"),
+        ),
+    ).toBe(true);
+    // The lane really is stuck — the report is what has to stay honest.
+    expect(
+      h.backend.maintenanceRuns
+        .values()
+        .flatMap((run) => run.lanes)
+        .filter((lane) => lane.status === "claimed"),
+    ).toHaveLength(1);
+  });
+
   it("TC-identity-172: a second cron against a live foreign lease is a no-op", async () => {
     const h = createTestHarness();
     const now = h.clock.now();

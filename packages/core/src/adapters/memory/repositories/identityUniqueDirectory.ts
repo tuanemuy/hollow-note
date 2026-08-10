@@ -87,6 +87,21 @@ export function createMemoryIdentityUniqueDirectory(
           `No reservation for operation ${operationId}`,
         );
       }
+      // Conditional update: the durable claim may only be published on
+      // top of the committed user row it belongs to. Every row is checked
+      // before any is written so the operation stays all-or-nothing.
+      for (const [, row] of rows) {
+        const user = backend.users.get(row.userId);
+        if (
+          user === undefined ||
+          (user.version as number) !== expectedUserVersion
+        ) {
+          throw new ConflictError(
+            "OPTIMISTIC_LOCK_FAILURE",
+            `User ${row.userId} is not at version ${expectedUserVersion}`,
+          );
+        }
+      }
       for (const [key, row] of rows) {
         if (row.state === "active") {
           continue;

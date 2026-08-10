@@ -14,6 +14,19 @@ import type { NoteRoute } from "./noteRouteStore";
  * both generations are read, deduplicated by NoteId with the higher
  * routeVersion winning.
  *
+ * Enumerates every route whose creation has committed — `active`,
+ * `moving` and `purging` — and skips only `reserved`, whose note may
+ * never come into existence. This set is deliberately wider than
+ * `NoteRouteStore.resolve`, which additionally hides `purging`: `resolve`
+ * answers "can an external read reach this note?", while the fan-out
+ * answers "which routes must a scope-wide fix touch?", and a note that is
+ * mid-move or mid-purge still owes its author-route redaction. Filtering
+ * this down to `active` would drop those notes from the account-deletion
+ * manifest and leave them unprocessed forever.
+ *
+ * `tombstone` rows are unspecified: an adapter may keep them until expiry
+ * or reclaim them physically, so callers must tolerate either.
+ *
  * Error contract: `ValidationError("INVALID_PAGINATION")` (tampered /
  * retired cursor), `SystemError(DatabaseError)`.
  */

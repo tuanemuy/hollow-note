@@ -130,6 +130,7 @@ export function createMemoryNoteRouteStore(
         state: "reserved",
         target: null,
         migrationId: null,
+        lastMigrationId: null,
         operationId: input.operationId,
         expiresAt: input.expiresAt,
       };
@@ -206,7 +207,8 @@ export function createMemoryNoteRouteStore(
       const row = requireRow(input.noteId);
       if (
         row.state === "active" &&
-        row.routeVersion === input.expectedRouteVersion + 1
+        row.routeVersion === input.expectedRouteVersion + 1 &&
+        row.lastMigrationId === input.migrationId
       ) {
         // Lost-response retry after a completed switch.
         return toRoute(row);
@@ -224,6 +226,7 @@ export function createMemoryNoteRouteStore(
         state: "active",
         target: null,
         migrationId: null,
+        lastMigrationId: input.migrationId,
         routeVersion: row.routeVersion + 1,
       };
       table.set(input.noteId, next);

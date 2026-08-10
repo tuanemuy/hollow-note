@@ -39,7 +39,7 @@ export function PublicShell({ children }: PublicShellProps) {
       </header>
       <div className="flex-1">{children}</div>
       <footer className="border-t border-hairline">
-        <div className="mx-auto flex max-w-[var(--list-max)] flex-wrap items-center gap-4 px-4 py-6 text-xs text-ink-tertiary sm:px-6">
+        <div className="mx-auto flex max-w-[var(--list-max)] flex-wrap items-center gap-4 px-4 py-6 text-xs text-ink-secondary sm:px-6">
           <span>Hollow</span>
           <span className="flex-1" />
           <Link to="/terms" className="hover:text-ink hover:underline">

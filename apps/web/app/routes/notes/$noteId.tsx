@@ -58,7 +58,7 @@ function ReaderShell({ children }: { children: ReactNode }) {
       <header className="sticky top-0 z-40 flex h-[var(--bar-height)] items-center gap-2 bg-[var(--bar-bg)] px-4 backdrop-blur-xl backdrop-saturate-150 sm:px-6">
         <Link
           to="/notes"
-          className="inline-flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-ink-tertiary transition-colors hover:bg-surface hover:text-ink"
+          className="inline-flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
         >
           <svg
             width="15"

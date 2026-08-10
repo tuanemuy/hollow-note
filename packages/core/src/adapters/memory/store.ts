@@ -192,6 +192,13 @@ export type NoteRouteRow = Readonly<{
   state: "reserved" | "active" | "moving" | "purging" | "tombstone";
   target: ScopeKey | null;
   migrationId: string | null;
+  /**
+   * Migration whose `switchMove` last bumped `routeVersion`. `migrationId`
+   * is cleared by the switch, so this is what lets a lost-response retry
+   * be told apart from a stale request of a different migration that
+   * happens to quote the same `expectedRouteVersion`.
+   */
+  lastMigrationId: string | null;
   operationId: string | null;
   expiresAt: Date | null;
 }>;

@@ -94,5 +94,72 @@ export function describeNoteRouteFanOutReaderContract(
       );
       expect(empty.items).toEqual([]);
     });
+
+    it("ADP-note-046/047: enumerates committed routes (active / moving / purging) and skips reservations", async () => {
+      const expiresAt = new Date(backend.clock.now().getTime() + HOUR_MS);
+      const reserve = async (n: number): Promise<void> => {
+        await backend.noteRouteStore.reserveCreate({
+          noteId: noteId(n),
+          scope: scopeOf(1),
+          createdBy: userId(1),
+          operationId: `op-${n}`,
+          expiresAt,
+        });
+      };
+      // note 4 stays reserved; note 5 is mid-move, note 6 is mid-purge.
+      await reserve(4);
+      await reserve(5);
+      await backend.noteRouteStore.activateCreate({
+        noteId: noteId(5),
+        operationId: "op-5",
+      });
+      await backend.noteRouteStore.beginMove({
+        noteId: noteId(5),
+        expectedRouteVersion: 1,
+        target: scopeOf(2),
+        migrationId: "mig-5",
+      });
+      await reserve(6);
+      await backend.noteRouteStore.activateCreate({
+        noteId: noteId(6),
+        operationId: "op-6",
+      });
+      await backend.noteRouteStore.beginPurge({
+        noteId: noteId(6),
+        scope: scopeOf(1),
+        expectedRouteVersion: 1,
+        operationId: "op-6",
+      });
+
+      // A note mid-move or mid-purge still owes its author-route redaction,
+      // so the fan-out must not narrow to `active` the way `resolve` does.
+      const byCreator = await backend.noteRouteFanOutReader.listByCreatedBy(
+        userId(1),
+        null,
+        200,
+      );
+      expect(
+        byCreator.items.map((route) => [route.noteId, route.state]),
+      ).toEqual([
+        [noteId(1), "active"],
+        [noteId(2), "active"],
+        [noteId(3), "active"],
+        [noteId(5), "moving"],
+        [noteId(6), "purging"],
+      ]);
+
+      const byScope = await backend.noteRouteFanOutReader.listByScope(
+        scopeOf(1),
+        null,
+        200,
+      );
+      expect(byScope.items.map((route) => route.noteId)).toEqual([
+        noteId(1),
+        noteId(2),
+        noteId(3),
+        noteId(5),
+        noteId(6),
+      ]);
+    });
   });
 }

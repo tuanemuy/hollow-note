@@ -24,4 +24,18 @@
     box-shadow: var(--shadow-focus);
     border-radius: inherit;
   }
+
+  /* Blanket rule rather than per-component `motion-reduce:` utilities: a
+     component that forgets the utility silently opts out of the preference,
+     and the failure is invisible to anyone not running with it set. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }

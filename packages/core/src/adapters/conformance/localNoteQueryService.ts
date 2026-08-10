@@ -111,6 +111,32 @@ export function describeLocalNoteQueryServiceContract(
       expect(period.items.map((item) => item.id)).toEqual(["note-002"]);
     });
 
+    it("ADP-note-021: highlightedExcerpt escapes the projection's markup", async () => {
+      const payload = '<script>alert(1)</script> & "quotes" about the roadmap';
+      await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+        makeProjectionEntry(4, userId(1), at("2026-04-01T00:00:00Z"), {
+          title: "Injection",
+          text: payload,
+          excerpt: payload,
+        }),
+        [],
+        { projectionRevision: 1, authorVersion: 1, workspaceVersion: 0 },
+      );
+
+      const found = await scoped.localNoteQueryService.search(
+        criteria({ keyword: "roadmap" }),
+      );
+      const highlighted = found.items[0]?.highlightedExcerpt;
+      // This is the one field the UI renders as HTML, so the producer —
+      // not the consumer — owes the escaping.
+      expect(highlighted).toContain("<mark>roadmap</mark>");
+      expect(highlighted).toContain("&lt;script&gt;");
+      expect(highlighted).toContain("&amp;");
+      expect(highlighted).not.toContain("<script");
+      // The raw excerpt is plain text and stays unescaped.
+      expect(found.items[0]?.excerpt).toBe(payload);
+    });
+
     it("ADP-note-021: sort keys and pagination behave deterministically", async () => {
       await seed();
       const asc = await scoped.localNoteQueryService.search(

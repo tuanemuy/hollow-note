@@ -35,6 +35,7 @@
 ### スコープ外として実施しなかったもの
 
 - `pruneExpiredAuthState` のランタイム配線 — usecase とテストは実装済みだが、Node runner へのスケジュール登録と continuation コマンドのルーティングは行っていない（runner の pruner 役は `pruneOutbox` のみ、consumer no-op。配線は CF cron スライス）。
+- `recoverBlankNoteCreation` の定期実行配線 — usecase とテスト（TC-note-065）は実装済みだが、呼び出し元は本スライスではテストのみで、期限切れ reserved route を実際に回収するスケジュール配線は行っていない（後続スライス）。
 - サインアウトの UC-identity-009 本体 — UI のサインアウトは Cookie 破棄のみの presentation glue（ADR-008）。セッション行は期限まで残り prune が回収する。
 - createBlankNote / getNote の workspace 分岐 — `WORKSPACE_NOT_FOUND` 返却まで（権限評価はスライス #3）。
 
@@ -58,6 +59,12 @@ plan.md / adr.md に散在するメモの一覧。spec-sync スキルでの同�
 - **メール確認の着地状態に「確認済み・サインインが必要」を追加**（ADR-038 / R3-SC-B-301）— セッション発行を確認要求元ブラウザーに束縛したため、別端末・別ブラウザーで確認リンクを開いた場合は「メール確認は成立するがサインイン状態にはならない」経路が生まれた。反映先は 3 か所: `spec/scenario/account.md` AC-01#5（「確認リンク → サインイン状態でノート一覧」に同一ブラウザー条件を付す）、同 AC-02#2（確認後のサインイン導線）、`spec/pages/index.md#P-03` の状態直和（処理中 / 成功 / **確認済み・サインインが必要** / 使用済み / 期限切れ / 無効 / 一時障害）。あわせて P-03 に一時障害（`failed`、system / unknown の再試行導線）の状態も無い（R3-FE-W-004）。
 - spec/domains/identity.md の `IdentityErrorCode` enum — `IdentityLimitExceeded` の記載漏れを追記（steps.md 設計節）。
 - spec/domains/note.md の `Note.createBlank` / `createFromUpload` に `projectionRevision`、`moveTo` に `routeVersion` 引数を追記（ADR-011）。
+- **spec/domains/note.md の振る舞い表に `markConversionFailed` / `markAwaitingIntegration` のガードを追記**（R4-CO-W-010）— 不変条件節の「`content.status !== "ready"` のノートは公開・限定公開にできない」を集約側でも守らせるため、この降格 2 メソッドは `visibility.status !== "private"` を `BusinessRuleError` で拒否するようになった。振る舞い表にはこのエラーの記載がないので、2 メソッドの行へ追記する（`makeUnlisted` / `makePublic` の `ensureReady` と対になるガード）。エラーコードは新設せず既存の `CannotPublishEmptyNote` を再利用した（「ready でない本文は公開できない」と「公開中のノートは本文を降格できない」は同一不変条件の両方向のため、エラーコード列挙の変更は不要）。
+- **`Note.reconstruct` の残る穴**（ラウンド4のドメイン契約修正から派生）— 今回のガードで新規のドメイン API 経由の到達は塞いだが、`reconstruct` は依然 `{ visibility: public/unlisted, content: failed/awaitingIntegration }` の組み合わせ自体を検査しない。DB に既存の不正行があれば復元できてしまう。spec/domains/note.md の不変条件節に「reconstruct でも組み合わせを検査する」と書くなら別対応が要る。
+- **spec/domains/note.md のポート契約に反映すべき2件**（ラウンド4のドメイン契約修正から派生。Issue #11 の D1 実装者が読む契約）— `NoteRouteFanOutReader` の列挙 state（`active` / `moving` / `purging` を列挙し `reserved` のみ除外。`resolve` と異なる理由と、`tombstone` は unspecified で物理削除も可）、および `NoteRepository.listByOwner` の順序（`updatedAt DESC, id DESC`。id タイブレークがオフセットページングでの重複・欠落を防ぐ）。
+- **spec/domains/note.md の不変条件節に「`reconstruct` は ready 本文の必須列（html / text / excerpt）欠落を空文字で補完せず拒否する」を追記**（ラウンド4のドメイン契約修正から派生）— D1 実装がこの契約を落とさないようにするため。
+- **ラウンド4で追加した適合ケースの ID 採番**（既存 ADP ID に相乗り: `ADP-note-015` / `ADP-note-046,047` / `ADP-note-021` / `ADP-common-012,017,019,021`）— spec/testcases/ports/ と spec/inventory/adapter.md にケース行を追記するか、membership cleanup レーンに新 ADP ID を採番するかは要判断。
+- **spec/presentation/index.md の CSRF 規律の条件付け**（R4-SC-W-401 / ADR-038）— 「`FormData` を受ける server function は `Origin` 検証必須」という条件文だが、`FormData` 経路はフレームワークが全 server function に対して常に開けているため条件は常に成立する。規律を「全 server function 呼び出しに同一オリジン検証を強制する（`createCsrfMiddleware`）」へ無条件化し、AC-15 の文面も追随させる。
 - ShareTokenProtector の失敗エラー — 契約 JSDoc が言う `ExternalServiceError` が `SystemErrorCode` に存在せず `DataIntegrityError` に写した（ADR-017）。
 - `VerifyEmailView.sessionToken` — alreadyVerified 経路のため `string | null`（spec の出力表は表現不能 — ADR-021）。
 - `SignInView` / `VerifyEmailView` への `expiresAt` 追加検討 — 現状は presentation が `Session.ttlMs` から Cookie 期限を再導出（ADR-024）。

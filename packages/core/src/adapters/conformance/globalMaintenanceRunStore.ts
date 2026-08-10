@@ -1,7 +1,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { GlobalMaintenanceRunStore } from "../../application/ports/globalMaintenanceRunStore";
+import type {
+  GlobalMaintenanceRunStore,
+  MaintenanceLane,
+} from "../../application/ports/globalMaintenanceRunStore";
 import { expectConflict } from "./asserts";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
+
+/**
+ * The key a caller re-derives for a lane position when it checkpoints
+ * (`application/identity/pruneExpiredAuthState.ts`). A store must mint the
+ * same string for the same position, or the Queue outbox sees one logical
+ * command under two keys.
+ */
+const commandKeyOf = (runId: string, lane: MaintenanceLane): string =>
+  `${runId}:${lane.generation}:${lane.shardId}:${lane.table}:${lane.cursor ?? ""}`;
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -109,6 +121,43 @@ export function describeGlobalMaintenanceRunStoreContract(
       }
       // Already-claimed lanes are not handed out twice.
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+    });
+
+    it("ADP-common-027: a lane's commandKey matches the key its position re-derives", async () => {
+      await begin("run-1", "owner-a");
+      const lanes = await store.claimLanes("run-1", "owner-a", 6);
+      expect(lanes).toHaveLength(2);
+      for (const lane of lanes) {
+        expect(lane.commandKey).toBe(commandKeyOf("run-1", lane));
+      }
+
+      const [first] = lanes;
+      if (first === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+      // Advancing to the next table re-mints the key at the new position.
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: first.generation,
+        shardId: first.shardId,
+        completed: true,
+      });
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: first.generation,
+        shardId: first.shardId,
+        completed: false,
+      });
+      const advanced = (await store.claimLanes("run-1", "owner-a", 6)).find(
+        (lane) => lane.shardId === first.shardId,
+      );
+      if (advanced === undefined) {
+        throw new Error("expected the advanced lane back");
+      }
+      expect(advanced.table).toBe("t2");
+      expect(advanced.commandKey).toBe(commandKeyOf("run-1", advanced));
     });
 
     it("ADP-common-027: only the lease owner may claim", async () => {

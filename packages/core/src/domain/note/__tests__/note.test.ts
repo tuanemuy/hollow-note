@@ -451,6 +451,24 @@ describe("Note.markConversionFailed / markAwaitingIntegration", () => {
     expect(entity.content).toEqual({ status: "awaitingIntegration" });
     expect(eventDrafts[0]?.type).toBe("note.awaitingIntegration");
   });
+
+  it("both refuse to demote the body of a shared note", () => {
+    const unlisted = Note.makeUnlisted(blank(), makeLink("t1"), at(1)).entity;
+    const published = Note.makePublic(unlisted, at(2)).entity;
+
+    expect(
+      codeOf(() => Note.markConversionFailed(unlisted, "timeout", at(3))),
+    ).toBe(NoteErrorCode.CannotPublishEmptyNote);
+    expect(codeOf(() => Note.markAwaitingIntegration(unlisted, at(3)))).toBe(
+      NoteErrorCode.CannotPublishEmptyNote,
+    );
+    expect(
+      codeOf(() => Note.markConversionFailed(published, "timeout", at(3))),
+    ).toBe(NoteErrorCode.CannotPublishEmptyNote);
+    expect(codeOf(() => Note.markAwaitingIntegration(published, at(3)))).toBe(
+      NoteErrorCode.CannotPublishEmptyNote,
+    );
+  });
 });
 
 describe("NoteRevision.capture", () => {
@@ -578,6 +596,54 @@ describe("Note.reconstruct", () => {
     expect(note.visibility).toMatchObject({
       status: "public",
       dormantShareLink: { tokenHash: "t1", password: null },
+    });
+  });
+
+  describe("a ready body with a missing column", () => {
+    const readyRow = (
+      overrides: Record<string, unknown>,
+    ): Parameters<typeof Note.reconstruct>[0] =>
+      ({
+        id: "n1",
+        ownerType: "user",
+        ownerId: "u1",
+        createdBy: "u1",
+        title: "T",
+        titleOrigin: "manual",
+        contentStatus: "ready",
+        html: "<p>x</p>",
+        text: "x",
+        excerpt: "x",
+        visibilityStatus: "private",
+        styleMode: "default",
+        lifecycle: "active",
+        version: 1,
+        createdAt: T0,
+        updatedAt: T0,
+        ...overrides,
+      }) as Parameters<typeof Note.reconstruct>[0];
+
+    it("accepts an empty body — a blank note is legal", () => {
+      const note = Note.reconstruct(
+        readyRow({ html: "", text: "", excerpt: "" }),
+      );
+      expect(note.content).toMatchObject({ status: "ready", html: "" });
+    });
+
+    for (const column of ["html", "text", "excerpt"] as const) {
+      it(`rejects a missing ${column} instead of defaulting it to ""`, () => {
+        expect(() =>
+          Note.reconstruct(readyRow({ [column]: undefined })),
+        ).toThrowError(RehydrationError);
+        expect(() =>
+          Note.reconstruct(readyRow({ [column]: null })),
+        ).toThrowError(RehydrationError);
+      });
+    }
+
+    it("still defaults missing headings to an empty list", () => {
+      const note = Note.reconstruct(readyRow({ headings: undefined }));
+      expect(note.content).toMatchObject({ status: "ready", headings: [] });
     });
   });
 });

@@ -89,8 +89,9 @@ export function createMemoryRuntime(
     },
   };
 
-  // The logger is what makes the dev flow completable: the verification
-  // link is only observable through the `mail.sent` log line.
+  // The logger records `mail.sent` for every delivery; the verification
+  // link itself is only logged under `MEMORY_MAIL_LOG_ACTION_URL=true`,
+  // since the action URL carries the raw one-shot token.
   const mailSender = createMemoryMailSender(ConsoleLogger);
   // One hasher per runtime, not per request: `signInWithPassword` memoizes
   // its timing-equalization dummy hash per hasher instance, so a fresh

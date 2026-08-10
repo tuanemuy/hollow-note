@@ -249,7 +249,7 @@ export function SignUpForm() {
             {showError("password")}
           </p>
           {showError("password") === null ? (
-            <p id={passwordHintId} className="mt-2 text-xs text-ink-tertiary">
+            <p id={passwordHintId} className="mt-2 text-xs text-ink-secondary">
               {PASSWORD_MIN_LENGTH} 文字以上で、英字と数字の両方を含めます
             </p>
           ) : null}

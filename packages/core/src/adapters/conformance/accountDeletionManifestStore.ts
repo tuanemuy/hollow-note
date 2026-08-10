@@ -58,10 +58,31 @@ export function describeAccountDeletionManifestStoreContract(
       }
     };
 
-    it("ADP-common-012: begin is idempotent", async () => {
+    it("ADP-common-012: a replayed begin preserves everything already recorded", async () => {
+      await beginWithRoutes();
+      await store().markBuilt("op-1");
+      await finalizeAll();
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
+
+      // A lost response replays begin. An `INSERT OR REPLACE` style begin
+      // would reopen the header as `building` and wipe the receipts and
+      // cursors, so assert the recorded state directly.
       await store().begin("op-1", userId(1));
-      await store().begin("op-1", userId(1));
-      expect(await store().allRollbackReleased("op-1")).toBe(true);
+
+      await expectConflict(
+        store().appendAuthorRoutePage(
+          "op-1",
+          [{ noteId: noteId(3), routeVersion: 1 }],
+          null,
+        ),
+      );
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
+      const terminalAt = backend.clock.now();
+      await store().markCompleted(
+        "op-1",
+        terminalAt,
+        new Date(terminalAt.getTime() + 120 * DAY_MS),
+      );
     });
 
     it("ADP-common-013: appendMembershipPage on an empty edge source fixes zero targets", async () => {
@@ -384,6 +405,62 @@ export function describeAccountDeletionManifestStoreContract(
         "release",
       );
       expect(await store().allRollbackReleased("op-1")).toBe(true);
+    });
+
+    it("ADP-common-017/019/021: the cleanup lane is what finalizes membership items (seeded backend)", async (ctx) => {
+      const seed = backend.seedMembershipEdges;
+      if (seed === undefined) {
+        ctx.skip();
+        return;
+      }
+      await seed.call(backend, userId(1), [
+        {
+          edgeKey: "edge-a",
+          workspaceId: WorkspaceId.create("ws-1"),
+          edgeState: "active",
+          membershipId: "membership-1",
+        },
+      ]);
+      await store().begin("op-1", userId(1));
+      await store().appendMembershipPage("op-1", null, 100);
+      await store().markBuilt("op-1");
+
+      const prepared = await store().claimPending("op-1", "prepare", 100);
+      expect(prepared.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      await store().acknowledge(
+        "op-1",
+        prepared.map((item) => item.key),
+        "prepare",
+      );
+      expect(await store().claimPending("op-1", "prepare", 100)).toEqual([]);
+
+      for (const receipt of FINALIZE_RECEIPTS) {
+        await store().acknowledgeReceipt("op-1", receipt);
+      }
+      // Prepare ack plus every receipt is still not enough: a membership
+      // item is only fully acked once the cleanup lane has run.
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
+
+      const cleanup = await store().claimPending("op-1", "cleanup", 100);
+      expect(cleanup.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      await store().acknowledge(
+        "op-1",
+        cleanup.map((item) => item.key),
+        "cleanup",
+      );
+      expect(await store().claimPending("op-1", "cleanup", 100)).toEqual([]);
+
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
+      const terminalAt = backend.clock.now();
+      await store().markCompleted(
+        "op-1",
+        terminalAt,
+        new Date(terminalAt.getTime() + 120 * DAY_MS),
+      );
+      expect(await store().compactItems("op-1", 100)).toEqual({
+        removed: 1,
+        remaining: false,
+      });
     });
   });
 }

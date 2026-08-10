@@ -26,15 +26,20 @@ import { signInFn } from "./action";
  * 数えて再開）/ ロック中（LOCKED、解除時刻 + 再設定の文言のみ — P-04 は
  * 本スライス外）/ 送信中。Google・再送・再設定導線は出さない。
  *
- * 失敗後の画面は単一の `Phase` 直和で持ち、throttled / locked の残り時間
- * は deadline からの導出にする。サーバー側の判定が正で、この時間は
- * あくまで案内 — 早すぎる再送信は再び 429 になるだけなので、deadline を
- * 復元できないときは秒数を発明せず、入力も塞がない。
+ * 失敗後の画面は単一の `Phase` 直和で持ち、THROTTLED の残り時間は
+ * deadline からの導出にする。サーバー側の判定が正で、この時間はあくまで
+ * 案内 — 早すぎる再送信は再び 429 になるだけなので、deadline を復元
+ * できないときは秒数を発明せず、入力も塞がない。
+ *
+ * 入力を塞ぐのは THROTTLED（最大 60 秒）だけ。LOCKED はキーが
+ * `signIn:${email}:${clientKey}` なので別のメールアドレスならサーバーが
+ * 受け付ける。15 分フォームごと塞ぐと切り替え手段を奪うだけで、しかも
+ * state なので再読み込みで消え防御にもならない。
  */
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "throttled"; until: Date | null }
+  | { kind: "throttled"; until: Date | null; waitSeconds: number | null }
   | { kind: "locked"; unlockAt: Date | null }
   | { kind: "invalidCredentials" }
   | { kind: "emailNotVerified" }
@@ -61,11 +66,14 @@ function classify(error: SerializedError): Phase {
       case "THROTTLED": {
         const raw = firstField(error, "waitSeconds");
         const parsed = raw !== null ? Number.parseInt(raw, 10) : Number.NaN;
+        const waitSeconds =
+          Number.isFinite(parsed) && parsed > 0 ? parsed : null;
         return {
           kind: "throttled",
+          waitSeconds,
           until:
-            Number.isFinite(parsed) && parsed > 0
-              ? new Date(Date.now() + parsed * 1000)
+            waitSeconds !== null
+              ? new Date(Date.now() + waitSeconds * 1000)
               : null,
         };
       }
@@ -134,15 +142,10 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
   );
 
   const phase = state.phase;
-  // The deadline the current phase is waiting out, if it has one. Both
-  // countdown and re-enabling are derived from it — no mirrored counter
-  // state that could disagree with the alert being shown.
-  const deadline =
-    phase.kind === "throttled"
-      ? phase.until
-      : phase.kind === "locked"
-        ? phase.unlockAt
-        : null;
+  // THROTTLED only — LOCKED never blocks input (see the module JSDoc). Both
+  // countdown and re-enabling are derived from this one deadline, so there is
+  // no mirrored counter state that could disagree with the alert being shown.
+  const deadline = phase.kind === "throttled" ? phase.until : null;
   const waiting = deadline !== null && deadline.getTime() > now;
 
   // Depends on `deadline` only — re-subscribing on every tick would tear
@@ -256,19 +259,29 @@ function PhaseAlert({
     case "idle":
       return null;
     case "throttled":
-      // A known deadline that has passed means the wait is over — the
-      // inputs are re-enabled, so the alert has nothing left to say.
-      if (phase.until !== null && !waiting) return null;
+      // A known deadline that has passed means the wait is over. Swapping in
+      // this line instead of emptying the region is what tells a screen
+      // reader the inputs are back — the re-enabling itself is silent.
+      if (phase.until !== null && !waiting) {
+        return (
+          <Alert tone="info" title="もう一度お試しいただけます" role="note">
+            待機時間が終わりました。
+          </Alert>
+        );
+      }
       return (
         <Alert
           tone="warning"
           title="しばらく待ってからお試しください"
           role="note"
         >
-          続けて失敗したため、サインインを一時的に受け付けられません。少し待ってからもう一度お試しください。
-          {/* The countdown rewrites itself every second. Hidden from the
-              accessibility tree so the enclosing live region announces the
-              fixed sentence once instead of queueing a new one per tick. */}
+          続けて失敗したため、サインインを一時的に受け付けられません。
+          {/* The wait is announced as a snapshot taken when the phase was
+              decided, not as the live counter below: the enclosing live
+              region would otherwise queue a new announcement every second. */}
+          {phase.waitSeconds !== null
+            ? `約 ${phase.waitSeconds} 秒お待ちください。`
+            : "少し待ってからもう一度お試しください。"}
           {phase.until !== null ? (
             <span aria-hidden="true">
               （あと {remainingSeconds(phase.until, now)} 秒）
@@ -277,10 +290,11 @@ function PhaseAlert({
         </Alert>
       );
     case "locked":
-      // Same rule as throttled: once the known unlock time has passed the
-      // inputs are back, so an alert saying sign-in is stopped would
-      // contradict the screen.
-      if (phase.unlockAt !== null && !waiting) return null;
+      // Nothing is disabled while locked, so the alert is the only thing
+      // saying sign-in is stopped — it stays until the unlock time passes.
+      if (phase.unlockAt !== null && phase.unlockAt.getTime() <= now) {
+        return null;
+      }
       return (
         <Alert
           tone="error"

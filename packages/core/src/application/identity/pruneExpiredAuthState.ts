@@ -244,8 +244,12 @@ async function runCron(
       });
     } catch (cause) {
       // The release runs on the way out, including out of a throw whose
-      // own cause (a lapsed or stolen lease) makes the release fail too.
-      // Nothing is left to salvage here beyond the record.
+      // own cause (a lapsed or stolen lease) makes the release fail too,
+      // so the failure is not rethrown. It still has to be reported as
+      // unfinished work: `PRUNE_LEASE_OWNER` is a process constant, so
+      // this process's next cron renews its own lease and the lapsed-lease
+      // reclaim never fires for a lane it failed to hand back.
+      workRemains = true;
       logger.error("[pruneExpiredAuthState] lane release failed", {
         cause,
         generation: lane.generation,

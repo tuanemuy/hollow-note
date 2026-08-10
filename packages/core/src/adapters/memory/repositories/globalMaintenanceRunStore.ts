@@ -17,10 +17,19 @@ const COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const laneKey = (generation: string, shardId: string): string =>
   `${generation} ${shardId}`;
 
+/**
+ * Lane command key. Keyed by the sweep **table name** and cursor — not the
+ * table index — so a key minted here is byte-identical to the one the
+ * caller re-derives for the same logical position when it checkpoints
+ * (`application/identity/pruneExpiredAuthState.ts`); a Queue outbox can
+ * therefore dedupe across both mints.
+ */
 const commandKeyOf = (
   runId: string,
-  lane: Pick<MaintenanceLaneRow, "generation" | "shardId" | "tableIndex">,
-): string => `${runId}:${lane.generation}:${lane.shardId}:${lane.tableIndex}`;
+  lane: Pick<MaintenanceLaneRow, "generation" | "shardId" | "cursor">,
+  table: string,
+): string =>
+  `${runId}:${lane.generation}:${lane.shardId}:${table}:${lane.cursor ?? ""}`;
 
 /**
  * A lapsed lease means the previous owner is gone (crash, invocation
@@ -144,7 +153,11 @@ export function createMemoryGlobalMaintenanceRunStore(
           };
           lanes.push({
             ...lane,
-            commandKey: commandKeyOf(input.candidateRunId, lane),
+            commandKey: commandKeyOf(
+              input.candidateRunId,
+              lane,
+              tables[0] ?? "",
+            ),
           });
         }
       }
@@ -249,7 +262,11 @@ export function createMemoryGlobalMaintenanceRunStore(
         };
         run = replaceLane(run, {
           ...advanced,
-          commandKey: commandKeyOf(run.runId, advanced),
+          commandKey: commandKeyOf(
+            run.runId,
+            advanced,
+            run.tables[advanced.tableIndex] ?? "",
+          ),
         });
         table.set(input.runId, run);
         return {

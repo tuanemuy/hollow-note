@@ -102,7 +102,7 @@ describe("verifyEmail", () => {
 
   it("TC-identity-299: rejects a token whose purpose is password_reset", async () => {
     const h = createTestHarness();
-    const { userId, verificationToken } = await signUpPending(h);
+    const { verificationToken } = await signUpPending(h);
     const stored = h.backend.authTokens.values()[0];
     if (stored === undefined) {
       throw new Error("missing token row");
@@ -111,7 +111,6 @@ describe("verifyEmail", () => {
       ...stored,
       purpose: "password_reset",
     });
-    void userId;
     await expect(
       verifyEmail({
         container: h.container,

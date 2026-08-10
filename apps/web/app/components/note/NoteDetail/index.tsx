@@ -89,12 +89,12 @@ function NoteContentBlock({ note }: { note: NoteDetailView }) {
           headings={note.headings}
         />
       ) : (
-        <p className="text-sm text-ink-tertiary">このノートは白紙です。</p>
+        <p className="text-sm text-ink-secondary">このノートは白紙です。</p>
       );
     case "processing":
     case "awaitingIntegration":
       return (
-        <p className="text-sm text-ink-tertiary" role="status">
+        <p className="text-sm text-ink-secondary" role="status">
           本文を準備しています。完了するとここに表示されます。
         </p>
       );

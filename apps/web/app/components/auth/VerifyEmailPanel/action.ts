@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { loadServerDeps } from "@/presentation/serverAction";
 import { validateInput } from "@/presentation/validator";
+import { shouldIssueVerificationSession } from "@/presentation/verificationSession";
 import { verifyEmailSchema } from "../schema";
 
 /**
@@ -30,10 +31,11 @@ export const verifyEmailFn = createServerFn({ method: "POST" })
       container,
       input: { token: data.token },
     });
-    const requestedHere =
-      session.readPendingVerificationUserId() === view.userId;
-    const signedIn = view.sessionToken !== null && requestedHere;
-    if (view.sessionToken !== null && requestedHere) {
+    const signedIn = shouldIssueVerificationSession(
+      session.readPendingVerificationUserId(),
+      view,
+    );
+    if (signedIn) {
       session.setSessionCookie(
         view.sessionToken,
         session.sessionCookieExpiry(container.clock.now()),

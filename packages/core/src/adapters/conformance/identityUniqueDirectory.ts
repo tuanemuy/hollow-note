@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { User } from "../../domain/identity/user";
 import { expectConflict } from "./asserts";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
-import { userId } from "./fixtures";
+import { makePendingUser, userId } from "./fixtures";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -19,6 +20,14 @@ export function describeIdentityUniqueDirectoryContract(
 
     beforeEach(async () => {
       backend = await makeBackend();
+      // `activate` is conditional on the committed user version, so every
+      // reservation owner needs a persisted user row to condition on.
+      await backend.userRepository.insert(
+        makePendingUser(1, backend.clock.now()),
+      );
+      await backend.userRepository.insert(
+        makePendingUser(2, backend.clock.now()),
+      );
     });
 
     const reserveEmail = (
@@ -117,6 +126,33 @@ export function describeIdentityUniqueDirectoryContract(
       await reserveEmail("op-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
       await backend.identityUniqueDirectory.release("op-1");
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBe(userId(1));
+    });
+
+    it("ADP-identity-008: activate is conditional on the expected user version", async () => {
+      const now = backend.clock.now();
+      const seeded = await backend.userRepository.findById(userId(1));
+      if (seeded === null || seeded.entity.status !== "pending") {
+        throw new Error("seeded user missing");
+      }
+      await backend.userRepository.save(
+        User.verifyEmail(seeded.entity, now).entity,
+        seeded.expectedVersion,
+      );
+      await reserveEmail("op-1");
+
+      await expectConflict(
+        backend.identityUniqueDirectory.activate("op-1", 0),
+        "OPTIMISTIC_LOCK_FAILURE",
+      );
+      // A rejected activation leaves the reservation untouched.
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBeNull();
+
+      await backend.identityUniqueDirectory.activate("op-1", 1);
       expect(
         await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
       ).toBe(userId(1));

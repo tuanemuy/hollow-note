@@ -87,6 +87,21 @@ const ensureReady = (
   return content;
 };
 
+/**
+ * The published-body invariant is symmetric. `makeUnlisted` / `makePublic`
+ * refuse a non-ready body, so demoting the body of an already shared note
+ * would reach the same illegal `{ visibility: public, content: failed }`
+ * pair from the other side.
+ */
+const ensurePrivate = (note: ActiveNote): void => {
+  if (note.visibility.status !== "private") {
+    throw new BusinessRuleError(
+      NoteErrorCode.CannotPublishEmptyNote,
+      "A shared note cannot drop back to a non-ready body",
+    );
+  }
+};
+
 const capHeadings = (
   headings: readonly NoteHeading[],
 ): readonly NoteHeading[] => headings.slice(0, MAX_HEADINGS_PER_NOTE);
@@ -287,6 +302,7 @@ export const Note = {
     reason: NoteFailureReason,
     now: Date,
   ): WithEventDrafts<ActiveNote, NoteEvent> => {
+    ensurePrivate(note);
     const next: ActiveNote = {
       ...note,
       content: { status: "failed", reason },
@@ -304,6 +320,7 @@ export const Note = {
     note: ActiveNote,
     now: Date,
   ): WithEventDrafts<ActiveNote, NoteEvent> => {
+    ensurePrivate(note);
     const next: ActiveNote = {
       ...note,
       content: { status: "awaitingIntegration" },
@@ -702,14 +719,29 @@ function reconstructContent(input: ReconstructInput): NoteContent {
       }
       return { status: "failed", reason: reason as NoteFailureReason };
     }
-    case "ready":
+    case "ready": {
+      // An empty body is legal (a blank note), a *missing* column is not:
+      // defaulting it to `""` would let the next OCC save persist the hole
+      // as real content and silently lose the body.
+      const { html, text, excerpt } = input;
+      if (
+        html === null ||
+        html === undefined ||
+        text === null ||
+        text === undefined ||
+        excerpt === null ||
+        excerpt === undefined
+      ) {
+        throw invalid("ready note requires html, text, and excerpt");
+      }
       return {
         status: "ready",
-        html: NoteHtml.create(input.html ?? ""),
-        text: PlainTextContent.create(input.text ?? ""),
-        excerpt: Excerpt.create(input.excerpt ?? ""),
+        html: NoteHtml.create(html),
+        text: PlainTextContent.create(text),
+        excerpt: Excerpt.create(excerpt),
         headings: capHeadings((input.headings ?? []).map(NoteHeading.create)),
       };
+    }
     default:
       throw invalid(`invalid content status: ${input.contentStatus}`);
   }

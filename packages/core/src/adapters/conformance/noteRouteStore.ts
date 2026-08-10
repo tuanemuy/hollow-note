@@ -168,6 +168,58 @@ export function describeNoteRouteStoreContract(
       );
     });
 
+    const switchedOnce = async (migrationId: string, from: number) => {
+      await store.beginMove({
+        noteId: noteId(1),
+        expectedRouteVersion: from,
+        target: scopeOf(2),
+        migrationId,
+      });
+      return store.switchMove({
+        noteId: noteId(1),
+        migrationId,
+        expectedRouteVersion: from,
+      });
+    };
+
+    it("ADP-note-042: a lost switchMove response replays to the same route for the same migration", async () => {
+      const active = await activated();
+      const switched = await switchedOnce("migration-1", active.routeVersion);
+
+      const replayed = await store.switchMove({
+        noteId: noteId(1),
+        migrationId: "migration-1",
+        expectedRouteVersion: active.routeVersion,
+      });
+      expect(replayed).toEqual(switched);
+    });
+
+    it("ADP-note-042: a completed switch does not answer a different migration quoting the same version", async () => {
+      const active = await activated();
+      // The aborted migration-1 saga still holds the pre-switch version;
+      // migration-2 is what actually moved the route.
+      await store.beginMove({
+        noteId: noteId(1),
+        expectedRouteVersion: active.routeVersion,
+        target: scopeOf(3),
+        migrationId: "migration-1",
+      });
+      await store.abortMove({
+        noteId: noteId(1),
+        migrationId: "migration-1",
+        expectedRouteVersion: active.routeVersion,
+      });
+      await switchedOnce("migration-2", active.routeVersion);
+
+      await expectConflict(
+        store.switchMove({
+          noteId: noteId(1),
+          migrationId: "migration-1",
+          expectedRouteVersion: active.routeVersion,
+        }),
+      );
+    });
+
     it("ADP-note-043/044/045: purge closes external reach, aborts pre-delete, then tombstones", async () => {
       const active = await activated();
       await store.beginPurge({

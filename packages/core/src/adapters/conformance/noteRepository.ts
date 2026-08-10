@@ -124,6 +124,38 @@ export function describeNoteRepositoryContract(
       expect(second.items[0]?.id).not.toBe(page.items[0]?.id);
     });
 
+    it("ADP-note-015: listByOwner pages a total updatedAt DESC, id DESC order", async () => {
+      const now = backend.clock.now();
+      // notes 2..4 share an updatedAt, so only the id tiebreak orders them;
+      // note 1 is newer, so a pure id order would put it last instead of first.
+      await scoped.noteRepository.insert(
+        makeBlankNote(1, userId(1), new Date(now.getTime() + 1_000)),
+      );
+      for (const n of [2, 3, 4]) {
+        await scoped.noteRepository.insert(makeBlankNote(n, userId(1), now));
+      }
+
+      const owner = NoteOwner.user(userId(1));
+      const first = await scoped.noteRepository.listByOwner(owner, "all", {
+        page: 1,
+        limit: 2,
+      });
+      expect(first.count).toBe(4);
+      expect(first.items.map((note) => note.id)).toEqual([
+        noteId(1),
+        noteId(4),
+      ]);
+
+      const second = await scoped.noteRepository.listByOwner(owner, "all", {
+        page: 2,
+        limit: 2,
+      });
+      expect(second.items.map((note) => note.id)).toEqual([
+        noteId(3),
+        noteId(2),
+      ]);
+    });
+
     it("scope isolation: another scope's repository does not see this scope's notes", async () => {
       const now = backend.clock.now();
       await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));
