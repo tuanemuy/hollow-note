@@ -93,18 +93,12 @@ If you want to try the Cloudflare wiring instead, see [`docs/runtime_cloudflare.
 ```bash
 pnpm dev                         # alias of pnpm dev:node
 pnpm dev:node                    # vite dev (Node)
-pnpm dev:cf                      # vite dev (Cloudflare / workerd)
-pnpm dev:gcp                     # vite dev with the GCP server entry
 
 pnpm build                       # alias of pnpm build:node
 pnpm build:node
-pnpm build:cf
-pnpm build:aws
-pnpm build:gcp
 
 pnpm start                       # alias of pnpm start:node
-pnpm start:node                  # @hono/node-server
-pnpm start:cf                    # wrangler dev (top-level Worker)
+pnpm start:node                  # node HTTP listener (scripts/listen.node.ts)
 
 pnpm typecheck                   # tsgo (@typescript/native-preview)
 pnpm lint                        # Biome lint
@@ -112,9 +106,8 @@ pnpm lint:fix                    # Biome check --write
 pnpm format                      # Biome format --write
 pnpm format:check
 
-pnpm test                        # unit + integration
-pnpm test:unit                   # Vitest (unit)
-pnpm test:integration            # integration suites
+pnpm test                        # alias of pnpm test:unit
+pnpm test:unit                   # Vitest (unit + the shared port-conformance suites)
 ```
 
 Recommended routine after changes:

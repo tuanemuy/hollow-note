@@ -110,7 +110,29 @@ const HTTP_STATUS_BY_KIND: Record<SerializedErrorKind, number> = {
   unknown: 500,
 };
 
+// Code-level exceptions to the kind mapping. The closed list lives in
+// spec/presentation/index.md#コードによる例外 — extend it only when the
+// client's behavior actually changes (401 → go sign in, 429 → wait,
+// 410 → drop from search indexes), never as a classification device.
+const HTTP_STATUS_BY_CODE: Partial<
+  Record<SerializedErrorKind, Readonly<Record<string, number>>>
+> = {
+  validation: {
+    UNAUTHENTICATED: 401,
+    THROTTLED: 429,
+    LOCKED: 429,
+    RATE_LIMITED: 429,
+  },
+  notFound: {
+    NOTE_GONE: 410,
+  },
+};
+
 export function httpStatusFor(serialized: SerializedError): number {
+  if (serialized.code !== null) {
+    const override = HTTP_STATUS_BY_CODE[serialized.kind]?.[serialized.code];
+    if (override !== undefined) return override;
+  }
   return HTTP_STATUS_BY_KIND[serialized.kind];
 }
 
@@ -153,8 +175,24 @@ function asSerializedError(value: unknown): SerializedError | null {
     : null;
 }
 
+/**
+ * Structural stand-in for `instanceof AppServerError`. The dev server
+ * hosts several module graphs (ssr / rsc / server-fn split), each with
+ * its own copy of this class, so an instance built by the middleware in
+ * one graph fails `instanceof` against another graph's class — which
+ * silently downgrades every thrown error to seroval's shallow
+ * message-only Error. Structural detection is graph-independent.
+ */
+export function isAppServerErrorShaped(
+  value: unknown,
+): value is AppServerError {
+  if (!(value instanceof Error)) return false;
+  if (!hasSerializedRemnant(value)) return false;
+  return asSerializedError(value.serialized) !== null;
+}
+
 export function extractSerializedError(error: unknown): SerializedError {
-  if (error instanceof AppServerError) {
+  if (isAppServerErrorShaped(error)) {
     return error.serialized;
   }
   if (hasSerializedRemnant(error)) {

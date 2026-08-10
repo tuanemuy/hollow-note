@@ -1,6 +1,9 @@
 import type { Pagination } from "@repo/core/domain/common/pagination";
 import { z } from "zod";
 
+// 現時点の消費者はゼロ。ページングを持つ画面が入るまで未使用だが、
+// `docs/frontend_implementation_example.md` が参照するテンプレート基盤
+// なので残す。
 export const PAGINATION_MAX_LIMIT = 100;
 export const PAGINATION_MAX_PAGE = 10_000;
 export const PAGINATION_DEFAULT_PAGE = 1;
@@ -13,7 +16,7 @@ export const PAGINATION_DEFAULT_LIMIT = 20;
 const pageField = z.number().int().min(1).max(PAGINATION_MAX_PAGE);
 const limitField = z.number().int().min(1).max(PAGINATION_MAX_LIMIT);
 
-// Strict numeric schema for server-function `inputValidator`. RPC payloads
+// Strict numeric schema for server-function `validator`. RPC payloads
 // arrive already typed (JSON), so no coercion is needed; bad payloads must
 // fail loud rather than silently fall back to defaults.
 export const paginationSchema = z.object({

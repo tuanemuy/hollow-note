@@ -1,0 +1,126 @@
+import { ConflictError } from "../../../application/errors";
+import type {
+  IdentityUniqueDirectory,
+  IdentityUniqueKind,
+} from "../../../domain/identity/ports/identityUniqueDirectory";
+import type { UserId } from "../../../domain/identity/valueObject";
+import type { DirectoryRow, MemoryBackend } from "../store";
+
+const CONFLICT_CODES: Record<IdentityUniqueKind, string> = {
+  email: "EMAIL_ALREADY_USED",
+  handle: "HANDLE_ALREADY_USED",
+  providerAccount: "PROVIDER_ACCOUNT_ALREADY_LINKED",
+};
+
+// NUL separates the composite key because it cannot occur in either
+// part; the escape sequence (not a raw byte) keeps this file text for
+// git diff / grep / blame.
+const rowKey = (kind: IdentityUniqueKind, normalizedKey: string): string =>
+  `${kind}\u0000${normalizedKey}`;
+
+const heldByAnother = (
+  kind: IdentityUniqueKind,
+  normalizedKey: string,
+): ConflictError =>
+  new ConflictError(
+    CONFLICT_CODES[kind],
+    `Unique key already held: ${kind} ${normalizedKey}`,
+  );
+
+export function createMemoryIdentityUniqueDirectory(
+  backend: MemoryBackend,
+): IdentityUniqueDirectory {
+  const table = backend.uniqueDirectory;
+  const rowsByOperation = (
+    operationId: string,
+  ): readonly (readonly [string, DirectoryRow])[] =>
+    table.entries().filter(([, row]) => row.operationId === operationId);
+
+  return {
+    async resolve(
+      kind: IdentityUniqueKind,
+      normalizedKey: string,
+    ): Promise<UserId | null> {
+      const row = table.get(rowKey(kind, normalizedKey));
+      // Reserved rows are not durable claims yet — they never resolve.
+      return row !== undefined && row.state === "active" ? row.userId : null;
+    },
+
+    async reserve(input): Promise<void> {
+      const key = rowKey(input.kind, input.normalizedKey);
+      const existing = table.get(key);
+      const now = backend.clock.now();
+      if (existing !== undefined) {
+        if (existing.operationId === input.operationId) {
+          if (existing.state === "reserved") {
+            table.set(key, { ...existing, expiresAt: input.expiresAt });
+          }
+          return;
+        }
+        const reservationLapsed =
+          existing.state === "reserved" &&
+          existing.expiresAt !== null &&
+          existing.expiresAt.getTime() <= now.getTime();
+        if (!reservationLapsed) {
+          throw heldByAnother(input.kind, input.normalizedKey);
+        }
+      }
+      table.set(key, {
+        kind: input.kind,
+        normalizedKey: input.normalizedKey,
+        userId: input.userId,
+        state: "reserved",
+        operationId: input.operationId,
+        expiresAt: input.expiresAt,
+        userVersion: null,
+      });
+    },
+
+    async activate(
+      operationId: string,
+      expectedUserVersion: number,
+    ): Promise<void> {
+      const rows = rowsByOperation(operationId);
+      if (rows.length === 0) {
+        throw new ConflictError(
+          "UNIQUE_RESERVATION_NOT_FOUND",
+          `No reservation for operation ${operationId}`,
+        );
+      }
+      // Conditional update: the durable claim may only be published on
+      // top of the committed user row it belongs to. Every row is checked
+      // before any is written so the operation stays all-or-nothing.
+      for (const [, row] of rows) {
+        const user = backend.users.get(row.userId);
+        if (
+          user === undefined ||
+          (user.version as number) !== expectedUserVersion
+        ) {
+          throw new ConflictError(
+            "OPTIMISTIC_LOCK_FAILURE",
+            `User ${row.userId} is not at version ${expectedUserVersion}`,
+          );
+        }
+      }
+      for (const [key, row] of rows) {
+        if (row.state === "active") {
+          continue;
+        }
+        table.set(key, {
+          ...row,
+          state: "active",
+          expiresAt: null,
+          userVersion: expectedUserVersion,
+        });
+      }
+    },
+
+    async release(operationId: string): Promise<void> {
+      for (const [key, row] of rowsByOperation(operationId)) {
+        if (row.state === "reserved") {
+          table.delete(key);
+        }
+      }
+    },
+  };
+}

@@ -1,3 +1,41 @@
 @import "tailwindcss";
 @import "./tokens.css";
 @import "./theme.css";
+
+@layer base {
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    letter-spacing: var(--tracking-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  /* The transparent outline is invisible in normal rendering (the ring is
+     the box-shadow) but forced-colors mode drops box-shadows and repaints
+     outlines with a system color — so this is what keeps focus visible in
+     Windows high contrast. */
+  :focus-visible {
+    outline: 2px solid transparent;
+    box-shadow: var(--shadow-focus);
+    border-radius: inherit;
+  }
+
+  /* Blanket rule rather than per-component `motion-reduce:` utilities: a
+     component that forgets the utility silently opts out of the preference,
+     and the failure is invisible to anyone not running with it set. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

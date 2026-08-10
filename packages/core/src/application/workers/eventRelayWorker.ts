@@ -3,10 +3,12 @@ import {
   type EventDecoder,
   EventId,
 } from "@repo/core/domain/common/event";
-import type { TodoEvent } from "@repo/core/domain/todo/events";
+import type { IdentityEvent } from "@repo/core/domain/identity/events";
+import type { NoteEvent } from "@repo/core/domain/note/events";
 import type { WorkerContainer } from "../di/types";
+import { identityEventDecoders } from "../identity/eventDecoders";
+import { noteEventDecoders } from "../note/eventDecoders";
 import type { OutboxEntry, OutboxFailure } from "../ports/outboxRepository";
-import { todoEventDecoders } from "../todo/eventDecoders";
 
 // Delivery is at-least-once with NO ordering guarantee. Per-row failures
 // bump `attempts` and schedule a backed-off retry; once a row exceeds
@@ -40,7 +42,9 @@ export type EventDispatcher = (
   events: readonly DomainEvent[],
 ) => Promise<readonly EventDispatchOutcome[]>;
 
-type AllDomainEvents = TodoEvent;
+// The closed union of every event the outbox may carry. Add a domain's
+// event union here before registering its decoders below.
+type AllDomainEvents = IdentityEvent | NoteEvent;
 
 export type DefaultEventDecoderRegistry = {
   readonly [K in AllDomainEvents["type"]]: EventDecoder<
@@ -55,7 +59,8 @@ export type DefaultEventDecoderRegistry = {
 export type EventDecoderRegistry = Partial<DefaultEventDecoderRegistry>;
 
 export const defaultEventDecoderRegistry = {
-  ...todoEventDecoders,
+  ...identityEventDecoders,
+  ...noteEventDecoders,
 } satisfies DefaultEventDecoderRegistry;
 
 export type ProcessOutboxEventsOptions = {
@@ -94,32 +99,21 @@ export type ProcessOutboxEventsOptions = {
 const RELAY_WORKER_ID = crypto.randomUUID();
 
 export const DEFAULT_BATCH_SIZE = 100;
-// Quarantine after 2 publish attempts. The consumer-side queue then
-// owns redelivery (`max_retries` in wrangler.toml [env.consumer]), so
-// the total user-visible retry count is the product of the two — keep
-// this low to avoid the multiplication producing surprising attempt
-// counts.
+// Quarantine after 2 publish attempts. The consumer-side dispatcher
+// (the Node runner's in-memory queue today, a hosted queue's redelivery
+// policy on other runtimes) then owns redelivery, so the total
+// user-visible retry count is the product of the two — keep this low to
+// avoid the multiplication producing surprising attempt counts.
 export const DEFAULT_MAX_ATTEMPTS = 2;
-export const DEFAULT_LEASE_MS = 5 * 60 * 1000; // 5 min
+export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 export const DEFAULT_MAX_ITERATIONS = 10;
-const MAX_BACKOFF_MS = 60 * 60 * 1000; // 1h ceiling
+const MAX_BACKOFF_MS = 60 * 60 * 1000;
 
 // Exponential backoff with a 30s base and a 1h cap. `attempts` is
-// 1-based (the value after the increment in `planFailure`). Schedule:
-//
-//   attempts | delay
-//   ---------|-------
-//   1        | 30s
-//   2        | 60s
-//   3        | 2m
-//   4        | 4m
-//   5        | 8m
-//   6        | 16m
-//   7        | 32m
-//   8+       | 1h (capped)
-//
-// With `DEFAULT_MAX_ATTEMPTS = 2`, only `attempts=1` actually fires;
-// the table matters when callers raise `maxAttempts`.
+// 1-based (the value after the increment in `planFailure`), so the first
+// retry waits 30s. With `DEFAULT_MAX_ATTEMPTS = 2` only that first delay
+// ever fires; the rest of the curve matters when callers raise
+// `maxAttempts`.
 const defaultBackoffMs = (attempts: number): number =>
   Math.min(2 ** Math.max(attempts - 1, 0) * 30_000, MAX_BACKOFF_MS);
 

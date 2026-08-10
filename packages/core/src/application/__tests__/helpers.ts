@@ -1,65 +1,91 @@
-// Test harness for application-layer integration tests.
-//
-// Runs inside a Workers isolate via `vitest-pool-workers`; the
-// `cloudflare:test` `env.DB` binding is a real D1 SQLite database
-// (in-memory under Miniflare). Per-test row cleanup is owned by
-// `packages/core/src/adapters/d1/__tests__/setup.ts` (TRUNCATE in `beforeEach`),
-// so the harness here is intentionally thin: each call to
-// `createTestContainer()` just builds a fresh DI container around the
-// shared binding.
-import { env } from "cloudflare:test";
-import { type Database, getDatabase } from "@repo/core/adapters/d1/client";
-import { D1IdempotencyStore } from "@repo/core/adapters/d1/repositories/idempotencyStore";
-import { D1OutboxRepository } from "@repo/core/adapters/d1/repositories/outboxRepository";
-import { D1UnitOfWorkProvider } from "@repo/core/adapters/d1/unitOfWork";
-import type {
-  RequestContainer,
-  WorkerContainer,
-} from "@repo/core/application/di/types";
-import { SystemClock } from "@repo/core/application/ports/clock";
-import { UuidV7Generator } from "@repo/core/application/ports/idGenerator";
-import { ConsoleLogger } from "@repo/core/application/ports/logger";
-import { content } from "@repo/core/config";
-import { beforeEach } from "vitest";
+import {
+  createTestClock,
+  type TestClock,
+} from "@repo/core/adapters/conformance/testClock";
+import type { MemoryMailSender } from "@repo/core/adapters/memory/mailSender";
+import type { MemoryBackend } from "@repo/core/adapters/memory/store";
+import type { MaintenanceKind } from "@repo/core/application/ports/globalMaintenanceRunStore";
+import {
+  createMemoryRuntime,
+  type MemoryRuntimeOptions,
+} from "../di/memoryRuntime";
+import type { AppConfig, RequestContainer, WorkerContainer } from "../di/types";
+import type { IdGenerator } from "../ports/idGenerator";
+import { FakeIdGenerator, FakeLogger } from "./fakes";
 
-// Tests need both scopes — they exercise usecases (request) and worker
-// pipelines in the same suite. Production code uses one container or
-// the other, never this fat shape.
-export type TestContainer = RequestContainer &
-  WorkerContainer & {
-    db: Database;
-  };
+export type TestHarnessOptions = Readonly<{
+  maintenanceShardIds?: readonly string[];
+  maintenanceTablesByKind?: Partial<Record<MaintenanceKind, readonly string[]>>;
+  routingGenerations?: readonly string[];
+  requestOverrides?: Partial<RequestContainer>;
+  workerOverrides?: Partial<WorkerContainer>;
+}>;
 
-export function createTestContainer(): TestContainer {
-  const db = getDatabase(env.DB);
-  return {
-    config: {
-      ...content,
-      appUrl: "http://localhost:8787",
-    },
-    unitOfWorkProvider: new D1UnitOfWorkProvider(
-      db,
-      SystemClock,
-      UuidV7Generator,
-    ),
-    outboxRepository: new D1OutboxRepository(db, UuidV7Generator, SystemClock),
-    idempotencyStore: new D1IdempotencyStore(db, SystemClock),
-    clock: SystemClock,
-    idGenerator: UuidV7Generator,
-    logger: ConsoleLogger,
-    db,
-  };
-}
+export type TestHarness = Readonly<{
+  backend: MemoryBackend;
+  clock: TestClock;
+  idGenerator: IdGenerator;
+  logger: FakeLogger;
+  container: RequestContainer;
+  workerContainer: WorkerContainer;
+  mailSender: MemoryMailSender;
+  config: AppConfig;
+}>;
+
+export const TEST_APP_URL = "https://app.example.test";
+
+const TEST_CONFIG: AppConfig = {
+  appUrl: TEST_APP_URL,
+  siteName: "Test",
+  defaultTitle: "Test",
+  defaultDescription: "Test",
+  themeColor: "#ffffff",
+};
 
 /**
- * Suite hook that yields a fresh `TestContainer` per test. Row
- * cleanup happens globally in the D1 pool's `setup.ts`, so this is
- * just a constructor + getter — no `afterEach` work is needed.
+ * Builds request + worker containers over one in-memory backend — the
+ * production wiring of `createMemoryRuntime` with a controllable clock,
+ * a deterministic id stream, and a recording logger. Overrides replace
+ * individual ports for fault injection.
  */
-export function setupTestContainer(): () => TestContainer {
-  let container: TestContainer;
-  beforeEach(() => {
-    container = createTestContainer();
-  });
-  return () => container;
+export function createTestHarness(
+  options: TestHarnessOptions = {},
+): TestHarness {
+  const clock = createTestClock();
+  const idGenerator = new FakeIdGenerator();
+  const logger = new FakeLogger();
+  const runtimeOptions: MemoryRuntimeOptions = {
+    clock,
+    idGenerator,
+    ...(options.maintenanceShardIds !== undefined
+      ? { maintenanceShardIds: options.maintenanceShardIds }
+      : {}),
+    ...(options.maintenanceTablesByKind !== undefined
+      ? { maintenanceTablesByKind: options.maintenanceTablesByKind }
+      : {}),
+    ...(options.routingGenerations !== undefined
+      ? { routingGenerations: options.routingGenerations }
+      : {}),
+  };
+  const runtime = createMemoryRuntime(runtimeOptions);
+  const container: RequestContainer = {
+    ...runtime.createRequestContainer(TEST_CONFIG),
+    logger,
+    ...options.requestOverrides,
+  };
+  const workerContainer: WorkerContainer = {
+    ...runtime.createWorkerContainer(),
+    logger,
+    ...options.workerOverrides,
+  };
+  return {
+    backend: runtime.backend,
+    clock,
+    idGenerator,
+    logger,
+    container,
+    workerContainer,
+    mailSender: runtime.mailSender,
+    config: TEST_CONFIG,
+  };
 }

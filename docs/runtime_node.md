@@ -1,33 +1,18 @@
-# Runtime: Node.js + libSQL (standalone)
+# Runtime: Node.js + in-memory adapters (standalone)
 
-Single-process runtime backed by an embedded libSQL file. No Docker, no Cloudflare account required. The full Outbox / domain-event lifecycle (relay → consumer → pruner) runs inside the same process as the HTTP server.
+Single-process runtime backed by the in-memory reference adapters (`packages/core/src/adapters/memory/`). No database, no Docker, no Cloudflare account required. The full Outbox / domain-event lifecycle (relay → consumer → pruner) runs inside the same process as the HTTP server.
 
-This is the default runtime: `pnpm dev` / `pnpm build` / `pnpm start` all alias to the `:node` variants. See [`runtime_cloudflare.md`](./runtime_cloudflare.md) for the Workers runtime.
-
-## Table of contents
-
-- [Quick start](#quick-start)
-- [Environment variables](#environment-variables)
-- [The libSQL data file](#the-libsql-data-file)
-- [SQLite PRAGMAs applied at boot](#sqlite-pragmas-applied-at-boot)
-- [Worker runner (relay / consumer / pruner)](#worker-runner-relay--consumer--pruner)
-- [Migrations](#migrations)
-- [Graceful shutdown](#graceful-shutdown)
-- [Single-process operational constraints](#single-process-operational-constraints)
-- [Logging and observability](#logging-and-observability)
-- [Known limitations](#known-limitations)
+This is the only runtime of the walking-skeleton slice and the default: `pnpm dev` / `pnpm build` / `pnpm start` all alias to the `:node` variants. The final target — Cloudflare Workers + Durable Objects + D1 (spec/platform) — arrives as Issue #11 and swaps only the adapter + entry layers; the memory adapters remain the fast local backend held to the same port-conformance suites.
 
 ## Quick start
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env
-pnpm db:generate           # generate SQL from the Drizzle schema
-pnpm db:migrate            # creates apps/web/data/ and applies migrations
-pnpm dev                   # http://localhost:3000
+cp apps/web/.env.example apps/web/.env    # set APP_URL
+pnpm dev                                  # http://localhost:3000
 ```
 
-For a production build:
+For a production-shaped build:
 
 ```bash
 pnpm build                 # vite build with the Node target (vite.config.node.ts)
@@ -36,154 +21,93 @@ pnpm start                 # tsx apps/web/scripts/listen.node.ts — boots @hono
 
 The flow:
 
-1. `vite build --config vite.config.node.ts` writes a fetch-handler bundle to `apps/web/dist/server/server.node.js`.
-2. `apps/web/scripts/listen.node.ts` loads `dotenv`, dynamically imports the bundle, calls its `boot()` to construct the libSQL client + DI container + worker runner, then registers the handler with `@hono/node-server`.
+1. `vite build --config vite.config.node.ts` writes a fetch-handler bundle to `apps/web/dist/server/server.node.js` and the browser build to `apps/web/dist/client/`.
+2. `apps/web/scripts/listen.node.ts` loads `dotenv`, dynamically imports the bundle, calls its `boot()` to construct the memory runtime + DI containers + worker runner, then registers the handler with `@hono/node-server`.
 3. SIGTERM / SIGINT triggers the shutdown sequence described below.
+
+## Static assets
+
+`vite dev` serves the browser build itself, so static serving is a production-only concern. `apps/web/scripts/listen.node.ts` puts a small file handler in front of the app's fetch handler: a `GET` / `HEAD` whose path resolves to a real file under `dist/client` is answered from disk, everything else falls through to the app. The client root is derived from whichever server-entry candidate resolved, so a deployment that ships `dist/` as its own root (`server/` + `client/` siblings) works unchanged.
+
+Headers differ from the app's by design:
+
+| Response          | `Cache-Control`                          | Other                                    |
+| ----------------- | ---------------------------------------- | ---------------------------------------- |
+| `/assets/*`       | `public, max-age=31536000, immutable`    | `nosniff`, content-type from extension   |
+| other static file | `public, max-age=0, must-revalidate`     | `nosniff`, content-type from extension   |
+| app responses     | `private, no-store` (+ CSP, Referrer-Policy, nosniff) | see `apps/web/app/server.node.ts` |
+
+Vite content-hashes everything under `assets/`, so those URLs are safe to pin forever; files copied verbatim from `apps/web/public/` keep their name across deploys and must be revalidated. The app's `private, no-store` default deliberately does **not** reach static files — it exists because SSR HTML and GET server-function responses are user-specific, which a hashed bundle is not.
+
+Putting a CDN or reverse proxy in front of the process is the expected production shape; the handler here is the floor, not a replacement for one.
+
+`apps/web/public/` does not exist yet, so the brand assets `__root.tsx` links (`/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/site.webmanifest`, `/og-image.png`) 404 in every mode, `pnpm dev` included. Dropping the files into that directory is all that is needed — vite copies them to `dist/client/` and the handler above serves them.
+
+## Persistence model
+
+There is none — by design. `packages/core/src/application/di/memoryRuntime.ts` builds one process-wide `MemoryBackend` shared by the request and worker containers (pinned on `globalThis` so the SSR and RSC module graphs see the same store across dev HMR reloads). **All data is lost when the process exits or the dev server restarts.** Manual test scenarios must complete within one process lifetime.
+
+The backend is a regular adapter, not a fake: it passes the shared port-conformance suites (`packages/core/src/adapters/conformance/`) that any future real backend must also pass. See `docs/test.md`.
+
+Verification-mail links can be printed to the server log by the memory `MailSender`, so the sign-up → verify flow can be completed locally without a mail provider. This is **opt-in**: set `MEMORY_MAIL_LOG_ACTION_URL=true` and the `mail.sent` lines gain an `actionUrl` field. Leave it off otherwise — the verification URL embeds the raw one-shot token, and consuming it issues a session, so log access alone is enough to take over a freshly registered account.
 
 ## Environment variables
 
-`apps/web/scripts/listen.node.ts` and `apps/web/scripts/migrate.node.ts` both load `apps/web/.env` before importing the rest of the app. Copy `apps/web/.env.example` to that path and edit it; the schema is validated at boot in `packages/core/src/application/di/serverNode.ts`.
+`apps/web/scripts/listen.node.ts` loads `apps/web/.env` before importing the rest of the app. The schema is validated at boot in `packages/core/src/application/di/serverNode.ts`.
 
-| Variable                  | Required | Default                  | Purpose                                                                                              |
-| ------------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`            | yes      | `file:./data/app.db`     | libSQL URL. `file:` opens an embedded SQLite file; `:memory:` is ephemeral; `libsql://` is remote.   |
-| `APP_URL`                 | yes      | `http://localhost:3000`  | Public origin used to build absolute URLs (canonical / OG image / OAuth callbacks).                  |
-| `PORT`                    | no       | `3000`                   | HTTP listener port.                                                                                  |
-| `HOSTNAME`                | no       | `0.0.0.0`                | HTTP listener bind address.                                                                          |
-| `DATABASE_AUTH_TOKEN`     | no       | (unset)                  | Bearer token for remote libSQL / Turso. Leave unset for local files.                                 |
-| `DATABASE_ENCRYPTION_KEY` | no       | (unset)                  | Encryption key for encrypted libSQL databases. Leave unset for plaintext.                            |
-| `OUTBOX_BATCH_SIZE`       | no       | `25`                     | Max outbox rows claimed per relay tick.                                                              |
-| `OUTBOX_LEASE_MS`         | no       | `30000`                  | Lease window (ms) before a stuck claim becomes reclaimable.                                          |
-| `OUTBOX_MAX_ATTEMPTS`     | no       | `3`                      | Per-event max attempts before quarantine (`failed_at` stamp).                                        |
-| `OUTBOX_RETENTION_MS`     | no       | `604800000` (7 days)     | Retention window before processed outbox rows are pruned.                                            |
+| Variable              | Required | Default                 | Purpose                                                                             |
+| --------------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| `APP_URL`             | yes      | `http://localhost:3000` | Public origin used to build absolute URLs (verification links, share URLs).         |
+| `PORT`                | no       | `3000`                  | HTTP listener port.                                                                 |
+| `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
+| `OUTBOX_BATCH_SIZE`   | no       | `100`                   | Max outbox rows claimed per relay tick.                                             |
+| `OUTBOX_LEASE_MS`     | no       | `300000`                | Lease window (ms) before a stuck claim becomes reclaimable.                         |
+| `OUTBOX_MAX_ATTEMPTS` | no       | `2`                     | Per-event max attempts before quarantine (`failed_at` stamp).                       |
+| `OUTBOX_RETENTION_MS` | no       | `604800000` (7 days)    | Retention window before processed outbox rows are pruned.                           |
+| `MEMORY_MAIL_LOG_ACTION_URL` | no | `false`              | `true` logs the action URL (verification link, raw token) on `mail.sent`. Manual testing only. |
 
-The outbox tuning variables are shared with the Cloudflare runtime; the schema is declared once in `packages/core/src/application/di/env.ts` and consumed by both `serverNode.ts` and the wrangler `[vars]` readers.
-
-## The libSQL data file
-
-`DATABASE_URL=file:./data/app.db` is resolved from the `@repo/web` workspace directory, so the default produces three files under `apps/web/data/`:
-
-```
-apps/web/data/
-├─ app.db        # main database file
-├─ app.db-wal    # write-ahead log (created when PRAGMA journal_mode = WAL is on)
-└─ app.db-shm    # shared memory file used by WAL
-```
-
-`apps/web/data/` is gitignored, and `apps/web/scripts/migrate.node.ts` + `apps/web/app/server.node.ts` both create the parent directory at boot — libSQL's embedded driver does not create it automatically.
-
-### Backup
-
-The database is plain SQLite. Two options:
-
-- **Cold copy** while the process is stopped:
-
-  ```bash
-  # Stop the process and wait for graceful shutdown, then:
-  cp apps/web/data/app.db apps/web/data/backup-$(date +%Y%m%d).db
-  ```
-
-- **Online backup** while the process is running, via the SQLite CLI's `.backup` command:
-
-  ```bash
-  sqlite3 apps/web/data/app.db ".backup apps/web/data/backup-$(date +%Y%m%d).db"
-  ```
-
-  `.backup` is concurrency-safe under WAL — readers and writers continue uninterrupted.
-
-The `*-wal` / `*-shm` sidecar files do **not** need to be copied; SQLite reconstructs them from the main file on next open. Restore by stopping the process, replacing `apps/web/data/app.db` with the backup, and starting again.
-
-## SQLite PRAGMAs applied at boot
-
-`packages/core/src/adapters/libsql/client.ts#applyPragmas` runs three statements after the client is constructed (unless `wal: false` is passed for `:memory:` / read-only test databases):
-
-| PRAGMA                  | Why                                                                                                                                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `journal_mode = WAL`    | Readers do not block the single writer. Matches the throughput model the deferred-batch UoW assumes.                                                                                                      |
-| `foreign_keys = ON`     | SQLite ships with FK enforcement off; D1 has it on by default. Without this PRAGMA the libSQL adapter would silently diverge for any future FK relation.                                                  |
-| `busy_timeout = 5000`   | Gives a 5-second wait before a contended write surfaces as `SQLITE_BUSY`. The UoW does not retry on `SQLITE_BUSY`, so this buffer is the only protection against transient contention from cron sweeps.   |
+The share-token encryption key ring is minted fresh at process start (ephemeral AES-256-GCM key). Existing share URLs therefore survive only as long as the process — consistent with the rest of the in-memory model.
 
 ## Worker runner (relay / consumer / pruner)
 
-`apps/web/app/worker/node/runner.ts#createNodeWorkerRunner` is the same-process orchestrator for the four roles that ship as separate Workers on Cloudflare.
+`apps/web/app/worker/node/runner.ts#createNodeWorkerRunner` is the same-process orchestrator for the roles that ship as separate Workers on Cloudflare.
 
-| Role     | Cloudflare                              | Node                                                                                                              |
+| Role     | Cloudflare (Issue #11)                  | Node                                                                                                              |
 | -------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Relay    | 5-minute cron + `RELAY` Service Binding | 60-second `setInterval` fallback + `InProcessRelayTrigger.kick()` from the request-path UoW (`setImmediate` fan)  |
-| Consumer | Queue subscriber                        | `InMemoryQueueDispatcher` — relay hands a decoded batch to the dispatcher, which invokes the consumer handler     |
-| Pruner   | Daily cron                              | 24-hour `setInterval`                                                                                             |
-| DLQ      | Dedicated Worker over `events-dlq`      | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
+| Relay    | cron + Service Binding                  | 60-second `setInterval` fallback + `InProcessRelayTrigger.kick()` from the request-path UoW (`setImmediate` fan)  |
+| Consumer | Queue subscriber                        | `InMemoryQueueDispatcher` — currently a no-op handler: no event subscriber exists in the walking-skeleton slice   |
+| Pruner   | crons (outbox + auth state)             | 24-hour `setInterval` running `pruneOutbox` only. `pruneExpiredAuthState` is implemented and tested but **not scheduled** here — its cron / queue wiring lands with the Cloudflare slice |
+| DLQ      | Dedicated Worker                        | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
 
-`runner.start()`:
-
-- Fires an immediate relay tick so a freshly-started process drains any backlog from a previous crash without waiting a full interval.
-- Registers the two intervals and `process.on("SIGTERM" | "SIGINT", …)` handlers.
-- Returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally.
-
-Concurrent kicks are collapsed: the periodic fallback and request-path kicks share one in-flight slot, so the same outbox row is never claimed twice in the same tick. Lease semantics still apply across process restarts — a crashed worker's claim is reclaimable once `OUTBOX_LEASE_MS` lapses.
-
-### Consumer handler
-
-`consumerHandler` is a required dependency on `createNodeWorkerRunner` so wiring is explicit at the type level. `apps/web/app/server.node.ts` passes an inline `async () => {}` as the template default — replace it with your application-specific subscriber. Idempotency is enforced by the dispatcher before the handler runs, so handlers stay idempotent without per-handler bookkeeping.
-
-## Migrations
-
-The canonical schema lives at `packages/core/src/adapters/d1/schema.ts`; `packages/core/src/adapters/libsql/schema.ts` re-exports it so both runtimes share an identical type-level surface.
-
-```bash
-pnpm db:generate           # alias of db:generate:node
-pnpm db:generate:node      # drizzle-kit generate → packages/core/src/adapters/libsql/migrations/
-pnpm db:generate:cf        # drizzle-kit generate → packages/core/src/adapters/d1/migrations/ (mirror)
-pnpm db:migrate            # alias of db:migrate:node
-pnpm db:migrate:node       # tsx apps/web/scripts/migrate.node.ts — applies libSQL migrations
-```
-
-Workflow:
-
-1. Edit `packages/core/src/adapters/d1/schema.ts`.
-2. `pnpm db:generate:cf` to author the SQL (this is the source of truth).
-3. `pnpm db:generate:node` to mirror it under `packages/core/src/adapters/libsql/migrations/`.
-4. `pnpm db:migrate` to apply against the local libSQL file.
-
-Drizzle's programmatic migrator writes its bookkeeping into the `__drizzle_migrations` table inside the database, so re-running `pnpm db:migrate` is idempotent.
+`runner.start()` fires an immediate relay tick (drains backlog), registers the two intervals plus SIGTERM / SIGINT handlers, and returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally. Commits kick the relay out-of-band via `bindNodeRelayTrigger`, and concurrent kicks collapse into one in-flight tick.
 
 ## Graceful shutdown
 
-`apps/web/scripts/listen.node.ts` and `apps/web/app/server.node.ts` both register SIGTERM / SIGINT handlers. The shutdown sequence:
+`apps/web/scripts/listen.node.ts` and `apps/web/app/server.node.ts` both register SIGTERM / SIGINT handlers:
 
 1. `@hono/node-server` stops accepting new HTTP connections.
-2. `runner.stop()`:
-   1. Clears the relay / prune `setInterval`s and removes signal handlers.
-   2. `relayTrigger.stop()` rejects further `kick()` calls.
-   3. Awaits all tracked in-flight relay / prune ticks via the `pendingSweeps` set.
-   4. Calls the cleanup hook supplied at construction time, which `client.close()`s the libSQL handle.
-3. `process.exit(0)`.
+2. `runner.stop()` clears the intervals, stops the relay trigger, and awaits in-flight ticks.
+3. `process.exit(0)`. Data is gone at this point (see *Persistence model*).
 
-The shutdown promise is memoised — calling `stop()` repeatedly (e.g. from a signal handler and again from a test teardown) is safe.
-
-### `*.db-wal` / `*.db-shm` after shutdown
-
-These sidecar files may remain on disk even after a clean shutdown; SQLite reclaims them lazily and reuses them on next open. This is normal — do not delete them while the process is running.
+The shutdown promise is memoised — calling `stop()` repeatedly is safe.
 
 ## Single-process operational constraints
 
-The Node runtime is **single-writer, single-process**. libSQL's embedded driver does not coordinate across OS processes (multiple processes opening the same `file:` URL race against each other on the WAL), and the worker runner assumes one in-flight relay loop at a time.
-
-Implications:
-
-- Run exactly one instance of `pnpm start` against a given `apps/web/data/app.db` path.
-- Horizontal scaling (multiple Node processes behind a load balancer sharing one DB file) is **not supported** in this template. Promote to the Cloudflare runtime, or front the libSQL data with a Turso remote URL (see *Known limitations* below).
-- Vertical scaling (a single beefier machine) works fine — WAL allows many concurrent readers against the single writer.
+The runtime is **single-process by construction**: state lives in the process heap. Running multiple instances gives each its own, unrelated store. There is nothing to scale horizontally here; the multi-tenant target is the Cloudflare runtime.
 
 ## Logging and observability
 
-The application uses the `ConsoleLogger` port (`packages/core/src/application/ports/logger.ts`) — every log line is `console.log` / `console.error` formatted as JSON-ish objects. On Cloudflare this is picked up by `wrangler tail` / Logpush; on Node the lines go straight to stdout / stderr and can be piped into any aggregator (journald, vector, etc).
+The application uses the `ConsoleLogger` port (`packages/core/src/application/ports/logger.ts`) — every log line goes to stdout / stderr as JSON-ish objects. Notable lines:
 
-Structured logging via `pino` or similar is a deliberate non-goal of the current template (the Cloudflare runtime constrains the choices). It is on the open-issues list in `plan.md`.
+- `mail.sent` — memory mail deliveries. Carries `actionUrl` (the verification link, raw token included) only when `MEMORY_MAIL_LOG_ACTION_URL=true`.
+- `[outbox] quarantining event …` — the DLQ surface.
+
+## Deployment conditions
+
+**Behind a reverse proxy, replace the `clientKey` supplier.** `apps/web/app/presentation/clientKey.ts` returns the socket-derived request IP; `X-Forwarded-For` is deliberately not trusted because it is client-forgeable. Put a TLS terminator or load balancer in front of the process and every request then reports the proxy's address, so all clients collapse onto one `clientKey`. The login throttle is keyed `signIn:{email}:{clientKey}`, so it inverts from a defence into an attack: any visitor can fail ten sign-ins against a known e-mail and lock that account for 15 minutes, repeatably. A proxied deployment must supply the real client address there (a trusted-proxy hop setting is a follow-up issue; the Cloudflare slice replaces the module with `CF-Connecting-IP`).
 
 ## Known limitations
 
-- **Single-process only.** No clustering / multi-process worker fanout. If you need that, deploy the Cloudflare runtime.
-- **Turso remote mode is not exercised.** The libSQL client can in principle open a `libsql://` URL with `DATABASE_AUTH_TOKEN`, and the env schema accepts it, but the template does not ship operational guidance for remote mode (replication, embedded replica, sync strategy). Treat it as experimental.
-- **No application-level encryption-at-rest helper.** `DATABASE_ENCRYPTION_KEY` is passed straight to the driver; key management is your responsibility.
-- **No built-in DLQ surface.** Quarantined outbox rows (`failed_at IS NOT NULL`) are visible only through the log line `[outbox] quarantining event …` and direct SQL inspection. The CF runtime has a dedicated DLQ Worker; the Node runtime intentionally does not duplicate it.
+- **No durability.** Every restart starts blank. This is the intended shape of the walking skeleton, not an oversight.
+- **No auth-state prune scheduling.** `pruneExpiredAuthState` runs only from tests; expired sessions / tokens are still rejected logically (absolute expiry + epoch checks), the physical rows just accumulate for the process lifetime.
+- **No built-in DLQ surface** beyond the quarantine log line.

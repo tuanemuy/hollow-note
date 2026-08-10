@@ -1,16 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
-import {
-  applyPragmas,
-  createLibsqlClient,
-  getDatabase,
-} from "@repo/core/adapters/libsql/client";
 import { installContainerStore } from "@repo/core/application/di/containerStore";
 import {
+  readPruneTuning,
+  readRelayTuning,
+} from "@repo/core/application/di/env";
+import {
+  bindNodeRelayTrigger,
   createNodeRequestContainer,
   createNodeWorkerContainer,
+  nodeServerEnvToTuningEnv,
   readNodeRequestServerConfig,
   readNodeServerEnv,
 } from "@repo/core/application/di/serverNode";
@@ -39,8 +38,12 @@ if (import.meta.hot) {
 installContainerStore({ getStore: () => storage.getStore() });
 
 /**
- * Boots node-runtime resources (env → libSQL → worker runner → request
- * factory) and returns a fetch handler plus a shutdown hook.
+ * Boots node-runtime resources (env → worker runner → request factory)
+ * and returns a fetch handler plus a shutdown hook.
+ *
+ * Persistence is the in-memory reference backend (ADR 024): request and
+ * worker containers share one process-wide store, and a restart starts
+ * blank by design.
  */
 export type NodeServerBoot = Readonly<{
   fetch: (request: Request) => Promise<Response>;
@@ -49,48 +52,59 @@ export type NodeServerBoot = Readonly<{
   shutdown: () => Promise<void>;
 }>;
 
+// サービス全体の応答の既定として敷くセキュリティヘッダー
+// (spec/presentation/index.md#公開ページのセキュリティヘッダー)。
+// CSP は本文由来の危険を抑える 4 指令の最小集合 — script-src / style-src
+// の絞り込みはフレームワーク出力の形に依存するため公開閲覧スライスで
+// 詰める。Referrer-Policy はクロスオリジンへパスを送らない方針の実現。
+// Cache-Control は既定を no-store に倒す: SSR HTML も GET の server
+// function 応答も Cookie 認証で利用者固有になるため、freshness 指示が
+// 無いと前段の CDN / プロキシが他人の応答を配りうる。静的アセットは
+// フレームワークが自前の Cache-Control を付けるので、既存値を上書き
+// しない `withSecurityHeaders` の実装と共存する。公開ノートだけ緩める
+// のは公開閲覧スライスで。
+const SECURITY_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ["X-Content-Type-Options", "nosniff"],
+  ["Referrer-Policy", "strict-origin-when-cross-origin"],
+  ["Cache-Control", "private, no-store"],
+  [
+    "Content-Security-Policy",
+    "frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'self'",
+  ],
+];
+
+function withSecurityHeaders(response: Response): Response {
+  for (const [name, value] of SECURITY_HEADERS) {
+    if (!response.headers.has(name)) {
+      response.headers.set(name, value);
+    }
+  }
+  return response;
+}
+
 export async function boot(): Promise<NodeServerBoot> {
   const env = readNodeServerEnv();
   const logger = ConsoleLogger;
 
-  // libSQL's embedded driver fails to open a `file:` URL whose parent
-  // directory does not exist; pre-create it so a fresh clone boots.
-  if (env.DATABASE_URL.startsWith("file:")) {
-    const filePath = env.DATABASE_URL.slice("file:".length);
-    const parent = path.dirname(path.resolve(process.cwd(), filePath));
-    fs.mkdirSync(parent, { recursive: true });
-  }
+  const workerContainer = createNodeWorkerContainer();
 
-  const client = createLibsqlClient({
-    url: env.DATABASE_URL,
-    ...(env.DATABASE_AUTH_TOKEN !== undefined
-      ? { authToken: env.DATABASE_AUTH_TOKEN }
-      : {}),
-    ...(env.DATABASE_ENCRYPTION_KEY !== undefined
-      ? { encryptionKey: env.DATABASE_ENCRYPTION_KEY }
-      : {}),
-  });
-  const isMemory = env.DATABASE_URL === ":memory:";
-  await applyPragmas(client, isMemory ? { wal: false } : {});
-  const db = getDatabase(client);
-
-  const workerContainer = createNodeWorkerContainer(db);
-
+  const tuningEnv = nodeServerEnvToTuningEnv(env);
   const runner = createNodeWorkerRunner({
     container: workerContainer,
     logger,
-    // Replace with the application's domain-event subscriber.
+    // No event subscriber exists in the walking-skeleton slice; the
+    // consumer role stays a no-op until a projection consumer lands.
     consumerHandler: async () => {},
-    cleanup: async () => {
-      client.close();
+    tuning: {
+      relayOptions: readRelayTuning(tuningEnv),
+      outboxRetentionMs: readPruneTuning(tuningEnv).retentionMs,
     },
   });
+  // Commits kick the relay immediately instead of waiting for the tick.
+  bindNodeRelayTrigger(runner.relayTrigger);
   runner.start();
 
-  const config = readNodeRequestServerConfig(env, {
-    db,
-    relayTrigger: runner.relayTrigger,
-  });
+  const config = readNodeRequestServerConfig(env);
 
   // `@tanstack/react-start/server-entry` only resolves once the framework
   // bundle is ready; defer the import to the first request.
@@ -101,7 +115,10 @@ export async function boot(): Promise<NodeServerBoot> {
   const fetch = async (request: Request): Promise<Response> => {
     const container = createNodeRequestContainer(config);
     const entry = await entryPromise;
-    return storage.run(container, async () => entry.fetch(request));
+    const response = await storage.run(container, async () =>
+      entry.fetch(request),
+    );
+    return withSecurityHeaders(response);
   };
 
   const port = Number.parseInt(env.PORT ?? "3000", 10);
@@ -131,7 +148,7 @@ const defaultExport = {
 };
 
 // Boot lazily so importing this module for type resolution (e.g. inside
-// the vite plugin's server-entry probe) does not trigger DB I/O.
+// the vite plugin's server-entry probe) does not trigger side effects.
 let bootPromise: Promise<NodeServerBoot> | null = null;
 function getOrStartBoot(): Promise<NodeServerBoot> {
   if (bootPromise === null) {

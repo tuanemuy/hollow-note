@@ -1,4 +1,8 @@
-import { CodedError, type SerializedErrorBase } from "@repo/core/lib/error";
+import {
+  CodedError,
+  type FieldErrors,
+  type SerializedErrorBase,
+} from "@repo/core/lib/error";
 
 export type { FieldErrors } from "@repo/core/lib/error";
 
@@ -20,6 +24,11 @@ export type SerializedForbiddenError = SerializedErrorBase & {
 
 export type SerializedSystemError = SerializedErrorBase & {
   kind: "system";
+};
+
+export type SerializedValidationError = SerializedErrorBase & {
+  kind: "validation";
+  fieldErrors?: FieldErrors;
 };
 
 export abstract class ApplicationError<
@@ -112,6 +121,43 @@ export class ForbiddenError extends ApplicationError {
 
 export function isForbiddenError(error: unknown): error is ForbiddenError {
   return error instanceof ForbiddenError;
+}
+
+/**
+ * Application-level rejection of an input that is well-typed but invalid
+ * against a runtime rule the static type cannot carry: tampered / retired
+ * pagination cursors (`INVALID_PAGINATION`), unauthenticated session
+ * material (`UNAUTHENTICATED`), throttled / locked verification attempts.
+ * Distinct from transport-shape validation, which lives at the
+ * presentation boundary.
+ */
+export class ValidationError extends ApplicationError {
+  constructor(
+    code: string,
+    message: string,
+    public readonly fieldErrors?: FieldErrors,
+    cause?: unknown,
+  ) {
+    super(code, message, cause);
+  }
+
+  override readonly name = "ValidationError";
+
+  override toSerialized(): SerializedValidationError {
+    return {
+      kind: "validation",
+      code: this.code,
+      message: this.message,
+      retryable: this.retryable,
+      ...(this.fieldErrors !== undefined
+        ? { fieldErrors: this.fieldErrors }
+        : {}),
+    };
+  }
+}
+
+export function isValidationError(error: unknown): error is ValidationError {
+  return error instanceof ValidationError;
 }
 
 /**

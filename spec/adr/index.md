@@ -25,6 +25,17 @@
 | 017 | [全文検索インデックスを contentless FTS5 にし、本文サイズに予算を設ける](./017-content-size-budget.md) |
 | 021 | [業務データを scope 単位の Durable Object に分割し、D1 をグローバル制御面と公開投影に限定する](./021-scope-sharded-data-plane.md) |
 | 022 | [常設サイドバーを持たず、航法をスコープトークンとコマンドパレットに二重化する](./022-command-palette-navigation.md) |
+| 023 | [Unit of Work を global 平面と scope 平面に分け、境界を型で強制する](./023-two-plane-unit-of-work.md) |
+| 024 | [in-memory 永続化を正規のバックエンドとして扱い、トランザクションを undo ログで実装する](./024-in-memory-adapter-as-first-class-backend.md) |
+| 025 | [参照ランタイムを Node + in-memory の 1 つに絞る](./025-single-reference-runtime.md) |
+| 026 | [ポート契約の正本はポート定義に置き、共有適合スイートで検証する](./026-port-contract-and-conformance.md) |
+| 027 | [投影世代と route 版は UoW 内で採番し、ドメインへは引数で渡す](./027-projection-revision-numbering.md) |
+| 028 | [認証の応答は登録の有無で差を作らない](./028-account-enumeration-resistance.md) |
+| 029 | [メール確認はセッションの発行を確認要求元のブラウザーに束縛する](./029-verification-session-binding.md) |
+| 030 | [認証状態を変える経路は POST に限り、サインアウトはフル遷移で行う](./030-auth-state-transition-transport.md) |
+| 031 | [RSC ストリーミング境界を越えるエラーは構造で運び、秘匿を 1 か所に集める](./031-error-transport-across-rsc-boundary.md) |
+| 032 | [本文の Shadow DOM は宣言的 template とクライアント側の昇格の二段で描画する](./032-shadow-dom-rendering-path.md) |
+| 033 | [「文字数」は UTF-16 コード単位で数え、切り詰めはサロゲートペアを割らない](./033-character-count-unit.md) |
 
 ## 前提依存マップ
 
@@ -47,3 +58,14 @@
 | 017 本文サイズの予算 | D1 と SQLite-backed DO の 1 行・1 値 2,000,000 バイト上限 | 本文を 800,000 バイトに制限し、FTS5 を contentless にする |
 | 021 scope shard | DO storage の object 私有性、D1、Queues、Alarms | scope-local transaction と global projection の境界を定める |
 | 022 サイドバーのない航法 | 本文が画面の大部分を占めること、`/jobs` が文脈を持たないこと | 行き先の帰属でスコープトークンとアカウントメニューを割り、パレット単独の入口を禁じる |
+| 023 二平面 Unit of Work | scope shard（021）、DO storage が別 object と D1 を 1 トランザクションに束ねられないこと | 平面をまたぐ操作はサガとし、UoW 外の書き込みはコンテナの型で列挙する |
+| 024 in-memory バックエンド | 適合スイート（026）を実バックエンドと同条件で通せること | in-memory は fake ではなくバックエンドの 1 つとして扱う |
+| 025 単一参照ランタイム | 最終ターゲットが Cloudflare（021）であり、その実装が独立した作業であること | 参照ランタイムは 1 つに保ち、他は Git 履歴に残す |
+| 026 ポート契約と適合スイート | ポートのバックエンドを差し替える前提（024 と Cloudflare 実装） | 契約はポート定義、検証は共有スイート、契約化するのは観測可能な結果だけ |
+| 027 投影世代の採番 | 投影購読者が世代で順序の逆転を検出すること、同一トランザクションでの bump 規約 | 採番は UoW 内、イベントの形の正本はドメイン |
+| 028 認証の応答同一化 | 一意性の強制がポート契約として残ること（026） | 一意性はポート、列挙耐性はユースケース |
+| 029 メール確認の束縛 | 全 server function への同一オリジン検証が実際に強制されていること、`SameSite=Lax` | 認証状態の変更は要求元ブラウザーに束縛する |
+| 030 認証状態の遷移経路 | `SameSite=Lax` がトップレベル GET に Cookie を添えること、ルーターの loader キャッシュ | 認証境界の遷移はページごと捨てる |
+| 031 RSC 境界のエラー運搬 | ストリーミングのエラーチャネルが `kind` タグを運べないこと、モジュールグラフが分割されうること | 判定は構造、秘匿はフラグメント生成ヘルパー 1 か所 |
+| 032 Shadow DOM の描画経路 | `<template shadowrootmode>` が HTML パーサー経由でのみ shadow root になること | 公開ページと認証必須ページで同じマークアップを使う |
+| 033 文字数の単位 | 行サイズの予算（017）がバイト長の上界に依存すること | 上限検査と切り詰めの単位を一致させる |
