@@ -63,7 +63,7 @@ export function readNodeRequestServerConfig(
   };
 }
 
-// One `MemoryBackend` per process (ADR-002): request and worker
+// One `MemoryBackend` per process (ADR 024): request and worker
 // containers must observe the same tables, and the dev server keeps its
 // data exactly as long as the process lives. Pinned on `globalThis` so
 // the SSR and RSC module graphs (and HMR reloads of this module) share

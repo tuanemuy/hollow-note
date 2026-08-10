@@ -15,7 +15,7 @@ const MAX_LIMIT = 100;
 
 /**
  * Minimal internal read of the viewer's own active notes for the
- * walking-skeleton note list (ADR-005 glue). This deliberately does NOT
+ * walking-skeleton note list. This deliberately does NOT
  * preempt the canonical `searchNotes` / query-service listing of a later
  * slice: it reads straight through `NoteRepository.listByOwner` on the
  * personal scope and will be replaced when the read model lands.

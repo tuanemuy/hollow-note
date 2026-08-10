@@ -7,7 +7,7 @@ import { makeMemoryConformanceBackend } from "./conformanceBackend";
 // serialization is the in-memory approximation of transaction isolation.
 // A real transactional backend (D1/DO) interleaves callbacks and must
 // still be correct, so the shared suite asserts only per-run atomicity.
-describe("memory global unit of work serialization (ADR-014)", () => {
+describe("memory global unit of work serialization (ADR 024)", () => {
   let backend: ConformanceBackend;
 
   beforeEach(() => {

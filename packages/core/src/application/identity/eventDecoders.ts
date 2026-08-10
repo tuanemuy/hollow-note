@@ -18,8 +18,8 @@ import { z } from "zod";
 import { buildEventDecoder } from "../events/buildDecoder";
 
 /**
- * Wire decoders for the identity events (ADR-013: decoders live in the
- * application layer). Each schema is `.strict()` so a payload with
+ * Wire decoders for the identity events. Decoders live in the application
+ * layer because they depend on it. Each schema is `.strict()` so a payload with
  * extra keys — a schema-skewed row — fails as
  * `SystemError(DataIntegrityError)` instead of passing silently.
  */

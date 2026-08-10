@@ -17,12 +17,12 @@ import { verifyEmailFn } from "./action";
 /**
  * P-03 メール確認（spec/pages/index.md#P-03、モック P03-verify-email.html）。
  * GET は「処理中」を描画するだけで、マウント後にトークンを POST して消費
- * する（ADR-007）。状態: 処理中 / 成功（/notes へ遷移）/ 確認済み・サイン
+ * する（ADR 029）。状態: 処理中 / 成功（/notes へ遷移）/ 確認済み・サイン
  * インが必要 / 期限切れ / 使用済み（サインインへ）/ 無効 / 一時障害。
  * 再送導線は resendVerificationEmail が本スライス外のため出さない。
  *
  * `verifiedSignInRequired` は「確認は成立したがセッションは出なかった」
- * 状態（ADR-038）。別端末でリンクを開いた正当な利用者がここへ落ちる。
+ * 状態（ADR 029）。別端末でリンクを開いた正当な利用者がここへ落ちる。
  * `alreadyVerified`（トークンが使用済み）とは原因が違うので別状態にする。
  */
 

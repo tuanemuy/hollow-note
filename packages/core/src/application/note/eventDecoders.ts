@@ -28,8 +28,8 @@ import { z } from "zod";
 import { buildEventDecoder } from "../events/buildDecoder";
 
 /**
- * Wire decoders for the note events (ADR-013: decoders live in the
- * application layer). Strict schemas: unexpected keys fail as
+ * Wire decoders for the note events. Decoders live in the application
+ * layer because they depend on it. Strict schemas: unexpected keys fail as
  * `SystemError(DataIntegrityError)`.
  */
 

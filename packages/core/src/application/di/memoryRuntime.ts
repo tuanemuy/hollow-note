@@ -65,7 +65,7 @@ const ephemeralKeyRing = (): ShareTokenKeyRing => ({
 });
 
 /**
- * Composition root for the in-memory reference runtime (ADR-002): one
+ * Composition root for the in-memory reference runtime (ADR 024): one
  * `MemoryBackend` shared by every adapter of the process, the same
  * wiring for `pnpm dev` and the usecase tests. Data lives for the
  * process lifetime only — a restart starts blank by design.

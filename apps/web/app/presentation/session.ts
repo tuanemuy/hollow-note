@@ -22,7 +22,7 @@ import { loadServerDeps } from "./serverAction";
 const SESSION_COOKIE_NAME = "hollow_session";
 
 /**
- * Marks the browser that asked for a verification mail (ADR-038). The
+ * Marks the browser that asked for a verification mail (ADR 029). The
  * value is the `userId` the sign-up response projected; `verifyEmail`
  * only issues a session when it matches the token's owner, so following
  * somebody else's verification link can never sign the visitor in.

@@ -3,7 +3,7 @@ import { createTestHarness } from "../../__tests__/helpers";
 import { createBlankNote } from "../createBlankNote";
 import { listNotes } from "../listNotes";
 
-// Walking-skeleton glue (ADR-005): a minimal internal read over
+// Walking-skeleton glue: a minimal internal read over
 // NoteRepository.listByOwner, replaced by the canonical listing later.
 describe("listNotes", () => {
   it("lists the viewer's active personal notes with a total count", async () => {

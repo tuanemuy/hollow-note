@@ -2,6 +2,8 @@
 
 ## ADR-001: Unit of Work を最初から二平面（Global + Scope）で導入する
 
+→ `spec/adr/023-two-plane-unit-of-work.md` に昇格（ADR-019 と統合）
+
 ### Status
 Proposed
 
@@ -18,6 +20,8 @@ Proposed
 ---
 
 ## ADR-002: in-memory 永続化は「テスト fake」ではなく正規アダプター群 `adapters/memory/` として実装する
+
+→ `spec/adr/024-in-memory-adapter-as-first-class-backend.md` に昇格（ADR-014 / ADR-026 と統合）
 
 ### Status
 Proposed
@@ -36,6 +40,8 @@ Proposed
 
 ## ADR-003: ポート適合テストは `adapters/conformance/` の共有パラメタライズドスイートとして新設する
 
+→ `spec/adr/026-port-contract-and-conformance.md` に昇格（ADR-031 / ADR-035 / ADR-036 / ADR-039 と統合）
+
 ### Status
 Proposed
 
@@ -52,6 +58,8 @@ Issue は「ポート適合テスト」を目的に掲げるが、`spec/testcase
 ---
 
 ## ADR-004: 参照ランタイムを Node + memory に一本化し、libsql / d1 / cloudflare / aws / gcp のアダプターとエントリを削除する
+
+→ `spec/adr/025-single-reference-runtime.md` に昇格（ADR-009 と統合）
 
 ### Status
 Proposed（Round 2 レビューで削除の実施タイミングをステップ1 への前倒しに改訂）
@@ -112,6 +120,8 @@ DOM 行（ポートインターフェース定義）は見送り対象を含め�
 
 ## ADR-007: verify-email はページ描画（GET）とトークン消費（POST）を分離する
 
+→ `spec/adr/029-verification-session-binding.md` に昇格（ADR-038 と統合）
+
 ### Status
 Proposed
 
@@ -129,6 +139,8 @@ spec/presentation/index.md の CSRF 規律は「状態を変更する GET 経路
 ---
 
 ## ADR-008: サインアウトは Cookie 破棄のみの presentation 限定 glue とする
+
+→ `spec/adr/030-auth-state-transition-transport.md` に昇格（JSON POST 限定という転送形態の判断のみ。Cookie 破棄だけの glue に留める範囲は本スライス限定のため非昇格）
 
 ### Status
 Proposed
@@ -148,6 +160,8 @@ Proposed
 ---
 
 ## ADR-009: ステップ1 の削除範囲を「参照が Node + memory 構成の外にしか残らないもの全部」へ補完する
+
+→ `spec/adr/025-single-reference-runtime.md` に昇格（ADR-004 と統合）
 
 ### Status
 Accepted
@@ -185,6 +199,8 @@ noteRouteStore / noteRouteFanOutReader / shareTokenProtector / noteMovePort の 
 - トレードオフ: steps.md のファイル列挙と物理配置が 4 ファイル分ずれる（本 ADR が根拠）。
 
 ## ADR-011: 投影世代・route 版はドメインメソッドの引数として受け取る
+
+→ `spec/adr/027-projection-revision-numbering.md` に昇格（ADR-018 と統合）
 
 ### Status
 Accepted
@@ -230,6 +246,8 @@ steps.md ステップ3 の記述は `domain/identity/events.ts` に「+ decoder�
 - トレードオフ: なし（ステップ7 の担当者は eventDecoders 未実装であることを前提に作業する）。
 
 ## ADR-014: memory アダプターのトランザクションは「スナップショット差し替え」ではなく undo ログ + AsyncLocalStorage で実装する
+
+→ `spec/adr/024-in-memory-adapter-as-first-class-backend.md` に昇格（ADR-002 と統合）
 
 ### Status
 Accepted
@@ -293,6 +311,8 @@ spec/domains/index.md の契約文は状態機械の骨格を定めるが、(1) 
 
 ## ADR-018: NoteProjectionRevisionStore を ScopeUnitOfWorkContext に載せる
 
+→ `spec/adr/027-projection-revision-numbering.md` に昇格（ADR-011 と統合）
+
 ### Status
 Accepted
 
@@ -307,6 +327,8 @@ spec/usecases/note.md 共通節は「投影対象状態を変える全 UoW は�
 - トレードオフ: なし（後続の updateBody 等も同じ経路を使う）。
 
 ## ADR-019: コンテナは UoW 外ポートを明示し、読み取りは `Pick` で write メソッドを型的に落とす
+
+→ `spec/adr/023-two-plane-unit-of-work.md` に昇格（ADR-001 と統合）
 
 ### Status
 Accepted
@@ -340,6 +362,8 @@ CF 実装では cron が continuation task を Queue に発行し lane を非同
 
 ## ADR-021: 認証ユースケースの応答形状の確定（decoy userId / fieldErrors / alreadyVerified の sessionToken）
 
+→ `spec/adr/028-account-enumeration-resistance.md` に昇格（ADR-027 / ADR-033 / ADR-034 と統合）
+
 ### Status
 Accepted
 
@@ -369,6 +393,8 @@ spec/domains/note.md の `createBlank` シグネチャは `title: string` だが
 - トレードオフ: なし。
 
 ## ADR-023: P-11 の Shadow DOM は宣言的 template + クライアント側 attachShadow 昇格で描画する
+
+→ `spec/adr/032-shadow-dom-rendering-path.md` に昇格
 
 ### Status
 Accepted
@@ -400,6 +426,8 @@ presentation の `sessionCookieExpiry(now)` が `now + Session.ttlMs`（domain �
 
 ## ADR-025: kind タグの運搬は class 同一性に依存させない（構造判定 + RSC fragment 内での NOT_FOUND 解決）
 
+→ `spec/adr/031-error-transport-across-rsc-boundary.md` に昇格（ADR-029 と統合）
+
 ### Status
 Accepted
 
@@ -416,6 +444,8 @@ Accepted
 
 ## ADR-026: crypto / Intl 系アダプターは当面 `adapters/memory/` に同居させる
 
+→ `spec/adr/024-in-memory-adapter-as-first-class-backend.md` に昇格（ADR-002 と統合）
+
 ### Status
 Proposed
 
@@ -430,6 +460,8 @@ Proposed
 - トレードオフ: `adapters/memory` からの crypto 実装 import は誤解を招きうる（`createNodeSecureTokenGenerator` の命名と本 ADR で緩和）。
 
 ## ADR-027: パスワード認証のタイミング防御と scrypt 検証ガード
+
+→ `spec/adr/028-account-enumeration-resistance.md` に昇格（ADR-021 と統合）
 
 ### Status
 Proposed
@@ -448,6 +480,8 @@ Proposed
 
 ## ADR-028: サインアウトはフル遷移で router キャッシュを物理破棄する
 
+→ `spec/adr/030-auth-state-transition-transport.md` に昇格（ADR-008 と統合）
+
 ### Status
 Proposed
 
@@ -462,6 +496,8 @@ TanStack Router のキャッシュ（staleTime 設定下の loader データ）�
 - トレードオフ: サインアウトだけ SPA 遷移でなくなる（認証境界の遷移としては許容）。
 
 ## ADR-029: RSC ストリーミングフラグメントは `renderServerFragment` 経由を規約とする
+
+→ `spec/adr/031-error-transport-across-rsc-boundary.md` に昇格（ADR-025 と統合）
 
 ### Status
 Proposed
@@ -493,6 +529,8 @@ SignInForm の状態は Phase の直和で表現し、待機表示は受信 payl
 
 ## ADR-031: ConformanceBackend 契約に UoW とリレー起動の観測点を追加する
 
+→ `spec/adr/026-port-contract-and-conformance.md` に昇格（ADR-003 と統合）
+
 ### Status
 Proposed
 
@@ -508,6 +546,8 @@ UnitOfWork まわりの契約（トランザクション境界・イベント en
 
 ## ADR-032: 「文字数」は UTF-16 コード単位で数え、切り詰めはサロゲートペアを割らない
 
+→ `spec/adr/033-character-count-unit.md` に昇格
+
 ### Status
 Proposed
 
@@ -522,6 +562,8 @@ spec/domains/note.md は Excerpt を「200 文字」、`NoteHeading.text` を「
 - トレードオフ: 絵文字主体のテキストでは「200 文字」が見かけ上 100 字程度になる（コード単位という定義に忠実な帰結）。spec に単位の明記がないままなので、単位を「UTF-16 コード単位」と書き足すのは spec-sync 候補。
 
 ## ADR-033: サインアップの一意性違反は応答に出さない — 契約はポート、畳み込みはユースケース
+
+→ `spec/adr/028-account-enumeration-resistance.md` に昇格（ADR-021 と統合）
 
 ### Status
 Proposed
@@ -543,6 +585,8 @@ TC-identity-261 の期待値は「並行 2 要求のいずれも同一応答を�
 
 ## ADR-034: タイミング均等化のダミーハッシュは PasswordHasher 単位に memo し、失敗しても false を返す
 
+→ `spec/adr/028-account-enumeration-resistance.md` に昇格（ADR-021 と統合）
+
 ### Status
 Proposed
 
@@ -560,6 +604,8 @@ ADR-027 のダミー verify は、未登録メール経路にも scrypt 1 回分
 
 ## ADR-035: 適合スイートは観測可能な結果だけを契約化する（ADR-003 / ADR-031 の補足）
 
+→ `spec/adr/026-port-contract-and-conformance.md` に昇格（ADR-003 と統合）
+
 ### Status
 Proposed
 
@@ -574,6 +620,8 @@ ADR-031 で UoW とリレー起動を `ConformanceBackend` の契約に加えた
 - トレードオフ: memory アダプターの直列化保証は共有スイートでは検証されなくなり、ローカルテストが落ちれば失う。新規ケースを共有スイートに足す際は「観測可能な結果か」の判断が毎回必要になる（レビューで守る規律）。
 
 ## ADR-036: ポートのバッチ上限超過は `SystemError(DatabaseError)` に統一する
+
+→ `spec/adr/026-port-contract-and-conformance.md` に昇格（ADR-003 と統合）
 
 ### Status
 Proposed
@@ -605,6 +653,8 @@ Proposed
 
 ## ADR-038: verify-email のセッション発行は確認要求元ブラウザーに束縛する
 
+→ `spec/adr/029-verification-session-binding.md` に昇格（ADR-007 と統合）
+
 ### Status
 Proposed（ADR-007 を supersede する — ADR-007 の GET/POST 分離自体は維持し、セッション発行の条件を追加する）
 
@@ -628,6 +678,8 @@ ADR-007 で `/verify-email` は「GET は描画のみ、マウント後に POST 
 - トレードオフ: presentation が「確認待ち」という状態を 1 つ持つ（Cookie 1 本）。usecase 側は無変更で、束縛は transport 境界に閉じている。
 
 ## ADR-039: リース失効時の lane 回収を `GlobalMaintenanceRunStore` の契約とする
+
+→ `spec/adr/026-port-contract-and-conformance.md` に昇格（ADR-003 と統合）
 
 ### Status
 Proposed
