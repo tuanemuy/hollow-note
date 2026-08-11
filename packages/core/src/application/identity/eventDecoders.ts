@@ -19,6 +19,7 @@ import { buildEventDecoder } from "../events/buildDecoder";
 import type {
   AccountDeletionDispatchContinuedEvent,
   AccountDeletionManifestBuildContinuedEvent,
+  AccountDeletionManifestCompactContinuedEvent,
   UserAuthResidueCleanupContinuedEvent,
 } from "./continuations";
 
@@ -229,6 +230,7 @@ export const identityEventDecoders = {
         | "cleanup"
         | "redaction"
         | "finalize";
+      cursor: string | null;
       continuationKey: string;
     }
   >(
@@ -243,6 +245,22 @@ export const identityEventDecoders = {
           "redaction",
           "finalize",
         ]),
+        cursor: z.string().min(1).nullable(),
+        continuationKey: z.string().min(1),
+      })
+      .strict(),
+    (parsed) => parsed,
+  ),
+
+  "identity.accountDeletionManifestCompactContinued": buildEventDecoder<
+    AccountDeletionManifestCompactContinuedEvent,
+    { operationId: string; cursor: string | null; continuationKey: string }
+  >(
+    "identity.accountDeletionManifestCompactContinued",
+    z
+      .object({
+        operationId: z.string().min(1),
+        cursor: z.string().min(1).nullable(),
         continuationKey: z.string().min(1),
       })
       .strict(),

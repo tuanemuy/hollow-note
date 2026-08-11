@@ -2,6 +2,7 @@ import type { OAuthRuntimeConfig } from "@repo/core/adapters/oauth/signInOAuthCl
 import { content } from "@repo/core/config";
 import { z } from "zod";
 import type { RelayTrigger } from "../ports/relayTrigger";
+import type { ScopeTaskTrigger } from "../ports/scopeTaskTrigger";
 import type { TuningEnv } from "./env";
 import {
   createMemoryRuntime,
@@ -173,6 +174,15 @@ export function initNodeRuntime(env: NodeServerEnv): void {
  */
 export function bindNodeRelayTrigger(trigger: RelayTrigger): void {
   memoryRuntime().bindRelayTrigger(trigger);
+}
+
+/**
+ * Late-binds the runner's scope-task trigger so a committed continuation
+ * is resumed within the same second instead of waiting for the interval
+ * tick (ADR-023).
+ */
+export function bindNodeScopeTaskTrigger(trigger: ScopeTaskTrigger): void {
+  memoryRuntime().bindScopeTaskTrigger(trigger);
 }
 
 /** Build the request-scoped container for the Node runtime. */

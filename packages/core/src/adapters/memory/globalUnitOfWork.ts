@@ -1,3 +1,4 @@
+import { mintEventIdFor } from "../../application/execution/eventId";
 import type {
   GlobalUnitOfWorkContext,
   GlobalUnitOfWorkProvider,
@@ -5,6 +6,7 @@ import type {
 import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import type { RelayTrigger } from "../../application/ports/relayTrigger";
 import type { PersonalCleanupComponent } from "../../application/ports/scopeCleanupAdmissionStore";
+import type { ScopeTaskTrigger } from "../../application/ports/scopeTaskTrigger";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import { createMemoryAccountDeletionManifestStore } from "./repositories/accountDeletionManifestStore";
@@ -20,6 +22,8 @@ import type { MemoryBackend } from "./store";
 
 export type MemoryUnitOfWorkOptions = Readonly<{
   relayTrigger?: RelayTrigger;
+  /** Kicked after a scope commit that stored a continuation (ADR-023). */
+  scopeTaskTrigger?: ScopeTaskTrigger;
   /**
    * Cleanup participants this deployment declares
    * (`application/cleanup/participants.ts`). Both default to the whole
@@ -68,7 +72,9 @@ export function createMemoryGlobalUnitOfWorkProvider(
             }),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
-              ...attachEventIds(drafts, () => backend.mintEventId()),
+              ...attachEventIds(drafts, (draft) =>
+                mintEventIdFor(draft, () => backend.mintEventId()),
+              ),
             );
           },
         };

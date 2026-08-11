@@ -156,9 +156,16 @@ export interface AccountDeletionManifestStore {
     terminalAt: Date,
     retainUntil: Date,
   ): Promise<void>;
+  /**
+   * Names the operations it reclaimed rather than counting them: the
+   * control-plane row of each is dropped by the caller in this very
+   * transaction (ADR-026), and a count cannot say which.
+   */
   pruneTerminal(
     asOf: Date,
     cursor: string | null,
     limit: number,
-  ): Promise<Readonly<{ removed: number; nextCursor: string | null }>>;
+  ): Promise<
+    Readonly<{ operationIds: readonly string[]; nextCursor: string | null }>
+  >;
 }

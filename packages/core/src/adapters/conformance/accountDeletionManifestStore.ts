@@ -257,11 +257,11 @@ export function describeAccountDeletionManifestStoreContract(
       await store().begin("op-live", userId(2));
 
       const early = await store().pruneTerminal(backend.clock.now(), null, 100);
-      expect(early.removed).toBe(0);
+      expect(early.operationIds).toEqual([]);
 
       backend.clock.advance(120 * DAY_MS);
       const first = await store().pruneTerminal(backend.clock.now(), null, 1);
-      expect(first.removed).toBe(1);
+      expect(first.operationIds).toHaveLength(1);
       expect(first.nextCursor).not.toBeNull();
 
       const second = await store().pruneTerminal(
@@ -269,7 +269,12 @@ export function describeAccountDeletionManifestStoreContract(
         first.nextCursor,
         100,
       );
-      expect(second.removed).toBe(1);
+      // Naming what it reclaimed is the contract: the caller drops each
+      // operation's control-plane row in the same transaction.
+      expect([...first.operationIds, ...second.operationIds].sort()).toEqual([
+        "op-1",
+        "op-2",
+      ]);
       expect(second.nextCursor).toBeNull();
 
       // The live manifest survives.
@@ -335,14 +340,14 @@ export function describeAccountDeletionManifestStoreContract(
         null,
         1_000,
       );
-      expect(first.removed).toBe(100);
+      expect(first.operationIds).toHaveLength(100);
       expect(first.nextCursor).not.toBeNull();
       const second = await store().pruneTerminal(
         backend.clock.now(),
         first.nextCursor,
         1_000,
       );
-      expect(second).toEqual({ removed: 1, nextCursor: null });
+      expect(second).toEqual({ operationIds: ["op-100"], nextCursor: null });
     });
 
     it("ADP-common-013: appendMembershipPage caps a page at 100 edges (seeded backend)", async (ctx) => {

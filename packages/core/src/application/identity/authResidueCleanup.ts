@@ -3,6 +3,7 @@ import {
   IdentityContinuations,
   type UserAuthResidueCleanupContinuedEvent,
 } from "./continuations";
+import { FINALIZE_ATTEMPT_FROM_AUTH_RESIDUE } from "./deleteAccount/finalize";
 
 /** One turn reclaims at most this many rows of one table. */
 export const AUTH_RESIDUE_PAGE_SIZE = 100;
@@ -91,5 +92,21 @@ export async function authResidueCleanup(
       deletionOperationId,
       "authResidue",
     );
+    // This chain may well be the last of the deletion's prerequisites to
+    // land, and nothing else would notice: finalize is re-attempted by
+    // whoever completes a receipt, under a key naming its producer so
+    // the attempts stay distinct events.
+    await deps.globalUnitOfWorkProvider.run(async (ctx) => {
+      ctx.collectEvents([
+        IdentityContinuations.accountDeletionDispatch(
+          {
+            operationId: deletionOperationId,
+            phase: "finalize",
+            cursor: FINALIZE_ATTEMPT_FROM_AUTH_RESIDUE,
+          },
+          now,
+        ),
+      ]);
+    });
   }
 }

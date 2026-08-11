@@ -468,7 +468,9 @@ export function createMemoryAccountDeletionManifestStore(
       asOf: Date,
       cursor: string | null,
       limit: number,
-    ): Promise<Readonly<{ removed: number; nextCursor: string | null }>> {
+    ): Promise<
+      Readonly<{ operationIds: readonly string[]; nextCursor: string | null }>
+    > {
       const effectiveLimit = Math.min(Math.max(0, limit), PAGE_LIMIT);
       const reclaimable = headers
         .values()
@@ -489,7 +491,7 @@ export function createMemoryAccountDeletionManifestStore(
       }
       const last = page[page.length - 1];
       return {
-        removed: page.length,
+        operationIds: page.map((header) => header.operationId),
         nextCursor:
           reclaimable.length > page.length && last !== undefined
             ? last.operationId

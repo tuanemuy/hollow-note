@@ -48,6 +48,25 @@ export type NoteProjectionEntry = Readonly<{
 
 export type ProjectionWriteResult = "written" | "stale" | "incomparable";
 
+/** Author display left behind once its user is gone (spec/domains/note.md). */
+export const WITHDRAWN_AUTHOR_DISPLAY_NAME = "退会した利用者";
+
+/**
+ * Erasure of one author's display on a projected note, requested by
+ * account deletion for every route it fixed
+ * (spec/usecases/identity.md 手順 4).
+ *
+ * `redactionVersion` is the author generation the erasure is published
+ * at — fixed once per deletion and greater than any version the deleted
+ * identity ever had, so a note event that was in flight when the
+ * deletion ran cannot bring the old name back.
+ */
+export type AuthorRedaction = Readonly<{
+  noteId: NoteId;
+  createdBy: UserId;
+  redactionVersion: number;
+}>;
+
 /**
  * Full-snapshot replacement of a note's row in the local read model,
  * called from the owner scope's scheduled task / Alarm. One call updates
@@ -68,4 +87,12 @@ export interface LocalNoteProjectionWriter {
   ): Promise<ProjectionWriteResult>;
   /** Removes the search row, FTS row, and tag filter rows for the note. */
   remove(noteId: NoteId): Promise<void>;
+  /**
+   * Replaces the stored author display with the withdrawn-user default at
+   * `redactionVersion`. A missing row, a row created by someone else, and
+   * a row already at that generation or later are all no-ops, so the
+   * at-least-once redaction fan-out converges. Returns whether a row
+   * changed.
+   */
+  redactAuthor(input: AuthorRedaction): Promise<boolean>;
 }

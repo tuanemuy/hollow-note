@@ -9,6 +9,7 @@ import {
 import type { WorkerContainer } from "@repo/core/application/di/types";
 import type { Logger } from "@repo/core/application/ports/logger";
 import type { RelayTrigger } from "@repo/core/application/ports/relayTrigger";
+import type { ScopeTaskTrigger } from "@repo/core/application/ports/scopeTaskTrigger";
 import {
   type EventDispatcher,
   type ProcessOutboxEventsOptions,
@@ -18,11 +19,19 @@ import {
   DEFAULT_OUTBOX_RETENTION_MS,
   pruneOutbox,
 } from "@repo/core/application/workers/outboxPrune";
+import { runDueScopeTasks } from "@repo/core/application/workers/scopeTaskRunner";
 import type { DomainEvent } from "@repo/core/domain/common/event";
 
 export type NodeWorkerRunnerTuning = Readonly<{
   relayIntervalMs?: number;
   pruneIntervalMs?: number;
+  /**
+   * Safety net behind the commit kick for scope-plane continuations
+   * (ADR-023). A second, not the relay's minute: a deletion advances one
+   * turn per round, so the interval is the worst-case wait per turn when
+   * a kick is lost.
+   */
+  scopeTaskIntervalMs?: number;
   outboxRetentionMs?: number;
   relayOptions?: ProcessOutboxEventsOptions;
   consumerConcurrency?: number;
@@ -40,10 +49,12 @@ export type NodeWorkerRunner = Readonly<{
   start(): void;
   stop(): Promise<void>;
   relayTrigger: RelayTrigger;
+  scopeTaskTrigger: ScopeTaskTrigger;
 }>;
 
 const DEFAULT_RELAY_INTERVAL_MS = 60_000;
 const DEFAULT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SCOPE_TASK_INTERVAL_MS = 1_000;
 
 /**
  * Single-process orchestrator for the four background roles of the Node
@@ -65,6 +76,8 @@ export function createNodeWorkerRunner(
 
   const relayIntervalMs = tuning.relayIntervalMs ?? DEFAULT_RELAY_INTERVAL_MS;
   const pruneIntervalMs = tuning.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
+  const scopeTaskIntervalMs =
+    tuning.scopeTaskIntervalMs ?? DEFAULT_SCOPE_TASK_INTERVAL_MS;
   const outboxRetentionMs =
     tuning.outboxRetentionMs ?? DEFAULT_OUTBOX_RETENTION_MS;
 
@@ -104,6 +117,21 @@ export function createNodeWorkerRunner(
     logger,
   });
 
+  const runScopeTaskTick = async (): Promise<void> => {
+    try {
+      await runDueScopeTasks(container);
+    } catch (cause) {
+      logger.error("[runner.node] scope task tick threw", { cause });
+    }
+  };
+
+  // Same serialization discipline as the relay: at most one round in
+  // flight, concurrent kicks collapsed into a single re-run.
+  const scopeTaskTrigger: InProcessRelayTrigger = createInProcessRelayTrigger({
+    runTick: runScopeTaskTick,
+    logger,
+  });
+
   const runPruneTick = async (): Promise<void> => {
     try {
       await pruneOutbox(container, { retentionMs: outboxRetentionMs });
@@ -117,6 +145,7 @@ export function createNodeWorkerRunner(
 
   let relayTimer: ReturnType<typeof setInterval> | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
+  let scopeTaskTimer: ReturnType<typeof setInterval> | null = null;
 
   // Tracked so `stop()` awaits every outstanding promise scheduled
   // outside the trigger.
@@ -141,8 +170,11 @@ export function createNodeWorkerRunner(
     if (started) return;
     started = true;
 
-    // Drain crash-leftover backlog without waiting a full interval.
+    // Drain crash-leftover backlog without waiting a full interval —
+    // including the scope-plane continuations a previous process left
+    // due, which live in the task table rather than in its memory.
     track(runRelayTick());
+    track(runScopeTaskTick());
 
     relayTimer = setInterval(() => {
       track(runRelayTick());
@@ -150,11 +182,15 @@ export function createNodeWorkerRunner(
     pruneTimer = setInterval(() => {
       track(runPruneTick());
     }, pruneIntervalMs);
+    scopeTaskTimer = setInterval(() => {
+      scopeTaskTrigger.kick();
+    }, scopeTaskIntervalMs);
 
     // Let the event loop exit naturally in tests / scripts; production
     // holds the loop open via the HTTP server.
     relayTimer.unref?.();
     pruneTimer.unref?.();
+    scopeTaskTimer.unref?.();
 
     process.on("SIGTERM", onSigterm);
     process.on("SIGINT", onSigint);
@@ -171,10 +207,15 @@ export function createNodeWorkerRunner(
         clearInterval(pruneTimer);
         pruneTimer = null;
       }
+      if (scopeTaskTimer !== null) {
+        clearInterval(scopeTaskTimer);
+        scopeTaskTimer = null;
+      }
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
 
       await relayTrigger.stop();
+      await scopeTaskTrigger.stop();
       // Snapshot via `Array.from` so concurrently-finishing entries that
       // mutate the Set don't disturb iteration.
       await Promise.all(Array.from(pendingSweeps));
@@ -194,5 +235,6 @@ export function createNodeWorkerRunner(
     start,
     stop,
     relayTrigger,
+    scopeTaskTrigger,
   };
 }

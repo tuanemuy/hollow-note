@@ -1,5 +1,6 @@
 import type { NoteId } from "../valueObject";
 import type {
+  AuthorRedaction,
   NoteProjectionEntry,
   ProjectedTagName,
   ProjectionVersion,
@@ -29,6 +30,8 @@ export interface PublicNoteProjectionWriter {
     routeVersion: number,
     projectionRevision: number,
   ): Promise<boolean>;
+  /** Public counterpart of `LocalNoteProjectionWriter.redactAuthor`. */
+  redactAuthor(input: AuthorRedaction): Promise<boolean>;
   /** Idempotent purge-side removal, acknowledged under the operation. */
   removeForPurge(
     input: Readonly<{

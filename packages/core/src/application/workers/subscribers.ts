@@ -1,7 +1,11 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
+import { dispatchAccountDeletionRedaction } from "../identity/deleteAccount/authorRedaction";
 import { dispatchAccountDeletionCleanup } from "../identity/deleteAccount/cleanupDispatch";
+import { compactAccountDeletionManifest } from "../identity/deleteAccount/compaction";
+import { finalizeAccountDeletion } from "../identity/deleteAccount/finalize";
+import { runAccountDeletionGlobalCleanup } from "../identity/deleteAccount/globalCleanup";
 import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
@@ -74,8 +78,64 @@ export const subscribers: readonly EventSubscriber[] = [
         type: event.type,
         operationId: event.payload.operationId,
         phase: "cleanup",
+        cursor: event.payload.cursor,
       });
     },
+  },
+  {
+    eventType: "identity.accountDeletionDispatchContinued",
+    consumerName: "identity.accountDeletionGlobalCleanup",
+    handle: async (event, deps) => {
+      if (event.payload.phase !== "cleanup") {
+        return;
+      }
+      await runAccountDeletionGlobalCleanup(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        phase: "cleanup",
+        cursor: event.payload.cursor,
+      });
+    },
+  },
+  {
+    eventType: "identity.accountDeletionDispatchContinued",
+    consumerName: "identity.accountDeletionRedaction",
+    handle: async (event, deps) => {
+      if (event.payload.phase !== "redaction") {
+        return;
+      }
+      await dispatchAccountDeletionRedaction(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        phase: "redaction",
+        cursor: event.payload.cursor,
+      });
+    },
+  },
+  {
+    eventType: "identity.accountDeletionDispatchContinued",
+    consumerName: "identity.accountDeletionFinalize",
+    handle: async (event, deps) => {
+      if (event.payload.phase !== "finalize") {
+        return;
+      }
+      await finalizeAccountDeletion(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        phase: "finalize",
+        cursor: event.payload.cursor,
+      });
+    },
+  },
+  {
+    eventType: "identity.accountDeletionManifestCompactContinued",
+    consumerName: "identity.accountDeletionManifestCompact",
+    handle: (event, deps) =>
+      compactAccountDeletionManifest(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        cursor: event.payload.cursor,
+      }),
   },
 ];
 

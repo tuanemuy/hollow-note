@@ -4,6 +4,7 @@ import type { IdentityRepository } from "@repo/core/domain/identity/ports/identi
 import type { IdentityUniqueDirectory } from "@repo/core/domain/identity/ports/identityUniqueDirectory";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
+import type { LocalNoteProjectionWriter } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
 import type { NoteProjectionRevisionStore } from "@repo/core/domain/note/ports/noteProjectionRevisionStore";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { NoteRevisionRepository } from "@repo/core/domain/note/ports/noteRevisionRepository";
@@ -67,6 +68,8 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * (spec/usecases/note.md 共通節). `scopeTaskScheduler` is here for the
  * same reason: a continuation must be stored in the transaction of the
  * turn it follows, or a lost response drops the rest of the work.
+ * `localNoteProjectionWriter` is the scope's own read model, so its
+ * writes belong to the transaction of the change they project.
  * `appliedOperationStore` likewise records a cleanup command in the
  * transaction that applies it, so a redelivery cannot apply it twice.
  */
@@ -75,6 +78,7 @@ export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly noteRevisionRepository: NoteRevisionRepository;
   readonly cleanupAdmission: ScopeCleanupAdmissionStore;
   readonly noteProjectionRevisionStore: NoteProjectionRevisionStore;
+  readonly localNoteProjectionWriter: LocalNoteProjectionWriter;
   readonly scopeTaskScheduler: ScopeTaskScheduler;
   readonly appliedOperationStore: AppliedOperationStore;
   readonly storageQuotaRepository: StorageQuotaRepository;

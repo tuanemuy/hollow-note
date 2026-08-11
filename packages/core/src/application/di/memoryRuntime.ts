@@ -19,6 +19,7 @@ import { createMemoryIdentityRepository } from "@repo/core/adapters/memory/repos
 import { createMemoryIdentityUniqueDirectory } from "@repo/core/adapters/memory/repositories/identityUniqueDirectory";
 import { createMemoryLlmUsageRepository } from "@repo/core/adapters/memory/repositories/llmUsageRepository";
 import { createMemoryLoginAttemptStore } from "@repo/core/adapters/memory/repositories/loginAttemptStore";
+import { createMemoryPublicNoteProjectionWriter } from "@repo/core/adapters/memory/repositories/noteProjection";
 import { createMemoryNoteRepository } from "@repo/core/adapters/memory/repositories/noteRepository";
 import { createMemoryNoteRouteFanOutReader } from "@repo/core/adapters/memory/repositories/noteRouteFanOutReader";
 import { createMemoryNoteRouteStore } from "@repo/core/adapters/memory/repositories/noteRouteStore";
@@ -49,6 +50,7 @@ import {
 } from "../cleanup/participants";
 import { ConsoleLogger } from "../ports/logger";
 import type { RelayTrigger } from "../ports/relayTrigger";
+import type { ScopeTaskTrigger } from "../ports/scopeTaskTrigger";
 import type { ScopeKey } from "../scope";
 import type {
   AppConfig,
@@ -82,6 +84,8 @@ export type MemoryRuntime = Readonly<{
    * simply wait for the runner's interval tick.
    */
   bindRelayTrigger: (trigger: RelayTrigger) => void;
+  /** Same late binding for the scope-task runner's own trigger (ADR-023). */
+  bindScopeTaskTrigger: (trigger: ScopeTaskTrigger) => void;
   createRequestContainer: (config: AppConfig) => RequestContainer;
   createWorkerContainer: () => WorkerContainer;
 }>;
@@ -120,12 +124,19 @@ export function createMemoryRuntime(
       boundTrigger?.kick();
     },
   };
+  let boundScopeTaskTrigger: ScopeTaskTrigger | null = null;
+  const scopeTaskTrigger: ScopeTaskTrigger = {
+    kick(): void {
+      boundScopeTaskTrigger?.kick();
+    },
+  };
 
   // The deployment's own cleanup declaration decides what a deletion
   // waits for; the stores never assume a participant exists (ADR-002 /
   // ADR-017).
   const unitOfWorkOptions: MemoryUnitOfWorkOptions = {
     relayTrigger,
+    scopeTaskTrigger,
     requiredCleanupComponents: REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
     requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
   };
@@ -171,6 +182,9 @@ export function createMemoryRuntime(
     mailSender,
     bindRelayTrigger(trigger: RelayTrigger): void {
       boundTrigger = trigger;
+    },
+    bindScopeTaskTrigger(trigger: ScopeTaskTrigger): void {
+      boundScopeTaskTrigger = trigger;
     },
     createRequestContainer(config: AppConfig): RequestContainer {
       return {
@@ -231,6 +245,9 @@ export function createMemoryRuntime(
           },
         ),
         noteRouteFanOutReader: createMemoryNoteRouteFanOutReader(backend),
+        noteRouteResolver: createMemoryNoteRouteStore(backend),
+        publicNoteProjectionWriter:
+          createMemoryPublicNoteProjectionWriter(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),
         objectStorage,
         routingGenerations: routingGenerations ?? ["gen-1"],

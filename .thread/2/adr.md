@@ -1160,3 +1160,82 @@ TC-storage-043 の期待結果は「列挙 1 文 + 多行 DELETE 1 文 + 多行 
 ### Consequences
 - 良い点: ADR-022 と矛盾しない形で行を消化でき、テストが実装の内部（文の数）ではなく契約（列挙回数とイベント数）を固定する。
 - トレードオフ: spec の「3 文」という性能上の約束は本スライスでは検証されない。D1 実装を書くスライスが同じ行を再検証する必要がある。
+
+---
+
+## ADR-058: author redaction は投影ポートの `redactAuthor` 1 本で行う
+
+### Status
+Accepted
+
+### Context
+spec 手順 4 の author redaction は `projection.authorRedactionRequested` を local / public 両平面へ送り、受け手（`projectNoteChanges` — Note スライス、ADR-009 で見送り）が「著者を『退会した利用者』・`authorVersion` を `redactionVersion` とした完全 snapshot」で置換する。本 Issue には受け手が居ないので `deleteAccount` 自身が書くしかないが、`replaceSnapshotIfNewer` は完全 snapshot を要求する。既存 snapshot を読んで書き戻す形にすると (a) local は `NoteProjectionSnapshotReader` を Scope UoW に載せる必要があり、(b) public には entry を返す読み取りポートが存在せず、(c) 行が無い Note に対して「無から投影行を作る」危険がある。
+
+### Decision
+`LocalNoteProjectionWriter` / `PublicNoteProjectionWriter` に `redactAuthor({ noteId, createdBy, redactionVersion }): Promise<boolean>` を足す。契約は「保存済み行の著者表示だけを `{ displayName: "退会した利用者", handle: null, version: redactionVersion }` へ置換する。行が無い / 別の作成者 / 既に同世代以降なら no-op で `false`」。実 DB では単一 UPDATE（`WHERE created_by = ? AND author_version < ?`）に写る。
+
+- `redactionVersion` は削除対象 User の現 `version`。受理時の `beginDeletion` がバンプ済みなので、削除前に発行された Note event が運ぶ `authorVersion` より必ず大きい（TC-identity-082）。
+- 対象 scope は manifest の item ではなく `NoteRouteStore.resolve` で引き直す（spec「routeが移動していればcurrent routeへ再解決し、purged/tombstoneなら両planeをackする」）。そのため `Pick<NoteRouteStore, "resolve">` を `WorkerContainer` に載せる。
+- 定数 `WITHDRAWN_AUTHOR_DISPLAY_NAME` はポート側に置き、両平面と将来の `projectNoteChanges` が同じ文言を使う。
+
+### Consequences
+- 良い点: 読み取りポートを 2 つ増やさずに済み、「無から投影行を作る」経路が型に存在しない。冪等性が `>=` 比較 1 つで表現でき、at-least-once 配送に耐える。
+- トレードオフ: #1 の完成物である投影ポート 2 本に手が入る（ADR-015 / 002 / 017 の 3 ポートに続いて 4・5 本目）。`projectNoteChanges` を実装するスライスは、完全 snapshot 置換と `redactAuthor` のどちらで redaction を受けるかを選ぶ必要がある — spec-sync 候補。
+
+---
+
+## ADR-059: `pruneTerminal` は回収した operation ID を返す
+
+### Status
+Accepted
+
+### Context
+ADR-026 は「terminal の回収は manifest の terminal prune が `deleteTerminal(operationId)` を**同一 transaction**で呼ぶ形に限る」と定める。ところが `AccountDeletionManifestStore.pruneTerminal` は `{ removed: number; nextCursor }` を返すだけで、どの operation を消したかを呼び出し側が知る手段が無い（header を列挙する別の読み取りも無い）。
+
+### Decision
+`pruneTerminal` の戻りを `{ operationIds: readonly string[]; nextCursor: string | null }` にする。`removed` は `operationIds.length` と重複するので置き換える（2 つの値がずれる状態を作れなくする）。適合スイート ADP-common-025 も同じ形へ更新する。
+
+### Consequences
+- 良い点: 「header と operation を同じ transaction で消す」が呼び出し側のコードとして書ける。回収対象の列挙という読み取りポートを別に足さずに済む。
+- トレードオフ: #1 の完成物の戻り値型が変わる（呼び出し側は適合スイートのみだった）。spec/database の列構成との差と合わせて spec-sync 候補。
+
+---
+
+## ADR-060: dispatch 継続は turn 識別子 `cursor` を運び、finalize の再試行は発行元で名前を分ける
+
+### Status
+Accepted
+
+### Context
+ADR-019 は global 平面の継続イベント ID を `continuationKey` から決定的に導出すると定め、ADR-025 は「同じ phase を繰り返す継続に決定的キーを与えるときは、ターンを識別する材料をキーに含めなければならない」と制約を付けた。ステップ 30 が足す継続のうち、**redaction**（100 件ずつ ack して次ページへ）と **compaction**（100 件ずつ削除して次ページへ）は同じ phase を繰り返す。加えて **finalize** は「必須 receipt が揃った時点で再試行する」形で、redaction 完了 / uniqueness 解放 / 認証残渣完了の 3 経路が同じ 1 つの試行を要求しうる。
+
+### Decision
+- `identity.accountDeletionDispatchContinued` の payload に `cursor: string | null` を足し、`identity.accountDeletionManifestCompactContinued` を新設して同じ形にする。redaction / compaction は turn 番号（`"1"`, `"2"`, …）を `cursor` に載せるので、`continuationKey` がターンごとに変わる。
+- **finalize は自分自身を再発行しない**。代わりに receipt を完成させうる 3 経路が、それぞれ発行元名（`redaction` / `uniquenessRelease` / `authResidue`）を `cursor` に載せて finalize 試行を積む。同一キーの upsert にならないので、「配送中の行を上書きして直後の relay finalize に消される」競合が構造的に起きない。finalize は冪等（`status !== "built"` / user が `deleted` なら即 return）なので、3 経路が全部積んでも害は無い。
+- 認証残渣の継続（`identity.userAuthResidueCleanupContinued`）は ADR-025 のとおり `continuationKey` を持たない。
+
+### Consequences
+- 良い点: 応答喪失後の再実行で継続チェーンが 2 本走らない、という ADR-019 の不変条件が redaction / compaction にも適用でき、同時に ADR-025 の罠を踏まない。finalize の再試行主体が「最後の ack を書いた者」に定まり、待ち合わせのための polling が要らない。
+- トレードオフ: spec の継続 DTO と 1 フィールド差（`cursor`）が 2 種類増える（ADR-053 の build continuation と同じ扱い）。spec-sync 候補。finalize 試行が最大 3 イベントに増える。
+
+---
+
+## ADR-061: scope 継続タスクのランナーは kind → ハンドラーのレジストリで引く
+
+### Status
+Accepted
+
+### Context
+ADR-005 / ADR-023 はランナーが `ScopeTaskQueue.listDue` で列挙し `scopeUnitOfWorkProvider.run(scope, …)` を開いて `claimDue` → 再投入 → `complete` / `backoff` を行うと書いていたが、ADR-055 が「turn 側が自分の継続タスクを自分で決着させる」を確定させた。ユースケース（`deleteFilesByOwner` / `deleteQuota`）は自分で scope UoW を開くので、ランナーが UoW の中でユースケースを呼ぶと UoW がネストする。
+
+### Decision
+`application/workers/scopeTaskRunner.ts` に `Record<kind, ScopeTaskHandler>` のレジストリを置き、ランナーは (1) `listDue` で列挙 → (2) kind でハンドラーを引く → (3) ハンドラーがユースケースを呼ぶ（ユースケースが自分で scope UoW を開き、`schedule` / `complete` / `backoff` まで済ませる）だけにする。ランナー自身は `claimDue` を呼ばない。
+
+- 本 Issue が登録するのは `storage.ownerDeleteContinued` / `usage.userCleanupContinued` / `identity.personalBarrierPruneContinued` の 3 kind。
+- scope→global ブリッジ（`personalCleanup` receipt の記録）は scope 平面から書けないので、ハンドラーが turn の戻り `personalCleanupCompleted` を見て `acknowledgePersonalCleanup` を別 UoW で呼ぶ。
+- ハンドラーが無い kind は **due のまま残して警告する**。`complete` して黙って捨てると「掃除したつもりで動いていない」状態が見えなくなる。
+- 1 タスクの失敗は他のタスクを止めない（worker → root の部分失敗許容。CLAUDE.md の catch 方針で broad catch が許される唯一の場所）。
+
+### Consequences
+- 良い点: UoW のネスト禁止と「継続の保存は本処理と同一 UoW」の両方が同時に成り立つ。kind を足す = レジストリに 1 行足す、になる。
+- トレードオフ: `ScopeTaskScheduler.claimDue` の実利用者が本 Issue に居なくなる（適合スイートのみ）。複数プロセスでランナーを走らせる場合は claim による排他が要るので、そのときにランナー側へ戻す判断が必要 — #11 への引き継ぎ。

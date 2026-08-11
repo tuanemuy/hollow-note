@@ -50,11 +50,14 @@ export type AccountDeletionDispatchContinuedInput<
   type: "identity.accountDeletionDispatchContinued";
   operationId: string;
   phase: TPhase;
+  /** Turn discriminator of a multi-turn phase (see the event's JSDoc). */
+  cursor: string | null;
 }>;
 
 export type AccountDeletionManifestCompactContinuedInput = Readonly<{
   type: "identity.accountDeletionManifestCompactContinued";
   operationId: string;
+  cursor: string | null;
 }>;
 
 export type AccountDeletionManifestPruneContinuedInput = Readonly<{

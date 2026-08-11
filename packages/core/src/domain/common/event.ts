@@ -75,7 +75,7 @@ export type WithEventDrafts<
 // see a fully typed `TEvent[]`.
 export function attachEventIds<TEvent extends DomainEvent>(
   drafts: readonly EventDraft<TEvent>[],
-  mintId: () => EventId,
+  mintId: (draft: EventDraft<TEvent>) => EventId,
 ): readonly TEvent[] {
-  return drafts.map((draft) => ({ ...draft, id: mintId() }) as TEvent);
+  return drafts.map((draft) => ({ ...draft, id: mintId(draft) }) as TEvent);
 }

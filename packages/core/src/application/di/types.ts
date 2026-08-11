@@ -9,6 +9,7 @@ import type { SessionRepository } from "@repo/core/domain/identity/ports/session
 import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
+import type { PublicNoteProjectionWriter } from "@repo/core/domain/note/ports/publicNoteProjectionWriter";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
 import type {
@@ -92,6 +93,12 @@ export type NoteRouteFanOutReadView = Pick<
   NoteRouteFanOutReader,
   "listByCreatedBy"
 >;
+/**
+ * Where a note currently lives. Author redaction fixed its targets by
+ * NoteId, and a note may have moved (or been purged) since, so the plane
+ * it writes to is re-resolved per target rather than assumed.
+ */
+export type NoteRouteResolver = Pick<NoteRouteStore, "resolve">;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
   NoteRepository,
@@ -210,7 +217,10 @@ export type ExpirySweep = Readonly<{
  * `noteRouteFanOutReader` fixes the author routes of a deletion —
  * a routing-catalog read that the manifest's transaction may not
  * enclose, which is why deletion continuations are worker-plane
- * consumers rather than request-path calls.
+ * consumers rather than request-path calls. Author redaction adds the
+ * other two halves of that same fan-out: the route resolver that says
+ * where each fixed target lives now, and the public projection, which is
+ * global and therefore belongs to no scope's unit of work.
  * `scopeTaskQueue` is the runner's only way to learn which scopes have
  * continuation work due (ADR-005) — it reads, and the claim still
  * happens inside each scope's unit of work. `objectStorage` is here
@@ -228,6 +238,8 @@ export type WorkerContainer = SharedDeps &
     identityRemovalReceiptStore: IdentityRemovalReceiptStore;
     accountDeletionManifestStore: AccountDeletionManifestStore;
     noteRouteFanOutReader: NoteRouteFanOutReadView;
+    noteRouteResolver: NoteRouteResolver;
+    publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
     routingGenerations: readonly string[];

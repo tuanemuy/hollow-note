@@ -58,6 +58,7 @@ const dispatch = (h: TestHarness, operationId: string) =>
     type: "identity.accountDeletionDispatchContinued",
     operationId,
     phase: "cleanup",
+    cursor: null,
   });
 
 const receipt = (h: TestHarness, userId: string) =>
@@ -288,7 +289,7 @@ describe("deleteAccount personal cleanup", () => {
     expect(receipt(h, userId)?.retainUntil).toBeNull();
   });
 
-  it("drives itself from the relay: accepting is enough to reach a completed barrier", async () => {
+  it("drives itself from the relay: accepting is enough to run the deletion out", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h, EMAIL);
     await seedFiles(h, userId, 3);
@@ -312,7 +313,7 @@ describe("deleteAccount personal cleanup", () => {
     });
 
     expect(h.backend.manifestHeaders.get(view.operationId)?.status).toBe(
-      "built",
+      "completed",
     );
     expect(receipt(h, userId)?.status).toBe("completed");
     expect(manifestReceipts(h, view.operationId)).toContain("personalCleanup");

@@ -7,6 +7,7 @@ import {
 } from "@repo/core/application/di/env";
 import {
   bindNodeRelayTrigger,
+  bindNodeScopeTaskTrigger,
   createNodeRequestContainer,
   createNodeWorkerContainer,
   initNodeRuntime,
@@ -108,6 +109,9 @@ export async function boot(): Promise<NodeServerBoot> {
   });
   // Commits kick the relay immediately instead of waiting for the tick.
   bindNodeRelayTrigger(runner.relayTrigger);
+  // Same for a scope commit that stored a continuation, so a deletion
+  // advances turn by turn rather than interval by interval.
+  bindNodeScopeTaskTrigger(runner.scopeTaskTrigger);
   runner.start();
 
   const config = readNodeRequestServerConfig(env);

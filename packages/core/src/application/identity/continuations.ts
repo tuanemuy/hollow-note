@@ -50,12 +50,33 @@ export type AccountDeletionManifestBuildContinuedEvent = DomainEventBase<
   }>
 >;
 
-/** Continuation of one account-deletion dispatch phase (same key rules). */
+/**
+ * Continuation of one account-deletion dispatch phase.
+ *
+ * `cursor` discriminates the turns of a phase that needs several of them.
+ * A deterministic id may only be given to a continuation whose key
+ * changes per turn (ADR-025): a turn re-emitting its own key would be
+ * marked processed by the very relay finalize that follows it, and the
+ * chain would stop. The redaction pages therefore number their turns
+ * here, and the several producers of a `finalize` attempt name
+ * themselves, so their attempts stay separate events.
+ */
 export type AccountDeletionDispatchContinuedEvent = DomainEventBase<
   "identity.accountDeletionDispatchContinued",
   Readonly<{
     operationId: string;
     phase: AccountDeletionDispatchPhase;
+    cursor: string | null;
+    continuationKey: string;
+  }>
+>;
+
+/** Continuation of the manifest compaction; `cursor` numbers the turns. */
+export type AccountDeletionManifestCompactContinuedEvent = DomainEventBase<
+  "identity.accountDeletionManifestCompactContinued",
+  Readonly<{
+    operationId: string;
+    cursor: string | null;
     continuationKey: string;
   }>
 >;
@@ -63,7 +84,8 @@ export type AccountDeletionDispatchContinuedEvent = DomainEventBase<
 export type IdentityContinuationEvent =
   | UserAuthResidueCleanupContinuedEvent
   | AccountDeletionManifestBuildContinuedEvent
-  | AccountDeletionDispatchContinuedEvent;
+  | AccountDeletionDispatchContinuedEvent
+  | AccountDeletionManifestCompactContinuedEvent;
 
 const continuationKey = (
   eventType: string,
@@ -125,16 +147,40 @@ export const IdentityContinuations = {
     occurredAt: Date,
   ): EventDraft<AccountDeletionDispatchContinuedEvent> => {
     const type = "identity.accountDeletionDispatchContinued";
+    const cursor = params.cursor ?? null;
     return {
       type,
       payload: {
         operationId: params.operationId,
         phase: params.phase,
+        cursor,
         continuationKey: continuationKey(
           type,
           params.operationId,
           params.phase,
-          params.cursor ?? null,
+          cursor,
+        ),
+      },
+      occurredAt,
+      aggregateId: params.operationId,
+    };
+  },
+
+  accountDeletionManifestCompact: (
+    params: Readonly<{ operationId: string; cursor: string | null }>,
+    occurredAt: Date,
+  ): EventDraft<AccountDeletionManifestCompactContinuedEvent> => {
+    const type = "identity.accountDeletionManifestCompactContinued";
+    return {
+      type,
+      payload: {
+        operationId: params.operationId,
+        cursor: params.cursor,
+        continuationKey: continuationKey(
+          type,
+          params.operationId,
+          "compact",
+          params.cursor,
         ),
       },
       occurredAt,

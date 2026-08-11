@@ -1,4 +1,6 @@
+import type { WorkerContainer } from "../di/types";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import type { ScopeKey } from "../scope";
 import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "./participants";
 
 /** How long a completed barrier receipt is kept before it is reclaimed. */
@@ -67,4 +69,47 @@ export async function completePersonalCleanupIfDone(
     },
   });
   return true;
+}
+
+/** Receipts one prune turn reclaims. */
+export const PERSONAL_BARRIER_PRUNE_PAGE_SIZE = 100;
+
+/**
+ * Reclaims completed barrier receipts whose retention has lapsed
+ * (TC-identity-110 / 111).
+ *
+ * The scan is bounded and the deadline is the turn's own fixed `asOf`,
+ * so a receipt that completes while the turn runs is not swept early;
+ * running barriers have no expiry at all and are never candidates.
+ * Reaching a short page is the proof there is nothing left, and only
+ * then is the task settled — a turn whose response was lost finds the
+ * row still due and repeats a scan that has nothing to remove.
+ */
+export async function prunePersonalCleanupBarriers(
+  container: WorkerContainer,
+  params: Readonly<{ scope: ScopeKey; operationId: string; asOf: Date }>,
+): Promise<ScopeCleanupTurn> {
+  return container.scopeUnitOfWorkProvider.run(params.scope, async (ctx) => {
+    const removed = await ctx.cleanupAdmission.pruneCompleted(
+      params.asOf,
+      PERSONAL_BARRIER_PRUNE_PAGE_SIZE,
+    );
+    if (removed === PERSONAL_BARRIER_PRUNE_PAGE_SIZE) {
+      await ctx.scopeTaskScheduler.schedule({
+        kind: PERSONAL_BARRIER_PRUNE_TASK_KIND,
+        operationId: params.operationId,
+        dueAt: params.asOf,
+        payload: {
+          deletionOperationId: params.operationId,
+          asOf: params.asOf.toISOString(),
+        },
+      });
+      return { status: "continued", personalCleanupCompleted: false };
+    }
+    await ctx.scopeTaskScheduler.complete(
+      PERSONAL_BARRIER_PRUNE_TASK_KIND,
+      params.operationId,
+    );
+    return { status: "settled", personalCleanupCompleted: false };
+  });
 }
