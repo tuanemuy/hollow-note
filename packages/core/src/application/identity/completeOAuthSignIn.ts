@@ -85,8 +85,8 @@ export async function completeOAuthSignIn({
 
 /**
  * The sign-in half of the callback, for a `state` row that has already
- * been consumed. The callback dispatcher (ADR-007) enters here because
- * it had to read the intent to choose a usecase at all.
+ * been consumed. The callback dispatcher enters here because it had to
+ * read the intent to choose a usecase at all.
  */
 export async function completeOAuthSignInForFlow(
   container: RequestContainer,

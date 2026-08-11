@@ -7,7 +7,7 @@ import type {
 import { OAuthProvider } from "../../domain/identity/valueObject";
 import { deriveCodeChallengeS256 } from "./pkce";
 
-/** Consent-screen route the dev IdP redirects to (ADR-021). */
+/** Consent-screen route the dev IdP redirects to. */
 export const DEV_AUTHORIZE_PATH = "/dev/oauth/authorize";
 
 /** Grant the dev consent screen encodes into its authorization code. */
@@ -39,7 +39,7 @@ export function devProviderAccountId(email: string): string {
  * (SSR / RSC), so a module-level secret would differ between the writer
  * and the reader. Integrity adds nothing here anyway: the whole IdP is
  * the developer's own machine and the route only exists while
- * `OAUTH_DEV_MODE` is on (ADR-003 forbids it in production).
+ * `OAUTH_DEV_MODE` is on — a flag boot refuses in production.
  */
 export function encodeDevAuthorizationCode(
   grant: DevAuthorizationGrant,
@@ -84,11 +84,10 @@ function decodeDevAuthorizationCode(code: string): DevAuthorizationGrant {
 }
 
 /**
- * Loopback identity provider for local development and manual testing
- * (ADR-003). This is a peer provider implementation, not a degraded
- * Google: it owns a real consent screen (`/dev/oauth/authorize`) so the
- * approve **and** cancel paths can both be exercised without Google
- * credentials.
+ * Loopback identity provider for local development and manual testing.
+ * This is a peer provider implementation, not a degraded Google: it owns
+ * a real consent screen (`/dev/oauth/authorize`) so the approve **and**
+ * cancel paths can both be exercised without Google credentials.
  */
 export function createDevSignInOAuthClient(
   options: Readonly<{ appUrl: string }>,

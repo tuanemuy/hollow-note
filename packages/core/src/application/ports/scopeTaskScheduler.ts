@@ -31,12 +31,16 @@ export const SCOPE_TASK_MAX_ATTEMPTS = 8;
  *
  * Claiming is a scope transaction: a scope object has a single writer,
  * so `claimDue` reads the due, non-failed rows in `dueAt` order and the
- * runner settles each one. The turn itself runs in a transaction of its
- * own (ADR-055) and settles its row there with `complete` (done),
- * `schedule` (a further page follows) or `backoffOrSchedule` (targets
- * remain but none could be processed). A turn that throws rolls its own
- * transaction back and leaves the row exactly as the claim saw it, so
- * the runner backs it off on the turn's behalf.
+ * runner settles each one. `dueAt` is the whole of the order — there is
+ * no priority class here, so a backlog of low-value tasks can crowd out
+ * a cleanup that fell due later. Adding a priority (and the lease a
+ * multi-writer backend needs) is deferred to the runtime that first
+ * deploys more than one writer per scope. The turn itself runs in a
+ * transaction of its own and settles its row there with `complete`
+ * (done), `schedule` (a further page follows) or `backoffOrSchedule`
+ * (targets remain but none could be processed). A turn that throws rolls
+ * its own transaction back and leaves the row exactly as the claim saw
+ * it, so the runner backs it off on the turn's behalf.
  *
  * `backoff` bumps `attempt` and pushes `dueAt` out exponentially
  * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^attempt, capped by

@@ -2,7 +2,7 @@ import type { AccountDeletionReceipt } from "../ports/accountDeletionManifestSto
 import type { PersonalCleanupComponent } from "../ports/scopeCleanupAdmissionStore";
 
 /**
- * Who acknowledges the cleanup a deletion waits for (ADR-002 / ADR-017).
+ * Who acknowledges the cleanup a deletion waits for.
  *
  * Both registries are **exhaustive** over their enum, so a build cannot
  * silently omit a component: a value that has no participant here must

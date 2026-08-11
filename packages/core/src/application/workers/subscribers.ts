@@ -1,6 +1,7 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
+import type { IdentityContinuationEvent } from "../identity/continuations";
 import { dispatchAccountDeletionRedaction } from "../identity/deleteAccount/authorRedaction";
 import { dispatchAccountDeletionCleanup } from "../identity/deleteAccount/cleanupDispatch";
 import { compactAccountDeletionManifest } from "../identity/deleteAccount/compaction";
@@ -13,8 +14,9 @@ import type { AllDomainEvents } from "./eventRelayWorker";
 
 type SubscriberFor<TType extends AllDomainEvents["type"]> = Readonly<{
   eventType: TType;
-  /** Stable name used as the `IdempotencyStore` consumer key by the
-   * subscribers that need one. */
+  /** Identifies the subscriber within the registry, unique per event
+   * type. No subscriber currently routes through an `IdempotencyStore`;
+   * each one states why its effect is replay-safe in its own usecase. */
   consumerName: string;
   handle: (
     event: Extract<AllDomainEvents, { type: TType }>,
@@ -30,19 +32,123 @@ export type EventSubscriber = {
   [K in AllDomainEvents["type"]]: SubscriberFor<K>;
 }[AllDomainEvents["type"]];
 
+type ContinuationSubscribers = {
+  readonly [K in IdentityContinuationEvent["type"]]: readonly [
+    SubscriberFor<K>,
+    ...SubscriberFor<K>[],
+  ];
+};
+
 /**
- * The single entry point for events the relay delivered: the consumer
- * role of every runtime looks the event up here instead of holding its
- * own switch. Several subscribers may share an event type; they run in
- * registration order and a throw fails the whole delivery, so every
- * handler must be safe to re-run (delivery is at-least-once).
+ * Subscribers of the continuation requests, keyed by continuation type.
+ *
+ * A continuation is not a notification: it carries the rest of a job no
+ * turn could finish, so leaving one unsubscribed stops the chain instead
+ * of merely ignoring an event — and the dispatcher below would only warn
+ * about it. Keying by type with a non-empty tuple per key is what turns
+ * a missing registration into a compile error.
  */
-export const subscribers: readonly EventSubscriber[] = [
-  {
-    eventType: "identity.userAuthResidueCleanupContinued",
-    consumerName: "identity.authResidueCleanup",
-    handle: authResidueCleanup,
-  },
+export const continuationSubscribers: ContinuationSubscribers = {
+  "identity.userAuthResidueCleanupContinued": [
+    {
+      eventType: "identity.userAuthResidueCleanupContinued",
+      consumerName: "identity.authResidueCleanup",
+      handle: authResidueCleanup,
+    },
+  ],
+  "identity.accountDeletionManifestBuildContinued": [
+    {
+      eventType: "identity.accountDeletionManifestBuildContinued",
+      consumerName: "identity.accountDeletionManifestBuild",
+      handle: (event, deps) =>
+        continueAccountDeletionManifestBuild(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          phase: event.payload.phase,
+          cursor: event.payload.cursor,
+        }),
+    },
+  ],
+  // Every dispatch phase subscribes separately and passes on the phases
+  // it does not own, so a phase is wired by adding an entry rather than
+  // by editing a shared switch.
+  "identity.accountDeletionDispatchContinued": [
+    {
+      eventType: "identity.accountDeletionDispatchContinued",
+      consumerName: "identity.accountDeletionCleanup",
+      handle: async (event, deps) => {
+        if (event.payload.phase !== "cleanup") {
+          return;
+        }
+        await dispatchAccountDeletionCleanup(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          phase: "cleanup",
+          cursor: event.payload.cursor,
+        });
+      },
+    },
+    {
+      eventType: "identity.accountDeletionDispatchContinued",
+      consumerName: "identity.accountDeletionGlobalCleanup",
+      handle: async (event, deps) => {
+        if (event.payload.phase !== "cleanup") {
+          return;
+        }
+        await runAccountDeletionGlobalCleanup(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          phase: "cleanup",
+          cursor: event.payload.cursor,
+        });
+      },
+    },
+    {
+      eventType: "identity.accountDeletionDispatchContinued",
+      consumerName: "identity.accountDeletionRedaction",
+      handle: async (event, deps) => {
+        if (event.payload.phase !== "redaction") {
+          return;
+        }
+        await dispatchAccountDeletionRedaction(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          phase: "redaction",
+          cursor: event.payload.cursor,
+        });
+      },
+    },
+    {
+      eventType: "identity.accountDeletionDispatchContinued",
+      consumerName: "identity.accountDeletionFinalize",
+      handle: async (event, deps) => {
+        if (event.payload.phase !== "finalize") {
+          return;
+        }
+        await finalizeAccountDeletion(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          phase: "finalize",
+          cursor: event.payload.cursor,
+        });
+      },
+    },
+  ],
+  "identity.accountDeletionManifestCompactContinued": [
+    {
+      eventType: "identity.accountDeletionManifestCompactContinued",
+      consumerName: "identity.accountDeletionManifestCompact",
+      handle: (event, deps) =>
+        compactAccountDeletionManifest(deps, {
+          type: event.type,
+          operationId: event.payload.operationId,
+          cursor: event.payload.cursor,
+        }),
+    },
+  ],
+};
+
+const domainEventSubscribers: readonly EventSubscriber[] = [
   {
     eventType: "identity.identity.removed",
     consumerName: "identity.identityRemovalRelease",
@@ -53,90 +159,18 @@ export const subscribers: readonly EventSubscriber[] = [
     consumerName: "storage.deleteStoredObjects",
     handle: deleteStoredObjects,
   },
-  {
-    eventType: "identity.accountDeletionManifestBuildContinued",
-    consumerName: "identity.accountDeletionManifestBuild",
-    handle: (event, deps) =>
-      continueAccountDeletionManifestBuild(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        phase: event.payload.phase,
-        cursor: event.payload.cursor,
-      }),
-  },
-  // Every dispatch phase subscribes separately and passes on the phases
-  // it does not own, so a phase is wired by adding an entry rather than
-  // by editing a shared switch.
-  {
-    eventType: "identity.accountDeletionDispatchContinued",
-    consumerName: "identity.accountDeletionCleanup",
-    handle: async (event, deps) => {
-      if (event.payload.phase !== "cleanup") {
-        return;
-      }
-      await dispatchAccountDeletionCleanup(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        phase: "cleanup",
-        cursor: event.payload.cursor,
-      });
-    },
-  },
-  {
-    eventType: "identity.accountDeletionDispatchContinued",
-    consumerName: "identity.accountDeletionGlobalCleanup",
-    handle: async (event, deps) => {
-      if (event.payload.phase !== "cleanup") {
-        return;
-      }
-      await runAccountDeletionGlobalCleanup(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        phase: "cleanup",
-        cursor: event.payload.cursor,
-      });
-    },
-  },
-  {
-    eventType: "identity.accountDeletionDispatchContinued",
-    consumerName: "identity.accountDeletionRedaction",
-    handle: async (event, deps) => {
-      if (event.payload.phase !== "redaction") {
-        return;
-      }
-      await dispatchAccountDeletionRedaction(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        phase: "redaction",
-        cursor: event.payload.cursor,
-      });
-    },
-  },
-  {
-    eventType: "identity.accountDeletionDispatchContinued",
-    consumerName: "identity.accountDeletionFinalize",
-    handle: async (event, deps) => {
-      if (event.payload.phase !== "finalize") {
-        return;
-      }
-      await finalizeAccountDeletion(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        phase: "finalize",
-        cursor: event.payload.cursor,
-      });
-    },
-  },
-  {
-    eventType: "identity.accountDeletionManifestCompactContinued",
-    consumerName: "identity.accountDeletionManifestCompact",
-    handle: (event, deps) =>
-      compactAccountDeletionManifest(deps, {
-        type: event.type,
-        operationId: event.payload.operationId,
-        cursor: event.payload.cursor,
-      }),
-  },
+];
+
+/**
+ * The single entry point for events the relay delivered: the consumer
+ * role of every runtime looks the event up here instead of holding its
+ * own switch. Several subscribers may share an event type; they run in
+ * registration order and a throw fails the whole delivery, so every
+ * handler must be safe to re-run (delivery is at-least-once).
+ */
+export const subscribers: readonly EventSubscriber[] = [
+  ...domainEventSubscribers,
+  ...Object.values(continuationSubscribers).flat(),
 ];
 
 /**

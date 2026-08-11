@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 /**
- * 保管オブジェクトの配信口（ADR-011 / ADR-016）。
+ * 保管オブジェクトの配信口。
  *
  * memory の `ObjectStorage.publicUrl` が返す `/storage/{objectKey}` を
  * 実際に読める唯一の経路で、R2 等の公開ドメインへ移った配備ではこの
@@ -44,9 +44,12 @@ export const Route = createFileRoute("/storage/$")({
           headers: {
             "Content-Type": object.meta.mimeType,
             "Content-Length": String(object.meta.size),
+            "Content-Disposition": `inline; filename="${downloadName(key)}"`,
             // 鍵にファイル ID が入るので中身は不変。差し替えは必ず別の
             // 鍵になるため、長期キャッシュで古い画像が出ることはない。
-            "Cache-Control": "public, max-age=31536000, immutable",
+            // `private` なのは削除の約束（P-25）のためで、共有キャッシュ
+            // に載ると退会後もオリジンに無い画像が読めてしまう。
+            "Cache-Control": "private, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
             // 画像として配信するものだけを置く鍵空間だが、万一 HTML を
             // 積まれてもオリジン上で実行させない。
@@ -57,6 +60,14 @@ export const Route = createFileRoute("/storage/$")({
     },
   },
 });
+
+// `ObjectKey` はヘッダーに置けない文字（引用符・制御文字）を禁じて
+// いないので、末尾セグメントをそのまま名前にはできない。
+const downloadName = (key: string): string => {
+  const last = key.slice(key.lastIndexOf("/") + 1);
+  const safe = last.replace(/[^A-Za-z0-9._-]/g, "");
+  return safe.length === 0 ? "avatar" : safe;
+};
 
 const notFound = (): Response =>
   new Response("Not Found", {

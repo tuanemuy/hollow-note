@@ -78,7 +78,7 @@ export function describeAuthTokenRepositoryContract(
       expect(conflicts).toHaveLength(1);
     });
 
-    it("ADR-031: findPendingByUserAndPurpose yields the single live row of the pair", async () => {
+    it("findPendingByUserAndPurpose yields the single live row of the pair", async () => {
       const now = backend.clock.now();
       const consumedSource = makeAuthToken(
         1,

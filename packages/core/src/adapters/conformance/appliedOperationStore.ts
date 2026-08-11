@@ -7,8 +7,8 @@ import type {
 import { scopeOf } from "./fixtures";
 
 /**
- * Shared conformance suite for `AppliedOperationStore` (ADR-012):
- * one-shot marking of an operation's command in the current scope.
+ * Shared conformance suite for `AppliedOperationStore`: one-shot marking
+ * of an operation's command in the current scope.
  */
 export function describeAppliedOperationStoreContract(
   backendName: string,

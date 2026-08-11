@@ -5,9 +5,9 @@
 
 /**
  * `url` is the address the icon is served from, built by the object
- * store itself (ADR-011) — the usecase never learns the deployment's URL
- * shape. It is not written to the profile here: `updateProfile` owns
- * `User.avatarUrl`, and the form carries this value there (ADR-016).
+ * store itself — the usecase never learns the deployment's URL shape. It
+ * is not written to the profile here: `updateProfile` owns
+ * `User.avatarUrl`, and the form carries this value there.
  */
 export type StoreAvatarView = Readonly<{
   fileId: string;

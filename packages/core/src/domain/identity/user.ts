@@ -3,7 +3,14 @@ import { Version } from "@repo/core/domain/common/version";
 import { BusinessRuleError, RehydrationError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "./errorCode";
 import { type IdentityEvent, IdentityEvents } from "./events";
-import { Bio, DisplayName, Email, Handle, UserId } from "./valueObject";
+import {
+  type AvatarUrl,
+  Bio,
+  DisplayName,
+  Email,
+  Handle,
+  UserId,
+} from "./valueObject";
 
 type UserBase = Readonly<{
   id: UserId;
@@ -11,7 +18,7 @@ type UserBase = Readonly<{
   displayName: DisplayName;
   bio: Bio;
   // Public URL, not a StoredFileId — keeps Identity free of Storage.
-  avatarUrl: string | null;
+  avatarUrl: AvatarUrl | null;
   handle: Handle | null;
   /**
    * Monotonic generation that logically expires every session / auth
@@ -147,7 +154,7 @@ export const User = {
     params: Readonly<{
       displayName?: string;
       bio?: string;
-      avatarUrl?: string | null;
+      avatarUrl?: AvatarUrl | null;
     }>,
     now: Date,
   ): WithEventDrafts<ActiveUser, IdentityEvent> => {
@@ -302,7 +309,10 @@ export const User = {
           requireField(input.displayName, "displayName"),
         ),
         bio: Bio.create(input.bio ?? ""),
-        avatarUrl: input.avatarUrl ?? null,
+        // Trusted as validated on write: `AvatarUrl.create` needs the
+        // app origin, and reading configuration is exactly what a domain
+        // rehydration must not do.
+        avatarUrl: (input.avatarUrl ?? null) as AvatarUrl | null,
         handle:
           input.handle !== undefined && input.handle !== null
             ? Handle.create(input.handle)

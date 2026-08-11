@@ -4,6 +4,7 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "../../__tests__/helpers";
 import {
+  continuationSubscribers,
   dispatchDomainEvent,
   type EventSubscriber,
   subscribers,
@@ -85,5 +86,17 @@ describe("dispatchDomainEvent", () => {
       (subscriber) => `${subscriber.eventType}:${subscriber.consumerName}`,
     );
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("dispatches every continuation type, so no continuation chain stops at a warning", () => {
+    const registered = new Set<string>(
+      subscribers.map((subscriber) => subscriber.eventType),
+    );
+    const continuationTypes = Object.keys(continuationSubscribers);
+
+    expect(continuationTypes).not.toHaveLength(0);
+    expect(
+      continuationTypes.filter((type) => !registered.has(type)),
+    ).toHaveLength(0);
   });
 });

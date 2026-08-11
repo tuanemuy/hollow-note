@@ -9,7 +9,7 @@ export type CheckHandleAvailabilityInput = Readonly<{
 
 /**
  * Tells the profile form whether a handle is free before it is saved
- * (P-21 の「ハンドル重複（候補提示）」, ADR-047).
+ * (P-21 の「ハンドル重複（候補提示）」).
  *
  * An **advisory** read, not a claim: only `updateProfile`'s reservation
  * decides the winner, so a handle reported free can still lose a race and

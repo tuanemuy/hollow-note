@@ -5,7 +5,7 @@ import type { AccountDeletionStatusView } from "./view";
 export type GetAccountDeletionStatusInput = Readonly<{ operationId: string }>;
 
 /**
- * Reads the progress of one account deletion (ADR-006).
+ * Reads the progress of one account deletion.
  *
  * The caller has no session: `deleteAccount` expires it in the same
  * response that hands out the status ticket, so this is the only thing a

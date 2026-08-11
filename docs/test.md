@@ -1,6 +1,6 @@
 # Testing
 
-Tests are classified along two axes: **layer × purpose**. The whole suite currently runs at unit speed against the in-memory reference adapters (`packages/core/src/adapters/memory/`) — a regular adapter backend, not a test fake (ADR-002 of Issue #1). The shared port-conformance suites double as the "integration" layer until a real backend (D1 / Durable Objects, Issue #11) arrives and imports the same suites under its own integration config.
+Tests are classified along two axes: **layer × purpose**. The whole suite currently runs at unit speed against the in-memory reference adapters (`packages/core/src/adapters/memory/`) — a regular adapter backend, not a test fake. The shared port-conformance suites double as the "integration" layer until a real backend (D1 / Durable Objects, Issue #11) arrives and imports the same suites under its own integration config.
 
 ## Test layer classification
 

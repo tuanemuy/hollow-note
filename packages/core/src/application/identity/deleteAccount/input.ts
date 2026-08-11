@@ -35,7 +35,7 @@ export type AccountDeletionDispatchPhase =
  * moved to instead of re-running itself: replaying the last page of a
  * phase would re-open that phase from its start. Carrying the position
  * makes a continuation describe exactly one turn, which is also what
- * makes its deterministic event id identify that turn (ADR-019).
+ * makes its deterministic event id identify that turn.
  */
 export type AccountDeletionManifestBuildContinuedInput = Readonly<{
   type: "identity.accountDeletionManifestBuildContinued";
@@ -84,10 +84,10 @@ export type DeleteAccountInput =
   | PersonalBarrierPruneContinuedInput;
 
 /**
- * Uniqueness keys frozen into the operation payload at admission
- * (ADR-020). Global cleanup releases the directory claims from these and
- * never re-reads the identity rows: by then the PII they were derived
- * from is either gone or about to be.
+ * Uniqueness keys frozen into the operation payload at admission. Global
+ * cleanup releases the directory claims from these and never re-reads
+ * the identity rows: by then the PII they were derived from is either
+ * gone or about to be.
  */
 export type AccountDeletionUniquenessKeys = Readonly<{
   email: string;

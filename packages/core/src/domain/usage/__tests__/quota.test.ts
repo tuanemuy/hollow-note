@@ -13,12 +13,20 @@ const subject = QuotaSubject.user(UserId.create("u1"));
 const userId = UserId.create("u1");
 const period = BillingPeriod.of(NOW);
 
+/**
+ * `null` means the call was admitted. Anything other than a
+ * `BusinessRuleError` is rethrown so the admitted side of a boundary
+ * cannot pass by failing in some unrelated way.
+ */
 const codeOf = (fn: () => unknown): string | null => {
   try {
     fn();
     return null;
   } catch (error) {
-    return isBusinessRuleError(error) ? error.code : null;
+    if (!isBusinessRuleError(error)) {
+      throw error;
+    }
+    return error.code;
   }
 };
 

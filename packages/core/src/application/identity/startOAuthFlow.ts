@@ -25,7 +25,7 @@ export const oauthRedirectUri = (appUrl: string, provider: string): string =>
  * (UC-identity-005, spec/usecases/identity.md#startoauthflow).
  *
  * The `state` row is the only carrier of the flow's intent: the callback
- * decides which usecase to run from it alone (ADR-007), so a
+ * decides which usecase to run from it alone, so a
  * `linkIdentity` flow records the authenticated user and the epoch it
  * started under, and a `signIn` flow records neither.
  */

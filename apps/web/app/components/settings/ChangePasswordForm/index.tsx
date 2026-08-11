@@ -9,6 +9,8 @@ import {
   inputClass,
   inputInvalidClass,
 } from "@/components/auth/formStyles";
+import { PasswordStrengthMeter } from "@/components/auth/PasswordStrengthMeter";
+import { passwordStrength } from "@/components/auth/passwordStrength";
 import {
   panelClass,
   panelNoteClass,
@@ -102,7 +104,9 @@ export function ChangePasswordForm() {
             onChange={(event) => setPassword(event.target.value)}
             className={inputClass}
           />
-          {password.length > 0 ? <StrengthMeter strength={strength} /> : null}
+          {password.length > 0 ? (
+            <PasswordStrengthMeter strength={strength} />
+          ) : null}
         </div>
         <div className="mb-5">
           <label className={fieldLabelClass} htmlFor={confirmId}>
@@ -151,55 +155,5 @@ export function ChangePasswordForm() {
         </button>
       </form>
     </section>
-  );
-}
-
-/**
- * 目安の強度表示（ADR-043）。合否を決めるのはドメインの `PlainPassword`
- * （8〜128 字・英字と数字を各 1 つ以上）で、ここはそれを満たしたうえで
- * どれだけ余裕があるかを 4 段階で見せるだけ。score 0 は「ドメインの条件を
- * 満たさない」を意味し、送信ボタンもそこで止める。
- */
-type Strength = Readonly<{ score: 0 | 1 | 2 | 3 | 4; label: string }>;
-
-const STRENGTH_LABELS = [
-  "条件を満たしていません",
-  "弱い",
-  "ふつう",
-  "十分",
-  "とても強い",
-] as const;
-
-function passwordStrength(password: string): Strength {
-  const hasLetter = /[a-zA-Z]/.test(password);
-  const hasDigit = /[0-9]/.test(password);
-  if (password.length < 8 || !hasLetter || !hasDigit) {
-    return { score: 0, label: STRENGTH_LABELS[0] };
-  }
-  const bonus =
-    (password.length >= 12 ? 1 : 0) +
-    (password.length >= 16 ? 1 : 0) +
-    (/[^a-zA-Z0-9]/.test(password) ? 1 : 0);
-  const score = Math.min(1 + bonus, 4) as 1 | 2 | 3 | 4;
-  return { score, label: STRENGTH_LABELS[score] };
-}
-
-const STRENGTH_BARS = [0, 1, 2, 3] as const;
-
-function StrengthMeter({ strength }: { strength: Strength }) {
-  return (
-    <>
-      <div className="mt-2 flex gap-[3px]" aria-hidden="true">
-        {STRENGTH_BARS.map((index) => (
-          <span
-            key={index}
-            className={`h-[3px] flex-1 rounded-xs ${
-              index < strength.score ? "bg-success" : "bg-hairline"
-            }`}
-          />
-        ))}
-      </div>
-      <p className="mt-1 text-xs text-ink-secondary">強さ: {strength.label}</p>
-    </>
   );
 }

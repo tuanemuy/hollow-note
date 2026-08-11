@@ -1,7 +1,7 @@
 import { ValidationError } from "@repo/core/application/errors";
 
 /**
- * dev IdP（ADR-021）の同意画面が組み立てる遷移先。
+ * dev IdP の同意画面が組み立てる遷移先。
  *
  * `redirect_uri` はクエリー由来なので、そのまま `Location` に載せると
  * 開いたリダイレクターになる。受理するのはアプリ自身のオリジンに限り、

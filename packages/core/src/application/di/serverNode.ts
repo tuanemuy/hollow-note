@@ -32,8 +32,8 @@ const nonEmpty = (value: string | undefined): value is string =>
   value !== undefined && value.length > 0;
 
 /**
- * Boot-time OAuth provider selection (ADR-003). Expressed as a refinement
- * of the env schema — not inside `createMemoryRuntime` — because the
+ * Boot-time OAuth provider selection. Expressed as a refinement of the
+ * env schema — not inside `createMemoryRuntime` — because the
  * runtime is also built by `createTestHarness`, which has no env and must
  * never be able to fail these rules.
  */
@@ -57,8 +57,8 @@ const nodeServerEnvSchema = z
     OAUTH_DEV_MODE: z.string().optional(),
     GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
     GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-    // Optional (ADR-006): unset means a per-process key, which only
-    // costs outstanding tickets their validity across a restart. Set but
+    // Optional: unset means a per-process key, which only costs
+    // outstanding tickets their validity across a restart. Set but
     // malformed is refused instead of silently falling back — a
     // deployment that meant to pin the key must not boot without it.
     DELETION_TICKET_KEY: z
@@ -135,13 +135,13 @@ export function readNodeRequestServerConfig(
   };
 }
 
-// One `MemoryBackend` per process (ADR 024): request and worker
+// One `MemoryBackend` per process (spec/adr/024): request and worker
 // containers must observe the same tables, and the dev server keeps its
 // data exactly as long as the process lives. Pinned on `globalThis` so
 // the SSR and RSC module graphs (and HMR reloads of this module) share
 // the same runtime instead of silently forking the store. Filling and
 // reading the slot are both guarded: an env-less default would decide
-// the sign-in provider of ADR-003 by omission.
+// the sign-in provider by omission.
 const RUNTIME_SYMBOL: unique symbol = Symbol.for(
   "@tanstack-start-template/memory-runtime",
 ) as never;
@@ -205,8 +205,8 @@ const envDigestOf = (env: NodeServerEnv): string =>
  * — that is `vite dev` re-running `boot()` after a program reload, where
  * keeping the singleton also keeps the process's data. Any other env is
  * refused rather than dropped: the singleton carries the sign-in
- * provider selection of ADR-003, so serving under settings that were
- * validated but never applied is exactly the failure this guards.
+ * provider selection, so serving under settings that were validated but
+ * never applied is exactly the failure this guards.
  */
 export function initNodeRuntime(env: NodeServerEnv): void {
   const slot = globalThis as unknown as RuntimeSlot;
@@ -238,7 +238,7 @@ export function bindNodeRelayTrigger(trigger: RelayTrigger): void {
 /**
  * Late-binds the runner's scope-task trigger so a committed continuation
  * is resumed within the same second instead of waiting for the interval
- * tick (ADR-023).
+ * tick.
  */
 export function bindNodeScopeTaskTrigger(trigger: ScopeTaskTrigger): void {
   memoryRuntime().bindScopeTaskTrigger(trigger);

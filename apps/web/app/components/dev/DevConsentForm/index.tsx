@@ -12,7 +12,7 @@ import { displayError } from "@/presentation/errorDisplay";
 import { submitDevConsentFn } from "@/routes/dev/-action";
 
 /**
- * dev IdP の同意画面（ADR-021）。Google の同意画面が担う「アカウントを
+ * dev IdP の同意画面。Google の同意画面が担う「アカウントを
  * 選ぶ / 許可する / キャンセルする」をローカルで再現するためだけの画面で、
  * `OAUTH_DEV_MODE` が真のときしか到達しない。
  *

@@ -66,16 +66,16 @@ export type MemoryRuntimeOptions = MemoryBackendOptions &
   Readonly<{
     shareTokenKeyRing?: ShareTokenKeyRing;
     /**
-     * Signing keys for the deletion status ticket (ADR-006). Left unset
-     * the process mints its own, which is the right default for a
+     * Signing keys for the deletion status ticket. Left unset the
+     * process mints its own, which is the right default for a
      * runtime whose data does not survive a restart either — but it does
      * mean a restart invalidates outstanding tickets.
      */
     deletionTicketKeyRing?: DeletionTicketKeyRing;
     routingGenerations?: readonly string[];
     /**
-     * Which sign-in identity provider to talk to (ADR-003). Required and
-     * without a default: the dev IdP signs in whoever asks, so "nobody
+     * Which sign-in identity provider to talk to. Required and without a
+     * default: the dev IdP signs in whoever asks, so "nobody
      * decided" must not resolve to it. The selection *rules* and their
      * startup guards still belong to the runtime env schema
      * (`di/serverNode.ts`) — every other caller states its choice.
@@ -93,7 +93,7 @@ export type MemoryRuntime = Readonly<{
    * simply wait for the runner's interval tick.
    */
   bindRelayTrigger: (trigger: RelayTrigger) => void;
-  /** Same late binding for the scope-task runner's own trigger (ADR-023). */
+  /** Same late binding for the scope-task runner's own trigger. */
   bindScopeTaskTrigger: (trigger: ScopeTaskTrigger) => void;
   createRequestContainer: (config: AppConfig) => RequestContainer;
   createWorkerContainer: () => WorkerContainer;
@@ -105,7 +105,7 @@ const ephemeralKeyRing = (): ShareTokenKeyRing => ({
 });
 
 /**
- * Composition root for the in-memory reference runtime (ADR 024): one
+ * Composition root for the in-memory reference runtime (spec/adr/024): one
  * `MemoryBackend` shared by every adapter of the process, the same
  * wiring for `pnpm dev` and the usecase tests. Data lives for the
  * process lifetime only — a restart starts blank by design.
@@ -146,8 +146,7 @@ export function createMemoryRuntime(
   };
 
   // The deployment's own cleanup declaration decides what a deletion
-  // waits for; the stores never assume a participant exists (ADR-002 /
-  // ADR-017).
+  // waits for; the stores never assume a participant exists.
   const unitOfWorkOptions: MemoryUnitOfWorkOptions = {
     relayTrigger,
     scopeTaskTrigger,

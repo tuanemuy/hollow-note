@@ -6,7 +6,7 @@ import {
 } from "./googleSignInOAuthClient";
 
 /**
- * Which sign-in identity provider the process talks to (ADR-003). The
+ * Which sign-in identity provider the process talks to. The
  * discriminated union is what makes "Google selected but no credentials"
  * unrepresentable — the composition root decides once, at boot, and
  * every consumer downstream just holds a `SignInOAuthClient`.

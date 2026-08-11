@@ -1,7 +1,7 @@
 /**
  * Best-effort kick of the scope-task runner so a continuation stored by
  * a just-committed unit of work is picked up without waiting for the
- * next interval tick (ADR-023).
+ * next interval tick.
  *
  * Same contract as `RelayTrigger`: fire-and-forget, never throwing,
  * never blocking the caller, and idempotent — a kick that races a run

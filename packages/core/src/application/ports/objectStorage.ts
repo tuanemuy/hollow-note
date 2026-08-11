@@ -33,8 +33,8 @@ export type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
  * caller believed it was sending, never what the answer will be.
  *
  * `publicUrl` builds the address a publicly served object is read from,
- * keeping the deployment's URL shape inside the adapter (ADR-011): the
- * in-memory adapter answers with the app's own delivery path, an R2
+ * keeping the deployment's URL shape inside the adapter: the in-memory
+ * adapter answers with the app's own delivery path, an R2
  * adapter with its public domain. Use it only for objects that really
  * are public — today, avatars.
  *

@@ -19,11 +19,13 @@ import {
   submitButtonClass,
 } from "../formStyles";
 import { OAuthButton } from "../OAuthButton";
+import { PasswordStrengthMeter } from "../PasswordStrengthMeter";
 import {
-  DISPLAY_NAME_MAX_LENGTH,
-  PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
-} from "../schema";
+  PASSWORD_RULE_HINT,
+  passwordFieldError,
+  passwordStrength,
+} from "../passwordStrength";
+import { DISPLAY_NAME_MAX_LENGTH } from "../schema";
 import { signUpFn } from "./action";
 
 /**
@@ -46,38 +48,12 @@ const initialFields: Fields = {
   termsAccepted: false,
 };
 
-function passwordError(value: string): string | null {
-  if (value.length === 0) return "パスワードを入力してください";
-  if (value.length < PASSWORD_MIN_LENGTH) {
-    return `パスワードが短すぎます。${PASSWORD_MIN_LENGTH} 文字以上で入力してください`;
-  }
-  if (value.length > PASSWORD_MAX_LENGTH) {
-    return `パスワードは ${PASSWORD_MAX_LENGTH} 文字までです`;
-  }
-  if (!/[a-zA-Z]/.test(value) || !/[0-9]/.test(value)) {
-    return "英字と数字の両方を含めてください";
-  }
-  return null;
-}
-
 function displayNameError(value: string): string | null {
   if (value.trim().length === 0) return "表示名を入力してください";
   if (value.trim().length > DISPLAY_NAME_MAX_LENGTH) {
     return `表示名は ${DISPLAY_NAME_MAX_LENGTH} 文字までです`;
   }
   return null;
-}
-
-function passwordStrength(value: string): { score: number; label: string } {
-  if (value.length === 0) return { score: 0, label: "" };
-  let score = 0;
-  if (value.length >= PASSWORD_MIN_LENGTH) score += 1;
-  if (/[a-zA-Z]/.test(value) && /[0-9]/.test(value)) score += 1;
-  if (value.length >= 12) score += 1;
-  if (/[A-Z]/.test(value) && /[a-z]/.test(value)) score += 1;
-  else if (/[^a-zA-Z0-9]/.test(value)) score += 1;
-  const label = score <= 1 ? "弱い" : score <= 2 ? "普通" : "強い";
-  return { score: Math.max(score, 1), label };
 }
 
 type FormState = { error: SerializedError | null; done: boolean };
@@ -97,7 +73,7 @@ export function SignUpForm() {
 
   const errors = {
     email: emailFormatError(fields.email),
-    password: passwordError(fields.password),
+    password: passwordFieldError(fields.password),
     displayName: displayNameError(fields.displayName),
   };
   const hasFieldError =
@@ -221,26 +197,8 @@ export function SignUpForm() {
             aria-describedby={`${passwordErrorId} ${passwordHintId}`}
             className={`${inputClass} ${showError("password") !== null ? inputInvalidClass : ""}`}
           />
-          <div className="mt-2 flex gap-[3px]" aria-hidden="true">
-            {[1, 2, 3, 4].map((step) => (
-              <i
-                key={step}
-                className="h-[3px] flex-1 rounded-[2px]"
-                style={{
-                  background:
-                    step <= strength.score
-                      ? strength.score >= 3
-                        ? "var(--color-success)"
-                        : "var(--color-warning)"
-                      : "var(--color-hairline)",
-                }}
-              />
-            ))}
-          </div>
-          {strength.label !== "" ? (
-            <p className="mt-1 text-xs text-ink-secondary">
-              強度: {strength.label}
-            </p>
+          {fields.password.length > 0 ? (
+            <PasswordStrengthMeter strength={strength} />
           ) : null}
           <p
             id={passwordErrorId}
@@ -251,7 +209,7 @@ export function SignUpForm() {
           </p>
           {showError("password") === null ? (
             <p id={passwordHintId} className="mt-2 text-xs text-ink-secondary">
-              {PASSWORD_MIN_LENGTH} 文字以上で、英字と数字の両方を含めます
+              {PASSWORD_RULE_HINT}
             </p>
           ) : null}
         </div>

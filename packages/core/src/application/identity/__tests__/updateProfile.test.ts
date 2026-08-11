@@ -49,6 +49,17 @@ const storedUser = (h: TestHarness, userId: string) => {
   return user;
 };
 
+const deferred = (): Readonly<{
+  promise: Promise<void>;
+  resolve: () => void;
+}> => {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve: () => resolve() };
+};
+
 const expectBusinessRule = (promise: Promise<unknown>, code: string) =>
   expect(promise).rejects.toSatisfy(
     (error: unknown) => isBusinessRuleError(error) && error.code === code,
@@ -376,6 +387,77 @@ describe("updateProfile", () => {
         isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE",
     );
     expect(storedUser(h, userId).displayName).toBe("Rival");
+  });
+
+  it("TC-identity-293: the loser of a same-handle race leaves the winner's claim standing", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+    const other = await signUpVerified(h, "other@example.com");
+    const inner = h.container.globalUnitOfWorkProvider;
+    const directory = h.container.identityUniqueDirectory;
+
+    const committed = deferred();
+    const compensated = deferred();
+    const atUnitOfWork = deferred();
+
+    // The loser reserves and reaches its unit of work first, then waits
+    // for the winner to commit — so it observes the stale user version.
+    const loserContainer: RequestContainer = {
+      ...h.container,
+      globalUnitOfWorkProvider: {
+        run: async (fn) => {
+          atUnitOfWork.resolve();
+          await committed.promise;
+          return inner.run(fn);
+        },
+      },
+    };
+    // The winner is held between its commit and the activation, which is
+    // exactly the window in which the loser compensates.
+    const winnerContainer: RequestContainer = {
+      ...h.container,
+      globalUnitOfWorkProvider: {
+        run: async (fn) => {
+          const result = await inner.run(fn);
+          committed.resolve();
+          return result;
+        },
+      },
+      identityUniqueDirectory: {
+        ...directory,
+        activate: async (operationId, expectedUserVersion) => {
+          await compensated.promise;
+          await directory.activate(operationId, expectedUserVersion);
+        },
+      } satisfies IdentityUniqueDirectory,
+    };
+
+    const loser = updateProfile({
+      container: loserContainer,
+      input: { userId, handle: "shared" },
+    }).catch((error: unknown) => error);
+    await atUnitOfWork.promise;
+    const winner = updateProfile({
+      container: winnerContainer,
+      input: { userId, handle: "shared" },
+    });
+
+    expect(await loser).toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE",
+    );
+    compensated.resolve();
+    const view = await winner;
+
+    expect(view.handle).toBe("shared");
+    expect(storedUser(h, userId).handle).toBe("shared");
+    expect(handleRow(h, "shared")).toMatchObject({ state: "active", userId });
+    await expect(
+      update(h, { userId: other.userId, handle: "shared" }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "HANDLE_ALREADY_USED",
+    );
   });
 });
 

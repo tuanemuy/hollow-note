@@ -139,6 +139,31 @@ export function describeStoredFileRepositoryContract(
       );
     });
 
+    it("ADP-storage-003: saves only against the observed version", async () => {
+      await repository.insert(avatar(1));
+      const found = await repository.findById(StoredFileId.create("file-1"));
+      if (found === null) {
+        throw new Error("file missing");
+      }
+
+      const renamed = (name: string): StoredFile => ({
+        ...found.entity,
+        fileName: FileName.create(name),
+        version: Version.next(found.entity.version),
+        updatedAt: backend.clock.now(),
+      });
+      await repository.save(renamed("renamed.png"), found.expectedVersion);
+
+      // The stale token is refused, so a lost update cannot happen.
+      await expectConflict(
+        repository.save(renamed("clobbered.png"), found.expectedVersion),
+        "OPTIMISTIC_LOCK_FAILURE",
+      );
+      const reread = await repository.findById(found.entity.id);
+      expect(reread?.entity.fileName).toBe("renamed.png");
+      expect(reread?.expectedVersion).toBe(1);
+    });
+
     it("ADP-storage-004: deletes only against the observed version", async () => {
       await repository.insert(avatar(1));
       const found = await repository.findById(StoredFileId.create("file-1"));

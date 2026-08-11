@@ -104,7 +104,7 @@ export type AccountDeletionManifestHeader = Readonly<{
  *
  * The finalize receipt set is **not** fixed by this contract: the
  * deployment declares which participants exist and passes that set to
- * the implementation (ADR-017), so `allRequiredAcknowledged` answers
+ * the implementation, so `allRequiredAcknowledged` answers
  * against the declared set rather than the full enum.
  *
  * Error contract: `ConflictError` (state-machine violations),
@@ -159,7 +159,7 @@ export interface AccountDeletionManifestStore {
   /**
    * Names the operations it reclaimed rather than counting them: the
    * control-plane row of each is dropped by the caller in this very
-   * transaction (ADR-026), and a count cannot say which.
+   * transaction, and a count cannot say which.
    */
   pruneTerminal(
     asOf: Date,

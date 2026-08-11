@@ -36,10 +36,10 @@ export type UserAuthResidueCleanupContinuedEvent = DomainEventBase<
  * Continuation of the account-deletion manifest build: one turn fixes
  * one page of targets, starting at `cursor`.
  *
- * `continuationKey` is what makes the event id deterministic (ADR-019):
- * a turn whose commit response was lost re-derives the same key, so the
- * replay is skipped in favour of the first-writer row and collapses into
- * that single outbox row instead of forking the chain (ADR-065).
+ * `continuationKey` is what makes the event id deterministic: a turn
+ * whose commit response was lost re-derives the same key, so the replay
+ * is skipped in favour of the first-writer row and collapses into that
+ * single outbox row instead of forking the chain.
  */
 export type AccountDeletionManifestBuildContinuedEvent = DomainEventBase<
   "identity.accountDeletionManifestBuildContinued",
@@ -56,7 +56,7 @@ export type AccountDeletionManifestBuildContinuedEvent = DomainEventBase<
  *
  * `cursor` discriminates the turns of a phase that needs several of them.
  * A deterministic id may only be given to a continuation whose key
- * changes per turn (ADR-025): a turn re-emitting its own key would be
+ * changes per turn: a turn re-emitting its own key would be
  * marked processed by the very relay finalize that follows it, and the
  * chain would stop. The redaction pages therefore number their turns
  * here, and the several producers of a `finalize` attempt name

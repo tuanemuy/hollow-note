@@ -25,7 +25,7 @@ type PersonalCleanupCommand = (
 /**
  * Command key of one component's initial cleanup delivery. Derived from
  * the operation so a redelivery derives the same key and the receiving
- * scope suppresses it through `AppliedOperationStore` (ADR-012).
+ * scope suppresses it through `AppliedOperationStore`.
  */
 export const cleanupCommandKey = (
   operationId: string,
@@ -78,9 +78,8 @@ const readProgress = (
  * barrier in its own transaction and the two planes may not share one,
  * so the receipt is written **after** that commit was acknowledged. A
  * response lost in between leaves a completed barrier with no receipt,
- * and this deployment carries no driver that re-reads a closed barrier
- * (plan.md 縮退: barrier ack を落としたときの再駆動主体を置かない), so
- * the deletion stays `running` until the `cleanup` phase is delivered
+ * and this deployment carries no driver that re-reads a closed barrier,
+ * so the deletion stays `running` until the `cleanup` phase is delivered
  * again. A slice adding that driver only needs to call this alone.
  */
 export async function acknowledgePersonalCleanup(

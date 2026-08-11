@@ -65,8 +65,9 @@ export function AccountMenu({
   return (
     <div ref={rootRef} className="relative">
       {/* Disclosure, not an ARIA menu: a menu role promises full
-          arrow-key/focus management, which a one-item popover doesn't
-          implement — `aria-expanded` alone keeps the contract honest. */}
+          arrow-key/focus management, which this popover does not implement
+          at any item count — `aria-expanded` alone keeps the contract
+          honest. */}
       <button
         type="button"
         aria-label="アカウントメニュー"

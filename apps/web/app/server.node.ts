@@ -44,7 +44,7 @@ installContainerStore({ getStore: () => storage.getStore() });
  * Boots node-runtime resources (env → worker runner → request factory)
  * and returns a fetch handler plus a shutdown hook.
  *
- * Persistence is the in-memory reference backend (ADR 024): request and
+ * Persistence is the in-memory reference backend (spec/adr/024): request and
  * worker containers share one process-wide store, and a restart starts
  * blank by design.
  */
@@ -113,6 +113,7 @@ export async function boot(): Promise<NodeServerBoot> {
   // advances turn by turn rather than interval by interval.
   bindNodeScopeTaskTrigger(runner.scopeTaskTrigger);
   runner.start();
+  logger.info("[server.node] worker runner started");
 
   const config = readNodeRequestServerConfig(env);
 
@@ -157,18 +158,56 @@ const defaultExport = {
   },
 };
 
+// The booted server is pinned like the ALS above, for the same reason:
+// `vite dev` re-evaluates this module, and a module-scoped boot would
+// hand every reload its own worker runner and its own signal listeners
+// while the runtime singleton — and therefore the store they tick —
+// stays the one from the first boot.
+const BOOT_SYMBOL: unique symbol = Symbol.for(
+  "@tanstack-start-template/node-server-boot",
+) as never;
+type BootSlot = {
+  current: Promise<NodeServerBoot> | null;
+  signalsBound: boolean;
+};
+type BootHotData = { boot?: BootSlot };
+type BootGlobalSlot = { [BOOT_SYMBOL]?: BootSlot };
+const bootHotData: BootHotData = (import.meta.hot?.data ?? {}) as BootHotData;
+const bootGlobal = globalThis as unknown as BootGlobalSlot;
+const bootSlot: BootSlot = bootGlobal[BOOT_SYMBOL] ??
+  bootHotData.boot ?? { current: null, signalsBound: false };
+bootGlobal[BOOT_SYMBOL] = bootSlot;
+if (import.meta.hot) {
+  (import.meta.hot.data as BootHotData).boot = bootSlot;
+}
+
 // Boot lazily so importing this module for type resolution (e.g. inside
 // the vite plugin's server-entry probe) does not trigger side effects.
 let bootPromise: Promise<NodeServerBoot> | null = null;
 function getOrStartBoot(): Promise<NodeServerBoot> {
   if (bootPromise === null) {
-    bootPromise = boot();
-    const onSignal = (signal: NodeJS.Signals) => {
-      ConsoleLogger.info(`[server.node] received ${signal}, shutting down`);
-      void bootPromise?.then((b) => b.shutdown());
-    };
-    process.once("SIGTERM", () => onSignal("SIGTERM"));
-    process.once("SIGINT", () => onSignal("SIGINT"));
+    const previous = bootSlot.current;
+    // Rebooting rather than reusing keeps the reloaded program graph in
+    // front of requests; retiring the previous boot first is what keeps
+    // its timers and listeners from outliving it.
+    bootPromise = (async () => {
+      if (previous !== null) {
+        ConsoleLogger.info("[server.node] retiring the previous boot");
+        const stale = await previous.catch(() => null);
+        await stale?.shutdown();
+      }
+      return boot();
+    })();
+    bootSlot.current = bootPromise;
+    if (!bootSlot.signalsBound) {
+      bootSlot.signalsBound = true;
+      const onSignal = (signal: NodeJS.Signals) => {
+        ConsoleLogger.info(`[server.node] received ${signal}, shutting down`);
+        void bootSlot.current?.then((b) => b.shutdown());
+      };
+      process.once("SIGTERM", () => onSignal("SIGTERM"));
+      process.once("SIGINT", () => onSignal("SIGINT"));
+    }
   }
   return bootPromise;
 }

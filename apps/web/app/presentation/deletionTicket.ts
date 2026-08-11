@@ -2,7 +2,7 @@ import type { DeletionTicketKeyRing } from "@repo/core/application/di/types";
 import { ValidationError } from "@repo/core/application/errors";
 
 /**
- * 削除進捗の status ticket（spec/presentation/index.md・ADR-006）。
+ * 削除進捗の status ticket（spec/presentation/index.md）。
  *
  * `deleteAccount` は受理と同じ応答でセッションを失効させるので、利用者
  * は自分の削除を追う手段を失う。ticket はその 1 件の operation の状態を
@@ -13,7 +13,7 @@ import { ValidationError } from "@repo/core/application/errors";
  * 鍵は composition root が供給する（`RequestContainer.deletionTicketKeyRing`）。
  * この層は `process.env` を読まない — 秘密の供給点を 1 系統に保つため。
  *
- * Cookie にしない（ADR-006）。セッション破棄と同時に自動送信される別の
+ * Cookie にしない。セッション破棄と同時に自動送信される別の
  * 資格情報を増やすことになり、SharePass / ExportTicket の扱いとも揃わ
  * ない。応答 body で返し、島が `sessionStorage` に持つ。
  *

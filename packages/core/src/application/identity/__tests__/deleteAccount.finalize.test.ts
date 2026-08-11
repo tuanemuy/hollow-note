@@ -100,7 +100,7 @@ const redactAll = async (
 };
 
 describe("deleteAccount finalize and compaction", () => {
-  it("TC-identity-090: an incomplete receipt set leaves the user deleting and its PII in place", async () => {
+  it("TC-identity-090 (without the retry-time record): an incomplete receipt set leaves the user deleting and its PII in place", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h, EMAIL);
     const operationId = await acceptDeletion(h, { userId, email: EMAIL });

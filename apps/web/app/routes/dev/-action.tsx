@@ -4,7 +4,7 @@ import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware"
 import { validateInput } from "@/presentation/validator";
 
 /**
- * dev IdP の同意画面（ADR-021）を支える 2 本。`OAUTH_DEV_MODE` の判定は
+ * dev IdP の同意画面を支える 2 本。`OAUTH_DEV_MODE` の判定は
  * composition root が `RequestContainer.oauthDevMode` として供給する値を
  * 読むだけで、ここでも画面側でも env を直読みしない。
  */

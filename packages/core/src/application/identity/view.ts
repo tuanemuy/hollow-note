@@ -78,8 +78,8 @@ export type CompleteOAuthSignInView = Readonly<{
 
 /**
  * Result of the one callback route, tagged with the intent the flow was
- * started for (ADR-007). Each intent answers with its own shape — only
- * the sign-in arm carries a session token — which is why this is a union
+ * started for. Each intent answers with its own shape — only the
+ * sign-in arm carries a session token — which is why this is a union
  * rather than the sign-in view alone. `integration` joins it in the
  * external-connection slice.
  *
@@ -215,7 +215,7 @@ export const toProfileView = (user: ActiveUser): ProfileView => ({
 /**
  * All the deletion request answers: the operation to follow and the fact
  * that it was taken. Progress is read afterwards through the status
- * ticket, since the session is gone by then (ADR-006).
+ * ticket, since the session is gone by then.
  */
 export type AccountDeletionAcceptedView = Readonly<{
   operationId: string;
@@ -227,7 +227,7 @@ export type AccountDeletionAcceptedView = Readonly<{
  * the state of that one operation. The projection deliberately drops
  * `partitionKey` / `requestKey` / `payload` — the ticket's holder is an
  * already signed-out browser, and those fields carry the user id and the
- * uniqueness keys the deletion is in the middle of erasing (ADR-006).
+ * uniqueness keys the deletion is in the middle of erasing.
  */
 export type AccountDeletionStatusView = Readonly<{
   operationId: string;

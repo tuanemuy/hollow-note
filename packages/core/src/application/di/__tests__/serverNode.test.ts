@@ -15,8 +15,9 @@ const GOOGLE = {
 };
 
 /**
- * ADR-003 の選択規則は起動時の env スキーマに閉じる（`createMemoryRuntime`
- * 側に置くと env を持たないテストハーネスが全滅する）。
+ * OAuth プロバイダーの選択規則は起動時の env スキーマに閉じる
+ * （`createMemoryRuntime` 側に置くと env を持たないテストハーネスが全滅
+ * する）。
  */
 describe("nodeServerEnvSchema OAuth provider selection", () => {
   it("selects the dev identity provider when OAUTH_DEV_MODE is true", () => {
@@ -52,10 +53,10 @@ describe("nodeServerEnvSchema OAuth provider selection", () => {
 });
 
 /**
- * AC-6 / ADR-021: `/dev/oauth/authorize` の 404 ガードは env を直読みせず
+ * AC-6: `/dev/oauth/authorize` の 404 ガードは env を直読みせず
  * `RequestContainer.oauthDevMode` だけを見る。ここで押さえるのは env から
  * そのフラグまでの経路で、ルート loader が偽で `notFound()` を投げる 1 行は
- * コード確認に留まる（progress.md に記録）。
+ * このテストの対象外。
  */
 describe("dev consent route flag", () => {
   const oauthDevModeFor = (

@@ -7,8 +7,7 @@ import type { AccountDeletionDispatchContinuedInput } from "./input";
  * Who produced a finalize attempt. Finalize is not a chain: it is
  * re-attempted by whichever branch completed the receipt that was
  * missing, and each branch names itself so its attempt is a distinct
- * event rather than an upsert over one that may already be in flight
- * (ADR-019 / ADR-025).
+ * event rather than an upsert over one that may already be in flight.
  */
 export const FINALIZE_ATTEMPT_FROM_REDACTION = "redaction";
 export const FINALIZE_ATTEMPT_FROM_AUTH_RESIDUE = "authResidue";

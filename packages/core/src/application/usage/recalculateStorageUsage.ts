@@ -1,8 +1,10 @@
+import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteOwner } from "@repo/core/domain/note/valueObject";
 import { StorageOwner } from "@repo/core/domain/storage/valueObject";
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import { QuotaSubject } from "@repo/core/domain/usage/valueObject";
+import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
@@ -26,13 +28,23 @@ export type RecalculateStorageUsageInput = Readonly<{
  *
  * `userId` is the actor, not the subject: `assertActorWritable` needs
  * whoever asked for the stocktake, and a workspace subject is recomputed
- * by a member (ADR-052).
+ * by a member. A user subject is therefore bound to the actor
+ * — the two are the same person or the actor has no standing over that
+ * scope at all. Workspace membership itself stays unchecked until
+ * `WorkspaceAuthorization` exists.
  */
 export async function recalculateStorageUsage({
   container,
   input,
 }: ServiceArgs<RecalculateStorageUsageInput>): Promise<RecalculatedStorageUsageView> {
   const actorUserId = UserId.create(input.userId);
+  if (input.subjectType === "user" && input.subjectId !== actorUserId) {
+    throw new BusinessRuleError(
+      WorkspaceErrorCode.InsufficientRole,
+      "Not allowed to recalculate this subject",
+    );
+  }
+
   const owner =
     input.subjectType === "user"
       ? StorageOwner.user(UserId.create(input.subjectId))

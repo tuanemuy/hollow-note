@@ -14,9 +14,9 @@ const MINUTE_MS = 60 * 1000;
 
 /**
  * Shared conformance suite for `ScopeTaskScheduler` and the read side of
- * the same table, `ScopeTaskQueue.listDue` (ADR-005): deterministic
- * upsert per `(kind, operationId)`, due-order claiming, and the
- * exponential backoff that ends in `failed`.
+ * the same table, `ScopeTaskQueue.listDue`: deterministic upsert per
+ * `(kind, operationId)`, due-order claiming, and the exponential
+ * backoff that ends in `failed`.
  */
 export function describeScopeTaskSchedulerContract(
   backendName: string,

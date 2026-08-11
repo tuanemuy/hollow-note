@@ -153,7 +153,7 @@ export const Bio = {
 const AVATAR_URL_MAX_LENGTH = 2048;
 
 /**
- * Same-origin location of the profile picture (ADR-016).
+ * Same-origin location of the profile picture.
  *
  * Two accepted forms: an app-relative path (`/storage/...`) or an
  * absolute URL on the app's own origin. The relative form is the
@@ -216,8 +216,13 @@ export const PasswordHash = {
   },
 };
 
-const PASSWORD_MIN_LENGTH = 8;
-const PASSWORD_MAX_LENGTH = 128;
+/**
+ * The password bounds, published so a form can hint and pre-check the same
+ * limits it will be judged against. The rule itself stays with
+ * `PlainPassword.create` below — readers only borrow the numbers.
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
 
 /**
  * Plain-text password in transit toward `PasswordHasher`. Never log or

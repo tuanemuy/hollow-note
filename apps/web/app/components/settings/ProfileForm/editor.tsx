@@ -1,6 +1,7 @@
 "use client";
 
 import type { ProfileView } from "@repo/core/application/identity/view";
+import { IdentityErrorCode } from "@repo/core/domain/identity/errorCode";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import {
   AVATAR_ALLOWED_MIME_TYPES,
@@ -45,7 +46,7 @@ import {
  *
  * 表示名 / 自己紹介 / ハンドルは 1 つのフォームで保存し、`useActionState`
  * が保留状態と結果表示を持つ。アイコンだけは別の操作で、選択した時点で
- * `storeAvatar` → `updateProfile` の 2 段（ADR-016）を走らせる —
+ * `storeAvatar` → `updateProfile` の 2 段を走らせる —
  * `storeAvatar` は `User` を書かないので、この 2 段目が無いと保管だけ
  * 成功してプロフィールに出ない。差し替え中は `useOptimistic` が選んだ
  * 画像を先に見せ、`router.invalidate()` でサーバー truth に戻す。
@@ -69,17 +70,30 @@ const DISPLAY_NAME_MAX_LENGTH = 50;
 const BIO_MAX_LENGTH = 500;
 const HANDLE_CHECK_DEBOUNCE_MS = 400;
 
-type SaveState = Readonly<{
-  status: "idle" | "saved" | "error";
-  message: string | null;
+/**
+ * 保存の失敗はどこに出すかまで持つ。ハンドル欄に紐づく失敗（重複・不正・
+ * 予約語）は欄側に出して `aria-invalid` を付け、どの欄の問題でもない失敗
+ * （認証切れ・競合・システム）はバーの live region に出す — P-25 が採る
+ * 「項目のエラー / パネルのエラー」の分離と同じ。
+ */
+type SaveError = Readonly<{
+  target: "handle" | "form";
+  message: string;
   suggestions: readonly string[];
 }>;
 
-const IDLE_SAVE_STATE: SaveState = {
-  status: "idle",
-  message: null,
-  suggestions: [],
-};
+type SaveState =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "saved" }>
+  | Readonly<{ kind: "error"; error: SaveError }>;
+
+const IDLE_SAVE_STATE: SaveState = { kind: "idle" };
+
+const HANDLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "HANDLE_ALREADY_USED",
+  IdentityErrorCode.InvalidHandle,
+  IdentityErrorCode.HandleReserved,
+]);
 
 type HandleHint =
   | Readonly<{ kind: "idle" }>
@@ -139,14 +153,10 @@ export function ProfileEditor({
           },
         });
       } catch (error) {
-        return {
-          status: "error",
-          message: displayError(error),
-          suggestions: suggestionsFor(nextHandle, error),
-        };
+        return { kind: "error", error: saveErrorFor(nextHandle, error) };
       }
       await reconcile();
-      return { status: "saved", message: null, suggestions: [] };
+      return { kind: "saved" };
     },
     IDLE_SAVE_STATE,
   );
@@ -231,12 +241,14 @@ export function ProfileEditor({
     setHandleHint({ kind: "idle" });
   };
 
+  const saveFailure = saveState.kind === "error" ? saveState.error : null;
   const handleProblem =
-    saveState.status === "error" && saveState.suggestions.length > 0
-      ? saveState.message
+    saveFailure !== null && saveFailure.target === "handle"
+      ? saveFailure.message
       : handleHint.kind === "problem"
         ? handleHint.message
         : null;
+  const suggestions = saveFailure?.suggestions ?? [];
 
   return (
     <form action={save}>
@@ -248,10 +260,13 @@ export function ProfileEditor({
           <span className={fieldLabelClass}>アイコン</span>
           <div className="flex flex-wrap items-center gap-4">
             <Avatar url={avatarUrl} displayName={displayName} />
+            {/* `hidden` はフォーカス順と支援技術から外すため。`sr-only`
+                だと「画像を選ぶ」ボタンとは別に、ラベルの無いファイル
+                選択コントロールがもう 1 つ現れる。 */}
             <input
               ref={fileInputRef}
               type="file"
-              className="sr-only"
+              hidden
               accept={AVATAR_ALLOWED_MIME_TYPES.join(",")}
               onChange={(event) => {
                 const file = event.target.files?.[0];
@@ -382,9 +397,9 @@ export function ProfileEditor({
               </span>
             ) : null}
           </p>
-          {saveState.suggestions.length === 0 ? null : (
+          {suggestions.length === 0 ? null : (
             <div className="mt-2 flex flex-wrap gap-2">
-              {saveState.suggestions.map((suggestion) => (
+              {suggestions.map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"
@@ -409,7 +424,7 @@ export function ProfileEditor({
               ? "保存中..."
               : dirty
                 ? "未保存の変更があります"
-                : saveState.status === "saved"
+                : saveState.kind === "saved"
                   ? "保存しました"
                   : null}
           </span>
@@ -432,8 +447,8 @@ export function ProfileEditor({
           </button>
         </div>
         <p className={errorTextClass} role="status" aria-live="polite">
-          {saveState.status === "error" && saveState.suggestions.length === 0
-            ? saveState.message
+          {saveFailure !== null && saveFailure.target === "form"
+            ? saveFailure.message
             : null}
         </p>
       </div>
@@ -469,14 +484,25 @@ function Avatar({
   );
 }
 
+function saveErrorFor(handle: string, error: unknown): SaveError {
+  const serialized = extractSerializedError(error);
+  const message = renderErrorMessage(serialized);
+  if (serialized.code === null || !HANDLE_ERROR_CODES.has(serialized.code)) {
+    return { target: "form", message, suggestions: [] };
+  }
+  return {
+    target: "handle",
+    message,
+    suggestions:
+      serialized.code === "HANDLE_ALREADY_USED" ? suggestionsFor(handle) : [],
+  };
+}
+
 /**
  * 重複したときだけ出す代案。ハンドルは 30 文字までなので、接尾辞の分を
  * 削ってから足す。
  */
-function suggestionsFor(handle: string, error: unknown): readonly string[] {
-  if (extractSerializedError(error).code !== "HANDLE_ALREADY_USED") {
-    return [];
-  }
+function suggestionsFor(handle: string): readonly string[] {
   const suffixes = ["-1", "-2", `-${new Date().getFullYear() % 100}`];
   const base = handle.trim().toLowerCase();
   return suffixes.map(

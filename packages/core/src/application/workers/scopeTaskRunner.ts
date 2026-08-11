@@ -25,11 +25,11 @@ export type ScopeTaskHandler = (
 ) => Promise<void>;
 
 /**
- * A cleanup turn settles its own task row (ADR-055), so the runner only
- * re-invokes the usecase. What it does have to carry across is the
- * scope→global hand-over: the barrier can only close on the turn that
- * acknowledges the last component, and nothing on the scope plane can
- * write the manifest receipt that follows it.
+ * A cleanup turn settles its own task row, so the runner only re-invokes
+ * the usecase. What it does have to carry across is the scope→global
+ * hand-over: the barrier can only close on the turn that acknowledges
+ * the last component, and nothing on the scope plane can write the
+ * manifest receipt that follows it.
  */
 const settleCleanupTurn = async (
   container: WorkerContainer,
@@ -44,7 +44,11 @@ const settleCleanupTurn = async (
 /**
  * Continuation kinds this deployment knows how to resume. A task whose
  * kind is absent is left due and reported — better a visible stall than
- * a silently completed row nothing processed.
+ * a silently completed row nothing processed. Left due means it comes
+ * back on every tick (a second apart by default), so the report is a
+ * standing log line for as long as the deployment lacks the handler,
+ * not a one-off; the row also keeps its place at the head of the
+ * `dueAt` order and spends one unit of each round's budget.
  */
 export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   [STORAGE_OWNER_DELETE_TASK_KIND]: async (container, task) => {
@@ -78,14 +82,13 @@ export type RunDueScopeTasksOptions = Readonly<{
 /**
  * Drives one round of the scope plane's continuation work.
  *
- * The enumeration is central because nothing else can list scopes
- * (ADR-005), but the rows a scope hands out are read under that scope's
- * own transaction, which is what the port means by claiming. The turn
- * that follows opens a transaction of its own and settles its row there
- * (ADR-055), so a turn that throws leaves the row untouched — the
- * runner is then the only one left to back it off, and without that a
- * permanently failing target would be re-driven every tick with
- * `attempt` frozen at zero.
+ * The enumeration is central because nothing else can list scopes, but
+ * the rows a scope hands out are read under that scope's own
+ * transaction, which is what the port means by claiming. The turn that
+ * follows opens a transaction of its own and settles its row there, so a
+ * turn that throws leaves the row untouched — the runner is then the
+ * only one left to back it off, and without that a permanently failing
+ * target would be re-driven every tick with `attempt` frozen at zero.
  *
  * One failing task must not hold up the others, so each is isolated.
  */

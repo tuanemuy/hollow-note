@@ -12,7 +12,7 @@ import {
 } from "../../domain/storage/valueObject";
 import type { MemoryBackend } from "./store";
 
-/** Path of the delivery route that serves these objects (ADR-016). */
+/** Path of the delivery route that serves these objects. */
 export const MEMORY_OBJECT_URL_PREFIX = "/storage";
 
 /**

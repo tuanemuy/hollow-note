@@ -22,9 +22,9 @@ export type GetUsageSnapshotInput = Readonly<{
  * initialized values and is deliberately **not** created, so opening the
  * screen never becomes a write path.
  *
- * The workspace section is always empty and the input carries no cursor
- * (ADR-051): enumerating memberships and resolving workspace names needs
- * ports this slice does not have.
+ * The workspace section is always empty and the input carries no cursor:
+ * enumerating memberships and resolving workspace names needs ports this
+ * slice does not have.
  */
 export async function getUsageSnapshot({
   container,

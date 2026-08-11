@@ -40,12 +40,12 @@ export type PersonalCleanupProgress = Readonly<{
  * `markCompleted` is only legal once every component the deployment
  * declares has acknowledged. The required set is **not** the whole enum:
  * it is supplied to the implementation by the composition root from the
- * participant registry (`application/cleanup/participants.ts`, ADR-002),
- * so a component nothing cleans up is never acknowledged on its behalf.
+ * participant registry (`application/cleanup/participants.ts`), so a
+ * component nothing cleans up is never acknowledged on its behalf.
  * Until completion the receipt has no expiry and must not be pruned.
  * The **caller** stores the prune task for `retainUntil` (120 days) in
- * the same unit of work as `markCompleted` (ADR-005: a single-table
- * store must not write another port's table), after which
+ * the same unit of work as `markCompleted` (a single-table store must
+ * not write another port's table), after which
  * `pruneCompleted` reclaims at most `limit` receipts per pass.
  *
  * Late duplicate deliveries inside the retention window no-op safely:

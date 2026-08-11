@@ -20,7 +20,7 @@ const nextTurn = (cursor: string | null): string =>
  *
  * The continuation numbers its turns. A turn that re-armed itself under
  * its own key would be marked processed by the relay finalize of the very
- * turn that stored it, and the chain would stop one page in (ADR-025).
+ * turn that stored it, and the chain would stop one page in.
  */
 export async function compactAccountDeletionManifest(
   container: WorkerContainer,

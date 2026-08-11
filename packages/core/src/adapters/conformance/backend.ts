@@ -53,10 +53,10 @@ export type ConformanceBackendOptions = Readonly<{
   maintenanceShardIds?: readonly string[];
   maintenanceTablesByKind?: Partial<Record<MaintenanceKind, readonly string[]>>;
   /**
-   * Cleanup participants the backend under test declares (ADR-002 /
-   * ADR-017). The suites drive completion from the same sets, so the
-   * contract is "everything declared, nothing else" rather than a fixed
-   * enum a deployment may not be able to satisfy.
+   * Cleanup participants the backend under test declares. The suites
+   * drive completion from the same sets, so the contract is "everything
+   * declared, nothing else" rather than a fixed enum a deployment may
+   * not be able to satisfy.
    */
   requiredCleanupComponents?: readonly PersonalCleanupComponent[];
   requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];

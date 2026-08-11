@@ -7,9 +7,9 @@ import { userId } from "./fixtures";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Shared conformance suite for `IdentityRemovalReceiptStore` (ADR-015 /
- * steps.md step 1): retention record of a removed identity, read back by
- * either the removal operation or the identity it describes.
+ * Shared conformance suite for `IdentityRemovalReceiptStore`: retention
+ * record of a removed identity, read back by either the removal
+ * operation or the identity it describes.
  */
 export function describeIdentityRemovalReceiptStoreContract(
   backendName: string,

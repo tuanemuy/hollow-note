@@ -8,7 +8,7 @@ export type RequestPasswordResetInput = Readonly<{
   email: string;
 }>;
 
-/** Minimum spacing between two reset mails for one user (ADR-031). */
+/** Minimum spacing between two reset mails for one user. */
 const REQUEST_INTERVAL_MS = 60 * 1000;
 
 const UNIFORM_RESPONSE: RequestPasswordResetView = {};

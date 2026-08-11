@@ -1,5 +1,6 @@
 import { ScopeKey } from "@repo/core/application/scope";
 import { Version } from "@repo/core/domain/common/version";
+import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
@@ -16,6 +17,7 @@ import {
 } from "@repo/core/domain/storage/valueObject";
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import { QuotaSubject } from "@repo/core/domain/usage/valueObject";
+import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
@@ -260,6 +262,22 @@ describe("recalculateStorageUsage", () => {
     expect(view).toEqual({ consumedBytes: 40, noteCount: 1 });
     expect(storedQuota(h, workspaceScope)?.consumedBytes).toBe(40);
     expect(h.backend.scope(scope).storageQuotas.values()).toHaveLength(0);
+  });
+
+  it("a user subject other than the actor is refused", async () => {
+    const h = createTestHarness();
+    await seedFile(h, { id: "file-1", bytes: 120, purpose: "media" });
+
+    await expect(recalculate(h, { subjectId: "user-2" })).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof BusinessRuleError &&
+        error.code === WorkspaceErrorCode.InsufficientRole,
+    );
+    expect(
+      h.backend
+        .scope(ScopeKey.user(UserId.create("user-2")))
+        .storageQuotas.values(),
+    ).toHaveLength(0);
   });
 
   it("TC-identity-045: a recalculation after the deletion barrier is refused", async () => {

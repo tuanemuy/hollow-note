@@ -15,7 +15,7 @@ export type CompleteOAuthCallbackInput = Readonly<{
 
 /**
  * Single entry point of `/auth/callback/:provider`, dispatching to the
- * usecase the flow was started for (ADR-007).
+ * usecase the flow was started for.
  *
  * The **only** branching evidence is `OAuthFlowState.intent`. It cannot
  * be the query string (attacker-controlled) nor the current session

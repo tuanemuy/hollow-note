@@ -54,7 +54,7 @@ const uniquenessKeysOf = (
  * 2): it decides the operation, moves the user to `deleting`, and takes
  * the personal write barrier.
  *
- * The order is load-bearing (ADR-020). Retained terminal attempts are
+ * The order is load-bearing. Retained terminal attempts are
  * **counted and judged before** the operation is created, so admission
  * never creates one it has to roll back. The operation is then decided
  * **before** the user transition, because `User.beginDeletion` accepts
@@ -66,7 +66,7 @@ const uniquenessKeysOf = (
  *
  * The uniqueness keys are frozen into the operation payload here, while
  * the PII is still alive; global cleanup and every replay of it read
- * only the payload (ADR-020).
+ * only the payload.
  *
  * The barrier is taken after the commit, in the personal scope's own
  * transaction: writes that committed before it stay visible to the

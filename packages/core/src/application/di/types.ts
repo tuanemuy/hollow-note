@@ -45,7 +45,7 @@ export type AppConfig = Readonly<{
 }>;
 
 /**
- * Signing keys for the deletion status ticket (ADR-006).
+ * Signing keys for the deletion status ticket.
  *
  * The ticket is a presentation concern — it carries a transport format
  * and an expiry — but its secret is a deployment concern, so the
@@ -152,9 +152,9 @@ export type UsageReader = Readonly<{
  * may enclose.
  *
  * `oauthDevMode` is not a port but the one flag the composition root
- * publishes about its own OAuth wiring (ADR-021): the dev consent route
- * reads it instead of `process.env`, so no request-path code inspects
- * the environment directly.
+ * publishes about its own OAuth wiring: the dev consent route reads it
+ * instead of `process.env`, so no request-path code inspects the
+ * environment directly.
  *
  * Intentionally does NOT carry `outboxRepository` or `idempotencyStore`:
  * those are worker concerns. A request that needs to enqueue a domain
@@ -250,10 +250,10 @@ export type ExpirySweep = Readonly<{
  * where each fixed target lives now, and the public projection, which is
  * global and therefore belongs to no scope's unit of work.
  * `scopeTaskQueue` is the runner's only way to learn which scopes have
- * continuation work due (ADR-005) — it reads, and the claim still
- * happens inside each scope's unit of work. `objectStorage` is here
- * because reclaiming an object is the subscriber's job, after the
- * metadata row it belonged to is already gone.
+ * continuation work due — it reads, and the claim still happens inside
+ * each scope's unit of work. `objectStorage` is here because reclaiming
+ * an object is the subscriber's job, after the metadata row it belonged
+ * to is already gone.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{

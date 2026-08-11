@@ -37,6 +37,19 @@ export const startOAuthSignInFn = createServerFn({ method: "POST" })
     return { authorizationUrl: view.authorizationUrl };
   });
 
+/**
+ * 消費 POST が起きずに終わった往復（プロバイダーのキャンセル・`state` /
+ * `code` の欠落）で束縛 Cookie を捨てる。破棄は照合と対で成立するもの
+ * なので、照合に辿り着かない往復にも破棄の入口を用意する。
+ */
+export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .handler(async () => {
+    const stateCookie = await import("@/presentation/oauthStateCookie");
+    stateCookie.clearOAuthStateCookie();
+    return null;
+  });
+
 const callbackSchema = z.object({
   provider: z.string().min(1).max(32),
   state: z.string().min(1).max(512),
@@ -45,7 +58,7 @@ const callbackSchema = z.object({
 
 /**
  * P-05 のコールバック消費（JSON POST）。分岐根拠は `state` の intent
- * だけで、パスの `:provider` は照合にしか使わない（ADR-007）。サインイン
+ * だけで、パスの `:provider` は照合にしか使わない。サインイン
  * のときだけここでセッション Cookie を焼く — `Set-Cookie` はこの応答に
  * しか載せられない。認証手段の追加（`linkIdentity`）は既に認証済みの
  * 要求なので Cookie に触れず、戻り先だけを返す。
@@ -74,11 +87,14 @@ export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
         import("@/presentation/oauthStateCookie"),
       ]);
       await stateCookie.assertOAuthStateCookie(data.state);
+      // 照合を通った時点で束縛の役目は終わる（この先の最初の一手が
+      // `state` の単回消費なので、交換が失敗しても往復はやり直せない）。
+      // 破棄をここに置くと、成功・失敗のどちらでも取り残されない。
+      stateCookie.clearOAuthStateCookie();
       const view = await module.completeOAuthCallback({
         container,
         input: { provider: data.provider, state: data.state, code: data.code },
       });
-      stateCookie.clearOAuthStateCookie();
       if (view.intent === "linkIdentity") {
         return { intent: "linkIdentity", redirectTo: view.redirectTo };
       }

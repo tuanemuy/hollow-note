@@ -7,7 +7,12 @@ import {
   Handle,
   UserId,
 } from "@repo/core/domain/identity/valueObject";
-import { ConflictError, NotFoundError, ValidationError } from "../errors";
+import {
+  ConflictError,
+  isConflictError,
+  NotFoundError,
+  ValidationError,
+} from "../errors";
 import type { ServiceArgs } from "../types";
 import {
   activateUniqueKeys,
@@ -44,8 +49,7 @@ type HandlePlan =
  * Composed from the user id rather than minted, so a retry after a lost
  * response derives the **same** reservation id and reuses the row it
  * already took (a fresh id would collide with its own reservation and
- * surface as `HANDLE_ALREADY_USED`). Same reasoning as the deterministic
- * continuation ids of ADR-019 / ADR-035.
+ * surface as `HANDLE_ALREADY_USED`).
  */
 const profileOperationId = (userId: UserId): string =>
   `identity.updateProfile:${userId}`;
@@ -85,7 +89,7 @@ async function planHandle(
   // claim is really published: `reserve` would answer this user's own
   // `active` row with `HANDLE_ALREADY_USED`. A saga stopped between the
   // shard commit and `activate` leaves no claim behind, and this re-run
-  // is the only thing that can publish it again (ADR-076).
+  // is the only thing that can publish it again.
   const claimed = await holdsActiveUniqueKey(deps, {
     kind: "handle",
     normalizedKey: handle,
@@ -105,13 +109,13 @@ async function planHandle(
  * neither key is held and a rival could take the old one while this
  * request still might fail; activating after the release would leave the
  * new key parked. The old claim is freed by `normalizedKey` because the
- * operation that created it is long past (ADR-015).
+ * operation that created it is long past.
  *
  * A saga stopped between the commit and the activation leaves the user
  * row naming a handle the directory does not claim, which a rival could
  * then take. Re-sending the same handle repairs it: the plan reads the
  * directory before collapsing to a no-op and reserves again under the
- * same deterministic operation id (ADR-076).
+ * same deterministic operation id.
  *
  * Concurrency is decided by the user version observed before the
  * transaction: a profile write that committed in between makes this one a
@@ -213,7 +217,16 @@ export async function updateProfile({
       return entity;
     });
   } catch (error) {
-    await releaseUniqueKeys(container, reservations);
+    // A lost race is the one failure that must not compensate. The
+    // reservation id is derived from the user id and the key, so two
+    // concurrent attempts at the same handle share a single directory
+    // row; releasing here would delete the row the winning attempt is
+    // about to activate, leaving the user row naming a handle nobody
+    // claims. Losing means "another attempt of this same operation is
+    // in flight", and that attempt owns the row.
+    if (!(isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE")) {
+      await releaseUniqueKeys(container, reservations);
+    }
     throw error;
   }
 

@@ -16,11 +16,11 @@ import { releaseActiveUniqueKey } from "./uniqueness";
  * spec's "release only after the authoritative delete" honest on a
  * backend whose receipt and row could ever diverge.
  *
- * Idempotence basis (no `IdempotencyStore`, per the criterion of
- * ADR-024): the effect is `beginRelease` + `release` on one key for one
- * operation id. A redelivery finds nothing left to release, and neither
- * call can touch a claim owned by anybody else — `beginRelease` no-ops
- * unless the row is the receipt's own user's.
+ * Idempotence basis (no `IdempotencyStore`, because the processing is
+ * itself idempotent): the effect is `beginRelease` + `release` on one
+ * key for one operation id. A redelivery finds nothing left to release,
+ * and neither call can touch a claim owned by anybody else —
+ * `beginRelease` no-ops unless the row is the receipt's own user's.
  */
 export async function identityRemovalRelease(
   event: IdentityRemovedEvent,

@@ -61,6 +61,7 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | `OAUTH_DEV_MODE`      | see below | — (commented out in `.env.example`) | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Refused together with `NODE_ENV=production`, which `pnpm start` declares. |
 | `NODE_ENV`            | no       | `production` under `pnpm start` | `scripts/listen.node.ts` declares it before loading `.env`, so the boot-time guards see the same value vite folded into the bundle. |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | see below | — | Google OpenID Connect credentials. Authorized redirect URI: `${APP_URL}/auth/callback/google`. |
+| `DELETION_TICKET_KEY`  | no       | per-process random key   | Signing key (32 bytes, base64url) for the status ticket the account-deletion screen polls with. Unset means the key is minted at boot, so a restart makes outstanding tickets unreadable and the progress display falls back to "the deletion keeps going"; the deletion itself still runs to completion. Set but not 32 base64url bytes is a startup error. |
 | `PORT`                | no       | `3000`                  | HTTP listener port.                                                                 |
 | `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
 | `OUTBOX_BATCH_SIZE`   | no       | `100`                   | Max outbox rows claimed per relay tick.                                             |
@@ -83,25 +84,28 @@ Running the production build against the dev IdP is deliberately awkward: it tak
 
 The share-token encryption key ring is minted fresh at process start (ephemeral AES-256-GCM key). Existing share URLs therefore survive only as long as the process — consistent with the rest of the in-memory model.
 
-## Worker runner (relay / consumer / pruner)
+## Worker runner (relay / consumer / scope tasks / pruner)
 
 `apps/web/app/worker/node/runner.ts#createNodeWorkerRunner` is the same-process orchestrator for the roles that ship as separate Workers on Cloudflare.
 
-| Role     | Cloudflare (Issue #11)                  | Node                                                                                                              |
-| -------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Relay    | cron + Service Binding                  | 60-second `setInterval` fallback + `InProcessRelayTrigger.kick()` from the request-path UoW (`setImmediate` fan)  |
-| Consumer | Queue subscriber                        | `InMemoryQueueDispatcher` — currently a no-op handler: no event subscriber exists in the walking-skeleton slice   |
-| Pruner   | crons (outbox + auth state)             | 24-hour `setInterval` running `pruneOutbox` only. `pruneExpiredAuthState` is implemented and tested but **not scheduled** here — its cron / queue wiring lands with the Cloudflare slice |
-| DLQ      | Dedicated Worker                        | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
+| Role        | Cloudflare (Issue #11)      | Node                                                                                                              |
+| ----------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Relay       | cron + Service Binding      | 60-second `setInterval` fallback + `InProcessRelayTrigger.kick()` from the request-path UoW (`setImmediate` fan)   |
+| Consumer    | Queue subscriber            | `InMemoryQueueDispatcher` → `dispatchDomainEvent` (`packages/core/src/application/workers/subscribers.ts`): the registry routes an event to the subscribers registered for its type, and an event nobody subscribes to is acked with a warning |
+| Scope tasks | Durable Object alarms       | 1-second `setInterval` + `ScopeTaskTrigger.kick()` from a scope-plane commit that stored a continuation, both draining `runDueScopeTasks` |
+| Pruner      | crons (outbox + auth state) | 24-hour `setInterval` — plus one round at `start()` — running three mutually isolated sweeps: `pruneOutbox`, `pruneAccountDeletionManifests` (terminal deletion headers and their control-plane rows), and the 30-day `identity_removal_receipts` sweep. `pruneExpiredAuthState` is implemented and tested but **not scheduled** here — its cron / queue wiring is Issue #15 |
+| DLQ         | Dedicated Worker            | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
 
-`runner.start()` fires an immediate relay tick (drains backlog), registers the two intervals plus SIGTERM / SIGINT handlers, and returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally. Commits kick the relay out-of-band via `bindNodeRelayTrigger`, and concurrent kicks collapse into one in-flight tick.
+`runner.start()` drives one round of the relay, the scope tasks and the pruner immediately (crash-leftover backlog, due continuations left by a previous process, and retention that must not wait a whole interval), registers the three intervals plus SIGTERM / SIGINT handlers, and returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally. Commits kick the relay and the scope-task runner out-of-band via `bindNodeRelayTrigger` / `bindNodeScopeTaskTrigger`, and concurrent kicks collapse into one in-flight tick.
+
+There is exactly one runner per process. `apps/web/app/server.node.ts` pins the booted server on `globalThis` / `import.meta.hot.data`, so a `vite dev` reload — which re-evaluates the module and boots again — retires the previous boot (`[server.node] retiring the previous boot`) before starting the replacement (`[server.node] worker runner started`). Two "started" lines without a "retiring" line between them would mean two runners ticking the same store.
 
 ## Graceful shutdown
 
 `apps/web/scripts/listen.node.ts` and `apps/web/app/server.node.ts` both register SIGTERM / SIGINT handlers:
 
 1. `@hono/node-server` stops accepting new HTTP connections.
-2. `runner.stop()` clears the intervals, stops the relay trigger, and awaits in-flight ticks.
+2. `runner.stop()` clears the intervals, deregisters its own signal listeners, stops the relay and scope-task triggers, and awaits in-flight ticks.
 3. `process.exit(0)`. Data is gone at this point (see *Persistence model*).
 
 The shutdown promise is memoised — calling `stop()` repeatedly is safe.
@@ -110,12 +114,16 @@ The shutdown promise is memoised — calling `stop()` repeatedly is safe.
 
 The runtime is **single-process by construction**: state lives in the process heap. Running multiple instances gives each its own, unrelated store. There is nothing to scale horizontally here; the multi-tenant target is the Cloudflare runtime.
 
+Request bodies are therefore capped at **12 MB** (`MAX_REQUEST_BODY_BYTES` in `apps/web/scripts/listen.node.ts`); anything larger is answered `413` before the app sees it. Server functions materialise the whole body into `FormData` / `File` before their validator runs, and the request and worker planes share this process, so an oversized POST would otherwise buffer against the in-flight deletion continuations. The cap sits above the largest business limit (8 MB at the avatar upload boundary) on purpose — that one stays with the route. It applies to `pnpm start` only; `vite dev` does not go through this launcher.
+
 ## Logging and observability
 
 The application uses the `ConsoleLogger` port (`packages/core/src/application/ports/logger.ts`) — every log line goes to stdout / stderr as JSON-ish objects. Notable lines:
 
 - `mail.sent` — memory mail deliveries. Carries `actionUrl` (the verification link, raw token included) only when `MEMORY_MAIL_LOG_ACTION_URL=true`.
 - `[outbox] quarantining event …` — the DLQ surface.
+- `[outbox] pruned N processed event(s)` — one line per prune tick (boot, then daily).
+- `[server.node] worker runner started` / `[server.node] retiring the previous boot` — the boot lifecycle described under *Worker runner*.
 
 ## Deployment conditions
 
@@ -124,5 +132,5 @@ The application uses the `ConsoleLogger` port (`packages/core/src/application/po
 ## Known limitations
 
 - **No durability.** Every restart starts blank. This is the intended shape of the walking skeleton, not an oversight.
-- **No auth-state prune scheduling.** `pruneExpiredAuthState` runs only from tests; expired sessions / tokens are still rejected logically (absolute expiry + epoch checks), the physical rows just accumulate for the process lifetime.
+- **No auth-state prune scheduling.** `pruneExpiredAuthState` runs only from tests; expired sessions / tokens are still rejected logically (absolute expiry + epoch checks), the physical rows just accumulate for the process lifetime. The one exception is `identity_removal_receipts`, which the prune tick sweeps directly because its 30-day window is a retention promise rather than bookkeeping; once Issue #15 gives `pruneExpiredAuthState` a driver, that table is swept by both and the runner's own sweep can go.
 - **No built-in DLQ surface** beyond the quarantine log line.

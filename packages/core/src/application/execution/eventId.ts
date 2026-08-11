@@ -7,12 +7,12 @@ import { type EventDraft, EventId } from "@repo/core/domain/common/event";
  * originating operation, phase and cursor. Deriving the id from it makes
  * a replay of the turn that stored it write the **same** outbox row
  * instead of a second one, which is what keeps a lost commit response
- * from forking a continuation chain in two (ADR-019). Everything else —
+ * from forking a continuation chain in two. Everything else —
  * domain events, whose duplicates are meaningful history — is minted.
  *
  * The key must differ between the turns of a chain. A continuation that
  * re-emitted its own key would be marked processed by the relay finalize
- * of the turn that stored it, and the chain would stop there (ADR-025);
+ * of the turn that stored it, and the chain would stop there;
  * a chain that cannot vary its key therefore leaves the field out and
  * relies on its handler being idempotent instead.
  *

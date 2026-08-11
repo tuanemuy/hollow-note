@@ -7,9 +7,9 @@ import { userId } from "./fixtures";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Shared conformance suite for `DistributedOperationStore` (ADR-013):
- * one running operation per partition, replay by request key, a payload
- * fixed at creation, and terminal-row counting.
+ * Shared conformance suite for `DistributedOperationStore`: one running
+ * operation per partition, replay by request key, a payload fixed at
+ * creation, and terminal-row counting.
  */
 export function describeDistributedOperationStoreContract(
   backendName: string,

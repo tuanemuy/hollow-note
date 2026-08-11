@@ -27,13 +27,12 @@ export type ScopeCleanupTurn = Readonly<{
 
 /**
  * Closes the personal barrier once every declared component has
- * acknowledged, and arms its expiry in the same unit of work (ADR-005:
- * the store must not write another port's table, so the caller pairs
- * them).
+ * acknowledged, and arms its expiry in the same unit of work (the store
+ * must not write another port's table, so the caller pairs them).
  *
  * Returns whether the barrier is completed — including when it already
  * was, which is what lets a re-driven turn re-acknowledge the global
- * receipt without redoing the scope work (ADR-018).
+ * receipt without redoing the scope work.
  */
 export async function completePersonalCleanupIfDone(
   ctx: ScopeUnitOfWorkContext,
@@ -84,6 +83,11 @@ export const PERSONAL_BARRIER_PRUNE_PAGE_SIZE = 100;
  * Reaching a short page is the proof there is nothing left, and only
  * then is the task settled — a turn whose response was lost finds the
  * row still due and repeats a scan that has nothing to remove.
+ *
+ * The full-page branch is unreachable on a backend that keeps at most
+ * one barrier receipt per scope (the memory adapter, and what the
+ * conformance suite pins today), so it is carried untested until a
+ * backend that can hold several exists — #11.
  */
 export async function prunePersonalCleanupBarriers(
   container: WorkerContainer,

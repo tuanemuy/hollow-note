@@ -46,6 +46,12 @@ export interface IdentityUniqueDirectory {
    * the releasing operation, so the following `release(operationId)` can
    * find it. A missing row or a row held by another user is a no-op — a
    * release request can never take a key away from its owner.
+   *
+   * A row that is still merely `reserved` is a no-op too: this call only
+   * tears **durable** claims down. Re-keying a reservation would hand it
+   * to the releasing operation, whose `release` drops `reserved` rows as
+   * well, and the in-flight operation that took the reservation would
+   * lose it mid-saga.
    */
   beginRelease(
     input: Readonly<{

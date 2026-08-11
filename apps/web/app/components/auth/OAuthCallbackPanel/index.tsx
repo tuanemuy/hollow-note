@@ -13,10 +13,7 @@ import {
   OAUTH_FLOW_INTERRUPTED_MESSAGE,
   renderErrorMessage,
 } from "@/presentation/errorDisplay";
-import {
-  extractSerializedError,
-  type SerializedError,
-} from "@/presentation/errorResponse";
+import { extractSerializedError } from "@/presentation/errorResponse";
 import {
   completeOAuthCallbackFn,
   startOAuthSignInFn,
@@ -25,24 +22,31 @@ import {
 /**
  * P-05 OAuth コールバック（spec/pages/index.md#P-05、モック
  * P05-oauth-callback.html）。GET はこの画面を描くだけで、マウント後に
- * `state` / `code` を POST で消費する（#1 ADR-029 の GET/POST 分離）。
+ * `state` / `code` を POST で消費する（spec/adr/029 の GET/POST 分離）。
  *
  * 状態: 処理中 / 成功（`redirectTo` へ）/ キャンセル / 失敗（state 不一致・
  * 期限切れ・通信失敗）/ 再許可（プロバイダーから受け取った情報では
  * サインインを完了できず、同意からやり直す必要がある）。
  *
- * どのユースケースを走らせるかは `state` の intent だけが決める
- * （ADR-007）ので、この画面は分岐を持たず結果だけを表示する。成功以外は
- * intent が判っていない（`state` を消費できていない）ため、文言と戻り先
- * を intent 中立に倒す（ADR-084）。
+ * どのユースケースを走らせるかは `state` の intent だけが決めるので、
+ * この画面は分岐を持たず結果だけを表示する。成功以外は intent が判って
+ * いない（`state` を消費できていない）ため、文言と戻り先を intent 中立に
+ * 倒す。
  */
+
+/**
+ * 失敗から出せる再試行は 2 つだけで、どちらを出せるかは失敗の出所が
+ * 決める。`state` は単回消費なので、交換のやり直しは要求が
+ * サーバーに届いていないと判るときにしか意味を持たない。
+ */
+type RetryAction = "exchange" | "authorization";
 
 type Phase =
   | { kind: "processing" }
   | { kind: "succeeded"; intent: "signIn" | "linkIdentity" }
   | { kind: "cancelled" }
   | { kind: "needsReauthorization" }
-  | { kind: "failed"; message: string };
+  | { kind: "failed"; message: string; retry: RetryAction | null };
 
 /** 戻り先が `state` に無いときの落ち着き先。intent ごとに違う。 */
 const FALLBACK_PATH = {
@@ -81,7 +85,7 @@ export function OAuthCallbackPanel({
       try {
         result = await complete({ data: { provider, state, code } });
       } catch (thrown) {
-        setPhase(classify(extractSerializedError(thrown)));
+        setPhase(classify(thrown, reachedServer(thrown) ? null : "exchange"));
         return;
       }
       setPhase({ kind: "succeeded", intent: result.intent });
@@ -103,7 +107,8 @@ export function OAuthCallbackPanel({
         });
         window.location.assign(authorizationUrl);
       } catch (thrown) {
-        setPhase(classify(extractSerializedError(thrown)));
+        // 認可のやり直しは新しい `state` を作る操作なので、何度でも押せる。
+        setPhase(classify(thrown, "authorization"));
       }
     })();
   }, [provider, startAgain]);
@@ -135,19 +140,37 @@ function initialPhase(
   if (error === "access_denied") {
     return { kind: "cancelled" };
   }
+  // 交換を始める材料が無い（`code` / `state` が届いていない）ので、
+  // ここからやり直せるものは無い。
   if (error !== null || state === null || code === null) {
-    return { kind: "failed", message: OAUTH_FLOW_INTERRUPTED_MESSAGE };
+    return {
+      kind: "failed",
+      message: OAUTH_FLOW_INTERRUPTED_MESSAGE,
+      retry: null,
+    };
   }
   return { kind: "processing" };
 }
 
 // 文言はすべて辞書（`errorDisplay`）に任せ、ここで分岐するのは画面状態が
 // 変わる 1 件だけにする。
-function classify(error: SerializedError): Phase {
+function classify(thrown: unknown, retry: RetryAction | null): Phase {
+  const error = extractSerializedError(thrown);
   if (error.kind === "validation" && error.code === "OAUTH_EMAIL_UNVERIFIED") {
     return { kind: "needsReauthorization" };
   }
-  return { kind: "failed", message: renderErrorMessage(error) };
+  return { kind: "failed", message: renderErrorMessage(error), retry };
+}
+
+/**
+ * サーバーが返した失敗はエラー契約（`serialized`）を必ず連れてくる。それを
+ * 持たない throw だけが「要求が届いていない」と言い切れるもので、`state` を
+ * 消費していないと判るのもその場合に限る。
+ */
+function reachedServer(thrown: unknown): boolean {
+  return (
+    typeof thrown === "object" && thrown !== null && "serialized" in thrown
+  );
 }
 
 function PhaseResult({
@@ -237,18 +260,28 @@ function PhaseResult({
           title="手続きを完了できませんでした"
           body={phase.message}
           actions={
-            <>
-              <button
-                type="button"
-                onClick={onRetryExchange}
-                className={primaryClass}
-              >
-                もう一度試す
-              </button>
-              <Link to="/" className={ghostClass}>
+            phase.retry === null ? (
+              <Link to="/" className={outlineClass}>
                 Hollow に戻る
               </Link>
-            </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={
+                    phase.retry === "exchange"
+                      ? onRetryExchange
+                      : onRetryAuthorization
+                  }
+                  className={primaryClass}
+                >
+                  もう一度試す
+                </button>
+                <Link to="/" className={ghostClass}>
+                  Hollow に戻る
+                </Link>
+              </>
+            )
           }
         />
       );

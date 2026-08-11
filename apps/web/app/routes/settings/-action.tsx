@@ -1,3 +1,4 @@
+import { PASSWORD_MAX_LENGTH } from "@repo/core/domain/identity/valueObject";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
@@ -13,8 +14,6 @@ import { validateInput } from "@/presentation/validator";
  * 認証は各ハンドラーの中で `requireSession()` を通す（ルートガードは
  * リダイレクトのため、こちらは 401 を返す二重化）。
  */
-
-const PASSWORD_MAX_LENGTH = 128;
 
 /** P-22 の一覧フラグメント。未解決の promise を返してストリームさせる。 */
 export const renderIdentityList = createServerFn({ method: "GET" })
@@ -162,7 +161,7 @@ const avatarUploadSchema = z.object({
 
 /**
  * PAGE-p21-001。`storeAvatar` はバイト列を置くだけで `User` を書かない
- * ので、返った `url` を `updateProfileFn` へ渡す 2 段目が要る（ADR-016）。
+ * ので、返った `url` を `updateProfileFn` へ渡す 2 段目が要る。
  * 主体は Cookie のセッションで、`subjectId` を要求本文から取らない。
  */
 export const uploadAvatarFn = createServerFn({ method: "POST" })
@@ -347,7 +346,7 @@ const deleteAccountSchema = z.object({
 });
 
 /**
- * PAGE-p25-002。受理は 202 + 応答 body の status ticket（ADR-006）。
+ * PAGE-p25-002。受理は 202 + 応答 body の status ticket。
  *
  * 即時サインアウトは `Set-Cookie` によるセッション Cookie の破棄だけで
  * 済ませ、リダイレクトは返さない — 画面は P-25 に留まって ticket で

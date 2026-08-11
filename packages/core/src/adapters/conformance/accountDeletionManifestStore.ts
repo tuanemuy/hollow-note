@@ -8,8 +8,8 @@ import { noteId, userId } from "./fixtures";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The declaration this suite drives the backend with (ADR-017). It is a
- * strict subset of the receipt enum on purpose: finalize waits for what
+ * The declaration this suite drives the backend with. It is a strict
+ * subset of the receipt enum on purpose: finalize waits for what
  * the deployment declares, so a backend that hard-codes the full set
  * fails here.
  */

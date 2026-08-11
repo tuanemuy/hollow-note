@@ -151,7 +151,7 @@ export async function holdsActiveUniqueKey(
  *
  * Keyed by `normalizedKey` and the owner rather than by the reservation
  * that created the claim: that operation is long past and its id cannot
- * be re-derived by the one freeing the key (ADR-015). A row that is
+ * be re-derived by the one freeing the key. A row that is
  * missing or held by someone else makes `beginRelease` a no-op, so this
  * can never take a key away from its owner, and re-running the same
  * `operationId` converges — which is what lets an at-least-once consumer

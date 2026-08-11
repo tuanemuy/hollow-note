@@ -4,8 +4,9 @@ const SECTIONS = ["storage", "llm"] as const;
 
 /**
  * `/settings/usage` の per-fragment streaming 用フォールバック。
- * `UsagePanel` の DOM（更新時刻 + 2 セクション）を写して、差し替え時の
- * レイアウトシフトを防ぐ。警告のアラートは出るとは限らないので置かない。
+ * `UsagePanel` の DOM（更新時刻 + 2 セクション + 削除への導線行）を写して、
+ * 差し替え時のレイアウトシフトを防ぐ。警告のアラートは出るとは限らないので
+ * 置かない。
  */
 export function UsagePanelSkeleton() {
   return (
@@ -25,6 +26,10 @@ export function UsagePanelSkeleton() {
           <Skeleton className="mt-2 h-3 w-40" />
         </div>
       ))}
+      <div className="flex items-center gap-3 border-t border-hairline py-5">
+        <Skeleton className="h-4 w-60" />
+        <Skeleton className="ml-auto h-8 w-32 rounded-pill" />
+      </div>
     </div>
   );
 }

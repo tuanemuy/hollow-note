@@ -14,7 +14,7 @@ export type GetProfileInput = Readonly<{ userId: string }>;
  * start from the stored values (`bio` in particular is projected nowhere
  * else), and reaching into `userReader` from the presentation layer would
  * put a repository read outside the application layer. Hence this
- * read-only sibling of `updateProfile` (ADR-047).
+ * read-only sibling of `updateProfile`.
  */
 export async function getProfile({
   container,

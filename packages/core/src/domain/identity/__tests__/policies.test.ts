@@ -30,12 +30,20 @@ const oauthIdentity = (id: string, accountId: string) =>
     T0,
   ).entity;
 
+/**
+ * `null` means the call was admitted. Anything other than a
+ * `BusinessRuleError` is rethrown so the admitted side of a boundary
+ * cannot pass by failing in some unrelated way.
+ */
 const codeOf = (fn: () => unknown): string | null => {
   try {
     fn();
     return null;
   } catch (error) {
-    return isBusinessRuleError(error) ? error.code : null;
+    if (!isBusinessRuleError(error)) {
+      throw error;
+    }
+    return error.code;
   }
 };
 
@@ -221,7 +229,9 @@ describe("AvatarUrl", () => {
 });
 
 describe("AccountDeletionRetryPolicy", () => {
-  it("TC-identity-052: admits the ninth attempt only while fewer than 8 terminal rows are retained", () => {
+  // The threshold's own boundary only. Verifying it as a checklist row
+  // (TC-identity-052) needs the `rejected` path, which lives in #3.
+  it("admits the ninth attempt only while fewer than 8 terminal rows are retained", () => {
     expect(
       codeOf(() => AccountDeletionRetryPolicy.ensureRetryable(7)),
     ).toBeNull();

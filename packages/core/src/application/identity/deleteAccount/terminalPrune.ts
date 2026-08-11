@@ -50,7 +50,7 @@ const commandKeyOf = (
  *
  * The header and its `distributed_operations` row are dropped in one
  * transaction, which is the whole reason the manifest names what it
- * reclaimed instead of counting it (ADR-026): the two must never survive
+ * reclaimed instead of counting it: the two must never survive
  * each other, or a retained request key would keep pointing at a
  * manifest that is gone.
  *

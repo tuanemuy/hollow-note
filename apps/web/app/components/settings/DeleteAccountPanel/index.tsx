@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouteContext } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import {
@@ -14,6 +15,7 @@ import {
   dangerPanelTitleClass,
   ghostButtonClass,
   panelNoteClass,
+  primaryButtonClass,
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { renderErrorMessage } from "@/presentation/errorDisplay";
@@ -27,7 +29,7 @@ import {
  * P-25 アカウント削除（モック P25-settings-danger.html、PAGE-p25-001..003）。
  *
  * 実行は同じ応答でセッションを失効させるので、この画面には他と違う 2 つ
- * の規律がある（ADR-006）。**遷移しない** — ticket を持つこの島がその場
+ * の規律がある。**遷移しない** — ticket を持つこの島がその場
  * で消えると、正常系の 1 手目で進捗照会の手段が無くなる。そして三層規律
  * の唯一の例外として **`router.invalidate()` を呼ばない** — 再基底化する
  * とローダーが `UNAUTHENTICATED` で落ちて進捗表示ごと消える。再基底化の
@@ -47,12 +49,49 @@ type Phase =
   | Readonly<{ kind: "accepted"; ticket: string }>
   | Readonly<{ kind: "running"; ticket: string }>
   | Readonly<{ kind: "completed" }>
-  | Readonly<{ kind: "settled"; message: string }>;
+  /**
+   * 進捗を追えなくなった状態。ticket が残っているのは一時障害のときだけ
+   * で、そのときは同じ ticket で追い直せる。恒久失効・終端では null に
+   * なる。
+   */
+  | Readonly<{ kind: "settled"; message: string; resumeTicket: string | null }>;
+
+/**
+ * 退避する ticket は「誰の削除か」まで持つ。ticket 自体は operationId と
+ * 期限しか含まないので、主体はここに置く。持た
+ * ないと、進行中に離脱したタブで別の利用者がサインインしたときに、その人
+ * へ他人の削除の進捗と「削除しました」を見せてしまう。
+ */
+type StoredTicket = Readonly<{ ticket: string; userId: string | null }>;
+
+const readStoredTicket = (): StoredTicket | null => {
+  const raw = sessionStorage.getItem(TICKET_STORAGE_KEY);
+  if (raw === null) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const { ticket, userId } = parsed as {
+    ticket?: unknown;
+    userId?: unknown;
+  };
+  if (typeof ticket !== "string") {
+    return null;
+  }
+  return { ticket, userId: typeof userId === "string" ? userId : null };
+};
 
 /**
  * 提出の失敗はどこに出すかまで持つ。項目エラー欄はメールアドレス不一致
  * の専用枠で、認証切れのような入力と無関係な失敗をそこへ出すと、無関係
- * な欄に `aria-invalid` が付く（ADR-085）。
+ * な欄に `aria-invalid` が付く。
  */
 type SubmitError = Readonly<{ target: "field" | "panel"; message: string }>;
 
@@ -89,13 +128,16 @@ const newRequestId = (): string => {
 
 const leave = (): void => {
   // フル遷移。router キャッシュにはサインアウト済みセッションの RSC
-  // ペイロードが残っているので、SPA 遷移では捨てられない（#1 ADR-028）。
+  // ペイロードが残っているので、SPA 遷移では捨てられない（spec/adr/030）。
   window.location.assign("/");
 };
 
 export function DeleteAccountPanel() {
   const requestDeletion = useServerFn(deleteAccountFn);
   const readStatus = useServerFn(getDeletionStatusFn);
+  // 未サインインでも開ける画面なので `user` は null になりうる。
+  const { user } = useRouteContext({ from: "/settings" });
+  const currentUserId = user?.userId ?? null;
 
   const confirmId = useId();
   const confirmErrorId = useId();
@@ -120,7 +162,13 @@ export function DeleteAccountPanel() {
         });
         // リロードから復帰できるように退避する。ticket は Cookie では
         // なく応答 body で来るので、保持はクライアントの責任。
-        sessionStorage.setItem(TICKET_STORAGE_KEY, ticket);
+        sessionStorage.setItem(
+          TICKET_STORAGE_KEY,
+          JSON.stringify({
+            ticket,
+            userId: currentUserId,
+          } satisfies StoredTicket),
+        );
         setPhase({ kind: "accepted", ticket });
       } catch (error) {
         return { error: submitError(error) };
@@ -131,11 +179,17 @@ export function DeleteAccountPanel() {
   );
 
   useEffect(() => {
-    const stored = sessionStorage.getItem(TICKET_STORAGE_KEY);
-    if (stored !== null) {
-      setPhase({ kind: "accepted", ticket: stored });
+    const stored = readStoredTicket();
+    if (stored === null) {
+      return;
     }
-  }, []);
+    // 復元するのは保存時の主体と今の主体が一致するときだけ。セッションが
+    // 無いときは受理でセッションを失った当人しかありえないので通す。
+    if (currentUserId !== null && stored.userId !== currentUserId) {
+      return;
+    }
+    setPhase({ kind: "accepted", ticket: stored.ticket });
+  }, [currentUserId]);
 
   const activeTicket =
     phase.kind === "accepted" || phase.kind === "running" ? phase.ticket : null;
@@ -166,6 +220,7 @@ export function DeleteAccountPanel() {
             kind: "settled",
             message:
               "削除を完了できませんでした。サインインし直して状態をご確認ください。",
+            resumeTicket: null,
           });
           return;
         }
@@ -178,21 +233,18 @@ export function DeleteAccountPanel() {
       } catch (error) {
         if (cancelled) return;
         const serialized = extractSerializedError(error);
-        const next: Phase = {
-          kind: "settled",
-          message: renderErrorMessage(serialized),
-        };
+        const message = renderErrorMessage(serialized);
         // 恒久的に失効した ticket は捨てる — 残すと復元して即失敗する
         // だけで、そのタブから削除フォームへ戻れなくなる。一時障害の
-        // ticket は残し、再読込でのポーリング再開に賭ける。
+        // ticket は残し、画面から追い直せるようにする。
         if (
           serialized.code === "DELETION_TICKET_EXPIRED" ||
           serialized.code === "DELETION_TICKET_INVALID"
         ) {
-          settle(next);
+          settle({ kind: "settled", message, resumeTicket: null });
           return;
         }
-        setPhase(next);
+        setPhase({ kind: "settled", message, resumeTicket: activeTicket });
       }
     };
 
@@ -214,7 +266,12 @@ export function DeleteAccountPanel() {
   }, [phase.kind]);
 
   if (phase.kind !== "idle") {
-    return <DeletionProgress phase={phase} />;
+    return (
+      <DeletionProgress
+        phase={phase}
+        onResume={(ticket) => setPhase({ kind: "accepted", ticket })}
+      />
+    );
   }
 
   const failure = submitState.error;
@@ -295,8 +352,10 @@ export function DeleteAccountPanel() {
 
 function DeletionProgress({
   phase,
+  onResume,
 }: {
   phase: Exclude<Phase, { kind: "idle" }>;
+  onResume: (ticket: string) => void;
 }) {
   switch (phase.kind) {
     case "completed":
@@ -311,16 +370,29 @@ function DeletionProgress({
           </button>
         </section>
       );
-    case "settled":
+    case "settled": {
+      const resumeTicket = phase.resumeTicket;
       return (
         <section className={dangerPanelClass}>
           <h2 className={dangerPanelTitleClass}>削除の進捗を表示できません</h2>
           <p className={panelNoteClass}>{phase.message}</p>
-          <button type="button" className={ghostButtonClass} onClick={leave}>
-            トップページへ
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {resumeTicket === null ? null : (
+              <button
+                type="button"
+                className={primaryButtonClass}
+                onClick={() => onResume(resumeTicket)}
+              >
+                進捗をもう一度確認する
+              </button>
+            )}
+            <button type="button" className={ghostButtonClass} onClick={leave}>
+              トップページへ
+            </button>
+          </div>
         </section>
       );
+    }
     case "accepted":
     case "running":
       return (

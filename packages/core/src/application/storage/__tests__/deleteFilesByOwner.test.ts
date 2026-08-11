@@ -282,7 +282,7 @@ describe("deleteFilesByOwner", () => {
     );
   });
 
-  it("TC-storage-043: one turn enumerates once and emits one event per file, whatever the count", async () => {
+  it("TC-storage-043 (without the statement-count promise): one turn enumerates once and emits one event per file, whatever the count", async () => {
     const h = createTestHarness();
     await openBarrier(h);
     await seedFiles(h, { count: 40 });
@@ -308,9 +308,10 @@ describe("deleteFilesByOwner", () => {
 
     await run(h, { container: counting });
 
-    // The per-row `findById` the OCC contract requires is a property of
-    // this adapter, not of the turn: what the turn promises is a single
-    // enumeration and one deletion event per file (ADR-022).
+    // The spec's "three statements whatever the count" is not verified
+    // here: deleting through the OCC token reads every row first, so the
+    // statement count is not fixed. What is checked is the enumeration
+    // count and one deletion event per deleted file.
     expect(enumerations).toBe(1);
     expect(deletionEvents(h)).toHaveLength(40);
   });

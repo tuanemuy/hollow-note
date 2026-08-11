@@ -27,10 +27,10 @@ export type NodeWorkerRunnerTuning = Readonly<{
   relayIntervalMs?: number;
   pruneIntervalMs?: number;
   /**
-   * Safety net behind the commit kick for scope-plane continuations
-   * (ADR-023). A second, not the relay's minute: a deletion advances one
-   * turn per round, so the interval is the worst-case wait per turn when
-   * a kick is lost.
+   * Safety net behind the commit kick for scope-plane continuations. A
+   * second, not the relay's minute: a deletion advances one turn per
+   * round, so the interval is the worst-case wait per turn when a kick
+   * is lost.
    */
   scopeTaskIntervalMs?: number;
   outboxRetentionMs?: number;
@@ -61,11 +61,14 @@ const RECEIPT_SWEEP_MAX_PAGES = 100;
 
 /**
  * Single-process orchestrator for the four background roles of the Node
- * runtime (relay, consumer, pruner, dlq). `start()` registers timers +
- * signal handlers,
- * `relayTrigger.kick()` schedules an out-of-band relay tick collapsed
- * with concurrent kicks, `stop()` drains in-flight work and runs
- * `cleanup`. All three are idempotent.
+ * runtime (relay, consumer, pruner, dlq). `start()` drives one round of
+ * each periodic role immediately and then registers its timers + signal
+ * handlers, `relayTrigger.kick()` schedules an out-of-band relay tick
+ * collapsed with concurrent kicks, `stop()` releases the timers and the
+ * process listeners, drains in-flight work and runs `cleanup`. All three
+ * are idempotent — and `stop()` leaving nothing registered is what lets
+ * a caller replace a runner (`server.node.ts` does so on a dev reload)
+ * without two of them ticking the same store.
  *
  * The "DLQ" role is satisfied by `processOutboxEvents`'s existing
  * `[outbox] quarantining event …` log line when `failed_at` is stamped;
@@ -136,11 +139,18 @@ export function createNodeWorkerRunner(
   });
 
   /**
-   * Reclaims the removal receipts whose 30 days are up. The store is a
-   * plain keyset sweep rather than a maintenance-run lane, so the bound
-   * lives here: a page cap keeps one tick from monopolizing the process,
-   * and the next tick resumes from the start since the sweep only ever
-   * removes expired rows.
+   * Reclaims the removal receipts whose 30 days are up.
+   *
+   * `identity_removal_receipts` is also a lane of `pruneExpiredAuthState`,
+   * but nothing schedules that usecase in this runtime yet (its cron
+   * wiring is Issue #15), so this direct sweep is what actually enforces
+   * the retention window today. The two are expected to collapse into
+   * the lane once #15 gives it a driver; until then the duplication is
+   * deliberate, and harmless because both only ever remove expired rows.
+   *
+   * The bound lives here rather than in the store: a page cap keeps one
+   * tick from monopolizing the process, and the next tick resumes from
+   * the start for the same reason.
    */
   const sweepIdentityRemovalReceipts = async (): Promise<void> => {
     let cursor: string | null = null;
@@ -216,6 +226,10 @@ export function createNodeWorkerRunner(
     // arriving in the same moment instead of racing it.
     track(runRelayTick());
     scopeTaskTrigger.kick();
+    // The prune tick carries personal-data retention (deletion manifests,
+    // removal receipts), so it cannot be reachable only by a process that
+    // outlives its 24-hour interval.
+    track(runPruneTick());
 
     relayTimer = setInterval(() => {
       track(runRelayTick());

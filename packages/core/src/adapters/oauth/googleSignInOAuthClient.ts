@@ -14,6 +14,7 @@ const AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const SCOPE = "openid email profile";
 const DEFAULT_TOKEN_ENDPOINT_TIMEOUT_MS = 10_000;
+const ISSUERS = ["https://accounts.google.com", "accounts.google.com"];
 
 export type GoogleOAuthCredentials = Readonly<{
   clientId: string;
@@ -44,14 +45,25 @@ type IdTokenClaims = Readonly<{
   picture: string | null;
 }>;
 
+const audienceMatches = (aud: unknown, clientId: string): boolean =>
+  typeof aud === "string"
+    ? aud === clientId
+    : Array.isArray(aud) && aud.includes(clientId);
+
 /**
  * Reads the claims of an `id_token` **without** verifying its signature.
- * That is the one case OIDC Core §3.1.3.7 allows it: the token was just
- * received over TLS directly from the provider's token endpoint in
- * response to our own code, so there is no untrusted hop to protect
- * against.
+ * The signature is the one check OIDC Core §3.1.3.7 allows to skip: the
+ * token was just received over TLS directly from the provider's token
+ * endpoint in response to our own code, so there is no untrusted hop to
+ * protect against. The registered claims that same section requires —
+ * `iss`, `aud`, `exp` — are checked here, because `sub` and `email`
+ * become the unique keys of an identity.
  */
-function readIdTokenClaims(idToken: string): IdTokenClaims {
+function readIdTokenClaims(
+  idToken: string,
+  clientId: string,
+  now: number,
+): IdTokenClaims {
   const segment = idToken.split(".")[1];
   if (segment === undefined) {
     throw unreachable("Google returned a malformed id_token");
@@ -66,6 +78,15 @@ function readIdTokenClaims(idToken: string): IdTokenClaims {
     throw unreachable("Google returned an unreadable id_token");
   }
   const claims = parsed as Record<string, unknown>;
+  if (typeof claims.iss !== "string" || !ISSUERS.includes(claims.iss)) {
+    throw unreachable("Google returned an id_token from another issuer");
+  }
+  if (!audienceMatches(claims.aud, clientId)) {
+    throw unreachable("Google returned an id_token issued for another client");
+  }
+  if (typeof claims.exp !== "number" || claims.exp * 1000 <= now) {
+    throw unreachable("Google returned an expired id_token");
+  }
   if (typeof claims.sub !== "string" || typeof claims.email !== "string") {
     throw unreachable("Google returned an id_token without an identity");
   }
@@ -169,7 +190,11 @@ export function createGoogleSignInOAuthClient(
         throw unreachable("Google returned no id_token");
       }
 
-      const claims = readIdTokenClaims(idToken);
+      const claims = readIdTokenClaims(
+        idToken,
+        credentials.clientId,
+        Date.now(),
+      );
       return {
         provider: OAuthProvider.create(params.provider),
         providerAccountId: claims.sub,

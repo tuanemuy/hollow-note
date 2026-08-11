@@ -22,13 +22,13 @@ import type { MemoryBackend } from "./store";
 
 export type MemoryUnitOfWorkOptions = Readonly<{
   relayTrigger?: RelayTrigger;
-  /** Kicked after a scope commit that stored a continuation (ADR-023). */
+  /** Kicked after a scope commit that stored a continuation. */
   scopeTaskTrigger?: ScopeTaskTrigger;
   /**
    * Cleanup participants this deployment declares
    * (`application/cleanup/participants.ts`). Both default to the whole
    * enum inside the stores, so omitting them stalls a deletion rather
-   * than completing one nothing cleaned up (ADR-002 / ADR-017).
+   * than completing one nothing cleaned up.
    */
   requiredCleanupComponents?: readonly PersonalCleanupComponent[];
   requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];

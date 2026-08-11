@@ -235,6 +235,24 @@ export function describeIdentityUniqueDirectoryContract(
       ).toBe(userId(1));
     });
 
+    it("ADP-identity-009: beginRelease leaves a still-reserved row alone", async () => {
+      await reserveEmail("op-1");
+
+      await beginRelease("release-1");
+      await backend.identityUniqueDirectory.release("release-1");
+
+      // The reservation survived, so its own operation can still publish
+      // it and another user is still blocked.
+      await expectConflict(
+        reserveEmail("op-2", userId(2)),
+        "EMAIL_ALREADY_USED",
+      );
+      await backend.identityUniqueDirectory.activate("op-1", 0);
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBe(userId(1));
+    });
+
     it("ADP-identity-009: beginRelease on an unknown key is a no-op", async () => {
       await beginRelease("release-1", userId(1), "absent@example.com");
       await backend.identityUniqueDirectory.release("release-1");

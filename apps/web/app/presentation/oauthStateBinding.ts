@@ -2,7 +2,7 @@ import { ValidationError } from "@repo/core/application/errors";
 
 /**
  * OAuth の認可往復を「フローを開始したブラウザー」に束縛する
- * （ADR-029 と同型の login CSRF 対策）。
+ * （spec/adr/029 と同型の login CSRF 対策）。
  *
  * 束縛が無いと、攻撃者は自分のフローを同意まで進めて最終ナビゲーション
  * だけを止め、`?state=…&code=…` の付いたコールバック URL を被害者に踏
@@ -31,8 +31,7 @@ export async function deriveOAuthStateBinding(state: string): Promise<string> {
 /**
  * 不一致・Cookie 不在はどちらも `OAUTH_STATE_INVALID` に畳む。開始した
  * ブラウザーでない以上、原因を区別しても利用者の取れる行動は「もう一度
- * やり直す」の 1 つしかない（intent が判らない時点の文言は中立に保つ —
- * ADR-084）。
+ * やり直す」の 1 つしかない（intent が判らない時点の文言は中立に保つ）。
  */
 export async function assertOAuthStateBinding(
   cookieValue: string | null,

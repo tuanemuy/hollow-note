@@ -76,3 +76,58 @@ R1: 新規 42（統合前 56）/ fix 37 / fix-editorial 2 / wont-fix 2 / defer 1
 6. **`/settings/danger` の未認証フォーム** → **ルートの挙動は wont-fix**（ADR-062 で宣言済み）。**401 がメール不一致用の項目エラー欄に出る点だけ fix**（ADR の射程外の UX 不具合）。
 7. **MIME のマジックナンバー検証** → **本 PR で入れる**。現状の防御は配信ルートの `nosniff` + CSP のみで、`publicUrl` が R2 の公開ドメインへ移る配備では防御がゼロになる。`spec/domains/storage.md` の契約範囲に収まる。
 8. **`claimDue` の去就** → **(a) runner を `claimDue` 経由に寄せる**。契約と実駆動が一致し W-D02 / W-A03 も同時に解消。AC-31「適合テスト専用のポートが残らない」の趣旨に沿う。**ADR-061「runner は claim しない」を supersede する ADR を起こすこと**。
+
+## R2
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `identity/updateProfile.ts:releaseUniqueKeys/補償解放の巻き添え`（D-B001） | R2 | fix | 敗者の補償解放が勝者の reserved 行を消し user 行と directory が乖離。再現確認済み。**案 2（ポート不変・OCC 失敗時は解放を飛ばす）を採る** | 0 |
+| `identity/updateProfile.ts:releaseActiveUniqueKey/再駆動主体不在`（D-W001） | R2 | fix | 旧ハンドルの active 行が残ると誰も取れない。縮退として記録する | 0 |
+| `domain/identity/user.ts:UserBase.avatarUrl/型で表現`（D-W002） | R2 | fix | **裁定 1: (a) 型を `AvatarUrl \| null` に上げ、`reconstruct` は「書き込み時に検証済み」としてキャスト**。他 4 フィールドと形が揃う | 0 |
+| `domain/identity/valueObject.ts:PlainPassword/フロント複写`（D-W003 + F-W001） | R2 | fix | 3 か所複写。`ChangePasswordForm` は 128 上限が無く 200 文字が送信可能 | 0 |
+| `workers/subscribers.ts:consumerName/死んだ JSDoc`（D-W004） | R2 | fix-editorial | 非テスト参照 0 件。実在しない用途を主張 | 0 |
+| `コード内の裸 ADR-0NN 参照`（D-W005 + T-W005） | R2 | fix | 116 件中 21 件が `.thread/2/adr.md` しか指し得ず `spec/adr/` の同番号と衝突。`.thread` 直参照 3 件も実在 | 0 |
+| `deleteAccount/globalCleanup.ts:JSDoc/outbox 契約と不整合`（D-W006） | R2 | fix-editorial | 挙動は正しくコメントの根拠だけが誤り | 0 |
+| `execution/eventId.ts:continuationKey/構造的読み取り`（D-W007） | R2 | wont-fix | **裁定 2: (a)**。実害は仮説段階で、`EventDraft` に `deterministicId` を足すとアプリ層の関心が domain draft base へ逆流する。規約は `eventId.ts` の JSDoc で明文化済み | 0 |
+| `docs/runtime_node.md/実装との乖離`（A-W001） | R2 | fix-editorial | 運用の正典が古いまま（consumer no-op / scope task 行なし / `DELETION_TICKET_KEY` 未記載） | 0 |
+| `server.node.ts:bootPromise/dev 再ロードで runner 多重起動`（A-W002） | R2 | fix | ALS だけ `import.meta.hot.data` に退避され `bootPromise` はモジュールスコープ。`process.once` も累積 | 0 |
+| `worker/node/runner.ts:receipt sweep/コメントと実態`（A-W003） | R2 | fix-editorial | **裁定 3: runner の sweep を残し JSDoc を実態に合わせる**。`pruneExpiredAuthState` は本番呼び出しが無く（cron は #15）、一本化すると 30 日保持の回収が止まる。二重定義は #15 への引き継ぎとして記録 | 0 |
+| `worker/node/runner.ts:prune tick/起動ドレイン欠落`（A-W004） | R2 | fix | relay と scope task は即時駆動、prune だけ 24h interval 登録のみ。短命プロセスで一度も走らない | 0 |
+| `workers/scopeTaskRunner.ts:未知 kind/警告ログ洪水`（A-W005） | R2 | fix-editorial | 「可視な停滞」は妥当な設計判断。JSDoc に定常ログ化を明記するに留める | 0 |
+| `ports/identityUniqueDirectory.ts:beginRelease/reserved 契約欠落`（A-W006） | R2 | fix | ADR-026「契約の正本はポート定義」に照らしポート文とスイートの両方が欠けている | 0 |
+| `ports/scopeTaskScheduler.ts:priority/縮退未記録`（A-W007） | R2 | fix | `spec/database` の `scheduled_tasks` から `priority` と lease を落としたが縮退記録が無い。#11 の前提になるので Issue も起票する | 0 |
+| `adapters/oauth/googleSignInOAuthClient.test.ts/翻訳無検証`（A-W008） | R2 | fix | 共有スイートの exchange は Google では常に skip され、翻訳規則を守る唯一のテストが空 | 0 |
+| `workers/subscribers.ts/継続イベント網羅性`（A-W009） | R2 | fix | 継続 4 種の登録漏れが「削除チェーンの無言停止」になる。AC-29 の核心 | 0 |
+| `worker/node/runner.ts/テスト無し`（A-W010） | R2 | fix | **裁定 5: A-W002（多重起動しない）と A-W004（起動時に prune が 1 回走る）の 2 点に限定**。stop のドレイン・例外隔離は受け入れ基準の要求を超える | 0 |
+| `cleanup/personalCleanup.ts:ページ継続/到達不能`（A-W011） | R2 | fix-editorial | 到達不能を確認。JSDoc に明記して #11 へ引き継ぐ | 0 |
+| `ProfileForm/editor.tsx:handleProblem/項目エラー振り分け`（F-W002） | R2 | fix | `suggestions.length > 0` 判定のため不正・予約語が `aria-invalid` に乗らない | 0 |
+| `DeleteAccountPanel:ticket 復元/主体未束縛`（F-W003） | R2 | fix | ticket claims に userId が無く、別アカウントに「削除しました」を 1 回必ず誤表示 | 0 |
+| `DeleteAccountPanel:settled/再開手段なし`（F-W004） | R2 | fix | ADR-085 が ticket を残した意図（再読込で再開）が利用者に到達しない | 0 |
+| `OAuthCallbackPanel:retryExchange/消費済み state`（F-W005） | R2 | fix | 単回消費の state を再 POST。「state 未消費と判る失敗だけ交換再試行」に絞る | 0 |
+| `{ProfileForm,UsagePanel}Skeleton/レイアウトシフト`（F-W006） | R2 | fix | 実 DOM 側が無条件表示。**ProfileForm 分は R1（W-F10）の修正が不十分**（継承・再指摘 +1） | 1 |
+| `ProfileForm/editor.tsx:input[type=file]/アクセシブルネーム`（F-W007） | R2 | fix | `sr-only` かつ id / aria-label 無し | 0 |
+| `UsagePanel:updatedAt/timeZone 未指定`（F-W008） | R2 | fix | 同一パネル内のリセット日は UTC 明示。1 行の非対称 | 0 |
+| `AccountMenu:JSDoc/項目数`（F-W009） | R2 | fix-editorial | 実項目 2 件。判断は妥当、根拠の記述だけ古い | 0 |
+| `oauthStateCookie:clear/破棄経路が片肺`（S-W001） | R2 | fix | 破棄が成功パスのみで、失敗・キャンセル時に 10 分残る | 0 |
+| `routes/auth/-action.tsx:束縛の配線/テスト無し`（S-W002） | R2 | fix | 「2 行消しても全テストが緑」。順序が壊れた瞬間に login CSRF が復活する | 0 |
+| `scripts/listen.node.ts:本文サイズ上限なし`（S-W003） | R2 | fix | 未認証で数百 MB を実体化させられ、同居するワーカー平面（削除継続）にも及ぶ | 0 |
+| `routes/storage.$.tsx:Cache-Control immutable`（S-W004） | R2 | fix | 1 年 CDN 残留が P-25 の「消える」約束と矛盾。`private` 化は 1 語 | 0 |
+| `usage/recalculateStorageUsage.ts:subject と actor の非結合`（S-W005） | R2 | fix | 現状到達不能だが `storeAvatar:70` の手本を 3 行複写するだけ。**workspace 主体は AC-22 / TC-usage-072 が要求するので user 主体のみ束縛する** | 0 |
+| `googleSignInOAuthClient.ts:id_token/iss・aud・exp 未検証`（S-W006） | R2 | fix | OIDC §3.1.3.7 が省けるのは署名検証だけ | 0 |
+| `deleteAccount.finalize.test.ts:TC-identity-090/再試行時刻`（T-B001） | R1 | fix-editorial | **裁定 4**。実装は plan.md / ADR-026 が宣言済み（スコープ外）、ID 単位の記録は progress.md に既にある。**残るはテスト名の欠落明示だけ** | 1 |
+| `deleteFilesByOwner.test.ts:TC-storage-043/3 文`（T-B002） | R2 | fix-editorial | **裁定 4**。ADR-057（Accepted）と progress.md に ID 単位で記録済みなので「記録が無い」は誤り。テスト名とコメントの言い回しのみ | 0 |
+| `policies.test.ts:TC-identity-052/見送り行の ID 冠`（T-W001） | R2 | fix-editorial | AC-33 の機械照合が取れなくなる。テスト名から ID を落とす | 0 |
+| `quota.test.ts:codeOf/例外の取りこぼし`（T-W002） | R2 | fix | 許容側境界が「BusinessRuleError 以外で落ちても緑」 | 0 |
+| `pruneExpiredAuthState.test.ts:identity_removal_receipts/実削除未検証`（T-W003） | R2 | fix | AC-14 の 30 日保持を担保する唯一の経路が 0 件確認だけ | 0 |
+| `conformance/storedFileRepository.ts:ADP-storage-003/save 未検証`（T-W004） | R2 | fix | 姉妹スイート 2 本は検証済みでここだけ非対称 | 0 |
+
+R2: 新規 36 / 継承 3 / fix 24 / fix-editorial 14 / wont-fix 1 / defer 0（方針フェーズ: 実施）
+観点別 fix 件数: domain-usecase 5 / adapter 6 / frontend 7 / security 6 / test 3（重複統合後）
+
+## 要確認の裁定（メイン・R2）
+
+1. **`UserBase.avatarUrl` の型付け** → **(a)**。型を `AvatarUrl | null` に上げ、`reconstruct` は「書き込み時に検証済み」としてキャストする。`AvatarUrl.create` が `appUrl` を要求するため `reconstruct` で再検証するとドメインに設定が漏れ、他 4 フィールドと形も揃わない。
+2. **継続イベント ID の決定性を型で縛るか** → **(a) wont-fix**。`EventDraft` は domain の `DomainEventDraftBase` 由来で、`deterministicId` を足すとアプリ層の関心が domain へ逆流する。規約は `eventId.ts` の JSDoc で明文化済みで、危険は仮説段階。
+3. **receipt 回収の一本化 vs コメント修正** → **runner の sweep を残し JSDoc を実態に合わせる**。`pruneExpiredAuthState` の cron 配線は #15（本 Issue 外）で本番呼び出しが無く、一本化すると 30 日保持の回収が止まる。二重定義は #15 への引き継ぎとして記録する。
+4. **TC-identity-090 / TC-storage-043 の記録の置き場所** → **plan.md に複写しない**。ID 単位の記録は `progress.md`（Issue コメントの原本）に既にあり、plan.md は契約という役割分担を保つ。修正はテスト名・テスト内コメントの欠落明示に限る。
+5. **runner テストの範囲** → **A-W002（多重起動しない）と A-W004（起動時に prune が 1 回走る）の 2 点に限定**。stop のドレイン・prune 3 本の例外隔離は本 Issue の受け入れ基準の要求を超える。

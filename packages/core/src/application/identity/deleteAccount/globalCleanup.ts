@@ -9,8 +9,7 @@ import { readUniquenessKeys } from "./input";
 /**
  * Names the producer of a finalize attempt so the attempts of the
  * several branches that can complete the receipt set stay separate
- * events (ADR-025: a deterministic id may only be reused by turns that
- * differ).
+ * events (a deterministic id may only be reused by turns that differ).
  */
 export const FINALIZE_ATTEMPT_FROM_UNIQUENESS = "uniquenessRelease";
 
@@ -38,18 +37,22 @@ const uniqueKeysOf = (
  *
  * The release happens **here**, before finalize, not after it: finalize
  * waits for a receipt set that includes `uniquenessRelease`, so freeing
- * the keys as part of finalize would be a receipt waiting on itself
- * (ADR-015). Which keys to free is read from the operation payload
- * frozen at admission — by now the identity rows may already be gone,
- * and after finalize they certainly are (ADR-020).
+ * the keys as part of finalize would be a receipt waiting on itself.
+ * Which keys to free is read from the operation payload frozen at
+ * admission — by now the identity rows may already be gone, and after
+ * finalize they certainly are.
  *
  * Both halves are idempotent, and the work of each is skipped once its
  * receipt is in, so a redelivered wave neither restarts the residue
  * chain nor re-releases a key. The receipt and the finalize attempt it
- * unblocks are written in one transaction, and a wave that finds the
- * receipt already there still re-issues that attempt — "the receipt is
- * in but finalize was never asked for" is a state this cannot leave
- * behind, and a redelivery is what recovers from a lost response.
+ * unblocks are written in one transaction, so "the receipt is in but
+ * finalize was never asked for" is a state this cannot leave behind.
+ * Re-issuing the attempt is not itself a recovery mechanism: the id is
+ * deterministic and `OutboxRepository.save` leaves an existing row
+ * untouched, so a redelivered wave's attempt is a no-op while that row
+ * lives. What keeps finalize reachable is that each producer names its
+ * own cursor — whichever branch completes the last missing receipt
+ * writes an attempt id no other branch can have taken.
  */
 export async function runAccountDeletionGlobalCleanup(
   container: WorkerContainer,

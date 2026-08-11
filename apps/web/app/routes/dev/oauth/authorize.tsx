@@ -5,7 +5,7 @@ import { AuthLayout } from "@/components/layout/AuthLayout";
 import { buildHead } from "@/presentation/head";
 import { loadDevOAuthModeFn } from "../-action";
 
-// 認可エンドポイントのクエリー（ADR-021）。`code_challenge_method` は
+// 認可エンドポイントのクエリー。`code_challenge_method` は
 // S256 のみを受ける — 他の方式は dev アダプターが発行しない。
 const searchSchema = z.object({
   client_id: z.string().min(1).max(128),
@@ -18,9 +18,9 @@ const searchSchema = z.object({
 });
 
 /**
- * dev IdP の同意画面（ADR-021）。`OAUTH_DEV_MODE` が偽なら 404 に倒す
- * ので、production ビルドでこの画面が開く状態は存在しない（真との併用は
- * 起動時エラー — ADR-003）。
+ * dev IdP の同意画面。`OAUTH_DEV_MODE` が偽なら 404 に倒すので、
+ * production ビルドでこの画面が開く状態は存在しない（真との併用は起動時
+ * エラー）。
  */
 export const Route = createFileRoute("/dev/oauth/authorize")({
   validateSearch: (search) => searchSchema.parse(search),

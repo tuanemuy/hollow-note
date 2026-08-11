@@ -9,8 +9,8 @@ import type {
 import { scopeOf, userId } from "./fixtures";
 
 /**
- * The declaration this suite drives the backend with (ADR-002). It is a
- * strict subset of the enum on purpose: the contract is "every declared
+ * The declaration this suite drives the backend with. It is a strict
+ * subset of the enum on purpose: the contract is "every declared
  * component and nothing else", so a backend that quietly demands the
  * full enum fails here.
  */

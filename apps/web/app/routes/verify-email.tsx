@@ -4,7 +4,7 @@ import { VerifyEmailPanel } from "@/components/auth/VerifyEmailPanel";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { buildHead } from "@/presentation/head";
 
-// GET はこのページの描画だけで状態を変更しない（ADR 029）。token の欠落・
+// GET はこのページの描画だけで状態を変更しない（spec/adr/029）。token の欠落・
 // 型不正は「無効」状態として画面側で扱うため、ここでは落とさない。
 const searchSchema = z.object({
   token: z.string().min(1).max(512).optional().catch(undefined),

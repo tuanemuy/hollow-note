@@ -28,7 +28,7 @@ export type UsageSnapshotView = Readonly<{
    * Workspace usage. This slice has no port that enumerates the viewer's
    * memberships and resolves workspace names, so the list is always
    * empty and carries no element type; the slice that adds the keyset
-   * paging widens it along with the cursor field it needs (ADR-051).
+   * paging widens it along with the cursor field it needs.
    */
   workspaces: readonly never[];
   updatedAt: Date;

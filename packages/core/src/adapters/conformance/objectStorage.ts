@@ -20,7 +20,7 @@ const sha256Hex = async (body: Uint8Array): Promise<string> => {
 
 /**
  * Shared conformance suite for `ObjectStorage`
- * (ADP-storage-018..020 + `publicUrl`, ADR-011).
+ * (ADP-storage-018..020 + `publicUrl`).
  */
 export function describeObjectStorageContract(
   backendName: string,

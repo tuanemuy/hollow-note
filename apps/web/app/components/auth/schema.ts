@@ -1,3 +1,4 @@
+import { PASSWORD_MAX_LENGTH } from "@repo/core/domain/identity/valueObject";
 import { z } from "zod";
 
 // Transport-boundary schemas — shape / DoS checks only. Business
@@ -11,8 +12,6 @@ export const EMAIL_MAX_LENGTH = 254;
 // addresses the domain accepts (`user@localhost`) with a permanently
 // disabled submit button.
 export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+$/;
-export const PASSWORD_MIN_LENGTH = 8;
-export const PASSWORD_MAX_LENGTH = 128;
 export const DISPLAY_NAME_MAX_LENGTH = 50;
 
 export const signUpSchema = z.object({

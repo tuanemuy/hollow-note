@@ -187,13 +187,18 @@ function ratioOf(consumed: number, limit: number): number {
   return limit <= 0 ? 1 : consumed / limit;
 }
 
+// 同じパネルに並ぶリセット日と基準を揃える（下の `resetDateFormat` と
+// 同じ理由で UTC 固定。片方だけ配備の時間帯に従うと、同一画面の 2 つの
+// 日時が別基準になる）。
 const updatedDateFormat = new Intl.DateTimeFormat("ja-JP", {
   month: "long",
   day: "numeric",
+  timeZone: "UTC",
 });
 const updatedTimeFormat = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
   minute: "2-digit",
+  timeZone: "UTC",
 });
 
 function formatUpdatedAt(updatedAt: Date): string {

@@ -57,7 +57,7 @@ export async function linkOAuthIdentity({
 
 /**
  * The link half of the callback, for a `state` row the dispatcher has
- * already consumed to read its intent (ADR-007 / ADR-036).
+ * already consumed to read its intent.
  */
 export async function linkOAuthIdentityForFlow(
   container: RequestContainer,

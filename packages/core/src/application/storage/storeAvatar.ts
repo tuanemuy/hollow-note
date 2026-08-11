@@ -53,11 +53,11 @@ const insufficientRole = () =>
  *
  * Size and content type are both measured from the body rather than
  * declared by the caller: the policy has to bind the bytes actually
- * stored, and a declaration can disagree with them (ADR-048 / ADR-078).
+ * stored, and a declaration can disagree with them.
  *
  * Workspace subjects are refused outright until `WorkspaceAuthorization`
  * exists — "cannot evaluate the permission" is answered as "does not have
- * it", with the same error the real check will raise (ADR-014).
+ * it", with the same error the real check will raise.
  */
 export async function storeAvatar({
   container,

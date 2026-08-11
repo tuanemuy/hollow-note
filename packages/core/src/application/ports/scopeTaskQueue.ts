@@ -8,8 +8,8 @@ export type DueScopeTask = Readonly<{
 
 /**
  * Scope-spanning read over the scheduled tasks of every scope — the one
- * way a central runner can find out **which scopes** have work due
- * (ADR-005). `ScopeTaskScheduler` is only reachable through
+ * way a central runner can find out **which scopes** have work due.
+ * `ScopeTaskScheduler` is only reachable through
  * `scopeUnitOfWorkProvider.run(scope, …)`, which needs the scope up
  * front, and nothing else enumerates scopes.
  *

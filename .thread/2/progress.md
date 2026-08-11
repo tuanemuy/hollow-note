@@ -170,7 +170,7 @@
 
 裏取りとして、実装 277 行のうち TC 205 行はすべてテストコード側に ID の言及があることを機械確認した（複数行を 1 テストで消化しているものは結合表記: `TC-identity-105/107`、`ADP-usage-001/002`、`ADP-usage-006/007`）。`DOM-usage-009..017` / `ADP-usage-002` / `ADP-usage-007` は ID をテスト名に持たないポート定義・アダプター実装行なので、`domain/usage/ports/{storageQuotaRepository,llmUsageRepository}.ts` のメソッド存在と適合スイートの該当ケースで確認した。
 
-注意: **`TC-identity-052` は見送り行だが、`domain/identity/__tests__/policies.test.ts` に同 ID のドメイン単体テストがある**。plan.md の縮退（`AccountDeletionRetryPolicy` は到達不能な先行実装）どおり、境界のドメイン検証だけ先に置き、行としての検証は #3 に残す形。チェックは付けない。
+注意: **`TC-identity-052` は見送り行で、同 ID を冠したテスト名は存在しない**。`domain/identity/__tests__/policies.test.ts` に `AccountDeletionRetryPolicy` の境界を押さえるドメイン単体テストはあるが、TC-identity-052 との関係はテスト名ではなくコメントに残している。plan.md の縮退（`AccountDeletionRetryPolicy` は到達不能な先行実装）どおり、境界のドメイン検証だけ先に置き、行としての検証は #3 に残す形。チェックは付けない。
 
 ## 縮退（実装したが spec の一部要素を欠く）
 
@@ -305,3 +305,28 @@
 - **W-A01 / Adapter W-001 + Security W-006（ランタイム singleton の fail-open）**: `memoryRuntime()` は未初期化なら throw、`initNodeRuntime` は「別 env で初期化済み」なら throw する（同一 env の再入は `vite dev` のプログラム再読込なので singleton を保つ — ADR-074）。`MemoryRuntimeOptions.oauth` の既定（dev）を廃して明示必須にし、`createTestHarness` が `{ mode: "dev" }` を明示する。
 - **W-A08 / Adapter W-008（`identity_removal_receipts` の 30 日保持が回収されない）**: `AuthStateTable` に `identity_removal_receipts` を足し、`authStateSweeps` / memory backend の `authStatePrune` 表順 / `PruneExpiredAuthStateView` へ反映した。`pruneExpiredAuthState` の cron 配線自体は引き続き Issue #15。
 - **W-T09 / Test W-009（AC-6 の 404 ガードに自動テストが無い）**: **どこまで検証済みか** — env → `RequestContainer.oauthDevMode` の経路は `di/__tests__/serverNode.test.ts` の 3 ケース（`true` / Google 配備 / `"true"` 以外の値）で自動検証済み、そのフラグが偽のとき `/dev/oauth/authorize` が実際に 404 を返すことは本番形の起動（`OAUTH_DEV_MODE=false` + Google 資格情報）で手動確認済み（`/` が 200、当該ルートが 404）。ルート loader の `notFound()` 1 行自体を通す自動テストは、`createServerFn` の実行時を引き込むため置いていない。
+
+## レビュー R2 の反映（単位: Node ランナー / 起動配線）
+
+対象は Adapter 観点の W-001 / W-002 / W-003 / W-004 / W-010。
+
+- **A-W001（`docs/runtime_node.md` が本 PR を反映していない）**: Worker runner 表を実装に合わせた。Consumer 行を `dispatchDomainEvent`（購読者レジストリ経由。購読者ゼロのイベントは warn して ack）に、Pruner 行を「24 時間 interval + 起動時 1 回、`pruneOutbox` / `pruneAccountDeletionManifests` / `identity_removal_receipts` の 3 sweep」に直し、Scope tasks 行（1 秒 interval + commit kick、ADR-023）を追加した。env 表に `DELETION_TICKET_KEY`（未設定 = プロセス毎の鍵、不正値は起動エラー）を追加。あわせて graceful shutdown の手順・「Known limitations」の auth-state prune 行・notable log lines も実態に合わせた。
+- **A-W002（dev 再ロードで worker runner が多重起動する）**: ADR-093。boot slot を `globalThis` / `import.meta.hot.data` に載せ、再ロード時は**前の boot を `shutdown()` で retire してから作り直す**（再利用しないのは boot が `server-entry` の名前空間を抱えるため）。signal リスナーはプロセスで 1 度だけ張り、slot 越しに現行 boot を見る。retire / start をログ化した。
+- **A-W003（removal receipt 回収の二重化）**: 裁定どおり runner 側の sweep を残し、JSDoc を実態に合わせた（下の引き継ぎを参照）。
+- **A-W004（prune tick が起動時に走らない）**: `start()` で `track(runPruneTick())` を打つようにした。relay / scope task と同じ即時ドレインで、`stop()` は待つ。
+- **A-W010（runner にテストが無い）**: `apps/web/app/worker/node/__tests__/runner.test.ts` を新設し、裁定どおり A-W002 / A-W004 の 2 点に限定して 4 本置いた —「`start()` で prune が 1 回走る」「2 度目の `start()` を無視する」「`stop()` 後は interval が止まる（走っている間は 1 秒間隔で刻むことと対にして固定）」「`stop()` が SIGTERM / SIGINT のリスナーを完全に戻すので、差し替えても累積しない」。stop のドレインと prune 3 本の例外隔離は本 Issue の受け入れ基準の要求を超えるので書いていない。boot slot 自体は `server-entry` の動的 import を抱えるためユニットで起こせず、`pnpm dev` の実測が担保（下記）。
+
+### `pnpm dev` での多重起動の実測
+
+`vite dev`（port 3100、`OAUTH_DEV_MODE=true`）を起動し、`apps/web/app/worker/node/runner.ts` の保存を 4 回繰り返して毎回リクエストを 1 本流した。ログは boot 5 回に対し `[server.node] retiring the previous boot` が 4 本で、常に retire → started の交互（`started` が 2 本続く箇所は無い）。各 boot の直後に `[outbox] pruned 0 processed event(s)` が 1 行出ており、起動時 prune tick も実プロセスで確認できた。`MaxListenersExceededWarning` は 0 件。
+
+### Issue #15 への引き継ぎ（`identity_removal_receipts` の回収経路が 2 系統）
+
+同じ表を 2 つの経路が掃く状態になっている。
+
+| 経路 | 実装 | 上限 / 記録 |
+|---|---|---|
+| runner の直接 sweep | `apps/web/app/worker/node/runner.ts#sweepIdentityRemovalReceipts`（prune tick 内） | 100 件 × 最大 100 ページ、maintenance run の bookkeeping なし |
+| `pruneExpiredAuthState` の lane | `packages/core/src/application/identity/pruneExpiredAuthState.ts`（`AuthStateTable` / `authStateSweeps` に登録済み） | maintenance run のリース + チェックポイント付き |
+
+本 Issue では `pruneExpiredAuthState` を呼ぶ本番コードが存在せず（cron 配線は #15）、一本化すると 30 日保持の回収が誰も走らせない状態になるため、runner 側の sweep を残した（JSDoc に理由と引き継ぎ先を明記）。**#15 が `pruneExpiredAuthState` に駆動主体を付けた時点で、runner の sweep を落として lane に一本化する。**
