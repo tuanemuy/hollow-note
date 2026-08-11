@@ -333,3 +333,88 @@ export const signOutOtherSessionsFn = createServerFn({ method: "POST" })
     });
     return { revocationAccepted: view.revocationAccepted };
   });
+
+const EMAIL_MAX_LENGTH = 254;
+
+const deleteAccountSchema = z.object({
+  confirmationEmail: z.string().max(EMAIL_MAX_LENGTH),
+  // 形と DoS 上限だけ。UUID であることは `deleteAccount` が
+  // `INVALID_REQUEST_ID` で判定する（重複排除の鍵としての要件なので、
+  // 転送境界に写すと同じ規則が 2 か所に散る）。
+  requestId: z.string().min(1).max(64),
+});
+
+/**
+ * PAGE-p25-002。受理は 202 + 応答 body の status ticket（ADR-006）。
+ *
+ * 即時サインアウトは `Set-Cookie` によるセッション Cookie の破棄だけで
+ * 済ませ、リダイレクトは返さない — 画面は P-25 に留まって ticket で
+ * 進捗を追う必要があり、ここで遷移させると ticket を持つ島がその場で
+ * 消える。
+ */
+export const deleteAccountFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(deleteAccountSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, session, ticketing, startServer] =
+      await Promise.all([
+        loadServerDeps(
+          () => import("@repo/core/application/identity/deleteAccount/index"),
+        ),
+        import("@/presentation/session"),
+        import("@/presentation/deletionTicket"),
+        import("@tanstack/react-start/server"),
+      ]);
+    const user = await session.requireSession();
+    const view = await module.deleteAccount({
+      container,
+      input: {
+        type: "userRequest",
+        userId: user.userId,
+        confirmationEmail: data.confirmationEmail,
+        requestId: data.requestId,
+      },
+    });
+    const ticket = await ticketing.issueDeletionTicket(
+      container.deletionTicketKeyRing,
+      { operationId: view.operationId, now: container.clock.now() },
+    );
+    session.clearSessionCookie();
+    startServer.setResponseStatus(202);
+    return { operationId: view.operationId, status: view.status, ticket };
+  });
+
+const deletionStatusSchema = z.object({
+  ticket: z.string().min(1).max(1024),
+});
+
+/**
+ * PAGE-p25-003 の進捗照会。
+ *
+ * ここだけは `requireSession()` を通さない — 主体は削除の受理で失効した
+ * セッションではなく ticket そのもので、そうでなければ「受理直後から
+ * 進捗が読めない」という自己矛盾になる。読む対象の `operationId` は
+ * **検証済み ticket からしか取らない**ので、要求本文で別の operation を
+ * 指すことはできない（TC-identity-048）。
+ */
+export const getDeletionStatusFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(deletionStatusSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, ticketing] = await Promise.all([
+      loadServerDeps(
+        () =>
+          import("@repo/core/application/identity/getAccountDeletionStatus"),
+      ),
+      import("@/presentation/deletionTicket"),
+    ]);
+    const claims = await ticketing.readDeletionTicket(
+      container.deletionTicketKeyRing,
+      data.ticket,
+      container.clock.now(),
+    );
+    return module.getAccountDeletionStatus({
+      container,
+      input: { operationId: claims.operationId },
+    });
+  });

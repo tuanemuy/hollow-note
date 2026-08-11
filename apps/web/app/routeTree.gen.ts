@@ -20,6 +20,7 @@ import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
 import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
+import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
@@ -81,6 +82,11 @@ const SettingsAuthRoute = SettingsAuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => SettingsRouteRoute,
 } as any)
+const SettingsDangerRoute = SettingsDangerRouteImport.update({
+  id: '/danger',
+  path: '/danger',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
 const SettingsProfileRoute = SettingsProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -118,6 +124,7 @@ export interface FileRoutesByFullPath {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
@@ -136,6 +143,7 @@ export interface FileRoutesByTo {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
@@ -155,6 +163,7 @@ export interface FileRoutesById {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
@@ -175,6 +184,7 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/danger'
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
@@ -193,6 +203,7 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/danger'
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
@@ -211,6 +222,7 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/danger'
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
@@ -314,6 +326,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAuthRouteImport
       parentRoute: typeof SettingsRouteRoute
     }
+    '/settings/danger': {
+      id: '/settings/danger'
+      path: '/danger'
+      fullPath: '/settings/danger'
+      preLoaderRoute: typeof SettingsDangerRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
     '/settings/profile': {
       id: '/settings/profile'
       path: '/profile'
@@ -354,12 +373,14 @@ declare module '@tanstack/react-router' {
 
 interface SettingsRouteRouteChildren {
   SettingsAuthRoute: typeof SettingsAuthRoute
+  SettingsDangerRoute: typeof SettingsDangerRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
   SettingsUsageRoute: typeof SettingsUsageRoute
 }
 
 const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
   SettingsAuthRoute: SettingsAuthRoute,
+  SettingsDangerRoute: SettingsDangerRoute,
   SettingsProfileRoute: SettingsProfileRoute,
   SettingsUsageRoute: SettingsUsageRoute,
 }

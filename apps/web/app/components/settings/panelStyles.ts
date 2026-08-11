@@ -19,6 +19,16 @@ export const ghostButtonClass = `${buttonBase} h-8 border border-hairline px-3 t
 
 export const dangerButtonClass = `${buttonBase} h-8 border border-error/30 px-3 text-error hover:bg-error-surface disabled:hover:bg-transparent`;
 
+// P-25 の主操作。枠線と塗りを別 recipe に分けるのは、`panelClass` に
+// `border-error/30` を重ねても Tailwind の出力順で勝敗が決まり、クラスの
+// 並び順では上書きを保証できないため。
+export const dangerPanelClass = "mb-6 rounded-lg border border-error/30 p-5";
+
+export const dangerPanelTitleClass =
+  "mb-4 text-md font-semibold tracking-tight text-error";
+
+export const dangerActionButtonClass = `${buttonBase} h-10 bg-error px-4 text-bg hover:bg-error-hover active:bg-error-pressed disabled:hover:bg-error`;
+
 // 常設の live region。空のときに消すと、後から入るテキストが読み上げ
 // られないため、余白だけを条件付きにする。
 export const errorTextClass = "text-xs text-error not-empty:mt-2";

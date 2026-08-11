@@ -107,6 +107,21 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
 
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
+
+  CONFIRMATION_MISMATCH:
+    "メールアドレスが一致しません。アカウントのメールアドレスをそのまま入力してください。",
+  INVALID_REQUEST_ID:
+    "削除の要求を組み立てられませんでした。画面を再読み込みしてもう一度お試しください。",
+  IDENTITY_ACCOUNT_DELETION_RETRY_LIMIT_EXCEEDED:
+    "削除のやり直しが続いたため、しばらく受け付けられません。時間をおいてからお試しください。",
+  ACCOUNT_DELETION_OPERATION_MISMATCH:
+    "別の削除処理が進行中です。画面を再読み込みして進捗をご確認ください。",
+  DELETION_OPERATION_NOT_FOUND:
+    "この削除処理は見つかりません。サインインし直して状態をご確認ください。",
+  DELETION_TICKET_INVALID:
+    "進捗を確認できませんでした。削除の処理はこのまま進みます。",
+  DELETION_TICKET_EXPIRED:
+    "進捗を確認できる期間を過ぎました。削除の処理はこのまま進みます。",
 };
 
 const MESSAGE_BY_KIND: Readonly<Record<SerializedErrorKind, string>> = {

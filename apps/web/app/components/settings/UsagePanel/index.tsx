@@ -3,6 +3,7 @@ import type {
   PersonalUsageView,
   UsageLevelView,
 } from "@repo/core/application/usage/view";
+import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { ghostButtonClass } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
@@ -63,10 +64,9 @@ export async function UsagePanel({ userId }: { userId: string }) {
         <span>
           アカウントと保存されたデータをまとめて削除することもできます。
         </span>
-        {/* 遷移先 P-25 のルートが生成された後に型付き `Link` へ差し替える。 */}
-        <a className={`${ghostButtonClass} ml-auto`} href="/settings/danger">
+        <Link className={`${ghostButtonClass} ml-auto`} to="/settings/danger">
           アカウント削除へ
-        </a>
+        </Link>
       </div>
     </div>
   );

@@ -19,6 +19,7 @@ export type NodeServerEnv = Readonly<{
   OAUTH_DEV_MODE?: string | undefined;
   GOOGLE_OAUTH_CLIENT_ID?: string | undefined;
   GOOGLE_OAUTH_CLIENT_SECRET?: string | undefined;
+  DELETION_TICKET_KEY?: string | undefined;
   OUTBOX_BATCH_SIZE?: string | undefined;
   OUTBOX_LEASE_MS?: string | undefined;
   OUTBOX_MAX_ATTEMPTS?: string | undefined;
@@ -39,6 +40,14 @@ const nonEmpty = (value: string | undefined): value is string =>
 const OAUTH_SETUP_HINT =
   "add `OAUTH_DEV_MODE=true` to apps/web/.env for local development, or set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET";
 
+const TICKET_KEY_BYTES = 32;
+
+const decodeKeyMaterial = (value: string): Uint8Array =>
+  new Uint8Array(Buffer.from(value, "base64url"));
+
+const isKeyMaterial = (value: string): boolean =>
+  decodeKeyMaterial(value).length === TICKET_KEY_BYTES;
+
 const nodeServerEnvSchema = z
   .object({
     APP_URL: z.string().min(1, "APP_URL is required"),
@@ -48,6 +57,17 @@ const nodeServerEnvSchema = z
     OAUTH_DEV_MODE: z.string().optional(),
     GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
     GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+    // Optional (ADR-006): unset means a per-process key, which only
+    // costs outstanding tickets their validity across a restart. Set but
+    // malformed is refused instead of silently falling back — a
+    // deployment that meant to pin the key must not boot without it.
+    DELETION_TICKET_KEY: z
+      .string()
+      .optional()
+      .refine(
+        (value) => value === undefined || value === "" || isKeyMaterial(value),
+        "DELETION_TICKET_KEY must be 32 bytes encoded as base64url",
+      ),
     OUTBOX_BATCH_SIZE: z.string().optional(),
     OUTBOX_LEASE_MS: z.string().optional(),
     OUTBOX_MAX_ATTEMPTS: z.string().optional(),
@@ -138,7 +158,18 @@ function memoryRuntime(): MemoryRuntime {
 export function nodeServerEnvToRuntimeOptions(
   env: NodeServerEnv,
 ): MemoryRuntimeOptions {
-  return { oauth: readOAuthRuntimeConfig(env) };
+  const ticketKey = env.DELETION_TICKET_KEY;
+  return {
+    oauth: readOAuthRuntimeConfig(env),
+    ...(nonEmpty(ticketKey)
+      ? {
+          deletionTicketKeyRing: {
+            currentVersion: 1,
+            keys: new Map([[1, decodeKeyMaterial(ticketKey)]]),
+          },
+        }
+      : {}),
+  };
 }
 
 function readOAuthRuntimeConfig(env: NodeServerEnv): OAuthRuntimeConfig {

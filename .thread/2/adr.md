@@ -1239,3 +1239,40 @@ ADR-005 / ADR-023 はランナーが `ScopeTaskQueue.listDue` で列挙し `scop
 ### Consequences
 - 良い点: UoW のネスト禁止と「継続の保存は本処理と同一 UoW」の両方が同時に成り立つ。kind を足す = レジストリに 1 行足す、になる。
 - トレードオフ: `ScopeTaskScheduler.claimDue` の実利用者が本 Issue に居なくなる（適合スイートのみ）。複数プロセスでランナーを走らせる場合は claim による排他が要るので、そのときにランナー側へ戻す判断が必要 — #11 への引き継ぎ。
+
+---
+
+## ADR-062: `/settings` の認証ガードは P-25 だけ通す
+
+### Status
+Accepted
+
+### Context
+ADR-006 は「ticket を `sessionStorage` に退避してリロードから復帰できるようにする」と決めたが、P-25 は `/settings` レイアウトルートの子で、そのルートの `beforeLoad` が `requireAuthenticated` を通す。削除の受理はその応答でセッションを失効させるので、**受理後にリロードした利用者は必ず `/signin` へ飛ばされる** — 退避した ticket は到達不能なまま残り、ADR-006 の復帰は成立しない。TanStack Router の親 `beforeLoad` が投げる redirect は子が打ち消せないので、子ルート側では解けない。
+
+### Decision
+`/settings` の `beforeLoad` を「セッションが無く、かつ pathname が `/settings/danger` のとき **だけ** `{ user: null }` を返す」形にし、それ以外は従来どおり `/signin` へ redirect する。`user === null` のときレイアウトは `AppShell`（アカウントメニュー）とタブ列を描かず、中央カラムだけを出す — サインアウト済みの状態で他タブへの導線を出しても行き先がすべて redirect になるため。`AppShell` / `AccountMenu` / `SettingsTabs` には手を入れない。
+
+「P-25 はセッションが無くても開ける」は抜け道ではなく設計上の性質である: 受理と同時にセッションが消える以上、進捗を読める画面は認証を要求できない。読み取りの権限は ticket が持ち、`getAccountDeletionStatus` は ticket が名指す 1 件しか返さない。
+
+### Consequences
+- 良い点: ADR-006 のリロード復帰が実際に成立する。変更が `routes/settings/route.tsx` 1 本に閉じる。
+- トレードオフ: `/settings/danger` は未サインインでも 200 を返す（中身は説明文と確認フォームで、`deleteAccountFn` 自体は `requireSession()` を通すので操作はできない）。パスの直書きが 1 箇所増えるので、#3 がワークスペース設定タブ列を足すときにこの分岐を見落とさないこと。
+
+---
+
+## ADR-063: status ticket は失効の理由を 2 コードに分け、HTTP ステータスの例外表は増やさない
+
+### Status
+Accepted
+
+### Context
+`presentation/deletionTicket.ts` の検証失敗には「署名が合わない / 形が壊れている」と「署名は正しいが 30 分を過ぎた」の 2 種類がある。前者は実運用では起こらず（発行元は自分だけ）、後者は正常な経過である。steps.md のステップ 32 は対象ファイルに `presentation/errorResponse.ts` を挙げており、ticket 失効を HTTP ステータスの例外（401 など）に載せる余地があった。
+
+### Decision
+- コードは `DELETION_TICKET_INVALID` と `DELETION_TICKET_EXPIRED` の 2 つに分ける。P-25 が出す文言が違う（前者は「進捗を確認できませんでした」、後者は「確認できる期間を過ぎました」）ためで、どちらも「削除の処理はこのまま進みます」を添える。期限の判定は**署名の検証を通った後にだけ**行うので、偽造 ticket が `EXPIRED` として返ることはない。
+- `presentation/errorResponse.ts` の `HTTP_STATUS_BY_CODE` には**足さない**。`spec/presentation/index.md#コードによる例外` は「この例外は上表の 5 行だけとし、増やすときはクライアントの振る舞いが実際に変わるかを基準にする」と定めており、ticket 失効でクライアントがすることは「ポーリングをやめて文言を出す」だけで、422 のままでも達成できる。したがってステップ 32 の対象ファイル一覧のうち `errorResponse.ts` は変更しない。
+
+### Consequences
+- 良い点: 秘密や状態を漏らさずに、正常な失効と異常な ticket を利用者向けに書き分けられる。spec の閉じた 5 行を守る。
+- トレードオフ: steps.md の対象ファイル一覧と実際の変更が 1 本ずれる（ステップ 34 の記録対象）。

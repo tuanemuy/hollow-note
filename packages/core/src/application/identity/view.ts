@@ -1,5 +1,6 @@
 import type { Identity } from "@repo/core/domain/identity/identity";
 import type { ActiveUser } from "@repo/core/domain/identity/user";
+import type { DistributedOperationState } from "../ports/distributedOperationStore";
 
 /**
  * DTO projections for the identity usecases. Fields are primitives only;
@@ -212,4 +213,16 @@ export const toProfileView = (user: ActiveUser): ProfileView => ({
 export type AccountDeletionAcceptedView = Readonly<{
   operationId: string;
   status: "accepted";
+}>;
+
+/**
+ * Everything a progress poll may learn: the operation it asked about and
+ * the state of that one operation. The projection deliberately drops
+ * `partitionKey` / `requestKey` / `payload` — the ticket's holder is an
+ * already signed-out browser, and those fields carry the user id and the
+ * uniqueness keys the deletion is in the middle of erasing (ADR-006).
+ */
+export type AccountDeletionStatusView = Readonly<{
+  operationId: string;
+  status: DistributedOperationState;
 }>;

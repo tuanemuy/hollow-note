@@ -35,12 +35,7 @@ export function SettingsTabs() {
             ? "font-medium text-ink after:absolute after:inset-x-2 after:-bottom-px after:h-0.5 after:bg-ink after:content-['']"
             : "text-ink-secondary"
         }`;
-        // ルートが生成済みのタブだけ型付き `Link` にする。残りは素の
-        // リンクのまま — 型付き `to` は遷移先ルートが存在してからしか
-        // 書けないので、各設定画面のスライスが自分の行を差し替える。
-        return tab.href === "/settings/auth" ||
-          tab.href === "/settings/profile" ||
-          tab.href === "/settings/usage" ? (
+        return (
           <Link
             key={tab.href}
             to={tab.href}
@@ -49,15 +44,6 @@ export function SettingsTabs() {
           >
             {tab.label}
           </Link>
-        ) : (
-          <a
-            key={tab.href}
-            href={tab.href}
-            aria-current={current ? "page" : undefined}
-            className={className}
-          >
-            {tab.label}
-          </a>
         );
       })}
     </nav>

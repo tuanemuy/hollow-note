@@ -54,6 +54,7 @@ import type { ScopeTaskTrigger } from "../ports/scopeTaskTrigger";
 import type { ScopeKey } from "../scope";
 import type {
   AppConfig,
+  DeletionTicketKeyRing,
   NoteReader,
   RequestContainer,
   SharedDeps,
@@ -64,6 +65,13 @@ import type {
 export type MemoryRuntimeOptions = MemoryBackendOptions &
   Readonly<{
     shareTokenKeyRing?: ShareTokenKeyRing;
+    /**
+     * Signing keys for the deletion status ticket (ADR-006). Left unset
+     * the process mints its own, which is the right default for a
+     * runtime whose data does not survive a restart either — but it does
+     * mean a restart invalidates outstanding tickets.
+     */
+    deletionTicketKeyRing?: DeletionTicketKeyRing;
     routingGenerations?: readonly string[];
     /**
      * Which sign-in identity provider to talk to (ADR-003). Defaults to
@@ -106,6 +114,7 @@ export function createMemoryRuntime(
 ): MemoryRuntime {
   const {
     shareTokenKeyRing,
+    deletionTicketKeyRing,
     routingGenerations,
     oauth = { mode: "dev" },
     ...backendOptions
@@ -117,6 +126,10 @@ export function createMemoryRuntime(
   // a value protected in one request could never be revealed in another
   // (the 版→鍵 mapping of spec/presentation/index.md).
   const keyRing = shareTokenKeyRing ?? ephemeralKeyRing();
+  // A separate ring, not a second use of the share-token one: the two
+  // secrets protect different things and rotate independently.
+  const ticketKeyRing: DeletionTicketKeyRing =
+    deletionTicketKeyRing ?? ephemeralKeyRing();
 
   let boundTrigger: RelayTrigger | null = null;
   const relayTrigger: RelayTrigger = {
@@ -219,6 +232,7 @@ export function createMemoryRuntime(
         passwordHasher,
         secureTokenGenerator: createNodeSecureTokenGenerator(),
         shareTokenProtector: createWebCryptoShareTokenProtector(keyRing),
+        deletionTicketKeyRing: ticketKeyRing,
       };
     },
     createWorkerContainer(): WorkerContainer {

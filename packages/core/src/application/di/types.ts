@@ -45,6 +45,26 @@ export type AppConfig = Readonly<{
 }>;
 
 /**
+ * Signing keys for the deletion status ticket (ADR-006).
+ *
+ * The ticket is a presentation concern — it carries a transport format
+ * and an expiry — but its secret is a deployment concern, so the
+ * composition root supplies the ring and the presentation layer only
+ * uses it. That keeps every secret entering the process through one
+ * path, the same one `shareTokenKeyRing` already takes; it is
+ * deliberately not part of `AppConfig`, which is SSR metadata.
+ *
+ * Versioned so a key can be rotated by adding one and bumping
+ * `currentVersion`: tickets already in flight keep verifying under the
+ * version they were signed with.
+ */
+export type DeletionTicketKeyRing = Readonly<{
+  currentVersion: number;
+  /** 32-byte HMAC-SHA-256 keys by version. Never persisted. */
+  keys: ReadonlyMap<number, Uint8Array>;
+}>;
+
+/**
  * Cross-cutting deterministic deps shared between request and worker
  * containers. Held as ports so domain / application code stays free of
  * ambient time, id generation, and IO sinks.
@@ -164,6 +184,7 @@ export type RequestContainer = SharedDeps &
     passwordHasher: PasswordHasher;
     secureTokenGenerator: SecureTokenGenerator;
     shareTokenProtector: ShareTokenProtector;
+    deletionTicketKeyRing: DeletionTicketKeyRing;
   }>;
 
 /** Sweep tables owned by `pruneExpiredAuthState` (spec/usecases/identity.md). */
