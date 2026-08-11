@@ -1,5 +1,6 @@
 "use client";
 
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { SETTINGS_TABS } from "@/components/layout/SettingsTabs";
@@ -95,15 +96,12 @@ export function AccountMenu({
           <div className="truncate px-4 py-1.5 text-xs text-ink-tertiary">
             {displayName}
           </div>
-          {/* 通常のリンク（`Link` ではない）: 遷移先の `/settings/profile`
-              を作るのはプロフィール設定のスライスで、型付き `to` はその
-              ルートが生成された後にしか書けない。 */}
-          <a
-            href={SETTINGS_ENTRY_HREF}
+          <Link
+            to={SETTINGS_ENTRY_HREF}
             className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
           >
             設定
-          </a>
+          </Link>
           <button
             type="button"
             disabled={isPending}

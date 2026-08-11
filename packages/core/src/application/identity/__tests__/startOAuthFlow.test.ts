@@ -7,7 +7,7 @@ import { IdentityErrorCode } from "@repo/core/domain/identity/errorCode";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { type StartOAuthFlowInput, startOAuthFlow } from "../startOAuthFlow";
-import { signUpVerified } from "./authFlowHelpers";
+import { markDeleted, markDeleting, signUpVerified } from "./authFlowHelpers";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
@@ -59,15 +59,20 @@ describe("startOAuthFlow", () => {
   it("TC-identity-266: a user that started deletion is not an authenticated principal", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
-    const stored = h.backend.users.get(userId);
-    if (stored === undefined || stored.status !== "active") {
-      throw new Error("expected an active user row");
-    }
-    h.backend.users.set(userId, {
-      ...stored,
-      status: "deleting",
-      deletionOperationId: "operation-1",
-    });
+    markDeleting(h, userId);
+
+    const error = await start(h, { intent: "linkIdentity", userId }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(isUnauthorizedError(error)).toBe(true);
+    expect(storedStates(h)).toHaveLength(0);
+  });
+
+  it("TC-identity-266: a tombstoned user is not an authenticated principal either", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+    markDeleted(h, userId);
 
     const error = await start(h, { intent: "linkIdentity", userId }).catch(
       (thrown: unknown) => thrown,

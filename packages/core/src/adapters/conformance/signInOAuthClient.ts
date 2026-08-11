@@ -40,22 +40,22 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 /**
  * Shared conformance suite for `SignInOAuthClient` (ADP-identity-033/034).
  *
- * The PKCE half is a pure function and runs for every adapter; the
- * exchange half needs an adapter that can mint its own code, so a live
- * provider only contributes the authorization-request contract.
- *
- * `enabled: false` keeps the registration line in place while the
- * provider's credentials are absent (AC-6) — the suite is skipped, not
- * deleted, so the missing credentials are visible in the test report.
+ * Split in two so the credential gate only covers what actually needs a
+ * provider (AC-6): the authorization-request half is pure — challenge
+ * derivation and URL building never talk to anyone — and runs for every
+ * registered adapter, while the exchange half is skipped when the
+ * provider's credentials are absent. `enabled: false` skips that half
+ * rather than deleting the registration, so missing credentials stay
+ * visible in the test report.
  */
 export function describeSignInOAuthClientContract(
   adapterName: string,
   makeHarness: MakeSignInOAuthClientHarness,
   options: Readonly<{ enabled?: boolean }> = {},
 ): void {
-  const suite = options.enabled === false ? describe.skip : describe;
+  const gated = options.enabled === false ? describe.skip : describe;
 
-  suite(`SignInOAuthClient conformance [${adapterName}]`, () => {
+  describe(`SignInOAuthClient authorization request [${adapterName}]`, () => {
     let harness: SignInOAuthClientHarness;
 
     beforeEach(async () => {
@@ -87,6 +87,14 @@ export function describeSignInOAuthClientContract(
       expect(url.searchParams.get("code_challenge")).toBe(codeChallenge);
       expect(url.searchParams.get("code_challenge_method")).toBe("S256");
       expect(url.searchParams.get("response_type")).toBe("code");
+    });
+  });
+
+  gated(`SignInOAuthClient conformance [${adapterName}]`, () => {
+    let harness: SignInOAuthClientHarness;
+
+    beforeEach(async () => {
+      harness = await makeHarness();
     });
 
     it("rejects a malformed authorization code with OAUTH_CODE_INVALID", async () => {

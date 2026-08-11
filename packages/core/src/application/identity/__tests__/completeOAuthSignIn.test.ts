@@ -213,6 +213,7 @@ describe("completeOAuthSignIn", () => {
       deletionOperationId: "operation-1",
     });
     const sessionsBefore = h.backend.sessions.values().length;
+    const identitiesBefore = h.backend.identities.values().length;
 
     // Provider link resolves to the deleting user.
     const viaProvider = await signInWithOAuth(h, {
@@ -232,6 +233,7 @@ describe("completeOAuthSignIn", () => {
     );
 
     expect(h.backend.sessions.values()).toHaveLength(sessionsBefore);
+    expect(h.backend.identities.values()).toHaveLength(identitiesBefore);
   });
 
   it("TC-identity-030: only one sign-up may hold the provider-account key", async () => {

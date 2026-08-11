@@ -29,7 +29,7 @@ import { signUpFn } from "./action";
 /**
  * P-01 サインアップ（spec/pages/index.md#P-01、モック P01-signup.html）。
  * 状態: 入力 / 項目エラー（入力中に検出し送信を抑止）/ 送信中 / 送信完了 /
- * 全体エラー。Google・招待経由は本スライス外のため出さない。
+ * 全体エラー。招待経由は本スライス外のため出さない。
  */
 
 type Fields = Readonly<{

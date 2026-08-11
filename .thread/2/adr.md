@@ -1276,3 +1276,23 @@ Accepted
 ### Consequences
 - 良い点: 秘密や状態を漏らさずに、正常な失効と異常な ticket を利用者向けに書き分けられる。spec の閉じた 5 行を守る。
 - トレードオフ: steps.md の対象ファイル一覧と実際の変更が 1 本ずれる（ステップ 34 の記録対象）。
+
+---
+
+## ADR-064: `SignInOAuthClient` の適合スイートは資格情報の要否で 2 つに割る
+
+### Status
+Accepted
+
+### Context
+AC-6 は 2 つを同時に求める: (a) Google アダプターの適合スイートは資格情報の無い環境で `describe.skip` 相当になること、(b) `deriveCodeChallenge` の S256 契約（同一 verifier → 同一値 / 43 文字 base64url / 認可 URL に `code_challenge_method=S256`）は資格情報を要さない純関数の検証として**両アダプターで実行する**こと。ステップ 13 の実装は `enabled: false` をスイート全体に掛けていたため、(a) は満たすが (b) が満たされず、Google アダプターの S256 導出は既定の開発機と CI のどちらでも 1 度も実行されていなかった（スイートの JSDoc の「PKCE half runs for every adapter」も実態と食い違っていた）。
+
+### Decision
+`describeSignInOAuthClientContract` を 2 つの `describe` に割る。
+
+- `SignInOAuthClient authorization request [adapter]` — `deriveCodeChallenge` と `buildAuthorizationUrl` の 2 ケース。どちらも外部と通信せず、資格情報も読まない（Google 実装は `client_id` を URL に載せるだけで、空文字でも契約は検証できる）ので、**常に**実行する。
+- `SignInOAuthClient conformance [adapter]` — `exchangeCode` の 3 ケース。`enabled: false` のときスキップする。
+
+### Consequences
+- 良い点: AC-6 の 2 条件が同時に成立し、「資格情報が無い」ことでスキップされる範囲が実際に provider を要する部分だけに縮む。
+- トレードオフ: 1 アダプターにつきスイート名が 2 つ出る。`live` provider が資格情報つきで走っても交換系 3 ケースは早期 return のままで、実際に交換を検証するのは `offline`（dev IdP）だけという構造は変わらない。

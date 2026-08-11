@@ -1,5 +1,5 @@
 import { encodeDevAuthorizationCode } from "@repo/core/adapters/oauth/devSignInOAuthClient";
-import type { DeletingUser, User } from "@repo/core/domain/identity/user";
+import { type DeletingUser, User } from "@repo/core/domain/identity/user";
 import type { TestHarness } from "../../__tests__/helpers";
 import { completeOAuthSignIn } from "../completeOAuthSignIn";
 import { signUpWithPassword } from "../signUpWithPassword";
@@ -87,6 +87,22 @@ export function markDeleting(
       deletionOperationId,
     };
     return deleting;
+  });
+}
+
+/** Moves an active user to the PII-free tombstone `deleteAccount` leaves. */
+export function markDeleted(
+  h: TestHarness,
+  userId: string,
+  deletionOperationId = "deletion-1",
+): void {
+  markDeleting(h, userId, deletionOperationId);
+  overwriteUser(h, userId, (user) => {
+    if (user.status !== "deleting") {
+      throw new Error(`user ${userId} is not deleting`);
+    }
+    return User.finalizeDeletion(user, deletionOperationId, h.clock.now())
+      .entity;
   });
 }
 

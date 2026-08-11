@@ -14,6 +14,7 @@ import { linkOAuthIdentity } from "../linkOAuthIdentity";
 import {
   beginOAuthFlow,
   devAuthorizationCode,
+  markDeleted,
   markDeleting,
   type OAuthGrant,
   overwriteUser,
@@ -146,6 +147,29 @@ describe("linkOAuthIdentity", () => {
     ).rejects.toSatisfy(
       (error) => isNotFoundError(error) && error.code === "USER_NOT_FOUND",
     );
+    expect(directoryRows(h)).toHaveLength(0);
+  });
+
+  it("TC-identity-122: refuses a tombstoned user the same way", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+    const flow = await beginOAuthFlow(h, { intent: "linkIdentity", userId });
+    markDeleted(h, userId);
+
+    await expect(
+      linkOAuthIdentity({
+        container: h.container,
+        input: {
+          state: flow.state,
+          code: devAuthorizationCode(flow, {
+            providerAccountId: "google-link-1",
+          }),
+        },
+      }),
+    ).rejects.toSatisfy(
+      (error) => isNotFoundError(error) && error.code === "USER_NOT_FOUND",
+    );
+    expect(identitiesOf(h, userId)).toHaveLength(1);
     expect(directoryRows(h)).toHaveLength(0);
   });
 
