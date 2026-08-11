@@ -53,6 +53,22 @@ export const renderProfileForm = createServerFn({ method: "GET" })
     };
   });
 
+/** P-24 の使用量フラグメント。未解決の promise を返してストリームさせる。 */
+export const renderUsagePanel = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .handler(async () => {
+    const [{ UsagePanel }, { requireSession }] = await Promise.all([
+      import("@/components/settings/UsagePanel"),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return {
+      UsagePanel: renderServerFragment(() =>
+        UsagePanel({ userId: user.userId }),
+      ),
+    };
+  });
+
 const DISPLAY_NAME_MAX_LENGTH = 50;
 const BIO_MAX_LENGTH = 500;
 const HANDLE_MAX_LENGTH = 30;

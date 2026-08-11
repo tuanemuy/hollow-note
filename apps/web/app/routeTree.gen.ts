@@ -21,6 +21,7 @@ import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
 import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
+import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
@@ -85,6 +86,11 @@ const SettingsProfileRoute = SettingsProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => SettingsRouteRoute,
 } as any)
+const SettingsUsageRoute = SettingsUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
 const StorageSplatRoute = StorageSplatRouteImport.update({
   id: '/storage/$',
   path: '/storage/$',
@@ -113,6 +119,7 @@ export interface FileRoutesByFullPath {
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
@@ -130,6 +137,7 @@ export interface FileRoutesByTo {
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
@@ -148,6 +156,7 @@ export interface FileRoutesById {
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/profile'
+    | '/settings/usage'
     | '/storage/$'
     | '/notes/'
     | '/auth/callback/$provider'
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/profile'
+    | '/settings/usage'
     | '/storage/$'
     | '/notes'
     | '/auth/callback/$provider'
@@ -201,6 +212,7 @@ export interface FileRouteTypes {
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/profile'
+    | '/settings/usage'
     | '/storage/$'
     | '/notes/'
     | '/auth/callback/$provider'
@@ -309,6 +321,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsProfileRouteImport
       parentRoute: typeof SettingsRouteRoute
     }
+    '/settings/usage': {
+      id: '/settings/usage'
+      path: '/usage'
+      fullPath: '/settings/usage'
+      preLoaderRoute: typeof SettingsUsageRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
     '/storage/$': {
       id: '/storage/$'
       path: '/storage/$'
@@ -336,11 +355,13 @@ declare module '@tanstack/react-router' {
 interface SettingsRouteRouteChildren {
   SettingsAuthRoute: typeof SettingsAuthRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
+  SettingsUsageRoute: typeof SettingsUsageRoute
 }
 
 const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
   SettingsAuthRoute: SettingsAuthRoute,
   SettingsProfileRoute: SettingsProfileRoute,
+  SettingsUsageRoute: SettingsUsageRoute,
 }
 
 const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(

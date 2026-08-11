@@ -1029,3 +1029,37 @@ steps.md は配信ルートを `apps/web/app/routes/storage.$key.tsx` と書く�
 ### Consequences
 - 良い点: memory 配備でアイコンが実際に配信でき、`publicUrl` の形をアダプターに閉じたまま保てる。R2 等の公開ドメインへ移る配備ではこのルートごと落とせる。
 - トレードオフ: steps.md のファイル名と 1 文字違う。splat なので `/storage` 配下の未定義パスもこのハンドラーに入る（不在は 404 を返すので実害は無い）。
+
+---
+
+## ADR-051: `getUsageSnapshot` の出力から workspace ページングの構造ごと落とす
+
+### Status
+Accepted
+
+### Context
+plan.md の縮退で「workspace セクションは常に空配列」と決めたが、spec の出力 DTO は `workspaces: WorkspaceUsageItem[]` と `nextWorkspaceCursor: string | null`、入力 DTO は `workspaceCursor` / `workspaceLimit` を持つ。空配列だけを返す実装でも、この 3 つのフィールドと `WorkspaceUsageItem`（`available` / `unavailable` の判別共用体）を型として置くことはできる。置けば「P-24 が読める形」に見えるが、`membership_directory` の keyset を引くポートが無いので、`nextWorkspaceCursor` は常に `null`、`workspaceCursor` は常に無視される — 値を持たない引数と、常に同じ答えを返すフィールドになる。
+
+### Decision
+入力から `workspaceCursor` / `workspaceLimit` を、出力から `nextWorkspaceCursor` と `WorkspaceUsageItem` を落とし、`workspaces: readonly never[]` だけを残す。`never[]` にするのは、要素を作る経路が本スライスに無いことを型で表すため — 要素型を先に決めておくと、#3 が実ポートに合わせて決める自由を奪う。#3 はこの 1 フィールドを広げ、cursor 系のフィールドを同時に足す。
+
+### Consequences
+- 良い点: 「常に `null` を返す cursor」という嘘のインターフェースを UI に見せない。PAGE-p24-002 を UI に出さない判断（無効ボタンの placeholder も置かない）と、DTO の形が一致する。
+- トレードオフ: #3 は DTO の破壊的変更を伴う（フィールド追加ではなく `never[]` の置換）。呼び出し元は P-24 の 1 か所だけなので影響範囲は閉じている。
+
+---
+
+## ADR-052: `recalculateStorageUsage` の入力に主体とは別の実行者 `userId` を持たせる
+
+### Status
+Accepted
+
+### Context
+spec の入力 DTO は `subjectType` / `subjectId` だけで、実行者を持たない（運用操作として書かれているため）。一方 steps.md / AC-22 は「scope の通常 write 入口として `cleanupAdmission.assertWritable()` と `assertActorWritable(userId)` の 2 本を呼ぶ」ことを求め、後者は `UserId` を要る。主体（workspace かもしれない）から実行者を導くことはできない。
+
+### Decision
+入力に `userId`（実行者）を `subjectType` / `subjectId`（主体）と並べて持たせる。personal 主体では両者が一致するが、型としては別物として扱う — workspace 主体の再計算はメンバーが実行するので、主体から実行者を導く実装は #3 が membership を足した時点で誤りになる。本スライスは実行者と主体の一致を検査しない（`assertActorWritable` が actor ロックを見るだけ）。権限検査（誰が再計算してよいか）は `WorkspaceAuthorization` を持つ #3 の担当で、ADR-014 の `storeAvatar` と同じ扱いにはしない — こちらは値を作り直すだけで、新たな消費も外部への露出も生まない。
+
+### Consequences
+- 良い点: `assertActorWritable` を実装でき、TC-identity-045 が Usage 経路でも成立する。#3 が権限検査を足すときに引数を増やす必要が無い。
+- トレードオフ: spec の入力 DTO と 1 フィールド差がある（ステップ 34 の spec-sync 候補）。
