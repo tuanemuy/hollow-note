@@ -2,6 +2,7 @@ import { ConflictError } from "../../../application/errors";
 import type {
   AccountDeletionAckPhase,
   AccountDeletionAuthorRoute,
+  AccountDeletionManifestHeader,
   AccountDeletionManifestItem,
   AccountDeletionManifestStore,
   AccountDeletionPhase,
@@ -16,17 +17,26 @@ import type {
   ManifestMembershipItemRow,
   MemoryBackend,
 } from "../store";
-import { compareStrings } from "../support";
+import { clone, compareStrings } from "../support";
 
 const PAGE_LIMIT = 100;
 
-const REQUIRED_FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
+const ALL_FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
   "authResidue",
   "externalConnections",
   "jobHistory",
   "uniquenessRelease",
 ];
+
+export type MemoryAccountDeletionManifestOptions = Readonly<{
+  /**
+   * Receipts finalize waits for. Defaults to every non-rollback receipt
+   * — the strictest reading — so a deployment that forgets to declare
+   * its participants stalls instead of finalizing early.
+   */
+  requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];
+}>;
 
 const itemTableKey = (operationId: string, itemKey: string): string =>
   `${operationId} ${itemKey}`;
@@ -48,9 +58,12 @@ const authorRouteFullyAcked = (item: ManifestAuthorRouteItemRow): boolean =>
 
 export function createMemoryAccountDeletionManifestStore(
   backend: MemoryBackend,
+  options: MemoryAccountDeletionManifestOptions = {},
 ): AccountDeletionManifestStore {
   const headers = backend.manifestHeaders;
   const items = backend.manifestItems;
+  const requiredReceipts =
+    options.requiredFinalizeReceipts ?? ALL_FINALIZE_RECEIPTS;
 
   const requireHeader = (operationId: string): ManifestHeaderRow => {
     const header = headers.get(operationId);
@@ -113,13 +126,18 @@ export function createMemoryAccountDeletionManifestStore(
     return (
       membershipItems(operationId).every(membershipFullyAcked) &&
       authorRouteItems(operationId).every(authorRouteFullyAcked) &&
-      REQUIRED_FINALIZE_RECEIPTS.every((receipt) =>
-        header.receipts.includes(receipt),
-      )
+      requiredReceipts.every((receipt) => header.receipts.includes(receipt))
     );
   };
 
   return {
+    async describe(
+      operationId: string,
+    ): Promise<AccountDeletionManifestHeader | null> {
+      const header = headers.get(operationId);
+      return header === undefined ? null : clone(header);
+    },
+
     async begin(operationId: string, userId: UserId): Promise<void> {
       if (headers.has(operationId)) {
         return;

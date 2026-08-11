@@ -1,6 +1,8 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
+import { dispatchAccountDeletionCleanup } from "../identity/deleteAccount/cleanupDispatch";
+import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
 import type { AllDomainEvents } from "./eventRelayWorker";
@@ -46,6 +48,34 @@ export const subscribers: readonly EventSubscriber[] = [
     eventType: "storage.fileDeleted",
     consumerName: "storage.deleteStoredObjects",
     handle: deleteStoredObjects,
+  },
+  {
+    eventType: "identity.accountDeletionManifestBuildContinued",
+    consumerName: "identity.accountDeletionManifestBuild",
+    handle: (event, deps) =>
+      continueAccountDeletionManifestBuild(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        phase: event.payload.phase,
+        cursor: event.payload.cursor,
+      }),
+  },
+  // Every dispatch phase subscribes separately and passes on the phases
+  // it does not own, so a phase is wired by adding an entry rather than
+  // by editing a shared switch.
+  {
+    eventType: "identity.accountDeletionDispatchContinued",
+    consumerName: "identity.accountDeletionCleanup",
+    handle: async (event, deps) => {
+      if (event.payload.phase !== "cleanup") {
+        return;
+      }
+      await dispatchAccountDeletionCleanup(deps, {
+        type: event.type,
+        operationId: event.payload.operationId,
+        phase: "cleanup",
+      });
+    },
   },
 ];
 

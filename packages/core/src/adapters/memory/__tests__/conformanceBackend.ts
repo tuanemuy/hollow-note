@@ -65,13 +65,31 @@ export function makeMemoryConformanceBackend(
       relayKicks += 1;
     },
   };
+  const cleanupOptions = {
+    ...(options.requiredCleanupComponents !== undefined
+      ? { requiredCleanupComponents: options.requiredCleanupComponents }
+      : {}),
+    ...(options.requiredFinalizeReceipts !== undefined
+      ? { requiredFinalizeReceipts: options.requiredFinalizeReceipts }
+      : {}),
+  };
+  const manifestOptions =
+    options.requiredFinalizeReceipts !== undefined
+      ? { requiredFinalizeReceipts: options.requiredFinalizeReceipts }
+      : {};
+  const admissionOptions =
+    options.requiredCleanupComponents !== undefined
+      ? { requiredComponents: options.requiredCleanupComponents }
+      : {};
   return {
     clock,
     globalUnitOfWork: createMemoryGlobalUnitOfWorkProvider(backend, {
       relayTrigger,
+      ...cleanupOptions,
     }),
     scopeUnitOfWork: createMemoryScopeUnitOfWorkProvider(backend, {
       relayTrigger,
+      ...cleanupOptions,
     }),
     relayKickCount: () => relayKicks,
     userRepository: createMemoryUserRepository(backend),
@@ -92,8 +110,10 @@ export function makeMemoryConformanceBackend(
     scopeRouter: createMemoryScopeRouter(backend),
     scopeTaskQueue: createMemoryScopeTaskQueue(backend),
     objectStorage: createMemoryObjectStorage(backend),
-    accountDeletionManifestStore:
-      createMemoryAccountDeletionManifestStore(backend),
+    accountDeletionManifestStore: createMemoryAccountDeletionManifestStore(
+      backend,
+      manifestOptions,
+    ),
     globalMaintenanceRunStore: createMemoryGlobalMaintenanceRunStore(backend),
     publicNoteProjectionWriter: createMemoryPublicNoteProjectionWriter(backend),
     publicNoteQueryService: createMemoryPublicNoteQueryService(backend),
@@ -102,8 +122,10 @@ export function makeMemoryConformanceBackend(
       return {
         noteRepository: createMemoryNoteRepository(scopeStore),
         noteRevisionRepository: createMemoryNoteRevisionRepository(scopeStore),
-        scopeCleanupAdmissionStore:
-          createMemoryScopeCleanupAdmissionStore(scopeStore),
+        scopeCleanupAdmissionStore: createMemoryScopeCleanupAdmissionStore(
+          scopeStore,
+          admissionOptions,
+        ),
         localNoteProjectionWriter:
           createMemoryLocalNoteProjectionWriter(scopeStore),
         noteProjectionSnapshotReader:

@@ -2,7 +2,10 @@ import type {
   GlobalUnitOfWorkProvider,
   ScopeUnitOfWorkProvider,
 } from "../../application/execution/unitOfWork";
-import type { AccountDeletionManifestStore } from "../../application/ports/accountDeletionManifestStore";
+import type {
+  AccountDeletionManifestStore,
+  AccountDeletionReceipt,
+} from "../../application/ports/accountDeletionManifestStore";
 import type { AppliedOperationStore } from "../../application/ports/appliedOperationStore";
 import type { DistributedOperationStore } from "../../application/ports/distributedOperationStore";
 import type {
@@ -16,7 +19,10 @@ import type { NoteRouteStore } from "../../application/ports/noteRouteStore";
 import type { OAuthStateStore } from "../../application/ports/oauthStateStore";
 import type { ObjectStorage } from "../../application/ports/objectStorage";
 import type { OutboxRepository } from "../../application/ports/outboxRepository";
-import type { ScopeCleanupAdmissionStore } from "../../application/ports/scopeCleanupAdmissionStore";
+import type {
+  PersonalCleanupComponent,
+  ScopeCleanupAdmissionStore,
+} from "../../application/ports/scopeCleanupAdmissionStore";
 import type { ScopeRouter } from "../../application/ports/scopeRouter";
 import type { ScopeTaskQueue } from "../../application/ports/scopeTaskQueue";
 import type { ScopeTaskScheduler } from "../../application/ports/scopeTaskScheduler";
@@ -46,6 +52,14 @@ import type { TestClock } from "./testClock";
 export type ConformanceBackendOptions = Readonly<{
   maintenanceShardIds?: readonly string[];
   maintenanceTablesByKind?: Partial<Record<MaintenanceKind, readonly string[]>>;
+  /**
+   * Cleanup participants the backend under test declares (ADR-002 /
+   * ADR-017). The suites drive completion from the same sets, so the
+   * contract is "everything declared, nothing else" rather than a fixed
+   * enum a deployment may not be able to satisfy.
+   */
+  requiredCleanupComponents?: readonly PersonalCleanupComponent[];
+  requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];
 }>;
 
 /** Scope-plane ports bound to one `ScopeKey`. */

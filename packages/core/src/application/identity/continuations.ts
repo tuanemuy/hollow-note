@@ -3,6 +3,10 @@ import type {
   EventDraft,
 } from "@repo/core/domain/common/event";
 import type { UserId } from "@repo/core/domain/identity/valueObject";
+import type {
+  AccountDeletionBuildPhase,
+  AccountDeletionDispatchPhase,
+} from "./deleteAccount/input";
 
 export type AuthResidueTable = "sessions" | "authTokens";
 
@@ -28,7 +32,45 @@ export type UserAuthResidueCleanupContinuedEvent = DomainEventBase<
   }>
 >;
 
-export type IdentityContinuationEvent = UserAuthResidueCleanupContinuedEvent;
+/**
+ * Continuation of the account-deletion manifest build: one turn fixes
+ * one page of targets, starting at `cursor`.
+ *
+ * `continuationKey` is what makes the event id deterministic (ADR-019):
+ * a turn whose commit response was lost re-derives the same key, so the
+ * replay upserts the same outbox row instead of forking the chain.
+ */
+export type AccountDeletionManifestBuildContinuedEvent = DomainEventBase<
+  "identity.accountDeletionManifestBuildContinued",
+  Readonly<{
+    operationId: string;
+    phase: AccountDeletionBuildPhase;
+    cursor: string | null;
+    continuationKey: string;
+  }>
+>;
+
+/** Continuation of one account-deletion dispatch phase (same key rules). */
+export type AccountDeletionDispatchContinuedEvent = DomainEventBase<
+  "identity.accountDeletionDispatchContinued",
+  Readonly<{
+    operationId: string;
+    phase: AccountDeletionDispatchPhase;
+    continuationKey: string;
+  }>
+>;
+
+export type IdentityContinuationEvent =
+  | UserAuthResidueCleanupContinuedEvent
+  | AccountDeletionManifestBuildContinuedEvent
+  | AccountDeletionDispatchContinuedEvent;
+
+const continuationKey = (
+  eventType: string,
+  operationId: string,
+  phase: string,
+  cursor: string | null,
+): string => `${eventType}:${operationId}:${phase}:${cursor ?? "-"}`;
 
 export const IdentityContinuations = {
   userAuthResidueCleanup: (
@@ -45,4 +87,58 @@ export const IdentityContinuations = {
     occurredAt,
     aggregateId: params.userId,
   }),
+
+  accountDeletionManifestBuild: (
+    params: Readonly<{
+      operationId: string;
+      phase: AccountDeletionBuildPhase;
+      /** Page position the next turn starts from. */
+      cursor: string | null;
+    }>,
+    occurredAt: Date,
+  ): EventDraft<AccountDeletionManifestBuildContinuedEvent> => {
+    const type = "identity.accountDeletionManifestBuildContinued";
+    return {
+      type,
+      payload: {
+        operationId: params.operationId,
+        phase: params.phase,
+        cursor: params.cursor,
+        continuationKey: continuationKey(
+          type,
+          params.operationId,
+          params.phase,
+          params.cursor,
+        ),
+      },
+      occurredAt,
+      aggregateId: params.operationId,
+    };
+  },
+
+  accountDeletionDispatch: (
+    params: Readonly<{
+      operationId: string;
+      phase: AccountDeletionDispatchPhase;
+      cursor?: string | null;
+    }>,
+    occurredAt: Date,
+  ): EventDraft<AccountDeletionDispatchContinuedEvent> => {
+    const type = "identity.accountDeletionDispatchContinued";
+    return {
+      type,
+      payload: {
+        operationId: params.operationId,
+        phase: params.phase,
+        continuationKey: continuationKey(
+          type,
+          params.operationId,
+          params.phase,
+          params.cursor ?? null,
+        ),
+      },
+      occurredAt,
+      aggregateId: params.operationId,
+    };
+  },
 };

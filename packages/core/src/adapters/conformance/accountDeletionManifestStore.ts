@@ -7,13 +7,19 @@ import { noteId, userId } from "./fixtures";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The declaration this suite drives the backend with (ADR-017). It is a
+ * strict subset of the receipt enum on purpose: finalize waits for what
+ * the deployment declares, so a backend that hard-codes the full set
+ * fails here.
+ */
 const FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
   "authResidue",
-  "externalConnections",
-  "jobHistory",
   "uniquenessRelease",
 ];
+
+const UNDECLARED_RECEIPT: AccountDeletionReceipt = "jobHistory";
 
 /**
  * Shared conformance suite for `AccountDeletionManifestStore`
@@ -31,7 +37,9 @@ export function describeAccountDeletionManifestStoreContract(
     let backend: ConformanceBackend;
 
     beforeEach(async () => {
-      backend = await makeBackend();
+      backend = await makeBackend({
+        requiredFinalizeReceipts: FINALIZE_RECEIPTS,
+      });
     });
 
     const store = () => backend.accountDeletionManifestStore;
@@ -82,6 +90,31 @@ export function describeAccountDeletionManifestStoreContract(
         "op-1",
         terminalAt,
         new Date(terminalAt.getTime() + 120 * DAY_MS),
+      );
+    });
+
+    it("ADP-common-012: describe reports the header a continuation resumes from", async () => {
+      expect(await store().describe("op-1")).toBeNull();
+
+      await beginWithRoutes();
+      const building = await store().describe("op-1");
+      expect(building).toMatchObject({
+        operationId: "op-1",
+        userId: userId(1),
+        status: "building",
+        membershipCursor: null,
+        authorRouteCursor: null,
+        receipts: [],
+        terminalAt: null,
+        retainUntil: null,
+      });
+
+      await store().markBuilt("op-1");
+      await finalizeAll();
+      const built = await store().describe("op-1");
+      expect(built?.status).toBe("built");
+      expect(built?.receipts).toEqual(
+        expect.arrayContaining([...FINALIZE_RECEIPTS]),
       );
     });
 
@@ -168,6 +201,10 @@ export function describeAccountDeletionManifestStoreContract(
       await expectConflict(
         store().markCompleted("op-1", terminalAt, retainUntil),
       );
+
+      // A receipt nothing declares does not move finalize forward.
+      await store().acknowledgeReceipt("op-1", UNDECLARED_RECEIPT);
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
 
       await finalizeAll();
       expect(await store().allRequiredAcknowledged("op-1")).toBe(true);

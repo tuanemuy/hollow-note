@@ -2,7 +2,9 @@ import type {
   GlobalUnitOfWorkContext,
   GlobalUnitOfWorkProvider,
 } from "../../application/execution/unitOfWork";
+import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import type { RelayTrigger } from "../../application/ports/relayTrigger";
+import type { PersonalCleanupComponent } from "../../application/ports/scopeCleanupAdmissionStore";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import { createMemoryAccountDeletionManifestStore } from "./repositories/accountDeletionManifestStore";
@@ -18,6 +20,14 @@ import type { MemoryBackend } from "./store";
 
 export type MemoryUnitOfWorkOptions = Readonly<{
   relayTrigger?: RelayTrigger;
+  /**
+   * Cleanup participants this deployment declares
+   * (`application/cleanup/participants.ts`). Both default to the whole
+   * enum inside the stores, so omitting them stalls a deletion rather
+   * than completing one nothing cleaned up (ADR-002 / ADR-017).
+   */
+  requiredCleanupComponents?: readonly PersonalCleanupComponent[];
+  requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];
 }>;
 
 /**
@@ -51,7 +61,11 @@ export function createMemoryGlobalUnitOfWorkProvider(
           distributedOperationStore:
             createMemoryDistributedOperationStore(backend),
           accountDeletionManifestStore:
-            createMemoryAccountDeletionManifestStore(backend),
+            createMemoryAccountDeletionManifestStore(backend, {
+              ...(options.requiredFinalizeReceipts !== undefined
+                ? { requiredFinalizeReceipts: options.requiredFinalizeReceipts }
+                : {}),
+            }),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, () => backend.mintEventId()),

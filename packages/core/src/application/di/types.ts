@@ -24,6 +24,7 @@ import type { IdentityRemovalReceiptStore } from "../ports/identityRemovalReceip
 import type { IdGenerator } from "../ports/idGenerator";
 import type { Logger } from "../ports/logger";
 import type { MailSender } from "../ports/mailSender";
+import type { NoteRouteFanOutReader } from "../ports/noteRouteFanOutReader";
 import type { NoteRouteStore } from "../ports/noteRouteStore";
 import type { OAuthStateStore } from "../ports/oauthStateStore";
 import type { ObjectStorage } from "../ports/objectStorage";
@@ -80,6 +81,16 @@ export type AuthTokenReader = Pick<AuthTokenRepository, "findByTokenHash">;
 export type DeletionOperationReader = Pick<
   DistributedOperationStore,
   "findByOperationId"
+>;
+/**
+ * Author-side fan-out over the note routing catalog. Account deletion
+ * fixes its author-route targets from it, and it is a read of a store
+ * the manifest's unit of work cannot enclose, so it stays a `Pick`
+ * outside the transaction.
+ */
+export type NoteRouteFanOutReadView = Pick<
+  NoteRouteFanOutReader,
+  "listByCreatedBy"
 >;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
@@ -194,7 +205,12 @@ export type ExpirySweep = Readonly<{
  *
  * The remaining ports are the ones today's subscribers touch outside a
  * unit of work: reservation release reads the removal receipt and frees
- * the directory key, and the deletion manifest collects global receipts.
+ * the directory key, the deletion manifest collects global receipts and
+ * hands its build continuations the header they resume from, and
+ * `noteRouteFanOutReader` fixes the author routes of a deletion —
+ * a routing-catalog read that the manifest's transaction may not
+ * enclose, which is why deletion continuations are worker-plane
+ * consumers rather than request-path calls.
  * `scopeTaskQueue` is the runner's only way to learn which scopes have
  * continuation work due (ADR-005) — it reads, and the claim still
  * happens inside each scope's unit of work. `objectStorage` is here
@@ -211,6 +227,7 @@ export type WorkerContainer = SharedDeps &
     identityUniqueDirectory: IdentityUniqueDirectory;
     identityRemovalReceiptStore: IdentityRemovalReceiptStore;
     accountDeletionManifestStore: AccountDeletionManifestStore;
+    noteRouteFanOutReader: NoteRouteFanOutReadView;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
     routingGenerations: readonly string[];

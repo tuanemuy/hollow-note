@@ -1063,3 +1063,100 @@ spec の入力 DTO は `subjectType` / `subjectId` だけで、実行者を持�
 ### Consequences
 - 良い点: `assertActorWritable` を実装でき、TC-identity-045 が Usage 経路でも成立する。#3 が権限検査を足すときに引数を増やす必要が無い。
 - トレードオフ: spec の入力 DTO と 1 フィールド差がある（ステップ 34 の spec-sync 候補）。
+
+---
+
+## ADR-053: manifest header に読み取り (`describe`) を足し、build continuation は自分の cursor を運ぶ
+
+### Status
+Accepted
+
+### Context
+`identity.accountDeletionManifestBuildContinued` の spec DTO は `{ operationId, phase }` だけで、page 位置は manifest header（`membershipCursor` / `authorRouteCursor`）に置くと定める。ところが実コードの `AccountDeletionManifestStore` に header を読む手段が無く、継続ハンドラーは (a) どの利用者の route を走査するか（`userId`）も (b) どこから再開するか（cursor）も知りようがない。さらに header の cursor だけで再開すると、**phase の最終 page を再配送されたときに cursor が `null` に戻っているためその phase を先頭から開き直す**（items は冪等 append なので壊れないが、`次 page へ進む` という TC-identity-096 / 101 の期待と食い違い、1 往復余計に回る）。
+
+### Decision
+2 点セットで解く。
+
+- `AccountDeletionManifestStore.describe(operationId): Promise<AccountDeletionManifestHeader | null>` を足す（ADR-018 が `ScopeCleanupAdmissionStore.describePersonalCleanup` を足したのと同型の「再駆動を冪等にするための読み取り 1 本」）。継続ハンドラーはこれで `userId` と `status` を得る。`status !== "building"` なら late redelivery として即 return する。適合スイートに 1 ケース追加。
+- build continuation の payload に `cursor: string | null` を載せる。1 つの継続イベントが 1 つの turn を完全に記述するので、再配送は**同じ page をもう一度固定する**（冪等 append）だけで済み、phase を巻き戻さない。ADR-019 の `continuationKey` が `cursor` を材料に含む以上、event ID と turn が 1:1 になるのはこの形でだけ成立する。header 側の cursor は「build がどこまで進んだか」の記録として維持する（author route の外部走査は UoW の外で行うため、`describe` が返す `userId` と合わせて必要）。
+
+### Consequences
+- 良い点: 応答喪失の再実行が「同じ turn の再実行」に閉じ、cursor の巻き戻りが構造的に起きない。header 読み取りは #4 / #5 / ステップ 30 の finalize / prune でも使える。
+- トレードオフ: spec の継続 DTO と 1 フィールド差（`cursor`）ができ、ポートに読み取りが 1 本増える。どちらもステップ 34 の spec-sync 候補に載せる。
+
+---
+
+## ADR-054: 削除の継続ハンドラーは worker plane の consumer とし、`NoteRouteFanOutReader` は `WorkerContainer` に載せる
+
+### Status
+Accepted
+
+### Context
+steps.md / AC-31 は `NoteRouteFanOutReader` を `RequestContainer` に載せると書いていた。これは `deleteAccount(input)` を 6 variant すべてのディスパッチャーとして `ServiceArgs`（= `RequestContainer`）で書く前提に立っている。しかし実際の運搬路は global outbox → relay → `application/workers/subscribers.ts` であり、購読者ハンドラーの引数は `WorkerContainer` に固定されている（`authResidueCleanup` / `deleteStoredObjects` と同じ）。`RequestContainer` は購読者からは作れない。
+
+### Decision
+- `deleteAccount`（`ServiceArgs`, `RequestContainer`）は **`userRequest` の受理経路だけ**を担う。presentation が呼ぶのはこれ 1 つ。
+- 継続 variant（manifest build / dispatch phase / compact / prune / personal barrier prune）はそれぞれ独立した関数として `WorkerContainer` を取り、購読者レジストリと（scope 平面は）タスクランナーから駆動する。`pruneExpiredAuthState` が `WorkerContainer` 用の Args 型を自前で持つのと同じ扱い。
+- したがって `NoteRouteFanOutReader` の読み取りビュー（`Pick<…, "listByCreatedBy">`）は **`WorkerContainer`** に載せる。`RequestContainer` には載せない（使う者がいない配線を作らない）。header 読み取りは `WorkerContainer` が既に持つ `accountDeletionManifestStore` を UoW の外から使う。
+- `deleteAccount/input.ts` は spec どおり 6 variant の判別共用体を型として保持する（DTO の契約）。ディスパッチャーが 1 つに集約されないだけで、型の網羅は失われない。
+- scope cleanup のユースケース（`deleteQuota` / `deleteFilesByOwner`）も同じ理由で `WorkerContainer` を取る。
+
+### Consequences
+- 良い点: 未実装 phase のためのスタブ分岐が 1 つも要らない（存在しないハンドラーは購読エントリーが無いだけ）。読み取りポートが実際の利用者と同じ container に載る。
+- トレードオフ: AC-31 の文言（「`NoteRouteFanOutReader` → `RequestContainer`」）と実装がずれる。ステップ 34 で AC-31 の該当行を「`WorkerContainer`」と読み替えて記録する。
+
+---
+
+## ADR-055: scope cleanup の 1 turn は自分の継続タスクを自分で決着させ、結果を呼び出し元へ返す
+
+### Status
+Accepted
+
+### Context
+spec は「継続タスクの保存は本処理と同一 UoW」と定める一方、ADR-005 のランナーは「`claimDue` → ユースケース再投入 → `complete` / `backoff`」と書かれている。`ScopeTaskScheduler.schedule` は `(kind, operationId)` の upsert なので、turn が残件のために同じ行を再 upsert した直後にランナーが `complete` を呼ぶと、**積んだばかりの継続が消える**。
+
+### Decision
+turn 側を正とし、結果でランナーに伝える。
+
+- 残件があれば turn が同じ行を `schedule` で再武装して `status: "continued"` を返す。ランナーはこの turn の claim を **`complete` してはならない**。
+- 仕事が尽きたら turn が component ack と `complete` を同一 UoW で行い `status: "settled"` を返す（`complete` の二重呼び出しは no-op なので、ランナーが重ねて呼んでも安全）。
+- 対象が残っているのに 1 件も消せなかったときは turn が `backoff` を呼び `status: "stalled"` を返す（新しい継続は積まない — TC-storage-041）。
+- 初回コマンド配送だけ `commandKey` を伴い、`AppliedOperationStore.markApplied` が偽を返したら `status: "alreadyApplied"` で何もしない。継続 turn は `commandKey` を持たない（同じ鍵で抑止されると 2 turn 目以降が進まなくなるため）。
+
+### Consequences
+- 良い点: 「同一 UoW で継続を保存する」という spec の要求と、claim/settle するランナーの両方が矛盾なく成立する。ステップ 31 は `status` を見るだけで書ける。
+- トレードオフ: spec が出力 DTO を持たない `deleteQuota` にも戻り値ができる（`deletedCount` を持つ `deleteFilesByOwner` は spec の DTO に 1 フィールド追加）。ステップ 34 の spec-sync 候補。
+
+---
+
+## ADR-056: cleanup dispatcher は membership の `claimPending` を呼ばない
+
+### Status
+Accepted
+
+### Context
+spec 手順 4 の cleanup phase は `claimPending(operationId, "cleanup", 100)` で membership item のコマンド鍵を確定してから配送する。本 Issue には membership item を作る経路も、cleanup コマンドを受けて ack する受け手（Workspace）も無い。
+
+### Decision
+personal participant（`storage` / `usage`）への配送だけを行い、membership の `claimPending` は呼ばない。claim は「配送前に鍵と `dispatchedAt` を確定する」ための操作であり、配送先が無い状態で呼ぶと「dispatch 済みだが誰も ack しない item」を作るだけになる。#3 が受け手を足すときに、claim と配送と ack を 1 組で追加する。
+
+### Consequences
+- 良い点: manifest 上に宙ぶらりんの dispatch 記録を作らない。#3 の追加点が 1 か所にまとまる。
+- トレードオフ: steps.md のステップ 29 (4) の記述（`claimPending("cleanup", 100)` から始める）と実装が異なる。#3 への引き継ぎとして本 ADR とコード上のコメントに残す。
+
+---
+
+## ADR-057: TC-storage-043 は「1 turn = 列挙 1 回 + ファイル 1 件につきイベント 1 件」として検証する
+
+### Status
+Accepted
+
+### Context
+TC-storage-043 の期待結果は「列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文で、件数によらず 3 文」。しかし ADR-022 が確定したとおり、`deleteFiles` は OCC トークンを `findById` からしか得られないため 1 件ずつ読んで消す（N+1）。memory バックエンドには「発行 SQL 文数」という観測点も無い。
+
+### Decision
+この行は turn が保証する観測可能な性質——**列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない**——として検証する。多行 DELETE / 多行 INSERT へまとめるかはバックエンドの実装事項であり、OCC 契約（書く意図の読みは `findById` を通る）を優先する。spec と実装の差はステップ 34 の spec-sync 候補に載せる。
+
+### Consequences
+- 良い点: ADR-022 と矛盾しない形で行を消化でき、テストが実装の内部（文の数）ではなく契約（列挙回数とイベント数）を固定する。
+- トレードオフ: spec の「3 文」という性能上の約束は本スライスでは検証されない。D1 実装を書くスライスが同じ行を再検証する必要がある。

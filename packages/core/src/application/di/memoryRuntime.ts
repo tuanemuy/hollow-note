@@ -1,5 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { createMemoryGlobalUnitOfWorkProvider } from "@repo/core/adapters/memory/globalUnitOfWork";
+import {
+  createMemoryGlobalUnitOfWorkProvider,
+  type MemoryUnitOfWorkOptions,
+} from "@repo/core/adapters/memory/globalUnitOfWork";
 import {
   createMemoryMailSender,
   type MemoryMailSender,
@@ -17,6 +20,7 @@ import { createMemoryIdentityUniqueDirectory } from "@repo/core/adapters/memory/
 import { createMemoryLlmUsageRepository } from "@repo/core/adapters/memory/repositories/llmUsageRepository";
 import { createMemoryLoginAttemptStore } from "@repo/core/adapters/memory/repositories/loginAttemptStore";
 import { createMemoryNoteRepository } from "@repo/core/adapters/memory/repositories/noteRepository";
+import { createMemoryNoteRouteFanOutReader } from "@repo/core/adapters/memory/repositories/noteRouteFanOutReader";
 import { createMemoryNoteRouteStore } from "@repo/core/adapters/memory/repositories/noteRouteStore";
 import { createMemoryOAuthStateStore } from "@repo/core/adapters/memory/repositories/oauthStateStore";
 import { createMemoryOutboxRepository } from "@repo/core/adapters/memory/repositories/outboxRepository";
@@ -39,6 +43,10 @@ import {
   createSignInOAuthClient,
   type OAuthRuntimeConfig,
 } from "@repo/core/adapters/oauth/signInOAuthClient";
+import {
+  REQUIRED_FINALIZE_RECEIPTS,
+  REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
+} from "../cleanup/participants";
 import { ConsoleLogger } from "../ports/logger";
 import type { RelayTrigger } from "../ports/relayTrigger";
 import type { ScopeKey } from "../scope";
@@ -113,6 +121,15 @@ export function createMemoryRuntime(
     },
   };
 
+  // The deployment's own cleanup declaration decides what a deletion
+  // waits for; the stores never assume a participant exists (ADR-002 /
+  // ADR-017).
+  const unitOfWorkOptions: MemoryUnitOfWorkOptions = {
+    relayTrigger,
+    requiredCleanupComponents: REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
+    requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
+  };
+
   // The logger records `mail.sent` for every delivery; the verification
   // link itself is only logged under `MEMORY_MAIL_LOG_ACTION_URL=true`,
   // since the action URL carries the raw one-shot token.
@@ -161,11 +178,12 @@ export function createMemoryRuntime(
         config,
         globalUnitOfWorkProvider: createMemoryGlobalUnitOfWorkProvider(
           backend,
-          { relayTrigger },
+          unitOfWorkOptions,
         ),
-        scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(backend, {
-          relayTrigger,
-        }),
+        scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(
+          backend,
+          unitOfWorkOptions,
+        ),
         scopeRouter: createMemoryScopeRouter(backend),
         noteRouteStore: createMemoryNoteRouteStore(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
@@ -194,21 +212,25 @@ export function createMemoryRuntime(
         ...sharedDeps,
         globalUnitOfWorkProvider: createMemoryGlobalUnitOfWorkProvider(
           backend,
-          {
-            relayTrigger,
-          },
+          unitOfWorkOptions,
         ),
-        scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(backend, {
-          relayTrigger,
-        }),
+        scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(
+          backend,
+          unitOfWorkOptions,
+        ),
         outboxRepository: createMemoryOutboxRepository(backend),
         idempotencyStore: createMemoryIdempotencyStore(backend),
         maintenanceRunStore: createMemoryGlobalMaintenanceRunStore(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
         identityRemovalReceiptStore:
           createMemoryIdentityRemovalReceiptStore(backend),
-        accountDeletionManifestStore:
-          createMemoryAccountDeletionManifestStore(backend),
+        accountDeletionManifestStore: createMemoryAccountDeletionManifestStore(
+          backend,
+          {
+            requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
+          },
+        ),
+        noteRouteFanOutReader: createMemoryNoteRouteFanOutReader(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),
         objectStorage,
         routingGenerations: routingGenerations ?? ["gen-1"],

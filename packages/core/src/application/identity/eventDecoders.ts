@@ -16,7 +16,11 @@ import {
 } from "@repo/core/domain/identity/valueObject";
 import { z } from "zod";
 import { buildEventDecoder } from "../events/buildDecoder";
-import type { UserAuthResidueCleanupContinuedEvent } from "./continuations";
+import type {
+  AccountDeletionDispatchContinuedEvent,
+  AccountDeletionManifestBuildContinuedEvent,
+  UserAuthResidueCleanupContinuedEvent,
+} from "./continuations";
 
 /**
  * Wire decoders for the identity events. Decoders live in the application
@@ -192,5 +196,56 @@ export const identityEventDecoders = {
       table: parsed.table,
       deletionOperationId: parsed.deletionOperationId,
     }),
+  ),
+
+  "identity.accountDeletionManifestBuildContinued": buildEventDecoder<
+    AccountDeletionManifestBuildContinuedEvent,
+    {
+      operationId: string;
+      phase: "memberships" | "authorRoutes";
+      cursor: string | null;
+      continuationKey: string;
+    }
+  >(
+    "identity.accountDeletionManifestBuildContinued",
+    z
+      .object({
+        operationId: z.string().min(1),
+        phase: z.enum(["memberships", "authorRoutes"]),
+        cursor: z.string().min(1).nullable(),
+        continuationKey: z.string().min(1),
+      })
+      .strict(),
+    (parsed) => parsed,
+  ),
+
+  "identity.accountDeletionDispatchContinued": buildEventDecoder<
+    AccountDeletionDispatchContinuedEvent,
+    {
+      operationId: string;
+      phase:
+        | "prepare"
+        | "rollbackRelease"
+        | "cleanup"
+        | "redaction"
+        | "finalize";
+      continuationKey: string;
+    }
+  >(
+    "identity.accountDeletionDispatchContinued",
+    z
+      .object({
+        operationId: z.string().min(1),
+        phase: z.enum([
+          "prepare",
+          "rollbackRelease",
+          "cleanup",
+          "redaction",
+          "finalize",
+        ]),
+        continuationKey: z.string().min(1),
+      })
+      .strict(),
+    (parsed) => parsed,
   ),
 } as const;

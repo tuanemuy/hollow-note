@@ -203,3 +203,13 @@ export const toProfileView = (user: ActiveUser): ProfileView => ({
   avatarUrl: user.avatarUrl,
   handle: user.handle,
 });
+
+/**
+ * All the deletion request answers: the operation to follow and the fact
+ * that it was taken. Progress is read afterwards through the status
+ * ticket, since the session is gone by then (ADR-006).
+ */
+export type AccountDeletionAcceptedView = Readonly<{
+  operationId: string;
+  status: "accepted";
+}>;

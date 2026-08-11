@@ -44,7 +44,11 @@ export function createMemoryScopeUnitOfWorkProvider(
           noteRepository: createMemoryNoteRepository(scopeStore),
           noteRevisionRepository:
             createMemoryNoteRevisionRepository(scopeStore),
-          cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore),
+          cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore, {
+            ...(options.requiredCleanupComponents !== undefined
+              ? { requiredComponents: options.requiredCleanupComponents }
+              : {}),
+          }),
           noteProjectionRevisionStore:
             createMemoryNoteProjectionRevisionStore(scopeStore),
           scopeTaskScheduler: createMemoryScopeTaskScheduler(scopeStore),
