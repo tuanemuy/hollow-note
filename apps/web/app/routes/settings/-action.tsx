@@ -32,6 +32,153 @@ export const renderIdentityList = createServerFn({ method: "GET" })
     };
   });
 
+/** P-21 のフォームフラグメント。未解決の promise を返してストリームさせる。 */
+export const renderProfileForm = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .handler(async () => {
+    const [{ ProfileForm }, { requireSession }, { getContainer }] =
+      await Promise.all([
+        import("@/components/settings/ProfileForm"),
+        import("@/presentation/session"),
+        import("@repo/core/application/di/containerStore"),
+      ]);
+    const [user, container] = await Promise.all([
+      requireSession(),
+      getContainer(),
+    ]);
+    return {
+      ProfileForm: renderServerFragment(() =>
+        ProfileForm({ userId: user.userId, appUrl: container.config.appUrl }),
+      ),
+    };
+  });
+
+const DISPLAY_NAME_MAX_LENGTH = 50;
+const BIO_MAX_LENGTH = 500;
+const HANDLE_MAX_LENGTH = 30;
+const AVATAR_URL_MAX_LENGTH = 2048;
+
+// 転送境界の役目は形と DoS 上限だけ。表示名 50 / 自己紹介 500 /
+// ハンドル 3〜30・予約語といった業務不変条件は値オブジェクトが持つ
+// ので、ここで二重に書かない（CLAUDE.md「Input validation」）。
+const updateProfileSchema = z.object({
+  displayName: z
+    .string()
+    .max(DISPLAY_NAME_MAX_LENGTH + 1)
+    .optional(),
+  bio: z
+    .string()
+    .max(BIO_MAX_LENGTH + 1)
+    .optional(),
+  handle: z
+    .string()
+    .max(HANDLE_MAX_LENGTH + 1)
+    .optional(),
+  avatarUrl: z.string().max(AVATAR_URL_MAX_LENGTH).nullable().optional(),
+});
+
+/** PAGE-p21-001..003。表示名 / 自己紹介 / ハンドル / アイコンの保存。 */
+export const updateProfileFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(updateProfileSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/identity/updateProfile"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    // 省略されたキーは「変更しない」。`exactOptionalPropertyTypes` の
+    // 下では `undefined` を渡すことと省略することが別物なので、明示的に
+    // 積み直す。
+    return module.updateProfile({
+      container,
+      input: {
+        userId: user.userId,
+        ...(data.displayName !== undefined
+          ? { displayName: data.displayName }
+          : {}),
+        ...(data.bio !== undefined ? { bio: data.bio } : {}),
+        ...(data.handle !== undefined ? { handle: data.handle } : {}),
+        ...(data.avatarUrl !== undefined ? { avatarUrl: data.avatarUrl } : {}),
+      },
+    });
+  });
+
+const handleAvailabilitySchema = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .max(HANDLE_MAX_LENGTH + 1),
+});
+
+/** P-21 のハンドル欄の目安表示。確定は保存時の予約が決める。 */
+export const checkHandleAvailabilityFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(handleAvailabilitySchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/identity/checkHandleAvailability"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.checkHandleAvailability({
+      container,
+      input: { userId: user.userId, handle: data.handle },
+    });
+  });
+
+/**
+ * 転送境界の DoS 上限。業務上の上限（5 MB）より広いのは意図的で、
+ * 5〜8 MB は `UploadValidationPolicy` に届いて `FileTooLarge` として
+ * 返る — 上限違反の理由をドメイン側の 1 か所に保つため。
+ */
+const AVATAR_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+
+const avatarUploadSchema = z.object({
+  file: z
+    .instanceof(File)
+    .refine((file) => file.size > 0 && file.size <= AVATAR_UPLOAD_MAX_BYTES),
+});
+
+/**
+ * PAGE-p21-001。`storeAvatar` はバイト列を置くだけで `User` を書かない
+ * ので、返った `url` を `updateProfileFn` へ渡す 2 段目が要る（ADR-016）。
+ * 主体は Cookie のセッションで、`subjectId` を要求本文から取らない。
+ */
+export const uploadAvatarFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator((input: unknown) =>
+    validateInput(avatarUploadSchema)({
+      file: input instanceof FormData ? input.get("file") : undefined,
+    }),
+  )
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/storage/storeAvatar"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    const body = new Uint8Array(await data.file.arrayBuffer());
+    const view = await module.storeAvatar({
+      container,
+      input: {
+        userId: user.userId,
+        subjectType: "user",
+        subjectId: user.userId,
+        fileName: data.file.name,
+        declaredMimeType: data.file.type,
+        body,
+      },
+    });
+    return { fileId: view.fileId, url: view.url };
+  });
+
 const addPasswordSchema = z.object({
   newPassword: z.string().min(1).max(PASSWORD_MAX_LENGTH),
 });

@@ -14,7 +14,13 @@ const SETTINGS_ENTRY_HREF = SETTINGS_TABS[0].href;
  * プロフィール・処理履歴は対応画面が未実装のため並べない
  * （placeholder 禁止）。
  */
-export function AccountMenu({ displayName }: { displayName: string }) {
+export function AccountMenu({
+  displayName,
+  avatarUrl = null,
+}: {
+  displayName: string;
+  avatarUrl?: string | null;
+}) {
   const signOut = useServerFn(signOutFn);
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -67,12 +73,22 @@ export function AccountMenu({ displayName }: { displayName: string }) {
         onClick={() => setOpen((value) => !value)}
         className="inline-flex size-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
       >
-        <span
-          aria-hidden="true"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-linear-135 from-[#c9d3df] to-[#8e99a8] text-[10px] font-medium text-bg"
-        >
-          {initials}
-        </span>
+        {avatarUrl === null ? (
+          <span
+            aria-hidden="true"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-linear-135 from-[#c9d3df] to-[#8e99a8] text-[10px] font-medium text-bg"
+          >
+            {initials}
+          </span>
+        ) : (
+          <img
+            src={avatarUrl}
+            alt=""
+            width={28}
+            height={28}
+            className="size-7 shrink-0 rounded-full object-cover"
+          />
+        )}
       </button>
       {open ? (
         <div className="absolute top-full right-0 z-50 mt-2 min-w-44 rounded-lg border border-hairline bg-bg py-2 shadow-sm">

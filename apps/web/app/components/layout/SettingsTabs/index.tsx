@@ -38,10 +38,11 @@ export function SettingsTabs() {
         // ルートが生成済みのタブだけ型付き `Link` にする。残りは素の
         // リンクのまま — 型付き `to` は遷移先ルートが存在してからしか
         // 書けないので、各設定画面のスライスが自分の行を差し替える。
-        return tab.href === "/settings/auth" ? (
+        return tab.href === "/settings/auth" ||
+          tab.href === "/settings/profile" ? (
           <Link
             key={tab.href}
-            to="/settings/auth"
+            to={tab.href}
             aria-current={current ? "page" : undefined}
             className={className}
           >

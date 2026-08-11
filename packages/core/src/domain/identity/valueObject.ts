@@ -9,6 +9,7 @@ declare const emailBrand: unique symbol;
 declare const handleBrand: unique symbol;
 declare const displayNameBrand: unique symbol;
 declare const bioBrand: unique symbol;
+declare const avatarUrlBrand: unique symbol;
 declare const passwordHashBrand: unique symbol;
 declare const plainPasswordBrand: unique symbol;
 declare const tokenHashBrand: unique symbol;
@@ -139,6 +140,56 @@ export const Bio = {
     return raw as Bio;
   },
 };
+
+const AVATAR_URL_MAX_LENGTH = 2048;
+
+/**
+ * Same-origin location of the profile picture (ADR-016).
+ *
+ * Two accepted forms: an app-relative path (`/storage/...`) or an
+ * absolute URL on the app's own origin. The relative form is the
+ * canonical one — a stored value then survives a change of deployment
+ * origin — and the absolute form exists for object stores served from
+ * their own public domain.
+ *
+ * `appUrl` is a parameter rather than something this module reads:
+ * a value object never reaches for configuration.
+ */
+export type AvatarUrl = string & { readonly [avatarUrlBrand]: true };
+export const AvatarUrl = {
+  create: (raw: string, appUrl: string): AvatarUrl => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0 || trimmed.length > AVATAR_URL_MAX_LENGTH) {
+      throw invalidAvatarUrl();
+    }
+    // `//host/path` is protocol-relative, i.e. another origin wearing the
+    // shape of a path — the one case a leading slash does not make safe.
+    if (trimmed.startsWith("/")) {
+      if (trimmed.startsWith("//")) {
+        throw invalidAvatarUrl();
+      }
+      return trimmed as AvatarUrl;
+    }
+    let candidate: URL;
+    let base: URL;
+    try {
+      candidate = new URL(trimmed);
+      base = new URL(appUrl);
+    } catch {
+      throw invalidAvatarUrl();
+    }
+    if (candidate.origin !== base.origin) {
+      throw invalidAvatarUrl();
+    }
+    return trimmed as AvatarUrl;
+  },
+};
+
+const invalidAvatarUrl = () =>
+  new BusinessRuleError(
+    IdentityErrorCode.InvalidAvatarUrl,
+    "Avatar URL must be same-origin",
+  );
 
 /**
  * Opaque password hash. The only legitimate producer is the

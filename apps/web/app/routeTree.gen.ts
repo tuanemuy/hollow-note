@@ -20,6 +20,8 @@ import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
 import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
+import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
+import { Route as StorageSplatRouteImport } from './routes/storage.$'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
 
@@ -78,6 +80,16 @@ const SettingsAuthRoute = SettingsAuthRouteImport.update({
   path: '/auth',
   getParentRoute: () => SettingsRouteRoute,
 } as any)
+const SettingsProfileRoute = SettingsProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const StorageSplatRoute = StorageSplatRouteImport.update({
+  id: '/storage/$',
+  path: '/storage/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthCallbackProviderRoute = AuthCallbackProviderRouteImport.update({
   id: '/auth/callback/$provider',
   path: '/auth/callback/$provider',
@@ -100,6 +112,8 @@ export interface FileRoutesByFullPath {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
@@ -115,6 +129,8 @@ export interface FileRoutesByTo {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
@@ -131,6 +147,8 @@ export interface FileRoutesById {
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
@@ -148,6 +166,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/profile'
+    | '/storage/$'
     | '/notes/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -163,6 +183,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/profile'
+    | '/storage/$'
     | '/notes'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -178,6 +200,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/notes/$noteId'
     | '/settings/auth'
+    | '/settings/profile'
+    | '/storage/$'
     | '/notes/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -193,6 +217,7 @@ export interface RootRouteChildren {
   TermsRoute: typeof TermsRoute
   VerifyEmailRoute: typeof VerifyEmailRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
+  StorageSplatRoute: typeof StorageSplatRoute
   NotesIndexRoute: typeof NotesIndexRoute
   AuthCallbackProviderRoute: typeof AuthCallbackProviderRoute
   DevOauthAuthorizeRoute: typeof DevOauthAuthorizeRoute
@@ -277,6 +302,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsAuthRouteImport
       parentRoute: typeof SettingsRouteRoute
     }
+    '/settings/profile': {
+      id: '/settings/profile'
+      path: '/profile'
+      fullPath: '/settings/profile'
+      preLoaderRoute: typeof SettingsProfileRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/storage/$': {
+      id: '/storage/$'
+      path: '/storage/$'
+      fullPath: '/storage/$'
+      preLoaderRoute: typeof StorageSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth/callback/$provider': {
       id: '/auth/callback/$provider'
       path: '/auth/callback/$provider'
@@ -296,10 +335,12 @@ declare module '@tanstack/react-router' {
 
 interface SettingsRouteRouteChildren {
   SettingsAuthRoute: typeof SettingsAuthRoute
+  SettingsProfileRoute: typeof SettingsProfileRoute
 }
 
 const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
   SettingsAuthRoute: SettingsAuthRoute,
+  SettingsProfileRoute: SettingsProfileRoute,
 }
 
 const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
@@ -316,6 +357,7 @@ const rootRouteChildren: RootRouteChildren = {
   TermsRoute: TermsRoute,
   VerifyEmailRoute: VerifyEmailRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
+  StorageSplatRoute: StorageSplatRoute,
   NotesIndexRoute: NotesIndexRoute,
   AuthCallbackProviderRoute: AuthCallbackProviderRoute,
   DevOauthAuthorizeRoute: DevOauthAuthorizeRoute,

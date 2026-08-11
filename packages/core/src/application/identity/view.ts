@@ -171,3 +171,35 @@ export type SignOutView = Readonly<Record<string, never>>;
 export type SignOutOtherSessionsView = Readonly<{
   revocationAccepted: true;
 }>;
+
+/**
+ * The editable profile as P-21 shows it and as `updateProfile` answers
+ * (spec/usecases/identity.md#updateprofile 出力DTO). Distinct from
+ * `AuthenticatedUserView`, which is the session probe's projection and
+ * deliberately omits `bio`.
+ */
+export type ProfileView = Readonly<{
+  userId: string;
+  displayName: string;
+  bio: string;
+  avatarUrl: string | null;
+  handle: string | null;
+}>;
+
+/**
+ * Advisory verdict for the handle field. `ownedBySelf` separates "free"
+ * from "already yours", which the form shows differently.
+ */
+export type HandleAvailabilityView = Readonly<{
+  handle: string;
+  available: boolean;
+  ownedBySelf: boolean;
+}>;
+
+export const toProfileView = (user: ActiveUser): ProfileView => ({
+  userId: user.id,
+  displayName: user.displayName,
+  bio: user.bio,
+  avatarUrl: user.avatarUrl,
+  handle: user.handle,
+});

@@ -954,3 +954,78 @@ steps.md は `AddPasswordForm` / `ChangePasswordForm` を「P-22 内のダイア
 ### Consequences
 - 良い点: モックの完成イメージを崩さずに、モックが描いていない 2 状態（追加中 / 解除確認）を足せる。ダイアログの a11y を自作しない。
 - トレードオフ: 同じ「パスワード入力」の見た目が 2 か所（ダイアログとパネル）に分かれる。共有するのは `components/auth/formStyles.ts` の入力 recipe と `components/settings/panelStyles.ts` のパネル / ボタン recipe まで。
+
+---
+
+## ADR-047: プロフィールの読み取りと handle の空き確認を `updateProfile` の対として application に置く
+
+### Status
+Accepted
+
+### Context
+P-21 は保存だけでなく **現在値の表示**（表示名 / 自己紹介 / アイコン / ハンドル）から始まるが、`bio` を射影するユースケースが実コードに存在しない。`AuthenticatedUserView`（`authenticateSession`）は `displayName` / `handle` / `avatarUrl` までで `bio` を持たず、`spec/usecases/identity.md` の `getPublicProfile` はハンドル鍵の公開読みなので、ハンドル未設定の利用者を引けない。プレゼンテーションから `RequestContainer.userReader` を直接叩けば書けてしまうが、それはリポジトリ読みをアプリケーション層の外へ出すことになる。
+
+あわせて `spec/pages/index.md` の P-21 状態一覧と `spec/manual-tests/account.md` TC-10 手順 3 は「ハンドル欄に入力すると重複チェックが走り、使用可能であることが示される」を要求するが、保存前に空きを問い合わせる経路も無い。
+
+### Decision
+`application/identity/` に読み取り専用の 2 つを足す。どちらも `updateProfile` の対であり、新しいドメイン要素を導入しない。
+
+- `getProfile(userId): ProfileView` — `updateProfile` の出力 DTO と同じ射影（`view.ts` の `ProfileView` / `toProfileView` を共有）。`DeletedUser` は `USER_NOT_FOUND`、`PendingUser` は `EMAIL_NOT_VERIFIED`。
+- `checkHandleAvailability(userId, handle): HandleAvailabilityView` — `IdentityUniqueDirectory.resolve` の**目安**。`active` な claim しか見ないので、他者が `reserved` にした鍵は「空き」と読める。確定するのは `updateProfile` の予約だけで、UI もこの結果で送信可否を変えない。公開ハンドルは URL として公開される情報なので、`spec/adr/028-account-enumeration-resistance.md` が塞ぐ種類のオラクルには当たらない（呼び出しは認証済みセッションに限る）。
+
+### Consequences
+- 良い点: P-21 が層を飛ばさずに書け、`bio` の射影が 1 か所（`toProfileView`）に閉じる。空き確認が「目安」であることが型と JSDoc に残るので、後から「予約の代わり」に使われる誤解が起きにくい。
+- トレードオフ: plan.md の 20 ユースケース表に無い読みが 2 つ増える（どちらも write を持たない）。`checkHandleAvailability` は保存時の判定と食い違いうるので、UI 側で「使用できます」を送信可否に結びつけない規律が要る。
+
+---
+
+## ADR-048: `storeAvatar` は宣言サイズを受け取らず、実バイト長で検査する
+
+### Status
+Accepted
+
+### Context
+`spec/usecases/storage.md` の `storeAvatar` の入力 DTO は `size` と `body` の両方を持つ。両方あると「宣言サイズは 4 MB、実体は 6 MB」という状態が表現でき、`UploadValidationPolicy.ensureAcceptable` をどちらで呼ぶかで上限の意味が変わる。宣言側で呼べば嘘の宣言で上限を越えられ、実体側で呼べば `size` は誰も読まないフィールドとして残る。
+
+### Decision
+入力 DTO から `size` を落とし、`ByteSize.create(body.byteLength)` を唯一のサイズとする。ADR-027 で `ObjectStorage` がバイト列しか受けないと決めた以上、ユースケースは必ず実体を握っており、宣言を信じる理由が無い。転送境界（`uploadAvatarFn`）は DoS 上限として 8 MB を持ち、業務上限（5 MB）より広く取る — 5〜8 MB は `UploadValidationPolicy` に届いて `FileTooLarge` になり、上限違反の理由がドメインの 1 か所に残る。spec との差分は spec-sync 候補に載せる。
+
+### Consequences
+- 良い点: 「宣言と実体が食い違う」状態が型として作れない。上限の判定点が 1 つになり、TC-storage-171 / 172 の境界がドメイン単体でも成立する。
+- トレードオフ: spec の入力 DTO から 1 フィールド減る（spec-sync 候補 1 件）。ストリーム取り込み（#6）で「読み切る前に上限で切る」形が要るときは、そのスライスが `size` を戻すか別の手段を選ぶ。
+
+---
+
+## ADR-049: `updateProfile` の handle 予約 operation ID は利用者から合成する
+
+### Status
+Accepted
+
+### Context
+TC-identity-280 は「新 handle の予約後・UserId shard 更新前に失敗し、再試行すると**同じ operation ID で予約を再利用**する」ことを求める。`completeOAuthSignIn` のように親 operation ID を `idGenerator.next()` で採ると、再試行のたびに別 ID になる。memory の `IdentityUniqueDirectory.reserve` は「同じ鍵に別 operation の行があり、期限切れでもない」を `HANDLE_ALREADY_USED` として撥ねるので、**自分自身の予約に衝突して再試行が通らない**。
+
+### Decision
+親 operation ID を `identity.updateProfile:{userId}` として合成する（鍵ごとの sub-operation は既存の `reservationOperationId` が `:{kind}:{normalizedKey}` を足す）。旧ハンドルの解放も同じ規則で `…:release:handle:{旧ハンドル}` を導出する。ADR-019 / ADR-035 の「継続 ID は生成元から決定的に導出する」と同じ考え方で、ハッシュではなく構成で作る。
+
+同一利用者の 2 つのプロフィール更新が同時に走ったときは、同じ鍵を同じ ID で予約する形になるが、`reserve` は同一 operation の再送を冪等 no-op として扱い、勝者は UoW 内の版検査（`OPTIMISTIC_LOCK_FAILURE`）が決めるので、二重に活性化されることはない。
+
+### Consequences
+- 良い点: 応答喪失からの再開が予約層でも成立し、TC-identity-280 / 281 が仮実装なしで通る。予約行が孤児になっても、同じ利用者の次の試行が必ず同じ ID で拾い直す。
+- トレードオフ: 予約行の `operationId` が推測可能な文字列になる（`IdentityUniqueDirectory` は所有者一致を別に見るので、推測できても他人の鍵は動かせない）。
+
+---
+
+## ADR-050: 保管オブジェクトの配信は splat ルート `/storage/$` で受ける
+
+### Status
+Accepted
+
+### Context
+steps.md は配信ルートを `apps/web/app/routes/storage.$key.tsx` と書くが、`ObjectKey.build` が作る鍵は `users/{userId}/avatar/{fileId}.png` という**複数セグメント**で、単一の動的パラメーターでは受けられない。`publicUrl` を `encodeURIComponent` した形に変えると `%2F` を含むパスになり、前段のプロキシの正規化で壊れる。
+
+### Decision
+ファイル名を `routes/storage.$.tsx`（splat）にし、`params._splat` を `ObjectKey.create` に通す。ハンドラーは TanStack Start のルート `server.handlers.GET` で、`Response` を直接返す（HTML ルートではないので component を持たない）。形式違反の鍵は 400 ではなく 404 に倒す — 形の違いを区別すると鍵空間の探索の手掛かりになる。応答には `Cache-Control: public, max-age=31536000, immutable`（鍵にファイル ID が入るので中身は不変。差し替えは必ず別の鍵になる）と `X-Content-Type-Options: nosniff` / `Content-Security-Policy: sandbox; default-src 'none'` を付ける。
+
+### Consequences
+- 良い点: memory 配備でアイコンが実際に配信でき、`publicUrl` の形をアダプターに閉じたまま保てる。R2 等の公開ドメインへ移る配備ではこのルートごと落とせる。
+- トレードオフ: steps.md のファイル名と 1 文字違う。splat なので `/storage` 配下の未定義パスもこのハンドラーに入る（不在は 404 を返すので実害は無い）。

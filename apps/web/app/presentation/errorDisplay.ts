@@ -90,6 +90,22 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   USER_NOT_FOUND:
     "アカウントが見つかりません。サインインし直してからお試しください。",
 
+  HANDLE_ALREADY_USED:
+    "このハンドルは使われています。別のハンドルでお試しください。",
+  IDENTITY_INVALID_HANDLE:
+    "ハンドルは英小文字・数字・ハイフン・アンダースコアの 3〜30 文字です。入力内容を確認してもう一度お試しください。",
+  IDENTITY_HANDLE_RESERVED:
+    "このハンドルは予約されていて使えません。別のハンドルでお試しください。",
+  IDENTITY_INVALID_BIO:
+    "自己紹介は 500 文字までです。短くしてからもう一度お試しください。",
+  IDENTITY_INVALID_AVATAR_URL:
+    "このアイコンの場所は保存できません。画像を選び直してからお試しください。",
+
+  STORAGE_UNSUPPORTED_MIME_TYPE:
+    "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
+  STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
+  WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
+
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 };
 

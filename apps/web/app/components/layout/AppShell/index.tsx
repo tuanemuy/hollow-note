@@ -10,9 +10,11 @@ import { BrandMark } from "@/components/ui/BrandMark";
  */
 export function AppShell({
   displayName,
+  avatarUrl = null,
   children,
 }: {
   displayName: string;
+  avatarUrl?: string | null;
   children: ReactNode;
 }) {
   return (
@@ -57,7 +59,7 @@ export function AppShell({
             ⌘K
           </span>
         </button>
-        <AccountMenu displayName={displayName} />
+        <AccountMenu displayName={displayName} avatarUrl={avatarUrl} />
       </header>
       {children}
     </div>

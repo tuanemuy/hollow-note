@@ -108,6 +108,11 @@ export type UsageReader = Readonly<{
  * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
  * atomic step (`oauthStateStore`), and the pure read views above.
  *
+ * `objectStorage` is here for the same reason: `storeAvatar` writes the
+ * bytes *before* the transaction that records the file, and the delivery
+ * route reads them back — both request-path work that no unit of work
+ * may enclose.
+ *
  * `oauthDevMode` is not a port but the one flag the composition root
  * publishes about its own OAuth wiring (ADR-021): the dev consent route
  * reads it instead of `process.env`, so no request-path code inspects
@@ -127,6 +132,7 @@ export type RequestContainer = SharedDeps &
     identityUniqueDirectory: IdentityUniqueDirectory;
     loginAttemptStore: LoginAttemptStore;
     oauthStateStore: OAuthStateStore;
+    objectStorage: ObjectStorage;
     signInOAuthClient: SignInOAuthClient;
     oauthDevMode: boolean;
     userReader: UserReader;

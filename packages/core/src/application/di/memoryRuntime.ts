@@ -171,6 +171,7 @@ export function createMemoryRuntime(
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
         loginAttemptStore,
         oauthStateStore,
+        objectStorage,
         // Built per container because the dev IdP's consent screen lives
         // under the app's own origin, which only `config` knows.
         signInOAuthClient: createSignInOAuthClient(oauth, config.appUrl),

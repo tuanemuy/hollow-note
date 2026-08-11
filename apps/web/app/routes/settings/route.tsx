@@ -31,7 +31,7 @@ export const Route = createFileRoute("/settings")({
 function SettingsLayout() {
   const { user } = Route.useRouteContext();
   return (
-    <AppShell displayName={user.displayName}>
+    <AppShell displayName={user.displayName} avatarUrl={user.avatarUrl}>
       <main className="mx-auto max-w-[var(--list-max)] px-4 pt-8 pb-20 sm:px-6 sm:pt-10 lg:pt-16">
         <h1 className="mb-5 text-3xl font-light tracking-tightest leading-tight">
           設定
