@@ -231,7 +231,6 @@ describe("deleteAccount personal cleanup", () => {
         subjectType: "user",
         subjectId: userId,
         fileName: "icon.png",
-        declaredMimeType: "image/png",
         body: PNG,
       },
     });

@@ -268,7 +268,7 @@ describe("pruneExpiredAuthState", () => {
     expect(await store.take(state)).not.toBeNull();
   });
 
-  it("TC-identity-162: all four targets empty succeeds with zeros", async () => {
+  it("TC-identity-162: every sweep target empty succeeds with zeros", async () => {
     const h = createTestHarness();
     const view = await cron(h);
     expect(view).toEqual({
@@ -276,6 +276,7 @@ describe("pruneExpiredAuthState", () => {
       authTokens: 0,
       loginAttempts: 0,
       oauthFlowStates: 0,
+      identityRemovalReceipts: 0,
       continued: false,
     });
   });
@@ -296,6 +297,7 @@ describe("pruneExpiredAuthState", () => {
       authTokens: 0,
       loginAttempts: 0,
       oauthFlowStates: 0,
+      identityRemovalReceipts: 0,
       continued: false,
     });
   });
@@ -561,7 +563,7 @@ describe("pruneExpiredAuthState", () => {
     // hint cannot name.
     const h = createTestHarness({
       maintenanceTablesByKind: {
-        authStatePrune: ["oauth_flow_states", "sessions"],
+        authStatePrune: ["identity_removal_receipts", "sessions"],
       },
     });
     seedSession(h, new Date(h.clock.now().getTime() - 1));
@@ -593,7 +595,7 @@ describe("pruneExpiredAuthState", () => {
     // `releaseLane`'s catch is defensive and has no observable path yet.
     const h = createTestHarness({
       maintenanceTablesByKind: {
-        authStatePrune: ["oauth_flow_states", "sessions"],
+        authStatePrune: ["identity_removal_receipts", "sessions"],
       },
     });
     seedSession(h, new Date(h.clock.now().getTime() - 1));

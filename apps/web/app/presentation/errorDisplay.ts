@@ -10,6 +10,14 @@ const NOTE_INACCESSIBLE_MESSAGE =
   "このノートは見つかりません。URL が変わったか、削除された可能性があります。";
 
 /**
+ * 認可の往復が途中で切れたときの文言。P-05 は `SerializedError` を伴わ
+ * ない失敗（プロバイダーが `code` / `state` を返さない）も同じ状態に畳む
+ * ので、辞書の外からも同じ文字列を読めるようにしてある。
+ */
+export const OAUTH_FLOW_INTERRUPTED_MESSAGE =
+  "認可の手続きが途中で切れました。もう一度やり直してください。";
+
+/**
  * UI に出るエラー文言の唯一の辞書（spec/design/index.md §9・§10）。
  *
  * `SerializedError` から読むのは `kind` と `code` だけ。原文 message・
@@ -52,10 +60,9 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   AUTH_TOKEN_ALREADY_CONSUMED:
     "このリンクはすでに使われています。そのままサインインしてください。",
 
-  OAUTH_STATE_INVALID:
-    "認可の手続きが途中で切れました。もう一度サインインからやり直してください。",
+  OAUTH_STATE_INVALID: OAUTH_FLOW_INTERRUPTED_MESSAGE,
   OAUTH_CODE_INVALID:
-    "認可の手続きを完了できませんでした。もう一度サインインからやり直してください。",
+    "認可の手続きを完了できませんでした。もう一度やり直してください。",
   OAUTH_EMAIL_UNVERIFIED:
     "メールアドレスが確認されていないため、この方法ではサインインできません。プロバイダー側でメールアドレスを確認してからお試しください。",
   EXISTING_ACCOUNT_UNVERIFIED:

@@ -19,6 +19,37 @@ const MB = 1024 * 1024;
 const NOW = new Date("2026-05-01T00:00:00.000Z");
 const owner = StorageOwner.user(UserId.create("u1"));
 
+const withSignature = (
+  signature: readonly number[],
+  totalBytes = 64,
+  at = 0,
+): Uint8Array => {
+  const body = new Uint8Array(Math.max(totalBytes, at + signature.length));
+  body.set(signature, at);
+  return body;
+};
+
+const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_BYTES = [0xff, 0xd8, 0xff];
+const RIFF_BYTES = [0x52, 0x49, 0x46, 0x46];
+const WEBP_BYTES = [0x57, 0x45, 0x42, 0x50];
+const GIF_BYTES = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
+
+const imageBody = (
+  format: "png" | "jpeg" | "webp",
+  totalBytes = 64,
+): Uint8Array => {
+  if (format === "png") {
+    return withSignature(PNG_BYTES, totalBytes);
+  }
+  if (format === "jpeg") {
+    return withSignature(JPEG_BYTES, totalBytes);
+  }
+  const body = withSignature(RIFF_BYTES, totalBytes);
+  body.set(WEBP_BYTES, 8);
+  return body;
+};
+
 const codeOf = (fn: () => unknown): string | null => {
   try {
     fn();
@@ -51,6 +82,28 @@ describe("ObjectKey", () => {
     expect(codeOf(() => ObjectKey.create("a".repeat(1025)))).toBe(
       StorageErrorCode.InvalidObjectKey,
     );
+  });
+
+  it("reads back the purpose it encoded, and nothing from a key of another shape", () => {
+    expect(
+      ObjectKey.purposeOf(
+        ObjectKey.build(owner, "avatar", StoredFileId.create("f1"), "png"),
+      ),
+    ).toBe("avatar");
+    expect(
+      ObjectKey.purposeOf(
+        ObjectKey.build(owner, "artifact", StoredFileId.create("f1"), null),
+      ),
+    ).toBe("artifact");
+    for (const raw of [
+      "users/u1/avatar",
+      "users/u1/avatar/nested/f1.png",
+      "users//avatar/f1.png",
+      "elsewhere/u1/avatar/f1.png",
+      "users/u1/portrait/f1.png",
+    ]) {
+      expect(ObjectKey.purposeOf(ObjectKey.create(raw))).toBeNull();
+    }
   });
 });
 
@@ -122,17 +175,14 @@ describe("StoredFile.register", () => {
 });
 
 describe("UploadValidationPolicy: avatar", () => {
-  it("accepts PNG / JPEG / WebP up to 5 MB", () => {
-    for (const mime of ["image/png", "image/jpeg", "image/webp"]) {
-      expect(
-        codeOf(() =>
-          UploadValidationPolicy.ensureAcceptable({
-            purpose: "avatar",
-            mimeType: MimeType.create(mime),
-            size: ByteSize.create(5 * MB),
-          }),
-        ),
-      ).toBeNull();
+  it("accepts PNG / JPEG / WebP up to 5 MB and answers with the measured type and size", () => {
+    for (const format of ["png", "jpeg", "webp"] as const) {
+      const accepted = UploadValidationPolicy.ensureAcceptable({
+        purpose: "avatar",
+        body: imageBody(format, 5 * MB),
+      });
+      expect(accepted.mimeType).toBe(`image/${format}`);
+      expect(accepted.size).toBe(5 * MB);
     }
   });
 
@@ -141,25 +191,67 @@ describe("UploadValidationPolicy: avatar", () => {
       codeOf(() =>
         UploadValidationPolicy.ensureAcceptable({
           purpose: "avatar",
-          mimeType: MimeType.create("image/png"),
-          size: ByteSize.create(5 * MB + 1),
+          body: imageBody("png", 5 * MB + 1),
         }),
       ),
     ).toBe(StorageErrorCode.FileTooLarge);
   });
 
   it("rejects GIF and SVG for an avatar", () => {
-    for (const mime of ["image/gif", "image/svg+xml"]) {
+    const bodies = [
+      withSignature(GIF_BYTES),
+      new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+    ];
+    for (const body of bodies) {
       expect(
         codeOf(() =>
-          UploadValidationPolicy.ensureAcceptable({
-            purpose: "avatar",
-            mimeType: MimeType.create(mime),
-            size: ByteSize.create(1024),
-          }),
+          UploadValidationPolicy.ensureAcceptable({ purpose: "avatar", body }),
         ),
       ).toBe(StorageErrorCode.UnsupportedMimeType);
     }
+  });
+
+  it("rejects bytes that do not carry an accepted signature, whatever they were declared as", () => {
+    const notAnImage = new TextEncoder().encode("<html>not an image</html>");
+    expect(
+      codeOf(() =>
+        UploadValidationPolicy.ensureAcceptable({
+          purpose: "avatar",
+          body: notAnImage,
+        }),
+      ),
+    ).toBe(StorageErrorCode.UnsupportedMimeType);
+
+    // A RIFF container that is not WebP (e.g. WAVE) is not an avatar.
+    const riffWave = withSignature(RIFF_BYTES);
+    riffWave.set([0x57, 0x41, 0x56, 0x45], 8);
+    expect(
+      codeOf(() =>
+        UploadValidationPolicy.ensureAcceptable({
+          purpose: "avatar",
+          body: riffWave,
+        }),
+      ),
+    ).toBe(StorageErrorCode.UnsupportedMimeType);
+  });
+
+  it("rejects a body too short to carry a signature", () => {
+    expect(
+      codeOf(() =>
+        UploadValidationPolicy.ensureAcceptable({
+          purpose: "avatar",
+          body: new Uint8Array(PNG_BYTES.slice(0, 4)),
+        }),
+      ),
+    ).toBe(StorageErrorCode.UnsupportedMimeType);
+    expect(
+      codeOf(() =>
+        UploadValidationPolicy.ensureAcceptable({
+          purpose: "avatar",
+          body: new Uint8Array(0),
+        }),
+      ),
+    ).toBe(StorageErrorCode.UnsupportedMimeType);
   });
 
   it("rejects the purposes whose rules the import slice still owns", () => {
@@ -167,8 +259,7 @@ describe("UploadValidationPolicy: avatar", () => {
       codeOf(() =>
         UploadValidationPolicy.ensureAcceptable({
           purpose: "source",
-          mimeType: MimeType.create("application/pdf"),
-          size: ByteSize.create(1024),
+          body: imageBody("png"),
         }),
       ),
     ).toBe(StorageErrorCode.UnsupportedMimeType);

@@ -43,9 +43,13 @@ const uniqueKeysOf = (
  * frozen at admission — by now the identity rows may already be gone,
  * and after finalize they certainly are (ADR-020).
  *
- * Both halves are idempotent, and both are skipped once their receipt is
- * in, so a redelivered wave neither restarts the residue chain nor
- * re-releases a key.
+ * Both halves are idempotent, and the work of each is skipped once its
+ * receipt is in, so a redelivered wave neither restarts the residue
+ * chain nor re-releases a key. The receipt and the finalize attempt it
+ * unblocks are written in one transaction, and a wave that finds the
+ * receipt already there still re-issues that attempt — "the receipt is
+ * in but finalize was never asked for" is a state this cannot leave
+ * behind, and a redelivery is what recovers from a lost response.
  */
 export async function runAccountDeletionGlobalCleanup(
   container: WorkerContainer,
@@ -61,31 +65,28 @@ export async function runAccountDeletionGlobalCleanup(
   if (!header.receipts.includes("authResidue")) {
     await startAuthResidueCleanup(container, input.operationId, header.userId);
   }
-  if (header.receipts.includes("uniquenessRelease")) {
-    return;
+  if (!header.receipts.includes("uniquenessRelease")) {
+    const operation = await container.globalUnitOfWorkProvider.run((ctx) =>
+      ctx.distributedOperationStore.findByOperationId(input.operationId),
+    );
+    if (operation === null) {
+      return;
+    }
+    for (const key of uniqueKeysOf(readUniquenessKeys(operation.payload))) {
+      await releaseActiveUniqueKey(container, {
+        ...key,
+        expectedUserId: header.userId,
+        operationId: reservationOperationId(input.operationId, key),
+      });
+    }
   }
 
-  const operation = await container.globalUnitOfWorkProvider.run((ctx) =>
-    ctx.distributedOperationStore.findByOperationId(input.operationId),
-  );
-  if (operation === null) {
-    return;
-  }
-  const keys = uniqueKeysOf(readUniquenessKeys(operation.payload));
-  for (const key of keys) {
-    await releaseActiveUniqueKey(container, {
-      ...key,
-      expectedUserId: header.userId,
-      operationId: reservationOperationId(input.operationId, key),
-    });
-  }
-
-  await container.accountDeletionManifestStore.acknowledgeReceipt(
-    input.operationId,
-    "uniquenessRelease",
-  );
   const now = container.clock.now();
   await container.globalUnitOfWorkProvider.run(async (ctx) => {
+    await ctx.accountDeletionManifestStore.acknowledgeReceipt(
+      input.operationId,
+      "uniquenessRelease",
+    );
     ctx.collectEvents([
       IdentityContinuations.accountDeletionDispatch(
         {

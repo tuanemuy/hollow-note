@@ -19,7 +19,7 @@ export const Route = createFileRoute("/auth/callback/$provider")({
     const config = match.context?.config;
     if (!config) return {};
     const { meta, links } = buildHead(config, {
-      title: `サインイン — ${config.siteName}`,
+      title: `認可 — ${config.siteName}`,
       path: "/auth/callback",
     });
     return { meta, links };

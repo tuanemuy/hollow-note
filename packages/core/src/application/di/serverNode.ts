@@ -139,19 +139,26 @@ export function readNodeRequestServerConfig(
 // containers must observe the same tables, and the dev server keeps its
 // data exactly as long as the process lives. Pinned on `globalThis` so
 // the SSR and RSC module graphs (and HMR reloads of this module) share
-// the same runtime instead of silently forking the store.
+// the same runtime instead of silently forking the store. Filling and
+// reading the slot are both guarded: an env-less default would decide
+// the sign-in provider of ADR-003 by omission.
 const RUNTIME_SYMBOL: unique symbol = Symbol.for(
   "@tanstack-start-template/memory-runtime",
 ) as never;
-type RuntimeSlot = { [RUNTIME_SYMBOL]?: MemoryRuntime };
+type HeldRuntime = Readonly<{ runtime: MemoryRuntime; envDigest: string }>;
+type RuntimeSlot = { [RUNTIME_SYMBOL]?: HeldRuntime };
+
+const INIT_ORDER_HINT =
+  "`initNodeRuntime(readNodeServerEnv())` runs once at the top of `boot()`, before any container is built";
 
 function memoryRuntime(): MemoryRuntime {
-  const slot = globalThis as unknown as RuntimeSlot;
-  // Reached before `initNodeRuntime` only outside the server entry point
-  // (unit tests, tooling probes); those get the same defaults the env
-  // schema would have produced for a development machine.
-  slot[RUNTIME_SYMBOL] ??= createMemoryRuntime();
-  return slot[RUNTIME_SYMBOL];
+  const held = (globalThis as unknown as RuntimeSlot)[RUNTIME_SYMBOL];
+  if (held === undefined) {
+    throw new Error(
+      `[serverNode] the process runtime is not initialized: ${INIT_ORDER_HINT}`,
+    );
+  }
+  return held.runtime;
 }
 
 /** Projection of {@link NodeServerEnv} to the runtime's construction options. */
@@ -185,17 +192,38 @@ function readOAuthRuntimeConfig(env: NodeServerEnv): OAuthRuntimeConfig {
   };
 }
 
+const envDigestOf = (env: NodeServerEnv): string =>
+  JSON.stringify(
+    Object.entries(env).sort(([left], [right]) => left.localeCompare(right)),
+  );
+
 /**
  * Builds the process-wide runtime from validated env. Called once at the
- * very top of `server.node.ts#boot`, before any container is created —
- * the runtime is a `globalThis` singleton, so a container built earlier
- * would pin the env-less defaults for the rest of the process.
+ * very top of `server.node.ts#boot`, before any container is created.
+ *
+ * A filled slot is kept only when this env is the one it was built from
+ * — that is `vite dev` re-running `boot()` after a program reload, where
+ * keeping the singleton also keeps the process's data. Any other env is
+ * refused rather than dropped: the singleton carries the sign-in
+ * provider selection of ADR-003, so serving under settings that were
+ * validated but never applied is exactly the failure this guards.
  */
 export function initNodeRuntime(env: NodeServerEnv): void {
   const slot = globalThis as unknown as RuntimeSlot;
-  slot[RUNTIME_SYMBOL] ??= createMemoryRuntime(
-    nodeServerEnvToRuntimeOptions(env),
-  );
+  const envDigest = envDigestOf(env);
+  const held = slot[RUNTIME_SYMBOL];
+  if (held !== undefined) {
+    if (held.envDigest === envDigest) {
+      return;
+    }
+    throw new Error(
+      `[serverNode] the process runtime is already initialized from a different environment: ${INIT_ORDER_HINT}`,
+    );
+  }
+  slot[RUNTIME_SYMBOL] = {
+    runtime: createMemoryRuntime(nodeServerEnvToRuntimeOptions(env)),
+    envDigest,
+  };
 }
 
 /**

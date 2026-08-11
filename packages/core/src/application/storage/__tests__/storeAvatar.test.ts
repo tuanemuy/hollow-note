@@ -12,7 +12,20 @@ import { type StoreAvatarInput, storeAvatar } from "../storeAvatar";
 const USER_ID = "user-1";
 const MB = 1024 * 1024;
 
-const png = (bytes: number): Uint8Array => new Uint8Array(bytes);
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+const png = (bytes: number): Uint8Array => {
+  const body = new Uint8Array(Math.max(bytes, PNG_SIGNATURE.length));
+  body.set(PNG_SIGNATURE, 0);
+  return body;
+};
+
+const webp = (bytes: number): Uint8Array => {
+  const body = new Uint8Array(Math.max(bytes, 12));
+  body.set([0x52, 0x49, 0x46, 0x46], 0);
+  body.set([0x57, 0x45, 0x42, 0x50], 8);
+  return body;
+};
 
 const upload = (h: TestHarness, overrides: Partial<StoreAvatarInput> = {}) =>
   storeAvatar({
@@ -22,7 +35,6 @@ const upload = (h: TestHarness, overrides: Partial<StoreAvatarInput> = {}) =>
       subjectType: "user",
       subjectId: USER_ID,
       fileName: "avatar.png",
-      declaredMimeType: "image/png",
       body: png(16),
       ...overrides,
     },
@@ -103,9 +115,31 @@ describe("storeAvatar", () => {
 
   it("TC-storage-173: a GIF is refused", async () => {
     const h = createTestHarness();
+    const gif = new Uint8Array(16);
+    gif.set([0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 0);
 
     await expectBusinessRule(
-      upload(h, { declaredMimeType: "image/gif", fileName: "avatar.gif" }),
+      upload(h, { body: gif, fileName: "avatar.gif" }),
+      StorageErrorCode.UnsupportedMimeType,
+    );
+    expect(storedFiles(h)).toHaveLength(0);
+  });
+
+  it("records the type the bytes carry, not the one the file name suggests", async () => {
+    const h = createTestHarness();
+
+    const view = await upload(h, { body: webp(32), fileName: "avatar.png" });
+
+    const file = storedFiles(h)[0];
+    expect(file?.mimeType).toBe("image/webp");
+    expect(file?.objectKey).toBe(`users/${USER_ID}/avatar/${view.fileId}.webp`);
+  });
+
+  it("refuses bytes that are not one of the accepted image formats", async () => {
+    const h = createTestHarness();
+
+    await expectBusinessRule(
+      upload(h, { body: new TextEncoder().encode("<html>hi</html>") }),
       StorageErrorCode.UnsupportedMimeType,
     );
     expect(storedFiles(h)).toHaveLength(0);
@@ -115,7 +149,7 @@ describe("storeAvatar", () => {
     const h = createTestHarness();
     const first = await upload(h);
 
-    const second = await upload(h, { declaredMimeType: "image/webp" });
+    const second = await upload(h, { body: webp(16) });
 
     const files = storedFiles(h);
     expect(files).toHaveLength(1);
@@ -143,5 +177,22 @@ describe("storeAvatar", () => {
         error.code === "ACCOUNT_DELETING",
     );
     expect(storedFiles(h)).toHaveLength(0);
+    // Bytes without a metadata row would be reachable by no cleanup at
+    // all — not even the account deletion this barrier belongs to.
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("rolls the stored object back when the transaction fails", async () => {
+    const failure = new Error("transaction rolled back");
+    const h = createTestHarness({
+      requestOverrides: {
+        scopeUnitOfWorkProvider: { run: () => Promise.reject(failure) },
+      },
+    });
+
+    await expect(upload(h)).rejects.toBe(failure);
+
+    expect(storedFiles(h)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 });

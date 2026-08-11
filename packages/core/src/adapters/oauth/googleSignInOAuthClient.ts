@@ -13,10 +13,16 @@ import { deriveCodeChallengeS256 } from "./pkce";
 const AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const SCOPE = "openid email profile";
+const DEFAULT_TOKEN_ENDPOINT_TIMEOUT_MS = 10_000;
 
 export type GoogleOAuthCredentials = Readonly<{
   clientId: string;
   clientSecret: string;
+}>;
+
+export type GoogleOAuthClientOptions = Readonly<{
+  /** Wall-clock budget for the token-endpoint round trip. */
+  tokenEndpointTimeoutMs?: number;
 }>;
 
 const invalidCode = (cause?: unknown): ValidationError =>
@@ -78,13 +84,24 @@ function readIdTokenClaims(idToken: string): IdTokenClaims {
  *
  * Error translation at the adapter boundary: anything the provider
  * itself rejects (4xx on the token endpoint) becomes
- * `ValidationError("OAUTH_CODE_INVALID")`; transport failures, 5xx, and
- * malformed responses become `SystemError(EXTERNAL_API_ERROR)`. No
- * provider-native error ever escapes.
+ * `ValidationError("OAUTH_CODE_INVALID")`; transport failures, 5xx,
+ * malformed responses, and a token request that outlives its timeout
+ * budget become `SystemError(EXTERNAL_API_ERROR)`. No provider-native
+ * error ever escapes.
+ *
+ * The exchange is deliberately not retried, unlike the driver-level
+ * retries other adapters do: an authorization code is single-use, so a
+ * replay after a timeout would be rejected as reused — and the caller
+ * (`/auth/callback/$provider`) is a live request that must not wait for
+ * a second budget.
  */
 export function createGoogleSignInOAuthClient(
   credentials: GoogleOAuthCredentials,
+  options: GoogleOAuthClientOptions = {},
 ): SignInOAuthClient {
+  const timeoutMs =
+    options.tokenEndpointTimeoutMs ?? DEFAULT_TOKEN_ENDPOINT_TIMEOUT_MS;
+
   return {
     deriveCodeChallenge: deriveCodeChallengeS256,
 
@@ -119,6 +136,7 @@ export function createGoogleSignInOAuthClient(
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body,
+          signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (cause) {
         throw unreachable("Google token endpoint is unreachable", cause);

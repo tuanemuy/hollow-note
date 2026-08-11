@@ -1,4 +1,3 @@
-import type { RequestContainer } from "../di/types";
 import type { ServiceArgs } from "../types";
 import {
   completeOAuthSignInForFlow,
@@ -36,18 +35,14 @@ export async function completeOAuthCallback({
   switch (flow.intent) {
     case "signIn": {
       const view = await completeOAuthSignInForFlow(
-        container as RequestContainer,
+        container,
         flow,
         input.code,
       );
       return { intent: "signIn", ...view };
     }
     case "linkIdentity": {
-      const view = await linkOAuthIdentityForFlow(
-        container as RequestContainer,
-        flow,
-        input.code,
-      );
+      const view = await linkOAuthIdentityForFlow(container, flow, input.code);
       return {
         intent: "linkIdentity",
         redirectTo: flow.redirectTo,

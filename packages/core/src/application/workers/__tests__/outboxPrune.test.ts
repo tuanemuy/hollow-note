@@ -74,6 +74,9 @@ function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
       oauth_flow_states: {
         deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
       },
+      identity_removal_receipts: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
     },
     clock: overrides.clock ?? { now: () => new Date(0) },
     idGenerator: {

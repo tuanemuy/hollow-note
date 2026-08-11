@@ -358,6 +358,7 @@ const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
     "sessions",
     "login_attempts",
     "oauth_flow_states",
+    "identity_removal_receipts",
   ],
   jobTombstonePrune: ["job_tombstones"],
   accountManifestPrune: ["account_deletion_manifests"],

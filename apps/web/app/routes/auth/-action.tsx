@@ -19,9 +19,12 @@ export const startOAuthSignInFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(startSchema))
   .handler(async ({ data }) => {
-    const { container, module } = await loadServerDeps(
-      () => import("@repo/core/application/identity/startOAuthFlow"),
-    );
+    const [{ container, module }, stateCookie] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/identity/startOAuthFlow"),
+      ),
+      import("@/presentation/oauthStateCookie"),
+    ]);
     const view = await module.startOAuthFlow({
       container,
       input: {
@@ -30,6 +33,7 @@ export const startOAuthSignInFn = createServerFn({ method: "POST" })
         redirectTo: data.redirectTo,
       },
     });
+    await stateCookie.setOAuthStateCookie(view.state, container.clock.now());
     return { authorizationUrl: view.authorizationUrl };
   });
 
@@ -47,6 +51,10 @@ const callbackSchema = z.object({
  * 要求なので Cookie に触れず、戻り先だけを返す。
  *
  * 画面が分岐できるよう、応答は intent 付きの判別共用体にする。
+ *
+ * `state` は消費の前にフローを開始したブラウザーへの束縛を照合する
+ * （`oauthStateCookie`）。踏ませるだけで認証状態が変わる経路を作らない
+ * ため、ユースケースより先に通す。
  */
 export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -58,16 +66,19 @@ export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
       | { intent: "signIn"; redirectTo: string | null; created: boolean }
       | { intent: "linkIdentity"; redirectTo: string | null }
     > => {
-      const [{ container, module }, session] = await Promise.all([
+      const [{ container, module }, session, stateCookie] = await Promise.all([
         loadServerDeps(
           () => import("@repo/core/application/identity/completeOAuthCallback"),
         ),
         import("@/presentation/session"),
+        import("@/presentation/oauthStateCookie"),
       ]);
+      await stateCookie.assertOAuthStateCookie(data.state);
       const view = await module.completeOAuthCallback({
         container,
         input: { provider: data.provider, state: data.state, code: data.code },
       });
+      stateCookie.clearOAuthStateCookie();
       if (view.intent === "linkIdentity") {
         return { intent: "linkIdentity", redirectTo: view.redirectTo };
       }

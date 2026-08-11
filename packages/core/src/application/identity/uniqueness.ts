@@ -125,6 +125,26 @@ export async function releaseUniqueKeys(
 }
 
 /**
+ * Whether the durable (`active`) claim for `key` is held by
+ * `expectedUserId` right now.
+ *
+ * A key that is merely `reserved`, already `releasing`, absent, or held by
+ * someone else all answer `false` — the aggregate that names the key can
+ * only treat its claim as published when the directory says the claim is
+ * both durable and its own.
+ */
+export async function holdsActiveUniqueKey(
+  deps: Pick<UniquenessDeps, "identityUniqueDirectory">,
+  params: UniqueKey & Readonly<{ expectedUserId: UserId }>,
+): Promise<boolean> {
+  const owner = await deps.identityUniqueDirectory.resolve(
+    params.kind,
+    params.normalizedKey,
+  );
+  return owner === params.expectedUserId;
+}
+
+/**
  * Tears a **durable** (`active`) claim down, the mirror of the reserve →
  * activate half: `beginRelease` marks the row `releasing` and re-keys it
  * to `operationId`, then `release` drops it.

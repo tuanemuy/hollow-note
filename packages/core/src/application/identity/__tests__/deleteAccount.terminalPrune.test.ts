@@ -6,8 +6,10 @@ import {
   PERSONAL_BARRIER_PRUNE_TASK_KIND,
   prunePersonalCleanupBarriers,
 } from "../../cleanup/personalCleanup";
+import type { WorkerContainer } from "../../di/types";
 import {
   ACCOUNT_MANIFEST_PRUNE_LEASE_OWNER,
+  type AccountDeletionTerminalPruneView,
   pruneAccountDeletionManifests,
 } from "../deleteAccount/terminalPrune";
 
@@ -82,6 +84,64 @@ const runRow = (h: TestHarness) =>
     .values()
     .find((run) => run.kind === "accountManifestPrune");
 
+const laneCursor = (h: TestHarness, shardId: string): string | null =>
+  runRow(h)?.lanes.find((row) => row.shardId === shardId)?.cursor ?? null;
+
+/**
+ * Seeds `count` due headers, opens a run and claims its lane, handing
+ * back the continuation entry point the queue would drive.
+ */
+const startLane = async (
+  h: TestHarness,
+  count: number,
+): Promise<
+  Readonly<{
+    shardId: string;
+    turn: (
+      cursor: string | null,
+      container?: WorkerContainer,
+    ) => Promise<AccountDeletionTerminalPruneView>;
+  }>
+> => {
+  const retainUntil = new Date(h.clock.now().getTime() + 120 * DAY_MS);
+  for (let i = 0; i < count; i += 1) {
+    seedTerminal(h, operationKey(i), retainUntil);
+  }
+  h.clock.advance(120 * DAY_MS);
+  const asOf = h.clock.now();
+  const begun = await h.workerContainer.maintenanceRunStore.beginOrResumeKind({
+    candidateRunId: "run-1",
+    kind: "accountManifestPrune",
+    candidateAsOf: asOf,
+    generations: h.workerContainer.routingGenerations,
+    leaseOwner: ACCOUNT_MANIFEST_PRUNE_LEASE_OWNER,
+    leaseUntil: new Date(asOf.getTime() + HOUR_MS),
+  });
+  const [lane] = await h.workerContainer.maintenanceRunStore.claimLanes(
+    begun.runId,
+    ACCOUNT_MANIFEST_PRUNE_LEASE_OWNER,
+    1,
+  );
+  if (lane === undefined) {
+    throw new Error("the run has no lane to claim");
+  }
+  return {
+    shardId: lane.shardId,
+    turn: (cursor, container = h.workerContainer) =>
+      pruneAccountDeletionManifests({
+        container,
+        input: {
+          type: "identity.accountDeletionManifestPruneContinued",
+          runId: begun.runId,
+          generation: lane.generation,
+          shardId: lane.shardId,
+          cursor,
+          asOf,
+        },
+      }),
+  };
+};
+
 describe("deleteAccount terminal prune", () => {
   it("TC-identity-104: 101 expired headers are reclaimed with their operations, running ones are kept", async () => {
     const h = createTestHarness();
@@ -115,58 +175,52 @@ describe("deleteAccount terminal prune", () => {
       .toEqual(["op-later"]);
   });
 
-  it("TC-identity-105/107: re-running a lane from the same cursor reclaims the rest without gaps", async () => {
+  it("TC-identity-105: a redelivered continuation resumes from the same asOf and cursor without gaps", async () => {
     const h = createTestHarness();
-    const retainUntil = new Date(h.clock.now().getTime() + 120 * DAY_MS);
-    for (let i = 0; i < 101; i += 1) {
-      seedTerminal(h, operationKey(i), retainUntil);
-    }
-    h.clock.advance(120 * DAY_MS);
-    const asOf = h.clock.now();
-    const begun = await h.workerContainer.maintenanceRunStore.beginOrResumeKind(
-      {
-        candidateRunId: "run-1",
-        kind: "accountManifestPrune",
-        candidateAsOf: asOf,
-        generations: h.workerContainer.routingGenerations,
-        leaseOwner: ACCOUNT_MANIFEST_PRUNE_LEASE_OWNER,
-        leaseUntil: new Date(asOf.getTime() + HOUR_MS),
-      },
-    );
-    const [lane] = await h.workerContainer.maintenanceRunStore.claimLanes(
-      begun.runId,
-      ACCOUNT_MANIFEST_PRUNE_LEASE_OWNER,
-      1,
-    );
-    if (lane === undefined) {
-      throw new Error("the run has no lane to claim");
-    }
-
-    const turn = (cursor: string | null) =>
-      pruneAccountDeletionManifests({
-        container: h.workerContainer,
-        input: {
-          type: "identity.accountDeletionManifestPruneContinued",
-          runId: begun.runId,
-          generation: lane.generation,
-          shardId: lane.shardId,
-          cursor,
-          asOf,
-        },
-      });
+    const { shardId, turn } = await startLane(h, 101);
 
     const first = await turn(null);
     expect(first).toEqual({ removed: 100, continued: true });
-    const checkpointed = runRow(h)?.lanes.find(
-      (row) => row.shardId === lane.shardId,
-    )?.cursor;
-    expect(checkpointed).not.toBeNull();
+    expect(laneCursor(h, shardId)).not.toBeNull();
 
-    // The checkpoint response was lost, so the very same input runs
-    // again: the keyset skips what is gone and finishes the rest.
+    // The page committed and the checkpoint with it; what was lost is the
+    // response, so the very same input arrives again.
     const replay = await turn(null);
 
     expect(replay).toEqual({ removed: 1, continued: false });
+    expect(h.backend.manifestHeaders.values()).toEqual([]);
+    expect(h.backend.distributedOperations.values()).toEqual([]);
+  });
+
+  it("TC-identity-107: a lane that stopped before its checkpoint re-runs the same cursor and then checkpoints the next one", async () => {
+    const h = createTestHarness();
+    const { shardId, turn } = await startLane(h, 201);
+    const store = h.workerContainer.maintenanceRunStore;
+    const withoutCheckpoint: WorkerContainer = {
+      ...h.workerContainer,
+      maintenanceRunStore: {
+        ...store,
+        checkpointLane: () =>
+          Promise.reject(new Error("stopped before the checkpoint")),
+      },
+    };
+
+    await expect(turn(null, withoutCheckpoint)).rejects.toThrow(
+      "stopped before the checkpoint",
+    );
+    // The delete lives on the target shard and the checkpoint on the
+    // catalog: the first committed, the second never did.
+    expect(h.backend.manifestHeaders.values()).toHaveLength(101);
+    expect(laneCursor(h, shardId)).toBeNull();
+
+    const replay = await turn(null);
+
+    expect(replay).toEqual({ removed: 100, continued: true });
+    const checkpointed = laneCursor(h, shardId);
+    expect(checkpointed).not.toBeNull();
+    expect(h.backend.manifestHeaders.values()).toHaveLength(1);
+
+    expect(await turn(checkpointed)).toEqual({ removed: 1, continued: false });
     expect(h.backend.manifestHeaders.values()).toEqual([]);
     expect(h.backend.distributedOperations.values()).toEqual([]);
   });

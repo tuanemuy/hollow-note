@@ -188,6 +188,7 @@
 - `TC-identity-085` — spec の期待結果は 8 component 固定だが、**ADR-002 / ADR-018 の宣言集合（`storage` / `usage` の 2 つ）**に読み替えて「1 つでも欠ければ running のまま」を検証してチェック。
 - `TC-storage-043` — spec の期待結果「列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文の計 3 文」のうち**文の数という性能上の約束を検証せず**、「列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない」に置き換えてチェック（ADR-057。OCC トークンを `findById` から得る ADR-022 の帰結で 1 件ずつ読む）。
 - `TC-usage-059`（ゴミ箱のノートも数える）— 根拠は `recalculateStorageUsage` の `countByOwner(owner, "all")` 側**だけ**。`noteCount` の即時反映（`applyStorageDelta`）が #6 のため。
+- `TC-identity-090` — spec の期待結果のうち「**再試行時刻を記録する**」を欠いてチェック（ADR-026。`DistributedOperationStore` が `next_attempt_at` を持たないため、記録すべき時刻そのものが無い。事実上の再駆動は P-25 の再送に依存する）。検証しているのは「`deleting` のまま / PII が残る / manifest は `built` のまま / finalize が待ち続けるログ」まで。→ recovery Cron を足すスライス
 
 ### 機能・運用としての縮退
 
@@ -265,6 +266,10 @@
 - `getProfile` / `checkHandleAvailability` の 2 読み取りを `application/identity/` に足した（ADR-047）。どちらも write を持たない `updateProfile` の対。
 - `completeOAuthCallback`（コールバックのディスパッチャー）を `application/identity/` に足した（ADR-036）。spec の `completeOAuthSignIn` / `linkOAuthIdentity` の入力 DTO はそのまま保っている。
 
+### レビュー R1 で増えた差
+
+- `UploadValidationPolicy.ensureAcceptable` の引数を `{ purpose, mimeType, size }` から `{ purpose, body }` へ、戻り値を `void` から `{ mimeType, size }` へ変えた（ADR-078）。MIME は申告値ではなくバイト列の署名（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る。`spec/domains/storage.md` の `UploadValidationPolicy` の表と、`storeAvatar` の入力 DTO の `declaredMimeType` 相当（ADR-048 の `size` と同根）に反映が要る。署名を持たない形式（`text/markdown` 等）を許可する purpose を足す #6 が、入口の形をさらに広げる。
+
 ## Issue #1 へのコメント用
 
 `.thread/1/progress.md` が「本スライス外」として見送った下記 5 行は、本 Issue（#2）で実装済み。コードで確認した。
@@ -293,3 +298,10 @@
 | `pnpm format` | 緑（Biome、427 files。追加の修正なし） |
 
 マニュアルテスト（`spec/manual-tests/account.md` の実行分 30 件）はブラウザ検証フェーズが実行する。
+
+## レビュー R1 の反映（単位 U-6: composition root / 起動配線）
+
+- **B-007 / Security B-002（dev IdP の production ガードが本番起動経路で発火しない）**: `apps/web/scripts/listen.node.ts` が dotenv より前に `process.env.NODE_ENV ??= "production"` を宣言し、`apps/web/.env.example` の `OAUTH_DEV_MODE=true` をコメントアウトした。`cp .env.example .env && pnpm build && pnpm start` は dev IdP を公開せず、`OAUTH_DEV_MODE=true` の `.env` を持つ手元でも起動が失敗する（実測: ZodError「OAUTH_DEV_MODE=true cannot be combined with NODE_ENV=production」）。
+- **W-A01 / Adapter W-001 + Security W-006（ランタイム singleton の fail-open）**: `memoryRuntime()` は未初期化なら throw、`initNodeRuntime` は「別 env で初期化済み」なら throw する（同一 env の再入は `vite dev` のプログラム再読込なので singleton を保つ — ADR-074）。`MemoryRuntimeOptions.oauth` の既定（dev）を廃して明示必須にし、`createTestHarness` が `{ mode: "dev" }` を明示する。
+- **W-A08 / Adapter W-008（`identity_removal_receipts` の 30 日保持が回収されない）**: `AuthStateTable` に `identity_removal_receipts` を足し、`authStateSweeps` / memory backend の `authStatePrune` 表順 / `PruneExpiredAuthStateView` へ反映した。`pruneExpiredAuthState` の cron 配線自体は引き続き Issue #15。
+- **W-T09 / Test W-009（AC-6 の 404 ガードに自動テストが無い）**: **どこまで検証済みか** — env → `RequestContainer.oauthDevMode` の経路は `di/__tests__/serverNode.test.ts` の 3 ケース（`true` / Google 配備 / `"true"` 以外の値）で自動検証済み、そのフラグが偽のとき `/dev/oauth/authorize` が実際に 404 を返すことは本番形の起動（`OAUTH_DEV_MODE=false` + Google 資格情報）で手動確認済み（`/` が 200、当該ルートが 404）。ルート loader の `notFound()` 1 行自体を通す自動テストは、`createServerFn` の実行時を引き込むため置いていない。

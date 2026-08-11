@@ -9,6 +9,15 @@ import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 
 const encoder = new TextEncoder();
 
+const sha256Hex = async (body: Uint8Array): Promise<string> => {
+  const source = new ArrayBuffer(body.byteLength);
+  new Uint8Array(source).set(body);
+  const digest = await crypto.subtle.digest("SHA-256", source);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
 /**
  * Shared conformance suite for `ObjectStorage`
  * (ADP-storage-018..020 + `publicUrl`, ADR-011).
@@ -33,10 +42,15 @@ export function describeObjectStorageContract(
     });
 
     it("ADP-storage-018/019: stores bytes and reports the measured size and checksum", async () => {
-      const result = await backend.objectStorage.put(key, body, meta);
+      // The declared size and checksum are deliberately wrong: what a
+      // caller believes about the bytes must not reach the result.
+      const result = await backend.objectStorage.put(key, body, {
+        ...meta,
+        size: ByteSize.create(0),
+        checksum: Checksum.sha256("b".repeat(64)),
+      });
       expect(result.size).toBe(body.byteLength);
-      expect(result.checksum.algorithm).toBe("sha256");
-      expect(result.checksum.value).toMatch(/^[0-9a-f]{64}$/);
+      expect(result.checksum).toEqual(Checksum.sha256(await sha256Hex(body)));
 
       const stored = await backend.objectStorage.get(key);
       expect(stored?.bytes).toEqual(body);
@@ -58,15 +72,6 @@ export function describeObjectStorageContract(
       expect((await backend.objectStorage.get(key))?.bytes).toEqual(
         replacement,
       );
-    });
-
-    it("ADP-storage-018: keeps a supplied checksum instead of recomputing it", async () => {
-      const declared = Checksum.sha256("b".repeat(64));
-      const result = await backend.objectStorage.put(key, body, {
-        ...meta,
-        checksum: declared,
-      });
-      expect(result.checksum).toEqual(declared);
     });
 
     it("ADP-storage-020: deletes many keys and tolerates absent ones", async () => {

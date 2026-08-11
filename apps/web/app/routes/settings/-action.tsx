@@ -188,7 +188,6 @@ export const uploadAvatarFn = createServerFn({ method: "POST" })
         subjectType: "user",
         subjectId: user.userId,
         fileName: data.file.name,
-        declaredMimeType: data.file.type,
         body,
       },
     });
@@ -292,12 +291,14 @@ export const startOAuthLinkFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(startOAuthLinkSchema))
   .handler(async ({ data }) => {
-    const [{ container, module }, { requireSession }] = await Promise.all([
-      loadServerDeps(
-        () => import("@repo/core/application/identity/startOAuthFlow"),
-      ),
-      import("@/presentation/session"),
-    ]);
+    const [{ container, module }, { requireSession }, stateCookie] =
+      await Promise.all([
+        loadServerDeps(
+          () => import("@repo/core/application/identity/startOAuthFlow"),
+        ),
+        import("@/presentation/session"),
+        import("@/presentation/oauthStateCookie"),
+      ]);
     const user = await requireSession();
     const view = await module.startOAuthFlow({
       container,
@@ -308,6 +309,7 @@ export const startOAuthLinkFn = createServerFn({ method: "POST" })
         redirectTo: "/settings/auth",
       },
     });
+    await stateCookie.setOAuthStateCookie(view.state, container.clock.now());
     return { authorizationUrl: view.authorizationUrl };
   });
 

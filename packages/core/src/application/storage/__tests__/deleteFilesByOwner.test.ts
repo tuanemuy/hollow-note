@@ -252,15 +252,34 @@ describe("deleteFilesByOwner", () => {
     await openBarrier(h);
     await seedFiles(h, { count: 15 });
 
-    const [first, second] = [
-      await run(h, { batchSize: 10 }),
-      await run(h, { batchSize: 10 }),
-    ];
+    // The memory unit of work serializes transactions, so what a
+    // duplicated continuation can be shown to do here is read whatever
+    // its twin left and still reach the same end — not overlap in time.
+    const first = await run(h, { batchSize: 10 });
+    const second = await run(h, { batchSize: 10 });
     const third = await run(h, { batchSize: 10 });
 
     expect(first.deletedCount + second.deletedCount).toBe(15);
     expect(third).toMatchObject({ status: "settled", deletedCount: 0 });
     expect(deletionEvents(h)).toHaveLength(15);
+  });
+
+  it("TC-storage-041: a stall on the initial command leaves a backed-off task behind to drive the retry", async () => {
+    const h = createTestHarness();
+    await openBarrier(h);
+    await seedFiles(h, { count: 5 });
+
+    const turn = await run(h, {
+      container: withVanishingFiles(h, () => true),
+      commandKey: `${OPERATION_ID}:cleanup:storage`,
+    });
+
+    expect(turn).toMatchObject({ status: "stalled", deletedCount: 0 });
+    expect(tasks(h)).toHaveLength(1);
+    expect(tasks(h)[0]?.attempt).toBe(1);
+    expect(tasks(h)[0]?.dueAt.getTime()).toBeGreaterThan(
+      h.clock.now().getTime(),
+    );
   });
 
   it("TC-storage-043: one turn enumerates once and emits one event per file, whatever the count", async () => {

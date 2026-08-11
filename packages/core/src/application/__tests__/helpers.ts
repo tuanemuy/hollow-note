@@ -57,6 +57,9 @@ export function createTestHarness(
   const runtimeOptions: MemoryRuntimeOptions = {
     clock,
     idGenerator,
+    // Stated, not defaulted: `MemoryRuntimeOptions.oauth` has no default
+    // so that no deployment can reach the dev IdP by omission.
+    oauth: { mode: "dev" },
     ...(options.maintenanceShardIds !== undefined
       ? { maintenanceShardIds: options.maintenanceShardIds }
       : {}),

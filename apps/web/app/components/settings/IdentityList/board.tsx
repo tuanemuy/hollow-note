@@ -1,6 +1,7 @@
 "use client";
 
 import type { IdentityListItemView } from "@repo/core/application/identity/view";
+import { IdentityPolicy } from "@repo/core/domain/identity/services/identityPolicy";
 import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useOptimistic, useState, useTransition } from "react";
@@ -86,8 +87,11 @@ export function IdentityBoard({
 
   // 解除の可否は楽観的リストから引き直す。サーバーが返した `removable`
   // は解除前の集合に対する判定なので、1 件消した直後に「まだ解除できる」
-  // と見えてしまう。
-  const canRemove = optimistic.length >= 2 && removable;
+  // と見えてしまう。しきい値はドメインの `IdentityPolicy` から取る
+  // （`isRemovable` そのものは `Identity` を要求するので、DTO しか持たない
+  // ここからは呼べない）。
+  const canRemove =
+    optimistic.length > IdentityPolicy.minIdentitiesPerUser && removable;
   const hasPassword = optimistic.some((item) => item.kind === "password");
   const hasGoogle = optimistic.some((item) => item.provider === "google");
 
@@ -204,7 +208,7 @@ export function IdentityBoard({
 
       {hasPassword ? <ChangePasswordForm /> : null}
 
-      <SignOutOthersPanel />
+      <SignOutOthersPanel onDone={reconcile} />
     </>
   );
 }
@@ -283,7 +287,7 @@ function MethodRow({
   );
 }
 
-function SignOutOthersPanel() {
+function SignOutOthersPanel({ onDone }: { onDone: () => Promise<void> }) {
   const signOutOthers = useServerFn(signOutOtherSessionsFn);
   const [isPending, startTransition] = useTransition();
   const [outcome, setOutcome] = useState<"idle" | "accepted">("idle");
@@ -299,6 +303,7 @@ function SignOutOthersPanel() {
       }
       setError(null);
       setOutcome("accepted");
+      await onDone();
     });
   };
 
@@ -335,10 +340,14 @@ const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   google: "Google",
 };
 
+// 時間帯を明示する。この島は SSR で 1 度描かれてからハイドレートされる
+// ので、既定（実行環境の時間帯）のままだとサーバーとブラウザーで日付が
+// 1 日ずれ、その差がハイドレーション不一致として出る。
 const dateFormat = new Intl.DateTimeFormat("ja-JP", {
   year: "numeric",
   month: "long",
   day: "numeric",
+  timeZone: "UTC",
 });
 
 const formatDate = (value: Date): string => dateFormat.format(value);

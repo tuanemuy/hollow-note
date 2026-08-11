@@ -8,16 +8,20 @@ import {
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
 import { acknowledgePersonalCleanup } from "../identity/deleteAccount/cleanupDispatch";
-import type { DueScopeTask } from "../ports/scopeTaskQueue";
+import type { ScopeTask } from "../ports/scopeTaskScheduler";
+import { ScopeKey } from "../scope";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
 import { deleteQuota } from "../usage/deleteQuota";
 
 /** Due rows one tick takes on. */
 export const SCOPE_TASK_TICK_LIMIT = 100;
 
+/** A claimed row together with the scope whose transaction claimed it. */
+export type ClaimedScopeTask = ScopeTask & Readonly<{ scope: ScopeKey }>;
+
 export type ScopeTaskHandler = (
   container: WorkerContainer,
-  task: DueScopeTask,
+  task: ClaimedScopeTask,
 ) => Promise<void>;
 
 /**
@@ -74,44 +78,80 @@ export type RunDueScopeTasksOptions = Readonly<{
 /**
  * Drives one round of the scope plane's continuation work.
  *
- * The enumeration is central because nothing else can list scopes, but
- * the claim is not: each turn opens its own scope unit of work and
- * settles its row there, which keeps the single-writer rule of a scope
- * object intact (ADR-005 / ADR-055).
+ * The enumeration is central because nothing else can list scopes
+ * (ADR-005), but the rows a scope hands out are read under that scope's
+ * own transaction, which is what the port means by claiming. The turn
+ * that follows opens a transaction of its own and settles its row there
+ * (ADR-055), so a turn that throws leaves the row untouched — the
+ * runner is then the only one left to back it off, and without that a
+ * permanently failing target would be re-driven every tick with
+ * `attempt` frozen at zero.
  *
- * One failing task must not hold up the others, so each is isolated —
- * the row stays due and its own backoff decides when it is tried again.
+ * One failing task must not hold up the others, so each is isolated.
  */
 export async function runDueScopeTasks(
   container: WorkerContainer,
   options: RunDueScopeTasksOptions = {},
 ): Promise<Readonly<{ processed: number }>> {
   const handlers = options.handlers ?? scopeTaskHandlers;
-  const due = await container.scopeTaskQueue.listDue(
-    container.clock.now(),
-    options.limit ?? SCOPE_TASK_TICK_LIMIT,
-  );
+  const now = container.clock.now();
+  let budget = options.limit ?? SCOPE_TASK_TICK_LIMIT;
+  const due = await container.scopeTaskQueue.listDue(now, budget);
 
   let processed = 0;
-  for (const task of due) {
-    const handle = handlers[task.kind];
-    if (handle === undefined) {
-      container.logger.warn(
-        `[scope-tasks] no handler for ${task.kind}; leaving it due`,
-        { kind: task.kind, operationId: task.operationId },
-      );
-      continue;
-    }
-    try {
-      await handle(container, task);
-      processed += 1;
-    } catch (cause) {
-      container.logger.error("[scope-tasks] task threw", {
-        cause,
-        kind: task.kind,
-        operationId: task.operationId,
-      });
+  const claimedScopes = new Set<string>();
+  for (const row of due) {
+    if (budget <= 0) break;
+    const scopeKey = ScopeKey.serialize(row.scope);
+    if (claimedScopes.has(scopeKey)) continue;
+    claimedScopes.add(scopeKey);
+
+    const claimed = await container.scopeUnitOfWorkProvider.run(
+      row.scope,
+      (ctx) => ctx.scopeTaskScheduler.claimDue(now, budget),
+    );
+    for (const task of claimed) {
+      if (budget <= 0) break;
+      budget -= 1;
+      const handle = handlers[task.kind];
+      if (handle === undefined) {
+        container.logger.warn(
+          `[scope-tasks] no handler for ${task.kind}; leaving it due`,
+          { kind: task.kind, operationId: task.operationId },
+        );
+        continue;
+      }
+      try {
+        await handle(container, { ...task, scope: row.scope });
+        processed += 1;
+      } catch (cause) {
+        container.logger.error("[scope-tasks] task threw", {
+          cause,
+          kind: task.kind,
+          operationId: task.operationId,
+        });
+        await backOff(container, row.scope, task, now);
+      }
     }
   }
   return { processed };
 }
+
+const backOff = async (
+  container: WorkerContainer,
+  scope: ScopeKey,
+  task: ScopeTask,
+  now: Date,
+): Promise<void> => {
+  try {
+    await container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+      ctx.scopeTaskScheduler.backoff(task.kind, task.operationId, now),
+    );
+  } catch (cause) {
+    container.logger.error("[scope-tasks] backoff failed", {
+      cause,
+      kind: task.kind,
+      operationId: task.operationId,
+    });
+  }
+};

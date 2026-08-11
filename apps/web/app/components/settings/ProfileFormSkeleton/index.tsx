@@ -4,7 +4,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 /**
  * `/settings/profile` の per-fragment streaming 用フォールバック。
  * `ProfileForm` の DOM（2 パネル + 下部のアクションバー）を写して、
- * 差し替え時のレイアウトシフトを防ぐ。
+ * 差し替え時のレイアウトシフトを防ぐ。ハンドル変更の警告はハンドルを
+ * 設定済みの利用者にしか出ないので置かない。
  */
 export function ProfileFormSkeleton() {
   return (
@@ -30,6 +31,12 @@ export function ProfileFormSkeleton() {
         <Skeleton className="mt-5 h-4 w-24" />
         <Skeleton className="mt-2 h-11 w-full" />
       </section>
+      <div className="-mx-4 border-t border-hairline px-4 py-2 sm:-mx-6 sm:px-6">
+        <div className="mx-auto flex max-w-[var(--list-max)] items-center justify-end gap-2">
+          <Skeleton className="h-8 w-28 rounded-pill" />
+          <Skeleton className="h-10 w-16 rounded-pill" />
+        </div>
+      </div>
     </div>
   );
 }

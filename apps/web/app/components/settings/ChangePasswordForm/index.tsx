@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useId, useState } from "react";
 import {
@@ -31,6 +32,7 @@ type Outcome = Readonly<{ done: boolean; error: string | null }>;
 const IDLE: Outcome = { done: false, error: null };
 
 export function ChangePasswordForm() {
+  const router = useRouter();
   const change = useServerFn(changePasswordFn);
   const currentId = useId();
   const passwordId = useId();
@@ -55,6 +57,9 @@ export function ChangePasswordForm() {
       setCurrent("");
       setPassword("");
       setConfirmation("");
+      await router.invalidate().catch(() => {
+        console.error("Password change reconcile failed");
+      });
       return { done: true, error: null };
     },
     IDLE,

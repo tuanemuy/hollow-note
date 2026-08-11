@@ -57,6 +57,11 @@ export async function dispatchAccountDeletionRedaction(
     );
     return {
       redactionVersion: versioned.entity.version,
+      // A full page means the phase has more to claim. Counted before
+      // the filter: `claimPending` is typed over the whole item union,
+      // so a page carrying anything but author routes would otherwise
+      // read as a short one and hand over with targets left unacked.
+      pageWasFull: items.length === MANIFEST_PAGE_LIMIT,
       targets: items.filter(isAuthorRoute),
     };
   });
@@ -95,7 +100,7 @@ export async function dispatchAccountDeletionRedaction(
       "publicRedaction",
     );
     ctx.collectEvents([
-      claimed.targets.length === MANIFEST_PAGE_LIMIT
+      claimed.pageWasFull
         ? IdentityContinuations.accountDeletionDispatch(
             {
               operationId: input.operationId,

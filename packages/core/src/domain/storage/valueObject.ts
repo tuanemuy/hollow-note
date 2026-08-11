@@ -42,12 +42,18 @@ export const StorageOwner = {
       : b.type === "workspace" && a.workspaceId === b.workspaceId,
 };
 
-export type FilePurpose =
-  | "source"
-  | "media"
-  | "reference"
-  | "artifact"
-  | "avatar";
+export const FILE_PURPOSES = [
+  "source",
+  "media",
+  "reference",
+  "artifact",
+  "avatar",
+] as const;
+
+export type FilePurpose = (typeof FILE_PURPOSES)[number];
+
+const isFilePurpose = (value: string): value is FilePurpose =>
+  (FILE_PURPOSES as readonly string[]).includes(value);
 
 export type FileProvenance =
   | Readonly<{
@@ -110,6 +116,25 @@ export const ObjectKey = {
     return ObjectKey.create(
       `${ownerSegment(owner)}/${purpose}/${fileId}${suffix}`,
     );
+  },
+  /**
+   * The purpose `build` encoded, or `null` for a key that does not have
+   * that shape. Reading the purpose back out is what lets a delivery
+   * path decide whether a key may be served publicly without loading
+   * the metadata row.
+   */
+  purposeOf: (key: ObjectKey): FilePurpose | null => {
+    const [ownerType, ownerId, purpose, ...rest] = key.split("/");
+    if (
+      (ownerType !== "users" && ownerType !== "workspaces") ||
+      ownerId === undefined ||
+      ownerId.length === 0 ||
+      purpose === undefined ||
+      rest.length !== 1
+    ) {
+      return null;
+    }
+    return isFilePurpose(purpose) ? purpose : null;
   },
 };
 

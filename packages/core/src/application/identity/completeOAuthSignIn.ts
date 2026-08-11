@@ -6,6 +6,7 @@ import { IdentityPolicy } from "@repo/core/domain/identity/services/identityPoli
 import { Session } from "@repo/core/domain/identity/session";
 import { User } from "@repo/core/domain/identity/user";
 import {
+  DisplayName,
   Email,
   OAuthProvider,
   type UserId,
@@ -29,8 +30,6 @@ export type CompleteOAuthSignInInput = Readonly<{
   code: string;
 }>;
 
-const DISPLAY_NAME_MAX_LENGTH = 50;
-
 export const oauthStateInvalid = (): ValidationError =>
   new ValidationError("OAUTH_STATE_INVALID", "Authorization state is invalid");
 
@@ -45,15 +44,16 @@ const existingAccountUnverified = (): ValidationError =>
 
 /**
  * Falls back to the address' local part: the provider may withhold a
- * name, and `DisplayName` cannot be empty.
+ * name, and `DisplayName` cannot be empty. A provider name longer than
+ * the limit is shortened rather than refused — the visitor never chose it.
  */
-function displayNameFor(profile: OAuthProfile, email: Email): string {
+function displayNameFor(profile: OAuthProfile, email: Email): DisplayName {
   const candidate = profile.displayName?.trim();
   const source =
     candidate !== undefined && candidate.length > 0
       ? candidate
       : (email.split("@")[0] ?? email);
-  return source.slice(0, DISPLAY_NAME_MAX_LENGTH);
+  return DisplayName.truncate(source);
 }
 
 /**

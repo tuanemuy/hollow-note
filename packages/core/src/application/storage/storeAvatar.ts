@@ -3,8 +3,6 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import { UploadValidationPolicy } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { StoredFile } from "@repo/core/domain/storage/storedFile";
 import {
-  ByteSize,
-  MimeType,
   ObjectKey,
   StorageOwner,
   StoredFileId,
@@ -20,7 +18,6 @@ export type StoreAvatarInput = Readonly<{
   subjectType: "user" | "workspace";
   subjectId: string;
   fileName: string;
-  declaredMimeType: string;
   body: Uint8Array;
 }>;
 
@@ -54,9 +51,9 @@ const insufficientRole = () =>
  * bytes still count toward `sumSizeByOwner`, so `recalculateStorageUsage`
  * reconciles them.
  *
- * Size is measured from the body rather than declared by the caller: the
- * policy has to bind the bytes actually stored, and a declared size can
- * disagree with them (ADR-048).
+ * Size and content type are both measured from the body rather than
+ * declared by the caller: the policy has to bind the bytes actually
+ * stored, and a declaration can disagree with them (ADR-048 / ADR-078).
  *
  * Workspace subjects are refused outright until `WorkspaceAuthorization`
  * exists — "cannot evaluate the permission" is answered as "does not have
@@ -66,7 +63,7 @@ export async function storeAvatar({
   container,
   input,
 }: ServiceArgs<StoreAvatarInput>): Promise<StoreAvatarView> {
-  const { clock, idGenerator, objectStorage, scopeUnitOfWorkProvider } =
+  const { clock, idGenerator, logger, objectStorage, scopeUnitOfWorkProvider } =
     container;
 
   const userId = UserId.create(input.userId);
@@ -76,12 +73,9 @@ export async function storeAvatar({
 
   const owner = StorageOwner.user(userId);
   const scope = ScopeKey.user(userId);
-  const mimeType = MimeType.create(input.declaredMimeType);
-  const size = ByteSize.create(input.body.byteLength);
-  UploadValidationPolicy.ensureAcceptable({
+  const { mimeType, size } = UploadValidationPolicy.ensureAcceptable({
     purpose: "avatar",
-    mimeType,
-    size,
+    body: input.body,
   });
 
   const fileId = StoredFileId.create(idGenerator.next());
@@ -98,43 +92,60 @@ export async function storeAvatar({
   });
 
   const now = clock.now();
-  await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
-    await ctx.cleanupAdmission.assertWritable();
-    await ctx.cleanupAdmission.assertActorWritable(userId);
+  try {
+    await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(userId);
 
-    // Read the icons to replace *before* inserting the new row, or the
-    // replacement would be in its own list of things to delete.
-    const replaced = await ctx.storedFileRepository.listByOwner(
-      owner,
-      "avatar",
-      { page: 1, limit: REPLACED_AVATAR_LIMIT },
-    );
-
-    const registered = StoredFile.register(
-      {
-        id: fileId,
+      // Read the icons to replace *before* inserting the new row, or the
+      // replacement would be in its own list of things to delete.
+      const replaced = await ctx.storedFileRepository.listByOwner(
         owner,
-        objectKey,
-        fileName: input.fileName,
-        mimeType,
-        size: stored.size,
-        checksum: stored.checksum,
-        purpose: "avatar",
-        noteId: null,
-        uploadedBy: userId,
-      },
-      now,
-    );
-    await ctx.storedFileRepository.insert(registered.entity);
-    ctx.collectEvents(registered.eventDrafts);
+        "avatar",
+        { page: 1, limit: REPLACED_AVATAR_LIMIT },
+      );
 
-    await deleteStoredFiles(
-      ctx,
-      replaced.items.map((file) => file.id),
-      null,
-      now,
-    );
-  });
+      const registered = StoredFile.register(
+        {
+          id: fileId,
+          owner,
+          objectKey,
+          fileName: input.fileName,
+          mimeType,
+          size: stored.size,
+          checksum: stored.checksum,
+          purpose: "avatar",
+          noteId: null,
+          uploadedBy: userId,
+        },
+        now,
+      );
+      await ctx.storedFileRepository.insert(registered.entity);
+      ctx.collectEvents(registered.eventDrafts);
+
+      await deleteStoredFiles(
+        ctx,
+        replaced.items.map((file) => file.id),
+        null,
+        now,
+      );
+    });
+  } catch (error) {
+    // The object store cannot join the transaction, so bytes written
+    // without their row would be unreachable: no owner scan and no
+    // `storage.fileDeleted` would ever name them, not even account
+    // deletion. Overwriting the same key is idempotent, so is removing
+    // it, and only this call knows the key exists.
+    try {
+      await objectStorage.deleteMany([objectKey]);
+    } catch (cause) {
+      logger.error("[storeAvatar] rollback of the stored object failed", {
+        cause,
+        objectKey,
+      });
+    }
+    throw error;
+  }
 
   return { fileId, url: objectStorage.publicUrl(objectKey) };
 }

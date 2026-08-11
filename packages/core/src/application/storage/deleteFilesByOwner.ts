@@ -44,8 +44,10 @@ export type DeleteFilesByOwnerView = ScopeCleanupTurn &
  *
  * "Targets remain but none could be deleted" is the one case that must
  * not breed a continuation — it would spin. The turn backs its own task
- * row off instead and leaves the retry to the schedule. Zero targets is
- * the opposite: work is finished, so the component is acknowledged.
+ * row off instead and leaves the retry to the schedule, minting the row
+ * when the stall happens on the operation's first command, which
+ * arrives as an event and therefore has none. Zero targets is the
+ * opposite: work is finished, so the component is acknowledged.
  */
 export async function deleteFilesByOwner({
   container,
@@ -89,11 +91,12 @@ export async function deleteFilesByOwner({
     );
 
     if (page.items.length > 0 && deletedCount === 0) {
-      await ctx.scopeTaskScheduler.backoff(
-        STORAGE_OWNER_DELETE_TASK_KIND,
-        input.deletionOperationId,
+      await ctx.scopeTaskScheduler.backoffOrSchedule({
+        kind: STORAGE_OWNER_DELETE_TASK_KIND,
+        operationId: input.deletionOperationId,
+        payload: { deletionOperationId: input.deletionOperationId },
         now,
-      );
+      });
       return {
         status: "stalled",
         personalCleanupCompleted: false,

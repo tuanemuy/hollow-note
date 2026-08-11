@@ -38,7 +38,8 @@ export type UserAuthResidueCleanupContinuedEvent = DomainEventBase<
  *
  * `continuationKey` is what makes the event id deterministic (ADR-019):
  * a turn whose commit response was lost re-derives the same key, so the
- * replay upserts the same outbox row instead of forking the chain.
+ * replay is skipped in favour of the first-writer row and collapses into
+ * that single outbox row instead of forking the chain (ADR-065).
  */
 export type AccountDeletionManifestBuildContinuedEvent = DomainEventBase<
   "identity.accountDeletionManifestBuildContinued",

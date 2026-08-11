@@ -206,6 +206,49 @@ describe("updateProfile", () => {
     expect(handleRow(h, "ichiro")).toBeUndefined();
   });
 
+  it("re-sending the handle repairs a claim lost between the commit and the activation", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+    const other = await signUpVerified(h, "other@example.com");
+    await update(h, { userId, handle: "ichiro" });
+
+    const inner = h.container.globalUnitOfWorkProvider;
+    // The shard write commits and the process stops before `activate`,
+    // so the reservation is gone and only the user row remembers the
+    // new handle.
+    const crashed: RequestContainer = {
+      ...h.container,
+      globalUnitOfWorkProvider: {
+        run: async (fn) => {
+          await inner.run(fn);
+          throw new Error("process stopped after the commit");
+        },
+      },
+    };
+
+    await expect(
+      updateProfile({
+        container: crashed,
+        input: { userId, handle: "ichiro-y" },
+      }),
+    ).rejects.toThrow("process stopped after the commit");
+    expect(storedUser(h, userId).handle).toBe("ichiro-y");
+    expect(handleRow(h, "ichiro-y")).toBeUndefined();
+
+    await update(h, { userId, handle: "ichiro-y" });
+
+    expect(handleRow(h, "ichiro-y")).toMatchObject({ state: "active", userId });
+    // Only the claim is re-published; the user row already named the
+    // handle, so the repair restates nothing.
+    expect(handleEvents(h)).toHaveLength(2);
+    await expect(
+      update(h, { userId: other.userId, handle: "ichiro-y" }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "HANDLE_ALREADY_USED",
+    );
+  });
+
   it("TC-identity-282: a two-character handle is refused", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);

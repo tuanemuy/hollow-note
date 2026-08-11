@@ -19,6 +19,7 @@ import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
 import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
@@ -77,6 +78,11 @@ const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
   path: '/notes/$noteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
 const SettingsAuthRoute = SettingsAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
@@ -129,12 +135,12 @@ export interface FileRoutesByFullPath {
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
@@ -148,6 +154,7 @@ export interface FileRoutesByTo {
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes': typeof NotesIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
@@ -168,6 +175,7 @@ export interface FileRoutesById {
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
@@ -189,12 +197,12 @@ export interface FileRouteTypes {
     | '/settings/usage'
     | '/storage/$'
     | '/notes/'
+    | '/settings/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/settings'
     | '/privacy'
     | '/reset-password'
     | '/signin'
@@ -208,6 +216,7 @@ export interface FileRouteTypes {
     | '/settings/usage'
     | '/storage/$'
     | '/notes'
+    | '/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
   id:
@@ -227,6 +236,7 @@ export interface FileRouteTypes {
     | '/settings/usage'
     | '/storage/$'
     | '/notes/'
+    | '/settings/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
   fileRoutesById: FileRoutesById
@@ -319,6 +329,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesNoteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
     '/settings/auth': {
       id: '/settings/auth'
       path: '/auth'
@@ -376,6 +393,7 @@ interface SettingsRouteRouteChildren {
   SettingsDangerRoute: typeof SettingsDangerRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
   SettingsUsageRoute: typeof SettingsUsageRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
 const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
@@ -383,6 +401,7 @@ const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
   SettingsDangerRoute: SettingsDangerRoute,
   SettingsProfileRoute: SettingsProfileRoute,
   SettingsUsageRoute: SettingsUsageRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
 }
 
 const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(

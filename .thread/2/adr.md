@@ -1223,7 +1223,7 @@ ADR-019 は global 平面の継続イベント ID を `continuationKey` から�
 ## ADR-061: scope 継続タスクのランナーは kind → ハンドラーのレジストリで引く
 
 ### Status
-Accepted
+Superseded by ADR-071（kind → ハンドラーのレジストリは残り、「ランナーは claim しない」だけが覆る）
 
 ### Context
 ADR-005 / ADR-023 はランナーが `ScopeTaskQueue.listDue` で列挙し `scopeUnitOfWorkProvider.run(scope, …)` を開いて `claimDue` → 再投入 → `complete` / `backoff` を行うと書いていたが、ADR-055 が「turn 側が自分の継続タスクを自分で決着させる」を確定させた。ユースケース（`deleteFilesByOwner` / `deleteQuota`）は自分で scope UoW を開くので、ランナーが UoW の中でユースケースを呼ぶと UoW がネストする。
@@ -1296,3 +1296,532 @@ AC-6 は 2 つを同時に求める: (a) Google アダプターの適合スイ�
 ### Consequences
 - 良い点: AC-6 の 2 条件が同時に成立し、「資格情報が無い」ことでスキップされる範囲が実際に provider を要する部分だけに縮む。
 - トレードオフ: 1 アダプターにつきスイート名が 2 つ出る。`live` provider が資格情報つきで走っても交換系 3 ケースは早期 return のままで、実際に交換を検証するのは `offline`（dev IdP）だけという構造は変わらない。
+
+---
+
+## ADR-065: outbox の `save` は id 衝突を「先着行をそのまま残す no-op」として契約する
+
+### Status
+Accepted
+
+### Context
+ADR-019 は継続イベントの ID を `continuationKey` から決定的に導出すると決め、その正しさの根拠を「同じ ID の再保存は同じ outbox 行への upsert になる」に置いた。ところがこの性質は `OutboxRepository.save` の契約に書かれておらず（JSDoc は「entity 変更と同一トランザクションで走る」だけ）、適合スイートにも重複 ID のケースが 1 件も無く、memory 実装の `table.set(event.id, …)` という実装特性だけが支えていた。しかもその実装は `attempts` / `processedAt` / `claimedAt` も初期値に戻すので、**配送済み・隔離済みの行を復活させる**（ADR-019 自身が「JSDoc に書く必要がある」と宿題にしていた挙動）。契約が無い以上、#11 の D1 実装は素の `INSERT`（UNIQUE 違反でビジネス transaction ごと巻き戻る）とも `INSERT OR IGNORE` とも書けてしまい、どちらも現行のテストでは検出できない。
+
+### Decision
+「`id` は outbox 行の同一性である。既に保存されている id のイベントは skip し、先着行（payload・`attempts`・再試行予定・claim・processed / 隔離の状態）をそのまま残す。これはエラーではなく、同一バッチの他イベントは通常どおり保存される」をポートの契約として明文化し、適合スイートで固定する（「再 save で行が増えない」「再 save が attempts と再試行予定を戻さない」「processed 済み id の再 save は再配送されない」の 3 ケース）。memory 実装は `table.has(event.id)` で skip する形、すなわち `INSERT … ON CONFLICT (id) DO NOTHING` と同じ意味に揃える。
+
+**復活させない**ことを選んだ理由は 4 つある。
+
+- ADR-019 が必要としているのは「行が 2 本にならない」ことだけで、既存行の書き換えは要らない。
+- processed 行の復活は、応答喪失 1 回につきチェーンの**残り全部**を再実行させる（復活した turn がその後続 turn を再 save し、それも processed なので復活する、という連鎖）。
+- ADR-025 の罠（同一キーの継続がリレー自身の `finalize` に消される）は save → finalize の**順序**に由来するので、upsert でも no-op でも結末は変わらない。復活は ADR-025 の救済にならない。むしろ ADR-025 が「決定的キーはターンごとに変える」を課している以上、**id が衝突する = 同じ論理イベントの再保存**が設計上の不変条件であり、その前提の下では先着優先の no-op が唯一健全な衝突解決になる。
+- 隔離行（`failed_at`）の再 kick は `eventRelayWorker.ts` の JSDoc が運用作業として定めている。save が `attempts` を 0 に戻すと、再配送のたびに毒行の再試行予算が回復して隔離が意味を失う。
+
+### Consequences
+- 良い点: ADR-019 の不変条件がバックエンド横断の契約として固定され、#11 の D1 実装は `ON CONFLICT DO NOTHING` を書くしかなくなる。ADR-019 がトレードオフとして挙げていた「配送済みの継続が 1 度だけ再配送されうる」が消える。
+- トレードオフ: 重複排除は行の寿命と等しく、`pruneProcessed` が id を解放した後は同じ id を再び保存できる。したがって outbox の保持期間は再配送窓を上回っている必要がある（既定では桁で上回る）。`spec/database/index.md` の「同じ PK / outbox ID へ upsert される」は「1 行に畳まれる」意図としては一致するが語が合わないので spec-sync 候補に載せる。ADR-019 の Decision 中の「memory の `save` は upsert なので〜」という根拠づけは本 ADR で置き換わる。
+
+---
+
+## ADR-066: 同一オリジン判定は `SameOriginPolicy` 1 本に集約し、ドメインに置く
+
+### Status
+Accepted
+
+### Context
+同一オリジン判定が 2 箇所にあり、片方だけが正しかった。`AvatarUrl.create` は「先頭が `/` で `//` でない」しか見ておらず、`startOAuthFlow.assertSameOriginPath` はそれに加えてバックスラッシュと C0 制御文字を弾いていた。URL パーサーは special scheme でバックスラッシュを区切りとして扱い、解決前に C0 制御文字を除去するので、`"/\evil.test/x.png"` と `"/<LF>/evil.test/x.png"`（先頭スラッシュ直後の制御文字）はどちらも `AvatarUrl` を通過して別オリジンへ解決していた（Node 22 で実測）。転送境界は長さ上限しか見ない設計（入力検証 2 点）なので、業務不変条件を持つのは VO 側だけであり、そこが抜けていた。
+
+### Decision
+述語を `packages/core/src/domain/identity/services/sameOriginPolicy.ts` の `SameOriginPolicy.isSameOriginPath(value: string): boolean` として 1 本化し、`AvatarUrl.create` の相対パス分岐をそれに寄せる。
+
+- **ドメインに置く**: 「保存されるアバターの位置は自オリジンに限る」も「認可往復の後に再生する遷移先は自オリジンに限る」も業務不変条件であって transport の形の話ではない。`lib/` の構造的プリミティブでもない（`lib/` はエラー契約の土台であり、判断を持たない）。
+- **真偽値を返す述語にする**: 呼び出し側でエラーの種類が違う（VO は `BusinessRuleError(InvalidAvatarUrl)`、`redirectTo` は `ValidationError(INVALID_REDIRECT)`）ので、述語は判定だけを持ち、どう倒すかは呼び出し側が決める。
+- **絶対 URL 形は述語の対象外**: `AvatarUrl` が受ける「自オリジンの絶対 URL」は `URL.origin` の比較で判定でき、パス形の落とし穴とは別問題なので現行のまま残す。
+- `startOAuthFlow.assertSameOriginPath` をこの述語へ寄せ替えるのは U-5 の担当。
+
+### Consequences
+- 良い点: 3 つの回避形（`//host`・バックスラッシュ・C0 / DEL）が 1 箇所でしか判定されなくなり、片方だけ知識が反映されない状態が作れない。境界値は `domain/identity/__tests__/policies.test.ts` が `new URL` の解決結果と対にして固定している。
+- トレードオフ: 述語は必要より厳しい。`"/x<LF>/y.png"` のように制御文字が先頭スラッシュ直後でない値は同一オリジンに解決するが拒否する。アバターの位置にも遷移先にも制御文字が要る用途は無いので、緩めるより単純さを採る。
+
+---
+
+## ADR-067: 交換系適合スイートの gate は「資格情報の有無」ではなく「認可コードを発行できるか」で決める
+
+### Status
+Accepted（ADR-064 の Decision を一部置き換える）
+
+### Context
+ADR-064 はスイートを 2 つに割り、交換系だけを `enabled`（＝ Google 資格情報の有無）で gate した。しかしハーネス側の交換モードは `live` 固定で、3 ケースはいずれも本体先頭で `if (kind === "live") return;` していた。資格情報が**無い**環境では `describe.skip` が勝つので skip として報告されるが、資格情報を入れた瞬間に同じ 3 ケースが「アサーション 0 本の PASS」に化ける。ADR-064 自身がトレードオフ節でこの構造に触れているが、報告面（未検証が緑に見える）は宣言に含まれていなかった。資格情報があっても Google の認可コードはブラウザーの同意画面を経ないと発行されないので、「資格情報が揃えば交換系が検証できる」という gate の前提自体が成り立たない。
+
+### Decision
+gate の判定軸を資格情報から**ハーネスが認可コードを発行できるか**に移す。
+
+- 交換モードをハーネスの戻り値から登録時の第 3 引数へ移し、`{ kind: "offline"; mintCode }` と `{ kind: "unverifiable"; reason }` の 2 値にする。`live` は消す。
+- `offline` のときだけ交換系 `describe` を実行し、`unverifiable` では `describe.skip` で登録する。スイート名に `reason` を含めるので、レポートに「なぜ未検証か」が残る。
+- ケース本体から早期 `return` を無くす。`describe.skip` も本体を収集するため minter は必要だが、`unverifiable` 側の minter は呼ばれたら throw する。gate を誤って広げたときに沈黙の緑ではなく失敗になる。
+- AC-6 が要求する「資格情報が無い環境で skip される（skip 条件がコードで確認できる）」は登録側で維持する。`conformance.test.ts` が `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` を読み、無ければ `reason` を「資格情報が無い」に、あれば「Google は同意画面経由でしかコードを発行しない」に切り替える。
+
+### Consequences
+- 良い点: Google の交換系は環境によらず 3 件 skip として報告され、「緑だが無検証」が構造的に作れない。skip 件数は 3 のまま変わらない。
+- 良い点: fake token endpoint を注入して Google の交換系を検証できるようにしたスライスは、登録を `offline` に差し替えるだけでよい。
+- トレードオフ: 資格情報を入れても Google の交換系は 1 ケースも走らない。ADR-064 が「資格情報があれば走る」と読める余地を残していたのに対し、本 ADR は走らないことを明示的な契約にする。
+
+---
+
+## ADR-068: Google token endpoint 呼び出しにタイムアウト予算を置き、再試行はしない
+
+### Status
+Accepted
+
+### Context
+`exchangeCode` の `fetch` に `signal` が無く、プロバイダーがハングすると `/auth/callback/$provider` のリクエスト経路がそのままぶら下がっていた。アダプターは「transport 失敗 → `SystemError(EXTERNAL_API_ERROR)`」に翻訳する設計だが、タイムアウトが無いとその翻訳に到達しない。
+
+### Decision
+`AbortSignal.timeout` で token endpoint 呼び出しに予算（既定 10 秒、`GoogleOAuthClientOptions.tokenEndpointTimeoutMs` で上書き可）を与え、abort は既存の `catch` が拾って `SystemError(EXTERNAL_API_ERROR)` になる。**再試行は足さない**。
+
+CLAUDE.md の「ドライバーレベルの一時エラーはアダプター内で再試行する」との整合は次のとおり: 認可コードは単回使用なので、タイムアウト後の再送はプロバイダーに「使用済みコード」として拒否される可能性が高く、再試行が成功に転じない。加えて呼び出し元は待っている HTTP リクエストなので、2 回目の予算を積むと利用者の待ち時間が倍になる。したがってこの外部呼び出しは再試行対象外であり、回復は利用者による再認可（P-05 の再試行導線）が担う。予算を設定可能にしたのは、ハングを `SystemError` に翻訳することを短い予算で検証できるようにするため。
+
+### Consequences
+- 良い点: 外部サービスのハングがリクエスト経路を無期限に占有しない。翻訳規約（provider-native なエラーを外に出さない）がタイムアウトにも及ぶ。
+- トレードオフ: 予算内に返らない正当な交換は失敗になる。10 秒は Google の token endpoint に対しては十分に緩い。
+- `GoogleOAuthCredentials` は資格情報だけを持つ型のまま残し、予算は別の options 引数にした（`OAuthRuntimeConfig` の判別ユニオンに運用パラメーターを混ぜないため）。composition root は既定値のまま使う。
+
+---
+
+## ADR-069: `uniquenessRelease` は receipt と finalize 継続を同一 UoW で書き、receipt 済みでも finalize 継続だけは再発行する
+
+### Status
+Accepted
+
+### Context
+`runAccountDeletionGlobalCleanup` は `acknowledgeReceipt("uniquenessRelease")` を UoW の外で直接ポートへ書き、finalize 継続をその後の別 UoW で発行していた。さらに冒頭で `header.receipts.includes("uniquenessRelease")` なら早期 return していた。この 2 つの組み合わせは、「receipt は残ったが finalize 継続は発行されなかった」応答喪失から回復できない: 再配送された cleanup コマンドは receipt を見て何もせずに抜け、finalize は「receipt を完成させた枝が再試行する」設計（ADR-060）なので、`uniquenessRelease` が最後の receipt だった場合に再試行する主体が誰もいなくなる。結果として利用者は `deleting` のまま PII を持ち続け、P-25 は永久に「処理中」を出す。同じ形の `acknowledgePersonalCleanup` は receipt と継続を同一 UoW で書いており、`authResidueCleanup` は UoW 外 ack を採る代わりに早期 return を持たず再配送で terminal turn へ再到達する。globalCleanup だけが両方の担保を欠いていた。
+
+### Decision
+両方入れる。
+
+- receipt と finalize 継続を 1 つの `globalUnitOfWorkProvider.run` に入れる。`accountDeletionManifestStore` は Global UoW コンテキストに載っているので、`acknowledgePersonalCleanup` と同じ形が書ける。
+- 冒頭の早期 return を「解放ループだけをスキップする」に変え、receipt が既にあるターンも finalize 継続の発行までは必ず通す。
+
+一方だけでも穴は塞がるが、両方入れると「receipt があるのに finalize が来ない」が構造的に表現不能になる — 前者は 1 度も作らせず、後者はもし作られても再配送が必ず直す。
+
+### Consequences
+- 良い点: cleanup フェーズの再配送が、receipt の有無にかかわらず finalize を必ず要求する冪等なターンになる。`deleteAccount.globalCleanup.test.ts` が「解放が 1 度失敗して `uniquenessRelease` が最後の receipt になり、成功した回の finalize 継続が失われる」経路を固定する。
+- トレードオフ: 既に finalize 済みの deletion に cleanup が再配送されると、無駄な finalize 継続が 1 件出る。ただし manifest が terminal なら冒頭の `status !== "built"` で抜けるので、実際に出るのは built のまま finalize 待ちの窓の中だけで、finalize 自身は receipt 集合が揃うまで何も書かない。ADR-065 の下では同じキーの再保存が no-op になるため、行が生きている限り重複行にもならない。
+
+---
+
+## ADR-070: author redaction の継続判定は claim した生の件数で行う
+
+### Status
+Accepted
+
+### Context
+`claimPending(operationId, "redaction", 100)` は `AccountDeletionManifestItem` のユニオンを返す。redaction のターンは戻りを `authorRoute` で絞ってから `targets.length === MANIFEST_PAGE_LIMIT` で「まだ続きがある」を判定していた。現行の memory 実装は redaction フェーズで authorRoute しか返さないので一致するが、その前提は型にもポート契約にも現れていない。membership item を扱うスライス（#3）が入ると、100 件フルのページに membership が混ざった時点で「短いページ = 終端」と誤読し、未 ack の authorRoute を残したまま finalize へ渡す。finalize は receipt 集合しか見ないので、この取りこぼしは検知されない。
+
+### Decision
+継続判定を `items.length === MANIFEST_PAGE_LIMIT`（フィルター前の生件数）で行い、`targets` は書き込み対象の絞り込みにだけ使う。「ページが満杯だった」は claim の結果そのものの性質であり、そのページから何を書いたかとは別の事実である。
+
+型で表現不能にする案（`claimPending` の戻り型をフェーズで絞る）は採らない。ポートとアダプター 2 種・適合スイートに波及し、本 Issue の担当範囲を越えるため。
+
+### Consequences
+- 良い点: ページに authorRoute 以外が混ざっても、フェーズは自分の ack が終わるまで続く。`deleteAccount.redaction.test.ts` が、claim に membership を 1 件混ぜたコンテナで「99 件 ack + redaction 継続」を固定する。
+- トレードオフ: そのフェーズが決して ack できない item を `claimPending` が返し続けるアダプターがあれば、終端に達せず同じページを回り続ける（未 ack を黙って捨てる代わりに止まる）。ポート契約違反であり、静かなデータ欠損より停止のほうが検知できるので、この向きの失敗を選ぶ。型で絞る案が実現した時点で本 ADR は不要になる。
+
+---
+
+## ADR-071: scope タスクのランナーは scope トランザクションで claim し、throw した turn を backoff する
+
+### Status
+Accepted（ADR-061 を supersede する）
+
+### Context
+ADR-061 は「ランナーは `claimDue` を呼ばず、`listDue` の結果を kind でハンドラーに渡すだけ」と決めた。UoW のネストを避けるという動機は正しかったが、claim を落とした帰結が 2 つ残った。
+
+- ハンドラーが throw したとき、誰も `backoff` を呼ばない。行は `pending` / `attempt` 据え置きのまま残り、次の tick（既定 1 秒）でまた同じ行が駆動される。`attempt` が 0 のままなので `SCOPE_TASK_MAX_ATTEMPTS` に到達せず、`ScopeTaskScheduler` の JSDoc が約束する「一つの恒久的失敗が継続を無限に増やさない」が、その保証が要る唯一の失敗モードで働かない。到達経路は現実的で、`deleteFilesByOwner` 先頭の `assertOwner` が `ConflictError` を投げ続ける状態が該当する。
+- `claimDue` / `ScopeTask.payload` / `ScopeTask.attempt` の実利用者が適合スイートだけになり、ポート JSDoc が説明する claim→settle モデルと実駆動が食い違う（AC-31「適合テスト専用のポートが残らない」の趣旨からも外れる）。
+
+ADR-055 の「turn は自分の UoW を開いて自分の行を決着させる」は、claim を turn と**別**のトランザクションに置けば維持できる。ネストが禁じているのは同一呼び出し内での入れ子であって、claim の直列化そのものではない。
+
+### Decision
+`runDueScopeTasks` を次の形にする。
+
+1. `scopeTaskQueue.listDue(now, budget)` で「work のある scope」を列挙する（scope を列挙できるのはここだけ — ADR-005）。
+2. scope ごとに一度だけ `scopeUnitOfWorkProvider.run(scope, ctx => ctx.scopeTaskScheduler.claimDue(now, budget))` で claim する。
+3. claim した行のハンドラーを呼ぶ。ハンドラーはこれまでどおりユースケースを呼び、ユースケースが自分の UoW で `schedule` / `complete` / `backoffOrSchedule` まで済ませる（ADR-055 は不変）。
+4. ハンドラーが throw したら、ランナーが scope UoW を開いて `backoff(kind, operationId, now)` を呼ぶ。backoff 自体の失敗はログに留める（worker → root の部分失敗許容）。
+5. `SCOPE_TASK_TICK_LIMIT` は scope 横断の budget として消費し、各 scope の claim には残り budget を渡す。
+6. ハンドラーの無い kind は従来どおり **due のまま残して警告**する（backoff もしない。掃除漏れを backoff で見えにくくしない）。
+
+あわせてポート契約を 2 点明文化する。`backoff` は行が無ければ no-op（`complete` 済みの turn には再試行するものが無い）。行が無い状態から再試行の駆動主体を作りたい stalled 経路のために `backoffOrSchedule(kind, operationId, payload, now)` を足す（W-A06: 初回コマンドは event で届くのでタスク行が存在しない）。
+
+### Consequences
+- 良い点: 恒久的に失敗するタスクが 8 回で `failed` に落ちる保証が実駆動でも成立し、1 Hz のホットループが構造的に消える。`claimDue` / `payload` / `attempt` が production の経路を持ち、契約と実駆動が一致する。
+- トレードオフ: 1 ラウンドにつき scope ごとの claim トランザクションが 1 本増える（tick あたり scope 数分）。
+- claim と turn が別トランザクションなので、**複数プロセスでランナーを走らせると同じ行を 2 本駆動しうる**。turn はいずれも冪等で収束するが、真の排他は claim と turn を同一トランザクションに置ける配備（Durable Object alarm など）で得る — #11 への引き継ぎ。ADR-061 の同じ引き継ぎを置き換える。
+
+---
+
+## ADR-072: 削除の terminal prune と removal receipt の期限切れ削除は Node runner の日次 prune tick が駆動する
+
+### Status
+Accepted
+
+### Context
+`pruneAccountDeletionManifests`（120 日）と `IdentityRemovalReceiptStore.deleteExpired`（30 日）を呼ぶ本番コードが無かった。`finalize` が `User` を tombstone にして PII を落とした後も、`distributed_operations` の payload には admission が凍結したメール / ハンドル / providerAccount キーが平文で残る（ADR-020）ので、駆動主体が無いと「アカウント削除」の中核的な約束が無期限に破られる。plan.md はこれを縮退にも「含まれないもの」にも書いていない（`pruneExpiredAuthState` の cron 未配線＝#15 とは別件）。
+
+### Decision
+`apps/web/app/worker/node/runner.ts` の prune tick（既定 24 時間）で、outbox prune に続けて 2 本を駆動する。3 本はそれぞれ独立した `try / catch` で囲み、1 本の失敗が他の保持期限を道連れにしないようにする。
+
+- manifest 側は `input: { type: "cron" }` で呼ぶ。lease と lane checkpoint を自前で持ち、1 回の呼び出しが 100 コマンドで yield するので、日次の呼び出しだけで足りる。
+- receipt 側は maintenance-run の lane を持たない素の keyset sweep なので、ページ上限（100 行 × 100 ページ）を runner 側で与える。次の tick は先頭から再開する（消すのは期限切れ行だけなので再開位置を覚える必要が無い）。
+
+### Consequences
+- 良い点: 120 日 / 30 日の保持が配備で実際に効く。どちらも既存の lease / checkpoint に乗るだけで、新しい調停機構を足さない。
+- トレードオフ: #15 が `pruneExpiredAuthState` の cron を配線し `identity_removal_receipts` を sweep table に加えると、同じ表の駆動主体が 2 つになる。削除対象が期限切れ行だけなので冪等・無害だが、#15 側でどちらかに寄せる。
+- receipt sweep は lease を持たないので、複数プロセス配備では同じページを 2 プロセスが読みうる（削除は冪等）。Node ランタイムは単一プロセス前提なので現状は問題にならない。
+
+---
+
+## ADR-073: dev IdP は `.env` の opt-in にし、`pnpm start` は自ら `NODE_ENV=production` を宣言する（ADR-003 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-003 は「`OAUTH_DEV_MODE=true` かつ `NODE_ENV=production` は起動時エラー」を production 混入への実効ガードと位置づけ、あわせて `.env.example` に `OAUTH_DEV_MODE=true` を既定の開発設定として書くと決めた。しかしこのリポジトリ自身の本番起動経路（`pnpm start` → `tsx apps/web/scripts/listen.node.ts`）は `NODE_ENV` をどこでも設定しない。ガードは `readNodeServerEnv` が**実行時の** `process.env` を読む形なので（`apps/web/app/presentation/session.ts` の `process.env.NODE_ENV === "production"` はリテラル参照で vite がビルド時に畳むが、`env.NODE_ENV` はプロパティ参照なので畳まれない）、運用者が明示的に `NODE_ENV=production` を渡した場合にしか発火しない。結果として `cp .env.example .env && pnpm build && pnpm start` が dev IdP を公開する — 攻撃者は同意画面に被害者のメールアドレスを打ち込むだけで任意アカウントのセッションを得られる。
+
+### Decision
+ガードの入力を配備者の申告に委ねず、起動経路が自分で宣言する。
+
+- `apps/web/scripts/listen.node.ts` は dotenv より前に `process.env.NODE_ENV ??= "production"` を立てる。このスクリプトは production バンドルしか読み込まない（`session.ts` は既に `() => true` に畳まれている）ので、宣言はバンドルの実体と一致する。dotenv は既存値を上書きしないため、`.env` から production を降格できない。降格が要るときはコマンドラインの `NODE_ENV=development pnpm start` という明示行為に限る。
+- `apps/web/.env.example` の `OAUTH_DEV_MODE=true` はコメントアウトし、開発機で自分で外す 1 行にする。ADR-003 の規則 3（どちらの設定も無ければ起動失敗）とヒント文言がそのまま案内になる。
+
+### Consequences
+- 良い点: 最短経路（`.env.example` をコピーして本番形で起動）が dev IdP を公開しなくなり、ADR-003 が守ろうとした性質が配線で満たされる。`pnpm dev` / `pnpm start` の双方で「今 production か」の答えが 1 つになる。
+- トレードオフ: `pnpm dev` を初めて動かす開発者は必ず 1 度起動に失敗する（規則 3 のエラーが `OAUTH_DEV_MODE=true` を外すよう案内する）。ADR-003 の「必須 env は 2 つに留まり、コピーするだけで起動できる」という DX 上の主張はここで撤回する。本番形で dev IdP を使う検証は `NODE_ENV=development pnpm start` が要る。
+
+---
+
+## ADR-074: ランタイム singleton は「未初期化で使えない・別 env での再初期化は失敗・同一 env の再入は保つ」
+
+### Status
+Accepted
+
+### Context
+`di/serverNode.ts` の `memoryRuntime()` は `slot ??= createMemoryRuntime()` で、`MemoryRuntimeOptions.oauth` の既定が `{ mode: "dev" }` だった。`boot()` より先に何かが `memoryRuntime()` に触れれば（HMR、ツーリング、将来のモジュールスコープ初期化、別 entry の追加）、env 検証を一切通っていない dev IdP のランタイムがプロセス全体に固定され、`initNodeRuntime` の `??=` はそれを黙って通過する。フェイルの向きが危険側に開いていた。
+
+### Decision
+「設定し忘れが dev IdP に化ける」経路を型と起動順の両方で塞ぐ。
+
+- `MemoryRuntimeOptions.oauth` を必須にする（既定を持たない）。env を持たない `createTestHarness` は `{ mode: "dev" }` を明示する。選択**規則**は引き続き env スキーマ側に閉じる（ADR-003）。
+- `memoryRuntime()` は未初期化なら throw する。`getContainer()` と同じ扱いで、起動順の違反は回復可能なランタイムエラーではない。
+- `initNodeRuntime` はスロットに env のダイジェストを添えて保持し、**別の env での再初期化を throw** する。同一 env での再入は `vite dev` のプログラム再読込（保存のたびに `boot()` が再実行される）なので、singleton とプロセスのデータを保って no-op で返す。「env を検証したのに適用されないまま起動する」ケースだけを正確に落とす。
+
+### Consequences
+- 良い点: 安全でない側が既定という構造が消え、env なしのランタイムがプロセスに固定される経路が無くなる。`??=` のサイレント no-op も、B-002 と重なったときの増幅も消える。
+- トレードオフ: 単に throw にすると `pnpm dev` が保存のたびに 500 を返す（実測済み）ため、同一 env の再入だけを例外として許す判定が要る。ダイジェストは `NodeServerEnv`（平坦な文字列レコード）の安定 JSON 表現で取る。
+
+---
+
+## ADR-075: `identity_removal_receipts` は `AuthStateTable` の掃除対象として登録する
+
+### Status
+Accepted
+
+### Context
+`IdentityRemovalReceiptStore` はポート契約に「identity 行が消えてから 30 日」の保持と `deleteExpired` の keyset sweep を書いているが、`AuthStateTable` は `sessions` / `auth_tokens` / `login_attempts` / `oauth_flow_states` の 4 つのままで、新設表が `WorkerContainer.authStateSweeps` に載っていなかった。`pruneExpiredAuthState` の cron 配線自体は #15 だが、掃除対象の**登録**はポートを新設した側の責務で、落とすと #15 が cron を足してもこの表だけ永久に残る。ADR-072 は当座の駆動主体として Node runner の日次 prune tick を置き、「#15 が sweep table に加えると駆動主体が 2 つになる — #15 側でどちらかに寄せる」を宿題にしていた。
+
+### Decision
+`AuthStateTable` に `identity_removal_receipts` を足し、`authStateSweeps` / memory backend の `authStatePrune` 表順 / `PruneExpiredAuthStateView` の件数まで通す。`authStateSweeps` の型が `Record<AuthStateTable, ExpirySweep>` なので、以後この種の表を足すと登録漏れが型エラーで止まる。ADR-072 の宿題は「sweep table に寄せる」で確定し、cron が配線される #15 の時点で runner の receipt sweep を落とす。
+
+### Consequences
+- 良い点: 30 日保持の回収先が #15 の cron に確実に含まれる。`AuthStateTable` が「期限つき auth 系表の総覧」として機能し、次の表も型で捕まる。
+- トレードオフ: #15 までは駆動主体が 2 つ（ADR-072 の runner tick と、未配線の cron lane）並ぶ。削除対象が期限切れ行だけで冪等なので観測できる差は無いが、#15 は runner 側を落とすまでが 1 単位。
+
+---
+
+## ADR-076: `updateProfile` は同じハンドルの再送を directory 照合つきの `reclaim` として扱う
+
+### Status
+Accepted
+
+### Context
+`planHandle` は「すでに自分が持っているハンドルの再設定」を `keep`（何もしない）に潰していた。これは directory の claim が健全なら正しい（自分の `active` 行に `reserve` すると `HANDLE_ALREADY_USED` になるため）が、UserId shard の commit 直後・`activate` の前に処理が止まると成立しない。新ハンドルの `reserved` 行は TTL で消え、User 行だけがそのハンドルを名乗る状態が残る。同じ入力で再送しても `keep` に潰れるので claim は永久に復旧せず、`resolve` は「空き」と答えるため**別の利用者がそのハンドルを `reserve` → `activate` できる**。`spec/usecases/identity.md` の手順 27 は「途中停止は operation payload に固定した全 sub-operation を照合して commit 済みなら全 activate へ収束させる」と定めるが、`updateProfile` は `DistributedOperation` を持たないので照合対象が無く、`activateUniqueKeys` の回復もプロセス内で `activate` が例外を投げた場合しか働かない。
+
+### Decision
+`planHandle` を非同期にし、`keep` へ潰す前に `holdsActiveUniqueKey`（`uniqueness.ts` に追加。`IdentityUniqueDirectory.resolve` の所有者一致判定）で「User 行のハンドルに対応する `active` claim が自分のものか」を確認する。claim が無ければ `keep` ではなく新しい plan `reclaim` を返し、`assign` と同じく reserve → commit → activate を走らせる。`profileOperationId` が決定的なので（ADR-049）再送は同じ予約行に収束する。
+
+`reclaim` は User 行が既に名乗っているハンドルの claim を publish し直すだけなので、(a) UoW 内で `User.assignHandle` を呼ばない（版だけは `User.updateProfile` が進める。`handleChanged` を再発行しないのは、変わっていない事実をイベントにしないため）、(b) 直前ハンドルの解放を走らせない（`previousHandle` が今回 activate した鍵そのものなので、解放すると自分で publish した claim を落とす）。この 2 点を型で表すために、解放対象は `plan.kind === "assign" || plan.kind === "clear"` のときだけ `previousHandle` を取る `supersededHandle` として計算する。
+
+照合を行うのは「明示的に現在と同じハンドルを送った」経路だけにする。`handle` を指定しない更新（表示名だけの変更など）まで照合すると、ハンドルを他人に取られた後の利用者が**プロフィールを一切更新できなくなる**（毎回 `HANDLE_ALREADY_USED` で落ちる）。
+
+### Consequences
+- 良い点: commit 済み・activate 前で止まった saga が、P-21 が同じフォームを再送するだけで収束する。他人がそのハンドルを奪える窓が閉じる。回帰テスト（`updateProfile.test.ts` の「re-sending the handle repairs a claim lost between the commit and the activation」）は、この状態から再送すると claim が `active` に戻り、別利用者の同ハンドル要求が `HANDLE_ALREADY_USED` になることまで検証する。
+- トレードオフ: 現在と同じハンドルを送る更新に directory の読み取りが 1 回増える。
+- 残る欠け: 停止時の**旧**ハンドルの `active` claim は解放されないまま残る（旧ハンドルは User 行から消えており、再送時にはどこにも記録が無いため導出できない）。所有者は本人のままなので他人には奪われず、影響は「本人が旧ハンドルへ戻せない」に留まる。完全な解消には `updateProfile` にも `DistributedOperation` payload を持たせて全 sub-operation を照合する形（手順 27 の本来の姿）が要るので、本 Issue の範囲外とする。
+
+---
+
+## ADR-077: `storeAvatar` は UoW が失敗したら put したオブジェクトを巻き戻す
+
+### Status
+Accepted
+
+### Context
+`objectStorage.put` はトランザクションの外・前で走る（オブジェクトストアは UoW に参加できない）。その後の scope UoW が barrier 閉鎖（`ACCOUNT_DELETING`）・actor lock 競合・OCC・プロセス落下のいずれかで失敗すると、バイト列だけが残り `stored_files` 行が無い状態になる。plan.md が縮退として記録している孤児（「アップロードしたがプロフィールを保存せず離脱」）は**行がある**ので `sumSizeByOwner` に算入され `deleteFilesByOwner` の owner scan で回収されるが、行の無いこの孤児は `storage.fileDeleted` も出ず、アカウント削除を完走させても残り続ける。回収経路そのものが無い。
+
+### Decision
+UoW を `try` で囲み、失敗したら `objectStorage.deleteMany([objectKey])` で巻き戻してから元のエラーを再送出する。巻き戻し自体が失敗したときはログに留め（元のエラーを潰さない）、`uniqueness.ts` の解放と同じ扱いにする。前段で barrier だけを読む軽い検査は置かない — OCC / 落下は前段検査では消えず、巻き戻しがある以上 2 つ目の判定点を持つ意味が無い。
+
+`put` は同じ鍵への冪等な上書きで、`deleteMany` は不在鍵を許容し、鍵はこの実行が生成した `fileId` から作られてまだ誰にも渡っていない。したがって巻き戻しが他の実行の成果物を消すことはない。
+
+### Consequences
+- 良い点: 「メタデータ行を持たないオブジェクト」という、どの掃除にも掛からない状態がアバター経路から消える。#6 が同じ 2 段（put → UoW）を書くときの手本になる。
+- トレードオフ: ユースケースに `try / catch` が 1 つ増える（CLAUDE.md の「広い catch を避ける」に対しては、UoW に参加できない資源の補償という明示的な境界として許容する）。プロセスが put と巻き戻しの間で落ちれば孤児は残る — その窓は残件として受容し、縮退の記録に含める。
+
+---
+
+## ADR-078: アバターの受理は申告 MIME ではなくバイト列の署名で判定する
+
+### Status
+Accepted
+
+### Context
+`storeAvatar` はサイズを実バイト長で測る（ADR-048）のに、MIME 型は `data.file.type`（クライアントの申告）をそのまま `MimeType.create` に通していた。`Content-Type: image/png` と申告した任意のバイト列（HTML / SVG / ZIP / polyglot）が `avatar` として保管され、配信ルートが `image/png` で返す。実害が限定的なのは配信ルートが `nosniff` + `Content-Security-Policy: sandbox; default-src 'none'` を付けているおかげで、防御が**配信側にしか無い**。`publicUrl` が R2 等の公開ドメインへ移る配備（#11）ではこのルートごと消えるので、その時点で防御がゼロになる。
+
+### Decision
+`UploadValidationPolicy.ensureAcceptable` の入口を `{ purpose, body }` に変え、戻り値を `{ mimeType, size }` にする。型は先頭バイトの署名（PNG / JPEG / RIFF+WEBP の 3 種）から決め、どれにも一致しなければ `BusinessRuleError(UnsupportedMimeType)`。サイズは従来どおり `body.byteLength`。ユースケースは返ってきた値しか記録できないので、申告値を保管する経路が型として消える（`StoreAvatarInput` から `declaredMimeType` を落とす）。
+
+判定はドメインサービスに置く。上限 MIME 表を持つのは既に `UploadValidationPolicy` で、「受け入れてよいアップロードかを保管前に判定する」というその責務の内側にある。`spec/adr/008` が Conversion に置いた「ファイル形式の判定」は変換方針を決めるための分類で、ここでやるのは受理判定に必要な最小の裏取り（許可 3 形式の署名照合）に限る。署名表を持つのは埋まっている rule（今は `avatar`）だけで、署名を持たない形式（`text/markdown` 等）を許可する purpose を足す #6 が、そのとき入口の形を広げる。
+
+### Consequences
+- 良い点: 保管される `mimeType` が必ず実体と一致し、防御が配信ルートの有無に依存しなくなる。「申告と実体が食い違う」状態が `storeAvatar` の入力からも消える（ADR-048 の続き）。
+- トレードオフ: `spec/domains/storage.md` の `ensureAcceptable` の引数・戻り値と差が出る（spec-sync 候補 1 件）。正しい PNG でもヘッダーが壊れていれば拒否になる（実際の画像デコードはしないので、署名以降の破損は検出しない）。#6 が署名を持たない形式を通すとき、入口を「署名があれば署名、無ければ申告」の形へ広げる作業が要る。
+
+---
+
+## ADR-079: `ObjectStorage.put` の契約は「実体から測った値を返す」を正とする
+
+### Status
+Accepted
+
+### Context
+ポート JSDoc は「`put` は計測した size と checksum を返す」と書いているのに、適合スイートは `ADP-storage-018: keeps a supplied checksum instead of recomputing it`（呼び出し側が宣言した checksum をそのまま返す）を契約として凍結しており、両者が逆を向いていた。しかも唯一の呼び出し元 `storeAvatar` は `checksum: null` を渡すので、この分岐は production で 1 度も通らない。size 側の「measured」も `meta.size === body.byteLength` の状態で assert していたため、宣言値をそのまま返す実装でも通る形骸化した検証だった。
+
+### Decision
+`spec/adr/026`（契約の正本はポート定義に置く）に従い、ポートの "measured" を正とする。
+
+- ポート JSDoc に「`put` が返すのは**書いたバイト列から測った** size と checksum で、`meta` は『どう配信すべきか』と『呼び出し側が何だと思って送ったか』を運ぶだけ。誤った `meta` が結果に混ざることはない」と明記する。
+- memory アダプターの `meta.checksum ?? 計算` を落とし、常に実体の sha256 を返す。
+- 適合スイートから「宣言 checksum をそのまま返す」ケースを削り、`ADP-storage-018/019` を **`meta.size` に 0、`meta.checksum` に別の値をわざと入れて** `result.size === body.byteLength` / `result.checksum === sha256(body)` を assert する形にする。期待値は `crypto.subtle` で算出する（Node / workerd の双方にある web 標準で、バックエンドを選ばない）。
+
+`ObjectMeta` の形（`size` / `checksum` を持つ）は spec のまま残す。R2 のような実バックエンドは配信ヘッダーの材料としてこれを使うため、フィールドを落とすと #11 が spec と実装の両方から外れる。
+
+### Consequences
+- 良い点: 契約が 1 方向になり、checksum を自前で計算するストア（R2 の `md5` / `sha256` ヘッダーを返す実装）がスイートを緩める交渉なしに通る。「measured」が観測可能な形で実際に固定される。
+- トレードオフ: 呼び出し側が計算済み checksum を持っていても再計算になる（本 Issue の呼び出し元は `null` を渡すので現時点の差は無い）。重複保管の回避に checksum を使うスライスが現れたら、`meta.checksum` の意味づけを改めて決める必要がある。
+
+---
+
+## ADR-080: 公開配信は `avatar` に限り、判定は `ObjectKey` から読む
+
+### Status
+Accepted
+
+### Context
+`/storage/$` は `ObjectKey` の形式検査だけを通して `objectStorage.get(key)` の結果をそのまま返し、`public, max-age=31536000, immutable` を付けていた。ところが `ObjectStorage` は 1 つの鍵空間で、`FilePurpose` には `source` / `media` / `reference` / `artifact`（＝非公開）が既に定義されている。ポートの `publicUrl` は「本当に公開なオブジェクト — 今日はアバター — にだけ使え」と限定しているのに、配信側がその線を持っていない。`storeUpload` / `storeMedia`（#6）が同じ `put` を使った瞬間、鍵を知る者への無認可配信になる。
+
+### Decision
+`ObjectKey.purposeOf(key): FilePurpose | null` をドメインに足し（`ObjectKey.build` が組んだ形をそのまま読み戻す。形が違えば `null`）、配信ルートは `purposeOf(key) !== "avatar"` を 404 に倒す。鍵の形を知っているのは `build` を持つ VO なので、セグメントの切り出しを `apps/web` のルートに書かない。
+
+`FilePurpose` は `FILE_PURPOSES` の const 配列から導出する形に変え、実行時の所属判定を型と 1 か所で共有する。`Cache-Control: public` は avatar に限られている限り妥当なので、purpose ガードとセットで残す。
+
+### Consequences
+- 良い点: 「公開なのは avatar だけ」がコードで守られ、#6 が非公開 purpose を `put` しても配信面が広がらない。将来 `source` / `media` を出す必要が出たら、同じルートに `StoredFileRepository` 越しの所有者検査を足す入口として使える。
+- トレードオフ: `ObjectKey` に読み取り側のメソッドが 1 つ増える（spec の VO 定義との差は `build` と対になる派生なので spec-sync 候補には上げない）。`build` の形（`{owner}/{purpose}/{fileId}`）を変えると配信判定も一緒に直す必要がある。
+
+---
+
+## ADR-081: OAuth の認可往復は転送境界で「開始したブラウザー」に束縛する
+
+### Status
+Accepted
+
+### Context
+`startOAuthFlow` が発行する `state` はサーバー側の 1 行としか結び付いておらず、**どのブラウザーが開始したか**を持たない。攻撃者は自分のブラウザーで「Google で続ける」を押し、自分のアカウントで同意まで進めてから最終ナビゲーションだけを止め、`https://app/auth/callback/google?state=S&code=C` を手元に取れる。それを被害者に踏ませると、P-05 の `OAuthCallbackPanel` がマウント時に自オリジンから消費 POST を投げるので、`Origin` も `Sec-Fetch-Site` も CSRF トークンも正しく揃い、被害者のブラウザーに**攻撃者アカウントのセッションが焼かれる**。以降、被害者が書いたノートは攻撃者のアカウントに入る。
+
+`spec/adr/029-verification-session-binding.md` がメール確認について「通常の CSRF 対策が原理的に効かない」と書いた条件がそのまま当てはまる。`OAuthStateStore.take` の原子性が防ぐのは他人の正規フローに別の code を差し込む向きだけで、攻撃者が自分の完成済みフローを被害者のブラウザーに持ち込む向きは防げない。PKCE も同様（verifier はサーバーが持っているので、攻撃者はむしろ正しく揃っている）。
+
+### Decision
+ADR-029 と同じ分担で**転送境界に閉じる**。`OAuthFlowState` にも `completeOAuthCallback` にもブラウザー束縛の概念を入れない。
+
+1. `startOAuthFlow` の view に `state` を足す（`authorizationUrl` に既に載っている値。転送境界が URL を再パースせずに束縛値を作れるようにするため）
+2. 開始の server function（`startOAuthSignInFn` / `startOAuthLinkFn`）が `hollow_oauth_state` Cookie を焼く。値は `state` そのものではなく **SHA-256**、属性は session cookie に揃えて `HttpOnly` / `SameSite=Lax` / `Path=/`（dev の平文 http を除き `Secure`）、寿命は state 行と同じ 10 分
+3. `completeOAuthCallbackFn` が**ユースケースを呼ぶ前に**「要求本文の `state` の SHA-256 == Cookie」を照合する。不一致・Cookie 不在はどちらも `OAUTH_STATE_INVALID` に畳む
+4. 成功して初めて Cookie を破棄する（use-once）
+
+生成と照合は `apps/web/app/presentation/oauthStateBinding.ts` に純関数として置き（Cookie の運搬は `oauthStateCookie.ts`）、`deletionTicket` / `devOAuth` / `verificationSession` と同じくフレームワークを引き込まずに単体テストする。
+
+`linkIdentity` intent にも同じ束縛を掛ける。こちらは `flow.userId` / `flow.userAuthEpoch` があるので攻撃者のセッションが焼かれる向きは元々成立しないが、束縛があると被害者に他人の provider account を紐づけさせる向きの state すり替えを一段防げる。
+
+照合をユースケースより先に置くのは、通っていない `state` を消費させないため。攻撃者の URL を踏んだだけで `take` が走ると、正規のブラウザーの側でフローが壊れる（消費済みになる）。
+
+Cookie に SHA-256 を載せるのは、`Path=/` の Cookie が同一オリジンの全要求に相乗りするため。単回消費の資格情報そのものを常時運ばせない。照合に必要なのは同値性だけなので、束縛の強さは変わらない。
+
+### Consequences
+- 良い点: 「コールバック URL を踏ませるだけでは被害者の認証状態が変わらない」が OAuth 経路でも成立する。攻撃者が被害者のブラウザーへ持ち込めないのは Cookie だけ、という ADR-029 と同じ根拠に乗る。
+- 良い点: 失敗表示は既存の P-05 失敗状態（`OAUTH_STATE_INVALID` →「認可の手続きが途中で切れました」）をそのまま使うので、画面側の変更が要らない。
+- トレードオフ: 束縛 Cookie は 1 本なので、**同一ブラウザーで 2 つの認可フローを並行して開始すると先に始めた方が完了できない**（後から焼いた Cookie が上書きするため）。「もう一度サインインからやり直してください」に倒れるだけで、認証状態は壊れない。ADR-029 の確認待ち Cookie が持つ縮退と同じ形。
+- トレードオフ: 別端末で認可を完了する経路（PC で開始してスマートフォンで同意）は成立しない。OAuth の同意は開始したブラウザーの中で完結するのが通常の導線なので、メール確認の別端末フローと違い実質的な縮退にはならない。
+- 中断されたフローの Cookie は 10 分（state 行と同じ）だけ残る。次の開始が上書きし、期限で消える。
+
+---
+
+## ADR-082: アイコン選択の事前チェックは「大きさだけ」に絞り、しきい値と文言は判定側から引く
+
+### Status
+Accepted
+
+### Context
+P-21 の島（`ProfileForm/editor.tsx`）はファイルを選んだ時点で MIME 許可リストと 5 MB 上限を自前の定数と自前の日本語で判定していた。判定の正典は `UploadValidationPolicy`（許可 MIME・5 MB）と `errorDisplay` の辞書（`STORAGE_FILE_TOO_LARGE` / `STORAGE_UNSUPPORTED_MIME_TYPE`）なので、同じ規則が値と文言の両方で二重化し、同じ拒否理由が経路によって別の日本語で出ていた。
+
+さらに ADR-078 で受理判定が**申告 MIME からバイト列の署名**へ移ったため、島の `file.type` による先回りは「本当の規則」ではなくなった（拡張子だけ偽装したファイルは島を素通りしてサーバーで落ちる）。
+
+### Decision
+島の事前チェックを**大きさだけ**に絞る。
+
+- しきい値は `AVATAR_MAX_BYTES`、`accept` は `AVATAR_ALLOWED_MIME_TYPES` を `@repo/core/domain/storage/services/uploadValidationPolicy` から import する（どちらも純粋モジュールなので `"use client"` から読める）。ヒント文の「N MB まで」も同じ定数から作る。
+- 文言は辞書から引く。島は `renderErrorMessage({ kind: "business", code: StorageErrorCode.FileTooLarge, ... })` を使い、サーバーが同じ拒否を返したときと 1 文字も違わない文字列を出す。
+- 形式の判定は先回りしない。`accept` は選択の目安として残し、拒否は署名判定を通ったサーバーの `UnsupportedMimeType` を `displayError` で出す。
+
+大きさだけを残すのは、転送境界の DoS 上限（8 MB）を超えると形の検証で落ちて `FileTooLarge` に届かず、拒否理由が伝わらないため。5〜8 MB がサーバーで `FileTooLarge` になる意図（`-action.tsx`）はそのまま保たれる。
+
+### Consequences
+- 良い点: 上限値の定義が 1 か所（ドメイン）、拒否文言の定義が 1 か所（辞書）に収まる。`UploadValidationPolicy` が 5 MB を変えれば `accept`・ヒント文・事前チェックが同時に追随する。
+- 良い点: 島が「申告 MIME」で判断しなくなったので、画面の挙動と実際の受理規則が食い違わない。
+- トレードオフ: 許可されない形式のファイルを（`accept` を無視して）選んだ場合、拒否が分かるのは往復 1 回のあとになる。バイト列を読まない限り正しい判定はできないので、往復の前に出せるのは推測でしかない。
+
+---
+
+## ADR-083: 島の中で日付を整形するときは時間帯を明示する
+
+### Status
+Accepted
+
+### Context
+`IdentityList/board.tsx` は `"use client"` の島だが SSR で 1 度サーバー側で描かれ、そのあとブラウザーでハイドレートされる。`Intl.DateTimeFormat("ja-JP", …)` に `timeZone` を渡さないと基準が実行環境の時間帯になるので、UTC のサーバーと JST のブラウザーでは日付境界付近の `createdAt` が 1 日ずれ、ハイドレーション不一致とテキストの差し替えが起きる。サーバーコンポーネントである `UsagePanel` は 1 度しか描かれないため構造的にこの問題を持たない。
+
+表示を島から出して RSC で整形済み文字列にする案もあるが、`IdentityBoard` は楽観追加の行を `createdAt: new Date()` で自前に組み立てるので、整形器は結局島に残る。
+
+### Decision
+島の中で残す代わりに `timeZone: "UTC"` を明示して決定的にする。`UsagePanel` のリセット日（課金期間が UTC 暦月なので UTC で読む）と同じ扱いに揃える。
+
+`suppressHydrationWarning` は採らない。ずれを黙らせるだけで、サーバーが送った日付とブラウザーが描く日付が違う状態は残るため。
+
+### Consequences
+- 良い点: SSR とハイドレートで必ず同じ文字列になり、楽観追加の行も同じ整形器を通せる。
+- トレードオフ: 端末の時間帯では日付が 1 日前に見える利用者がいる（JST の午前 9 時より前に追加した認証手段など）。「いつ追加したか」の粒度は日なので許容し、利用者の時間帯で読ませたくなった時点で、時間帯を持った表示層の仕組みとしてまとめて決める。
+
+---
+
+## ADR-084: P-05 の成功以外は intent 中立の文言と戻り先にする（ADR-038 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-038 は「P-05 のキャンセルはコールバック画面に留まり、サインインへは明示のリンクで戻す」と決めたが、その判断は intent が `signIn` の往復だけを見ていた。実装も成功アームだけが intent 別（`linkIdentity` なら「ログイン方法を追加しました」＋ `/settings/auth`）で、キャンセル・失敗は「**サインイン**をキャンセルしました」「**サインイン**に戻る」（`/signin`）に固定されていた。P-22 の「Google を追加」から来た利用者は、サインイン済みなのにサインインフォームへ流される（`/signin` は認証済みでもリダイレクトしない）。モック `P05-oauth-callback.html` 自体が連携フローの文言で書かれており、成功だけ intent を見る形は設計とも噛み合わない。
+
+キャンセル・失敗の時点で intent が判らないのは構造的な理由による。intent は `OAuthFlowState` の中にあり、それを読む唯一の手段は `OAuthStateStore.take`（1 回消費・ADR-007）である。キャンセルでは `code` が無いので消費してはならず、失敗ではまさに消費に失敗している。
+
+### Decision
+成功以外のアームの文言と戻り先を intent 中立にする。
+
+- キャンセル: 「手続きをキャンセルしました」、戻り先は `/`。`/` はサインイン済みなら `/notes` へ redirect し、未サインインならトップを出すので、どちらの intent から来ても行き止まりにならない唯一の導線になる。
+- 失敗: 「手続きを完了できませんでした」＋「もう一度試す」＋ `/`。本文は辞書（ADR-085 と同じ規律）から引く。
+- 再許可（`OAUTH_EMAIL_UNVERIFIED`）だけは intent 前提の文言と `startOAuthSignInFn` の再開導線を残す。このコードを投げるのは `completeOAuthSignIn` だけで、`linkIdentity` の往復では到達しないため。
+
+採らなかった案:
+
+- **`state` から intent だけを引く server function を足す**（レビューの案 a）— 往復が 1 つ増えるうえ、`state` を「消費せずに覗く」読み取り経路を `OAuthStateStore` に足すことになる。ADR-007 が「intent を読めるのは `take` だけ」に閉じた根拠が緩む。
+- **`redirect_uri` に intent のフラグを載せる**（レビューの案 b）— Google は authorized redirect URI にクエリー文字列を許さないので実装できない。パスを分ける（`/auth/callback/$provider/link`）と redirect URI が provider 登録側でも 2 本になり、ADR-007 の「1 ルート」を崩す。
+
+### Consequences
+- 良い点: どちらの intent から来ても文言が嘘にならず、戻り先が必ず利用者の現在の認証状態に合った場所になる。往復も `OAuthStateStore` の契約も増えない。
+- トレードオフ: 未サインインの利用者がキャンセルすると、サインインフォームまでは 1 クリック増える（`/` のトップから「サインイン」）。ADR-038 が受け入れた「ワンクリック挟む」と同種の縮退で、マニュアル TC-40 手順 2 の読み替えもそのまま通る。
+- `routes/auth/callback.$provider.tsx` の `head` は `サインイン — {siteName}` のままで、これも signIn 前提の残り。ページのタイトルは導線ではないため本単位では触っていない（別単位が所有するファイル）。
+
+---
+
+## ADR-085: P-25 の失敗は「項目のエラー」と「パネルのエラー」に分け、恒久失効した ticket は捨てる
+
+### Status
+Accepted
+
+### Context
+P-25 は 2 種類の失敗を 1 つの表示枠に流し込んでいた。
+
+1. **提出の失敗**: `deleteAccountFn` の失敗はすべてメールアドレス欄の項目エラー欄に出し、`aria-invalid` も付けていた。ADR-062 により `/settings/danger` は未サインインでも開けるので、その状態で押すと `UNAUTHENTICATED`（「サインインが必要です」）が**メールアドレス不一致用の枠**に出る。入力は正しいのに欄が不正扱いされる。
+2. **進捗照会の失敗**: ポーリングの `catch` は理由を問わず ticket を `sessionStorage` に残していた。一時障害では再読込で再開できるので正しいが、`DELETION_TICKET_EXPIRED`（30 分）と `DELETION_TICKET_INVALID`（memory 配備ではプロセス再起動のたびに起きる）は恒久的で、復元 → 即失敗を繰り返してそのタブから削除フォームへ戻れなくなる。
+
+### Decision
+- 提出の失敗は `{ target: "field" | "panel"; message }` として持ち、**項目エラー欄に出すのは `CONFIRMATION_MISMATCH` だけ**にする。その欄はモックでも「メールアドレスが一致しません」の枠であり、他の失敗（認証切れ・競合・システム）はフォーム全体の常設 live region に出す。判定材料は `SerializedError.code` だけで、`instanceof` も原文 message も見ない。
+- ポーリングの `catch` は `DELETION_TICKET_EXPIRED` / `DELETION_TICKET_INVALID` のときだけ ticket を捨てる。それ以外は従来どおり残して再読込での再開に賭ける。どちらの場合も表示は「削除の進捗を表示できません」で、削除自体はサーバー側で進み続ける旨を添える（辞書の文言）。
+- `requestId` の採番は `crypto.randomUUID` がセキュアコンテキスト限定なので、`getRandomValues` から v4 を組む代替を持ち、採番自体も `try` の中に入れる。非セキュアコンテキスト（`http://<LAN IP>:3000` の実機確認）で全画面エラーに落ちるのを避けるため。UUID の形を保つのは、サーバーが `INVALID_REQUEST_ID` で形式を検査するため。
+
+### Consequences
+- 良い点: 入力と無関係な失敗が入力欄を不正扱いしなくなり、支援技術にも「どこが悪いか」が正しく伝わる。恒久失効した ticket を持つタブが削除フォームへ戻れる。ADR-062 が受け入れた「未サインインでも開ける」の帰結が、少なくとも誤誘導にはならない。
+- トレードオフ: 転送境界の形式検査（`confirmationEmail` の長さ上限）で落ちた場合もパネル側に出る。項目に紐づく検査は業務不変条件の側（`CONFIRMATION_MISMATCH`）だけという線引きを取ったためで、DoS 上限に当たる入力は通常操作では起きない。
+- 未サインインで `/settings/danger` を開いたときに削除フォームが出ること自体は ADR-062 の宣言どおりで、変更しない（本 ADR が直すのは押した後の見せ方だけ）。
+
+---
+
+## ADR-086: 認証系メールの応答時間の等時化は実 `MailSender` と一緒に決める（Issue #18 へ defer）
+
+### Status
+Accepted（本 Issue では等時化を実装しない）
+
+### Context
+`resendVerificationEmail` / `requestPasswordReset` は応答**内容**を完全に同一化している（`UNIFORM_RESPONSE` の空 view。usecase も全分岐で同一値を返し、`resendVerificationEmail.test.ts` / `requestPasswordReset.test.ts` が TC-identity-194..199 / 187..193 でそれを固定している）。しかし経路の重さは 3 段階に分かれる — 未登録は directory 解決のみ、対象外（`active` / `deleting` 等）は + user 読み、対象（`pending` / パスワード手段あり）は + Global UoW（token 削除 + 発行）+ `mailSender.send` の await。`MailSender` が memory 実装のうちは差が小さいが、実 SMTP / API になる本番配備では最後の 1 行が数百 ms 規模になり、応答時間が「そのアドレスが登録済みで再送 / 再設定の対象か」のオラクルになる。
+
+`spec/usecases/identity.md` の当該節は所要時間について何も書いていないので spec 違反ではない。ただし ADR-028 は「所要時間を揃える」を明示的な要求として立てており、`signInWithPassword` はダミーハッシュ検証でそれを実現済みなので、同じ ADR の下でこの 2 経路だけ等時化が無いという非対称が残る。
+
+### Decision
+本 Issue では等時化を実装せず、Issue #18 へ引き継ぐ。判断の実体（どちらの形を採るか）は実 `MailSender` の導入と同時に決める。
+
+- **(a) `mailSender.send` を応答から外す**（`void` にして失敗はログのみ、あるいは outbox 経由の非同期送信）— 一番大きい差はこれで消えるが、配送失敗の観測性が下がる。
+- **(b) ADR-028 のダミー検証と同じ発想で、全経路に同じ下限時間を消費させる** — 非対称そのものを消すが、下限値の正典をどこに置くかを決める必要がある。
+
+いま (a) を入れないのは、memory `MailSender` の下では観測できる差がほとんど無く、失敗の観測性という実配備依存のトレードオフを、実配送手段が決まる前に一方向へ確定させたくないため。(b) を入れないのは、下限時間の値が実 `MailSender` のレイテンシー分布に依存し、いま置くと必ず後で置き直す定数になるため。どちらも「実 `MailSender` と一緒に決める横断的関心事」という同じ理由で #18 に寄せる。
+
+本 Issue で確定させるのは、応答**内容**の同一性が全分岐でテストに固定されていること（上記 TC 群）と、この非対称が縮退として plan.md / Issue コメントに記録されていることまで。
+
+### Consequences
+- 良い点: 列挙耐性のうち内容側は spec どおり成立しており、残る差分が「時間」1 軸に絞られて #18 に引き継がれる。無記録のまま残らない。
+- トレードオフ: 実 `MailSender` を先に配備すると、#18 が入るまでの間はアドレス登録有無の時間オラクルが本番で開く。memory `MailSender` のままの配備（本 Issue の到達点）では実害が無いので、#18 は実メール送信を入れるスライスの前提として扱う。
+- ADR-028 の「所要時間を揃える」は `signInWithPassword` でのみ満たされている状態が続く。#18 がこの 2 経路を揃えた時点で、ADR-028 の要求が認証系入口の全体で成立する。
+
+---
+
+## ADR-087: intent 中立化と outbox 契約の語彙を、他単位が触れなかった文言まで揃える（ADR-084 / ADR-065 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-084（P-05 の成功以外は intent 中立）と ADR-065（outbox の `save` は先着優先の skip）は決定を確定させたが、決定を書いた単位の所有ファイルの外に、旧前提のままの文言が 3 か所残っていた。いずれも挙動には影響しないが、次に読む者が「実装はこう決まっている」と読み違える材料になる。
+
+- `apps/web/app/routes/auth/callback.$provider.tsx` の `head` が `サインイン — {siteName}`。ADR-084 の Consequences 自身が「別単位が所有するファイルなので触っていない」と宿題にしていた。
+- `apps/web/app/presentation/oauthStateBinding.ts` の JSDoc が「利用者の取れる行動は『もう一度**サインインから**やり直す』の 1 つ」。束縛失敗は `linkIdentity` の往復でも起きるので、ADR-084 が中立化した辞書文言とずれる。
+- `packages/core/src/application/identity/continuations.ts` の `AccountDeletionManifestBuildContinuedEvent` の JSDoc が「replay **upserts** the same outbox row」。ADR-065 は upsert を明示的に棄却し「先着行をそのまま残す skip」を契約にしたので、根拠の語彙が古い。
+
+### Decision
+文言のみを揃える（挙動・型・テストは変えない）。
+
+- `head` のタイトルを `認可 — {siteName}` にする。P-05 は signIn / linkIdentity の両 intent が通る 1 ルート（ADR-007）なので、タイトルも intent を名乗らない。ADR-084 の Consequences に残る「`head` は `サインイン — {siteName}` のまま」という記述は本 ADR で解消済みとする。
+- `oauthStateBinding` の JSDoc を「もう一度やり直す」にし、intent が判らない時点の文言は中立に保つという ADR-084 の規律を根拠として添える。
+- `continuations.ts` の JSDoc を「replay は先着行が残って skip され、1 つの outbox 行に畳まれる（ADR-065）」に直す。
+
+### Consequences
+- 良い点: 「決定は ADR に書いたが、コード上の説明は旧前提のまま」という食い違いが 3 か所とも消える。ADR-084 / ADR-065 の記述だけを読んで実装を推測しても外れない。
+- トレードオフ: 無い（描画結果はタイトル文字列 1 つだけが変わる。P-05 の本文・導線・状態はいずれも ADR-084 の実装のまま）。

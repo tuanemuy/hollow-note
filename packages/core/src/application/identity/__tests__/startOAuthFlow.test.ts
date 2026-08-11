@@ -24,11 +24,14 @@ describe("startOAuthFlow", () => {
     const h = createTestHarness();
     const before = h.clock.now();
 
-    const { authorizationUrl } = await start(h);
+    const view = await start(h);
 
-    const url = new URL(authorizationUrl);
+    const url = new URL(view.authorizationUrl);
     const state = url.searchParams.get("state");
     expect(state).not.toBeNull();
+    // The transport boundary binds this to the browser that started the
+    // flow, so it must be the same value the provider is handed.
+    expect(view.state).toBe(state);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("redirect_uri")).toBe(
       `${h.config.appUrl}/auth/callback/google`,

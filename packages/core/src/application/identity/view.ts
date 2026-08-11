@@ -55,6 +55,12 @@ export const toAuthenticatedUserView = (
 });
 
 export type StartOAuthFlowView = Readonly<{
+  /**
+   * Already carried by `authorizationUrl`; surfaced separately so the
+   * transport boundary can bind the flow to the browser that started it
+   * without re-parsing the provider's URL.
+   */
+  state: string;
   authorizationUrl: string;
 }>;
 
@@ -91,6 +97,7 @@ export type PruneExpiredAuthStateView = Readonly<{
   authTokens: number;
   loginAttempts: number;
   oauthFlowStates: number;
+  identityRemovalReceipts: number;
   continued: boolean;
 }>;
 

@@ -60,10 +60,11 @@ const commandKeyOf = (
  * the previous attempt removed and picks up the rest, which makes the
  * re-run idempotent without a record of what it did.
  *
- * Runtime wiring note: no scheduler invokes this yet, the same standing
- * as `pruneExpiredAuthState` — a header is retained for 120 days, so
- * nothing is due until long after this slice. The cron / queue wiring
- * lands with the runtime slice that gives the Node runner a cron role.
+ * Runtime wiring note: the Node runner drives this from its daily prune
+ * tick, because the retained payload holds the deleted user's email,
+ * handle and provider-account keys — leaving it undriven would keep
+ * them past the 120 days the manifest promises. Other runtimes pick it
+ * up with their own cron / queue role.
  */
 export async function pruneAccountDeletionManifests({
   container,

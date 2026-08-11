@@ -1,5 +1,6 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "./errorCode";
+import { SameOriginPolicy } from "./services/sameOriginPolicy";
 
 declare const userIdBrand: unique symbol;
 declare const identityIdBrand: unique symbol;
@@ -127,6 +128,14 @@ export const DisplayName = {
     }
     return trimmed as DisplayName;
   },
+
+  /**
+   * Shortens instead of rejecting, for names supplied by a source that
+   * never agreed to the limit (an OAuth provider profile). An empty name
+   * is still a rejection: the caller owns the fallback.
+   */
+  truncate: (raw: string): DisplayName =>
+    DisplayName.create(raw.trim().slice(0, DISPLAY_NAME_MAX_LENGTH)),
 };
 
 const BIO_MAX_LENGTH = 500;
@@ -162,10 +171,8 @@ export const AvatarUrl = {
     if (trimmed.length === 0 || trimmed.length > AVATAR_URL_MAX_LENGTH) {
       throw invalidAvatarUrl();
     }
-    // `//host/path` is protocol-relative, i.e. another origin wearing the
-    // shape of a path — the one case a leading slash does not make safe.
     if (trimmed.startsWith("/")) {
-      if (trimmed.startsWith("//")) {
+      if (!SameOriginPolicy.isSameOriginPath(trimmed)) {
         throw invalidAvatarUrl();
       }
       return trimmed as AvatarUrl;

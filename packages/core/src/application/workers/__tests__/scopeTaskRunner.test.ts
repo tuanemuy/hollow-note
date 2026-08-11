@@ -1,3 +1,7 @@
+import {
+  SCOPE_TASK_MAX_ATTEMPTS,
+  SCOPE_TASK_MAX_BACKOFF_MS,
+} from "@repo/core/application/ports/scopeTaskScheduler";
 import { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
@@ -174,5 +178,42 @@ describe("runDueScopeTasks", () => {
         entry.message.includes("[scope-tasks] task threw"),
       ),
     ).toBe(true);
+  });
+
+  it("backs a throwing task off, so a permanently failing one stops being re-driven", async () => {
+    const h = createTestHarness();
+    const scope = scopeOf("user-1");
+    await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: "failing",
+        operationId: "op-1",
+        dueAt: h.clock.now(),
+        payload: {},
+      }),
+    );
+    let attempts = 0;
+    const handlers = {
+      failing: async () => {
+        attempts += 1;
+        throw new Error("boom");
+      },
+    };
+
+    await runDueScopeTasks(h.workerContainer, { handlers });
+    expect(attempts).toBe(1);
+    expect(
+      await h.workerContainer.scopeTaskQueue.listDue(h.clock.now(), 10),
+    ).toEqual([]);
+
+    for (let round = 0; round < SCOPE_TASK_MAX_ATTEMPTS; round += 1) {
+      h.clock.advance(SCOPE_TASK_MAX_BACKOFF_MS);
+      await runDueScopeTasks(h.workerContainer, { handlers });
+    }
+
+    expect(attempts).toBe(SCOPE_TASK_MAX_ATTEMPTS);
+    h.clock.advance(SCOPE_TASK_MAX_BACKOFF_MS);
+    expect(
+      await h.workerContainer.scopeTaskQueue.listDue(h.clock.now(), 10),
+    ).toEqual([]);
   });
 });

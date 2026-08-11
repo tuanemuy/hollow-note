@@ -5,8 +5,9 @@ import { Identity } from "../identity";
 import { AccountDeletionRetryPolicy } from "../services/accountDeletionRetryPolicy";
 import { AccountLinkingPolicy } from "../services/accountLinkingPolicy";
 import { IdentityPolicy } from "../services/identityPolicy";
+import { SameOriginPolicy } from "../services/sameOriginPolicy";
 import { User } from "../user";
-import { PasswordHash, UserId } from "../valueObject";
+import { AvatarUrl, PasswordHash, UserId } from "../valueObject";
 
 const T0 = new Date(0);
 const userId = UserId.create("u1");
@@ -50,6 +51,14 @@ describe("IdentityPolicy", () => {
     const a = passwordIdentity("i1");
     const b = oauthIdentity("i2", "g-1");
     expect(() => IdentityPolicy.ensureRemovable([a, b], a.id)).not.toThrow();
+  });
+
+  it("isRemovable opens removal exactly where ensureRemovable admits it", () => {
+    const a = passwordIdentity("i1");
+    const b = oauthIdentity("i2", "g-1");
+    expect(IdentityPolicy.isRemovable([])).toBe(false);
+    expect(IdentityPolicy.isRemovable([a])).toBe(false);
+    expect(IdentityPolicy.isRemovable([a, b])).toBe(true);
   });
 
   it("ensureAddable rejects at the limit of 8", () => {
@@ -129,6 +138,85 @@ describe("AccountLinkingPolicy.decide", () => {
       kind: "refuse",
       reason: "existingUserUnavailable",
     });
+  });
+});
+
+const APP_URL = "https://app.test";
+
+/**
+ * Paths that keep a leading slash yet resolve to another origin. The
+ * assertion on `new URL` is part of the test: it pins the parser behaviour
+ * the predicate exists to defend against.
+ */
+const CROSS_ORIGIN_PATHS = [
+  "//evil.test/x.png",
+  "/\\evil.test/x.png",
+  "/\n/evil.test/x.png",
+  "/\r/evil.test/x.png",
+  "/\t/evil.test/x.png",
+];
+
+describe("SameOriginPolicy.isSameOriginPath", () => {
+  it("accepts app-relative paths", () => {
+    for (const value of [
+      "/",
+      "/storage/users/u1/avatar/f1.png",
+      "/notes?tag=a#b",
+    ]) {
+      expect(SameOriginPolicy.isSameOriginPath(value)).toBe(true);
+      expect(new URL(value, APP_URL).origin).toBe(APP_URL);
+    }
+  });
+
+  it("rejects the paths a leading slash does not make same-origin", () => {
+    for (const value of CROSS_ORIGIN_PATHS) {
+      expect(new URL(value, APP_URL).origin).toBe("https://evil.test");
+      expect(SameOriginPolicy.isSameOriginPath(value)).toBe(false);
+    }
+  });
+
+  it("rejects anything that is not a path", () => {
+    for (const value of [
+      "",
+      "storage/x.png",
+      "https://evil.test/x.png",
+      "javascript:alert(1)",
+    ]) {
+      expect(SameOriginPolicy.isSameOriginPath(value)).toBe(false);
+    }
+  });
+});
+
+describe("AvatarUrl", () => {
+  it("accepts a relative path and an absolute URL on the app origin", () => {
+    expect(AvatarUrl.create("/storage/u1/avatar.png", APP_URL)).toBe(
+      "/storage/u1/avatar.png",
+    );
+    expect(AvatarUrl.create(`${APP_URL}/storage/u1/avatar.png`, APP_URL)).toBe(
+      `${APP_URL}/storage/u1/avatar.png`,
+    );
+  });
+
+  it("rejects paths that resolve cross-origin", () => {
+    for (const raw of CROSS_ORIGIN_PATHS) {
+      expect(codeOf(() => AvatarUrl.create(raw, APP_URL))).toBe(
+        IdentityErrorCode.InvalidAvatarUrl,
+      );
+    }
+  });
+
+  it("rejects other origins and opaque schemes", () => {
+    for (const raw of [
+      "https://evil.test/x.png",
+      "javascript:alert(1)",
+      "data:image/png;base64,AAAA",
+      "not a url",
+      "",
+    ]) {
+      expect(codeOf(() => AvatarUrl.create(raw, APP_URL))).toBe(
+        IdentityErrorCode.InvalidAvatarUrl,
+      );
+    }
   });
 });
 

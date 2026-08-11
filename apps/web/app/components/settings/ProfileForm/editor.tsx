@@ -1,6 +1,11 @@
 "use client";
 
 import type { ProfileView } from "@repo/core/application/identity/view";
+import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
+import {
+  AVATAR_ALLOWED_MIME_TYPES,
+  AVATAR_MAX_BYTES,
+} from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -27,7 +32,7 @@ import {
   primaryButtonClass,
   subtleButtonClass,
 } from "@/components/settings/panelStyles";
-import { displayError } from "@/presentation/errorDisplay";
+import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import {
   checkHandleAvailabilityFn,
@@ -46,8 +51,20 @@ import {
  * 画像を先に見せ、`router.invalidate()` でサーバー truth に戻す。
  */
 
-const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const AVATAR_MAX_MEGABYTES = AVATAR_MAX_BYTES / (1024 * 1024);
+
+/**
+ * 大きすぎるファイルだけは送る前に止める（8 MB の転送上限を超えると
+ * 形の検証で落ちて拒否理由が伝わらないため）。しきい値も文言も判定側と
+ * 同じ出所から引くので、ドメインが上限を変えれば追随する。形式の判定は
+ * バイト列の署名で行われるため先回りしない — `accept` は選択の目安。
+ */
+const OVERSIZE_MESSAGE = renderErrorMessage({
+  kind: "business",
+  code: StorageErrorCode.FileTooLarge,
+  message: "",
+});
+
 const DISPLAY_NAME_MAX_LENGTH = 50;
 const BIO_MAX_LENGTH = 500;
 const HANDLE_CHECK_DEBOUNCE_MS = 400;
@@ -169,16 +186,8 @@ export function ProfileEditor({
   }, [handle, profile.handle, checkHandle]);
 
   const onPickFile = (file: File) => {
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setAvatarError(
-        "アイコンに使えるのは PNG / JPEG / WebP です。形式を変えてからお試しください。",
-      );
-      return;
-    }
     if (file.size > AVATAR_MAX_BYTES) {
-      setAvatarError(
-        "アイコンは 5 MB までです。小さい画像にしてからお試しください。",
-      );
+      setAvatarError(OVERSIZE_MESSAGE);
       return;
     }
     const preview = URL.createObjectURL(file);
@@ -243,7 +252,7 @@ export function ProfileEditor({
               ref={fileInputRef}
               type="file"
               className="sr-only"
-              accept={ACCEPTED_IMAGE_TYPES.join(",")}
+              accept={AVATAR_ALLOWED_MIME_TYPES.join(",")}
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 // 同じファイルを選び直せるように毎回空へ戻す。
@@ -271,7 +280,7 @@ export function ProfileEditor({
               </button>
             )}
             <span className="text-xs text-ink-tertiary">
-              PNG / JPEG / WebP · 5 MB まで
+              PNG / JPEG / WebP · {AVATAR_MAX_MEGABYTES} MB まで
             </span>
           </div>
           <p className={errorTextClass} role="status" aria-live="polite">
@@ -398,10 +407,10 @@ export function ProfileEditor({
           <span className="text-xs text-ink-tertiary" role="status">
             {isSaving
               ? "保存中..."
-              : saveState.status === "saved"
-                ? "保存しました"
-                : dirty
-                  ? "未保存の変更があります"
+              : dirty
+                ? "未保存の変更があります"
+                : saveState.status === "saved"
+                  ? "保存しました"
                   : null}
           </span>
           <div className="flex-1" />

@@ -6,8 +6,9 @@ import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 const LEASE_MS = 5 * 60 * 1000;
 
 /**
- * Shared conformance suite for `OutboxRepository`: atomic claim-and-list
- * with lease-based reclaim, atomic finalize, and processed-row pruning.
+ * Shared conformance suite for `OutboxRepository`: id-keyed saves, atomic
+ * claim-and-list with lease-based reclaim, atomic finalize, and
+ * processed-row pruning.
  */
 export function describeOutboxRepositoryContract(
   backendName: string,
@@ -45,6 +46,54 @@ export function describeOutboxRepositoryContract(
       expect(claimed.map((entry) => entry.id)).toEqual(["event-1", "event-2"]);
       expect(claimed[0]?.attempts).toBe(0);
       expect(claimed[0]?.payload).toEqual({ n: 1 });
+    });
+
+    it("re-saving a stored id adds no row and does not disturb the batch", async () => {
+      await backend.outboxRepository.save([event(1)]);
+      backend.clock.advance(1000);
+      await backend.outboxRepository.save([event(1), event(2)]);
+
+      const claimed = await claim("worker-a");
+      expect(claimed.map((entry) => entry.id)).toEqual(["event-1", "event-2"]);
+    });
+
+    it("re-saving a stored id keeps its attempts and retry schedule", async () => {
+      await backend.outboxRepository.save([event(1)]);
+      await claim("worker-a");
+      await backend.outboxRepository.finalize({
+        processed: [],
+        failures: [
+          {
+            id: "event-1",
+            error: "boom",
+            nextAttemptAt: new Date(backend.clock.now().getTime() + 30_000),
+          },
+        ],
+        now: backend.clock.now(),
+      });
+
+      await backend.outboxRepository.save([event(1)]);
+      expect(await claim("worker-a")).toHaveLength(0);
+
+      backend.clock.advance(30_000);
+      const due = await claim("worker-a");
+      expect(due.map((entry) => entry.id)).toEqual(["event-1"]);
+      expect(due[0]?.attempts).toBe(1);
+    });
+
+    it("re-saving a processed id does not put the row back on the wire", async () => {
+      await backend.outboxRepository.save([event(1)]);
+      await claim("worker-a");
+      await backend.outboxRepository.finalize({
+        processed: [EventId.create("event-1")],
+        failures: [],
+        now: backend.clock.now(),
+      });
+
+      await backend.outboxRepository.save([event(1)]);
+
+      backend.clock.advance(LEASE_MS * 2);
+      expect(await claim("worker-a")).toHaveLength(0);
     });
 
     it("a claimed row is invisible to a concurrent worker until the lease lapses", async () => {

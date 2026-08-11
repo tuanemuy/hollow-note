@@ -120,6 +120,16 @@ describe("deleteAccount finalize and compaction", () => {
         entry.message.includes("finalize is still waiting"),
       ),
     ).toBe(true);
+    // The attempt has to leave the operation re-drivable: a terminal
+    // state here would strand the account half-deleted.
+    expect(h.backend.distributedOperations.get(operationId)?.state).toBe(
+      "running",
+    );
+    expect(
+      h.backend.outbox
+        .values()
+        .filter((row) => row.type === "identity.user.deleted"),
+    ).toEqual([]);
   });
 
   it("TC-identity-091: the completed set drops the PII, tombstones the user and emits identity.user.deleted", async () => {

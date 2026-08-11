@@ -88,8 +88,15 @@ export function describeScopeTaskSchedulerContract(
       await scheduler.complete("usage.userCleanupContinued", "op-1");
 
       expect(await scheduler.claimDue(backend.clock.now(), 10)).toEqual([]);
-      // Completing an absent task is a no-op, not an error.
+      // Completing an absent task is a no-op, not an error, and so is
+      // backing one off: a completed turn has nothing left to retry.
       await scheduler.complete("usage.userCleanupContinued", "op-1");
+      await scheduler.backoff(
+        "usage.userCleanupContinued",
+        "op-1",
+        backend.clock.now(),
+      );
+      expect(await scheduler.claimDue(backend.clock.now(), 10)).toEqual([]);
     });
 
     it("backs off the same row exponentially instead of adding a task", async () => {
@@ -114,6 +121,36 @@ export function describeScopeTaskSchedulerContract(
       expect(await scheduler.claimDue(backend.clock.now(), 10)).toEqual([]);
       backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS);
       expect(await scheduler.claimDue(backend.clock.now(), 10)).toHaveLength(1);
+    });
+
+    it("backs off a row that does not exist yet by minting it", async () => {
+      const now = backend.clock.now();
+
+      await scheduler.backoffOrSchedule({
+        kind: "storage.ownerDeleteContinued",
+        operationId: "op-1",
+        payload: { deletionOperationId: "d1" },
+        now,
+      });
+      expect(await scheduler.claimDue(now, 10)).toEqual([]);
+
+      backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS);
+      const claimed = await scheduler.claimDue(backend.clock.now(), 10);
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.attempt).toBe(1);
+      expect(claimed[0]?.payload).toEqual({ deletionOperationId: "d1" });
+
+      // An existing row is backed off, not restarted.
+      await scheduler.backoffOrSchedule({
+        kind: "storage.ownerDeleteContinued",
+        operationId: "op-1",
+        payload: { deletionOperationId: "d1" },
+        now: backend.clock.now(),
+      });
+      backend.clock.advance(2 * SCOPE_TASK_BACKOFF_BASE_MS);
+      expect(
+        (await scheduler.claimDue(backend.clock.now(), 10))[0]?.attempt,
+      ).toBe(2);
     });
 
     it("parks a task as failed once the attempt cap is reached", async () => {

@@ -49,6 +49,26 @@ export interface OutboxRepository {
   // them — usecases reach this only via `collectEvents`. The adapter
   // sources `createdAt` from its own `Clock` so a fake clock freezes
   // outbox timestamps without leaking the parameter through the port.
+  //
+  // `id` is the identity of the row: an event whose id is already stored
+  // is skipped, leaving the stored row untouched (its payload, its
+  // `attempts`, its retry schedule, its outstanding claim and its
+  // processed / quarantined disposition all stand) and adding no second
+  // row. Saving is not an error in that case, and the other events of
+  // the same batch are still stored. Two distinct events must therefore
+  // never be given the same id.
+  //
+  // The skip is what lets a caller mint an id deterministically from the
+  // work it describes: a turn replayed after a lost commit response
+  // re-derives the same id, and folding it onto the row the first
+  // attempt already wrote is what keeps a continuation chain single
+  // instead of forking it. Leaving the stored row untouched is part of
+  // that same guarantee — a replay must not put an already-dispatched
+  // continuation back on the wire (which would re-run the tail of a
+  // chain that has since moved on), nor reset the attempt budget of a
+  // quarantined row (re-kicking one stays an operator action). The skip
+  // lasts exactly as long as the row does: `pruneProcessed` frees the id
+  // again, so the retention window has to outlive the replay window.
   save(events: readonly DomainEvent[]): Promise<void>;
 
   // Atomically claims and returns rows that are unprocessed, not

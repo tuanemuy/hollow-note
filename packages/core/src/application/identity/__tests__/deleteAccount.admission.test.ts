@@ -1,5 +1,7 @@
 import { ScopeKey } from "@repo/core/application/scope";
-import { UserId } from "@repo/core/domain/identity/valueObject";
+import { AuthToken } from "@repo/core/domain/identity/authToken";
+import { Session } from "@repo/core/domain/identity/session";
+import { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { authenticateSession } from "../authenticateSession";
@@ -39,6 +41,46 @@ const barrier = (h: TestHarness, userId: string) =>
     .scope(ScopeKey.user(UserId.create(userId)))
     .cleanupReceipts.values()[0];
 
+/** Credentials of the live generation, at the scale TC-identity-040 names. */
+const plantCredentials = (
+  h: TestHarness,
+  userId: string,
+  count: number,
+): void => {
+  const owner = UserId.create(userId);
+  const now = h.clock.now();
+  for (let index = 0; index < count; index += 1) {
+    const suffix = String(index).padStart(5, "0");
+    const sessionId = `bulk-session-${suffix}`;
+    h.backend.sessions.set(
+      sessionId,
+      Session.create(
+        {
+          id: sessionId,
+          userId: owner,
+          tokenHash: TokenHash.create(`hash-${sessionId}`),
+          authEpoch: 0,
+        },
+        now,
+      ),
+    );
+    const tokenId = `bulk-token-${suffix}`;
+    h.backend.authTokens.set(
+      tokenId,
+      AuthToken.issue(
+        {
+          id: tokenId,
+          userId: owner,
+          purpose: "password_reset",
+          tokenHash: TokenHash.create(`hash-${tokenId}`),
+          authEpoch: 0,
+        },
+        now,
+      ),
+    );
+  }
+};
+
 const expectCode = async (
   promise: Promise<unknown>,
   code: string,
@@ -73,9 +115,12 @@ describe("deleteAccount admission", () => {
     });
   });
 
-  it("TC-identity-040: the epoch bump expires the live session without touching its row", async () => {
+  it("TC-identity-040: the epoch bump expires 10,000 sessions and tokens without touching their rows", async () => {
     const h = createTestHarness();
     const { userId, sessionToken } = await signUpVerified(h, EMAIL);
+    const sessionsBefore = h.backend.sessions.size;
+    const tokensBefore = h.backend.authTokens.size;
+    plantCredentials(h, userId, 10_000);
     const epochBefore = storedUser(h, userId).authEpoch;
 
     await request(h, userId);
@@ -85,9 +130,12 @@ describe("deleteAccount admission", () => {
       authenticateSession({ container: h.container, input: { sessionToken } }),
       "UNAUTHENTICATED",
     );
-    // Revocation is the generation, not the rows: physical cleanup is a
-    // continuation and finalize waits for its acknowledgement.
-    expect(h.backend.sessions.values()).toHaveLength(1);
+    // Revocation is the generation, not the rows: acceptance costs the
+    // same at 10,000 credentials as at one. The rows are reclaimed 100 at
+    // a time afterwards (TC-identity-041), and finalize waits for that
+    // acknowledgement (TC-identity-090).
+    expect(h.backend.sessions.size).toBe(sessionsBefore + 10_000);
+    expect(h.backend.authTokens.size).toBe(tokensBefore + 10_000);
   });
 
   it("TC-identity-049: a mismatched confirmation address creates no operation", async () => {

@@ -31,9 +31,9 @@ export function createMemoryObjectStorage(
       meta: ObjectMeta,
     ): Promise<PutResult> {
       const size = ByteSize.create(body.byteLength);
-      const checksum =
-        meta.checksum ??
-        Checksum.sha256(createHash("sha256").update(body).digest("hex"));
+      const checksum = Checksum.sha256(
+        createHash("sha256").update(body).digest("hex"),
+      );
       table.set(key, {
         bytes: new Uint8Array(body),
         meta: { ...meta, size, checksum },

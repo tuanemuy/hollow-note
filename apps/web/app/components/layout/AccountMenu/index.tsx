@@ -98,6 +98,7 @@ export function AccountMenu({
           </div>
           <Link
             to={SETTINGS_ENTRY_HREF}
+            onClick={() => setOpen(false)}
             className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
           >
             設定

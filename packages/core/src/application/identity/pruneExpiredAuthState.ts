@@ -45,6 +45,7 @@ const zeroCounts = (): Counts => ({
   auth_tokens: 0,
   login_attempts: 0,
   oauth_flow_states: 0,
+  identity_removal_receipts: 0,
 });
 
 const toView = (
@@ -55,6 +56,7 @@ const toView = (
   authTokens: counts.auth_tokens,
   loginAttempts: counts.login_attempts,
   oauthFlowStates: counts.oauth_flow_states,
+  identityRemovalReceipts: counts.identity_removal_receipts,
   continued,
 });
 
@@ -62,7 +64,8 @@ const isAuthStateTable = (table: string): table is AuthStateTable =>
   table === "sessions" ||
   table === "auth_tokens" ||
   table === "login_attempts" ||
-  table === "oauth_flow_states";
+  table === "oauth_flow_states" ||
+  table === "identity_removal_receipts";
 
 const commandKeyOf = (
   runId: string,
@@ -79,7 +82,8 @@ const hourBucketOf = (instant: Date): string => {
 
 /**
  * Reclaims expired auth state — sessions, auth tokens, login attempts,
- * and OAuth flow states of **both** intents — under the shared
+ * OAuth flow states of **both** intents, and the 30-day
+ * identity-removal receipts — under the shared
  * `GlobalMaintenanceRunStore` bookkeeping (UC-identity-021,
  * spec/usecases/identity.md#pruneexpiredauthstate).
  *
@@ -473,4 +477,5 @@ const SWEEP_ORDER_HINT: readonly AuthStateTable[] = [
   "sessions",
   "login_attempts",
   "oauth_flow_states",
+  "identity_removal_receipts",
 ];

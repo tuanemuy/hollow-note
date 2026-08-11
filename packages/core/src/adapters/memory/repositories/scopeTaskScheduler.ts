@@ -80,16 +80,31 @@ export function createMemoryScopeTaskScheduler(
       if (row === undefined) {
         return;
       }
-      const attempt = row.attempt + 1;
-      if (attempt >= SCOPE_TASK_MAX_ATTEMPTS) {
-        table.set(key, { ...row, attempt, state: "failed" });
-        return;
-      }
-      table.set(key, {
-        ...row,
-        attempt,
-        dueAt: new Date(now.getTime() + backoffDelayMs(attempt)),
-      });
+      table.set(key, backedOff(row, now));
+    },
+
+    async backoffOrSchedule(input): Promise<void> {
+      const key = scopeTaskKey(input.kind, input.operationId);
+      const row = table.get(key) ?? {
+        kind: input.kind,
+        operationId: input.operationId,
+        payload: clone(input.payload),
+        dueAt: input.now,
+        attempt: 0,
+        state: "pending" as const,
+      };
+      table.set(key, backedOff(row, input.now));
     },
   };
 }
+
+const backedOff = (row: ScheduledTaskRow, now: Date): ScheduledTaskRow => {
+  const attempt = row.attempt + 1;
+  return attempt >= SCOPE_TASK_MAX_ATTEMPTS
+    ? { ...row, attempt, state: "failed" }
+    : {
+        ...row,
+        attempt,
+        dueAt: new Date(now.getTime() + backoffDelayMs(attempt)),
+      };
+};

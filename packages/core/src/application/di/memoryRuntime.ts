@@ -74,12 +74,13 @@ export type MemoryRuntimeOptions = MemoryBackendOptions &
     deletionTicketKeyRing?: DeletionTicketKeyRing;
     routingGenerations?: readonly string[];
     /**
-     * Which sign-in identity provider to talk to (ADR-003). Defaults to
-     * the loopback dev IdP: the selection rules and their startup guards
-     * belong to the runtime env schema (`di/serverNode.ts`), not here —
-     * `createTestHarness` has no env and must stay constructible.
+     * Which sign-in identity provider to talk to (ADR-003). Required and
+     * without a default: the dev IdP signs in whoever asks, so "nobody
+     * decided" must not resolve to it. The selection *rules* and their
+     * startup guards still belong to the runtime env schema
+     * (`di/serverNode.ts`) — every other caller states its choice.
      */
-    oauth?: OAuthRuntimeConfig;
+    oauth: OAuthRuntimeConfig;
   }>;
 
 export type MemoryRuntime = Readonly<{
@@ -110,13 +111,13 @@ const ephemeralKeyRing = (): ShareTokenKeyRing => ({
  * process lifetime only — a restart starts blank by design.
  */
 export function createMemoryRuntime(
-  options: MemoryRuntimeOptions = {},
+  options: MemoryRuntimeOptions,
 ): MemoryRuntime {
   const {
     shareTokenKeyRing,
     deletionTicketKeyRing,
     routingGenerations,
-    oauth = { mode: "dev" },
+    oauth,
     ...backendOptions
   } = options;
   const backend = new MemoryBackend(backendOptions);
@@ -169,6 +170,8 @@ export function createMemoryRuntime(
   const oauthStateStore = createMemoryOAuthStateStore(backend);
   const distributedOperationStore =
     createMemoryDistributedOperationStore(backend);
+  const identityRemovalReceiptStore =
+    createMemoryIdentityRemovalReceiptStore(backend);
   const objectStorage = createMemoryObjectStorage(backend);
 
   const sharedDeps: SharedDeps = {
@@ -250,8 +253,7 @@ export function createMemoryRuntime(
         idempotencyStore: createMemoryIdempotencyStore(backend),
         maintenanceRunStore: createMemoryGlobalMaintenanceRunStore(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
-        identityRemovalReceiptStore:
-          createMemoryIdentityRemovalReceiptStore(backend),
+        identityRemovalReceiptStore,
         accountDeletionManifestStore: createMemoryAccountDeletionManifestStore(
           backend,
           {
@@ -270,6 +272,7 @@ export function createMemoryRuntime(
           auth_tokens: authTokenRepository,
           login_attempts: loginAttemptStore,
           oauth_flow_states: oauthStateStore,
+          identity_removal_receipts: identityRemovalReceiptStore,
         },
       };
     },

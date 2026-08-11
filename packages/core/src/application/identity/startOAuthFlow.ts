@@ -1,4 +1,5 @@
 import type { OAuthFlowState } from "@repo/core/application/ports/oauthStateStore";
+import { SameOriginPolicy } from "@repo/core/domain/identity/services/sameOriginPolicy";
 import { OAuthProvider, UserId } from "@repo/core/domain/identity/valueObject";
 import { UnauthorizedError, ValidationError } from "../errors";
 import type { ServiceArgs } from "../types";
@@ -12,39 +13,11 @@ export type StartOAuthFlowInput = Readonly<{
 }>;
 
 /** Lifetime of one authorization round-trip (spec/usecases/identity.md 手順4). */
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Callback route the authorization request is answered on. */
 export const oauthRedirectUri = (appUrl: string, provider: string): string =>
   `${appUrl}/auth/callback/${provider}`;
-
-/**
- * `redirectTo` is replayed as a browser navigation once the flow
- * returns, so only a same-origin absolute path is accepted. URL parsers
- * strip C0 controls before resolving, so a value like `"/\n/evil.test"`
- * would pass a naive prefix check and only then resolve cross-origin.
- */
-function assertSameOriginPath(value: string): void {
-  let hasControlCharacter = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      hasControlCharacter = true;
-      break;
-    }
-  }
-  if (
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    value.includes("\\") ||
-    hasControlCharacter
-  ) {
-    throw new ValidationError(
-      "INVALID_REDIRECT",
-      "redirectTo must be a same-origin path",
-    );
-  }
-}
 
 /**
  * Builds the authorization URL for a sign-in or identity-link flow and
@@ -70,8 +43,12 @@ export async function startOAuthFlow({
 
   const provider = OAuthProvider.create(input.provider);
   const redirectTo = input.redirectTo ?? null;
-  if (redirectTo !== null) {
-    assertSameOriginPath(redirectTo);
+  // `redirectTo` is replayed as a browser navigation once the flow returns.
+  if (redirectTo !== null && !SameOriginPolicy.isSameOriginPath(redirectTo)) {
+    throw new ValidationError(
+      "INVALID_REDIRECT",
+      "redirectTo must be a same-origin path",
+    );
   }
 
   let userId: UserId | null = null;
@@ -107,6 +84,7 @@ export async function startOAuthFlow({
   await oauthStateStore.put(state.token, flowState, OAUTH_STATE_TTL_MS);
 
   return {
+    state: state.token,
     authorizationUrl: signInOAuthClient.buildAuthorizationUrl({
       provider,
       state: state.token,

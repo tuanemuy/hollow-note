@@ -29,12 +29,14 @@ export const SCOPE_TASK_MAX_ATTEMPTS = 8;
  * continuations. Storing the next task shares the unit of work of the
  * turn it follows.
  *
- * Claiming is the enclosing scope transaction: a scope object has a
- * single writer, so `claimDue` reads the due, non-failed rows in `dueAt`
- * order and the caller settles each with `complete` (done) or `backoff`
- * (nothing could be processed while targets remain). A turn that throws
- * rolls the whole transaction back, claim included, and the row stays
- * due.
+ * Claiming is a scope transaction: a scope object has a single writer,
+ * so `claimDue` reads the due, non-failed rows in `dueAt` order and the
+ * runner settles each one. The turn itself runs in a transaction of its
+ * own (ADR-055) and settles its row there with `complete` (done),
+ * `schedule` (a further page follows) or `backoffOrSchedule` (targets
+ * remain but none could be processed). A turn that throws rolls its own
+ * transaction back and leaves the row exactly as the claim saw it, so
+ * the runner backs it off on the turn's behalf.
  *
  * `backoff` bumps `attempt` and pushes `dueAt` out exponentially
  * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^attempt, capped by
@@ -43,6 +45,12 @@ export const SCOPE_TASK_MAX_ATTEMPTS = 8;
  * permanently failing target must not breed continuations forever.
  * "Zero targets left" is a normal ending: it calls `complete`, not
  * `backoff`.
+ *
+ * `backoff` is a no-op on a row that is gone: a turn which already
+ * completed its row has nothing left to retry. `backoffOrSchedule` is
+ * the variant for a turn that stalls before any row exists — an
+ * operation's first command arrives as an event, not as a task — where
+ * a no-op would leave the retry with no driver at all.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */
@@ -58,4 +66,12 @@ export interface ScopeTaskScheduler {
   claimDue(now: Date, limit: number): Promise<readonly ScopeTask[]>;
   complete(kind: string, operationId: string): Promise<void>;
   backoff(kind: string, operationId: string, now: Date): Promise<void>;
+  backoffOrSchedule(
+    input: Readonly<{
+      kind: string;
+      operationId: string;
+      payload: ScopeTaskPayload;
+      now: Date;
+    }>,
+  ): Promise<void>;
 }

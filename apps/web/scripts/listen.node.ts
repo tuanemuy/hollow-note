@@ -11,6 +11,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { config as loadEnv } from "dotenv";
 
+// This launcher only ever serves a production bundle — vite already
+// folded `process.env.NODE_ENV === "production"` to `true` inside it —
+// so the runtime env must say the same thing, or boot-time guards that
+// read it (the dev IdP refusal of ADR-003) never fire. Declared before
+// dotenv so `.env` cannot quietly downgrade it; an operator who really
+// wants otherwise passes `NODE_ENV=…` on the command line.
+process.env.NODE_ENV ??= "production";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: path.resolve(here, "../.env"), quiet: true });
 

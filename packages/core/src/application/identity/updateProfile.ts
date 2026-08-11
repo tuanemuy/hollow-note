@@ -1,4 +1,5 @@
 import type { EventDraft } from "@repo/core/domain/common/event";
+import type { IdentityUniqueDirectory } from "@repo/core/domain/identity/ports/identityUniqueDirectory";
 import type { ActiveUser } from "@repo/core/domain/identity/user";
 import { User } from "@repo/core/domain/identity/user";
 import {
@@ -10,6 +11,7 @@ import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import type { ServiceArgs } from "../types";
 import {
   activateUniqueKeys,
+  holdsActiveUniqueKey,
   releaseActiveUniqueKey,
   releaseUniqueKeys,
   reserveUniqueKeys,
@@ -26,11 +28,14 @@ export type UpdateProfileInput = Readonly<{
 
 /**
  * What the request asks of the handle. Absent / `null` leaves it alone;
- * the empty string is the spec's spelling of "unset it".
+ * the empty string is the spec's spelling of "unset it". `reclaim` asks
+ * for the handle the user row already names, whose durable claim is
+ * missing from the directory.
  */
 type HandlePlan =
   | Readonly<{ kind: "keep" }>
   | Readonly<{ kind: "assign"; handle: Handle }>
+  | Readonly<{ kind: "reclaim"; handle: Handle }>
   | Readonly<{ kind: "clear" }>;
 
 /**
@@ -61,21 +66,32 @@ const accountUnavailable = (): ValidationError =>
 const userNotFound = (): NotFoundError =>
   new NotFoundError("USER_NOT_FOUND", "User not found");
 
-function planHandle(
+async function planHandle(
+  deps: Readonly<{ identityUniqueDirectory: IdentityUniqueDirectory }>,
   user: ActiveUser,
   raw: string | null | undefined,
-): HandlePlan {
+): Promise<HandlePlan> {
   if (raw === undefined || raw === null) {
     return { kind: "keep" };
   }
   if (raw.trim().length === 0) {
     return user.handle === null ? { kind: "keep" } : { kind: "clear" };
   }
-  // Re-setting the handle one already owns is a no-op rather than a
-  // reservation: the directory row is already `active` for this user and
-  // `reserve` would answer its own claim with `HANDLE_ALREADY_USED`.
   const handle = Handle.create(raw);
-  return handle === user.handle ? { kind: "keep" } : { kind: "assign", handle };
+  if (handle !== user.handle) {
+    return { kind: "assign", handle };
+  }
+  // Re-setting the handle one already owns is a no-op only while the
+  // claim is really published: `reserve` would answer this user's own
+  // `active` row with `HANDLE_ALREADY_USED`. A saga stopped between the
+  // shard commit and `activate` leaves no claim behind, and this re-run
+  // is the only thing that can publish it again (ADR-076).
+  const claimed = await holdsActiveUniqueKey(deps, {
+    kind: "handle",
+    normalizedKey: handle,
+    expectedUserId: user.id,
+  });
+  return claimed ? { kind: "keep" } : { kind: "reclaim", handle };
 }
 
 /**
@@ -90,6 +106,12 @@ function planHandle(
  * request still might fail; activating after the release would leave the
  * new key parked. The old claim is freed by `normalizedKey` because the
  * operation that created it is long past (ADR-015).
+ *
+ * A saga stopped between the commit and the activation leaves the user
+ * row naming a handle the directory does not claim, which a rival could
+ * then take. Re-sending the same handle repairs it: the plan reads the
+ * directory before collapsing to a no-op and reserves again under the
+ * same deterministic operation id (ADR-076).
  *
  * Concurrency is decided by the user version observed before the
  * transaction: a profile write that committed in between makes this one a
@@ -134,16 +156,22 @@ export async function updateProfile({
         }
       : {}),
   };
-  const plan = planHandle(observed.entity, input.handle);
+  const plan = await planHandle(container, observed.entity, input.handle);
+  const claimedHandle =
+    plan.kind === "assign" || plan.kind === "reclaim" ? plan.handle : null;
+  // `reclaim` re-publishes the claim for the handle the user row already
+  // names, so there is no superseded claim to tear down afterwards.
+  const supersededHandle =
+    plan.kind === "assign" || plan.kind === "clear" ? previousHandle : null;
 
   const now = clock.now();
   const parentOperationId = profileOperationId(userId);
   const reservations =
-    plan.kind === "assign"
+    claimedHandle !== null
       ? await reserveUniqueKeys(container, {
           parentOperationId,
           userId,
-          keys: [{ kind: "handle", normalizedKey: plan.handle }],
+          keys: [{ kind: "handle", normalizedKey: claimedHandle }],
         })
       : [];
 
@@ -200,12 +228,12 @@ export async function updateProfile({
     },
   });
 
-  if (plan.kind !== "keep" && previousHandle !== null) {
+  if (supersededHandle !== null) {
     await releaseActiveUniqueKey(container, {
       kind: "handle",
-      normalizedKey: previousHandle,
+      normalizedKey: supersededHandle,
       expectedUserId: userId,
-      operationId: handleReleaseOperationId(userId, previousHandle),
+      operationId: handleReleaseOperationId(userId, supersededHandle),
     });
   }
 

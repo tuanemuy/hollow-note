@@ -3,32 +3,31 @@ import type { SignInOAuthClient } from "../../domain/identity/ports/signInOAuthC
 import type { OAuthProvider } from "../../domain/identity/valueObject";
 import { expectValidation } from "./asserts";
 
+export type MintAuthorizationCode = (
+  grant: Readonly<{
+    providerAccountId: string;
+    email: string;
+    emailVerified: boolean;
+    displayName: string | null;
+    codeChallenge: string;
+  }>,
+) => string;
+
 /**
  * How the adapter under test can be driven through a code exchange.
  * `offline` providers (the dev IdP) can mint their own authorization
- * code, so the exchange contract is verifiable without a network;
- * `live` providers can only be checked up to the request they build.
+ * code, so the exchange contract is verifiable here; for anything else
+ * the caller states why it cannot be, and the exchange cases register as
+ * skipped instead of running empty.
  */
 export type SignInOAuthExchangeMode =
-  | Readonly<{
-      kind: "offline";
-      mintCode: (
-        grant: Readonly<{
-          providerAccountId: string;
-          email: string;
-          emailVerified: boolean;
-          displayName: string | null;
-          codeChallenge: string;
-        }>,
-      ) => string;
-    }>
-  | Readonly<{ kind: "live" }>;
+  | Readonly<{ kind: "offline"; mintCode: MintAuthorizationCode }>
+  | Readonly<{ kind: "unverifiable"; reason: string }>;
 
 export type SignInOAuthClientHarness = Readonly<{
   client: SignInOAuthClient;
   provider: OAuthProvider;
   redirectUri: string;
-  exchange: SignInOAuthExchangeMode;
 }>;
 
 export type MakeSignInOAuthClientHarness = () =>
@@ -40,20 +39,36 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 /**
  * Shared conformance suite for `SignInOAuthClient` (ADP-identity-033/034).
  *
- * Split in two so the credential gate only covers what actually needs a
- * provider (AC-6): the authorization-request half is pure — challenge
- * derivation and URL building never talk to anyone — and runs for every
- * registered adapter, while the exchange half is skipped when the
- * provider's credentials are absent. `enabled: false` skips that half
- * rather than deleting the registration, so missing credentials stay
- * visible in the test report.
+ * Split in two so that each half reports honestly (AC-6): the
+ * authorization-request half is pure — challenge derivation and URL
+ * building never talk to anyone — and runs for every registered adapter,
+ * while the exchange half needs an authorization code the harness can
+ * mint. An adapter that cannot mint one registers the exchange cases as
+ * skipped, carrying the reason in the suite name, so "not verified here"
+ * never reads as a passing case.
  */
 export function describeSignInOAuthClientContract(
   adapterName: string,
   makeHarness: MakeSignInOAuthClientHarness,
-  options: Readonly<{ enabled?: boolean }> = {},
+  exchange: SignInOAuthExchangeMode,
 ): void {
-  const gated = options.enabled === false ? describe.skip : describe;
+  const gated = exchange.kind === "offline" ? describe : describe.skip;
+  const exchangeSuite =
+    exchange.kind === "offline"
+      ? `SignInOAuthClient code exchange [${adapterName}]`
+      : `SignInOAuthClient code exchange [${adapterName}] (unverifiable: ${exchange.reason})`;
+  // `describe.skip` still collects its body, so the skipped half needs a
+  // minter to close over. It throws rather than returning a dummy code:
+  // if the gate is ever widened by mistake, the cases fail loudly
+  // instead of passing without touching the adapter.
+  const mintCode: MintAuthorizationCode =
+    exchange.kind === "offline"
+      ? exchange.mintCode
+      : () => {
+          throw new Error(
+            `[${adapterName}] cannot mint an authorization code: ${exchange.reason}`,
+          );
+        };
 
   describe(`SignInOAuthClient authorization request [${adapterName}]`, () => {
     let harness: SignInOAuthClientHarness;
@@ -90,7 +105,7 @@ export function describeSignInOAuthClientContract(
     });
   });
 
-  gated(`SignInOAuthClient conformance [${adapterName}]`, () => {
+  gated(exchangeSuite, () => {
     let harness: SignInOAuthClientHarness;
 
     beforeEach(async () => {
@@ -98,9 +113,6 @@ export function describeSignInOAuthClientContract(
     });
 
     it("rejects a malformed authorization code with OAUTH_CODE_INVALID", async () => {
-      if (harness.exchange.kind === "live") {
-        return;
-      }
       await expectValidation(
         harness.client.exchangeCode({
           provider: harness.provider,
@@ -113,12 +125,8 @@ export function describeSignInOAuthClientContract(
     });
 
     it("exchanges a code for the provider profile and propagates emailVerified", async () => {
-      const exchange = harness.exchange;
-      if (exchange.kind === "live") {
-        return;
-      }
       const codeVerifier = "verifier-1";
-      const code = exchange.mintCode({
+      const code = mintCode({
         providerAccountId: "provider-account-1",
         email: "oauth-user@example.com",
         emailVerified: false,
@@ -144,11 +152,7 @@ export function describeSignInOAuthClientContract(
     });
 
     it("rejects a code whose PKCE challenge does not match the verifier", async () => {
-      const exchange = harness.exchange;
-      if (exchange.kind === "live") {
-        return;
-      }
-      const code = exchange.mintCode({
+      const code = mintCode({
         providerAccountId: "provider-account-1",
         email: "oauth-user@example.com",
         emailVerified: true,

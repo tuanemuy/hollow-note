@@ -157,7 +157,7 @@ describe("authResidueCleanup", () => {
     );
   });
 
-  it("TC-identity-042: a lost phase-switch response resumes from the saved table", async () => {
+  it("TC-identity-042: a lost phase-switch response resumes from the saved table and still satisfies finalize", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
     await bumpEpochTo(h, userId, 1);
@@ -165,20 +165,32 @@ describe("authResidueCleanup", () => {
     seedRows(h, userId, 3, 0, "session-old");
     seedRows(h, userId, 2, 0, "token-old");
 
+    await h.workerContainer.accountDeletionManifestStore.begin(
+      "deletion-1",
+      UserId.create(userId),
+    );
+    const turn = {
+      userId,
+      authEpoch: 1,
+      table: "authTokens",
+      deletionOperationId: "deletion-1",
+    } as const;
+
     // Re-delivering the sessions turn must not walk back from the
     // authTokens phase: it deletes nothing and re-emits the same switch.
-    await authResidueCleanup(
-      event({ userId, authEpoch: 1, table: "authTokens" }),
-      h.workerContainer,
-    );
+    await authResidueCleanup(event(turn), h.workerContainer);
     expect(h.backend.authTokens.size).toBe(0);
     expect(h.backend.sessions.size).toBe(3);
 
-    await authResidueCleanup(
-      event({ userId, authEpoch: 1, table: "authTokens" }),
-      h.workerContainer,
-    );
+    await authResidueCleanup(event(turn), h.workerContainer);
     expect(h.backend.authTokens.size).toBe(0);
+    expect(h.backend.sessions.size).toBe(3);
+    expect(continuations(h)).toHaveLength(0);
+    // Resuming from the saved phase is only half the claim: the terminal
+    // turn must also earn the receipt finalize waits for.
+    expect(h.backend.manifestHeaders.get("deletion-1")?.receipts).toContain(
+      "authResidue",
+    );
   });
 
   it("TC-identity-043: a turn whose epoch was overtaken deletes nothing and stops the chain", async () => {
@@ -196,6 +208,9 @@ describe("authResidueCleanup", () => {
 
     expect(h.backend.sessions.size).toBe(9);
     expect(continuations(h)).toHaveLength(0);
+    // The overtaken turn carries the older generation in its payload;
+    // writing it back would revive every credential it names.
+    expect(h.backend.users.get(userId)?.authEpoch).toBe(2);
   });
 
   it("never deletes rows of the current generation", async () => {

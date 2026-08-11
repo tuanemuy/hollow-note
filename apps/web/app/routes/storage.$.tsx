@@ -27,6 +27,14 @@ export const Route = createFileRoute("/storage/$")({
         } catch {
           return notFound();
         }
+        // `publicUrl` is only for objects that really are public, and
+        // today that is avatars alone. The rest of the key space (note
+        // sources, media, generated artifacts) shares this store, so the
+        // route has to hold that line itself rather than trust that
+        // nothing else was ever written.
+        if (ObjectKey.purposeOf(key) !== "avatar") {
+          return notFound();
+        }
         const container = await getContainer();
         const object = await container.objectStorage.get(key);
         if (object === null) {

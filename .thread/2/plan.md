@@ -138,6 +138,8 @@
 - **P-22 の「再認証要求」状態を実装しない**。`spec/pages/index.md` の P-22 状態一覧には「再認証要求」があり、シナリオ AC-06 は「パスワードを追加する際は Google 再認可を求める」としているが、`spec/usecases/identity.md` の `addPasswordIdentity` 手順に再認可が無い。`PAGE-p22-001` はチェックを付ける行なので、この状態を出さない判断を縮退として明記し、spec-sync 候補（ステップ 34）に載せる。マニュアル TC-07 手順 2 の skip と同じ理由。
 - **Google OAuth アダプターの適合スイートは資格情報の無い環境で skip される**（AC-6 / ADR-003）。CI と既定の開発機で実際に実行されるのは dev IdP アダプターと、両アダプター共通の `deriveCodeChallenge` 契約のみ。
 - **アイコンをアップロードしてプロフィールを保存せずに離脱すると、参照されない `StoredFile` が 1 件残る**（ADR-016 の 2 段経路の帰結）。orphan media 回収は #6 の担当。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` の値には現れる。
+- **`addPasswordIdentity` が再認証を求めない**ことのセキュリティ上の帰結（レビュー R1 / Security W-007）: セッションを奪取された時点でパスワード手段を 1 本追加でき、`authEpoch` も進まないため、被害者が「他の端末からサインアウト」しても追加された identity は残り、攻撃者は以後も正規のサインイン手段で入り直せる永続的なアクセス手段を得る。上の「P-22 の『再認証要求』状態を実装しない」と同一の縮退で、spec-sync ではシナリオ AC-06 を正として `spec/usecases/identity.md` に再認証手順を足す方向で解消する。
+- **認証系メールの応答時間を等時化しない**（レビュー R1 / Security W-004、triage の裁定 5 = defer → Issue #18）。`resendVerificationEmail` / `requestPasswordReset` は応答**内容**は `UNIFORM_RESPONSE` で完全に同一だが、経路の重さが 3 段階（未登録 = directory 解決のみ / 対象外 = + user 読み / 対象 = + Global UoW + `mailSender.send` の await）に分かれるため、実 `MailSender` 配備では応答時間がアドレス登録有無のオラクルになる。`spec/usecases/identity.md` は時間について何も書いていないので spec 違反ではないが、ADR-028 が「所要時間を揃える」を要求しており `signInWithPassword` はダミーハッシュ検証で実現済みなので、この 2 経路だけ非対称。正しい形（全経路一律の下限時間）は実 `MailSender` と一緒に決める横断的関心事のため #18 へ。
 
 **本番の外部サービス結合**: 実メール送信（memory の `MailSender` のまま。本文は開発ログから読む）、R2 等の実オブジェクトストレージ（memory + 配信ルート）、Cloudflare ランタイム（#11）。Google OAuth は実アダプターを実装する（ADR-003）が、資格情報のない環境では dev IdP を明示的に選択する。
 

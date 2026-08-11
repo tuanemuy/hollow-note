@@ -58,7 +58,8 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | Variable              | Required | Default                 | Purpose                                                                             |
 | --------------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
 | `APP_URL`             | yes      | `http://localhost:3000` | Public origin used to build absolute URLs (verification links, share URLs).         |
-| `OAUTH_DEV_MODE`      | see below | —                      | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Refused together with `NODE_ENV=production`. |
+| `OAUTH_DEV_MODE`      | see below | — (commented out in `.env.example`) | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Refused together with `NODE_ENV=production`, which `pnpm start` declares. |
+| `NODE_ENV`            | no       | `production` under `pnpm start` | `scripts/listen.node.ts` declares it before loading `.env`, so the boot-time guards see the same value vite folded into the bundle. |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | see below | — | Google OpenID Connect credentials. Authorized redirect URI: `${APP_URL}/auth/callback/google`. |
 | `PORT`                | no       | `3000`                  | HTTP listener port.                                                                 |
 | `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
@@ -76,7 +77,9 @@ Boot picks exactly one sign-in provider and **fails if it cannot** — there is 
 2. Otherwise `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` → real Google.
 3. Neither → startup error.
 
-If you already have an `apps/web/.env` from an earlier revision, **add `OAUTH_DEV_MODE=true` to it**; without one of the two setups the server no longer boots.
+The dev IdP signs in whoever is typed into its consent screen, so it is **opt-in per machine**: `.env.example` ships it commented out, and `pnpm start` declares `NODE_ENV=production` before reading `.env`, which turns rule 1 into a refusal. Copying `.env.example` and running `pnpm dev` therefore stops at rule 3 with the setup hint — **uncomment `OAUTH_DEV_MODE=true` in your own `apps/web/.env`** (never on a deployed host). The same line is what an `.env` from an earlier revision needs.
+
+Running the production build against the dev IdP is deliberately awkward: it takes an explicit `NODE_ENV=development pnpm start` on the command line. Prefer `pnpm dev` for that.
 
 The share-token encryption key ring is minted fresh at process start (ephemeral AES-256-GCM key). Existing share URLs therefore survive only as long as the process — consistent with the rest of the in-memory model.
 

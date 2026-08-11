@@ -3,8 +3,11 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { NoteProjectionEntry } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
 import { WITHDRAWN_AUTHOR_DISPLAY_NAME } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import type { WorkerContainer } from "../../di/types";
+import type { AccountDeletionManifestItem } from "../../ports/accountDeletionManifestStore";
 import { dispatchAccountDeletionRedaction } from "../deleteAccount/authorRedaction";
 import { finalizeAccountDeletion } from "../deleteAccount/finalize";
 import { signUpVerified } from "./authFlowHelpers";
@@ -127,6 +130,52 @@ const ackedCount = (h: TestHarness, operationId: string): number =>
       item.publicRedactionAckedAt !== null,
   ).length;
 
+const MEMBERSHIP_ITEM: AccountDeletionManifestItem = {
+  key: "membership:workspace-1",
+  kind: "membership",
+  workspaceId: WorkspaceId.create("workspace-1"),
+  edgeState: "active",
+  membershipId: null,
+  prepareCommandKey: null,
+  prepareDispatchedAt: null,
+  prepareAckedAt: null,
+  releaseCommandKey: null,
+  releaseDispatchedAt: null,
+  releaseAckedAt: null,
+  cleanupAckedAt: null,
+};
+
+/**
+ * A container whose redaction claim carries one membership item at the
+ * head of every page — the shape `claimPending` takes once the workspace
+ * slice fixes membership targets, and the reason a turn may not measure
+ * its page by the targets it kept.
+ */
+const withMembershipInEveryPage = (h: TestHarness): WorkerContainer => ({
+  ...h.workerContainer,
+  globalUnitOfWorkProvider: {
+    run: (fn) =>
+      h.workerContainer.globalUnitOfWorkProvider.run((ctx) =>
+        fn({
+          ...ctx,
+          accountDeletionManifestStore: {
+            ...ctx.accountDeletionManifestStore,
+            claimPending: async (operationId, phase, limit) => {
+              const items = await ctx.accountDeletionManifestStore.claimPending(
+                operationId,
+                phase,
+                limit,
+              );
+              return phase === "redaction"
+                ? [MEMBERSHIP_ITEM, ...items.slice(0, limit - 1)]
+                : items;
+            },
+          },
+        }),
+      ),
+  },
+});
+
 /** The successor a redaction turn stored, as the relay would deliver it. */
 const lastDispatch = (h: TestHarness) =>
   h.backend.outbox
@@ -215,6 +264,26 @@ describe("deleteAccount author redaction", () => {
     expect(publicAuthor(h, noteKey(0))?.displayName).toBe(
       WITHDRAWN_AUTHOR_DISPLAY_NAME,
     );
+  });
+
+  it("keeps the phase going on a full page that is not all author routes", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h, EMAIL);
+    seedAuthorRoutes(h, userId, 150);
+    const operationId = await acceptDeletion(h, { userId, email: EMAIL });
+    await buildDeletionManifest(h, operationId);
+
+    await dispatchAccountDeletionRedaction(withMembershipInEveryPage(h), {
+      type: "identity.accountDeletionDispatchContinued",
+      operationId,
+      phase: "redaction",
+      cursor: null,
+    });
+
+    // 99 of the 100 claimed rows were author routes; handing over to
+    // finalize here would have left the other 51 unredacted.
+    expect(ackedCount(h, operationId)).toBe(99);
+    expect(lastDispatch(h)).toMatchObject({ phase: "redaction", cursor: "1" });
   });
 
   it("acknowledges both planes of a note whose route is already gone", async () => {

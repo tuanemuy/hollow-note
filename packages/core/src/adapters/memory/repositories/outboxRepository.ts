@@ -26,6 +26,7 @@ export function createMemoryOutboxRepository(
     async save(events: readonly DomainEvent[]): Promise<void> {
       const createdAt = backend.clock.now();
       for (const event of events) {
+        if (table.has(event.id)) continue;
         table.set(event.id, {
           id: event.id,
           type: event.type,

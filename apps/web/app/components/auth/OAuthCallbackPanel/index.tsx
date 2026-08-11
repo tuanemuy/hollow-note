@@ -9,8 +9,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { renderErrorMessage } from "@/presentation/errorDisplay";
-import { extractSerializedError } from "@/presentation/errorResponse";
+import {
+  OAUTH_FLOW_INTERRUPTED_MESSAGE,
+  renderErrorMessage,
+} from "@/presentation/errorDisplay";
+import {
+  extractSerializedError,
+  type SerializedError,
+} from "@/presentation/errorResponse";
 import {
   completeOAuthCallbackFn,
   startOAuthSignInFn,
@@ -26,7 +32,9 @@ import {
  * サインインを完了できず、同意からやり直す必要がある）。
  *
  * どのユースケースを走らせるかは `state` の intent だけが決める
- * （ADR-007）ので、この画面は分岐を持たず結果だけを表示する。
+ * （ADR-007）ので、この画面は分岐を持たず結果だけを表示する。成功以外は
+ * intent が判っていない（`state` を消費できていない）ため、文言と戻り先
+ * を intent 中立に倒す（ADR-084）。
  */
 
 type Phase =
@@ -128,28 +136,16 @@ function initialPhase(
     return { kind: "cancelled" };
   }
   if (error !== null || state === null || code === null) {
-    return {
-      kind: "failed",
-      message:
-        "認可の手続きが途中で切れました。もう一度サインインからやり直してください。",
-    };
+    return { kind: "failed", message: OAUTH_FLOW_INTERRUPTED_MESSAGE };
   }
   return { kind: "processing" };
 }
 
-function classify(error: ReturnType<typeof extractSerializedError>): Phase {
-  if (error.kind === "validation") {
-    switch (error.code) {
-      case "OAUTH_EMAIL_UNVERIFIED":
-        return { kind: "needsReauthorization" };
-      case "OAUTH_STATE_INVALID":
-      case "OAUTH_CODE_INVALID":
-        return {
-          kind: "failed",
-          message:
-            "認可の手続きが途中で切れました。もう一度サインインからやり直してください。",
-        };
-    }
+// 文言はすべて辞書（`errorDisplay`）に任せ、ここで分岐するのは画面状態が
+// 変わる 1 件だけにする。
+function classify(error: SerializedError): Phase {
+  if (error.kind === "validation" && error.code === "OAUTH_EMAIL_UNVERIFIED") {
+    return { kind: "needsReauthorization" };
   }
   return { kind: "failed", message: renderErrorMessage(error) };
 }
@@ -200,15 +196,18 @@ function PhaseResult({
       return (
         <Result
           icon={<MinusIcon className="text-ink-tertiary" />}
-          title="サインインをキャンセルしました"
+          title="手続きをキャンセルしました"
           body="何も変更されていません。必要になったらいつでもやり直せます。"
           actions={
-            <Link to="/signin" className={outlineClass}>
-              サインインに戻る
+            <Link to="/" className={outlineClass}>
+              Hollow に戻る
             </Link>
           }
         />
       );
+    // この状態に来るのはサインインの経路だけ（`OAUTH_EMAIL_UNVERIFIED` は
+    // `completeOAuthSignIn` しか投げない）ので、ここだけは intent を前提に
+    // した文言と再開導線でよい。
     case "needsReauthorization":
       return (
         <Result
@@ -235,7 +234,7 @@ function PhaseResult({
       return (
         <Result
           icon={<CrossIcon className="text-error" />}
-          title="サインインを完了できませんでした"
+          title="手続きを完了できませんでした"
           body={phase.message}
           actions={
             <>
@@ -246,8 +245,8 @@ function PhaseResult({
               >
                 もう一度試す
               </button>
-              <Link to="/signin" className={ghostClass}>
-                サインインに戻る
+              <Link to="/" className={ghostClass}>
+                Hollow に戻る
               </Link>
             </>
           }

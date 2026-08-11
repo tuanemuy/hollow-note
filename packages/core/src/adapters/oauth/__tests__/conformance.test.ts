@@ -11,8 +11,9 @@ const REDIRECT_URI = `${APP_URL}/auth/callback/google`;
 /**
  * The single place the Google suite's precondition is expressed: without
  * a client id / secret there is no provider to talk to, so the
- * registration below stays and its exchange half runs skipped (AC-6).
- * The authorization-request half needs no credentials and always runs.
+ * registration below stays and its exchange half registers skipped
+ * (AC-6). The authorization-request half needs no credentials and always
+ * runs.
  */
 function googleCredentials(): {
   clientId: string;
@@ -28,12 +29,15 @@ function googleCredentials(): {
     : null;
 }
 
-describeSignInOAuthClientContract("dev", () => ({
-  client: createDevSignInOAuthClient({ appUrl: APP_URL }),
-  provider: "google",
-  redirectUri: REDIRECT_URI,
-  exchange: { kind: "offline", mintCode: encodeDevAuthorizationCode },
-}));
+describeSignInOAuthClientContract(
+  "dev",
+  () => ({
+    client: createDevSignInOAuthClient({ appUrl: APP_URL }),
+    provider: "google",
+    redirectUri: REDIRECT_URI,
+  }),
+  { kind: "offline", mintCode: encodeDevAuthorizationCode },
+);
 
 const credentials = googleCredentials();
 describeSignInOAuthClientContract(
@@ -44,7 +48,12 @@ describeSignInOAuthClientContract(
     ),
     provider: "google",
     redirectUri: REDIRECT_URI,
-    exchange: { kind: "live" },
   }),
-  { enabled: credentials !== null },
+  {
+    kind: "unverifiable",
+    reason:
+      credentials === null
+        ? "GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET are not set"
+        : "Google only issues an authorization code through a browser consent screen",
+  },
 );

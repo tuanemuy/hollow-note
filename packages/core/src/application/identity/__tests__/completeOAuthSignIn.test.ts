@@ -122,6 +122,19 @@ describe("completeOAuthSignIn", () => {
     );
   });
 
+  it("shortens an over-long provider name to the DisplayName limit", async () => {
+    const h = createTestHarness();
+
+    const { userId } = await signInWithOAuth(h, {
+      displayName: "x".repeat(80),
+    });
+
+    const user = h.backend.users.get(userId);
+    expect(user?.status === "deleted" ? null : user?.displayName).toBe(
+      "x".repeat(50),
+    );
+  });
+
   it("TC-identity-025: an existing provider link signs the same user in without creating one", async () => {
     const h = createTestHarness();
     const first = await signInWithOAuth(h);

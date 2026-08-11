@@ -187,17 +187,24 @@ export type RequestContainer = SharedDeps &
     deletionTicketKeyRing: DeletionTicketKeyRing;
   }>;
 
-/** Sweep tables owned by `pruneExpiredAuthState` (spec/usecases/identity.md). */
+/**
+ * Sweep tables owned by `pruneExpiredAuthState`
+ * (spec/usecases/identity.md). Every table with an `expiresAt` retention
+ * window belongs here — this union is what makes a missing registration
+ * a type error rather than a table that is never collected.
+ */
 export type AuthStateTable =
   | "sessions"
   | "auth_tokens"
   | "login_attempts"
-  | "oauth_flow_states";
+  | "oauth_flow_states"
+  | "identity_removal_receipts";
 
 /**
- * Common shape of the four expiry sweeps (`SessionRepository` /
- * `AuthTokenRepository` / `LoginAttemptStore` / `OAuthStateStore`):
- * one bounded keyset page of rows with `expiresAt <= now`.
+ * Common shape of the expiry sweeps (`SessionRepository` /
+ * `AuthTokenRepository` / `LoginAttemptStore` / `OAuthStateStore` /
+ * `IdentityRemovalReceiptStore`): one bounded keyset page of rows with
+ * `expiresAt <= now`.
  */
 export type ExpirySweep = Readonly<{
   deleteExpired(

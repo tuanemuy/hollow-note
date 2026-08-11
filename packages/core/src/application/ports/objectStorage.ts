@@ -26,8 +26,11 @@ export type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
  *
  * Only the plural `deleteMany` exists, since the single path to deleting
  * objects is that subscriber receiving a batch — one file is an array of
- * one. `put` returns the measured size and checksum, so nothing has to
- * ask the store about an object it just wrote.
+ * one. `put` returns the size and checksum **measured from the bytes it
+ * wrote**, so nothing has to ask the store about an object it just wrote
+ * and a mistaken `meta` cannot make the metadata row disagree with the
+ * object: `meta` says how the object should be served and what the
+ * caller believed it was sending, never what the answer will be.
  *
  * `publicUrl` builds the address a publicly served object is read from,
  * keeping the deployment's URL shape inside the adapter (ADR-011): the

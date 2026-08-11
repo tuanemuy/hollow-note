@@ -7,6 +7,7 @@ import {
   type InProcessRelayTrigger,
 } from "@repo/core/adapters/node/inProcessRelayTrigger";
 import type { WorkerContainer } from "@repo/core/application/di/types";
+import { pruneAccountDeletionManifests } from "@repo/core/application/identity/deleteAccount/terminalPrune";
 import type { Logger } from "@repo/core/application/ports/logger";
 import type { RelayTrigger } from "@repo/core/application/ports/relayTrigger";
 import type { ScopeTaskTrigger } from "@repo/core/application/ports/scopeTaskTrigger";
@@ -55,6 +56,8 @@ export type NodeWorkerRunner = Readonly<{
 const DEFAULT_RELAY_INTERVAL_MS = 60_000;
 const DEFAULT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SCOPE_TASK_INTERVAL_MS = 1_000;
+const RECEIPT_SWEEP_PAGE_LIMIT = 100;
+const RECEIPT_SWEEP_MAX_PAGES = 100;
 
 /**
  * Single-process orchestrator for the four background roles of the Node
@@ -132,11 +135,47 @@ export function createNodeWorkerRunner(
     logger,
   });
 
+  /**
+   * Reclaims the removal receipts whose 30 days are up. The store is a
+   * plain keyset sweep rather than a maintenance-run lane, so the bound
+   * lives here: a page cap keeps one tick from monopolizing the process,
+   * and the next tick resumes from the start since the sweep only ever
+   * removes expired rows.
+   */
+  const sweepIdentityRemovalReceipts = async (): Promise<void> => {
+    let cursor: string | null = null;
+    for (let page = 0; page < RECEIPT_SWEEP_MAX_PAGES; page += 1) {
+      const swept = await container.identityRemovalReceiptStore.deleteExpired(
+        container.clock.now(),
+        cursor,
+        RECEIPT_SWEEP_PAGE_LIMIT,
+      );
+      if (swept.nextCursor === null) return;
+      cursor = swept.nextCursor;
+    }
+  };
+
+  // The three sweeps are isolated from one another: they reclaim
+  // unrelated tables, and the deletion ones carry personal data whose
+  // retention must not hinge on the outbox prune succeeding.
   const runPruneTick = async (): Promise<void> => {
     try {
       await pruneOutbox(container, { retentionMs: outboxRetentionMs });
     } catch (cause) {
       logger.error("[runner.node] prune tick threw", { cause });
+    }
+    try {
+      await pruneAccountDeletionManifests({
+        container,
+        input: { type: "cron" },
+      });
+    } catch (cause) {
+      logger.error("[runner.node] manifest prune threw", { cause });
+    }
+    try {
+      await sweepIdentityRemovalReceipts();
+    } catch (cause) {
+      logger.error("[runner.node] removal receipt sweep threw", { cause });
     }
   };
 
@@ -172,9 +211,11 @@ export function createNodeWorkerRunner(
 
     // Drain crash-leftover backlog without waiting a full interval —
     // including the scope-plane continuations a previous process left
-    // due, which live in the task table rather than in its memory.
+    // due, which live in the task table rather than in its memory. The
+    // drain goes through the trigger so it collapses with a commit kick
+    // arriving in the same moment instead of racing it.
     track(runRelayTick());
-    track(runScopeTaskTick());
+    scopeTaskTrigger.kick();
 
     relayTimer = setInterval(() => {
       track(runRelayTick());
