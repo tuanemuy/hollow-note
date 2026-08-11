@@ -31,12 +31,16 @@ import {
 
 type Phase =
   | { kind: "processing" }
-  | { kind: "succeeded" }
+  | { kind: "succeeded"; intent: "signIn" | "linkIdentity" }
   | { kind: "cancelled" }
   | { kind: "needsReauthorization" }
   | { kind: "failed"; message: string };
 
-const FALLBACK_PATH = "/notes";
+/** 戻り先が `state` に無いときの落ち着き先。intent ごとに違う。 */
+const FALLBACK_PATH = {
+  signIn: "/notes",
+  linkIdentity: "/settings/auth",
+} as const;
 
 export function OAuthCallbackPanel({
   provider,
@@ -65,20 +69,20 @@ export function OAuthCallbackPanel({
     if (started.current === attempt) return;
     started.current = attempt;
     void (async () => {
-      let result: { redirectTo: string | null; created: boolean };
+      let result: Awaited<ReturnType<typeof complete>>;
       try {
         result = await complete({ data: { provider, state, code } });
       } catch (thrown) {
         setPhase(classify(extractSerializedError(thrown)));
         return;
       }
-      setPhase({ kind: "succeeded" });
-      // The session cookie is already issued; neither step below can turn
-      // this back into a failed sign-in, so both sit outside the try.
+      setPhase({ kind: "succeeded", intent: result.intent });
+      // The outcome is already durable; neither step below can turn this
+      // back into a failure, so both sit outside the try.
       await router.invalidate().catch(() => {
         console.error("Post-callback reconcile failed");
       });
-      router.history.push(result.redirectTo ?? FALLBACK_PATH);
+      router.history.push(result.redirectTo ?? FALLBACK_PATH[result.intent]);
     })();
   }, [provider, state, code, error, complete, router, attempt]);
 
@@ -164,12 +168,23 @@ function PhaseResult({
       return (
         <Result
           icon={<Spinner />}
-          title="サインインを完了しています"
+          title="手続きを完了しています"
           body="終わったら元の画面に戻ります。"
         />
       );
     case "succeeded":
-      return (
+      return phase.intent === "linkIdentity" ? (
+        <Result
+          icon={<CheckIcon className="text-success" />}
+          title="ログイン方法を追加しました"
+          body="次回からこの方法でもサインインできます。"
+          actions={
+            <Link to="/settings/auth" className={primaryClass}>
+              設定へ戻る
+            </Link>
+          }
+        />
+      ) : (
         <Result
           icon={<CheckIcon className="text-success" />}
           title="サインインしました"

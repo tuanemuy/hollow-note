@@ -41,31 +41,48 @@ const callbackSchema = z.object({
 
 /**
  * P-05 のコールバック消費（JSON POST）。分岐根拠は `state` の intent
- * だけで、パスの `:provider` は照合にしか使わない（ADR-007）。成功時は
- * ここでセッション Cookie を焼く — `Set-Cookie` はこの応答にしか
- * 載せられない。
+ * だけで、パスの `:provider` は照合にしか使わない（ADR-007）。サインイン
+ * のときだけここでセッション Cookie を焼く — `Set-Cookie` はこの応答に
+ * しか載せられない。認証手段の追加（`linkIdentity`）は既に認証済みの
+ * 要求なので Cookie に触れず、戻り先だけを返す。
+ *
+ * 画面が分岐できるよう、応答は intent 付きの判別共用体にする。
  */
 export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(callbackSchema))
-  .handler(async ({ data }) => {
-    const [{ container, module }, session] = await Promise.all([
-      loadServerDeps(
-        () => import("@repo/core/application/identity/completeOAuthCallback"),
-      ),
-      import("@/presentation/session"),
-    ]);
-    const view = await module.completeOAuthCallback({
-      container,
-      input: { provider: data.provider, state: data.state, code: data.code },
-    });
-    session.setSessionCookie(
-      view.sessionToken,
-      session.sessionCookieExpiry(container.clock.now()),
-    );
-    // The pending-verification marker belongs to the password sign-up
-    // flow; an OAuth account is verified by the provider, so leaving it
-    // behind would send a later visit back to the verification screen.
-    session.clearPendingVerificationCookie();
-    return { redirectTo: view.redirectTo, created: view.created };
-  });
+  .handler(
+    async ({
+      data,
+    }): Promise<
+      | { intent: "signIn"; redirectTo: string | null; created: boolean }
+      | { intent: "linkIdentity"; redirectTo: string | null }
+    > => {
+      const [{ container, module }, session] = await Promise.all([
+        loadServerDeps(
+          () => import("@repo/core/application/identity/completeOAuthCallback"),
+        ),
+        import("@/presentation/session"),
+      ]);
+      const view = await module.completeOAuthCallback({
+        container,
+        input: { provider: data.provider, state: data.state, code: data.code },
+      });
+      if (view.intent === "linkIdentity") {
+        return { intent: "linkIdentity", redirectTo: view.redirectTo };
+      }
+      session.setSessionCookie(
+        view.sessionToken,
+        session.sessionCookieExpiry(container.clock.now()),
+      );
+      // The pending-verification marker belongs to the password sign-up
+      // flow; an OAuth account is verified by the provider, so leaving it
+      // behind would send a later visit back to the verification screen.
+      session.clearPendingVerificationCookie();
+      return {
+        intent: "signIn",
+        redirectTo: view.redirectTo,
+        created: view.created,
+      };
+    },
+  );

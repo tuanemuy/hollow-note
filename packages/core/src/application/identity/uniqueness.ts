@@ -125,6 +125,36 @@ export async function releaseUniqueKeys(
 }
 
 /**
+ * Tears a **durable** (`active`) claim down, the mirror of the reserve →
+ * activate half: `beginRelease` marks the row `releasing` and re-keys it
+ * to `operationId`, then `release` drops it.
+ *
+ * Keyed by `normalizedKey` and the owner rather than by the reservation
+ * that created the claim: that operation is long past and its id cannot
+ * be re-derived by the one freeing the key (ADR-015). A row that is
+ * missing or held by someone else makes `beginRelease` a no-op, so this
+ * can never take a key away from its owner, and re-running the same
+ * `operationId` converges — which is what lets an at-least-once consumer
+ * call it.
+ */
+export async function releaseActiveUniqueKey(
+  deps: Pick<UniquenessDeps, "identityUniqueDirectory">,
+  params: UniqueKey &
+    Readonly<{
+      expectedUserId: UserId;
+      operationId: string;
+    }>,
+): Promise<void> {
+  await deps.identityUniqueDirectory.beginRelease({
+    kind: params.kind,
+    normalizedKey: params.normalizedKey,
+    expectedUserId: params.expectedUserId,
+    operationId: params.operationId,
+  });
+  await deps.identityUniqueDirectory.release(params.operationId);
+}
+
+/**
  * Publishes the durable claims after the authoritative write committed.
  *
  * A lost `activate` response is reconciled per the spec's convergence

@@ -1,3 +1,4 @@
+import type { Identity } from "@repo/core/domain/identity/identity";
 import type { ActiveUser } from "@repo/core/domain/identity/user";
 
 /**
@@ -70,12 +71,19 @@ export type CompleteOAuthSignInView = Readonly<{
 
 /**
  * Result of the one callback route, tagged with the intent the flow was
- * started for (ADR-007). The later intents (`linkIdentity`,
- * `integration`) answer with their own shapes, which is why this is a
- * union rather than the sign-in view alone.
+ * started for (ADR-007). Each intent answers with its own shape — only
+ * the sign-in arm carries a session token — which is why this is a union
+ * rather than the sign-in view alone. `integration` joins it in the
+ * external-connection slice.
+ *
+ * `redirectTo` is on the link arm because the usecase's DTO is
+ * `identityId` alone: the return path belongs to the flow the dispatcher
+ * consumed, not to the linking itself.
  */
-export type OAuthCallbackView = Readonly<{ intent: "signIn" }> &
-  CompleteOAuthSignInView;
+export type OAuthCallbackView =
+  | (Readonly<{ intent: "signIn" }> & CompleteOAuthSignInView)
+  | (Readonly<{ intent: "linkIdentity"; redirectTo: string | null }> &
+      LinkOAuthIdentityView);
 
 export type PruneExpiredAuthStateView = Readonly<{
   sessions: number;
@@ -96,4 +104,70 @@ export type RequestPasswordResetView = Readonly<Record<string, never>>;
 
 export type ResetPasswordView = Readonly<{
   userId: string;
+}>;
+
+/**
+ * One authentication method as the settings screen shows it. Nothing
+ * secret is projected: a password identity carries neither its hash nor
+ * a label, and an OAuth one is labelled by the address the provider
+ * reported (spec/usecases/identity.md#listidentities).
+ */
+export type IdentityListItemView = Readonly<{
+  id: string;
+  kind: "password" | "oauth";
+  provider: string | null;
+  accountLabel: string | null;
+  createdAt: Date;
+}>;
+
+export type ListIdentitiesView = Readonly<{
+  /** At most 8 by the `IdentityPolicy` invariant. */
+  identities: readonly IdentityListItemView[];
+  removable: boolean;
+}>;
+
+export const toIdentityListItemView = (
+  identity: Identity,
+): IdentityListItemView =>
+  identity.kind === "password"
+    ? {
+        id: identity.id,
+        kind: "password",
+        provider: null,
+        accountLabel: null,
+        createdAt: identity.createdAt,
+      }
+    : {
+        id: identity.id,
+        kind: "oauth",
+        provider: identity.provider,
+        accountLabel: identity.providerEmail,
+        createdAt: identity.createdAt,
+      };
+
+export type AddPasswordIdentityView = Readonly<{
+  identityId: string;
+}>;
+
+/** Deliberately empty — the spec gives `changePassword` no output. */
+export type ChangePasswordView = Readonly<Record<string, never>>;
+
+/** Deliberately empty — the spec gives `removeIdentity` no output. */
+export type RemoveIdentityView = Readonly<Record<string, never>>;
+
+export type LinkOAuthIdentityView = Readonly<{
+  identityId: string;
+}>;
+
+/** Deliberately empty — `signOut` always succeeds and reports nothing. */
+export type SignOutView = Readonly<Record<string, never>>;
+
+/**
+ * `revocationAccepted` rather than a deleted count: revocation is the
+ * epoch bump, and the physical rows are reclaimed out of band, so a count
+ * would describe the cleanup rather than the outcome
+ * (spec/usecases/identity.md#signoutothersessions 手順 3).
+ */
+export type SignOutOtherSessionsView = Readonly<{
+  revocationAccepted: true;
 }>;

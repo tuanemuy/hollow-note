@@ -19,6 +19,7 @@ import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
+import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
 
@@ -72,6 +73,11 @@ const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
   path: '/notes/$noteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsAuthRoute = SettingsAuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
 const AuthCallbackProviderRoute = AuthCallbackProviderRouteImport.update({
   id: '/auth/callback/$provider',
   path: '/auth/callback/$provider',
@@ -85,7 +91,7 @@ const DevOauthAuthorizeRoute = DevOauthAuthorizeRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/settings': typeof SettingsRouteRoute
+  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
@@ -93,13 +99,14 @@ export interface FileRoutesByFullPath {
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/settings': typeof SettingsRouteRoute
+  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
@@ -107,6 +114,7 @@ export interface FileRoutesByTo {
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
   '/notes': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
@@ -114,7 +122,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/settings': typeof SettingsRouteRoute
+  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
   '/notes/': typeof NotesIndexRoute
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
@@ -138,6 +147,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
     | '/notes/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -152,6 +162,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
     | '/notes'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
     | '/notes/'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
@@ -173,7 +185,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  SettingsRouteRoute: typeof SettingsRouteRoute
+  SettingsRouteRoute: typeof SettingsRouteRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   SigninRoute: typeof SigninRoute
@@ -258,6 +270,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesNoteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/auth': {
+      id: '/settings/auth'
+      path: '/auth'
+      fullPath: '/settings/auth'
+      preLoaderRoute: typeof SettingsAuthRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
     '/auth/callback/$provider': {
       id: '/auth/callback/$provider'
       path: '/auth/callback/$provider'
@@ -275,9 +294,21 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface SettingsRouteRouteChildren {
+  SettingsAuthRoute: typeof SettingsAuthRoute
+}
+
+const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
+  SettingsAuthRoute: SettingsAuthRoute,
+}
+
+const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
+  SettingsRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  SettingsRouteRoute: SettingsRouteRoute,
+  SettingsRouteRoute: SettingsRouteRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   SigninRoute: SigninRoute,

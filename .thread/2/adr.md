@@ -898,3 +898,59 @@ Accepted
 ### Consequences
 - 良い点: 画面の判定とサーバーの判定が食い違わず（クライアントが通したものはサーバーも通る）、TC-identity-208 の `WeakPassword` はサーバー由来のまま検証できる。
 - トレードオフ: 段階の刻み方は仕様ではなく実装の判断なので、デザイン側の指定が入ったら差し替える。
+
+---
+
+## ADR-044: `removeIdentity` の operation ID も合成で導出し、`identityRemovalRelease` は `IdempotencyStore` を通さない
+
+### Status
+Accepted
+
+### Context
+`spec/usecases/identity.md` の `removeIdentity` 手順 3 は `operationId = sha256("removeIdentity:" + identityId)` と書く。一方 ADR-035 は sub-operation ID について「sha256 ではなく構成で導出する」と決めており、application 層にハッシュ実装を置かない方針が既にある（`reservationOperationId`）。また plan.md の未解決事項は「非可換な副作用を持つ `identityRemovalRelease` は `IdempotencyStore` を通す」を想定と記していたが、ADR-024 が判断基準を「購読者名」ではなく**効果の可換性**に置き直した。
+
+### Decision
+- `removalOperationId(identityId) = "removeIdentity:" + identityId` とする。固定接頭辞と `:` を含まない ID の 2 要素なので、合成だけで一意性と決定性が得られる。決定性は「同じ解除の再送が同じ受領・同じ directory 解放へ収束する」ために要るのであって、不可逆性は要らない。
+- `identityRemovalRelease` は `IdempotencyStore` を通さない。効果は 1 つの key に対する `beginRelease` + `release` で、再配送しても解放するものが残っていないだけであり、`beginRelease` は受領の所有者以外の行に触れない。契約上 `markProcessed` は本処理と同一 UoW でなければならないが、directory は key shard 上にあり UserId shard の UoW には入らない。
+
+### Consequences
+- 良い点: application 層にハッシュ実装が入らず、ADR-035 と同じ規則で読める。冪等性の根拠が購読者のコード（JSDoc）に残る。
+- トレードオフ: operation ID が `identityId` を平文で含む（内部 ID なので秘匿対象ではない）。spec の `sha256(...)` 表記との差が spec-sync 候補に 1 件増える（ADR-035 と同じ扱い）。
+
+---
+
+## ADR-045: OAuth コールバックの応答は intent 付きの判別共用体にし、`linkIdentity` は Cookie に触れない
+
+### Status
+Accepted
+
+### Context
+ADR-007 で `/auth/callback/$provider` は 1 ルート 2 ユースケースになり、テーマ C までは `OAuthCallbackView` が `{ intent: "signIn" } & CompleteOAuthSignInView` の 1 種類だった。ステップ 20 で `linkIdentity` が着地すると、その結果には `sessionToken` が無い（既に認証済みの要求なので新しいセッションを発行しない）。`completeOAuthCallbackFn` は現状 `view.sessionToken` を無条件に Cookie へ焼いている。
+
+### Decision
+- `OAuthCallbackView` を intent で判別する共用体に広げ、`linkIdentity` 側は `{ intent, redirectTo, identityId }` とする。`redirectTo` はユースケースの出力 DTO（spec は `identityId` のみ）ではなく**ディスパッチャーが flow から載せる** — 戻り先は「リンクしたこと」ではなく「どの flow だったか」に属する情報だから。
+- `completeOAuthCallbackFn` も同じ判別共用体を返し、`signIn` のときだけ `setSessionCookie` / `clearPendingVerificationCookie` を実行する。`linkIdentity` は Cookie に一切触れない。
+- P-05 の成功表示も intent で分岐する（「サインインしました」/「ログイン方法を追加しました」）。戻り先が `state` に無い場合の既定は intent ごとに違う（`/notes` / `/settings/auth`）。
+
+### Consequences
+- 良い点: 「セッション発行を伴わない intent」が型で表現され、Cookie を焼く経路が signIn の 1 本に閉じる。`integration`（#4）を足すときも同じ形で 1 arm 増やすだけになる。
+- トレードオフ: `completeOAuthCallbackFn` の戻り値型を明示する必要があり（推論だと arm が広がる）、画面側にも分岐が 1 つ増える。
+
+---
+
+## ADR-046: P-22 の「追加」はダイアログ、「変更」はパネルにする
+
+### Status
+Accepted
+
+### Context
+steps.md は `AddPasswordForm` / `ChangePasswordForm` を「P-22 内のダイアログ」と書くが、モック `P22-settings-auth.html` は「パスワードを変更」を独立したパネルとして描いており、パスワード追加の UI はモックに存在しない（モックの主体は既にパスワードを持っている）。
+
+### Decision
+- **変更**はモックどおりパネルにする。恒常的に存在する操作で、一覧の下に並ぶことに意味がある（モックの 3 パネル構成をそのまま保つ）。
+- **追加**はネイティブ `<dialog>` の `showModal()` で出す。パスワードを持たない利用者にしか現れない一時的な操作で、常設パネルにすると「追加」と「変更」の 2 つのパスワード欄が同時に並ぶ。フォーカストラップと Esc は要素側の仕様に任せ、自前の実装を持たない。
+- 「解除」はモックに確認 UI が無いが、PAGE-p22-005 が「確認後削除」を要求するので、行内の 2 段階（解除 → 解除する / やめる）にする。モーダルを増やさずに確認を挟むため。
+
+### Consequences
+- 良い点: モックの完成イメージを崩さずに、モックが描いていない 2 状態（追加中 / 解除確認）を足せる。ダイアログの a11y を自作しない。
+- トレードオフ: 同じ「パスワード入力」の見た目が 2 か所（ダイアログとパネル）に分かれる。共有するのは `components/auth/formStyles.ts` の入力 recipe と `components/settings/panelStyles.ts` のパネル / ボタン recipe まで。

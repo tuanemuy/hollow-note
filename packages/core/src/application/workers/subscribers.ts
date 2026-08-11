@@ -1,6 +1,7 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
+import { identityRemovalRelease } from "../identity/identityRemovalRelease";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
 import type { AllDomainEvents } from "./eventRelayWorker";
 
@@ -35,6 +36,11 @@ export const subscribers: readonly EventSubscriber[] = [
     eventType: "identity.userAuthResidueCleanupContinued",
     consumerName: "identity.authResidueCleanup",
     handle: authResidueCleanup,
+  },
+  {
+    eventType: "identity.identity.removed",
+    consumerName: "identity.identityRemovalRelease",
+    handle: identityRemovalRelease,
   },
   {
     eventType: "storage.fileDeleted",

@@ -4,6 +4,7 @@ import {
   completeOAuthSignInForFlow,
   oauthStateInvalid,
 } from "./completeOAuthSignIn";
+import { linkOAuthIdentityForFlow } from "./linkOAuthIdentity";
 import type { OAuthCallbackView } from "./view";
 
 export type CompleteOAuthCallbackInput = Readonly<{
@@ -41,10 +42,20 @@ export async function completeOAuthCallback({
       );
       return { intent: "signIn", ...view };
     }
-    // `linkIdentity` lands with `linkOAuthIdentity`, `integration` with
-    // the external-connection slice; until then their states cannot have
-    // been minted by this app.
-    case "linkIdentity":
+    case "linkIdentity": {
+      const view = await linkOAuthIdentityForFlow(
+        container as RequestContainer,
+        flow,
+        input.code,
+      );
+      return {
+        intent: "linkIdentity",
+        redirectTo: flow.redirectTo,
+        ...view,
+      };
+    }
+    // `integration` lands with the external-connection slice; until then
+    // its states cannot have been minted by this app.
     case "integration":
       throw oauthStateInvalid();
   }

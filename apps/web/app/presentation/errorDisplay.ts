@@ -79,6 +79,17 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   NOTE_CONTENT_TOO_LARGE:
     "内容が上限を超えています。分割してからもう一度お試しください。",
 
+  IDENTITY_PASSWORD_IDENTITY_ALREADY_EXISTS:
+    "この方法はすでに登録されています。パスワードを変えたいときは「パスワードを変更」をお使いください。",
+  IDENTITY_LAST_IDENTITY_CANNOT_BE_REMOVED:
+    "最後のログイン方法は解除できません。別の方法を追加してから解除してください。",
+  IDENTITY_NOT_FOUND:
+    "このログイン方法は見つかりません。画面を再読み込みしてもう一度お試しください。",
+  PASSWORD_IDENTITY_NOT_FOUND:
+    "パスワードが登録されていません。先にパスワードを追加してください。",
+  USER_NOT_FOUND:
+    "アカウントが見つかりません。サインインし直してからお試しください。",
+
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 };
 

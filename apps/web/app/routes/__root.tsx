@@ -25,6 +25,7 @@ import "@/components/layout/AccountMenu/action";
 import "@/components/note/CreateNoteButton/action";
 import "@/routes/auth/-action";
 import "@/routes/dev/-action";
+import "@/routes/settings/-action";
 
 export const loadAppContext = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
