@@ -189,7 +189,8 @@ function ratioOf(consumed: number, limit: number): number {
 
 // 同じパネルに並ぶリセット日と基準を揃える（下の `resetDateFormat` と
 // 同じ理由で UTC 固定。片方だけ配備の時間帯に従うと、同一画面の 2 つの
-// 日時が別基準になる）。
+// 日時が別基準になる）。ただしこちらは暦月境界ではなく実時刻なので、
+// 基準を表示にも添えないと閲覧者の時計とずれた時刻に読める。
 const updatedDateFormat = new Intl.DateTimeFormat("ja-JP", {
   month: "long",
   day: "numeric",
@@ -202,7 +203,7 @@ const updatedTimeFormat = new Intl.DateTimeFormat("ja-JP", {
 });
 
 function formatUpdatedAt(updatedAt: Date): string {
-  return `${updatedDateFormat.format(updatedAt)} ${updatedTimeFormat.format(updatedAt)}`;
+  return `${updatedDateFormat.format(updatedAt)} ${updatedTimeFormat.format(updatedAt)}（UTC）`;
 }
 
 // 課金期間は UTC の暦月なので、リセット日も UTC で読む — 端末の時間帯

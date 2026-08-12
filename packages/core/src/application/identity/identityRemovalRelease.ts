@@ -1,7 +1,7 @@
 import type { IdentityRemovedEvent } from "@repo/core/domain/identity/events";
+import type { UserId } from "@repo/core/domain/identity/valueObject";
 import type { WorkerContainer } from "../di/types";
-import type { IdentityRemovalReceipt } from "../ports/identityRemovalReceiptStore";
-import { releaseActiveUniqueKey } from "./uniqueness";
+import { providerAccountKey, releaseActiveUniqueKey } from "./uniqueness";
 
 /**
  * Frees the provider-account claim of a removed OAuth identity
@@ -18,43 +18,71 @@ import { releaseActiveUniqueKey } from "./uniqueness";
  *
  * Idempotence basis (no `IdempotencyStore`, because the processing is
  * itself idempotent): the effect is `beginRelease` + `release` on one
- * key for one operation id. A redelivery finds nothing left to release,
- * and neither call can touch a claim owned by anybody else —
- * `beginRelease` no-ops unless the row is the receipt's own user's.
+ * key for one operation id, and a redelivery finds nothing left to
+ * release. `beginRelease` alone only rules out a claim held by *another*
+ * user, so the claim the receipt's own user may have taken again on the
+ * same key — a re-link mints a new `IdentityId`, which leaves the deleted
+ * one absent forever — is ruled out here instead, by refusing to release
+ * a key some current identity of that user still names.
  */
 export async function identityRemovalRelease(
   event: IdentityRemovedEvent,
   deps: WorkerContainer,
 ): Promise<void> {
-  const { operationId, providerAccountKey } = event.payload;
-  if (providerAccountKey === null) {
+  if (event.payload.providerAccountKey === null) {
     return;
   }
+  const { operationId } = event.payload;
 
-  const receipt = await deps.globalUnitOfWorkProvider.run(
-    async (ctx): Promise<IdentityRemovalReceipt | null> => {
-      const found =
+  const decision = await deps.globalUnitOfWorkProvider.run(
+    async (ctx): Promise<ReleaseDecision> => {
+      const receipt =
         await ctx.identityRemovalReceiptStore.findByOperationId(operationId);
-      if (found === null || found.providerAccountKey === null) {
-        return null;
+      if (receipt === null || receipt.providerAccountKey === null) {
+        return { outcome: "keep", reason: "noReceipt" };
       }
-      const identity = await ctx.identityRepository.findById(found.identityId);
-      return identity === null ? found : null;
+      const removed = await ctx.identityRepository.findById(receipt.identityId);
+      if (removed !== null) {
+        return { outcome: "keep", reason: "identityStillPresent" };
+      }
+      const identities = await ctx.identityRepository.listByUserId(
+        receipt.userId,
+      );
+      const stillClaimed = identities.some(
+        (identity) =>
+          identity.kind === "oauth" &&
+          providerAccountKey(identity.provider, identity.providerAccountId) ===
+            receipt.providerAccountKey,
+      );
+      return stillClaimed
+        ? { outcome: "keep", reason: "providerAccountRelinked" }
+        : {
+            outcome: "release",
+            userId: receipt.userId,
+            normalizedKey: receipt.providerAccountKey,
+          };
     },
   );
 
-  if (receipt === null || receipt.providerAccountKey === null) {
-    deps.logger.warn(
-      "[identityRemovalRelease] no receipt for the removal; keeping the claim",
-      { operationId },
-    );
+  if (decision.outcome === "keep") {
+    deps.logger.warn("[identityRemovalRelease] keeping the claim", {
+      operationId,
+      reason: decision.reason,
+    });
     return;
   }
 
   await releaseActiveUniqueKey(deps, {
     kind: "providerAccount",
-    normalizedKey: receipt.providerAccountKey,
-    expectedUserId: receipt.userId,
+    normalizedKey: decision.normalizedKey,
+    expectedUserId: decision.userId,
     operationId,
   });
 }
+
+type ReleaseDecision =
+  | Readonly<{
+      outcome: "keep";
+      reason: "noReceipt" | "identityStillPresent" | "providerAccountRelinked";
+    }>
+  | Readonly<{ outcome: "release"; userId: UserId; normalizedKey: string }>;

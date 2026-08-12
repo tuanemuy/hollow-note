@@ -28,7 +28,10 @@ import {
   acceptDeletion,
   drainDeletion,
 } from "../../identity/__tests__/deletionHarness";
-import { runDueScopeTasks } from "../scopeTaskRunner";
+import {
+  PERSONAL_CLEANUP_HANDOVER_TASK_KIND,
+  runDueScopeTasks,
+} from "../scopeTaskRunner";
 
 const EMAIL = "user@example.com";
 
@@ -106,6 +109,53 @@ describe("runDueScopeTasks", () => {
     expect(round.processed).toBe(1);
     expect(storedFileCount(h, userId)).toBe(0);
     expect(receipts(h, operationId)).toContain("personalCleanup");
+  });
+
+  it("re-drives the turn whose hand-over to the manifest was lost, and reaches completion", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h, EMAIL);
+    await seedFiles(h, userId, 150);
+    const operationId = await acceptDeletion(h, { userId, email: EMAIL });
+
+    await drainDeletion(h);
+
+    // The barrier closes on this turn, and the global hand-over that
+    // follows its commit is lost.
+    const lostHandOver = await runDueScopeTasks({
+      ...h.workerContainer,
+      globalUnitOfWorkProvider: {
+        run: () => Promise.reject(new Error("hand-over lost")),
+      },
+    });
+
+    expect(lostHandOver).toEqual({ processed: 0 });
+    expect(storedFileCount(h, userId)).toBe(0);
+    expect(receipts(h, operationId)).not.toContain("personalCleanup");
+    // The scope work is done and its own row is gone, so the hand-over
+    // row is the only thing left that can finish the deletion.
+    const due = await h.workerContainer.scopeTaskQueue.listDue(
+      h.clock.now(),
+      10,
+    );
+    expect(due.map((task) => task.kind)).toEqual([
+      PERSONAL_CLEANUP_HANDOVER_TASK_KIND,
+    ]);
+
+    expect(await runDueScopeTasks(restartWorkers(h))).toEqual({ processed: 1 });
+    expect(receipts(h, operationId)).toContain("personalCleanup");
+    expect(
+      await h.workerContainer.scopeTaskQueue.listDue(h.clock.now(), 10),
+    ).toEqual([]);
+
+    for (let round = 0; round < 10; round += 1) {
+      await drainDeletion(h);
+      await runDueScopeTasks(h.workerContainer);
+    }
+
+    expect(h.backend.users.get(userId)?.status).toBe("deleted");
+    expect(h.backend.manifestHeaders.get(operationId)?.status).toBe(
+      "completed",
+    );
   });
 
   it("carries a deletion to completion across alternating relay and task rounds", async () => {

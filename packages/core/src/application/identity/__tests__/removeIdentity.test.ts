@@ -1,4 +1,7 @@
-import { isNotFoundError } from "@repo/core/application/errors";
+import {
+  isConflictError,
+  isNotFoundError,
+} from "@repo/core/application/errors";
 import { EventId } from "@repo/core/domain/common/event";
 import { isBusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "@repo/core/domain/identity/errorCode";
@@ -8,6 +11,7 @@ import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { dispatchDomainEvent } from "../../workers/subscribers";
 import { addPasswordIdentity } from "../addPasswordIdentity";
 import { completeOAuthSignIn } from "../completeOAuthSignIn";
+import { linkOAuthIdentity } from "../linkOAuthIdentity";
 import { removalOperationId, removeIdentity } from "../removeIdentity";
 import {
   beginOAuthFlow,
@@ -203,6 +207,65 @@ describe("removeIdentity", () => {
       isBusinessRuleError(rejected.reason) &&
         rejected.reason.code === IdentityErrorCode.LastIdentityCannotBeRemoved,
     ).toBe(true);
+  });
+
+  it("keeps the re-linked claim when the removal event is redelivered", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+    await drainRemovalEvents(h);
+
+    const relink = await beginOAuthFlow(h, { intent: "linkIdentity", userId });
+    const { identityId: relinkedId } = await linkOAuthIdentity({
+      container: h.container,
+      input: {
+        state: relink.state,
+        code: devAuthorizationCode(relink, {
+          providerAccountId: "google-account-1",
+        }),
+      },
+    });
+    expect(relinkedId).not.toBe(oauthIdentityId);
+
+    await drainRemovalEvents(h);
+
+    expect(directoryRow(h, "google:google-account-1")).toMatchObject({
+      state: "active",
+      userId,
+    });
+
+    const stranger = await signUpVerified(h, "stranger@example.com");
+    const steal = await beginOAuthFlow(h, {
+      intent: "linkIdentity",
+      userId: stranger.userId,
+    });
+    await expect(
+      linkOAuthIdentity({
+        container: h.container,
+        input: {
+          state: steal.state,
+          code: devAuthorizationCode(steal, {
+            providerAccountId: "google-account-1",
+          }),
+        },
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        isConflictError(error) &&
+        error.code === "PROVIDER_ACCOUNT_ALREADY_LINKED",
+    );
+
+    const flow = await beginOAuthFlow(h, { intent: "signIn" });
+    const view = await completeOAuthSignIn({
+      container: h.container,
+      input: {
+        state: flow.state,
+        code: devAuthorizationCode(flow, {
+          providerAccountId: "google-account-1",
+        }),
+      },
+    });
+    expect(view.userId).toBe(userId);
   });
 
   it("keeps the claim when no receipt backs the removal event", async () => {

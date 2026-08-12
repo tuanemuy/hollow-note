@@ -1,3 +1,4 @@
+import { isValidationError } from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { AuthToken } from "@repo/core/domain/identity/authToken";
 import { Session } from "@repo/core/domain/identity/session";
@@ -81,16 +82,18 @@ const plantCredentials = (
   }
 };
 
+/**
+ * The class matters as much as the code: it is what the presentation
+ * layer maps to a status (`ValidationError` → 400, `BusinessRuleError`
+ * → 422), so a rejection that keeps the code but changes the class is a
+ * transport-visible change.
+ */
 const expectCode = async (
   promise: Promise<unknown>,
   code: string,
 ): Promise<void> => {
   await expect(promise).rejects.toSatisfy(
-    (error: unknown) =>
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === code,
+    (error: unknown) => isValidationError(error) && error.code === code,
   );
 };
 

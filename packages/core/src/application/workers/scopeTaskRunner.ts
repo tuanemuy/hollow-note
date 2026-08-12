@@ -24,21 +24,53 @@ export type ScopeTaskHandler = (
   task: ClaimedScopeTask,
 ) => Promise<void>;
 
+/** Scope-task kind of the hand-over that follows a closed barrier. */
+export const PERSONAL_CLEANUP_HANDOVER_TASK_KIND =
+  "identity.personalCleanupHandoverContinued";
+
 /**
  * A cleanup turn settles its own task row, so the runner only re-invokes
  * the usecase. What it does have to carry across is the scope→global
  * hand-over: the barrier can only close on the turn that acknowledges
  * the last component, and nothing on the scope plane can write the
  * manifest receipt that follows it.
+ *
+ * That receipt is a second commit on the other plane, and by the time it
+ * is attempted the turn's own row is gone — while re-running the cleanup
+ * usecase can no longer stand in for it either, because `assertOwner`
+ * rejects the barrier the turn just closed. So the hand-over is armed as
+ * a row of its own **before** it is attempted and removed only once the
+ * receipt is in: a hand-over lost to an exception or to the process
+ * dying is then re-driven by the next tick instead of leaving the
+ * deletion `running` with nothing left to drive it.
  */
 const settleCleanupTurn = async (
   container: WorkerContainer,
-  operationId: string,
+  task: ClaimedScopeTask,
   turn: Readonly<{ personalCleanupCompleted: boolean }>,
 ): Promise<void> => {
-  if (turn.personalCleanupCompleted) {
-    await acknowledgePersonalCleanup(container, operationId);
+  if (!turn.personalCleanupCompleted) {
+    return;
   }
+  await container.scopeUnitOfWorkProvider.run(task.scope, (ctx) =>
+    ctx.scopeTaskScheduler.schedule({
+      kind: PERSONAL_CLEANUP_HANDOVER_TASK_KIND,
+      operationId: task.operationId,
+      dueAt: container.clock.now(),
+      payload: { deletionOperationId: task.operationId },
+    }),
+  );
+  await handOverPersonalCleanup(container, task);
+};
+
+const handOverPersonalCleanup: ScopeTaskHandler = async (container, task) => {
+  await acknowledgePersonalCleanup(container, task.operationId);
+  await container.scopeUnitOfWorkProvider.run(task.scope, (ctx) =>
+    ctx.scopeTaskScheduler.complete(
+      PERSONAL_CLEANUP_HANDOVER_TASK_KIND,
+      task.operationId,
+    ),
+  );
 };
 
 /**
@@ -56,15 +88,16 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
       container,
       input: { deletionOperationId: task.operationId, scope: task.scope },
     });
-    await settleCleanupTurn(container, task.operationId, turn);
+    await settleCleanupTurn(container, task, turn);
   },
   [USAGE_USER_CLEANUP_TASK_KIND]: async (container, task) => {
     const turn = await deleteQuota({
       container,
       input: { deletionOperationId: task.operationId, scope: task.scope },
     });
-    await settleCleanupTurn(container, task.operationId, turn);
+    await settleCleanupTurn(container, task, turn);
   },
+  [PERSONAL_CLEANUP_HANDOVER_TASK_KIND]: handOverPersonalCleanup,
   [PERSONAL_BARRIER_PRUNE_TASK_KIND]: async (container, task) => {
     await prunePersonalCleanupBarriers(container, {
       scope: task.scope,

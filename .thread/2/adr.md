@@ -2205,3 +2205,75 @@ Accepted
 - 良い点: 契約を弱める側（`markState`）でも、弱めた事実が JSDoc に出るので、遷移を守る責務が呼び出し側にあることが読める。
 - トレードオフ: `markState` は terminal → running を弾かないままなので、同ポートを再利用する #7（note move）が二重呼び出しを起こすと `terminalAt` が消えうる。引き継ぎとして progress.md に記録する。
 - トレードオフ: `listDue` を必須にしたことで、中央列挙を持たないランタイムも実装を求められる。再起動後に未完の継続を拾う経路が他に無い以上、これは縮退ではなく要件。
+
+## ADR-104: 予約解放の冪等性は「削除された ID の不在」ではなく「その鍵を名乗る現行 identity の不在」で判定する
+
+### Status
+Accepted
+
+### Context
+`identityRemovalRelease` は `identity.identity.removed` を受けて provider account の active 予約を解放する。冪等性の根拠は receipt の存在と `receipt.identityId` の行が消えていることの 2 点だった。
+
+しかし再連携は**新しい `IdentityId`** を採番するため、旧 ID は恒久的に不在のままになる。「解除 → 解放 → 同じ Google アカウントを再連携 → 同じ removal イベントが再配送」の列で、ガードは素通りし、再連携で publish されたばかりの active 予約が `releasing → 削除` される。`beginRelease` は所有者一致（同一 user）しか見ないので止まらない。結果は「Identity 行はあるが directory に claim が無い」状態で、**別の利用者がその provider account を奪って本人のアカウントにサインインできる**。outbox は at-least-once であり、receipt の TTL は 30 日なので窓も 30 日。
+
+### Decision
+解放の前に「その `providerAccountKey` を**今**名乗っている identity が receipt の user に存在しないこと」を確認する。`ctx.identityRepository.listByUserId(receipt.userId)` を同じ UoW で読み、`providerAccountKey(provider, providerAccountId)` が一致する oauth identity があれば解放しない。
+
+receipt に directory 行の `operationId` を凍結して `beginRelease` で照合する案（ポートと適合スイートとアダプターの変更）は採らない。波及が本 Issue の範囲を超え、かつ効果は同じ「奪取の阻止」に留まる。
+
+判定は `{ outcome: "keep"; reason } | { outcome: "release"; userId; normalizedKey }` の直和で返し、解放に必要な値は release 側だけが持つ形にした（呼び出し側で `null` を再検査する余地を消す）。
+
+### Consequences
+- 良い点: 「解除は自分の claim にしか触れない」だけでなく「解除は**過去の**自分の claim にしか触れない」が成立し、再連携後の再配送で乗っ取り経路が開かない。
+- 良い点: ポート契約・適合スイート・アダプターは無変更。判定はすべて application 層の 1 ファイルに閉じる。
+- トレードオフ: 解放のたびに `listByUserId` を 1 回追加で読む。identity は 8 件上限なので実質定数コスト。
+- トレードオフ: 「同じ鍵を再連携したあとに旧 removal が再配送される」正常系でも `keep` の warn が出る。理由コード（`providerAccountRelinked`）で異常系と区別できるようにした。
+
+## ADR-105: P-25 の「削除されるもの / されないもの」は宣言された participant の集合に合わせる
+
+### Status
+Accepted
+
+### Context
+P-25 の説明は「個人のノートと、その元ファイル」「公開ページとすべての共有リンク」を削除されるものとして挙げ、完了画面は「データの削除が完了しました」と断定していた（モック `spec/design/pages/P25-settings-danger.html` の写し）。
+
+本スライスの personal cleanup participant は `storage` / `usage` の 2 つだけで（ADR-002 / ADR-018）、`deleteNotesForOwner` と公開 URL の tombstone 化（TC-identity-092）は別スライス。`completed` に到達しても個人ノートとその公開ページは残る。plan.md 自身が TC-identity-083 の見送り理由に「File / Usage だけの部分確認を『全データを削除』と読み替えない」と書いており、取り消せない操作の説明だけが実態より広い約束をしていた。
+
+### Decision
+文言を、`completed` の時点で実際に起きることに合わせる。
+
+- 削除されるもの: プロフィール（表示名・ハンドル・自己紹介・アイコン。`finalizeDeletion` が落とし、`uniquenessRelease` がハンドルと メールの予約を解放する）/ アップロード済みファイル（`deleteFilesByOwner`）/ すべてのログイン方法とセッション（`identityRepository.delete` と auth 残渣掃除）。
+- 削除されないもの: 個人のノートとその公開ページ・共有リンク（新設行）/ 既存のワークスペース 2 行。
+- 完了文言: 「データの削除が完了しました」→ 実際に消えた 3 種の列挙。
+
+participant を足すスライス（編集・整理 / #9）が、ノートと公開ページの行を左の列へ戻す。
+
+### Consequences
+- 良い点: 取り消せない操作の前後で、利用者が読む説明と実際の結果が一致する。ノートが残ることを実行前に知れる。
+- 良い点: 差分が 2 つのリテラル配列と 1 文に閉じるので、participant 追加時の戻しが機械的。
+- トレードオフ: モック（`spec/design/pages/P25-settings-danger.html`）と文言が一時的にずれる。モックは participant が揃った状態の完成形を描いているので、spec 側は直さない（PAGE-p25 の縮退として引き継ぐ）。
+- トレードオフ: 「個人のノートは残る」は本スライス限定の事実で、後続スライスで逆になる。行が移動するだけと分かるよう、左右の列で同じ語（ノート / 公開ページ・共有リンク）を使った。
+
+## ADR-106: barrier を閉じた scope turn の global 引き渡しは、専用の scope task 行で駆動する
+
+### Status
+Accepted
+
+### Context
+personal cleanup の最後のターンは 1 つのトランザクションで `acknowledgePersonalComponent` → `markCompleted` → 自分の task 行の `complete` を確定させる。その **あと** に、別の平面・別のトランザクションとして `acknowledgePersonalCleanup`（manifest への `personalCleanup` receipt + `redaction` フェーズの継続）が走る。
+
+この 2 つ目のコミットを落とすと、復旧する主体がどこにも残らない。task 行は `complete` で消えており `backoff` は行不在で no-op、cleanup フェーズの継続イベントは決定的 id（`…:cleanup:-`）で outbox に折り畳まれて再配送されず、`terminalPrune` / `globalCleanup` / `finalize` のどれも cleanup へは戻らない。150 件を seed して ack 直前で失敗を注入すると、データは削除済み・barrier は `completed`・manifest に receipt 無しで、削除は恒久的に `running` のままになる（実測）。
+
+「消えた行を `backoffOrSchedule` で復活させる」だけでは復旧しない。復活した行が再投入するのは cleanup ユースケース本体であり、その先頭の `assertOwner` は `status === "running"` の barrier しか通さない。閉じたばかりの barrier に対しては必ず `ConflictError` になり、8 回の再試行のあと `failed` に落ちる毒行になる（実測: `[scope-tasks] task threw` × 8）。イベント駆動のウェーブが復旧できるのは、`dispatchAccountDeletionCleanup` が progress を先に読んでコマンド自体を飛ばすからで、scope task 経路には同じ入口が無い。
+
+### Decision
+引き渡しに専用の継続行を与える。runner は barrier を閉じたターンの直後に `identity.personalCleanupHandoverContinued` を scope 平面へ arm し、その上で `acknowledgePersonalCleanup` を呼び、receipt が入って初めてその行を `complete` する。同じ kind のハンドラーが登録されているので、例外でもプロセス断でも次の tick が同じ引き渡しだけを再実行する。`acknowledgeReceipt` は冪等で継続イベントは決定的 id に折り畳まれるため、再実行の副作用は無い。
+
+`backoff` は catch のまま変えない。閉じた cleanup 行を復活させると上記の毒行になるので、「行が無ければ何もしない」がこの経路の正しい既定になる。
+
+### Consequences
+- 良い点: 引き渡しが失われても駆動主体が DB 上に残るので、AC-29 の「プロセスを落として再起動しても未完の継続を拾って完走する」が scope task ターンで barrier が閉じる経路でも成立する。
+- 良い点: 再駆動されるのが引き渡しだけなので、`assertOwner` にも cleanup ユースケースにも触れずに済む。閉じた barrier を読み直すドライバーを別に建てる必要も無い。
+- トレードオフ: barrier を閉じるターンごとに scope 平面のトランザクションが 2 つ増える（arm と complete）。削除 1 件につき 1 回だけなので、往復 1 回ぶんのコストとして許容する。
+- 残る穴: barrier を閉じたコミットと arm のあいだでプロセスが落ちると、依然として駆動主体が残らない。塞ぐには `completePersonalCleanupIfDone` と同じ UoW で arm する必要があり、cleanup ユースケース側の変更になるので本ラウンドでは持ち越す（arm が同一 scope への小さな書き込み 1 回なのに対し、塞げた窓は別平面のコミット全体なので、窓は桁で縮んでいる）。
+- kind の定数は runner に置いた。この継続を出すのも受けるのも runner だけで、participant 登録簿（`cleanup/participants.ts`）が並べているのは「掃除に参加する component」であってこの引き渡しはその一員ではない。

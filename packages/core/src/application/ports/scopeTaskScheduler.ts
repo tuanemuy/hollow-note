@@ -43,7 +43,8 @@ export const SCOPE_TASK_MAX_ATTEMPTS = 8;
  * it, so the runner backs it off on the turn's behalf.
  *
  * `backoff` bumps `attempt` and pushes `dueAt` out exponentially
- * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^attempt, capped by
+ * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^(attempt - 1) — so the first retry
+ * waits `SCOPE_TASK_BACKOFF_BASE_MS` — capped by
  * `SCOPE_TASK_MAX_BACKOFF_MS`) until `SCOPE_TASK_MAX_ATTEMPTS`, at which
  * point the row becomes `failed` and stops being claimed — one
  * permanently failing target must not breed continuations forever.
@@ -54,7 +55,13 @@ export const SCOPE_TASK_MAX_ATTEMPTS = 8;
  * completed its row has nothing left to retry. `backoffOrSchedule` is
  * the variant for a turn that stalls before any row exists — an
  * operation's first command arrives as an event, not as a task — where
- * a no-op would leave the retry with no driver at all.
+ * a no-op would leave the retry with no driver at all. Neither variant
+ * recovers a turn that crashes **after** its row was completed: reviving
+ * the row would re-enter the usecase body, and a usecase whose barrier
+ * the completed turn already closed is refused by its own `assertOwner`,
+ * so the revived row only burns its attempts. Work that must survive
+ * that window needs a driver of its own — a separate task row armed
+ * before the step it drives, settled once the step is observable.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */

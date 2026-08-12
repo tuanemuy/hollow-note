@@ -78,9 +78,12 @@ const readProgress = (
  * barrier in its own transaction and the two planes may not share one,
  * so the receipt is written **after** that commit was acknowledged. A
  * response lost in between leaves a completed barrier with no receipt,
- * and this deployment carries no driver that re-reads a closed barrier,
- * so the deletion stays `running` until the `cleanup` phase is delivered
- * again. A slice adding that driver only needs to call this alone.
+ * which nothing recovers from on its own — so every caller brings the
+ * driver that repeats the call. The wave below is re-delivered by the
+ * outbox; the scope-task runner arms a hand-over row before it calls
+ * this and clears it only once the receipt is in. Repeating is free: the
+ * receipt is idempotent and the continuation folds onto its
+ * deterministic id.
  */
 export async function acknowledgePersonalCleanup(
   container: WorkerContainer,

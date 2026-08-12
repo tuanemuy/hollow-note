@@ -287,8 +287,7 @@ export function DeleteAccountPanel() {
           title="削除されるもの"
           tone="gone"
           items={[
-            "個人のノートと、その元ファイル",
-            "公開ページとすべての共有リンク",
+            "プロフィール（表示名・ハンドル・自己紹介・アイコン）",
             "アイコンなどのアップロード済みファイル",
             "すべてのログイン方法とセッション",
           ]}
@@ -297,6 +296,7 @@ export function DeleteAccountPanel() {
           title="削除されないもの"
           tone="stay"
           items={[
+            "個人のノートと、その公開ページ・共有リンク",
             "ワークスペースが持つノート（作成者は「退会した利用者」と表示されます）",
             "他のメンバーが取り込んだ元ファイル",
           ]}
@@ -363,7 +363,7 @@ function DeletionProgress({
         <section className={dangerPanelClass}>
           <h2 className={dangerPanelTitleClass}>アカウントを削除しました</h2>
           <p className={panelNoteClass}>
-            データの削除が完了しました。ご利用ありがとうございました。まもなくトップページへ移動します。
+            プロフィールとログイン方法、アップロード済みファイルを削除しました。ご利用ありがとうございました。まもなくトップページへ移動します。
           </p>
           <button type="button" className={ghostButtonClass} onClick={leave}>
             トップページへ

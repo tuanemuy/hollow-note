@@ -165,3 +165,27 @@ R3: 新規 18 / 継承 2 / fix 11 / fix-editorial 6 / wont-fix 3 / defer 0（方
 1. **`DistributedOperationStore.markState` の遷移拘束** → **契約文を実装に合わせる（fix-editorial）**。実装側で terminal → running を `ConflictError` にするのは本 Issue の AC 外の強化で、`AccountDeletionRetryPolicy` の根拠は現状の呼び出し側が守っている。ポート定義が実装より強い約束をしている状態のほうが害なので、約束を実態に合わせる。同ポートを再利用する #7 への引き継ぎとして記録する。
 2. **`testTimeout` の値** → **10s へ下げ、コメントを実測に合わせる**。実測の最遅テストは 278ms で、30s は根拠のない過剰。10s でも 35 倍の余裕がある。
 3. **Frontend W-001 の再指摘防止** → **1 行の why コメントを置く**。2 ラウンド連続で誤指摘が上がっており、「Origin 検証は `start.ts` の `createCsrfMiddleware` が serverFn 全経路で行う」はまさに CLAUDE.md が言う「隠れた制約」に当たる。
+
+## R4
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `identity/identityRemovalRelease.ts:ガード/再連携後の再配送`（D-W001） | R4 | fix | **再現済み・実質 Blocker**。解除 → 同 provider account を再連携 → 同イベント再配送で active claim が解放され、**別利用者が被害者の Google アカウントを奪取できる**。**裁定 1: (a) 解放前に同じ key を名乗る現行 identity が無いことを確認**（ポート不変・本 PR 範囲） | 0 |
+| `workers/scopeTaskRunner.ts:settleCleanupTurn/ack 喪失の再駆動`（D-W002） | R4 | fix | **再現済み**。barrier が scope task ターンで閉じる場合、ack 喪失で削除が恒久的に `running`。plan.md が書く復旧経路（P-25 再送）は**実在しない**。**裁定 2: 最小案（runner の catch を `backoff` → `backoffOrSchedule` に寄せる）+ plan.md / progress.md の縮退記述の訂正** | 0 |
+| `ports/distributedOperationStore.ts:deleteTerminal/契約欠落`（A-W001） | R4 | fix-editorial | 実装は running を `ConflictError`・unknown を no-op なのに JSDoc に記載ゼロ（ADR-026 違反） | 0 |
+| `ports/scopeTaskScheduler.ts:backoff/式が 2 倍ずれ`（A-W002） | R4 | fix-editorial | JSDoc `2^attempt` に対し実装・スイートは `2^(attempt-1)`。実装が正 | 0 |
+| `UsagePanel:updatedAt/時間帯表記なし`（F-W001） | R4 | fix | **裁定 4: (c)「（UTC）」の表記を足す**。UTC 固定の時刻を無表記で出しており JST 利用者には常に 9 時間前に見える | 0 |
+| `DeleteAccountPanel:削除されるもの/完了文言`（F-W002） | R4 | fix | 実際に消えるのは `storage` / `usage` のみ。plan.md 自身が「File / Usage だけの部分削除を『全データ削除』と読み替えない」と明記しており UI が真逆を断言している | 0 |
+| `presentation/oauthStateBinding.ts:sha256(state)/束縛の一方向性`（S-W001） | R4 | fix-editorial + defer (#20) | **裁定 3**。宣言された脅威（login CSRF）は成立しており残存経路は「未消費コールバック URL の漏洩」が前提。**JSDoc の過剰主張だけ直し、双方向化は別 Issue（#20）** | 0 |
+| `worker/node/runner.ts:queue received/payload 全体をログ`（S-W002） | R4 | fix | `displayName` / `handle` / `google:<sub>` が production の info ログに出る。隣の `subscribers.ts` が既に正しい形 | 0 |
+| `startOAuthFlow.test.ts:TC-identity-268/spec-sync 未記録`（T-W001） | R4 | fix-editorial | AC-33 の「spec-sync 候補を漏れなく記録」の取りこぼし | 0 |
+| `deleteAccount.admission.test.ts:expectCode/クラス未固定`（T-W002） | R4 | fix | spec がクラスを名指す 2 行で、別クラスに倒れても緑。HTTP ステータス写像の入力なので実効性がある | 0 |
+
+R4: 新規 10 / 継承 0 / fix 6 / fix-editorial 4 / wont-fix 0 / defer 1（S-W001 の設計変更分）
+
+## 要確認の裁定（メイン・R4）
+
+1. **D-W001 の重大度と修正方式** → **Blocker 相当として扱い、(a) を採る**（解放前に同じ key を名乗る現行 identity が無いことを確認）。(b)（receipt に directory 行の operationId を凍結して `beginRelease` で照合）はポート + 適合スイート + 全アダプターに波及するので本 PR の範囲を超える。
+2. **D-W002 の修正範囲** → **最小案**（runner の catch を `backoffOrSchedule` に寄せて完了済み行を復活させる）。「再駆動さえあれば ack はやり直せる」ことが実測で確認済み。あわせて plan.md / progress.md の縮退記述（P-25 再送で復旧＝事実誤り）を訂正する。
+3. **S-W001 を本 PR でやるか** → **JSDoc の過剰主張だけ直して defer**。双方向束縛はポート・memory アダプター・適合スイート・presentation・テストの 5〜8 ファイルに及び、宣言された脅威は現状で成立している。
+4. **F-W001 の対応範囲** → **(c)「（UTC）」の 1 行追記**で収める。相対表記や島化は本 PR の範囲を超える。

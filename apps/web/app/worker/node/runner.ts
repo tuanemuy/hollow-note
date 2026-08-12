@@ -96,8 +96,13 @@ export function createNodeWorkerRunner(
       // that pairing inside its own usecase — a standalone
       // `markProcessed` in this dispatch loop would commit the record
       // without any effect and violate the contract.
+
+      // Identifiers only: payloads carry profile fields and provider
+      // account keys, and this line runs on every delivery in production.
       container.logger.info(`[queue] received ${event.type} ${event.id}`, {
-        event,
+        eventId: event.id,
+        eventType: event.type,
+        aggregateId: event.aggregateId,
       });
       await handler(event);
     },

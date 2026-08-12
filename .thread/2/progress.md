@@ -188,7 +188,7 @@
 - `TC-identity-085` — spec の期待結果は 8 component 固定だが、**ADR-002 / ADR-018 の宣言集合（`storage` / `usage` の 2 つ）**に読み替えて「1 つでも欠ければ running のまま」を検証してチェック。
 - `TC-storage-043` — spec の期待結果「列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文の計 3 文」のうち**文の数という性能上の約束を検証せず**、「列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない」に置き換えてチェック（ADR-057。OCC トークンを `findById` から得る ADR-022 の帰結で 1 件ずつ読む）。
 - `TC-usage-059`（ゴミ箱のノートも数える）— 根拠は `recalculateStorageUsage` の `countByOwner(owner, "all")` 側**だけ**。`noteCount` の即時反映（`applyStorageDelta`）が #6 のため。
-- `TC-identity-090` — spec の期待結果のうち「**再試行時刻を記録する**」を欠いてチェック（ADR-026。`DistributedOperationStore` が `next_attempt_at` を持たないため、記録すべき時刻そのものが無い。事実上の再駆動は P-25 の再送に依存する）。検証しているのは「`deleting` のまま / PII が残る / manifest は `built` のまま / finalize が待ち続けるログ」まで。→ recovery Cron を足すスライス
+- `TC-identity-090` — spec の期待結果のうち「**再試行時刻を記録する**」を欠いてチェック（ADR-026。`DistributedOperationStore` が `next_attempt_at` を持たないため、記録すべき時刻そのものが無い。事実上の再駆動は P-25 の再送に依存する。cleanup 引き渡しは ADR-106 の継続行が駆動する）。検証しているのは「`deleting` のまま / PII が残る / manifest は `built` のまま / finalize が待ち続けるログ」まで。→ recovery Cron を足すスライス
 
 ### 機能・運用としての縮退
 
@@ -199,7 +199,7 @@
 - **finalize の必須 receipt も宣言集合に縮退**（ADR-017）。`externalConnections`（#4）/ `jobHistory`（#5）を ack する主体が本 Issue に無いため、必須集合は `personalCleanup` / `authResidue` / `uniquenessRelease` の 3 つ。→ #4 / #5
 - **`AccountDeletionRetryPolicy`（8 件 / 120 日）と `AccountDeletionRetryLimitExceeded` は到達不能な先行実装**（ADR-013）。しきい値の発火には同一利用者の terminal 行が 8 件必要だが、`completed` は 1 件しか作れず `rejected` 経路は workspace 依存。検証はドメイン単体テスト（7 / 8 / 9 の境界）と `countTerminalSince` の適合スイートまで。→ #3
 - **`getUsageSnapshot` の workspace ページングを実装しない**（ADR-051）。→ #3
-- **受理応答 / barrier ack を落としたときの再駆動主体を置かない**。`spec/database/index.md` は `next_attempt_at` の partial index を recovery Cron が使うと定めるが、本 Issue の `DistributedOperationStore` は `next_attempt_at` を持たず recovery を回すステップも無い。事実上の再駆動は P-25 の再送（同一 `requestId` で冪等）に依存する。継続タスク（scope 平面）は `ScopeTaskScheduler` の backoff で自律再開するので、対象は「受理そのものを落とした場合」に限られる。
+- **受理応答を落としたときの再駆動主体を置かない**。`spec/database/index.md` は `next_attempt_at` の partial index を recovery Cron が使うと定めるが、本 Issue の `DistributedOperationStore` は `next_attempt_at` を持たず recovery を回すステップも無い。受理そのものを落とした場合の再駆動は P-25 の再送（同一 `requestId` で冪等）に依存する。**barrier ack（scope→global の引き渡し）はこの縮退の対象ではない**: P-25 の再送が出すのは manifest build の継続だけで cleanup フェーズには戻らないため、runner が barrier を閉じたターンで専用の継続行 `identity.personalCleanupHandoverContinued` を先に積み、receipt が入ってから消す（ADR-106）。イベント駆動ウェーブ側は outbox の再配送が同じ役を果たす。**残る穴は、barrier を閉じたコミットと引き渡し行を積むコミットのあいだでプロセスが落ちた場合**（塞ぐには `completePersonalCleanupIfDone` と同じ UoW で積む必要があり、cleanup ユースケース側の変更になるため持ち越し）。継続タスク（scope 平面）は `ScopeTaskScheduler` の backoff で自律再開する。
 - **Google OAuth アダプターの適合スイートのうち `exchangeCode` の 3 ケースは資格情報の無い環境で skip される**（AC-6 / ADR-003 / ADR-064）。CI と既定の開発機で実行されるのは dev IdP アダプターの全ケースと、両アダプター共通の認可要求（`deriveCodeChallenge` / `buildAuthorizationUrl`）契約。
 - **マニュアルテストは dev IdP で実行する**（ADR-003）。実 Google 資格情報での往復は検証範囲外。
 - **アイコンをアップロードしてプロフィールを保存せずに離脱すると、参照されない `StoredFile` が 1 件残る**（ADR-016 の 2 段経路の帰結）。orphan media 回収は #6。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` の値には現れる。
@@ -226,6 +226,7 @@
 - `StorageQuota.replaceTotals(quota, { consumedBytes, noteCount }, now)` の追加（ADR-029）。spec の振る舞い表は差分メソッドしか持たない。
 - `IdentityUniqueDirectory.beginRelease` の追加と `DirectoryRow.state` の `releasing`（ADR-015）。あわせて `resolve` は `releasing` を解決せず、`reserve` は `releasing` を塞ぐという非対称（ADR-028）。
 - `ScopeCleanupAdmissionStore.describePersonalCleanup` の追加（ADR-018）。
+- `ScopeCleanupAdmissionStore.assertOwner` が `completed` の barrier も `ConflictError` で弾く点が、ポート JSDoc にも適合スイート（ADP-common-008）にも固定されていない。周囲の設計意図（`markCompleted` / `acknowledgePersonalComponent` は完了済みを冪等に受ける）と逆向きに見えるので、`completed` の扱いを契約として明示したい。
 - `AccountDeletionManifestStore.describe(operationId)` の追加（ADR-053）。
 - `AccountDeletionManifestStore.pruneTerminal` の戻りを `{ removed }` から `{ operationIds, nextCursor }` へ（ADR-059）。header と operation を同一 transaction で消すため。
 - `LocalNoteProjectionWriter` / `PublicNoteProjectionWriter` に `redactAuthor({ noteId, createdBy, redactionVersion })` を追加（ADR-058）。`projectNoteChanges` を実装するスライスは、完全 snapshot 置換と `redactAuthor` のどちらで author redaction を受けるかを選ぶ必要がある。
@@ -247,6 +248,7 @@
 - `requestPasswordReset` の手順に 60 秒の発行間隔規則が無い（ADR-041）。60 秒という値の正典が実装側にある。
 - `addPasswordIdentity` の手順に Google 再認可が無い（`spec/pages/index.md` の P-22 状態一覧とシナリオ AC-06 は「再認証要求」を求める）。どちらを正とするか要決定。マニュアル TC-07 手順 2 の skip と同根。
 - `SignInOAuthClient` の通信失敗が `SystemError(ExternalServiceError)` と書かれているが、実 enum は `SystemErrorCode.ExternalApiError`（`EXTERNAL_API_ERROR`）— 呼称ずれ（ADR-034）。
+- `spec/testcases/identity/startOAuthFlow.md` の TC-identity-268 が `BusinessRuleError(InvalidProvider)` を期待しているが、未知プロバイダーの実コードは `IdentityErrorCode.InvalidProviderAccount`（`IDENTITY_INVALID_PROVIDER_ACCOUNT`）で、`InvalidProvider` は `spec/domains/identity.md` のエラーコード union にも存在しない — 呼称ずれ（spec 側を直す）。
 - sub-operation ID を `sha256(parent + ":" + kind + ":" + key)` ではなく構成 `${parent}:${kind}:${key}` で導出した（ADR-035）。`removeIdentity` の `operationId` も同様に `"removeIdentity:" + identityId`（ADR-044）。application 層にハッシュ実装を持ち込まないため。
 - `PROVIDER_ACCOUNT_ALREADY_LINKED` の担保箇所を「一意性は `IdentityUniqueDirectory`、応答は usecase（`linkOAuthIdentity` / `completeOAuthSignIn`）」に確定した。`IdentityRepository` の JSDoc はまだこのコードを自分の error contract に列挙しているが、memory アダプターは投げない。
 - `TC-storage-043` の「3 文」という性能上の約束を、観測可能な性質（列挙 1 回 / 削除 1 件につきイベント 1 件）に置き換えた（ADR-057）。D1 実装を書くスライスが同じ行を再検証する必要がある。
@@ -261,6 +263,8 @@
 - `applied_operations` の 1 表がコードでは 2 ポート（`ScopeCleanupAdmissionStore` と `AppliedOperationStore`）に分かれ、`result` 列を持たない（ADR-012）。値を返すコマンドを足すスライスが `result` を戻す。
 - 削除 status ticket の署名鍵は実装の `AppConfig` 型ではなく **composition root が供給する**（ADR-006）。spec は `AppConfig` の表に鍵を並べている。
 - `/settings/danger`（P-25）が未サインインでも到達できること（ADR-062）を spec/pages の P-25 に明記したい。
+- 継続 kind `identity.personalCleanupHandoverContinued`（ADR-106。barrier を閉じたターンの scope→global 引き渡しを駆動する scope 平面の継続）が `spec/domains/index.md#継続要求` の表に無い。
+- P-25 の「削除されるもの / されないもの」と完了文言を、宣言された participant（`storage` / `usage`）の実態に合わせて狭めた（ADR-105）。`spec/design/pages/P25-settings-danger.html` と `spec/pages/index.md#P-25` は participant 完備の完成形のままなので、participant を足すスライスが左の列へ戻す。
 
 ### spec に無い application 入口
 

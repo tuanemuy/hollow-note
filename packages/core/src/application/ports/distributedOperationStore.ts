@@ -45,15 +45,18 @@ export type DistributedOperation = Readonly<{
  *
  * Retention is the manifest's: a terminal row stays until the manifest
  * prune calls `deleteTerminal` in the same transaction that drops the
- * terminal header.
+ * terminal header. `deleteTerminal` refuses an operation that is still
+ * running (`ConflictError`) — the header and the control-plane row must
+ * not leave each other behind — and is a no-op on an operation that is
+ * already gone, so re-running the prune succeeds.
  *
  * `markState` records the state its caller decided on and rejects only
  * an unknown operation: the store is not the state machine, so ordering
  * the transitions (and not re-running a terminal operation) belongs to
  * the caller. `terminalAt` follows the state it is given.
  *
- * Error contract: `ConflictError` (unknown operation),
- * `SystemError(DatabaseError)`.
+ * Error contract: `ConflictError` (`markState` on an unknown operation,
+ * `deleteTerminal` on a non-terminal one), `SystemError(DatabaseError)`.
  */
 export interface DistributedOperationStore {
   beginOrResume(
