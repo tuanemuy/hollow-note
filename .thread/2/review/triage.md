@@ -371,3 +371,22 @@ R10: 新規 7 / 継承 0 / **fix 0** / fix-editorial 0 / wont-fix 6 / defer 1（
 | **R10** | **0** | **7** | **0** | **収束（全 5 観点で fix ゼロ）** |
 
 合計: Blockers 17 / Warnings 166 / **fix 142 件を反映**、wont-fix 21 件・defer 5 件（Issue #18 / #19 / #20 / #21 と #6 / #3 / #11 への引き継ぎ）。
+
+## R11（ブラウザ検証の修正に対する追加レビュー・Frontend 観点のみ）
+
+R10 で収束（fix ゼロ）した後、Phase 4 のブラウザ検証で**変更起因の実装バグ 2 件**が見つかったため修正し、変更した 1 ファイル（`apps/web/app/components/settings/ProfileForm/editor.tsx`）に絞って Frontend 観点の追加レビューを行った。
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `ProfileForm/editor.tsx:reseed/invalidate との窓でヒントが一瞬ちらつく` | R11 | wont-fix | `setHandle` と `router.invalidate()` の commit がずれた窓でハンドル欄に一瞬「確認中...」が出て照会が 1 往復余計に走りうるが、照会は自分持ちの `available` に落ちるため誤った表示や候補は出ない。**修正前は同経路で恒久的に緑ヒントと未保存バーが並んでいたので厳密に改善側** | 0 |
+
+R11: 新規 1 / 継承 0 / **fix 0** / fix-editorial 0 / wont-fix 1 / defer 0
+
+**追加レビューでも `fix` ゼロ。** 修正 2 件はいずれも意図どおり入っており（`router.invalidate()` は残り種まき直しはその前に走るだけ / 巻き戻し回避は `useState` の関数更新で closure が古い値を掴まない / 「候補を持てるのは重複が確定したときだけ」が `HandleHint` の直和型で保証されている）、三層規律・`aria-invalid` の関連付け・見送り行の非表示・デザイントークンのいずれにも波及していない。
+
+### ブラウザ検証由来の判定（テスト手順の問題）
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `testing.md:項目 10/使用済みリンクで入力欄が出る` | Phase 4 | fix-editorial（testing.md） | GET は状態を変えない設計（`spec/usecases/identity.md` に消費せず検証する読み取り UC が無い）で、無効判定は送信の失敗として返る。`spec/inventory/frontend.md` PAGE-p04-003 / p04-004 が正本。testing.md の期待結果を訂正し、`spec/manual-tests/account.md` TC-26 を spec-sync 候補に記録 | 0 |
+| `testing.md:項目 18/無効セッションの件数表示` | Phase 4 | fix-editorial（testing.md） | `spec/usecases/identity.md#signOutOtherSessions` が「応答は削除件数ではなく `revocationAccepted: true` を返す」と明示。件数表示は AC-16 の O(1) 要求とも `spec/scenario/account.md` の「端末一覧を持たない」方針とも矛盾する。testing.md を訂正し TC-13 を spec-sync 候補に記録 | 0 |

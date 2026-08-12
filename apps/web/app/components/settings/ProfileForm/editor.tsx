@@ -99,10 +99,23 @@ const HANDLE_ERROR_CODES: ReadonlySet<string> = new Set([
   IdentityErrorCode.HandleReserved,
 ]);
 
+type ProfileDraft = Readonly<{
+  displayName: string;
+  bio: string;
+  handle: string;
+}>;
+
+/**
+ * 入力中の目安。候補を伴えるのは「その名前が埋まっている」と分かった
+ * `taken` だけで、確認そのものが通らなかった経路（予約語・不正な文字・
+ * 通信断）は `problem` として候補を持てない — そこで候補を出すと、打てない
+ * 一手を勧めることになる。
+ */
 type HandleHint =
   | Readonly<{ kind: "idle" }>
   | Readonly<{ kind: "checking" }>
   | Readonly<{ kind: "available" }>
+  | Readonly<{ kind: "taken"; message: string; suggestions: readonly string[] }>
   | Readonly<{ kind: "problem"; message: string }>;
 
 export function ProfileEditor({
@@ -145,20 +158,37 @@ export function ProfileEditor({
       console.error("Profile reconcile failed");
     });
 
+  /**
+   * サーバー側の正規化（`Handle.create` の `toLowerCase()`、`DisplayName.create`
+   * の `trim()`）で値が変わると、送った値のまま残るローカル状態はサーバー
+   * truth と食い違い続け、保存が通っているのに永久に未保存扱いになる。
+   * 保存中に打ち替えた欄まで巻き戻さないよう、送った値がそのまま残っている
+   * 欄だけを種まき直す。
+   */
+  const reseed = (submitted: ProfileDraft, saved: ProfileView) => {
+    setDisplayName((current) =>
+      current === submitted.displayName ? saved.displayName : current,
+    );
+    setBio((current) => (current === submitted.bio ? saved.bio : current));
+    setHandle((current) =>
+      current === submitted.handle ? (saved.handle ?? "") : current,
+    );
+  };
+
   const [saveState, save, isSaving] = useActionState(
     async (_previous: SaveState, formData: FormData): Promise<SaveState> => {
-      const nextHandle = String(formData.get("handle") ?? "");
+      const submitted: ProfileDraft = {
+        displayName: String(formData.get("displayName") ?? ""),
+        bio: String(formData.get("bio") ?? ""),
+        handle: String(formData.get("handle") ?? ""),
+      };
+      let saved: ProfileView;
       try {
-        await updateProfile({
-          data: {
-            displayName: String(formData.get("displayName") ?? ""),
-            bio: String(formData.get("bio") ?? ""),
-            handle: nextHandle,
-          },
-        });
+        saved = await updateProfile({ data: submitted });
       } catch (error) {
-        return { kind: "error", error: saveErrorFor(nextHandle, error) };
+        return { kind: "error", error: saveErrorFor(submitted.handle, error) };
       }
+      reseed(submitted, saved);
       await reconcile();
       return { kind: "saved" };
     },
@@ -183,8 +213,9 @@ export function ProfileEditor({
             view.available
               ? { kind: "available" }
               : {
-                  kind: "problem",
+                  kind: "taken",
                   message: "このハンドルは使われています",
+                  suggestions: suggestionsFor(candidate),
                 },
           );
         })
@@ -252,13 +283,19 @@ export function ProfileEditor({
     saveFailure.handle === handle
       ? saveFailure
       : null;
+  const hintProblem =
+    handleHint.kind === "taken" || handleHint.kind === "problem"
+      ? handleHint.message
+      : null;
   const handleProblem =
+    handleFailure !== null ? handleFailure.message : hintProblem;
+  // 実際に予約が落ちた値の候補を、入力中の目安より先に採る。
+  const suggestions =
     handleFailure !== null
-      ? handleFailure.message
-      : handleHint.kind === "problem"
-        ? handleHint.message
-        : null;
-  const suggestions = handleFailure?.suggestions ?? [];
+      ? handleFailure.suggestions
+      : handleHint.kind === "taken"
+        ? handleHint.suggestions
+        : [];
 
   return (
     <form action={save}>

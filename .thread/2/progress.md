@@ -279,6 +279,11 @@
 
 - `UploadValidationPolicy.ensureAcceptable` の引数を `{ purpose, mimeType, size }` から `{ purpose, body }` へ、戻り値を `void` から `{ mimeType, size }` へ変えた（ADR-078）。MIME は申告値ではなくバイト列の署名（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る。`spec/domains/storage.md` の `UploadValidationPolicy` の表と、`storeAvatar` の入力 DTO の `declaredMimeType` 相当（ADR-048 の `size` と同根）に反映が要る。署名を持たない形式（`text/markdown` 等）を許可する purpose を足す #6 が、入口の形をさらに広げる。
 
+### マニュアルテスト手順の差
+
+- `spec/manual-tests/account.md` の TC-26 手順 1・2「使用済み / 期限切れの再設定リンクを**開く**｜リンクが無効である旨が表示される」— 実装は GET で状態を変えない設計で、無効判定は送信の失敗として返る。手順を「開いて新しいパスワードを送信する」に、期待結果を「送信が拒否され、リンクが無効である旨と再申請への導線が出る」に直す必要がある。正本は `spec/inventory/frontend.md` PAGE-p04-003 / p04-004。
+- `spec/manual-tests/account.md` の TC-13 手順 2「無効にしたセッションが 1 件であることが表示される」— `spec/usecases/identity.md#signOutOtherSessions` が「応答は削除件数ではなく `revocationAccepted: true` を返す」と定めており、件数表示は AC-16 の O(1) 要求とも `spec/scenario/account.md` の「端末一覧を持たない」方針とも矛盾する。期待結果を「解除を受理した旨が表示される」に直す必要がある。
+
 ## Issue #1 へのコメント用
 
 `.thread/1/progress.md` が「本スライス外」として見送った下記 5 行は、本 Issue（#2）で実装済み。コードで確認した。
