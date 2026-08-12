@@ -56,11 +56,15 @@ export function describeAccountDeletionManifestStoreContract(
       );
     };
 
-    const finalizeAll = async (operationId = "op-1"): Promise<void> => {
+    const acknowledgeItems = async (operationId = "op-1"): Promise<void> => {
       const pending = await store().claimPending(operationId, "redaction", 100);
       const keys = pending.map((item) => item.key);
       await store().acknowledge(operationId, keys, "localRedaction");
       await store().acknowledge(operationId, keys, "publicRedaction");
+    };
+
+    const finalizeAll = async (operationId = "op-1"): Promise<void> => {
+      await acknowledgeItems(operationId);
       for (const receipt of FINALIZE_RECEIPTS) {
         await store().acknowledgeReceipt(operationId, receipt);
       }
@@ -213,6 +217,34 @@ export function describeAccountDeletionManifestStoreContract(
       expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
       await store().markCompleted("op-1", terminalAt, retainUntil);
       await store().markCompleted("op-1", terminalAt, retainUntil);
+    });
+
+    it("ADP-common-019/021: every declared receipt is required, one missing at a time", async () => {
+      for (const [index, missing] of FINALIZE_RECEIPTS.entries()) {
+        const operationId = `op-missing-${index}`;
+        await beginWithRoutes(operationId);
+        await store().markBuilt(operationId);
+        await acknowledgeItems(operationId);
+        for (const receipt of FINALIZE_RECEIPTS) {
+          if (receipt !== missing) {
+            await store().acknowledgeReceipt(operationId, receipt);
+          }
+        }
+
+        // Items are fully acked, so only the missing receipt can hold
+        // finalize back — a backend requiring less than what is declared
+        // would let it through here.
+        expect(await store().allRequiredAcknowledged(operationId)).toBe(false);
+        const terminalAt = backend.clock.now();
+        const retainUntil = new Date(terminalAt.getTime() + 120 * DAY_MS);
+        await expectConflict(
+          store().markCompleted(operationId, terminalAt, retainUntil),
+        );
+
+        await store().acknowledgeReceipt(operationId, missing);
+        expect(await store().allRequiredAcknowledged(operationId)).toBe(true);
+        await store().markCompleted(operationId, terminalAt, retainUntil);
+      }
     });
 
     it("ADP-common-016/020/024: rollback releases and rejects through the release path", async () => {

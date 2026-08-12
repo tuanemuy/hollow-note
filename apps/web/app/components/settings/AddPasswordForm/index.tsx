@@ -20,8 +20,10 @@ import { displayError } from "@/presentation/errorDisplay";
  * ここは入力と「追加中 / 失敗」の表示だけを持つ — 追加はリストの増減
  * なので、楽観的状態は親にしか置けない（CLAUDE.md 所有権の規則）。
  *
- * ネイティブの `<dialog>` を `showModal()` で開く。フォーカストラップと
- * Esc は要素側の仕様で担保されるので、自前の実装を持たない。
+ * ネイティブの `<dialog>` を `showModal()` で開く。フォーカストラップは
+ * 要素側の仕様に任せるが、Esc による閉じは送信中だけ塞ぐ — 失敗文言は
+ * このダイアログの中にしか無いので、閉じたあとに届くと利用者に読めない
+ * （「やめる」を `disabled` にしているのと同じ理由）。
  */
 export function AddPasswordForm({
   open,
@@ -69,6 +71,9 @@ export function AddPasswordForm({
     <dialog
       ref={dialogRef}
       aria-labelledby={`${passwordId}-title`}
+      onCancel={(event) => {
+        if (isPending) event.preventDefault();
+      }}
       onClose={onClose}
       className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-lg border border-hairline bg-bg p-5 text-ink shadow-md backdrop:bg-ink/25"
     >

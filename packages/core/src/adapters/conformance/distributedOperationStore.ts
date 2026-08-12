@@ -89,6 +89,40 @@ export function describeDistributedOperationStoreContract(
       expect(theirs.operation.id).not.toBe(mine.operation.id);
     });
 
+    it("separates kinds that share a partition", async () => {
+      const deletion = await begin("request-1");
+
+      const move = await backend.distributedOperationStore.beginOrResume({
+        kind: "noteMove",
+        partitionKey: userId(1),
+        requestKey: "request-1",
+        payload: {},
+      });
+      expect(move.resumed).toBe(false);
+      expect(move.operation.id).not.toBe(deletion.operation.id);
+      expect(move.operation.state).toBe("running");
+
+      await backend.distributedOperationStore.markState(
+        move.operation.id,
+        "completed",
+        backend.clock.now(),
+      );
+      expect(
+        await backend.distributedOperationStore.countTerminalSince(
+          "accountDeletion",
+          userId(1),
+          new Date(0),
+        ),
+      ).toBe(0);
+      expect(
+        await backend.distributedOperationStore.countTerminalSince(
+          "noteMove",
+          userId(1),
+          new Date(0),
+        ),
+      ).toBe(1);
+    });
+
     it("counts retained terminal rows of the partition since an instant", async () => {
       const older = await begin("request-1");
       await backend.distributedOperationStore.markState(

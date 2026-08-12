@@ -73,6 +73,22 @@ describe("deletion status ticket", () => {
     );
   });
 
+  it("rejects a forged ticket as invalid even when its deadline has passed", async () => {
+    const ticket = await issueDeletionTicket(RING, {
+      operationId: OPERATION_ID,
+      now: NOW,
+    });
+    const [version, , signature] = ticket.split(".");
+    const forged = toBase64Url(
+      JSON.stringify({ o: OPERATION_ID, e: NOW.getTime() - 1 }),
+    );
+
+    await expectCode(
+      () => readDeletionTicket(RING, `${version}.${forged}.${signature}`, NOW),
+      "DELETION_TICKET_INVALID",
+    );
+  });
+
   it("refuses a ticket signed with another deployment's key", async () => {
     const ticket = await issueDeletionTicket(keyRing(1, 9), {
       operationId: OPERATION_ID,

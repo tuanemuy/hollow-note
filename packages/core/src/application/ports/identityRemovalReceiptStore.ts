@@ -27,8 +27,10 @@ export type IdentityRemovalReceipt = Readonly<{
  * `record` therefore shares the unit of work that deletes the identity
  * and enqueues `identity.identity.removed`.
  *
- * `record` is idempotent per `operationId`: the first write wins, so a
- * lost-response retry of the same removal cannot rewrite the receipt.
+ * `record` is idempotent per `identityId` (the primary key of
+ * `identity_removal_receipts`): the first receipt of an identity wins, so
+ * neither a lost-response retry nor a later removal attempt carrying a
+ * different `operationId` can rewrite it.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */

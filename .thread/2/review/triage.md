@@ -215,3 +215,37 @@ R5: 新規 12 / 継承 0 / fix 5 / fix-editorial 1 / wont-fix 5 / defer 1（方�
 1. **B-001 / W-001 が返すエラーコード** → **新コード `PROVIDER_ACCOUNT_RELEASE_PENDING` を新設**し、`signInLinkedUser` と `existingLinkId` の両方に使う。既存の `PROVIDER_ACCOUNT_ALREADY_LINKED` の文言は「別の利用者に紐づいています」で、自分が今解除したアカウントについて出ると誤誘導になる（W-001 の実害そのもの）。
 2. **Frontend W-003 を本 PR で入れるか** → **入れる**。AC-28 は読み上げまでは要求していないが、同 PR 内に手本があり 6 行で、最も後戻りできない操作でフォーカスも喪失する。
 3. **Domain W-002 を構造修正まで踏み込むか** → **fix-editorial に留める**。ADR-069 が現行形を明示的に承認済みで、同一 UoW 化しても quarantine 耐性は増えない。
+
+## R6
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `adapters/memory/repositories/accountDeletionManifestStore.ts:requiredReceipts/.slice 切り詰め`（Domain B-001） | R6 | wont-fix | **誤検知**。実ファイルに `.slice(0, 1)` は無く作業ツリーもクリーン。並行して走った Test 観点の変異テスト中の状態を観測したもの | 0 |
+| `di/serverNode.ts:superRefine/dev IdP ガードが denylist`（Security W-001） | R6 | fix | **Warning ラベルだが実質 Blocker。再現済み**: `NODE_ENV=staging` / 空文字で本番バンドルが起動し `/dev/oauth/authorize` が 200 を返す（任意メールで全アカウント乗っ取り可）。**裁定 1: allowlist へ反転し `development` のみ受理** | 0 |
+| `conformance/accountDeletionManifestStore.ts:必須 receipt の部分欠落が未検証`（Domain W-001 + Test W-003） | R6 | fix | AC-31 が両ポートに同じ担保を要求するのに兄弟スイートだけが変異を捕まえる非対称。ADR-017 の自由度に対する唯一の防波堤 | 0 |
+| `ports/scopeTaskQueue.ts:listDue/ADR-005 と矛盾`（Adapter W-001） | R6 | fix-editorial | **裁定 4**。設計判断は ADR-103（Accepted）で決着済み。残るは ADR-005（Proposed）の当該段落が未更新なことだけ | 0 |
+| `ports/identityRemovalReceiptStore.ts:record/冪等キーの記述誤り`（Adapter W-002） | R6 | fix | `spec/database/index.md` が `identity_id` PK と定め実装もそれに従う。JSDoc だけが誤り。適合スイートも両キー一致 fixture で判別できていない | 0 |
+| `workers/subscribers.ts:storage.fileDeleted/既定レジストリ未検証`（Test W-001） | R6 | fix | AC-32 が名指す 3 イベントの 1 つ。entry 削除で全緑（変異実証済み） | 0 |
+| `routes/dev/-action.tsx:submitDevConsentFn/404 ガード未検証`（Test W-005） | R6 | fix | AC-6 の一部。R1 W-T09 の修正は env→フラグ経路のみで、承認コードを実発行するこの経路を射程外にしている | 1 |
+| `presentation/deletionTicket.ts:署名検証→期限判定の順序が未検証`（Test W-006） | R6 | fix | 偽造ケースの期限が遠未来のため順序入替でも緑。plan.md テスト方針が名指す ADR-006 の核心 | 0 |
+| `conformance/distributedOperationStore.ts:(kind, partitionKey) の kind 側未検証`（Test W-002） | R6 | fix | **裁定 3: 本 PR で入れる**（数行で、#7 が同ポートを別 kind で再利用する）。`row.kind === kind` を落として全緑＝どこにも担保が無い | 0 |
+| `conformance/noteProjection.ts:public 平面の redactAuthor/効果未検証`（Test W-004） | R6 | fix | **裁定 3: 本 PR で入れる**。適合バックエンドは `publicNoteQueryService` を公開済みで読み戻し 1 行で閉じる | 0 |
+| `AddPasswordForm:<dialog>/送信中の Esc`（Frontend W-001） | R6 | fix | 「やめる」は `disabled={isPending}` で塞ぐのに Esc だけ空いている非対称。JSDoc の主張も実態と食い違う | 0 |
+| `identity/updateProfile.ts:OPTIMISTIC_LOCK_FAILURE/抑止条件の広さ`（Domain W-002） | R6 | fix-editorial | 主張は成立するが残るのは TTL 10 分で自然消滅する `reserved` 行で、#9 送りの既知縮退（`active` 行の永久残留）とは重大度が別。コメントのみ訂正 | 0 |
+
+R6: 新規 12 / 継承 0 / fix 8 / fix-editorial 2 / wont-fix 1 / defer 0（方針フェーズ: 実施）
+
+## 要確認の裁定（メイン・R6）
+
+1. **dev IdP の allowlist の許容値** → **`NODE_ENV === "development"` のみ受理**。未設定・空文字・`test`・`staging` を含む他の全値で起動失敗させる。`pnpm dev`（vite が `development` を立てる）だけが通り、`pnpm start` 系は値によらず必ず落ちる。CI で `readNodeServerEnv` を実 env から呼ぶ経路が無いので `test` は足さない。
+2. **Security W-001 の記録上の重大度** → **「Warning ラベルだが実質 Blocker」として扱う**（R4 D-W001 / R5 Domain B-001 と同じ）。本番ビルドが乗っ取り可能な状態で起動する。
+3. **適合スイートの判別性補強（Test W-002 / W-004）を本 PR に入れるか** → **入れる**。どちらも数行で、対象ファイルは他単位が触らない。defer は最終手段という基準に照らして、別 Issue を立てるほうが高くつく。
+4. **Adapter W-001 の直し方** → **ADR-005 側に追記するだけ**（JSDoc・適合スイートは無変更）。設計判断は ADR-103（Accepted）で決着済み。ADR-005 の Status が Proposed のままである点も併せて整理する。
+
+## レビュー運用の是正（R6 で発生した事故を受けて）
+
+**変異テスト（実装を一時的に壊して落ちることを確認する手法）は、並列レビュー中に共有作業ツリーで行わない。** R6 では Test 観点のレビュアーが書き込んだ一時的な変異を、別プロセスの Domain 観点レビュアーが実装だと信じて Blocker として報告した。以降のラウンドでは:
+
+1. 変異は隔離環境（`git worktree` 等）で行う。共有作業ツリーで `Edit` → 実行 → `git checkout` する形は、並列レビュアーがいる限り禁止
+2. レビュアーへの指示に「実装の事実主張は `git status` がクリーンであることを確認してから行う」を含める
+3. 「差分に含まれない変更」を根拠とする指摘は、判定前にメインが実ファイルで再確認する

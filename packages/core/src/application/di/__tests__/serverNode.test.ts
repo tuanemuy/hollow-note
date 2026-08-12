@@ -13,6 +13,7 @@ const GOOGLE = {
   GOOGLE_OAUTH_CLIENT_ID: "client-id",
   GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
 };
+const DEV = { OAUTH_DEV_MODE: "true", NODE_ENV: "development" };
 
 /**
  * OAuth プロバイダーの選択規則は起動時の env スキーマに閉じる
@@ -20,19 +21,41 @@ const GOOGLE = {
  * する）。
  */
 describe("nodeServerEnvSchema OAuth provider selection", () => {
-  it("selects the dev identity provider when OAUTH_DEV_MODE is true", () => {
-    const env = readNodeServerEnv({ ...BASE, OAUTH_DEV_MODE: "true" });
+  it("selects the dev identity provider under NODE_ENV=development", () => {
+    const env = readNodeServerEnv({ ...BASE, ...DEV });
     expect(nodeServerEnvToRuntimeOptions(env).oauth).toEqual({ mode: "dev" });
   });
 
-  it("refuses the dev identity provider in production", () => {
+  // The rule is an allowlist, so the interesting cases are the values a
+  // denylist on `production` would have let through.
+  it.each([
+    ["production", "production"],
+    ["staging", "staging"],
+    ["test", "test"],
+    ["empty", ""],
+    ["unset", undefined],
+  ])(
+    "refuses the dev identity provider when NODE_ENV is %s",
+    (_label, nodeEnv) => {
+      expect(() =>
+        readNodeServerEnv({
+          ...BASE,
+          OAUTH_DEV_MODE: "true",
+          NODE_ENV: nodeEnv,
+        }),
+      ).toThrow(/only under NODE_ENV=development/);
+    },
+  );
+
+  it("refuses the dev identity provider even with Google credentials present", () => {
     expect(() =>
       readNodeServerEnv({
         ...BASE,
+        ...GOOGLE,
         OAUTH_DEV_MODE: "true",
         NODE_ENV: "production",
       }),
-    ).toThrow();
+    ).toThrow(/only under NODE_ENV=development/);
   });
 
   it("selects Google when both credentials are present", () => {
@@ -55,8 +78,9 @@ describe("nodeServerEnvSchema OAuth provider selection", () => {
 /**
  * AC-6: `/dev/oauth/authorize` の 404 ガードは env を直読みせず
  * `RequestContainer.oauthDevMode` だけを見る。ここで押さえるのは env から
- * そのフラグまでの経路で、ルート loader が偽で `notFound()` を投げる 1 行は
- * このテストの対象外。
+ * そのフラグまでの経路で、フラグを読む側は
+ * `apps/web/app/presentation/__tests__/devOAuth.test.ts`（承認コードを
+ * 発行する server function）が持つ。
  */
 describe("dev consent route flag", () => {
   const oauthDevModeFor = (
@@ -69,7 +93,7 @@ describe("dev consent route flag", () => {
   };
 
   it("is on for OAUTH_DEV_MODE=true", () => {
-    expect(oauthDevModeFor({ OAUTH_DEV_MODE: "true" })).toBe(true);
+    expect(oauthDevModeFor(DEV)).toBe(true);
   });
 
   it("is off for a Google deployment", () => {
@@ -86,7 +110,7 @@ describe("initNodeRuntime", () => {
     "@tanstack-start-template/memory-runtime",
   ) as unknown as symbol;
   const slot = globalThis as unknown as Record<symbol, unknown>;
-  const devEnv = () => readNodeServerEnv({ ...BASE, OAUTH_DEV_MODE: "true" });
+  const devEnv = () => readNodeServerEnv({ ...BASE, ...DEV });
   const TEST_CONFIG = readNodeRequestServerConfig(devEnv());
 
   afterEach(() => {

@@ -38,7 +38,15 @@ const nonEmpty = (value: string | undefined): value is string =>
  * never be able to fail these rules.
  */
 const OAUTH_SETUP_HINT =
-  "add `OAUTH_DEV_MODE=true` to apps/web/.env for local development, or set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET";
+  "add `OAUTH_DEV_MODE=true` to apps/web/.env and run `pnpm dev` (NODE_ENV=development), or set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET";
+
+// The one `NODE_ENV` the dev identity provider may run under. Stated as
+// an allowlist rather than a `production` denylist because every value
+// we cannot classify — unset, empty, `staging`, a typo — would otherwise
+// serve a consent screen that signs in whoever is typed into it. Only
+// `vite dev` sets `development`; `pnpm start` declares `production`, so
+// a production bundle is refused whatever the deployment passes.
+const DEV_IDP_NODE_ENV = "development";
 
 const TICKET_KEY_BYTES = 32;
 
@@ -75,12 +83,11 @@ const nodeServerEnvSchema = z
   })
   .superRefine((env, ctx) => {
     if (isTrue(env.OAUTH_DEV_MODE)) {
-      if (env.NODE_ENV === "production") {
+      if (env.NODE_ENV !== DEV_IDP_NODE_ENV) {
         ctx.addIssue({
           code: "custom",
           path: ["OAUTH_DEV_MODE"],
-          message:
-            "OAUTH_DEV_MODE=true cannot be combined with NODE_ENV=production: the dev identity provider signs anyone in",
+          message: `OAUTH_DEV_MODE=true is accepted only under NODE_ENV=${DEV_IDP_NODE_ENV} (got ${JSON.stringify(env.NODE_ENV)}): the dev identity provider signs anyone in`,
         });
       }
       return;

@@ -96,7 +96,9 @@ export function describeNoteProjectionContract(
         version,
       );
       await backend.publicNoteProjectionWriter.replaceSnapshotIfNewer(
-        entry(),
+        makeProjectionEntry(1, userId(1), backend.clock.now(), {
+          visibility: "public",
+        }),
         [],
         { ...version, routeVersion: 1 },
       );
@@ -120,6 +122,17 @@ export function describeNoteProjectionContract(
         handle: null,
         version: 4,
       });
+      const published = await backend.publicNoteQueryService.searchPublic({
+        keyword: null,
+        tagNames: [],
+        ownerFilter: null,
+        updatedWithin: null,
+        cursor: null,
+        limit: 10,
+      });
+      expect(published.items.map((item) => item.authorDisplayName)).toEqual([
+        WITHDRAWN_AUTHOR_DISPLAY_NAME,
+      ]);
 
       // Repeats, other authors, and absent rows change nothing.
       expect(

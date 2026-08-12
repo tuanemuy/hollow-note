@@ -58,8 +58,8 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | Variable              | Required | Default                 | Purpose                                                                             |
 | --------------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------- |
 | `APP_URL`             | yes      | `http://localhost:3000` | Public origin used to build absolute URLs (verification links, share URLs).         |
-| `OAUTH_DEV_MODE`      | see below | — (commented out in `.env.example`) | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Refused together with `NODE_ENV=production`, which `pnpm start` declares. |
-| `NODE_ENV`            | no       | `production` under `pnpm start` | `scripts/listen.node.ts` declares it before loading `.env`, so the boot-time guards see the same value vite folded into the bundle. |
+| `OAUTH_DEV_MODE`      | see below | — (commented out in `.env.example`) | `true` selects the loopback dev identity provider (`/dev/oauth/authorize`). Accepted **only** under `NODE_ENV=development`, which only `vite dev` sets; every other value refuses to boot. |
+| `NODE_ENV`            | no       | `production` under `pnpm start` | `scripts/listen.node.ts` declares it before loading `.env`, so the boot-time guards see the same value vite folded into the bundle. Only the literal `development` unlocks the dev IdP. |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | see below | — | Google OpenID Connect credentials. Authorized redirect URI: `${APP_URL}/auth/callback/google`. |
 | `DELETION_TICKET_KEY`  | no       | per-process random key   | Signing key (32 bytes, base64url) for the status ticket the account-deletion screen polls with. Unset means the key is minted at boot, so a restart makes outstanding tickets unreadable and the progress display falls back to "the deletion keeps going"; the deletion itself still runs to completion. Set but not 32 base64url bytes is a startup error. |
 | `PORT`                | no       | `3000`                  | HTTP listener port.                                                                 |
@@ -74,11 +74,13 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 
 Boot picks exactly one sign-in provider and **fails if it cannot** — there is no silent fallback to a fake:
 
-1. `OAUTH_DEV_MODE=true` → the loopback dev IdP. It serves its own consent screen at `/dev/oauth/authorize` (the route 404s whenever the flag is off), so the approve *and* cancel paths of the OAuth flow are reachable without Google credentials. Combining it with `NODE_ENV=production` is a startup error.
+1. `OAUTH_DEV_MODE=true` **and `NODE_ENV=development`** → the loopback dev IdP. It serves its own consent screen at `/dev/oauth/authorize` (the route and its consent server function both 404 whenever the flag is off), so the approve *and* cancel paths of the OAuth flow are reachable without Google credentials. `OAUTH_DEV_MODE=true` under any other `NODE_ENV` is a startup error.
 2. Otherwise `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` → real Google.
 3. Neither → startup error.
 
-The dev IdP signs in whoever is typed into its consent screen, so it is **opt-in per machine**: `.env.example` ships it commented out, and `pnpm start` declares `NODE_ENV=production` before reading `.env`, which turns rule 1 into a refusal. Copying `.env.example` and running `pnpm dev` therefore stops at rule 3 with the setup hint — **uncomment `OAUTH_DEV_MODE=true` in your own `apps/web/.env`** (never on a deployed host). The same line is what an `.env` from an earlier revision needs.
+Rule 1 is an allowlist, not a `production` denylist: `staging`, an empty value, and an unset `NODE_ENV` are all refused. A deployment whose environment we cannot classify must not serve a consent screen that signs in whoever is typed into it, and empty values are ordinary in container manifests (`NODE_ENV=$UNSET_VAR`), where `??=` in `scripts/listen.node.ts` cannot restore the default.
+
+The dev IdP is therefore **opt-in per machine and per launcher**: `.env.example` ships the flag commented out, and only `pnpm dev` (`vite dev`, which sets `NODE_ENV=development`) accepts it. Copying `.env.example` and running `pnpm dev` stops at rule 3 with the setup hint — **uncomment `OAUTH_DEV_MODE=true` in your own `apps/web/.env`** (never on a deployed host). The same line is what an `.env` from an earlier revision needs.
 
 Running the production build against the dev IdP is deliberately awkward: it takes an explicit `NODE_ENV=development pnpm start` on the command line. Prefer `pnpm dev` for that.
 

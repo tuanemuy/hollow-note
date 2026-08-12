@@ -226,8 +226,11 @@ export async function updateProfile({
     // concurrent attempts at the same handle share a single directory
     // row; releasing here would delete the row the winning attempt is
     // about to activate, leaving the user row naming a handle nobody
-    // claims. Losing means "another attempt of this same operation is
-    // in flight", and that attempt owns the row.
+    // claims. The condition is the error code alone, so it also covers
+    // a concurrent update that never touched the handle — there the
+    // reserved row is owned by nobody, and it stays parked until its
+    // TTL lapses; the owner retakes it with the same deterministic
+    // operation id on the next attempt.
     if (!(isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE")) {
       await releaseUniqueKeys(container, reservations);
     }

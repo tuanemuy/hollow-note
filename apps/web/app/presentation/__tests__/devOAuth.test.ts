@@ -1,8 +1,20 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isValidationError } from "@repo/core/application/errors";
-import { describe, expect, it } from "vitest";
+import { requestHandler } from "@tanstack/react-start/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { devApprovalRedirect, devDenialRedirect } from "../devOAuth";
+import { extractSerializedError, httpStatusFor } from "../errorResponse";
 
-const APP_URL = "https://app.example.test";
+const container = vi.hoisted(() => ({
+  oauthDevMode: false,
+  config: { appUrl: "https://app.example.test" },
+}));
+
+const APP_URL = container.config.appUrl;
+
+vi.mock("@repo/core/application/di/containerStore", () => ({
+  getContainer: async () => container,
+}));
 
 const invalidRedirect = (run: () => unknown): void => {
   try {
@@ -61,5 +73,83 @@ describe("devOAuth redirects", () => {
         state: "state-1",
       }),
     );
+  });
+});
+
+const START_CONTEXT_KEY = Symbol.for("tanstack-start:start-storage-context");
+
+/**
+ * server function を 1 リクエスト分の実行文脈で走らせ、投げられたものを
+ * 返す（投げなければ `undefined`）。`errorResponseMiddleware` が
+ * `setResponseStatus` を呼ぶので、実行文脈の外では 404 に落ちる経路その
+ * ものが観測できない。
+ */
+async function thrownByServerFn(
+  invoke: () => Promise<unknown>,
+): Promise<unknown> {
+  let error: unknown;
+  const handler = requestHandler(async (request: Request) => {
+    const globals = globalThis as unknown as Record<
+      symbol,
+      AsyncLocalStorage<unknown> | undefined
+    >;
+    const storage =
+      globals[START_CONTEXT_KEY] ?? new AsyncLocalStorage<unknown>();
+    globals[START_CONTEXT_KEY] = storage;
+    await storage.run(
+      { request, contextAfterGlobalMiddlewares: {} },
+      async () => {
+        try {
+          await invoke();
+        } catch (thrown) {
+          error = thrown;
+        }
+      },
+    );
+    return new Response(null, { status: 204 });
+  });
+  await handler(
+    new Request("https://app.example.test/_serverFn", { method: "POST" }),
+    undefined,
+  );
+  return error;
+}
+
+/**
+ * AC-6: 承認コードを実発行する経路が `OAUTH_DEV_MODE` のフラグに従うこと。
+ * 起動時ガードが止めるのは env の側だけなので、フラグが偽のまま到達した
+ * 要求をこの 1 本が塞ぐ。
+ */
+describe("submitDevConsentFn", () => {
+  const consent = {
+    redirectUri: `${APP_URL}/auth/callback/google`,
+    state: "state-1",
+    codeChallenge: "challenge-1",
+    decision: "approve" as const,
+    email: "victim@example.test",
+    displayName: "Victim",
+    emailVerified: true,
+  };
+
+  const thrownBySubmit = async (): Promise<unknown> => {
+    const { submitDevConsentFn } = await import("@/routes/dev/-action");
+    return thrownByServerFn(() => submitDevConsentFn({ data: consent }));
+  };
+
+  beforeEach(() => {
+    container.oauthDevMode = false;
+  });
+
+  it("refuses to mint an authorization code when the dev IdP is off", async () => {
+    const serialized = extractSerializedError(await thrownBySubmit());
+
+    expect(serialized.kind).toBe("notFound");
+    expect(httpStatusFor(serialized)).toBe(404);
+  });
+
+  it("accepts the same consent when the dev IdP is on", async () => {
+    container.oauthDevMode = true;
+
+    expect(await thrownBySubmit()).toBeUndefined();
   });
 });

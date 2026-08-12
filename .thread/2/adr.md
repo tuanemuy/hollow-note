@@ -123,7 +123,9 @@ personal barrier の prune task（`identity.personalBarrierPruneContinued`）の
 
 `application/ports/scopeTaskQueue.ts` に `ScopeTaskQueue.listDue(now, limit): Promise<readonly { scope: ScopeKey; kind: string; operationId: string }[]>` の 1 メソッドだけを置き、`WorkerContainer` に載せる。**読み取り専用で claim も処理もしない** — claim は従来どおり scope UoW 内の `ScopeTaskScheduler.claimDue` が行う。ランナーは `listDue` の各行について `scopeUnitOfWorkProvider.run(scope, …)` を開き、その中で claim → 再投入 → `complete` / `backoff` を行う。
 
-代替案（running な `distributed_operations` から `userId → user:{id}` を導いて polling する）は新ポートを増やさずに済むが、**`identity.personalBarrierPruneContinued` は operation が `completed` になった 120 日後に期限が来る**ため、running 集合からは導出できない。この 1 種類のために例外規則を作るより、汎用の列挙ポートを 1 つ持つほうが #3 以降の participant にも素直に効く。#11 の DO Alarm 実装では `listDue` は空配列を返す（scope 自身が起きるので中央からの列挙が不要）。
+代替案（running な `distributed_operations` から `userId → user:{id}` を導いて polling する）は新ポートを増やさずに済むが、**`identity.personalBarrierPruneContinued` は operation が `completed` になった 120 日後に期限が来る**ため、running 集合からは導出できない。この 1 種類のために例外規則を作るより、汎用の列挙ポートを 1 つ持つほうが #3 以降の participant にも素直に効く。
+
+> **ADR-103 で更新**: 起草時は「#11 の DO Alarm 実装では `listDue` は空配列を返す（scope 自身が起きるので中央からの列挙が不要）」としていたが、ADR-103 が正本を plan.md のテスト方針に置き、`listDue` を必須契約へ書き換えた。中央列挙を持たないランタイムも実装を求められる — 再起動後に未完の継続を拾う経路が他に無い以上、これは縮退ではなく要件。以下の Consequences のうち「実装が空になるポート」に関する記述も同様に置き換わっている。
 
 `pruneExpiredAuthState` の cron 配線は本 Issue のチェックリスト外なので引き続き見送る（Issue #15 の担当）。
 
@@ -2324,3 +2326,29 @@ claim を無視して email 経路（新規作成 / 既存への自動リンク�
 - トレードオフ: 既存リンクのサインインごとに `listByUserId` が 1 回増える。identity は 8 件上限なので実質定数（ADR-104 と同じコスト）。
 - トレードオフ: 解放が恒久的に落ちた場合、その provider account は誰も使えないまま残る（サインインも再連携も `RELEASE_PENDING`）。運用で解放を再駆動するまで固まる形を選んだ — 誤って通すより固まるほうが安全側に倒れる。
 - spec-sync 候補: `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケース表に `PROVIDER_ACCOUNT_RELEASE_PENDING` が無い。手順 3 の要求そのものは満たしたので、表側の追記を spec-sync に回す。
+
+---
+
+## ADR-109: dev IdP の起動ガードは `NODE_ENV` の allowlist にする（ADR-003 / ADR-073 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-003 の規則 1 と ADR-073 は、dev IdP の production 混入を「`NODE_ENV === "production"` かつ `OAUTH_DEV_MODE=true` なら起動失敗」という denylist で守っていた。plan.md「リスクと注意点」はこのガードを唯一の技術的統制として挙げているが、denylist は production 以外のあらゆる値を通す。`pnpm build` の成果物に対する実測で、`NODE_ENV=staging` と `NODE_ENV=`（空文字）はいずれも起動に成功し、`GET /dev/oauth/authorize` が 200（同意画面）を返した。空文字は `listen.node.ts` の `process.env.NODE_ENV ??= "production"` が既定値に戻せない（`??=` は空文字を nullish と見なさない）ため、`NODE_ENV=$UNSET_VAR` を書いたコンテナマニフェストで普通に起こる。dev の同意画面は任意のメールアドレスを `emailVerified: true` のまま通し、認可コードは無署名なので、成立した時点で当該デプロイの全アカウントが乗っ取り可能になる。
+
+### Decision
+判定を allowlist に反転する。`OAUTH_DEV_MODE=true` を受理するのは `NODE_ENV === "development"` のときだけとし、未設定・空文字・`test`・`staging` を含む他のすべての値で起動失敗させる（`di/serverNode.ts` の `nodeServerEnvSchema.superRefine` 1 箇所）。
+
+- 「分類できない配備は拒否側に倒す」を規則そのものにする。denylist は「危険な値を数え上げられている」ことを前提にするが、配備側の `NODE_ENV` は我々の管理下にない。
+- `development` を立てるのは `vite dev`（= `pnpm dev`）だけなので、開発の唯一の正規経路は通り、`pnpm start` 系は `.env` の内容によらず必ず落ちる。
+- `test` は足さない。CI で `readNodeServerEnv` を実 `process.env` から呼ぶ経路が無く（ユニットテストは env を引数で渡す）、足すと守る対象が増えるだけになる。
+- ADR-073 の `listen.node.ts` の `NODE_ENV ??= "production"` は変更しない。allowlist では空文字も staging も `development` ではないので、この宣言はガードの前提ではなくなり、production バンドルと実行時 env の一致を保つ役割だけが残る。
+- 失敗メッセージには観測した `NODE_ENV` を含める。落ちた側が「どの値で拒否されたか」を見ずに `OAUTH_DEV_MODE` を疑うと、空文字のケースで原因に辿り着けない。
+
+あわせて、AC-6 の「`OAUTH_DEV_MODE` が偽なら 404」のうち**承認コードを実発行する** `submitDevConsentFn` にテストを 1 本足す。起動ガードが塞ぐのは env→フラグの経路だけで、フラグが偽のまま到達した要求はこの server function が塞ぐ。ルート loader の `notFound()` とは別の穴なので、ガードを外すと落ちることまで実測して固定する。
+
+### Consequences
+- 良い点: 本番形の起動が `NODE_ENV` の値によらず dev IdP を拒否する。実測で production / staging / 空文字 / 未設定の 4 通りすべてが ZodError で起動失敗し、`OAUTH_DEV_MODE` 無しの本番形は起動して `/dev/oauth/authorize` が 404 を返す。
+- 良い点: `.env.example` の「never on a deployed host」という運用約束が、配備者の申告ではなくコードで裏づけられる。
+- トレードオフ: `NODE_ENV=production pnpm start` 相当の本番形で dev IdP を検証する経路は `NODE_ENV=development pnpm start` の 1 通りだけになる（ADR-073 の想定どおり）。`NODE_ENV=test` でユニットテスト以外から起動する運用を将来入れる場合は、この allowlist を明示的に広げる判断が要る。

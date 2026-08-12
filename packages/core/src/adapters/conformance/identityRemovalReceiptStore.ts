@@ -75,6 +75,27 @@ export function describeIdentityRemovalReceiptStoreContract(
       expect(found?.providerAccountKey).toBe("google:account-1");
     });
 
+    it("keeps the first receipt when the same identity is recorded under another operation", async () => {
+      await backend.identityRemovalReceiptStore.record(receipt(1));
+      await backend.identityRemovalReceiptStore.record(
+        receipt(1, {
+          operationId: "removal-1-again",
+          providerAccountKey: "rewritten",
+        }),
+      );
+
+      const found = await backend.identityRemovalReceiptStore.findByIdentityId(
+        IdentityId.create("identity-1"),
+      );
+      expect(found?.operationId).toBe("removal-1");
+      expect(found?.providerAccountKey).toBe("google:account-1");
+      expect(
+        await backend.identityRemovalReceiptStore.findByOperationId(
+          "removal-1-again",
+        ),
+      ).toBeNull();
+    });
+
     it("keeps the provider account key of a password identity null", async () => {
       await backend.identityRemovalReceiptStore.record(
         receipt(2, { kind: "password", providerAccountKey: null }),
