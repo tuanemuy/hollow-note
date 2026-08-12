@@ -134,17 +134,18 @@ describe("authResidueCleanup", () => {
     );
     expect(h.backend.sessions.size).toBe(0);
     expect(continuations(h).at(-1)?.table).toBe("authTokens");
-    expect(
-      await h.workerContainer.accountDeletionManifestStore.allRequiredAcknowledged(
-        "deletion-1",
-      ),
-    ).toBe(false);
+    expect(h.backend.manifestHeaders.get("deletion-1")?.receipts).not.toContain(
+      "authResidue",
+    );
 
     await authResidueCleanup(
       event({ ...base, table: "authTokens" }),
       h.workerContainer,
     );
     expect(h.backend.authTokens.size).toBe(1);
+    expect(h.backend.manifestHeaders.get("deletion-1")?.receipts).not.toContain(
+      "authResidue",
+    );
 
     await authResidueCleanup(
       event({ ...base, table: "authTokens" }),

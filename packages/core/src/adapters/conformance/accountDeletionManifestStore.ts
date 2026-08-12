@@ -247,6 +247,28 @@ export function describeAccountDeletionManifestStoreContract(
       }
     });
 
+    it("ADP-common-019/021: every fixed item is required, the receipt set alone does not finalize", async () => {
+      await beginWithRoutes();
+      await store().markBuilt("op-1");
+      for (const receipt of FINALIZE_RECEIPTS) {
+        await store().acknowledgeReceipt("op-1", receipt);
+      }
+
+      // Every declared receipt is in hand, so the fixed items are the only
+      // thing left holding finalize back — a backend that weighs receipts
+      // alone would let this through.
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
+      const terminalAt = backend.clock.now();
+      const retainUntil = new Date(terminalAt.getTime() + 120 * DAY_MS);
+      await expectConflict(
+        store().markCompleted("op-1", terminalAt, retainUntil),
+      );
+
+      await acknowledgeItems();
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
+      await store().markCompleted("op-1", terminalAt, retainUntil);
+    });
+
     it("ADP-common-016/020/024: rollback releases and rejects through the release path", async () => {
       await beginWithRoutes();
       await store().markBuilt("op-1");

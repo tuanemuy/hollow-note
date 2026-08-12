@@ -189,6 +189,14 @@ const filesOf = (h: TestHarness, target: ScopeKey = scope) =>
 const deletionEvents = (h: TestHarness) =>
   h.backend.outbox.values().filter((row) => row.type === "storage.fileDeleted");
 
+const outboxTypeCounts = (h: TestHarness): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const row of h.backend.outbox.values()) {
+    counts[row.type] = (counts[row.type] ?? 0) + 1;
+  }
+  return counts;
+};
+
 const tasks = (h: TestHarness) =>
   h.backend
     .scope(scope)
@@ -258,6 +266,7 @@ describe("deleteFilesByOwner", () => {
     const h = createTestHarness();
     await openBarrier(h);
     await seedFiles(h, { count: 30 });
+    const before = outboxTypeCounts(h);
 
     await run(h, { batchSize: 10 });
 
@@ -266,6 +275,12 @@ describe("deleteFilesByOwner", () => {
       kind: STORAGE_OWNER_DELETE_TASK_KIND,
       operationId: OPERATION_ID,
       payload: { deletionOperationId: OPERATION_ID },
+    });
+    // The continuation is that task and nothing else: the delete command
+    // the turn consumed is not put back on the outbox.
+    expect(outboxTypeCounts(h)).toEqual({
+      ...before,
+      "storage.fileDeleted": (before["storage.fileDeleted"] ?? 0) + 10,
     });
   });
 
@@ -406,9 +421,11 @@ describe("deleteFilesByOwner", () => {
       container: withVanishingFiles(h, (id) => id === "file-002"),
     });
 
-    expect(turn.deletedCount).toBe(4);
+    expect(turn).toMatchObject({ status: "continued", deletedCount: 4 });
     expect(filesOf(h)).toHaveLength(1);
     expect(deletionEvents(h)).toHaveLength(4);
+    // The row that could not be deleted keeps the chain alive.
+    expect(tasks(h)).toHaveLength(1);
   });
 
   it("TC-storage-048: running the same request twice leaves the same result", async () => {

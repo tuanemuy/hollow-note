@@ -6,6 +6,7 @@ import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { REQUIRED_FINALIZE_RECEIPTS } from "../../cleanup/participants";
 import type { WorkerContainer } from "../../di/types";
 import type { AccountDeletionManifestItem } from "../../ports/accountDeletionManifestStore";
 import { dispatchAccountDeletionRedaction } from "../deleteAccount/authorRedaction";
@@ -176,6 +177,18 @@ const withMembershipInEveryPage = (h: TestHarness): WorkerContainer => ({
   },
 });
 
+const grantFinalizeReceipts = async (
+  h: TestHarness,
+  operationId: string,
+): Promise<void> => {
+  for (const receipt of REQUIRED_FINALIZE_RECEIPTS) {
+    await h.workerContainer.accountDeletionManifestStore.acknowledgeReceipt(
+      operationId,
+      receipt,
+    );
+  }
+};
+
 /** The successor a redaction turn stored, as the relay would deliver it. */
 const lastDispatch = (h: TestHarness) =>
   h.backend.outbox
@@ -199,7 +212,9 @@ describe("deleteAccount author redaction", () => {
     await redactionTurn(h, operationId, null);
     expect(ackedCount(h, operationId)).toBe(100);
     expect(lastDispatch(h)).toMatchObject({ phase: "redaction", cursor: "1" });
-    // Nothing may finalize while a plane is still unacknowledged.
+    // Every global receipt is already in hand, so the 150 routes still
+    // waiting on a plane ack are the only thing holding finalize back.
+    await grantFinalizeReceipts(h, operationId);
     await finalizeAccountDeletion(h.workerContainer, {
       type: "identity.accountDeletionDispatchContinued",
       operationId,

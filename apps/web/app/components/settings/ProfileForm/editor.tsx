@@ -19,7 +19,6 @@ import {
   useTransition,
 } from "react";
 import {
-  fieldErrorClass,
   fieldLabelClass,
   inputClass,
   inputInvalidClass,
@@ -395,17 +394,17 @@ export function ProfileEditor({
               onChange={(event) => setHandle(event.target.value)}
             />
           </div>
-          <p id={handleHintId} aria-live="polite" className="empty:hidden">
+          <p
+            id={handleHintId}
+            aria-live="polite"
+            className="text-xs not-empty:mt-2"
+          >
             {handleProblem !== null ? (
-              <span className={fieldErrorClass}>{handleProblem}</span>
+              <span className="text-error">{handleProblem}</span>
             ) : handleHint.kind === "available" ? (
-              <span className="mt-2 inline-block text-xs text-success">
-                このハンドルは使用できます
-              </span>
+              <span className="text-success">このハンドルは使用できます</span>
             ) : handleHint.kind === "checking" ? (
-              <span className="mt-2 inline-block text-xs text-ink-tertiary">
-                確認中...
-              </span>
+              <span className="text-ink-tertiary">確認中...</span>
             ) : null}
           </p>
           {suggestions.length === 0 ? null : (

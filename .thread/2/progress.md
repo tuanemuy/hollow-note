@@ -189,6 +189,8 @@
 - `TC-storage-043` — spec の期待結果「列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文の計 3 文」のうち**文の数という性能上の約束を検証せず**、「列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない」に置き換えてチェック（ADR-057。OCC トークンを `findById` から得る ADR-022 の帰結で 1 件ずつ読む）。
 - `TC-usage-059`（ゴミ箱のノートも数える）— 根拠は `recalculateStorageUsage` の `countByOwner(owner, "all")` 側**だけ**。`noteCount` の即時反映（`applyStorageDelta`）が #6 のため。
 - `TC-identity-090` — spec の期待結果のうち「**再試行時刻を記録する**」を欠いてチェック（ADR-026。`DistributedOperationStore` が `next_attempt_at` を持たないため、記録すべき時刻そのものが無い。事実上の再駆動は P-25 の再送に依存する。cleanup 引き渡しは ADR-106 の継続行が駆動する）。検証しているのは「`deleting` のまま / PII が残る / manifest は `built` のまま / finalize が待ち続けるログ」まで。→ recovery Cron を足すスライス
+- `TC-identity-110` — spec の期待結果のうち「**最大 100 件を回収**」というページ上限の分岐を検証せずにチェック（固定 `asOf` で回収する / running barrier を対象にしない側は検証済み）。1 scope に barrier receipt を 1 件しか持てないバックエンド（memory と、いま適合スイートが固定している範囲）では full-page 分岐が構造的に到達不能なため。→ #11
+- `TC-storage-047` — spec の期待結果「記録して継続する」のうち**「記録」を欠いてチェック**。`deleteStoredFiles` は既に消えている id を無言で `continue` する（同じ削除の再試行が成功しなければならないため意図的な skip で、観測できる記録が実装に無い）。「継続」側は別の単位がテストで固定する。
 
 ### 機能・運用としての縮退
 

@@ -128,4 +128,10 @@ describe("DOM-usage-005: UsageWarningLevel", () => {
     expect(UsageWarningLevel.of(100, 100)).toBe("exceeded");
     expect(UsageWarningLevel.of(101, 100)).toBe("exceeded");
   });
+
+  it("treats a zero limit as already exceeded", () => {
+    expect(UsageWarningLevel.of(0, LlmCallQuota.create(0).limit)).toBe(
+      "exceeded",
+    );
+  });
 });

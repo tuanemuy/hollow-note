@@ -249,3 +249,30 @@ R6: 新規 12 / 継承 0 / fix 8 / fix-editorial 2 / wont-fix 1 / defer 0（方�
 1. 変異は隔離環境（`git worktree` 等）で行う。共有作業ツリーで `Edit` → 実行 → `git checkout` する形は、並列レビュアーがいる限り禁止
 2. レビュアーへの指示に「実装の事実主張は `git status` がクリーンであることを確認してから行う」を含める
 3. 「差分に含まれない変更」を根拠とする指摘は、判定前にメインが実ファイルで再確認する
+
+## R7
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `conformance/accountDeletionManifestStore.ts:item ack 連言の判別性（authorRoute lane）`（Test B-001） | R7 | fix | **裁定 1**。authorRoute item の ack ゲートを単独で固定する検証が皆無で、唯一の item ゲート事例（membership）は `ctx.skip()` の内側。**R3 Test W-012 の wont-fix は「適合スイートが押さえている」という前提が誤りだったため継承しない**。production 欠陥ではないので重大度は Warning 相当 | 0 |
+| `authResidueCleanup.test.ts:TC-identity-041/receipt 否定側が恒真`（Test W-001） | R7 | fix | spec 期待結果「残件 0 確認後**だけ** ack」の否定側が恒真。2 行で実効化 | 0 |
+| `deleteFilesByOwner.test.ts:TC-storage-047/継続の未検証`（Test W-002） | R7 | fix + 記録 | AC-25 の対象行で「継続」が未主張。「記録」側は観測点が無いので progress.md の ID 単位縮退へ 1 行 | 0 |
+| `deleteFilesByOwner.test.ts:TC-storage-039/再投入しないの未検証`（Test W-003） | R7 | fix | spec 期待結果の後半節が完全に未検証。outbox の型別増分 1 行 | 0 |
+| `cleanup/personalCleanup.ts:ページ上限 100/縮退記録`（Test W-004） | R7 | fix-editorial | JSDoc は R2 で入っているが `TC-identity-110` の ID 単位記録が progress.md に無い（R2 裁定 4 の記録先） | 0 |
+| `domain/usage/valueObject.ts:UsageWarningLevel.of/limit<=0 未検証`（Test W-005） | R7 | fix | `LlmCallQuota.create(0)` が合法なので到達可能な分岐。docs/test.md のドメイン ~100% 方針 | 0 |
+| `startOAuthFlow.test.ts:TC-identity-268/spec-sync 未記録`（Test W-006） | R4 | wont-fix | **誤指摘**。`progress.md` に記録済み（R4 T-W001 の fix が着地している）。レビュアーが plan.md しか読まなかったための取りこぼし | 1 |
+| `ProfileForm/editor.tsx:handleHint live region/empty:hidden`（Frontend W-001） | R7 | fix | リポジトリ自身が `panelStyles.ts` に明文化した「live region は要素を常設し余白だけ条件付き」からの唯一の逸脱 | 0 |
+| `routes/settings/route.tsx:未サインインの削除フォーム / ticket 復元`（Frontend W-002） | R1 | wont-fix + fix-editorial | **裁定 2**。ADR-062 / ADR-085 が宣言済み（R1 W-F04 を継承）。`restoring` phase 案は SSR で削除フォームを出せなくなり多数派の初期表示を劣化させる。**ADR-085 の Consequences に「復元前は idle が描画される」を 1 行足すに留める** | 1 |
+
+R7: 新規 7 / 継承 2 / fix 5 / fix-editorial 2 / wont-fix 2 / defer 0（方針フェーズ: 実施）
+観点別 fix 件数: domain-usecase 0→休止 / adapter 0→休止 / security 0→休止 / frontend 1 / test 5
+
+## 要確認の裁定（メイン・R7）
+
+1. **Test B-001 の重大度と修正範囲** → **重大度は Warning 相当**（production 欠陥ではなくテストの判別性）。**修正は両方入れる**（適合スイートの補集合 1 ケース + ユースケース TC-081 側の receipt 前置。合計 10 行程度で、TC-081 は AC-26 のチェック行そのもの）。**R3 Test W-012 は「適合スイートが押さえている」という前提が誤りだったので、R7 で fix へ改める**ことを台帳に明記した。
+2. **Frontend W-002** → **wont-fix（宣言どおり）**。ADR-062 / ADR-085 が「未サインインでフォームが出ること」を設計上の性質として宣言済みで、`restoring` phase による解消は SSR 段階でフォームを出せなくなり通常の削除利用者の初期表示を劣化させる。**ADR-085 の Consequences に「復元前は idle が描画される」を 1 行足す fix-editorial に留める**。
+
+## 次ラウンド（R8）のレビュー指示への反映
+
+1. **Test 観点の閾値を固定する**: ゼロベース + 変異可能点探索は原理的に毎ラウンド新しい「判別性の穴」を生むので、**「AC が名指す TC の spec 期待結果を空振りさせているか」**を Blocker / Warning の閾値とし、それ以外（適合スイートの網羅性の一般的な強化、memory では到達不能な分岐の検証）は #11 / #19 へ送る。
+2. **決着済み事項を事実として参照可にする**: 「`.thread/2/progress.md` と `.thread/2/adr.md` の縮退・spec-sync 候補・Accepted 判断は事実として参照してよい（ゼロベースの対象外）」をレビュアー指示に加える。R7 の 9 件のうち 2 件が決着済み事項の再指摘だった。
