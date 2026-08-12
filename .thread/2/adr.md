@@ -92,7 +92,7 @@ memory `ObjectStorage` はプロセス内のバイト列ストアとし、`apps/
 VO は `spec/domains/storage.md` の列挙どおり `StorageOwner` / `FileName` / `MimeType` / `ByteSize` / `FileProvenance` に加えて **`ObjectKey`（`ObjectKey.build(owner, purpose, fileId, extension)`）/ `Checksum` / `FilePurpose`** を含む。`publicUrl(key: ObjectKey)` / `deleteMany(keys)` / `put(key, body, meta)` / `StoredFile.register` はこの 3 つが無いと型として書けない。リポジトリの形（OCC トークンの取得経路・`listByOwner` の戻り値）は ADR-022 で確定する。
 
 ### Decision の帰結として本 Issue で扱わないもの
-`applyStorageDelta`（UC-usage-003、チェックリスト外）を実装しないため、アバター保存時に `StorageQuota.consumedBytes` は増えない。**同じ理由で `noteCount` も増減しない**（`spec/usecases/usage.md` は `note.created` / `note.purged` による件数更新も `applyStorageDelta` に置く）。したがって TC-usage-059（ゴミ箱のノートも数える）の根拠は `recalculateStorageUsage` の `countByOwner(owner, "all")` 側にしか無い。整合は `recalculateStorageUsage`（チェックリスト内）で取る。この縮退は Issue コメントに記録する。
+`applyStorageDelta`（UC-usage-003、チェックリスト外）を実装しないため、アバター保存時に `StorageQuota.consumedBytes` は増えない。**同じ理由で `noteCount` も増減しない**（`spec/usecases/usage.md` は `note.created` / `note.purged` による件数更新も `applyStorageDelta` に置く）。したがって TC-usage-059（ゴミ箱のノートも数える）の根拠は `recalculateStorageUsage` の `countByOwner(owner, "all")` 側にしか無い。`recalculateStorageUsage`（チェックリスト内）は実装するが、`spec/usecases/usage.md#recalculateStorageUsage` はこれを**運用操作**と規定しており、本 Issue に本番の駆動主体は置かない（`spec/pages/index.md#P-24` にも再計算の導線は無く、`getUsageSnapshot` は「開くこと自体を write 経路にしない」契約を持つ）。結果として `storage_quotas` の行が生成される経路が無く、P-24 の個人使用量は `consumedBytes: 0` / `noteCount: 0` を表示し続ける（`getUsageSnapshot` が `StorageQuota.initialize` の既定値へフォールバックするため）。実値の反映は `initializeQuota` / `applyStorageDelta` を実装する #6 まで到達しない。この縮退は Issue コメントに記録する。
 
 ### Consequences
 - 良い点: シナリオ AC-07（`spec/scenario/account.md#AC-07`）と TC-storage-167, 170..174 が仮実装なしで通り、#6 は同じエンティティ・ポートの上に upload 系 UC を足すだけになる（TC-storage-168 / 169 は workspace アイコンで #3 へ見送り — ADR-014）。`deleteFilesByOwner` も同じコアで実装でき、personal cleanup の `storage` participant が本物になる。
@@ -2432,3 +2432,89 @@ ticket の保持がクライアント責務であること自体は ADR-006 の�
 - 良い点: `/settings/danger` が復元経路の例外で `ServerErrorState` に倒れなくなる。
 - トレードオフ: 保持に失敗したことは利用者に見えない。リロードすると進捗を追えなくなるが、その時点の案内（サインインし直して確認する）は既存の `settled` 表示が持つ。
 - CLAUDE.md の「broad catch は境界だけ」との関係: ここは Web Storage という外部資源との境界で、アダプターが driver の例外を畳むのと同じ位置づけになる。
+
+---
+
+## ADR-113: P-25 の完了パネルは自動遷移しない（ADR-107 の追補）
+
+### Status
+Accepted
+
+### Context
+完了パネルは `completed` に入った瞬間に `DeletionProgress` が焦点を自分へ移し（ADR-107）、その 5 秒後に `window.location.assign("/")` を無条件に走らせていた。読み上げ対象は見出しと本文 2 文で、既定の速度では 5 秒に収まらない。利用者側に停止・延長・解除の手段は無く、WCAG 2.2.1（Timing Adjustable）の除外条件（リアルタイム・必須・20 時間）にも当たらない。この画面は削除完了の告知が読める最後の機会で、以後サインインして読み直すこともできないため、読み落としが回復不能になる。
+
+`plan.md` / `spec/manual-tests/account.md` TC-14 のどこにも自動遷移の要求は無く、5 秒という値の根拠も記録が無い。AC-28 が求めるのは「完了表示とそこからのフル遷移」で、遷移の**契機**までは定めていない。
+
+### Decision
+タイマー（`COMPLETION_LEAVE_MS` と `completed` の `useEffect`）を撤去し、フル遷移は「トップページへ」ボタンの明示操作だけにする。本文からも「まもなくトップページへ移動します。」を落とし、文言と挙動を一致させる。
+
+残り秒数の可視化や、キー入力・ポインター操作での解除は採らない。停止できるタイマーは「止められることに気づく」ことを前提にするが、この画面は焦点が移った直後で、利用者が最初に受け取る情報は完了の告知そのものである。読み終える時間を利用者に委ねるほうが単純で、失われる機能も無い（遷移の手段はボタンとして残る）。
+
+router キャッシュの再基底化（サインアウト済みセッションの RSC ペイロードを捨てる。spec/adr/030）はフル遷移が担うという設計は変わらない。担い手が「5 秒後のタイマー」から「ボタン」に変わるだけで、`router.invalidate()` を呼ばない ADR-006 の例外もそのまま。
+
+### Consequences
+- 良い点: 支援技術の利用者が完了の告知を最後まで読める。読み上げ中に遷移が割り込む経路が消える。
+- 良い点: 「まもなく移動します」と書いてあるのに止められない、という文言と操作の不一致が無くなる。
+- トレードオフ: 削除後にタブを開いたまま放置すると `/settings/danger` の完了パネルが残る。この画面はセッションを失っており、留まっても読めるのは自分の完了表示だけなので害は無い。
+
+---
+
+## ADR-114: P-25 の ticket 復元は「境界デコード」と「主体の照合」の 2 つの純関数に割る（ADR-095 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-095 が定めた「他人の削除の進捗と『削除しました』を見せない」照合は、`sessionStorage` から来る信頼できない値のデコード（JSON parse・型検査・`userId` 欠落時の `null` 化）と、保存時の主体と今の主体の突き合わせという 2 つの判断を持つ。どちらもコンポーネント本体の非 export な処理として埋まっていて、単体テストから到達できなかった。同種の境界判断（`shouldIssueVerificationSession` / `assertOAuthStateBinding` / `safeRedirectPath` / `readDeletionTicket`）はいずれも純関数として切り出したうえでテストが付いている。
+
+### Decision
+`DeleteAccountPanel/ticketStorage.ts` を作り、DOM に依存しない 2 本を export する: `parseStoredTicket(raw: string | null): StoredTicket | null` と `canRestoreTicket(stored, currentUserId): boolean`。`sessionStorage` に触る `persistTicket` / `forgetTicket` / `readStoredTicket` は同モジュールの薄いラッパーとして残し、ADR-112 の `try / catch` もそこに閉じたままにする（`readStoredTicket` は `getItem` の結果を `parseStoredTicket` へ渡すだけになる）。
+
+判定の真理値は移設前と同じにする。特に「保存レコードの `userId` が `null` で、今のセッションが有る」場合は復元しない — ADR-095 が通すのは*今の*セッションが無いときで、保存側の欠落ではない。
+
+`presentation/` には置かない。この 2 本は P-25 の島が自分の退避形式を読むための判断で、転送境界（server function の validator / `validateSearch`）でもルート横断の資格情報でもない。
+
+### Consequences
+- 良い点: ADR-095 の門が `__tests__/ticketStorage.test.ts` で固定される（別 userId は復元しない / セッション無しは復元する / 壊れた JSON・非オブジェクト・ticket 非文字列は `null`）。
+- 良い点: テストは DOM を要らないので、リポジトリ唯一の node 環境の vitest 設定のまま動く。
+- トレードオフ: `DeleteAccountPanel/` がファイル 3 つになる。退避形式を知る場所は 1 か所のままなので、島の外へ知識は漏れない。
+
+---
+
+## ADR-115: P-22 のリスト増減は成功も常設 live region で告知し、解除の焦点はリスト見出しへ戻す（ADR-111 の追補）
+
+### Status
+Accepted
+
+### Context
+`IdentityBoard` の live region は `listError`（失敗専用）だけで、解除・追加の**成功**を伝える経路が無かった。同じ島の `ChangePasswordForm`（「パスワードを変更しました…」）と `SignOutOthersPanel`（「他の端末のサインインを解除しました…」）は成功文言を持っており、リストの増減 2 操作だけが規律から外れていた。さらに解除は `useOptimistic` が行を先にアンマウントするため、押した「解除する」ごと消えて焦点が `document.body` へ落ちる。ADR-111 は「実行では行が消えるので焦点は戻さない — 結果は親の常設 live region が伝える」としたが、その live region に成功の経路が無かったので、実際には何も伝わっていなかった。
+
+### Decision
+`listError` と対になる成功用の常設 live region を島に 1 つ置き（`SignOutOthersPanel` と同じ `text-xs text-success not-empty:mt-2` + `aria-live="polite"`）、解除・追加の成功文言をそこへ入れる。操作開始時にクリアするので、失敗した経路に前回の成功文言が残ることはない。
+
+あわせて `<h2>有効なログイン方法</h2>` を `tabIndex={-1}` の受け皿にし、**解除の成功後だけ**焦点をそこへ戻す（`DeletionProgress` と同じ形。焦点輪は `focus-visible:shadow-none` で出さない — 見出しは操作対象ではない）。失敗の経路で戻さないのは、楽観的除去が巻き戻って行が戻るので、焦点の受け皿を増やすより失敗文言の読み上げに寄せるほうが単純なため。追加は焦点の戻し先を島から動かさない — `<dialog>` の `close()` が platform 既定で焦点を戻す位置に割り込むと、閉じる順序（`setAdding(false)` の commit → 子の effect の `close()`）に依存した奪い合いになる。
+
+### Consequences
+- 良い点: 破壊的操作（解除）の直後に「何が起きたか」と「今どこにいるか」の両方が伝わり、ADR-111 が前提にしていた「結果は親の live region が伝える」が実際に成立する。
+- 良い点: 成功・失敗の告知位置が P-22 の 4 パネルで揃う。
+- トレードオフ: 解除の失敗時と追加の成功時は焦点が `document.body` に残りうる（追加は成功すると起動ボタン「パスワードを追加」自体が消えるため）。いずれも結果は live region が読み上げる。
+- `PasswordStrengthMeter` と同様、成功文言は島が 1 つだけ持つ。行ごとに持たせると楽観的除去で消えるので、告知は親に置くほかない。
+
+---
+
+## ADR-116: `AddPasswordForm` も `passwordStrength` の一本化に載せるが、強度メーターは置かない（ADR-092 の追補）
+
+### Status
+Accepted
+
+### Context
+ADR-092 は「UI 側でドメイン規則を写す場所を `components/auth/passwordStrength.ts` の 1 ファイルに閉じる」「ゲートは `score === 0` でのみ止める」と決めて `SignUpForm` / `ResetPasswordPanel` / `ChangePasswordForm` を揃えたが、パスワードを新規に作る 4 つ目の面である P-22 の追加ダイアログだけが漏れていた。規則の説明文を「8 文字以上で…」とリテラルで持ち（`PASSWORD_MIN_LENGTH` を変えると嘘になる）、`passwordStrength` を通さないので 128 字超過も英数字条件未達も転送境界まで往復していた。
+
+### Decision
+説明文を `PASSWORD_RULE_HINT` に置き換え、`disabled` に `passwordStrength(password).score === 0` を足す。写しとゲートの扱いはこれで 4 面すべてが ADR-092 に載る。
+
+`PasswordStrengthMeter` は置かない。`spec/design/pages/P22-settings-auth.html` に追加ダイアログのモック自体が無く、メーターを足すとデザイン忠実性の判断を新しく作ることになる。規則そのものはヒント文が常に出しているので、送信を止める条件は画面に書かれている。
+
+### Consequences
+- 良い点: `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH` を変えたときに文言とゲートが自動で追従する面が 4/4 になる。128 字超過・英数字条件未達は転送境界へ行く前に止まる。
+- トレードオフ: 条件未達のあいだ送信ボタンが無効なだけで、どこが足りないかは他 3 面のようなメーター表示では出ない。ダイアログという狭い面での表示追加はモックの範囲外なので、必要ならデザイン側の判断として別途決める。

@@ -195,7 +195,7 @@
 ### 機能・運用としての縮退
 
 - **先行 accept Saga の有界回復を行わない**（`MembershipDirectoryReservationStore.listActivatingByUser` で `activating` edge が 0 件になるまで manifest scan を待つ — spec/usecases/identity.md 手順 3）。当該ストアは #3 所有で本 Issue に membership 予約を作る経路が無いため実害は無いが、`deleteAccount` の受理経路が spec より緩い前提に立つ。→ #3
-- **アバター保存時の `consumedBytes` と `noteCount` が即時反映されない**（ADR-004。どちらも `applyStorageDelta` が担う）。`sumSizeByOwner` / `countByOwner` の集計対象ではあるので `recalculateStorageUsage` で反映される。→ #6
+- **P-24 の個人使用量は `consumedBytes: 0` / `noteCount: 0` を表示し続ける**（ADR-004）。即時反映を担う `applyStorageDelta` / `initializeQuota` は本 Issue に無く、`recalculateStorageUsage` は実装済みだが `spec/usecases/usage.md#recalculateStorageUsage` が定めるとおり**運用操作**で、本 Issue に本番の駆動主体は無い（`spec/pages/index.md#P-24` にも再計算の導線は無い）。したがって `storage_quotas` の行が生成される経路が無く、`getUsageSnapshot` は `StorageQuota.initialize` の既定値へフォールバックし続ける。#1 の `createBlankNote` でノートが増えても件数は 0 のまま。実値の反映は `initializeQuota` / `applyStorageDelta` まで到達しない。→ #6
 - **`storeAvatar` の workspace 主体は常に拒否**（ADR-014）。→ #3
 - **personal cleanup の participant は `storage` / `usage` の 2 つだけ**（ADR-002 / ADR-018）。`job`（#5）/ `note`（編集・整理スライス）/ `tag`（整理スライス）/ `backup`（#4）に加えて、**`localProjection`**（削除由来の local 投影 task を積む主体が本 Issue に無い。author redaction は manifest item ack として別勘定）と **`outbox`**（scope 平面から配送 ack を観測する読み側が無い。`storage.fileDeleted` の配送は `deleteStoredObjects` の冪等処理が担保）も `AbsentReason` として残る。→ #5 / #4 / 編集・整理スライス / #11
 - **finalize の必須 receipt も宣言集合に縮退**（ADR-017）。`externalConnections`（#4）/ `jobHistory`（#5）を ack する主体が本 Issue に無いため、必須集合は `personalCleanup` / `authResidue` / `uniquenessRelease` の 3 つ。→ #4 / #5
@@ -204,9 +204,10 @@
 - **受理応答を落としたときの再駆動主体を置かない**。`spec/database/index.md` は `next_attempt_at` の partial index を recovery Cron が使うと定めるが、本 Issue の `DistributedOperationStore` は `next_attempt_at` を持たず recovery を回すステップも無い。受理そのものを落とした場合の再駆動は P-25 の再送（同一 `requestId` で冪等）に依存する。**barrier ack（scope→global の引き渡し）はこの縮退の対象ではない**: P-25 の再送が出すのは manifest build の継続だけで cleanup フェーズには戻らないため、runner が barrier を閉じたターンで専用の継続行 `identity.personalCleanupHandoverContinued` を先に積み、receipt が入ってから消す（ADR-106）。イベント駆動ウェーブ側は outbox の再配送が同じ役を果たす。**残る穴は、barrier を閉じたコミットと引き渡し行を積むコミットのあいだでプロセスが落ちた場合**（塞ぐには `completePersonalCleanupIfDone` と同じ UoW で積む必要があり、cleanup ユースケース側の変更になるため持ち越し）。継続タスク（scope 平面）は `ScopeTaskScheduler` の backoff で自律再開する。
 - **Google OAuth アダプターの適合スイートのうち `exchangeCode` の 3 ケースは資格情報の無い環境で skip される**（AC-6 / ADR-003 / ADR-064）。CI と既定の開発機で実行されるのは dev IdP アダプターの全ケースと、両アダプター共通の認可要求（`deriveCodeChallenge` / `buildAuthorizationUrl`）契約。
 - **マニュアルテストは dev IdP で実行する**（ADR-003）。実 Google 資格情報での往復は検証範囲外。
-- **アイコンをアップロードしてプロフィールを保存せずに離脱すると、参照されない `StoredFile` が 1 件残る**（ADR-016 の 2 段経路の帰結）。orphan media 回収は #6。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` の値には現れる。
+- **アイコンをアップロードしてプロフィールを保存せずに離脱すると、参照されない `StoredFile` が 1 件残る**（ADR-016 の 2 段経路の帰結）。orphan media 回収は #6。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` を呼べばその戻り値には現れるが、本 Issue に当該 UC の駆動主体は無いので画面には出ない。
 - **`/settings/danger`（P-25）は未サインインでも 200 を返す**（ADR-062）。受理と同時にセッションが消える以上、進捗を読める画面は認証を要求できないため。読み取りの権限は status ticket が持ち、`getAccountDeletionStatus` は ticket が名指す 1 件しか返さない。`deleteAccountFn` 自体は `requireSession()` を通すので操作はできない。
 - **本番の外部サービス結合は行っていない**: 実メール送信（memory の `MailSender` のまま。本文は開発ログから読む）、R2 等の実オブジェクトストレージ（memory + `/storage/$` 配信ルート）、Cloudflare ランタイム（#11）。
+- **`requestPasswordReset` の `passwordResetUnavailable` 分岐は送信間隔の判定を通らず無制限**（トークン発行側は 60 秒間隔で保護）。実 `MailSender` を挿す前に #18 で全経路一律の送信間隔として閉じる。→ #18
 - **AC-19 / AC-22 の「`assertWritable` / `assertActorWritable` の 2 本を呼ぶ」が構造的に検証不能**。`scope.actorLocks` を立てる経路（membership prepare wave）が本 Issue に無いため、`storeAvatar` / `recalculateStorageUsage` の 2 本は同じ receipt 行の同じ `ACCOUNT_DELETING` に落ち、片方を消してもテストは緑のまま。actorLock を立てるバックエンドが入るまで両者を撃ち分けられない。→ #3
 
 ### steps.md / AC の記述と実装がずれた箇所（読み替えの記録）

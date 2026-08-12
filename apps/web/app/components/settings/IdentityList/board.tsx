@@ -88,8 +88,10 @@ export function IdentityBoard({
   const [isRemoving, startRemoving] = useTransition();
   const [isLinking, startLinking] = useTransition();
   const [listError, setListError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   // 解除の可否は楽観的リストから引き直す。サーバーが返した `removable`
   // は解除前の集合に対する判定なので、1 件消した直後に「まだ解除できる」
@@ -109,6 +111,7 @@ export function IdentityBoard({
   const onRemove = (identityId: string) => {
     setConfirming(null);
     startRemoving(async () => {
+      setNotice(null);
       dispatchOptimistic({ kind: "remove", identityId });
       try {
         await removeIdentity({ data: { identityId } });
@@ -117,14 +120,22 @@ export function IdentityBoard({
         return;
       }
       setListError(null);
+      setNotice("ログイン方法を解除しました。");
+      // 押した「解除する」は楽観的除去で行ごと消えるので、焦点をこの
+      // リストの見出しへ引き取らないと `document.body` へ落ちる。
+      headingRef.current?.focus();
       await reconcile();
     });
   };
 
   const onAddPassword = async (newPassword: string): Promise<void> => {
+    setNotice(null);
     dispatchOptimistic({ kind: "addPassword" });
     await addPassword({ data: { newPassword } });
     setAdding(false);
+    setNotice(
+      "パスワードを追加しました。次回からメールアドレスとパスワードでもサインインできます。",
+    );
     await reconcile();
   };
 
@@ -148,7 +159,13 @@ export function IdentityBoard({
   return (
     <>
       <section className={panelClass}>
-        <h2 className={panelTitleClass}>有効なログイン方法</h2>
+        <h2
+          ref={headingRef}
+          tabIndex={-1}
+          className={`${panelTitleClass} focus-visible:shadow-none`}
+        >
+          有効なログイン方法
+        </h2>
         <p className={panelNoteClass}>少なくとも 1 つは残す必要があります。</p>
 
         <ul>
@@ -200,9 +217,12 @@ export function IdentityBoard({
           </div>
         )}
 
-        {/* 常設の live region。追加 / 解除の失敗はここだけに出る。 */}
+        {/* 常設の live region。追加 / 解除の失敗と成功はここだけに出る。 */}
         <p className={errorTextClass} role="status" aria-live="polite">
           {listError}
+        </p>
+        <p className="text-xs text-success not-empty:mt-2" aria-live="polite">
+          {notice}
         </p>
       </section>
 

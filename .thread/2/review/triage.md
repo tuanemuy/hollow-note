@@ -304,3 +304,31 @@ R8: 新規 8 / 継承 1 / fix 5 / fix-editorial 2 / wont-fix 2 / defer 0（方�
 
 1. **決着済み Key を明示列挙する**: `session.ts` / `oauthStateCookie.ts` の `Secure`（**production バンドルで畳み込み済み**）、`uploadAvatarFn` の CSRF（`start.ts`）、`/settings/danger` の未認証フォーム（ADR-062 / ADR-085）、`activate` 応答喪失の注入（R5 / R8 で決着）、`TC-identity-268` の spec-sync 記録（progress.md 済み）。
 2. **「配備時の挙動を主張するときは `apps/web/dist` の成果物で確認する」を Security / Adapter 観点の必須手順にする**。Vite が `process.env.NODE_ENV` を畳み込むため、ソースだけを見た分類は誤る（R8 の Security W-001 がまさにそれ）。
+
+## R9
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `usage/recalculateStorageUsage.ts:駆動主体不在/P-24 の個人使用量が常に 0`（Domain W-001） | R9 | wont-fix（コード）+ fix-editorial（記録） | **裁定 1**。値が 0 なのは **ADR-004 が宣言済みの縮退（`applyStorageDelta` / `initializeQuota` は #6）の直接の帰結**で AC-23 未達ではない（AC-23 は表示、実値反映は AC-22 の UC 実装が担い実装済み）。spec は本 UC を「運用操作」と規定。ローダー呼び出しは `getUsageSnapshot` の「開くこと自体を write 経路にしない」契約を破る。**誤解を招く記録側だけ訂正**して #6 へ引き継ぐ | 0 |
+| `identity/requestPasswordReset.ts:passwordResetUnavailable/送信間隔なし`（Security W-001） | R9 | defer (#18) + fix-editorial | 事実は正しいが `spec/usecases/identity.md` の処理フロー自体が同形で、正しい形は「認証系メール送信間隔の全経路一律」＝ #18 と同じ横断的関心事。現配備は memory `MailSender` で実害なし | 0 |
+| `DeleteAccountPanel:COMPLETION_LEAVE_MS/自動遷移に停止手段なし`（Frontend W-001） | R9 | fix | **裁定 2: タイマー撤去**。WCAG 2.2.1 に当たり ADR にも spec にも根拠がない実装上の選択。AC-28 の「完了表示とそこからのフル遷移」は既存ボタンで満たす | 0 |
+| `IdentityList/board.tsx:追加・解除/成功告知・焦点復帰の欠落`（Frontend W-002） | R9 | fix | 同じ島の `ChangePasswordForm` / `SignOutOthersPanel` に手本があり、解除だけ焦点が `document.body` に落ちる非対称 | 0 |
+| `AddPasswordForm:パスワード規則の写し / score ゲート欠落`（Frontend W-003） | R9 | fix | ADR-092 が一本化した 3 面から**この 4 面目だけが漏れ**、128 字上限ゲートが実際に無い。**R2 の `valueObject.ts:PlainPassword/フロント複写` とは別ファイル・別 Key なので新規**。`PasswordStrengthMeter` は追加しない（P-22 モックに追加ダイアログが無い） | 0 |
+| `DeleteAccountPanel:readStoredTicket/主体照合が非 export でテスト不能`（Frontend W-004） | R9 | fix | **裁定 3: 含める**。ADR-095 が名指す境界判断で挙動不変の純関数抽出 + テストのみ。R10 のゼロベースレビューが最も再指摘しやすい形 | 0 |
+
+R9: 新規 6 / 継承 0 / fix 4 / fix-editorial 2 / wont-fix 1（コード側）/ defer 1（#18 へ併合）
+観点別 fix 件数: domain-usecase 0 / adapter 0 / security 0 / frontend 4 / test 0
+
+## 要確認の裁定（メイン・R9）
+
+1. **Domain W-001 をコード修正するか** → **コードは wont-fix、記録のみ訂正**。根拠: (a) 値 0 は ADR-004 が「アバター保存時に `consumedBytes` は増えない。同じ理由で `noteCount` も増減しない」と宣言済みの縮退の帰結、(b) `spec/usecases/usage.md#recalculateStorageUsage` は本 UC を「運用操作」と規定し P-24 に再計算の導線は無い、(c) 提案されたローダー呼び出しは `getUsageSnapshot` の「開くこと自体を write 経路にしない」契約と ADR-051 を同時に破る。**ただし `progress.md` / ADR-004 の「`recalculateStorageUsage` で反映される」は駆動主体があるかのように読めるので事実どおりに書き換える**。
+2. **Frontend W-001 の収め方** → **タイマー撤去**。AC-28 の「完了表示とそこからのフル遷移」は既存の「トップページへ」ボタンで満たす。「操作で解除」案はコード量・状態が増え R10 の指摘面が広がる。
+3. **Frontend W-004 を fix に含めるか** → **含める**。R8 で決めた閾値（AC が名指す TC の空振りか）の外だが、挙動不変・1 ファイル + テスト 1 本で、R10 のゼロベース Frontend レビューが最も再指摘しやすい形（未テストの主体照合）なので恒久的に閉じる。
+
+## 次ラウンド（R10・最終）のレビュー指示への反映
+
+**決着済み Key を明示列挙する**（R8 → R9 でこの手当てが実際に機能し、`Secure` / CSRF / `/settings/danger` の再指摘が消えた）:
+1. `recalculateStorageUsage` の駆動主体不在 → **progress.md / ADR-004 に事実どおり記録済み。コードは wont-fix（#6 へ引き継ぎ）**
+2. `requestPasswordReset` の案内メール送信間隔 → **#18 へ defer 済み・progress.md に記録済み**
+3. `session.ts` / `oauthStateCookie.ts` の `Secure`（production 成果物で畳み込み済み）、`uploadAvatarFn` の CSRF、`/settings/danger` の未認証フォーム、`activate` 応答喪失の注入、`TC-identity-268` の spec-sync 記録
+4. P-22 の追加ダイアログに `PasswordStrengthMeter` を置かない判断（モック非掲載）

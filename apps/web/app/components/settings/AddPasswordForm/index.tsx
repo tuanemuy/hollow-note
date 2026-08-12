@@ -8,6 +8,10 @@ import {
   inputInvalidClass,
 } from "@/components/auth/formStyles";
 import {
+  PASSWORD_RULE_HINT,
+  passwordStrength,
+} from "@/components/auth/passwordStrength";
+import {
   ghostButtonClass,
   primaryButtonClass,
 } from "@/components/settings/panelStyles";
@@ -66,6 +70,7 @@ export function AddPasswordForm({
   }, null);
 
   const mismatch = confirmation.length > 0 && confirmation !== password;
+  const strength = passwordStrength(password);
 
   return (
     <dialog
@@ -102,9 +107,7 @@ export function AddPasswordForm({
             onChange={(event) => setPassword(event.target.value)}
             className={inputClass}
           />
-          <p className="mt-2 text-xs text-ink-tertiary">
-            8 文字以上で、英字と数字の両方を含めてください。
-          </p>
+          <p className="mt-2 text-xs text-ink-tertiary">{PASSWORD_RULE_HINT}</p>
         </div>
         <div className="mb-4">
           <label className={fieldLabelClass} htmlFor={confirmId}>
@@ -145,7 +148,10 @@ export function AddPasswordForm({
             type="submit"
             className={primaryButtonClass}
             disabled={
-              isPending || password.length === 0 || confirmation !== password
+              isPending ||
+              password.length === 0 ||
+              confirmation !== password ||
+              strength.score === 0
             }
             aria-busy={isPending}
           >

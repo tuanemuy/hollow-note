@@ -10,6 +10,12 @@ import {
   inputInvalidClass,
 } from "@/components/auth/formStyles";
 import {
+  canRestoreTicket,
+  forgetTicket,
+  persistTicket,
+  readStoredTicket,
+} from "@/components/settings/DeleteAccountPanel/ticketStorage";
+import {
   dangerActionButtonClass,
   dangerPanelClass,
   dangerPanelTitleClass,
@@ -39,9 +45,7 @@ import {
  * も無効ボタンの placeholder も置かない。
  */
 
-const TICKET_STORAGE_KEY = "hollow.account-deletion-ticket";
 const POLL_INTERVAL_MS = 1500;
-const COMPLETION_LEAVE_MS = 5000;
 
 type Phase =
   | Readonly<{ kind: "idle" }>
@@ -55,64 +59,6 @@ type Phase =
    * なる。
    */
   | Readonly<{ kind: "settled"; message: string; resumeTicket: string | null }>;
-
-/**
- * 退避する ticket は「誰の削除か」まで持つ。ticket 自体は operationId と
- * 期限しか含まないので、主体はここに置く。持た
- * ないと、進行中に離脱したタブで別の利用者がサインインしたときに、その人
- * へ他人の削除の進捗と「削除しました」を見せてしまう。
- */
-type StoredTicket = Readonly<{ ticket: string; userId: string | null }>;
-
-/**
- * 退避は best-effort。サイトデータを遮断した設定では `sessionStorage` への
- * アクセス自体が投げるが、受理そのものはこのタブの `phase` で追えるので、
- * 保持の失敗を削除の失敗として見せない（追えなくなるのはリロード後だけ）。
- */
-const persistTicket = (stored: StoredTicket): void => {
-  try {
-    sessionStorage.setItem(TICKET_STORAGE_KEY, JSON.stringify(stored));
-  } catch {
-    // 退避できなくても、このタブのメモリで進捗を追える。
-  }
-};
-
-const forgetTicket = (): void => {
-  try {
-    sessionStorage.removeItem(TICKET_STORAGE_KEY);
-  } catch {
-    // 同上。捨てられなくても復元側が主体と ticket の妥当性を見る。
-  }
-};
-
-const readStoredTicket = (): StoredTicket | null => {
-  let raw: string | null;
-  try {
-    raw = sessionStorage.getItem(TICKET_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-  if (raw === null) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) {
-    return null;
-  }
-  const { ticket, userId } = parsed as {
-    ticket?: unknown;
-    userId?: unknown;
-  };
-  if (typeof ticket !== "string") {
-    return null;
-  }
-  return { ticket, userId: typeof userId === "string" ? userId : null };
-};
 
 /**
  * 提出の失敗はどこに出すかまで持つ。項目エラー欄はメールアドレス不一致
@@ -201,12 +147,7 @@ export function DeleteAccountPanel() {
 
   useEffect(() => {
     const stored = readStoredTicket();
-    if (stored === null) {
-      return;
-    }
-    // 復元するのは保存時の主体と今の主体が一致するときだけ。セッションが
-    // 無いときは受理でセッションを失った当人しかありえないので通す。
-    if (currentUserId !== null && stored.userId !== currentUserId) {
+    if (stored === null || !canRestoreTicket(stored, currentUserId)) {
       return;
     }
     setPhase({ kind: "accepted", ticket: stored.ticket });
@@ -277,14 +218,6 @@ export function DeleteAccountPanel() {
       }
     };
   }, [activeTicket, readStatus]);
-
-  useEffect(() => {
-    if (phase.kind !== "completed") {
-      return;
-    }
-    const timer = setTimeout(leave, COMPLETION_LEAVE_MS);
-    return () => clearTimeout(timer);
-  }, [phase.kind]);
 
   if (phase.kind !== "idle") {
     return (
@@ -415,7 +348,7 @@ function DeletionProgressBody({
         <>
           <h2 className={dangerPanelTitleClass}>アカウントを削除しました</h2>
           <p className={panelNoteClass}>
-            プロフィールとログイン方法、アップロード済みファイルを削除しました。ご利用ありがとうございました。まもなくトップページへ移動します。
+            プロフィールとログイン方法、アップロード済みファイルを削除しました。ご利用ありがとうございました。
           </p>
           <button type="button" className={ghostButtonClass} onClick={leave}>
             トップページへ
