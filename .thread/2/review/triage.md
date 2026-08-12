@@ -332,3 +332,42 @@ R9: 新規 6 / 継承 0 / fix 4 / fix-editorial 2 / wont-fix 1（コード側）
 2. `requestPasswordReset` の案内メール送信間隔 → **#18 へ defer 済み・progress.md に記録済み**
 3. `session.ts` / `oauthStateCookie.ts` の `Secure`（production 成果物で畳み込み済み）、`uploadAvatarFn` の CSRF、`/settings/danger` の未認証フォーム、`activate` 応答喪失の注入、`TC-identity-268` の spec-sync 記録
 4. P-22 の追加ダイアログに `PasswordStrengthMeter` を置かない判断（モック非掲載）
+
+## R10（最終ラウンド）
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `identity/{linkOAuthIdentity,completeOAuthSignIn}.ts:最終 UoW/同一 providerAccount の二重 insert`（Domain W-001） | R10 | defer (#21) | 事象は **plan.md が #21 への縮退として既に記録済みの帰結**そのもの（「identity 行は残るが directory の予約だけ無い → 次のサインインで二重に生える。権限昇格には至らない」）。正しい閉じ方も同所が「directory ポート契約の拡張」と確定させている。**到達経路が 1 本増えるだけ**なので progress.md に経路を 1 行足して #21 へ送る | 0 |
+| `SignInForm/index.tsx:PhaseAlert/再送先が入力欄の現在値`（Frontend W-001） | R10 | wont-fix | 再送先は画面に見えている入力値そのもので新たな権能もなく（P-03 の再送は任意アドレスを受ける）、`ResendVerificationForm` の JSDoc 契約どおり。AC-5 / PAGE-p02-006 は充足しており、残るのは表示の一貫性 | 0 |
+| `IdentityList/board.tsx:onAddPassword/listError 未クリア`（Frontend W-002） | R10 | wont-fix | 「排他な 1 つの結果」という前提が**事実誤り** — 追加の失敗は `AddPasswordForm` 自身の `useActionState` が出し、`listError` は解除 / 連携専用チャネル。重なるのは「解除は失敗した（真）」と「パスワードを追加した（真）」の 2 つの真の情報 | 0 |
+| `completeOAuthSignIn.test.ts:TC-identity-030/勝者 claim の残存`（Test W-001） | R10 | wont-fix | 名指しの変異（`releaseUniqueKeys` の key スコープ化）は `updateProfile.test.ts` の OCC 競合テストが捕捉する（実測確認）。「どこにも担保が無い」は誤り | 0 |
+| `deleteFilesByOwner.test.ts:TC-storage-040/カーソル不在`（Test W-002） | R10 | wont-fix | カーソル不在は**型で表現済み**（`DeleteFilesByOwnerInput` に cursor が無く継続 payload も持たない）。CLAUDE.md の「型で不能化してから実行時検査」に照らしアサーション不要 | 0 |
+| `deleteAccount.terminalPrune.test.ts:TC-identity-105/固定 asOf の判別性`（Test W-003） | R10 | wont-fix | 主節（cursor 冪等再開・欠落なし）は固定済みで、run 行の asOf 固定は TC-identity-106 が担う。残るのは「long run 中に新たに期限到来した header を拾うか」で利用者影響ゼロ | 0 |
+| `deleteAccount.manifestBuild.test.ts:TC-identity-100/item の routeVersion`（Test W-004） | R10 | wont-fix | `authorRedaction.ts` は JSDoc どおり **item の値を使わず plane を再解決**するので `routeVersion` は本スライスで誰も読まない値。固定しても production 挙動を守らない | 0 |
+
+R10: 新規 7 / 継承 0 / **fix 0** / fix-editorial 0 / wont-fix 6 / defer 1（方針フェーズ: 実施）
+観点別 fix 件数: domain-usecase 0 / adapter 0 / frontend 0 / security 0 / test 0
+
+**このラウンドで `fix` と仕分けた指摘はゼロ。全 5 観点が揃った確認ラウンドでの fix ゼロなので、レビューループは収束（APPROVED）。**
+
+## 要確認の裁定（メイン・R10）
+
+1. **Frontend W-001 / W-002 の wont-fix** → **wont-fix のまま採用**。どちらも AC 未達でもアクセシビリティ / セキュリティ問題でもなく、画面に出る情報はいずれも真。W-002 は「排他な 1 つの結果」という指摘の前提自体が事実誤り。修正すると `fix` を含むラウンドになり、完了条件（fix ゼロのラウンドを観測してから完了）を満たすために上限を超える 11 周目が必要になる。得られるものが表示の一貫性だけなのに対し代償が大きい。
+2. **Domain W-001 を defer で受けるか** → **defer (#21) + progress.md に到達経路を 1 行追記**（コード変更なし）。plan.md の既存記録は「解除 TOCTOU」経路で書かれているので、「activate 喪失 + `reserved` の TTL lapse からの再連携」という 2 本目の経路を明記して引き継ぎを完全にする。
+
+## レビューループの総括
+
+| ラウンド | Blockers | Warnings | fix | 主な内容 |
+|---|---|---|---|---|
+| R1 | 8 | 48 | 40 | OAuth login CSRF / dev IdP の production ガード / 削除継続の恒久停止 |
+| R2 | 3 | 38 | 38 | 一意性サガの巻き添え解放 / 束縛 Cookie の破棄 / 本文サイズ上限 |
+| R3 | 2 | 19 | 17 | OAuth テストの穴 / 予約 ID のログ PII / 適合スイートの契約整合 |
+| R4 | 0 | 10 | 10 | 再連携後の予約解放（乗っ取り）/ barrier 引き渡しの再駆動 |
+| R5 | 1 | 11 | 6 | 解除済み OAuth 手段でのサインイン / 確認欄の送信ゲート |
+| R6 | 1 | 12 | 11 | dev IdP ガードの allowlist 化 / 適合スイートの判別性 |
+| R7 | 1 | 8 | 7 | item ack ゲートの判別性 / 恒真アサーションの実効化 |
+| R8 | 1 | 7 | 7 | compaction 継続の固定 / Secure の allowlist 化 / 束縛照合つき破棄 |
+| R9 | 0 | 6 | 6 | 完了パネルの自動遷移撤去 / P-22 の成功告知 / 記録の訂正 |
+| **R10** | **0** | **7** | **0** | **収束（全 5 観点で fix ゼロ）** |
+
+合計: Blockers 17 / Warnings 166 / **fix 142 件を反映**、wont-fix 21 件・defer 5 件（Issue #18 / #19 / #20 / #21 と #6 / #3 / #11 への引き継ぎ）。
