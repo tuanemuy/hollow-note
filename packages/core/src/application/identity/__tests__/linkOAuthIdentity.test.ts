@@ -251,7 +251,16 @@ describe("linkOAuthIdentity", () => {
     expect(
       results.filter((result) => result.status === "fulfilled"),
     ).toHaveLength(1);
-    expect(directoryRows(h)).toHaveLength(1);
+    const losers = results.filter((result) => result.status === "rejected");
+    expect(losers).toHaveLength(1);
+    expect(
+      losers.every(
+        (loser) =>
+          isBusinessRuleError(loser.reason) &&
+          loser.reason.code === IdentityErrorCode.IdentityLimitExceeded,
+      ),
+    ).toBe(true);
+    expect(directoryRows(h).map((row) => row.state)).toEqual(["active"]);
   });
 
   it("TC-identity-127: linking an account already linked to the same user is idempotent", async () => {

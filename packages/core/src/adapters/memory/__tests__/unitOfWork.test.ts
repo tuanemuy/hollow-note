@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import type {
+  ScopeUnitOfWorkContext,
+  ScopeUnitOfWorkProvider,
+} from "../../../application/execution/unitOfWork";
 import type { ConformanceBackend } from "../../conformance/backend";
-import { makePendingUser, userId } from "../../conformance/fixtures";
+import { makePendingUser, scopeOf, userId } from "../../conformance/fixtures";
+import { createTestClock } from "../../conformance/testClock";
+import { createMemoryScopeUnitOfWorkProvider } from "../scopeUnitOfWork";
+import { MemoryBackend } from "../store";
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
 
 // Backend-local, NOT part of the shared conformance suite: mutex
@@ -40,5 +47,64 @@ describe("memory global unit of work serialization (spec/adr/024)", () => {
     ]);
     expect(await backend.userRepository.findById(userId(1))).not.toBeNull();
     expect(await backend.userRepository.findById(userId(2))).not.toBeNull();
+  });
+});
+
+// Backend-local as well: the trigger is an option of this provider
+// (`createMemoryRuntime` binds the runner's own), so the shared
+// conformance backend has nothing to observe it with.
+describe("memory scope unit of work commit kick (spec/adr/023)", () => {
+  const scope = scopeOf(1);
+  let backend: MemoryBackend;
+  let kicks: number;
+  let provider: ScopeUnitOfWorkProvider;
+
+  beforeEach(() => {
+    backend = new MemoryBackend({ clock: createTestClock() });
+    kicks = 0;
+    provider = createMemoryScopeUnitOfWorkProvider(backend, {
+      scopeTaskTrigger: {
+        kick: () => {
+          kicks += 1;
+        },
+      },
+    });
+  });
+
+  const scheduleTask = (ctx: ScopeUnitOfWorkContext): Promise<void> =>
+    ctx.scopeTaskScheduler.schedule({
+      kind: "cleanup.turn",
+      operationId: "op-1",
+      dueAt: backend.clock.now(),
+      payload: {},
+    });
+
+  const scheduledTasks = () => backend.scope(scope).scheduledTasks.values();
+
+  it("kicks the scope-task runner once when a commit stored a continuation", async () => {
+    await provider.run(scope, scheduleTask);
+
+    expect(scheduledTasks()).toHaveLength(1);
+    expect(kicks).toBe(1);
+  });
+
+  it("leaves the runner alone when the unit of work stored no continuation", async () => {
+    await provider.run(scope, async (ctx) => {
+      await ctx.scopeTaskScheduler.claimDue(backend.clock.now(), 10);
+    });
+
+    expect(kicks).toBe(0);
+  });
+
+  it("leaves the runner alone when the unit of work rolled back", async () => {
+    await expect(
+      provider.run(scope, async (ctx) => {
+        await scheduleTask(ctx);
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    expect(scheduledTasks()).toEqual([]);
+    expect(kicks).toBe(0);
   });
 });

@@ -34,7 +34,7 @@ Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 
 ## Timeout / flakiness
 
-- The configs use Vitest's default timeouts; everything runs in-process with a controlled clock, so flakiness should be treated as a bug, not retried around.
+- `testTimeout` is raised to 10s for the scrypt(N=16384) password cases — the slowest tests in the suite (~300ms against single-digit ms elsewhere), which have overrun the 5s default under parallel load. Everything else uses Vitest's defaults and runs in-process with a controlled clock, so flakiness should be treated as a bug, not retried around.
 
 ## Commands
 

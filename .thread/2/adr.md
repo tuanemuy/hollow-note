@@ -2140,3 +2140,68 @@ ADR-081 の束縛は 3 つの純関数（`deriveOAuthStateBinding` / `assertOAut
 - 良い点: 照合行・Cookie 生成行のどちらを消しても 3 ケースが赤になる（確認済み）。ADR-081 の主張がテストで支えられる。
 - トレードオフ: フレームワーク内部（ALS のグローバルキー、`requestHandler` の形）に依存するので、TanStack Start の更新で組み立て部分が壊れうる。壊れたときに直すのは `callServerFn` ヘルパー 1 か所で、赤くなること自体は検知として正しく働く。
 - トレードオフ: `validator` を通らないので、この経路のテストは入力の形を保証しない。転送境界の検証は zod スキーマと `validateInput` の担当のまま。
+
+---
+
+## ADR-101: 予約 ID は合成のまま残し、ログに出す同一性は `{ parentOperationId, kind }` に分ける
+
+### Status
+Accepted
+
+### Context
+`reservationOperationId` は `` `${parentOperationId}:${kind}:${normalizedKey}` `` で、決定性（同じ親の再試行が同じ行を再利用する）はこの合成そのものに依っている。一方で `normalizedKey` はメールアドレス・ハンドル・provider account id の生値なので、`releaseUniqueKeys` / `activateUniqueKeys` の失敗ログにこの ID を載せると、ディレクトリの一時障害が 1 回起きるだけで登録試行中の利用者のメールアドレスが標準エラーへ出る。ログは DB とは保持期間も権限境界も別で、転送・集約基盤に出ていく。
+
+ID をハッシュ化すれば両立するが、決定性の根拠を「合成の一意性」から「ハッシュの衝突困難性」に移すことになり、アプリケーション層にハッシュ実装を持ち込む（`reservationOperationId` の JSDoc がそれを避けた理由でもある）。`deleteAccount/globalCleanup` が同じ関数で ID を再導出しているため、形を変えると再導出側の互換も壊れる。
+
+### Decision
+ディレクトリに渡す ID は合成のまま変えず、**ログに載せる同一性だけを別に持つ**。`UniqueReservation` に `parentOperationId` を足し、失敗ログは `{ parentOperationId, kind }` を出す。親 ID は `identity.updateProfile:${userId}` のように主体と操作までは特定でき、鍵の値は含まない。`operationId` は「ディレクトリ呼び出しの引数」から出ない値と位置づけ、その規律を `reservationOperationId` と `handleReleaseOperationId` の JSDoc に残す。
+
+### Consequences
+- 良い点: 予約サガの冪等性（同じ親の再試行が同じ行を掴む）は完全に据え置き。呼び出し側 4 か所の署名も変わらない。
+- 良い点: 障害調査に要る「どの操作のどの種類が落ちたか」はログに残る。鍵そのものが要る場面ではディレクトリ行を引ける。
+- トレードオフ: 予約 1 件につき親 ID を重複して持つ。ログ用の同一性を型に載せることで、`operationId` を安易にログへ回す道を塞ぐ側の効果を取る。
+
+---
+
+## ADR-102: 保存エラーは「判断の対象になったハンドル」と対で保持する
+
+### Status
+Accepted
+
+### Context
+P-21 のハンドル重複は候補チップを出して**選ばせる**ための状態だが、`useActionState` の結果は次の送信まで残る。エラーを結果からだけ読むと、候補を押して入力が変わった後も欄に「使われています」と `aria-invalid` が残り続け、`checkHandleAvailability` が「使用できます」を返していてもそれが出ない。提示した一手を打った直後に画面が否定を言い続けるのは状態モデルの取り違えで、支援技術にも `invalid` が伝わる。
+
+### Decision
+`SaveError` に判断の対象になった `handle` を持たせ、欄側の表示（文言・`aria-invalid`）と候補チップは `saveFailure.handle === handle` のときだけ有効にする。入力が動いた時点で欄の判断はデバウンス済みの `checkHandleAvailability`（目安）に戻る。バーに出るフォーム全体の失敗（認証切れ・競合・システム）はハンドル欄の話ではないので畳まない。
+
+### Consequences
+- 良い点: 候補を選ぶ／打ち直すという次の一手が、そのまま古い否定の解除になる。
+- 良い点: 「エラーは判断した値に紐づく」という規則が型に出るので、欄が増えても同じ形で足せる。
+- トレードオフ: 同じ値に打ち直すと過去の失敗文言が戻る。実際に予約が落ちた値なので、表示としては正しい側。
+
+---
+
+## ADR-103: ポート契約と実装の乖離は、正本がどちらにあるかで倒す向きを決める
+
+### Status
+Accepted
+
+### Context
+レビュー R3 で、契約文（ポートの JSDoc）と実装・適合スイートが食い違う箇所が 2 つ出た。片方は JSDoc が実装より強く、もう片方は JSDoc が実装より弱い。
+
+- `DistributedOperationStore.markState` の JSDoc は「不正な遷移は `ConflictError`」と約束しているが、memory 実装は未知 ID しか弾かず、適合スイートも遷移を拘束していない（`completed → running` が通り `terminalAt` が消える）。
+- `ScopeTaskQueue.listDue` の JSDoc は「各 scope が自分で起きるランタイムは空配列を返す。それは完全な実装」と逃げ道を書いているが、適合スイートは無条件登録で内容と順序と limit を要求する。
+
+どちらも「JSDoc を読んだ実装者が到達する振る舞い」と「スイートが通す振る舞い」がずれており、#7 / #11 の実装者が契約の解釈から始めることになる。
+
+### Decision
+**正本がどこにあるかで倒す向きを決める。**
+
+- `markState`: 正本は実装側。JSDoc から "illegal transition" を落とし、「状態は呼び出し側が決める / ストアは状態機械ではない」と明記する。遷移を実装側で拒否するのは本 Issue の AC 外の強化なので行わない。
+- `listDue`: 正本は plan のテスト方針（「`scopeTaskScheduler` スイートには `ScopeTaskQueue.listDue` の契約も含める」）。JSDoc の逃げ道を削り、必須契約として書き直す。スイートはゲートを足さずそのまま残す。
+
+### Consequences
+- 良い点: どちらの側も「JSDoc だけ読んで実装 → スイートが通る」が成立する（spec/adr/026 の決定 1）。
+- 良い点: 契約を弱める側（`markState`）でも、弱めた事実が JSDoc に出るので、遷移を守る責務が呼び出し側にあることが読める。
+- トレードオフ: `markState` は terminal → running を弾かないままなので、同ポートを再利用する #7（note move）が二重呼び出しを起こすと `terminalAt` が消えうる。引き継ぎとして progress.md に記録する。
+- トレードオフ: `listDue` を必須にしたことで、中央列挙を持たないランタイムも実装を求められる。再起動後に未完の継続を拾う経路が他に無い以上、これは縮退ではなく要件。

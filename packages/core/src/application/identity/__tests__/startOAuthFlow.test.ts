@@ -6,6 +6,7 @@ import { isBusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "@repo/core/domain/identity/errorCode";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { signOutOtherSessions } from "../signOutOtherSessions";
 import { type StartOAuthFlowInput, startOAuthFlow } from "../startOAuthFlow";
 import { markDeleted, markDeleting, signUpVerified } from "./authFlowHelpers";
 
@@ -57,6 +58,22 @@ describe("startOAuthFlow", () => {
     expect(stored?.intent).toBe("linkIdentity");
     expect(stored?.userId).toBe(userId);
     expect(stored?.userAuthEpoch).toBe(0);
+  });
+
+  it("TC-identity-265: the stored epoch is the generation the user is on, not the initial one", async () => {
+    const h = createTestHarness();
+    const { userId, sessionToken } = await signUpVerified(h);
+    for (let round = 0; round < 2; round += 1) {
+      await signOutOtherSessions({
+        container: h.container,
+        input: { userId, currentSessionToken: sessionToken },
+      });
+    }
+    expect(h.backend.users.get(userId)?.authEpoch).toBe(2);
+
+    await start(h, { intent: "linkIdentity", userId });
+
+    expect(storedStates(h)[0]?.value.userAuthEpoch).toBe(2);
   });
 
   it("TC-identity-266: a user that started deletion is not an authenticated principal", async () => {

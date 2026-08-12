@@ -217,6 +217,37 @@ describe("updateProfile", () => {
     expect(handleRow(h, "ichiro")).toBeUndefined();
   });
 
+  it("keeps the handle out of the log when the activate response is lost", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h);
+
+    const directory = h.container.identityUniqueDirectory;
+    let dropNextActivate = true;
+    const container: RequestContainer = {
+      ...h.container,
+      identityUniqueDirectory: {
+        ...directory,
+        activate: async (operationId, expectedUserVersion) => {
+          if (dropNextActivate) {
+            dropNextActivate = false;
+            await directory.activate(operationId, expectedUserVersion);
+            throw new Error("activate response lost");
+          }
+          await directory.activate(operationId, expectedUserVersion);
+        },
+      } satisfies IdentityUniqueDirectory,
+    };
+
+    await updateProfile({ container, input: { userId, handle: "ichiro" } });
+
+    const errors = h.logger.byLevel("error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      meta: { parentOperationId: expect.any(String), kind: "handle" },
+    });
+    expect(JSON.stringify(errors)).not.toContain("ichiro");
+  });
+
   it("re-sending the handle repairs a claim lost between the commit and the activation", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);

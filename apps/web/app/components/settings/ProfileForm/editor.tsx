@@ -75,9 +75,14 @@ const HANDLE_CHECK_DEBOUNCE_MS = 400;
  * 予約語）は欄側に出して `aria-invalid` を付け、どの欄の問題でもない失敗
  * （認証切れ・競合・システム）はバーの live region に出す — P-25 が採る
  * 「項目のエラー / パネルのエラー」の分離と同じ。
+ *
+ * 判断の対象になったハンドルも持つ。`useActionState` の結果は次の送信まで
+ * 残るので、これが無いと候補を選んで入力が変わった後も「使われています」を
+ * 言い続ける。
  */
 type SaveError = Readonly<{
   target: "handle" | "form";
+  handle: string;
   message: string;
   suggestions: readonly string[];
 }>;
@@ -242,13 +247,19 @@ export function ProfileEditor({
   };
 
   const saveFailure = saveState.kind === "error" ? saveState.error : null;
+  const handleFailure =
+    saveFailure !== null &&
+    saveFailure.target === "handle" &&
+    saveFailure.handle === handle
+      ? saveFailure
+      : null;
   const handleProblem =
-    saveFailure !== null && saveFailure.target === "handle"
-      ? saveFailure.message
+    handleFailure !== null
+      ? handleFailure.message
       : handleHint.kind === "problem"
         ? handleHint.message
         : null;
-  const suggestions = saveFailure?.suggestions ?? [];
+  const suggestions = handleFailure?.suggestions ?? [];
 
   return (
     <form action={save}>
@@ -488,10 +499,11 @@ function saveErrorFor(handle: string, error: unknown): SaveError {
   const serialized = extractSerializedError(error);
   const message = renderErrorMessage(serialized);
   if (serialized.code === null || !HANDLE_ERROR_CODES.has(serialized.code)) {
-    return { target: "form", message, suggestions: [] };
+    return { target: "form", handle, message, suggestions: [] };
   }
   return {
     target: "handle",
+    handle,
     message,
     suggestions:
       serialized.code === "HANDLE_ALREADY_USED" ? suggestionsFor(handle) : [],

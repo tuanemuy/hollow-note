@@ -176,8 +176,8 @@ describe("authResidueCleanup", () => {
       deletionOperationId: "deletion-1",
     } as const;
 
-    // Re-delivering the sessions turn must not walk back from the
-    // authTokens phase: it deletes nothing and re-emits the same switch.
+    // The turn resumes at the saved authTokens phase, so the sessions rows are
+    // left alone, and re-delivering it enqueues no further continuation.
     await authResidueCleanup(event(turn), h.workerContainer);
     expect(h.backend.authTokens.size).toBe(0);
     expect(h.backend.sessions.size).toBe(3);

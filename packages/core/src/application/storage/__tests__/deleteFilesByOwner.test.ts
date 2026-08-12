@@ -1,3 +1,8 @@
+import {
+  isSystemError,
+  SystemError,
+  SystemErrorCode,
+} from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { Version } from "@repo/core/domain/common/version";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -155,6 +160,29 @@ const withVanishingFiles = (
   },
 });
 
+/** Container that loses the commit once the continuation is armed. */
+const withLostCommitAfterSchedule = (h: TestHarness): WorkerContainer => ({
+  ...h.workerContainer,
+  scopeUnitOfWorkProvider: {
+    run: (target, fn) =>
+      h.workerContainer.scopeUnitOfWorkProvider.run(target, (ctx) =>
+        fn({
+          ...ctx,
+          scopeTaskScheduler: {
+            ...ctx.scopeTaskScheduler,
+            schedule: async (input) => {
+              await ctx.scopeTaskScheduler.schedule(input);
+              throw new SystemError(
+                SystemErrorCode.DatabaseError,
+                "commit lost after the continuation was armed",
+              );
+            },
+          },
+        }),
+      ),
+  },
+});
+
 const filesOf = (h: TestHarness, target: ScopeKey = scope) =>
   h.backend.scope(target).storedFiles.values();
 
@@ -183,6 +211,23 @@ describe("deleteFilesByOwner", () => {
     expect(tasks(h)).toHaveLength(1);
   });
 
+  it("TC-storage-037: losing the commit after the continuation is armed takes the deleted page back with it", async () => {
+    const h = createTestHarness();
+    await openBarrier(h);
+    await seedFiles(h, { count: 120 });
+
+    await expect(
+      run(h, { batchSize: 50, container: withLostCommitAfterSchedule(h) }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isSystemError(error) && error.code === SystemErrorCode.DatabaseError,
+    );
+
+    expect(filesOf(h)).toHaveLength(120);
+    expect(tasks(h)).toHaveLength(0);
+    expect(deletionEvents(h)).toHaveLength(0);
+  });
+
   it("TC-storage-038: exactly batchSize targets are all deleted without a continuation", async () => {
     const h = createTestHarness();
     await openBarrier(h);
@@ -194,6 +239,19 @@ describe("deleteFilesByOwner", () => {
     expect(filesOf(h)).toHaveLength(0);
     expect(tasks(h)).toHaveLength(0);
     expect(acknowledged(h)).toContain("storage");
+  });
+
+  it("TC-storage-043: a batchSize above the ceiling is clamped, so one turn never emits more than 100 events", async () => {
+    const h = createTestHarness();
+    await openBarrier(h);
+    await seedFiles(h, { count: 150 });
+
+    const turn = await run(h, { batchSize: 101 });
+
+    expect(turn).toMatchObject({ status: "continued", deletedCount: 100 });
+    expect(filesOf(h)).toHaveLength(50);
+    expect(deletionEvents(h)).toHaveLength(100);
+    expect(tasks(h)).toHaveLength(1);
   });
 
   it("TC-storage-039: the continuation is a single scope task carrying the deletion operation", async () => {

@@ -105,8 +105,13 @@ export function describeScopeCleanupAdmissionStoreContract(
 
       await store.markCompleted("op-1", retainUntil);
       await store.markCompleted("op-1", retainUntil);
-      // As does one that arrives after completion.
+      // As does one that arrives after completion: a late ack must not
+      // walk the receipt back to `running`, which would leave
+      // `pruneCompleted` nothing to reclaim.
       await store.acknowledgePersonalComponent("op-1", last);
+      expect((await store.describePersonalCleanup("op-1"))?.status).toBe(
+        "completed",
+      );
 
       // Completion never reopens the scope.
       await expectConflict(store.assertWritable(), "ACCOUNT_DELETING");

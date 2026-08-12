@@ -54,7 +54,11 @@ type HandlePlan =
 const profileOperationId = (userId: UserId): string =>
   `identity.updateProfile:${userId}`;
 
-/** Operation that tears the *previous* handle's durable claim down. */
+/**
+ * Operation that tears the *previous* handle's durable claim down. It
+ * embeds the handle, so it stays inside the directory call and never
+ * reaches a log.
+ */
 const handleReleaseOperationId = (userId: UserId, handle: Handle): string =>
   `${profileOperationId(userId)}:release:handle:${handle}`;
 

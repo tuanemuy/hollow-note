@@ -1,3 +1,6 @@
+import { createMemoryGlobalUnitOfWorkProvider } from "@repo/core/adapters/memory/globalUnitOfWork";
+import { createMemoryScopeTaskQueue } from "@repo/core/adapters/memory/scopeTaskQueue";
+import { createMemoryScopeUnitOfWorkProvider } from "@repo/core/adapters/memory/scopeUnitOfWork";
 import {
   SCOPE_TASK_MAX_ATTEMPTS,
   SCOPE_TASK_MAX_BACKOFF_MS,
@@ -14,7 +17,12 @@ import {
 } from "@repo/core/domain/storage/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
-import { STORAGE_OWNER_DELETE_TASK_KIND } from "../../cleanup/participants";
+import {
+  REQUIRED_FINALIZE_RECEIPTS,
+  REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
+  STORAGE_OWNER_DELETE_TASK_KIND,
+} from "../../cleanup/participants";
+import type { WorkerContainer } from "../../di/types";
 import { signUpVerified } from "../../identity/__tests__/authFlowHelpers";
 import {
   acceptDeletion,
@@ -61,6 +69,27 @@ const storedFileCount = (h: TestHarness, userId: string): number =>
 const receipts = (h: TestHarness, operationId: string) =>
   h.backend.manifestHeaders.get(operationId)?.receipts ?? [];
 
+// Models a process restart: the store outlives it, every container over
+// it is built anew.
+const restartWorkers = (h: TestHarness): WorkerContainer => {
+  const unitOfWorkOptions = {
+    requiredCleanupComponents: REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
+    requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
+  };
+  return {
+    ...h.workerContainer,
+    globalUnitOfWorkProvider: createMemoryGlobalUnitOfWorkProvider(
+      h.backend,
+      unitOfWorkOptions,
+    ),
+    scopeUnitOfWorkProvider: createMemoryScopeUnitOfWorkProvider(
+      h.backend,
+      unitOfWorkOptions,
+    ),
+    scopeTaskQueue: createMemoryScopeTaskQueue(h.backend),
+  };
+};
+
 describe("runDueScopeTasks", () => {
   it("resumes a cleanup that outgrew its first turn and hands the completion to the manifest", async () => {
     const h = createTestHarness();
@@ -104,21 +133,21 @@ describe("runDueScopeTasks", () => {
     await acceptDeletion(h, { userId, email: EMAIL });
     await drainDeletion(h);
 
-    // A container built after the "restart" holds no in-process state;
-    // the scope task queue is the only thing that remembers the work.
-    const restarted = createTestHarness();
     const due = await h.workerContainer.scopeTaskQueue.listDue(
       h.clock.now(),
       10,
     );
-
     expect(due.map((task) => task.kind)).toEqual([
       STORAGE_OWNER_DELETE_TASK_KIND,
     ]);
-    expect(await runDueScopeTasks(restarted.workerContainer)).toEqual({
-      processed: 0,
-    });
-    expect(await runDueScopeTasks(h.workerContainer)).toEqual({ processed: 1 });
+    expect(due.map((task) => ScopeKey.serialize(task.scope))).toEqual([
+      ScopeKey.serialize(scopeOf(userId)),
+    ]);
+
+    // The "restart": the same store, reached through containers rebuilt
+    // from scratch, so nothing the first ones held in process carries the
+    // continuation over.
+    expect(await runDueScopeTasks(restartWorkers(h))).toEqual({ processed: 1 });
     expect(storedFileCount(h, userId)).toBe(0);
   });
 

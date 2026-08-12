@@ -131,3 +131,37 @@ R2: 新規 36 / 継承 3 / fix 24 / fix-editorial 14 / wont-fix 1 / defer 0（�
 3. **receipt 回収の一本化 vs コメント修正** → **runner の sweep を残し JSDoc を実態に合わせる**。`pruneExpiredAuthState` の cron 配線は #15（本 Issue 外）で本番呼び出しが無く、一本化すると 30 日保持の回収が止まる。二重定義は #15 への引き継ぎとして記録する。
 4. **TC-identity-090 / TC-storage-043 の記録の置き場所** → **plan.md に複写しない**。ID 単位の記録は `progress.md`（Issue コメントの原本）に既にあり、plan.md は契約という役割分担を保つ。修正はテスト名・テスト内コメントの欠落明示に限る。
 5. **runner テストの範囲** → **A-W002（多重起動しない）と A-W004（起動時に prune が 1 回走る）の 2 点に限定**。stop のドレイン・prune 3 本の例外隔離は本 Issue の受け入れ基準の要求を超える。
+
+## R3
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `__tests__/completeOAuthSignIn.test.ts:TC-identity-026/セッション未検証`（Test B-001） | R3 | fix | **実測確定**: `attachToExistingUser` の `sessionRepository.insert` を消しても 891 全緑。AC-8 の期待結果が無防備 | 0 |
+| `__tests__/startOAuthFlow.test.ts:TC-identity-265/userAuthEpoch 既定値`（Test B-002） | R3 | fix | 3 アサーションが全て 0 で、定数 0 実装が通る。AC-7 の「epoch を state に保持」が未検証 | 0 |
+| `identity/uniqueness.ts:reservationOperationId/ログ PII`（Security W-001） | R3 | fix | `operationId` に生メールが入り `logger.error` → stdout に出る。`main` には無かった本 PR の新規露出 | 0 |
+| `routes/settings/-action.tsx:uploadAvatarFn/CSRF`（Frontend W-001） | R1 | wont-fix | **誤指摘（R1 B-005 の判定を継承）**。`start.ts` の `createCsrfMiddleware` が serverFn の requestMiddleware 層でハンドラー到達前に照合し、ヘッダー不在は 403。**2 周連続の再指摘なので、非自明な制約として 1 行の why コメントを置く**（裁定 3） | 1 |
+| `ProfileForm/editor.tsx:handleProblem/saveFailure の陳腐化`（Frontend W-002） | R3 | fix | 候補チップを押しても前回の `HANDLE_ALREADY_USED` と `aria-invalid` が残り、AC-20 の目的動作を壊す | 0 |
+| `IdentityListSkeleton/レイアウトシフト`（Frontend W-003） | R3 | fix | 実 DOM の強度メーター等を写しておらず JSDoc の宣言を満たさない。R1/R2 の Skeleton 指摘とは別コンポーネント | 0 |
+| `memory/scopeUnitOfWork.ts:commit kick/無観測`（Adapter W-001） | R3 | fix | AC-29 が名指す commit kick が全テストから到達不能。**memory ローカルの単体テスト 1 本に限定**（適合バックエンドは触らない） | 0 |
+| `ports/distributedOperationStore.ts:markState/契約と実装の乖離`（Adapter W-002） | R3 | fix-editorial | **裁定 1: 契約文を実装に合わせる**。実装側で terminal → running を拒否するのは本 Issue の AC 外の強化。#7 への引き継ぎとして記録する | 0 |
+| `vitest.config.ts:testTimeout ↔ docs/test.md`（Adapter W-003 + Test W-009） | R3 | fix-editorial | **統合。裁定 2: 10s へ下げ、コメントを実測（最遅 278ms）に合わせる**。docs も 1 行更新 | 0 |
+| `worker/node/runner.ts:scope tick・relay ドレインのテスト無し`（Test W-001） | R2 | wont-fix | R2 **裁定 5** で runner テストの範囲を限定済み（判定継承）。commit kick 側の観測は Adapter W-001 で閉じる | 1 |
+| `deleteFilesByOwner.test.ts:batchSize 上限 100/未検証`（Test W-002） | R3 | fix | AC-25 が明示要件にしている 100 のクランプが一度も踏まれない | 0 |
+| `linkOAuthIdentity.test.ts:TC-identity-126/敗者の理由未検証`（Test W-003） | R3 | fix | AC-15 の対象行。隣の TC-125 はコードを確認しており非対称 | 0 |
+| `ports/scopeTaskQueue.ts:listDue/JSDoc の逃げ道`（Test W-004） | R3 | fix-editorial | plan.md のテスト方針が `listDue` の契約をスイートに含めよと明示。**スイートを残し JSDoc の「空配列も完全な実装」を削る** | 0 |
+| `conformance/accountDeletionManifestStore.ts:item key の文字列表現`（Test W-005） | R3 | fix | 「契約化するのは観測可能な結果だけ」に反し memory の符号化を契約化している | 0 |
+| `conformance/scopeCleanupAdmissionStore.ts:completed 後 ack の no-op`（Test W-006） | R3 | fix | 「投げない」だけで `running` へ巻き戻す実装も通る。ADR-018 の追加分の要求 | 0 |
+| `{deleteQuota,deleteFilesByOwner}.test.ts:継続の同一 UoW 登録`（Test W-007） | R3 | fix | AC-24 の明示要件。schedule を別トランザクションに出しても緑 | 0 |
+| `{storeAvatar,recalculateStorageUsage}:assertWritable 2 本/検証不能`（Test W-008） | R3 | fix-editorial | `actorLocks` を立てる経路が本 Issue に無く構造的に閉じられない（#3 依存）。progress.md の縮退に 1 行足す | 0 |
+| `authResidueCleanup.test.ts:注入障害のコメント誤り`（Test W-010） | R3 | fix-editorial | テストは正しくコメントだけが誤り | 0 |
+| `scopeTaskRunner.test.ts:再起動ケースの自明アサーション`（Test W-011） | R3 | fix | 別バックエンドで模しており「空 DB に due が無い」しか言っていない。同一 backend でコンテナだけ組み直す | 0 |
+| `deleteAccount.redaction.test.ts:TC-identity-081/item ack 側の門`（Test W-012） | R3 | wont-fix | item ack 側の門は適合スイートが押さえており、ユースケーステストでの二重化は AC の要求ではない | 0 |
+
+R3: 新規 18 / 継承 2 / fix 11 / fix-editorial 6 / wont-fix 3 / defer 0（方針フェーズ: 実施）
+観点別 fix 件数: domain-usecase 0→休止 / adapter 2 / frontend 2 / security 1 / test 6（重複統合後）
+
+## 要確認の裁定（メイン・R3）
+
+1. **`DistributedOperationStore.markState` の遷移拘束** → **契約文を実装に合わせる（fix-editorial）**。実装側で terminal → running を `ConflictError` にするのは本 Issue の AC 外の強化で、`AccountDeletionRetryPolicy` の根拠は現状の呼び出し側が守っている。ポート定義が実装より強い約束をしている状態のほうが害なので、約束を実態に合わせる。同ポートを再利用する #7 への引き継ぎとして記録する。
+2. **`testTimeout` の値** → **10s へ下げ、コメントを実測に合わせる**。実測の最遅テストは 278ms で、30s は根拠のない過剰。10s でも 35 倍の余裕がある。
+3. **Frontend W-001 の再指摘防止** → **1 行の why コメントを置く**。2 ラウンド連続で誤指摘が上がっており、「Origin 検証は `start.ts` の `createCsrfMiddleware` が serverFn 全経路で行う」はまさに CLAUDE.md が言う「隠れた制約」に当たる。

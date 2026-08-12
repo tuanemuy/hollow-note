@@ -17,9 +17,11 @@ export type DueScopeTask = Readonly<{
  * opens a scope unit of work per row and claims there, so the
  * serialization rule (claim inside the scope transaction) is unchanged.
  *
- * A runtime where each scope wakes itself (a Durable Object alarm)
- * returns an empty array — there is nothing for a central enumerator to
- * do, and that is a complete implementation of this port, not a stub.
+ * `listDue` is required of every backend, not an optional index: it
+ * returns the tasks already due at `now` across all scopes, ordered by
+ * `dueAt` ascending, and never more than `limit`. A restarted process
+ * has no other way to find the continuations it left behind, so a
+ * backend that answers with an empty array has not implemented the port.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */

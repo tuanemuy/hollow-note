@@ -37,8 +37,12 @@ export function IdentityListSkeleton() {
       <section className={panelClass}>
         <Skeleton className="h-5 w-36" />
         <Skeleton className="mt-2 h-4 w-64" />
-        <Skeleton className="mt-5 h-11 w-full" />
-        <Skeleton className="mt-5 h-11 w-full" />
+        <Skeleton className="mt-5 h-4 w-28" />
+        <Skeleton className="mt-2 h-11 w-full" />
+        <Skeleton className="mt-5 h-4 w-28" />
+        <Skeleton className="mt-2 h-11 w-full" />
+        <Skeleton className="mt-5 h-4 w-24" />
+        <Skeleton className="mt-2 h-11 w-full" />
         <Skeleton className="mt-5 h-10 w-40 rounded-pill" />
       </section>
       <section className={panelClass}>

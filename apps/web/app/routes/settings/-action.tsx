@@ -163,6 +163,10 @@ const avatarUploadSchema = z.object({
  * PAGE-p21-001。`storeAvatar` はバイト列を置くだけで `User` を書かない
  * ので、返った `url` を `updateProfileFn` へ渡す 2 段目が要る。
  * 主体は Cookie のセッションで、`subjectId` を要求本文から取らない。
+ *
+ * `FormData` を受ける経路の同一オリジン照合は、`start.ts` が
+ * `requestMiddleware` に置く `createCsrfMiddleware` がハンドラー到達前に
+ * `Sec-Fetch-Site` → `Origin` → `Referer` の順で行う。
  */
 export const uploadAvatarFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])

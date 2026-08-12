@@ -161,6 +161,13 @@ describe("completeOAuthSignIn", () => {
       .filter((identity) => identity.userId === userId)
       .map((identity) => identity.kind);
     expect([...kinds].sort()).toEqual(["oauth", "password"]);
+    const sessions = h.backend.sessions
+      .values()
+      .filter((session) => session.userId === userId);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.map((session) => session.tokenHash)).toContain(
+      h.container.secureTokenGenerator.hashOf(view.sessionToken),
+    );
     expect(directoryRows(h, "providerAccount").map((row) => row.state)).toEqual(
       ["active"],
     );

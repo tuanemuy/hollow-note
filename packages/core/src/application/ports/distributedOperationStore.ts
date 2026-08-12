@@ -47,8 +47,13 @@ export type DistributedOperation = Readonly<{
  * prune calls `deleteTerminal` in the same transaction that drops the
  * terminal header.
  *
- * Error contract: `ConflictError` (unknown operation, illegal
- * transition), `SystemError(DatabaseError)`.
+ * `markState` records the state its caller decided on and rejects only
+ * an unknown operation: the store is not the state machine, so ordering
+ * the transitions (and not re-running a terminal operation) belongs to
+ * the caller. `terminalAt` follows the state it is given.
+ *
+ * Error contract: `ConflictError` (unknown operation),
+ * `SystemError(DatabaseError)`.
  */
 export interface DistributedOperationStore {
   beginOrResume(

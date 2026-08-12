@@ -12,9 +12,9 @@ export default defineConfig({
     globals: true,
     environment: "node",
     exclude: ["**/node_modules/**", "**/dist/**", "**/.direnv/**", "spec/**"],
-    // Password paths derive scrypt keys at production cost (N=16384). A single
-    // change-password case chains up to seven derivations, which overruns the
-    // 5s default once the files run in parallel on a loaded machine.
-    testTimeout: 30_000,
+    // scrypt(N=16384) at production cost makes the password cases the slowest
+    // in the suite (~300ms against single-digit ms elsewhere), and on a loaded
+    // machine running files in parallel they have overrun the 5s default.
+    testTimeout: 10_000,
   },
 });

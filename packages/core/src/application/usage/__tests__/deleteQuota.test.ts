@@ -1,3 +1,8 @@
+import {
+  isSystemError,
+  SystemError,
+  SystemErrorCode,
+} from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { LlmUsage } from "@repo/core/domain/usage/llmUsage";
@@ -10,6 +15,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { USAGE_USER_CLEANUP_TASK_KIND } from "../../cleanup/participants";
+import type { WorkerContainer } from "../../di/types";
 import { deleteQuota } from "../deleteQuota";
 
 const USER_ID = "user-1";
@@ -47,12 +53,39 @@ const seedLlmMonths = (h: TestHarness, months: number) =>
     }
   });
 
+/** Container that loses the commit once the continuation is armed. */
+const withLostCommitAfterSchedule = (h: TestHarness): WorkerContainer => ({
+  ...h.workerContainer,
+  scopeUnitOfWorkProvider: {
+    run: (target, fn) =>
+      h.workerContainer.scopeUnitOfWorkProvider.run(target, (ctx) =>
+        fn({
+          ...ctx,
+          scopeTaskScheduler: {
+            ...ctx.scopeTaskScheduler,
+            schedule: async (input) => {
+              await ctx.scopeTaskScheduler.schedule(input);
+              throw new SystemError(
+                SystemErrorCode.DatabaseError,
+                "commit lost after the continuation was armed",
+              );
+            },
+          },
+        }),
+      ),
+  },
+});
+
 const run = (
   h: TestHarness,
-  overrides: Partial<{ scope: ScopeKey; commandKey: string }> = {},
+  overrides: Partial<{
+    scope: ScopeKey;
+    commandKey: string;
+    container: WorkerContainer;
+  }> = {},
 ) =>
   deleteQuota({
-    container: h.workerContainer,
+    container: overrides.container ?? h.workerContainer,
     input: {
       deletionOperationId: OPERATION_ID,
       scope: overrides.scope ?? scope,
@@ -162,6 +195,25 @@ describe("deleteQuota", () => {
     expect(llmRows(h)).toHaveLength(0);
     expect(tasks(h)).toHaveLength(0);
     expect(acknowledged(h)).toContain("usage");
+  });
+
+  it("TC-usage-032: losing the commit after the continuation is armed takes the deleted page back with it", async () => {
+    const h = createTestHarness();
+    await openBarrier(h);
+    await seedQuota(h, QuotaSubject.user(userId), scope);
+    await seedLlmMonths(h, 250);
+
+    await expect(
+      run(h, { container: withLostCommitAfterSchedule(h) }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isSystemError(error) && error.code === SystemErrorCode.DatabaseError,
+    );
+
+    expect(llmRows(h)).toHaveLength(250);
+    expect(quotaRows(h)).toHaveLength(1);
+    expect(tasks(h)).toHaveLength(0);
+    expect(acknowledged(h)).not.toContain("usage");
   });
 
   it("TC-usage-033: a lost response after a page resumes from what is left", async () => {

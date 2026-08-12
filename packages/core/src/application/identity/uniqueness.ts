@@ -33,7 +33,14 @@ export type UniqueKey = Readonly<{
   normalizedKey: string;
 }>;
 
-export type UniqueReservation = UniqueKey & Readonly<{ operationId: string }>;
+/**
+ * A key claimed for one parent operation. `parentOperationId` is kept
+ * alongside the derived `operationId` because it is, with `kind`, the only
+ * part of the reservation that may leave this module: `operationId` ends in
+ * the raw key.
+ */
+export type UniqueReservation = UniqueKey &
+  Readonly<{ parentOperationId: string; operationId: string }>;
 
 /** How long a reservation holds the key while its unit of work runs. */
 export const UNIQUE_RESERVATION_TTL_MS = 10 * 60 * 1000;
@@ -58,6 +65,10 @@ export const providerAccountKey = (
  * order — `kind` is a closed enum without `:` and the free-form key comes
  * last — so composition already gives distinctness and determinism, and
  * it keeps a hash implementation out of the application layer.
+ *
+ * The result therefore embeds the raw key (an email address, a handle, a
+ * provider account id) and must never reach a log or any other sink
+ * outside the directory: log `{ parentOperationId, kind }` instead.
  */
 export const reservationOperationId = (
   parentOperationId: string,
@@ -84,6 +95,7 @@ export async function reserveUniqueKeys(
   for (const key of params.keys) {
     const reservation: UniqueReservation = {
       ...key,
+      parentOperationId: params.parentOperationId,
       operationId: reservationOperationId(params.parentOperationId, key),
     };
     try {
@@ -118,7 +130,8 @@ export async function releaseUniqueKeys(
     } catch (cause) {
       deps.logger.error("[uniqueness] reservation release failed", {
         cause,
-        operationId: reservation.operationId,
+        parentOperationId: reservation.parentOperationId,
+        kind: reservation.kind,
       });
     }
   }
@@ -207,7 +220,8 @@ export async function activateUniqueKeys(
     } catch (cause) {
       deps.logger.error("[uniqueness] activate response lost; reconciling", {
         cause,
-        operationId: reservation.operationId,
+        parentOperationId: reservation.parentOperationId,
+        kind: reservation.kind,
       });
       const currentVersion = await confirmOnce();
       if (currentVersion !== null) {

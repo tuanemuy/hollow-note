@@ -205,6 +205,7 @@
 - **アイコンをアップロードしてプロフィールを保存せずに離脱すると、参照されない `StoredFile` が 1 件残る**（ADR-016 の 2 段経路の帰結）。orphan media 回収は #6。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` の値には現れる。
 - **`/settings/danger`（P-25）は未サインインでも 200 を返す**（ADR-062）。受理と同時にセッションが消える以上、進捗を読める画面は認証を要求できないため。読み取りの権限は status ticket が持ち、`getAccountDeletionStatus` は ticket が名指す 1 件しか返さない。`deleteAccountFn` 自体は `requireSession()` を通すので操作はできない。
 - **本番の外部サービス結合は行っていない**: 実メール送信（memory の `MailSender` のまま。本文は開発ログから読む）、R2 等の実オブジェクトストレージ（memory + `/storage/$` 配信ルート）、Cloudflare ランタイム（#11）。
+- **AC-19 / AC-22 の「`assertWritable` / `assertActorWritable` の 2 本を呼ぶ」が構造的に検証不能**。`scope.actorLocks` を立てる経路（membership prepare wave）が本 Issue に無いため、`storeAvatar` / `recalculateStorageUsage` の 2 本は同じ receipt 行の同じ `ACCOUNT_DELETING` に落ち、片方を消してもテストは緑のまま。actorLock を立てるバックエンドが入るまで両者を撃ち分けられない。→ #3
 
 ### steps.md / AC の記述と実装がずれた箇所（読み替えの記録）
 
@@ -330,3 +331,7 @@
 | `pruneExpiredAuthState` の lane | `packages/core/src/application/identity/pruneExpiredAuthState.ts`（`AuthStateTable` / `authStateSweeps` に登録済み） | maintenance run のリース + チェックポイント付き |
 
 本 Issue では `pruneExpiredAuthState` を呼ぶ本番コードが存在せず（cron 配線は #15）、一本化すると 30 日保持の回収が誰も走らせない状態になるため、runner 側の sweep を残した（JSDoc に理由と引き継ぎ先を明記）。**#15 が `pruneExpiredAuthState` に駆動主体を付けた時点で、runner の sweep を落として lane に一本化する。**
+
+## Issue #7 への引き継ぎ（`DistributedOperationStore.markState` は遷移を拘束しない）
+
+ADR-103 のとおり `markState` の契約は実装側に寄せた。ストアは未知 ID しか弾かず、`completed → running` も通って `terminalAt` が `null` に戻る（＝ `countTerminalSince` の計数からも `deleteTerminal` の対象からも外れる）。今日は `deleteAccount/compaction.ts` が `header.status === "completed"` で早期 return するため二重呼び出しが起きないが、**同じポートを再利用する #7（note move）は terminal 後の `markState` を自分で防ぐか、遷移を拒否する契約へ強化する（適合スイートに terminal → running の 1 ケースを足す）かを決めること。**

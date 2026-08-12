@@ -136,10 +136,13 @@ export function describeAccountDeletionManifestStoreContract(
       );
       await store().markBuilt("op-1");
       const claimed = await store().claimPending("op-1", "redaction", 100);
-      expect(claimed.map((item) => item.key).sort()).toEqual([
-        "authorRoute:note-001",
-        "authorRoute:note-002",
-      ]);
+      expect(claimed).toHaveLength(2);
+      expect(new Set(claimed.map((item) => item.key)).size).toBe(2);
+      expect(
+        claimed
+          .map((item) => (item.kind === "authorRoute" ? item.noteId : null))
+          .sort(),
+      ).toEqual([noteId(1), noteId(2)]);
     });
 
     it("ADP-common-015: target fixing is rejected after markBuilt", async () => {
@@ -468,7 +471,11 @@ export function describeAccountDeletionManifestStoreContract(
       await store().markBuilt("op-1");
 
       const prepared = await store().claimPending("op-1", "prepare", 100);
-      expect(prepared.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      expect(
+        prepared.map((item) =>
+          item.kind === "membership" ? item.membershipId : null,
+        ),
+      ).toEqual(["membership-1"]);
       await store().acknowledge(
         "op-1",
         prepared.map((item) => item.key),
@@ -484,7 +491,11 @@ export function describeAccountDeletionManifestStoreContract(
       expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
 
       const cleanup = await store().claimPending("op-1", "cleanup", 100);
-      expect(cleanup.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      // The very item the prepare lane acked is what the cleanup lane
+      // sees, whatever the backend encodes its key as.
+      expect(cleanup.map((item) => item.key)).toEqual(
+        prepared.map((item) => item.key),
+      );
       await store().acknowledge(
         "op-1",
         cleanup.map((item) => item.key),
