@@ -13,7 +13,10 @@ import {
   ValidationError,
 } from "../errors";
 import type { ServiceArgs } from "../types";
-import { oauthStateInvalid } from "./completeOAuthSignIn";
+import {
+  oauthStateInvalid,
+  providerAccountReleasePending,
+} from "./completeOAuthSignIn";
 import { oauthRedirectUri } from "./startOAuthFlow";
 import {
   activateUniqueKeys,
@@ -178,7 +181,7 @@ export async function linkOAuthIdentityForFlow(
 
 /**
  * Idempotent replay: the directory already names this user as the owner,
- * so the identity exists and the link is a no-op that answers with it.
+ * so a live identity makes the link a no-op that answers with it.
  */
 async function existingLinkId(
   container: RequestContainer,
@@ -194,12 +197,10 @@ async function existingLinkId(
       identity.providerAccountId === providerAccountId,
   );
   if (linked === undefined) {
-    // The claim resolves to this user but the row is gone: the directory
-    // and the shard disagree, which no successful path can produce.
-    throw new ConflictError(
-      "PROVIDER_ACCOUNT_ALREADY_LINKED",
-      "This provider account is claimed but has no identity",
-    );
+    // The claim resolves to this user but the row is gone: `removeIdentity`
+    // deleted the identity and its `identity.identity.removed` has not
+    // freed the key yet, so the link has to wait for that release.
+    throw providerAccountReleasePending();
   }
   return linked.id;
 }

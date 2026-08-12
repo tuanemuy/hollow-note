@@ -2277,3 +2277,50 @@ personal cleanup の最後のターンは 1 つのトランザクションで `a
 - トレードオフ: barrier を閉じるターンごとに scope 平面のトランザクションが 2 つ増える（arm と complete）。削除 1 件につき 1 回だけなので、往復 1 回ぶんのコストとして許容する。
 - 残る穴: barrier を閉じたコミットと arm のあいだでプロセスが落ちると、依然として駆動主体が残らない。塞ぐには `completePersonalCleanupIfDone` と同じ UoW で arm する必要があり、cleanup ユースケース側の変更になるので本ラウンドでは持ち越す（arm が同一 scope への小さな書き込み 1 回なのに対し、塞げた窓は別平面のコミット全体なので、窓は桁で縮んでいる）。
 - kind の定数は runner に置いた。この継続を出すのも受けるのも runner だけで、participant 登録簿（`cleanup/participants.ts`）が並べているのは「掃除に参加する component」であってこの引き渡しはその一員ではない。
+
+## ADR-107: P-25 の進捗パネルは「パネルが替わったときだけ」焦点を移す
+
+### Status
+Accepted
+
+### Context
+P-25 は受理した瞬間にフォームの `<section>` ごと進捗パネルへ差し替わる。差し替え後の `Alert role="status"` と `<p aria-live="polite">` は新規マウントとして現れるため、「受理しました」「サインアウトしました」は読み上げられない — live region は中身が入る前から DOM に在ることが読み上げの条件だからで、`SignInForm` の常設 region と `ResetPasswordPanel` の `Result`（焦点移動）はどちらもこの制約を前提にしている。P-25 はフォームと進捗が排他なので、両者の外側に常設 region を置くと入れ子の live region になり、`Alert` と二重に読み上げられる。
+
+### Decision
+`ResetPasswordPanel.Result` と同じ形にする。進捗パネルの外枠 `<section>` に `tabIndex={-1}` と ref を付け、マウント時に `ref.current?.focus()` する。フォーカスリングは `focus-visible:shadow-none` で消す（プログラム由来の焦点であって操作の位置ではない）。
+
+`accepted` と `running` は同じパネルなので、呼び出し側で同じ `key` に畳む。畳んだぶんは作り直されないので、進行中の文言差し替えは常設になった `<p aria-live="polite">` の更新として伝わり、焦点は奪い返されない。`completed` / `settled` は別の `key` になり、そこで初めて焦点が新しいパネルへ移る。
+
+### Consequences
+- 良い点: 「受理・サインアウト」「削除しました」「進捗を表示できません」のいずれもマウント時の焦点移動で読み上げられ、最も後戻りできない操作の結末が支援技術に伝わる。焦点喪失（`<body>` 送り）も起きない。
+- 良い点: 常設 region を外側に足さないので `Alert` との入れ子が生まれない。
+- トレードオフ: 焦点の単位を `key` に持たせたぶん、`phase.kind` と表示パネルの対応が呼び出し側にも現れる。対応表が 1 行で済むうちは、`useEffect` の依存にパネル名を渡す形（実効的に使っていない依存）より意図が読める。
+
+## ADR-108: providerAccount claim は「サインインを通す資格」ではなく、UserId shard の identity 行と対で読む
+
+### Status
+Accepted
+
+### Context
+`completeOAuthSignIn` の既存リンク経路（`signInLinkedUser`）は directory の `resolve("providerAccount", key)` が返した UserId をそのまま信じ、User 行の status だけを再確認してセッションを発行していた。spec/usecases/identity.md 手順 3 は「providerAccount directory を解決し、返った UserId shard で**既存 Identity と User を確認する**」と定めており、確認の片側が落ちていた。
+
+`removeIdentity` は identity 行を UserId shard で消し、directory の `active` 行は残したまま `identity.identity.removed` の consumer（`identityRemovalRelease`）に解放を委ねる。したがって「解除は成功したのに、その Google アカウントでまだサインインできる」窓が必ず一度は開く。実測でも、Google 登録 → パスワード追加 → OAuth 手段を解除 → イベント未 drain の順で同じ provider account を提示すると、identity が `["password"]` だけになった利用者として**セッションが発行された**。
+
+窓は一時的とは限らない。outbox は失敗回数超過で quarantine され、`identity_removal_receipts` は 30 日で掃除される（ADR-075）。両方が起きると再配送は `noReceipt` → `keep` に倒れ、claim は恒久的に `active` のまま残る。`linkOAuthIdentity` の `existingLinkId` と `identityRemovalRelease`（ADR-104）は同じ不一致をすでに検出しており、読み側だけが確認を落としていた。
+
+### Decision
+`signInLinkedUser` に `accountKey` を渡し、**セッションを insert する最終 UoW の中で** `ctx.identityRepository.listByUserId(userId)` を読んで、同じ `providerAccountKey` を名乗る oauth identity が現存することを確認する。無ければセッションを発行しない。UoW の外で読むと「読んだあとに解除が commit される」窓が残るので、status / epoch の再確認と同じトランザクションに置く。
+
+拒否は新コード `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` とし、`existingLinkId` の同じ不一致にも同じコードを使う。既存の `PROVIDER_ACCOUNT_ALREADY_LINKED` の文言は「別の利用者に紐づいています」で、**自分が今解除したアカウント**について出ると誤誘導になる。文言は「この外部アカウントの解除処理が進行中です。少し待ってからもう一度お試しください」で、再試行が有効な状態であることを伝える。
+
+コードは application 層のリテラルとして持つ。`domain/identity/errorCode.ts` は `BusinessRuleError` の不変条件違反コードの列挙で、これは directory と shard の収束待ちという usecase 側の事情なので、`PROVIDER_ACCOUNT_ALREADY_LINKED` と同じ置き場に揃えた。
+
+claim を無視して email 経路（新規作成 / 既存への自動リンク）へ落とす案は採らない。directory の行は残っているので後続の `reserve` が必ず競合し、しかも利用者には「別の利用者に紐づいています」が出る。解放が進行中であることを名乗って再試行させるほうが、状態と応答が一致する。
+
+### Consequences
+- 良い点: 「解除に成功した OAuth 手段では二度とサインインできない」が、解放イベントの到達に依存せず UserId shard の 1 トランザクションだけで成立する。quarantine や receipt TTL 切れで解放が永久に来ない場合でも同じ。
+- 良い点: 読み側（サインイン）・書き側（再連携）・解放側（consumer）の 3 経路がすべて「その鍵を名乗る現行 identity が居るか」という同じ述語で判断するようになり、非対称が消える。
+- 良い点: 本人が同じ窓で再連携したときの応答が「他人のものだ」から「解除処理が進行中だ」に変わり、実際に有効な行動（待って再試行）を案内できる。
+- トレードオフ: 既存リンクのサインインごとに `listByUserId` が 1 回増える。identity は 8 件上限なので実質定数（ADR-104 と同じコスト）。
+- トレードオフ: 解放が恒久的に落ちた場合、その provider account は誰も使えないまま残る（サインインも再連携も `RELEASE_PENDING`）。運用で解放を再駆動するまで固まる形を選んだ — 誤って通すより固まるほうが安全側に倒れる。
+- spec-sync 候補: `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケース表に `PROVIDER_ACCOUNT_RELEASE_PENDING` が無い。手順 3 の要求そのものは満たしたので、表側の追記を spec-sync に回す。

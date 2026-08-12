@@ -71,6 +71,8 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "このアカウントは使用できません。削除の処理が完了するまでサインインできません。",
   PROVIDER_ACCOUNT_ALREADY_LINKED:
     "この外部アカウントは別の利用者に紐づいています。別のアカウントでお試しください。",
+  PROVIDER_ACCOUNT_RELEASE_PENDING:
+    "この外部アカウントの解除処理が進行中です。少し待ってからもう一度お試しください。",
   IDENTITY_LIMIT_EXCEEDED:
     "登録できるログイン方法は 8 件までです。使っていない方法を解除してからお試しください。",
   INVALID_REDIRECT:

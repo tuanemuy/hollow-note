@@ -139,7 +139,9 @@ export function AddPasswordForm({
           <button
             type="submit"
             className={primaryButtonClass}
-            disabled={isPending || password.length === 0 || mismatch}
+            disabled={
+              isPending || password.length === 0 || confirmation !== password
+            }
             aria-busy={isPending}
           >
             {isPending ? "追加中..." : "パスワードを追加"}

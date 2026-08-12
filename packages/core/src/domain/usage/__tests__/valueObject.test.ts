@@ -83,6 +83,7 @@ describe("DOM-usage-003: LlmCallQuota", () => {
 });
 
 describe("DOM-usage-004: BillingPeriod", () => {
+  // Only discriminating because the suite runs in a non-UTC zone (vitest.config.ts).
   it("reads the calendar month in UTC, not in the local zone", () => {
     expect(BillingPeriod.of(new Date("2026-05-31T23:59:59.999Z"))).toEqual({
       year: 2026,

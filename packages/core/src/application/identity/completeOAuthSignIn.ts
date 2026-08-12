@@ -12,7 +12,7 @@ import {
   type UserId,
 } from "@repo/core/domain/identity/valueObject";
 import type { RequestContainer } from "../di/types";
-import { ValidationError } from "../errors";
+import { ConflictError, ValidationError } from "../errors";
 import type { ServiceArgs } from "../types";
 import { oauthRedirectUri } from "./startOAuthFlow";
 import {
@@ -40,6 +40,21 @@ const existingAccountUnverified = (): ValidationError =>
   new ValidationError(
     "EXISTING_ACCOUNT_UNVERIFIED",
     "The existing account has not verified its email address",
+  );
+
+/**
+ * The directory still names an owner whose UserId shard has no matching
+ * identity. `removeIdentity` deletes the row inside its own shard and
+ * leaves the claim to `identityRemovalRelease`, so the key outlives the
+ * identity for as long as that event takes to land — and forever if it
+ * never does. Distinct from `PROVIDER_ACCOUNT_ALREADY_LINKED` because
+ * the claim belongs to the very account the visitor just unlinked, not
+ * to a stranger.
+ */
+export const providerAccountReleasePending = (): ConflictError =>
+  new ConflictError(
+    "PROVIDER_ACCOUNT_RELEASE_PENDING",
+    "This provider account is claimed but has no identity",
   );
 
 /**
@@ -110,7 +125,11 @@ export async function completeOAuthSignInForFlow(
     accountKey,
   );
   if (linkedUserId !== null) {
-    return signInLinkedUser(container, linkedUserId, flow);
+    return signInLinkedUser(container, {
+      userId: linkedUserId,
+      accountKey,
+      flow,
+    });
   }
 
   const email = Email.create(profile.email);
@@ -150,14 +169,23 @@ export async function completeOAuthSignInForFlow(
   }
 }
 
-/** Signs in the user an existing provider link already points at. */
+/**
+ * Signs in the user an existing provider link already points at. The
+ * claim alone does not authorize the session (spec/usecases/identity.md
+ * 手順 3): the identities of the shard it names must still include this
+ * provider account, or the key outlived the identity it stood for.
+ */
 async function signInLinkedUser(
   container: RequestContainer,
-  userId: UserId,
-  flow: OAuthFlowState,
+  params: Readonly<{
+    userId: UserId;
+    accountKey: string;
+    flow: OAuthFlowState;
+  }>,
 ): Promise<CompleteOAuthSignInView> {
   const { clock, idGenerator, secureTokenGenerator, globalUnitOfWorkProvider } =
     container;
+  const { userId } = params;
   const now = clock.now();
   const session = secureTokenGenerator.issueForUser(userId);
 
@@ -171,6 +199,16 @@ async function signInLinkedUser(
     }
     if (fresh.entity.status !== "active") {
       throw accountUnavailable();
+    }
+    const identities = await ctx.identityRepository.listByUserId(userId);
+    const stillLinked = identities.some(
+      (identity) =>
+        identity.kind === "oauth" &&
+        providerAccountKey(identity.provider, identity.providerAccountId) ===
+          params.accountKey,
+    );
+    if (!stillLinked) {
+      throw providerAccountReleasePending();
     }
     await ctx.sessionRepository.insert(
       Session.create(
@@ -188,7 +226,7 @@ async function signInLinkedUser(
   return {
     userId,
     sessionToken: session.token,
-    redirectTo: flow.redirectTo,
+    redirectTo: params.flow.redirectTo,
     created: false,
   };
 }

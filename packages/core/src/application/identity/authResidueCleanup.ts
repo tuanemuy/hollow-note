@@ -83,11 +83,12 @@ export async function authResidueCleanup(
     return;
   }
   if (outcome === "finished") {
-    // Acknowledged after the commit, and outside it, because the receipt
-    // lives on the manifest rather than in this transaction. A crash in
-    // between redelivers this same continuation (the relay only marks it
-    // processed once the handler returns), and the retry re-reaches the
-    // terminal turn with zero rows left.
+    // Acknowledged after the page's commit and outside it. What keeps the
+    // pair whole is the absence of an early return: no "receipt already
+    // there, skip" path exists here, so a crash in between redelivers this
+    // same continuation (the relay only marks it processed once the handler
+    // returns) and the retry re-reaches this terminal turn with zero rows
+    // left, re-issuing both.
     await deps.accountDeletionManifestStore.acknowledgeReceipt(
       deletionOperationId,
       "authResidue",

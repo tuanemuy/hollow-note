@@ -24,6 +24,10 @@ import { providerAccountKey, releaseActiveUniqueKey } from "./uniqueness";
  * same key — a re-link mints a new `IdentityId`, which leaves the deleted
  * one absent forever — is ruled out here instead, by refusing to release
  * a key some current identity of that user still names.
+ *
+ * That check commits before `beginRelease` runs, so a re-link landing in
+ * the gap still loses its claim; closing it needs a compare-and-set on the
+ * directory row — #21.
  */
 export async function identityRemovalRelease(
   event: IdentityRemovedEvent,

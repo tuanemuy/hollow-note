@@ -189,3 +189,29 @@ R4: 新規 10 / 継承 0 / fix 6 / fix-editorial 4 / wont-fix 0 / defer 1（S-W0
 2. **D-W002 の修正範囲** → **最小案**（runner の catch を `backoffOrSchedule` に寄せて完了済み行を復活させる）。「再駆動さえあれば ack はやり直せる」ことが実測で確認済み。あわせて plan.md / progress.md の縮退記述（P-25 再送で復旧＝事実誤り）を訂正する。
 3. **S-W001 を本 PR でやるか** → **JSDoc の過剰主張だけ直して defer**。双方向束縛はポート・memory アダプター・適合スイート・presentation・テストの 5〜8 ファイルに及び、宣言された脅威は現状で成立している。
 4. **F-W001 の対応範囲** → **(c)「（UTC）」の 1 行追記**で収める。相対表記や島化は本 PR の範囲を超える。
+
+## R5
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `identity/completeOAuthSignIn.ts:signInLinkedUser/Identity 行未確認`（Domain B-001） | R5 | fix | **再現済み**。spec 手順 3 の「返った UserId shard で既存 Identity と User を確認する」を落としており、**解除済み OAuth 手段でサインインが通る**（quarantine / receipt の 30 日 TTL 経過で恒久化） | 0 |
+| `identity/linkOAuthIdentity.ts:existingLinkId/コメントの事実誤認`（Domain W-001） | R5 | fix | B-001 と同根で「no successful path can produce」が偽。文言も「別の利用者」と誤誘導する。**裁定 1: 新コード `PROVIDER_ACCOUNT_RELEASE_PENDING` を新設して両方に使う** | 0 |
+| `identity/authResidueCleanup.ts:receipt/UoW 分離`（Domain W-002） | R5 | fix-editorial | **裁定 3**。JSDoc の理由（manifest store がこの UoW に無い）は事実誤りだが、形自体は ADR-069 が明示的に承認済みで、同一 UoW 化しても quarantine 耐性は増えない。**理由の記述のみ訂正** | 0 |
+| `identity/identityRemovalRelease.ts:判定と beginRelease の TOCTOU`（Security W-001） | R5 | defer (#21) | 正しい形は `beginRelease` へのポート契約拡張で、**R4 裁定 1 が本 PR 範囲外と既決**。Node では窓がサブ ms かつ本人自身の再連携が競合する必要があり権限昇格に至らない | 0 |
+| `AddPasswordForm:mismatch/確認欄が空でも送信可`（Frontend W-001） | R5 | fix | `ChangePasswordForm` / `ResetPasswordPanel` は `confirmation !== password` で無効化しており、ここだけ非対称。二重入力チェックが完全に無効 | 0 |
+| `ProfileForm/editor.tsx:表示名の欄内エラー`（Frontend W-002） | R5 | wont-fix | **中核の事実主張が誤り**。`errorDisplay.ts` に `IDENTITY_INVALID_DISPLAY_NAME` は実在する。残るのは `aria-invalid` の欄割り当てのみで P-21 の状態一覧にも AC-20 にも無い | 0 |
+| `DeleteAccountPanel:live region/新規マウント`（Frontend W-003） | R5 | fix | **裁定 2**。最も後戻りできない操作でフォーカスも喪失する。同 PR 内の `ResetPasswordPanel.Result` が手本を持ち 6 行で揃う | 0 |
+| `{updateProfile,completeOAuthSignIn}.test.ts:activate 応答喪失の注入`（Test W-001） | R5 | wont-fix | spec 期待結果（TC-032 / TC-281）は満たしている。`confirm()===null` の release 分岐に対応する TC 行は存在せず AC-8 / AC-18 の要求外 | 0 |
+| `deleteAccount.cleanup.test.ts:TC-identity-086/0 件配置`（Test W-002） | R5 | wont-fix | 0 件 seed は「最終 page が 0 件」の退化形で spec 期待結果は成立。produced-state 版が `scopeTaskRunner.test.ts` にある | 0 |
+| `getUsageSnapshot.test.ts:TC-usage-055/ハードコード`（Test W-003） | R5 | wont-fix | plan.md 縮退が既に「workspace セクションは常に空配列／検証は #3」と宣言済み。自明性はその直接の帰結 | 0 |
+| `vitest.config.ts:TZ 未固定/DOM-usage-004 の自明化`（Test W-004） | R5 | fix | **CI で実際に無効**（`ubuntu-latest` = UTC）。AC-1 の「BillingPeriod（UTC 暦月）」を守る唯一のテストが CI で `getMonth` 実装と区別できない | 0 |
+| `deleteAccount.terminalPrune.test.ts:TC-identity-111/arranged state`（Test W-005） | R5 | wont-fix | spec 期待結果「期限後に completed receipt を回収できる」は満たされている。同一 UoW 保存の produced-state 証明は TC-identity-084 にある | 0 |
+
+R5: 新規 12 / 継承 0 / fix 5 / fix-editorial 1 / wont-fix 5 / defer 1（方針フェーズ: 実施）
+観点別 fix 件数: domain-usecase 2 / adapter 0→休止 / frontend 2 / security 0 / test 1
+
+## 要確認の裁定（メイン・R5）
+
+1. **B-001 / W-001 が返すエラーコード** → **新コード `PROVIDER_ACCOUNT_RELEASE_PENDING` を新設**し、`signInLinkedUser` と `existingLinkId` の両方に使う。既存の `PROVIDER_ACCOUNT_ALREADY_LINKED` の文言は「別の利用者に紐づいています」で、自分が今解除したアカウントについて出ると誤誘導になる（W-001 の実害そのもの）。
+2. **Frontend W-003 を本 PR で入れるか** → **入れる**。AC-28 は読み上げまでは要求していないが、同 PR 内に手本があり 6 行で、最も後戻りできない操作でフォーカスも喪失する。
+3. **Domain W-002 を構造修正まで踏み込むか** → **fix-editorial に留める**。ADR-069 が現行形を明示的に承認済みで、同一 UoW 化しても quarantine 耐性は増えない。

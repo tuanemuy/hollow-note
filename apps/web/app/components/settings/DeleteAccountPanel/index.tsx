@@ -268,6 +268,9 @@ export function DeleteAccountPanel() {
   if (phase.kind !== "idle") {
     return (
       <DeletionProgress
+        // 受理と進行中は同じパネルなので同じ key に畳む。パネルが入れ替わる
+        // ときだけ作り直され、そのときだけ焦点が移る。
+        key={phase.kind === "accepted" ? "running" : phase.kind}
         phase={phase}
         onResume={(ticket) => setPhase({ kind: "accepted", ticket })}
       />
@@ -357,10 +360,38 @@ function DeletionProgress({
   phase: Exclude<Phase, { kind: "idle" }>;
   onResume: (ticket: string) => void;
 }) {
+  const ref = useRef<HTMLElement | null>(null);
+
+  // パネルはフォームごと差し替わるので、live region への挿入だけでは読み
+  // 上げが落ちる支援技術がある。実行という操作の直後なので、焦点もここへ
+  // 移して見出しを確実に読ませる。
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+
+  return (
+    <section
+      ref={ref}
+      tabIndex={-1}
+      aria-busy={phase.kind === "accepted" || phase.kind === "running"}
+      className={`${dangerPanelClass} focus-visible:shadow-none`}
+    >
+      <DeletionProgressBody phase={phase} onResume={onResume} />
+    </section>
+  );
+}
+
+function DeletionProgressBody({
+  phase,
+  onResume,
+}: {
+  phase: Exclude<Phase, { kind: "idle" }>;
+  onResume: (ticket: string) => void;
+}) {
   switch (phase.kind) {
     case "completed":
       return (
-        <section className={dangerPanelClass}>
+        <>
           <h2 className={dangerPanelTitleClass}>アカウントを削除しました</h2>
           <p className={panelNoteClass}>
             プロフィールとログイン方法、アップロード済みファイルを削除しました。ご利用ありがとうございました。まもなくトップページへ移動します。
@@ -368,12 +399,12 @@ function DeletionProgress({
           <button type="button" className={ghostButtonClass} onClick={leave}>
             トップページへ
           </button>
-        </section>
+        </>
       );
     case "settled": {
       const resumeTicket = phase.resumeTicket;
       return (
-        <section className={dangerPanelClass}>
+        <>
           <h2 className={dangerPanelTitleClass}>削除の進捗を表示できません</h2>
           <p className={panelNoteClass}>{phase.message}</p>
           <div className="flex flex-wrap gap-2">
@@ -390,13 +421,13 @@ function DeletionProgress({
               トップページへ
             </button>
           </div>
-        </section>
+        </>
       );
     }
     case "accepted":
     case "running":
       return (
-        <section className={dangerPanelClass} aria-busy="true">
+        <>
           <h2 className={dangerPanelTitleClass}>アカウントを削除しています</h2>
           <Alert role="status" tone="info" title="サインアウトしました">
             削除の処理は続いています。このページを閉じても処理は進みます。
@@ -406,7 +437,7 @@ function DeletionProgress({
               ? "削除の要求を受け付けました。"
               : "データを削除しています。しばらくお待ちください。"}
           </p>
-        </section>
+        </>
       );
   }
 }

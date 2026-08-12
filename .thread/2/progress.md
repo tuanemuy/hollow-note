@@ -251,6 +251,7 @@
 - `spec/testcases/identity/startOAuthFlow.md` の TC-identity-268 が `BusinessRuleError(InvalidProvider)` を期待しているが、未知プロバイダーの実コードは `IdentityErrorCode.InvalidProviderAccount`（`IDENTITY_INVALID_PROVIDER_ACCOUNT`）で、`InvalidProvider` は `spec/domains/identity.md` のエラーコード union にも存在しない — 呼称ずれ（spec 側を直す）。
 - sub-operation ID を `sha256(parent + ":" + kind + ":" + key)` ではなく構成 `${parent}:${kind}:${key}` で導出した（ADR-035）。`removeIdentity` の `operationId` も同様に `"removeIdentity:" + identityId`（ADR-044）。application 層にハッシュ実装を持ち込まないため。
 - `PROVIDER_ACCOUNT_ALREADY_LINKED` の担保箇所を「一意性は `IdentityUniqueDirectory`、応答は usecase（`linkOAuthIdentity` / `completeOAuthSignIn`）」に確定した。`IdentityRepository` の JSDoc はまだこのコードを自分の error contract に列挙しているが、memory アダプターは投げない。
+- `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケース表に `PROVIDER_ACCOUNT_RELEASE_PENDING`（`ConflictError`）の行が無い（ADR-108）。directory の claim は残っているが UserId shard に対応する identity が居ない収束待ちの状態を、`PROVIDER_ACCOUNT_ALREADY_LINKED` と別のコードで名乗る。手順 3 の要求（返った UserId shard で既存 Identity と User を確認する）自体は満たしているので、表側の追記だけ。
 - `TC-storage-043` の「3 文」という性能上の約束を、観測可能な性質（列挙 1 回 / 削除 1 件につきイベント 1 件）に置き換えた（ADR-057）。D1 実装を書くスライスが同じ行を再検証する必要がある。
 
 ### 必須集合・データモデルの差

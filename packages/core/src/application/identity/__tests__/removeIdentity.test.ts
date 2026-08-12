@@ -174,6 +174,60 @@ describe("removeIdentity", () => {
     });
   });
 
+  it("refuses to sign in with the provider account of a removed identity before the release lands", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+    // The claim outlives the identity until the removal event is
+    // consumed, and may outlive it forever if that never happens.
+    expect(directoryRow(h, "google:google-account-1")?.state).toBe("active");
+    const sessionsBefore = h.backend.sessions.values().length;
+
+    const flow = await beginOAuthFlow(h, { intent: "signIn" });
+    await expect(
+      completeOAuthSignIn({
+        container: h.container,
+        input: {
+          state: flow.state,
+          code: devAuthorizationCode(flow, {
+            providerAccountId: "google-account-1",
+          }),
+        },
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        isConflictError(error) &&
+        error.code === "PROVIDER_ACCOUNT_RELEASE_PENDING",
+    );
+    expect(h.backend.sessions.values()).toHaveLength(sessionsBefore);
+  });
+
+  it("tells the owner the claim is being released when re-linking before it lands", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+
+    const relink = await beginOAuthFlow(h, { intent: "linkIdentity", userId });
+    await expect(
+      linkOAuthIdentity({
+        container: h.container,
+        input: {
+          state: relink.state,
+          code: devAuthorizationCode(relink, {
+            providerAccountId: "google-account-1",
+          }),
+        },
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        isConflictError(error) &&
+        error.code === "PROVIDER_ACCOUNT_RELEASE_PENDING",
+    );
+    expect(identitiesOf(h, userId).map((row) => row.kind)).toEqual([
+      "password",
+    ]);
+  });
+
   it("TC-identity-185: a re-sent removal answers from the receipt and releases under the same operation id", async () => {
     const h = createTestHarness();
     const { userId, oauthIdentityId } = await withTwoIdentities(h);

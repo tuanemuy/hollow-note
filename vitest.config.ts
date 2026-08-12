@@ -12,6 +12,10 @@ export default defineConfig({
     globals: true,
     environment: "node",
     exclude: ["**/node_modules/**", "**/dist/**", "**/.direnv/**", "spec/**"],
+    // Pinned to a non-UTC zone on purpose: UTC-only assertions (BillingPeriod's
+    // UTC calendar month) are indistinguishable from local-time implementations
+    // when the runner itself is UTC, which CI is.
+    env: { TZ: "Asia/Tokyo" },
     // scrypt(N=16384) at production cost makes the password cases the slowest
     // in the suite (~300ms against single-digit ms elsewhere), and on a loaded
     // machine running files in parallel they have overrun the 5s default.
