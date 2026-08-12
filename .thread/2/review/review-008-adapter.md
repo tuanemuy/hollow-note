@@ -1,0 +1,344 @@
+### Adapter / Infrastructure
+
+レビュー日: 2026-08-12 / ブランチ `issue/2/account-management-and-auth`（`git status` クリーンを確認のうえ実施。共有作業ツリーの実装は書き換えていない）
+
+実測: `pnpm exec vitest run`（75 files / 917 passed + 3 skipped）、`dist` 済みバンドルに対する `pnpm exec tsx scripts/listen.node.ts` の 2 形態（`.env` の `OAUTH_DEV_MODE=true` のまま → 起動拒否 / `OAUTH_DEV_MODE=false` + Google 資格情報 → 起動成功）。確認後にプロセスは停止済み。
+
+#### Blockers
+
+なし
+
+#### Warnings
+
+- **[W-001]** `ObjectStorage` のポート JSDoc が宣言する error contract が、どのメソッドからも発生しえない / 実在しないコードを名乗っている / 場所: `packages/core/src/application/ports/objectStorage.ts:41-42` / 理由: (1) `NotFoundError("OBJECT_NOT_FOUND")` を契約に挙げているが、`get` のシグネチャは `Promise<ObjectBody | null>` で、適合スイートは「未知の鍵は `null`」を固定している（`packages/core/src/adapters/conformance/objectStorage.ts:60-62`）。`deleteMany` は不在鍵を許容、`put` は生成、`publicUrl` は純関数なので、この例外を投げうるメソッドが 1 つも無い。R2 アダプターを書く担当者が「`get` は不在で throw してよい」と読むと適合スイートに落ちる形で契約が二重化する。(2) `SystemError(ExternalServiceError)` の `ExternalServiceError` は `SystemErrorCode` に存在しない（実 enum は `ExternalApiError` / `EXTERNAL_API_ERROR` — `packages/core/src/application/errors.ts:180-185`）。本 PR は同じ呼称ずれを `domain/identity/ports/signInOAuthClient.ts` では `SystemError(EXTERNAL_API_ERROR)` へ直しているので、新設ポートだけが直す前の書き方に戻っている（`mailSender` / `passwordHasher` 等の既存ポートは #1 由来の同じ表記のまま）。/ 提案: `get` の行を「不在は `null`（例外にしない）」と明記する形に置き換え、`ExternalServiceError` を `EXTERNAL_API_ERROR` に揃える。既存ポートの一括置換は本 Issue の範囲外でよいが、新設分だけは訂正後の表記に合わせたい。
+
+- **[W-002]** `docs/runtime_node.md` の 12MB 上限の記述が chunked 要求では成立しない（実測） / 場所: `docs/runtime_node.md`「Single-process operational constraints」節 / 理由: 「Request bodies are therefore capped at 12 MB …; anything larger is answered `413` **before the app sees it**」と書かれているが、本番形の起動（`dist` バンドル + `scripts/listen.node.ts`）に 13MB の POST を投げた実測は、`Content-Length` 付き → **413**、`Transfer-Encoding: chunked` → **200** だった。`withBodyLimit`（`apps/web/scripts/listen.node.ts:167-194`）は宣言長が無い場合 `TransformStream` で実流量を数えるので、**本文を誰も読まなければ `received` は 0 のまま**で `exceeded()` が偽になり、アプリの応答がそのまま返る。実装としては妥当（読まれない本文はバッファされないので DoS にならず、読まれた場合は 12MB で確実に切れる）で `listen.node.ts` 内のコメントは正確だが、docs の「before the app sees it」は chunked 経路で事実に反し、運用者が前段プロキシの body limit を外す判断材料にされうる。/ 提案: docs 側を「`Content-Length` を宣言する要求は本文を 1 バイトも読まずに 413。宣言の無い chunked 要求は実際に流れた長さで 12MB を超えた時点で打ち切り、その要求の応答を 413 に差し替える」と実装どおりに書き分ける。
+
+#### 確認した論点（指摘なし）
+
+- **ポート契約と実装の整合**: 新設 4 ポート（`ScopeTaskScheduler` / `ScopeTaskQueue` / `AppliedOperationStore` / `DistributedOperationStore` / `IdentityRemovalReceiptStore` / `ObjectStorage`）はいずれも観測可能な結果だけを契約にしている。`ScopeTaskScheduler` の JSDoc は priority / リース不在を縮退として自ら明記しており（plan.md の Adapter W-007 → #19 と一致）、`DistributedOperationStore.markState` が遷移を拘束しないことも progress.md の #7 引き継ぎと一致する。
+- **適合テストの実効性**: 9 スイートが `conformance.test.ts` へ 1 行ずつ登録済み。`ConformanceBackendOptions.requiredCleanupComponents` / `requiredFinalizeReceipts` は enum の**真部分集合**を渡す形になっており（`conformance/accountDeletionManifestStore.ts` は `jobHistory` を「宣言されていない receipt」として ack しても `allRequiredAcknowledged` が偽のままであることを固定）、全 enum をハードコードしたバックエンドは落ちる。skip はスイート全体で 3 件のみ、いずれも Google `exchangeCode`（資格情報なし）で、skip 側の `mintCode` は呼ばれたら throw するガード付き。認可要求の 2 ケース（S256 導出 / URL 構築）は Google 側でも実行される（AC-6 / ADR-064 どおり）。
+- **エラー翻訳**: Google アダプターは 4xx → `ValidationError("OAUTH_CODE_INVALID")`、transport / 5xx / 不正応答 / timeout → `SystemError(EXTERNAL_API_ERROR)` に翻訳し、`googleSignInOAuthClient.test.ts` の 11 本が全分岐を押さえている。認可コードが単回使用であることを理由に retry しない判断も JSDoc に根拠つきで残っている。
+- **OAuth**: `id_token` は `iss` / `aud`（配列 aud 含む）/ `exp` / `sub` / `email` を検証し、署名検証を省く根拠（OIDC Core §3.1.3.7、TLS 直取得）を明示。PKCE は両アダプター共通の `deriveCodeChallengeS256` で S256 固定、認可 URL に `code_challenge_method=S256`。dev IdP は起動時 env スキーマ（`NODE_ENV=development` の allowlist）＋ `RequestContainer.oauthDevMode` の 2 段で塞がれ、同意ルートの loader と `submitDevConsentFn` の両方がフラグを見る。**実測**: `.env` に `OAUTH_DEV_MODE=true` を残したまま本番形で起動すると ZodError で拒否、Google 資格情報で起動した本番形では `/` が 200 で `/dev/oauth/authorize` が 404。
+- **DI / composition root**: `initNodeRuntime` は未初期化読み取りと別 env での再初期化を throw し、同一 env の再入だけ singleton を保つ（`di/__tests__/serverNode.test.ts` が 3 ケースで固定）。`MemoryRuntimeOptions.oauth` に既定が無く、`createTestHarness` も `{ mode: "dev" }` を明示する。ポート搭載漏れは見当たらず、AC-31 が挙げる既存 5 ポートはすべて `RequestContainer` / `WorkerContainer` / UoW コンテキストに載っている。
+- **ワーカーランタイム**: relay / scope task はどちらも `createInProcessRelayTrigger` で直列化（in-flight 1 本 + kick の畳み込み）。`start()` は relay・scope task・prune の 3 つを即時 1 巡させ、タイマーは `unref()`、`stop()` はタイマー解除・signal リスナー撤去・trigger drain・`pendingSweeps` の待機まで行う。dev 再ロードの多重起動は `globalThis` / `import.meta.hot.data` の boot slot で retire→start に直列化され、runner.test.ts の 4 本が prune 初回・二重 start 無視・停止後の停止・リスナー非累積を固定する。**実測**: 起動直後に `[outbox] pruned 0 processed event(s)` が 1 行出ることを本番形で確認。継続タスクは claim（scope トランザクション内）→ 実行（別トランザクション）→ complete / schedule / backoffOrSchedule で、handler が throw した行はランナーが backoff し `SCOPE_TASK_MAX_ATTEMPTS` で `failed` に落ちる（無限ループ耐性を `scopeTaskRunner.test.ts` が固定）。barrier を閉じたターンの scope→global 引き渡しは専用行を先に積んでから実行する形（ADR-106）で、引き渡し喪失からの再駆動もテスト済み。prune tick は 3 sweep を相互隔離。
+- **決定的 EventId と outbox id 衝突**: `mintEventIdFor` は `continuationKey` がある draft だけ id を導出し、`OutboxRepository.save` は既存 id をスキップする契約を JSDoc に明文化したうえで適合スイート 3 本（行を増やさない / attempts と再試行予定を保つ / processed 済みを線に戻さない）が固定している。継続 key は `type:operationId:phase:cursor` で、build / redaction / compact は keyset または連番でターンごとに変わり、finalize は 3 つの発火元がそれぞれ自分の名前を cursor に入れるので互いに潰し合わない。
+- **memory 依存の移植性**: 適合スイートはメモリ固有の性質に依存していない（`TestClock` / `forScope` はバックエンド契約の一部）。ミューテックス直列化と scope commit kick の 2 本だけがバックエンド固有テストとして `adapters/memory/__tests__/unitOfWork.test.ts` に隔離され、その旨がコメントで明示されている。
+- **不要な記述**: コード / コメントにレビュー経緯・弁明・スレッド固有 ADR 番号の残留は見つからなかった（`spec/adr/*` への参照へ正規化済み）。
+
+#### カバレッジ
+
+**確認 100 件 + スキップ 199 件 = 299 件**（変更ファイル一覧の全量と一致）。
+
+- 確認 (100 件):
+- `.thread/2/plan.md`
+- `.thread/2/progress.md`
+- `apps/web/.env.example`
+- `apps/web/app/components/dev/DevConsentForm/index.tsx`
+- `apps/web/app/presentation/__tests__/devOAuth.test.ts`
+- `apps/web/app/presentation/devOAuth.ts`
+- `apps/web/app/routes/dev/-action.tsx`
+- `apps/web/app/routes/dev/oauth/authorize.tsx`
+- `apps/web/app/routes/storage.$.tsx`
+- `apps/web/app/server.node.ts`
+- `apps/web/app/worker/node/__tests__/runner.test.ts`
+- `apps/web/app/worker/node/runner.ts`
+- `apps/web/scripts/listen.node.ts`
+- `docs/runtime_node.md`
+- `docs/test.md`
+- `packages/core/src/adapters/conformance/accountDeletionManifestStore.ts`
+- `packages/core/src/adapters/conformance/appliedOperationStore.ts`
+- `packages/core/src/adapters/conformance/authTokenRepository.ts`
+- `packages/core/src/adapters/conformance/backend.ts`
+- `packages/core/src/adapters/conformance/distributedOperationStore.ts`
+- `packages/core/src/adapters/conformance/identityRemovalReceiptStore.ts`
+- `packages/core/src/adapters/conformance/identityUniqueDirectory.ts`
+- `packages/core/src/adapters/conformance/llmUsageRepository.ts`
+- `packages/core/src/adapters/conformance/noteProjection.ts`
+- `packages/core/src/adapters/conformance/objectStorage.ts`
+- `packages/core/src/adapters/conformance/outboxRepository.ts`
+- `packages/core/src/adapters/conformance/scopeCleanupAdmissionStore.ts`
+- `packages/core/src/adapters/conformance/scopeTaskScheduler.ts`
+- `packages/core/src/adapters/conformance/signInOAuthClient.ts`
+- `packages/core/src/adapters/conformance/storageQuotaRepository.ts`
+- `packages/core/src/adapters/conformance/storedFileRepository.ts`
+- `packages/core/src/adapters/memory/__tests__/conformance.test.ts`
+- `packages/core/src/adapters/memory/__tests__/conformanceBackend.ts`
+- `packages/core/src/adapters/memory/__tests__/unitOfWork.test.ts`
+- `packages/core/src/adapters/memory/globalUnitOfWork.ts`
+- `packages/core/src/adapters/memory/objectStorage.ts`
+- `packages/core/src/adapters/memory/repositories/accountDeletionManifestStore.ts`
+- `packages/core/src/adapters/memory/repositories/appliedOperationStore.ts`
+- `packages/core/src/adapters/memory/repositories/authTokenRepository.ts`
+- `packages/core/src/adapters/memory/repositories/distributedOperationStore.ts`
+- `packages/core/src/adapters/memory/repositories/identityRemovalReceiptStore.ts`
+- `packages/core/src/adapters/memory/repositories/identityUniqueDirectory.ts`
+- `packages/core/src/adapters/memory/repositories/llmUsageRepository.ts`
+- `packages/core/src/adapters/memory/repositories/noteProjection.ts`
+- `packages/core/src/adapters/memory/repositories/outboxRepository.ts`
+- `packages/core/src/adapters/memory/repositories/scopeCleanupAdmissionStore.ts`
+- `packages/core/src/adapters/memory/repositories/scopeTaskScheduler.ts`
+- `packages/core/src/adapters/memory/repositories/storageQuotaRepository.ts`
+- `packages/core/src/adapters/memory/repositories/storedFileRepository.ts`
+- `packages/core/src/adapters/memory/scopeTaskQueue.ts`
+- `packages/core/src/adapters/memory/scopeUnitOfWork.ts`
+- `packages/core/src/adapters/memory/store.ts`
+- `packages/core/src/adapters/oauth/__tests__/conformance.test.ts`
+- `packages/core/src/adapters/oauth/__tests__/googleSignInOAuthClient.test.ts`
+- `packages/core/src/adapters/oauth/devSignInOAuthClient.ts`
+- `packages/core/src/adapters/oauth/googleSignInOAuthClient.ts`
+- `packages/core/src/adapters/oauth/pkce.ts`
+- `packages/core/src/adapters/oauth/signInOAuthClient.ts`
+- `packages/core/src/application/__tests__/helpers.ts`
+- `packages/core/src/application/cleanup/participants.ts`
+- `packages/core/src/application/cleanup/personalCleanup.ts`
+- `packages/core/src/application/di/__tests__/serverNode.test.ts`
+- `packages/core/src/application/di/memoryRuntime.ts`
+- `packages/core/src/application/di/serverNode.ts`
+- `packages/core/src/application/di/types.ts`
+- `packages/core/src/application/execution/__tests__/eventId.test.ts`
+- `packages/core/src/application/execution/eventId.ts`
+- `packages/core/src/application/execution/unitOfWork.ts`
+- `packages/core/src/application/identity/continuations.ts`
+- `packages/core/src/application/identity/deleteAccount/compaction.ts`
+- `packages/core/src/application/identity/deleteAccount/finalize.ts`
+- `packages/core/src/application/identity/deleteAccount/manifestBuild.ts`
+- `packages/core/src/application/ports/accountDeletionManifestStore.ts`
+- `packages/core/src/application/ports/appliedOperationStore.ts`
+- `packages/core/src/application/ports/distributedOperationStore.ts`
+- `packages/core/src/application/ports/identityRemovalReceiptStore.ts`
+- `packages/core/src/application/ports/objectStorage.ts`
+- `packages/core/src/application/ports/outboxRepository.ts`
+- `packages/core/src/application/ports/scopeCleanupAdmissionStore.ts`
+- `packages/core/src/application/ports/scopeTaskQueue.ts`
+- `packages/core/src/application/ports/scopeTaskScheduler.ts`
+- `packages/core/src/application/ports/scopeTaskTrigger.ts`
+- `packages/core/src/application/workers/__tests__/outboxPrune.test.ts`
+- `packages/core/src/application/workers/__tests__/scopeTaskRunner.test.ts`
+- `packages/core/src/application/workers/__tests__/subscribers.test.ts`
+- `packages/core/src/application/workers/eventRelayWorker.ts`
+- `packages/core/src/application/workers/scopeTaskRunner.ts`
+- `packages/core/src/application/workers/subscribers.ts`
+- `packages/core/src/domain/common/event.ts`
+- `packages/core/src/domain/identity/ports/authTokenRepository.ts`
+- `packages/core/src/domain/identity/ports/identityUniqueDirectory.ts`
+- `packages/core/src/domain/identity/ports/signInOAuthClient.ts`
+- `packages/core/src/domain/note/ports/htmlProcessor.ts`
+- `packages/core/src/domain/note/ports/localNoteProjectionWriter.ts`
+- `packages/core/src/domain/note/ports/localNoteQueryService.ts`
+- `packages/core/src/domain/note/ports/publicNoteProjectionWriter.ts`
+- `packages/core/src/domain/storage/ports/storedFileRepository.ts`
+- `packages/core/src/domain/usage/ports/llmUsageRepository.ts`
+- `packages/core/src/domain/usage/ports/storageQuotaRepository.ts`
+- `vitest.config.ts`
+
+- スキップ (199 件、観点別にまとめて理由を記す):
+- **過去レビュー記録 (37 件)** — 本レビューはゼロベース指示によりレビューファイルを読まない
+  - `.thread/2/review/review-001-adapter.md`
+  - `.thread/2/review/review-001-domain-usecase.md`
+  - `.thread/2/review/review-001-frontend.md`
+  - `.thread/2/review/review-001-security.md`
+  - `.thread/2/review/review-001-test.md`
+  - `.thread/2/review/review-001.md`
+  - `.thread/2/review/review-002-adapter.md`
+  - `.thread/2/review/review-002-domain-usecase.md`
+  - `.thread/2/review/review-002-frontend.md`
+  - `.thread/2/review/review-002-security.md`
+  - `.thread/2/review/review-002-test.md`
+  - `.thread/2/review/review-003-adapter.md`
+  - `.thread/2/review/review-003-domain-usecase.md`
+  - `.thread/2/review/review-003-frontend.md`
+  - `.thread/2/review/review-003-security.md`
+  - `.thread/2/review/review-003-test.md`
+  - `.thread/2/review/review-004-adapter.md`
+  - `.thread/2/review/review-004-domain-usecase.md`
+  - `.thread/2/review/review-004-frontend.md`
+  - `.thread/2/review/review-004-security.md`
+  - `.thread/2/review/review-004-test.md`
+  - `.thread/2/review/review-005-adapter.md`
+  - `.thread/2/review/review-005-domain-usecase.md`
+  - `.thread/2/review/review-005-frontend.md`
+  - `.thread/2/review/review-005-security.md`
+  - `.thread/2/review/review-005-test.md`
+  - `.thread/2/review/review-006-adapter.md`
+  - `.thread/2/review/review-006-domain-usecase.md`
+  - `.thread/2/review/review-006-frontend.md`
+  - `.thread/2/review/review-006-security.md`
+  - `.thread/2/review/review-006-test.md`
+  - `.thread/2/review/review-007-adapter.md`
+  - `.thread/2/review/review-007-domain-usecase.md`
+  - `.thread/2/review/review-007-frontend.md`
+  - `.thread/2/review/review-007-security.md`
+  - `.thread/2/review/review-007-test.md`
+  - `.thread/2/review/triage.md`
+- **スレッド文書 (3 件)** — `adr.md` は決着済み事実として ADR 番号の参照にとどめ全文精読はしていない。`steps.md` / `testing.md` は実装計画・手順書で本観点の判断材料にならない
+  - `.thread/2/adr.md`
+  - `.thread/2/steps.md`
+  - `.thread/2/testing.md`
+- **Identity ユースケーステスト (31 件)** — テスト観点の担当。適合テスト（`adapters/conformance/`）の実効性は本観点で確認済み
+  - `packages/core/src/application/identity/__tests__/addPasswordIdentity.test.ts`
+  - `packages/core/src/application/identity/__tests__/authFlowHelpers.ts`
+  - `packages/core/src/application/identity/__tests__/authResidueCleanup.test.ts`
+  - `packages/core/src/application/identity/__tests__/changePassword.test.ts`
+  - `packages/core/src/application/identity/__tests__/checkHandleAvailability.test.ts`
+  - `packages/core/src/application/identity/__tests__/completeOAuthCallback.test.ts`
+  - `packages/core/src/application/identity/__tests__/completeOAuthSignIn.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.admission.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.cleanup.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.finalize.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.globalCleanup.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.manifestBuild.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.recovery.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.redaction.test.ts`
+  - `packages/core/src/application/identity/__tests__/deleteAccount.terminalPrune.test.ts`
+  - `packages/core/src/application/identity/__tests__/deletionDriver.ts`
+  - `packages/core/src/application/identity/__tests__/deletionHarness.ts`
+  - `packages/core/src/application/identity/__tests__/getAccountDeletionStatus.test.ts`
+  - `packages/core/src/application/identity/__tests__/getProfile.test.ts`
+  - `packages/core/src/application/identity/__tests__/linkOAuthIdentity.test.ts`
+  - `packages/core/src/application/identity/__tests__/listIdentities.test.ts`
+  - `packages/core/src/application/identity/__tests__/pruneExpiredAuthState.test.ts`
+  - `packages/core/src/application/identity/__tests__/removeIdentity.test.ts`
+  - `packages/core/src/application/identity/__tests__/requestPasswordReset.test.ts`
+  - `packages/core/src/application/identity/__tests__/resendVerificationEmail.test.ts`
+  - `packages/core/src/application/identity/__tests__/resetPassword.test.ts`
+  - `packages/core/src/application/identity/__tests__/signOut.test.ts`
+  - `packages/core/src/application/identity/__tests__/signOutOtherSessions.test.ts`
+  - `packages/core/src/application/identity/__tests__/startOAuthFlow.test.ts`
+  - `packages/core/src/application/identity/__tests__/updateProfile.test.ts`
+  - `packages/core/src/application/identity/__tests__/verifyEmail.test.ts`
+- **Identity ユースケース実装 (30 件)** — domain-usecase 観点の担当。ただし決定的 EventId / outbox id 衝突の検証に必要な `continuations.ts` / `deleteAccount/{manifestBuild,finalize,compaction}.ts` は確認側に含めた
+  - `packages/core/src/application/identity/addPasswordIdentity.ts`
+  - `packages/core/src/application/identity/authResidueCleanup.ts`
+  - `packages/core/src/application/identity/changePassword.ts`
+  - `packages/core/src/application/identity/checkHandleAvailability.ts`
+  - `packages/core/src/application/identity/completeOAuthCallback.ts`
+  - `packages/core/src/application/identity/completeOAuthSignIn.ts`
+  - `packages/core/src/application/identity/deleteAccount/admission.ts`
+  - `packages/core/src/application/identity/deleteAccount/authorRedaction.ts`
+  - `packages/core/src/application/identity/deleteAccount/cleanupDispatch.ts`
+  - `packages/core/src/application/identity/deleteAccount/globalCleanup.ts`
+  - `packages/core/src/application/identity/deleteAccount/index.ts`
+  - `packages/core/src/application/identity/deleteAccount/input.ts`
+  - `packages/core/src/application/identity/deleteAccount/terminalPrune.ts`
+  - `packages/core/src/application/identity/eventDecoders.ts`
+  - `packages/core/src/application/identity/getAccountDeletionStatus.ts`
+  - `packages/core/src/application/identity/getProfile.ts`
+  - `packages/core/src/application/identity/identityRemovalRelease.ts`
+  - `packages/core/src/application/identity/linkOAuthIdentity.ts`
+  - `packages/core/src/application/identity/listIdentities.ts`
+  - `packages/core/src/application/identity/pruneExpiredAuthState.ts`
+  - `packages/core/src/application/identity/removeIdentity.ts`
+  - `packages/core/src/application/identity/requestPasswordReset.ts`
+  - `packages/core/src/application/identity/resendVerificationEmail.ts`
+  - `packages/core/src/application/identity/resetPassword.ts`
+  - `packages/core/src/application/identity/signOut.ts`
+  - `packages/core/src/application/identity/signOutOtherSessions.ts`
+  - `packages/core/src/application/identity/startOAuthFlow.ts`
+  - `packages/core/src/application/identity/uniqueness.ts`
+  - `packages/core/src/application/identity/updateProfile.ts`
+  - `packages/core/src/application/identity/view.ts`
+- **Storage / Usage / Note ユースケースとそのテスト (17 件)** — domain-usecase 観点の担当。scope タスクからの呼び出し口は `workers/scopeTaskRunner.ts` 側で確認済み
+  - `packages/core/src/application/note/__tests__/createBlankNote.test.ts`
+  - `packages/core/src/application/storage/__tests__/deleteFiles.test.ts`
+  - `packages/core/src/application/storage/__tests__/deleteFilesByOwner.test.ts`
+  - `packages/core/src/application/storage/__tests__/storeAvatar.test.ts`
+  - `packages/core/src/application/storage/deleteFiles.ts`
+  - `packages/core/src/application/storage/deleteFilesByOwner.ts`
+  - `packages/core/src/application/storage/deleteStoredObjects.ts`
+  - `packages/core/src/application/storage/eventDecoders.ts`
+  - `packages/core/src/application/storage/storeAvatar.ts`
+  - `packages/core/src/application/storage/view.ts`
+  - `packages/core/src/application/usage/__tests__/deleteQuota.test.ts`
+  - `packages/core/src/application/usage/__tests__/getUsageSnapshot.test.ts`
+  - `packages/core/src/application/usage/__tests__/recalculateStorageUsage.test.ts`
+  - `packages/core/src/application/usage/deleteQuota.ts`
+  - `packages/core/src/application/usage/getUsageSnapshot.ts`
+  - `packages/core/src/application/usage/recalculateStorageUsage.ts`
+  - `packages/core/src/application/usage/view.ts`
+- **ドメイン層（ポートを除く）(22 件)** — domain-usecase 観点の担当。`domain/**/ports/**` と `domain/common/event.ts` は確認側に含めた
+  - `packages/core/src/domain/identity/__tests__/policies.test.ts`
+  - `packages/core/src/domain/identity/errorCode.ts`
+  - `packages/core/src/domain/identity/services/accountDeletionRetryPolicy.ts`
+  - `packages/core/src/domain/identity/services/identityPolicy.ts`
+  - `packages/core/src/domain/identity/services/sameOriginPolicy.ts`
+  - `packages/core/src/domain/identity/user.ts`
+  - `packages/core/src/domain/identity/valueObject.ts`
+  - `packages/core/src/domain/note/valueObject.ts`
+  - `packages/core/src/domain/storage/__tests__/storage.test.ts`
+  - `packages/core/src/domain/storage/errorCode.ts`
+  - `packages/core/src/domain/storage/events.ts`
+  - `packages/core/src/domain/storage/services/uploadValidationPolicy.ts`
+  - `packages/core/src/domain/storage/storedFile.ts`
+  - `packages/core/src/domain/storage/valueObject.ts`
+  - `packages/core/src/domain/usage/__tests__/quota.test.ts`
+  - `packages/core/src/domain/usage/__tests__/valueObject.test.ts`
+  - `packages/core/src/domain/usage/errorCode.ts`
+  - `packages/core/src/domain/usage/events.ts`
+  - `packages/core/src/domain/usage/llmUsage.ts`
+  - `packages/core/src/domain/usage/services/quotaEnforcement.ts`
+  - `packages/core/src/domain/usage/storageQuota.ts`
+  - `packages/core/src/domain/usage/valueObject.ts`
+- **UI コンポーネント (36 件)** — frontend 観点の担当。dev IdP 同意画面 `components/dev/DevConsentForm` のみ確認側に含めた
+  - `apps/web/app/components/auth/OAuthButton/index.tsx`
+  - `apps/web/app/components/auth/OAuthCallbackPanel/index.tsx`
+  - `apps/web/app/components/auth/PasswordStrengthMeter/index.tsx`
+  - `apps/web/app/components/auth/ResendVerificationForm/action.ts`
+  - `apps/web/app/components/auth/ResendVerificationForm/index.tsx`
+  - `apps/web/app/components/auth/ResetPasswordPanel/action.ts`
+  - `apps/web/app/components/auth/ResetPasswordPanel/index.tsx`
+  - `apps/web/app/components/auth/SignInForm/action.ts`
+  - `apps/web/app/components/auth/SignInForm/index.tsx`
+  - `apps/web/app/components/auth/SignUpForm/action.ts`
+  - `apps/web/app/components/auth/SignUpForm/index.tsx`
+  - `apps/web/app/components/auth/VerifyEmailPanel/action.ts`
+  - `apps/web/app/components/auth/VerifyEmailPanel/index.tsx`
+  - `apps/web/app/components/auth/__tests__/passwordStrength.test.ts`
+  - `apps/web/app/components/auth/passwordStrength.ts`
+  - `apps/web/app/components/auth/schema.ts`
+  - `apps/web/app/components/layout/AccountMenu/action.ts`
+  - `apps/web/app/components/layout/AccountMenu/index.tsx`
+  - `apps/web/app/components/layout/AppShell/index.tsx`
+  - `apps/web/app/components/layout/SettingsTabs/index.tsx`
+  - `apps/web/app/components/note/NoteBody/index.tsx`
+  - `apps/web/app/components/settings/AddPasswordForm/index.tsx`
+  - `apps/web/app/components/settings/ChangePasswordForm/index.tsx`
+  - `apps/web/app/components/settings/DeleteAccountPanel/index.tsx`
+  - `apps/web/app/components/settings/IdentityList/action.ts`
+  - `apps/web/app/components/settings/IdentityList/board.tsx`
+  - `apps/web/app/components/settings/IdentityList/index.tsx`
+  - `apps/web/app/components/settings/IdentityListSkeleton/index.tsx`
+  - `apps/web/app/components/settings/ProfileForm/action.ts`
+  - `apps/web/app/components/settings/ProfileForm/editor.tsx`
+  - `apps/web/app/components/settings/ProfileForm/index.tsx`
+  - `apps/web/app/components/settings/ProfileFormSkeleton/index.tsx`
+  - `apps/web/app/components/settings/UsagePanel/action.ts`
+  - `apps/web/app/components/settings/UsagePanel/index.tsx`
+  - `apps/web/app/components/settings/UsagePanelSkeleton/index.tsx`
+  - `apps/web/app/components/settings/panelStyles.ts`
+- **ルート (13 件)** — frontend 観点の担当。`routes/dev/**` と `routes/storage.$.tsx`（ObjectStorage 配信口）のみ確認側に含めた
+  - `apps/web/app/routes/__root.tsx`
+  - `apps/web/app/routes/auth/-action.tsx`
+  - `apps/web/app/routes/auth/callback.$provider.tsx`
+  - `apps/web/app/routes/notes/index.tsx`
+  - `apps/web/app/routes/reset-password.tsx`
+  - `apps/web/app/routes/settings/-action.tsx`
+  - `apps/web/app/routes/settings/auth.tsx`
+  - `apps/web/app/routes/settings/danger.tsx`
+  - `apps/web/app/routes/settings/index.tsx`
+  - `apps/web/app/routes/settings/profile.tsx`
+  - `apps/web/app/routes/settings/route.tsx`
+  - `apps/web/app/routes/settings/usage.tsx`
+  - `apps/web/app/routes/verify-email.tsx`
+- **presentation ユーティリティとそのテスト (9 件)** — security / frontend 観点の担当（OAuth state 束縛 Cookie・削除 ticket 署名は plan.md 縮退および #20 で決着済み）。dev IdP 配線の `devOAuth.ts` とそのテストのみ確認側に含めた
+  - `apps/web/app/presentation/__tests__/deletionTicket.test.ts`
+  - `apps/web/app/presentation/__tests__/oauthStateBinding.test.ts`
+  - `apps/web/app/presentation/__tests__/oauthStateBindingWiring.test.ts`
+  - `apps/web/app/presentation/deletionTicket.ts`
+  - `apps/web/app/presentation/errorDisplay.ts`
+  - `apps/web/app/presentation/oauthStateBinding.ts`
+  - `apps/web/app/presentation/oauthStateCookie.ts`
+  - `apps/web/app/presentation/session.ts`
+  - `apps/web/app/presentation/verificationSession.ts`
+- **生成ファイル (1 件)** — `routeTree.gen.ts` は TanStack Router の自動生成物
+  - `apps/web/app/routeTree.gen.ts`

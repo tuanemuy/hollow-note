@@ -276,3 +276,31 @@ R7: 新規 7 / 継承 2 / fix 5 / fix-editorial 2 / wont-fix 2 / defer 0（方�
 
 1. **Test 観点の閾値を固定する**: ゼロベース + 変異可能点探索は原理的に毎ラウンド新しい「判別性の穴」を生むので、**「AC が名指す TC の spec 期待結果を空振りさせているか」**を Blocker / Warning の閾値とし、それ以外（適合スイートの網羅性の一般的な強化、memory では到達不能な分岐の検証）は #11 / #19 へ送る。
 2. **決着済み事項を事実として参照可にする**: 「`.thread/2/progress.md` と `.thread/2/adr.md` の縮退・spec-sync 候補・Accepted 判断は事実として参照してよい（ゼロベースの対象外）」をレビュアー指示に加える。R7 の 9 件のうち 2 件が決着済み事項の再指摘だった。
+
+## R8
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `deleteAccount.finalize.test.ts:TC-identity-102,103/compact 継続の未表明`（Test B-001） | R8 | fix | **裁定 1: 重大度は Warning 相当**。production の連鎖は健全（購読者・デコーダー・決定的 continuationKey を確認、101 件超も完走する）。空振りなのはテストの判別性だけ | 0 |
+| `completeOAuthSignIn.test.ts:activate 応答喪失の注入`（Test W-001） | R5 | wont-fix | **Key 完全一致で R5 の判定を継承**。spec 期待結果（TC-032）は満たしており、`confirm()===null` の release 分岐に対応する TC 行が存在しない | 1 |
+| `presentation/{session,oauthStateCookie}.ts:Secure/NODE_ENV denylist`（Security W-001） | R8 | fix（挙動同値） | **裁定 2**。**攻撃シナリオは不成立** — 成果物は `isProduction = () => true` に畳み込まれる（`dist/server/rsc/assets/session-*.js` で確認）。ただし denylist 表記が繰り返し誤読を生むので allowlist へ反転し、畳み込みの why を 1 行足して根を絶つ | 0 |
+| `server.node.ts:SECURITY_HEADERS/HSTS 追加`（Security W-001b） | R8 | wont-fix | 上記の前提が崩れた時点で緩和の必要が消える。HSTS は TLS 終端側の運用事項で AC 外 | 0 |
+| `routes/auth/callback.$provider.tsx:loader/無条件 abandon`（Security W-002） | R8 | fix | **裁定 3: 入れる**。ADR-099 自身が「照合に失敗したら捨てない」と書いた原則から非消費経路だけが外れている。影響は可用性のみだが修正は小さい | 0 |
+| `ports/objectStorage.ts:error contract/producible でない・存在しないコード名`（Adapter W-001） | R8 | fix-editorial | `ExternalServiceError` は `SystemErrorCode` に無く、`get` は不在で `null` を返す契約。JSDoc 2 行 | 0 |
+| `docs/runtime_node.md:12MB/chunked で偽`（Adapter W-002） | R8 | fix-editorial | 実装は妥当で docs の断定だけが誤り。運用者が前段の body limit を外す判断材料になる | 0 |
+| `IdentityList/board.tsx:解除の二段確認/フォーカス喪失`（Frontend W-001） | R8 | fix | **裁定 4: 焦点移動のみ**。確認 UI 出現でフォーカスが `document.body` に落ちるのは実在で、同 PR 内に手本がある。**`<dialog>` 化と spec/design §3.10 の割り当て見直しは wont-fix**（P-22 と P-24 の両方を作り直す規模） | 0 |
+| `DeleteAccountPanel/index.tsx:sessionStorage/受理後の順序`（Frontend W-002） | R8 | fix | 受理済み（取り消し不能）の削除が保存失敗で「失敗」表示に倒れ、AC-28 の進捗表示そのものが壊れる | 0 |
+
+R8: 新規 8 / 継承 1 / fix 5 / fix-editorial 2 / wont-fix 2 / defer 0（方針フェーズ: 実施）
+
+## 要確認の裁定（メイン・R8）
+
+1. **Test B-001 の重大度** → **Warning 相当（テストの判別性）として記録**。production の連鎖は健全であることが反証済み（購読者 `identity.accountDeletionManifestCompactContinued` の登録・デコーダー・turn ごとに変わる continuationKey を確認）。
+2. **Security W-001 に手を入れるか** → **挙動同値の意味修正として入れる**。攻撃は不成立（Vite が `process.env.NODE_ENV` を畳み込むので `pnpm start` が読む成果物では `Secure` が必ず付く）が、denylist 表記が 5 周連続で誤読を生んでおり R9 での再指摘確率が高い。allowlist へ反転 + 畳み込みの why 1 行で恒久的に閉じる。**HSTS 追加は wont-fix**。
+3. **Security W-002 を本 PR で入れるか** → **入れる**。影響は可用性のみで AC 外だが、ADR-099 が自ら書いた原則の穴で修正は 3 ファイル + 既存テストハーネスの流用に収まる。
+4. **Frontend W-001 の範囲** → **焦点移動のみ**。`<dialog>` 化と `spec/design/index.md#3.10` の割り当て見直し（削除確認＝ダイアログ / パスワード追加＝インライン）は P-22 と P-24 の両方を作り直す規模なので wont-fix。
+
+## 次ラウンド（R9）のレビュー指示への反映
+
+1. **決着済み Key を明示列挙する**: `session.ts` / `oauthStateCookie.ts` の `Secure`（**production バンドルで畳み込み済み**）、`uploadAvatarFn` の CSRF（`start.ts`）、`/settings/danger` の未認証フォーム（ADR-062 / ADR-085）、`activate` 応答喪失の注入（R5 / R8 で決着）、`TC-identity-268` の spec-sync 記録（progress.md 済み）。
+2. **「配備時の挙動を主張するときは `apps/web/dist` の成果物で確認する」を Security / Adapter 観点の必須手順にする**。Vite が `process.env.NODE_ENV` を畳み込むため、ソースだけを見た分類は誤る（R8 の Security W-001 がまさにそれ）。

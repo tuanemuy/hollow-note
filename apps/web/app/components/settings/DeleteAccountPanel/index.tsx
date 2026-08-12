@@ -64,8 +64,34 @@ type Phase =
  */
 type StoredTicket = Readonly<{ ticket: string; userId: string | null }>;
 
+/**
+ * 退避は best-effort。サイトデータを遮断した設定では `sessionStorage` への
+ * アクセス自体が投げるが、受理そのものはこのタブの `phase` で追えるので、
+ * 保持の失敗を削除の失敗として見せない（追えなくなるのはリロード後だけ）。
+ */
+const persistTicket = (stored: StoredTicket): void => {
+  try {
+    sessionStorage.setItem(TICKET_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // 退避できなくても、このタブのメモリで進捗を追える。
+  }
+};
+
+const forgetTicket = (): void => {
+  try {
+    sessionStorage.removeItem(TICKET_STORAGE_KEY);
+  } catch {
+    // 同上。捨てられなくても復元側が主体と ticket の妥当性を見る。
+  }
+};
+
 const readStoredTicket = (): StoredTicket | null => {
-  const raw = sessionStorage.getItem(TICKET_STORAGE_KEY);
+  let raw: string | null;
+  try {
+    raw = sessionStorage.getItem(TICKET_STORAGE_KEY);
+  } catch {
+    return null;
+  }
   if (raw === null) {
     return null;
   }
@@ -160,16 +186,11 @@ export function DeleteAccountPanel() {
             requestId: requestIdRef.current,
           },
         });
-        // リロードから復帰できるように退避する。ticket は Cookie では
-        // なく応答 body で来るので、保持はクライアントの責任。
-        sessionStorage.setItem(
-          TICKET_STORAGE_KEY,
-          JSON.stringify({
-            ticket,
-            userId: currentUserId,
-          } satisfies StoredTicket),
-        );
+        // 受理は取り消せないので、画面の進行を先に確定させる。ticket の
+        // 退避（リロードからの復帰用。Cookie ではなく応答 body で来るので
+        // 保持はクライアントの責任）はそのあとの best-effort。
         setPhase({ kind: "accepted", ticket });
+        persistTicket({ ticket, userId: currentUserId });
       } catch (error) {
         return { error: submitError(error) };
       }
@@ -203,7 +224,7 @@ export function DeleteAccountPanel() {
 
     /** 終端に達した ticket は用済みなので捨てる。 */
     const settle = (next: Phase): void => {
-      sessionStorage.removeItem(TICKET_STORAGE_KEY);
+      forgetTicket();
       setPhase(next);
     };
 

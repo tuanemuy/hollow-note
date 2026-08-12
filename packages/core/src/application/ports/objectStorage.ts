@@ -38,8 +38,10 @@ export type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
  * adapter with its public domain. Use it only for objects that really
  * are public — today, avatars.
  *
- * Error contract: `SystemError(ExternalServiceError)`,
- * `NotFoundError("OBJECT_NOT_FOUND")`.
+ * Absence is not an error: `get` answers `null` for an unknown key and
+ * `deleteMany` tolerates keys that are already gone.
+ *
+ * Error contract: `SystemError(EXTERNAL_API_ERROR)`.
  */
 export interface ObjectStorage {
   put(key: ObjectKey, body: Uint8Array, meta: ObjectMeta): Promise<PutResult>;

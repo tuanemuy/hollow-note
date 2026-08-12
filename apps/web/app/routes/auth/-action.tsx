@@ -37,16 +37,23 @@ export const startOAuthSignInFn = createServerFn({ method: "POST" })
     return { authorizationUrl: view.authorizationUrl };
   });
 
+const abandonSchema = z.object({
+  state: z.string().min(1).max(512),
+});
+
 /**
- * 消費 POST が起きずに終わった往復（プロバイダーのキャンセル・`state` /
- * `code` の欠落）で束縛 Cookie を捨てる。破棄は照合と対で成立するもの
- * なので、照合に辿り着かない往復にも破棄の入口を用意する。
+ * 消費 POST が起きずに終わった往復（プロバイダーのキャンセル・`code` の
+ * 欠落）で束縛 Cookie を捨てる。破棄は照合と対で成立するものなので、
+ * ここでも `state` の束縛が一致した Cookie しか捨てない — 無条件に捨てると
+ * 単なる GET を踏ませるだけで他人の進行中フローを壊せる。`state` を伴わ
+ * ない往復は照合できないので、破棄せず TTL に委ねる（呼ぶ側で落とす）。
  */
 export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
-  .handler(async () => {
+  .validator(validateInput(abandonSchema))
+  .handler(async ({ data }) => {
     const stateCookie = await import("@/presentation/oauthStateCookie");
-    stateCookie.clearOAuthStateCookie();
+    await stateCookie.clearBoundOAuthStateCookie(data.state);
     return null;
   });
 

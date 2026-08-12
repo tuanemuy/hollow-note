@@ -2113,12 +2113,20 @@ ADR-081 は生成・照合・破棄の 3 経路で束縛を組んだが、破棄
 
 照合に**失敗した**ときは捨てない。不一致の Cookie は「別のブラウザー（＝正規の利用者）が進行中のフロー」のものなので、攻撃者のコールバック URL を踏ませるだけで被害者のフローを壊せてしまう。
 
+**追補**: 2 点目（非消費経路）もこの原則の内側に入れる。当初の `abandonOAuthFlowFn` は引数を取らず**無条件に**捨てていたため、`<img src="…/auth/callback/google?error=x">` を踏ませるだけで被害者の進行中フローの Cookie を落とせた（GET ナビゲーションとして SSR されるので CSRF ミドルウェアも `SameSite=Lax` も止めない。影響は可用性のみで、サインインからやり直せば通る）。破棄の入口を「自分が焼いた Cookie だと確認できた往復」に狭める。
+
+- `abandonOAuthFlowFn` は転送境界で `state`（1..512 文字）を検証したうえで受け取り、`deriveOAuthStateBinding(state)` が Cookie の値と一致したときだけ捨てる（`clearBoundOAuthStateCookie`）。不一致・不在では何もしない。
+- `state` を伴わない往復（`state` 欠落、`error` だけの往復）は照合の材料が無いので**捨てず TTL 10 分に委ねる**。ルート側は `loaderDeps` で「非消費かつ `state` あり」のときだけ `state` を渡し、それ以外では server function を呼ばない（呼べない形にするため引数は nullable にしない）。
+
 ### Consequences
 - 良い点: 成功・交換失敗・キャンセル・引数欠落のいずれでも束縛 Cookie が残らない。2 タブや戻るボタンの後の再試行が、前の往復の残骸で壊れなくなる。
 - 良い点: 破棄が照合と対で置かれるので、「照合を通った `state` は必ず消費された」という読み方が転送境界だけで完結する。
 - トレードオフ: 交換が失敗した往復は Cookie も `state` も戻らないので、利用者は必ずサインインからやり直す。`take` が単回消費である以上どのみち再試行はできないため、実質的な縮退にはならない。
 - トレードオフ: キャンセルの往復で server function を 1 本余計に叩く。初回描画の loader なので SSR 中は同一プロセス内の直接呼び出しで済み、往復は増えない。
 - 中断（タブを閉じる・戻らない）で残る Cookie は従来どおり TTL 10 分で消える。ブラウザーが戻ってこない以上、破棄の入口を置ける場所が無い。
+- （追補）良い点: 破棄の 2 点がどちらも「照合を通った」ことを条件にするようになり、「踏ませるだけで状態が変わる」経路が転送境界から消えた。`oauthStateBindingWiring.test.ts` が「不一致の `state` では `Set-Cookie` が出ない / 一致では出る」の 2 ケースで固定する。
+- （追補）トレードオフ: `state` の無いキャンセル往復では束縛 Cookie が最大 10 分残る。同じブラウザーの次の開始が上書きするので、残骸が壊すのは「放置した前の往復のコールバックへ後から戻ったとき」だけで、その往復はどのみち `state` 行が無く完了できない。
+- （追補）トレードオフ: 消費前の `state` を入手した第三者は束縛を再現できるので破棄も通せる。これは ADR-081 が明記した束縛の非対称性そのままで、その相手はもともとコールバックを消費できる立場にある。
 
 ---
 
@@ -2353,3 +2361,74 @@ ADR-003 の規則 1 と ADR-073 は、dev IdP の production 混入を「`NODE_E
 - 良い点: 本番形の起動が `NODE_ENV` の値によらず dev IdP を拒否する。実測で production / staging / 空文字 / 未設定の 4 通りすべてが ZodError で起動失敗し、`OAUTH_DEV_MODE` 無しの本番形は起動して `/dev/oauth/authorize` が 404 を返す。
 - 良い点: `.env.example` の「never on a deployed host」という運用約束が、配備者の申告ではなくコードで裏づけられる。
 - トレードオフ: `NODE_ENV=production pnpm start` 相当の本番形で dev IdP を検証する経路は `NODE_ENV=development pnpm start` の 1 通りだけになる（ADR-073 の想定どおり）。`NODE_ENV=test` でユニットテスト以外から起動する運用を将来入れる場合は、この allowlist を明示的に広げる判断が要る。
+
+---
+
+## ADR-110: Cookie の `Secure` も `NODE_ENV` の allowlist で判定する（ADR-109 の追補）
+
+### Status
+Accepted
+
+### Context
+`session.ts` / `oauthStateCookie.ts` の `secure` は `NODE_ENV === "production"` の denylist で、ADR-109 が dev IdP のガードを allowlist へ反転したあとも同じ形で残っていた。「`NODE_ENV=staging` や空文字で本番形を起動すると `Secure` が落ちる」という読みは 5 周にわたり繰り返し指摘されている。
+
+実測すると、その攻撃シナリオは成立しない。Vite は RSC / SSR バンドルでも `process.env.NODE_ENV` をビルド時に畳み込むため、`pnpm build` の成果物（`dist/server/rsc/assets/session-*.js`、`oauthStateCookie-*.js`）には `process.env` の参照が 1 つも残らず、述語は定数に潰れている。`pnpm start` に渡す `NODE_ENV` の値では覆せない。ADR-109 が反転した dev IdP のガードは**実行時に** `process.env` を読む `readNodeServerEnv` の側にあり、こちらとは畳み込みの有無が違う。
+
+### Decision
+挙動を変えずに、表記だけを allowlist へ反転する。`isDevelopment()`（`NODE_ENV === "development"`）のときだけ `Secure` を外し、それ以外のすべての値では付ける。
+
+- 免除の理由は「dev の平文 http」であって「production ではない」ではないので、意味と判定の向きを一致させる。分類できない `NODE_ENV` は免除しない側へ倒れる。
+- 畳み込みの事実を why コメント 1 行として両ファイルに残す。これが書かれていないことが誤読の原因なので、恒久的に閉じるのはコメントの側。
+- `Strict-Transport-Security` は足さない。転送層の方針（プリロード・サブドメイン・max-age）はこのスライスの射程外で、`Secure` が畳み込みで保証されている以上、緩和として要る場面が無い。
+- 述語は 2 ファイルに 1 行ずつ重複させたままにする。どちらも server-only の Cookie 運搬モジュールで、属性の並びのすぐ上に判定がある形を崩してまで共有モジュールを 1 本増やす利得が無い。
+
+### Consequences
+- 良い点: 「denylist なので配備値で緩む」という読みが、コードの向きとコメントの両方で閉じる。
+- 良い点: 実測で `dist/server/rsc/assets/session-*.js` と `oauthStateCookie-*.js` の双方が `isDevelopment = () => false` に畳み込まれ、`secure: !isDevelopment()` は常に真。両ファイルとも `NODE_ENV` の参照は 0 件。
+- トレードオフ: `vite dev` 以外で `NODE_ENV=development` を立てても `Secure` は外れない（成果物は畳み込み済み）。dev の平文 http は `pnpm dev` の 1 経路だけという ADR-109 と同じ前提に乗る。
+
+---
+
+## ADR-111: 行内の二段確認は「その行を操作したとき」だけ焦点を移す
+
+### Status
+Accepted
+
+### Context
+P-22 の「解除」は `confirming` の真偽でボタンごと差し替わるので、押した瞬間に焦点の載っていた `<button>` がアンマウントし、焦点が `document.body` へ落ちる。行内に live region は無いため、確認 UI の出現はキーボード / 支援技術のどちらにも伝わらない。同じ PR の `DeletionProgress`（ADR-107）と `ResetPasswordPanel.Result` は「パネルが替わるときは焦点も移す」を実装しており、最も破壊的なこの経路だけが規律から外れていた。
+
+### Decision
+`MethodRow` が確認 UI の出現で「解除する」へ、「やめる」で元の「解除」へ焦点を移す。
+
+移動するのは**その行のボタンを押した結果**のときだけとし、判定はクリックハンドラーが立てる ref のフラグで持つ。`confirming` の変化だけを条件にすると、(a) 初回描画でリスト先頭の「解除」が焦点を奪い、(b) 別の行の確認を開いて閉じた側が、開いた側から焦点を奪い返す。実行（「解除する」）では行が楽観的に消えるので焦点は戻さない — 結果は親の常設 live region が伝える。
+
+`<dialog showModal()>` への作り替えと `spec/design/index.md#3.10`（削除確認＝ダイアログ）の割り当て見直しは行わない。P-22 の行内確認と P-24 の `AddPasswordForm` を両方作り直す規模で、このスライスの射程を超える。焦点の移動だけで「確認が出た / 戻った」は伝わる。
+
+### Consequences
+- 良い点: 破壊的操作の二段確認が、キーボードだけで確認 → 実行 / 取り消しまで到達できる。焦点喪失（`<body>` 送り）も起きない。
+- 良い点: 判定が「自分の行の操作」に閉じているので、行が増えても焦点の奪い合いが起きない。
+- トレードオフ: 焦点移動の意図をフラグ ref で持つぶん、行コンポーネントに 1 つ状態が増える。`confirming` の前回値と比べる形では上記 (a)(b) を分けられないので、意図を明示するほうを採った。
+- spec-sync 候補: §3.10 の「ダイアログを使ってよい場面」と実装（削除確認＝行内差し替え、パスワード追加＝ダイアログ）の対応が反転したままなので、割り当ての正本をどちらにするかは spec-sync に回す。
+
+---
+
+## ADR-112: P-25 の ticket 退避は best-effort とし、受理の表示より後ろに置く（ADR-006 / ADR-095 の追補）
+
+### Status
+Accepted
+
+### Context
+`sessionStorage` はサイトデータを遮断した設定（Cookie とサイトデータのブロック、`dom.storage.enabled=false`、制限付き sandbox）ではアクセス自体が `SecurityError` を投げる。P-25 は受理直後の `setItem` を `try` の内側かつ `setPhase` より前に置いていたため、その環境では**サーバー側で削除が受理されセッションが破棄されたあと**に例外が出て `{ error }` に倒れ、画面は削除フォームのまま「うまく処理できませんでした」を出す。再送しても同じ `requestId` の resume が同じ行で落ちるので、利用者は取り消せない削除が走っていることを一度も知らされない。復元側の `getItem` も無防備で、同じ環境では effect が投げて `/settings/danger` が `ServerErrorState` に倒れ、削除フォームにすら到達できなかった。
+
+ticket の保持がクライアント責務であること自体は ADR-006 の決着済み設計で、変えるのは順序と失敗の扱いだけ。
+
+### Decision
+受理の表示（`setPhase({ kind: "accepted", ticket })`）を退避より**先**に出し、`sessionStorage` の読み書き（`persistTicket` / `forgetTicket` / `readStoredTicket`）はすべて `try / catch` で握って握り潰す。保持できなくても受理の事実はこのタブの `phase` で追えるので、退避の失敗を削除の失敗として見せない。
+
+`removeItem` も同じ扱いにする。終端で捨てる経路（`settle`）は `poll` の `catch` の中からも呼ばれるので、ここが投げると catch の中で例外が出て未処理の rejection になる。
+
+### Consequences
+- 良い点: 「受理されたのに失敗表示」で詰まる経路が無くなり、`sessionStorage` を持たない環境でも進捗表示と完了表示まで到達できる。
+- 良い点: `/settings/danger` が復元経路の例外で `ServerErrorState` に倒れなくなる。
+- トレードオフ: 保持に失敗したことは利用者に見えない。リロードすると進捗を追えなくなるが、その時点の案内（サインインし直して確認する）は既存の `settled` 表示が持つ。
+- CLAUDE.md の「broad catch は境界だけ」との関係: ここは Web Storage という外部資源との境界で、アダプターが driver の例外を畳むのと同じ位置づけになる。

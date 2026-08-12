@@ -16,18 +16,18 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/auth/callback/$provider")({
   validateSearch: (search) => searchSchema.parse(search),
+  // 破棄を頼めるのは「マウント後の POST が起きない」かつ「照合に使う
+  // `state` を伴う」組だけ。消費できる組で捨てると続く POST の束縛照合が
+  // 落ち、`state` の無い組は照合できないので TTL 10 分に委ねる。
   loaderDeps: ({ search }) => ({
-    consumable:
-      search.error === undefined &&
-      search.state !== undefined &&
-      search.code !== undefined,
+    abandonState:
+      search.error !== undefined || search.code === undefined
+        ? (search.state ?? null)
+        : null,
   }),
-  // 消費できる組では捨てない（続く POST の束縛照合が落ちる）。捨てるのは
-  // マウント後の POST が起きない組だけで、そこが束縛 Cookie の唯一の
-  // 破棄点になる。
   loader: async ({ deps }) => {
-    if (!deps.consumable) {
-      await abandonOAuthFlowFn();
+    if (deps.abandonState !== null) {
+      await abandonOAuthFlowFn({ data: { state: deps.abandonState } });
     }
     return null;
   },

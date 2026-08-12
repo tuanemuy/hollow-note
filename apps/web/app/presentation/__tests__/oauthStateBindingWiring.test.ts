@@ -170,10 +170,21 @@ describe("abandonOAuthFlowFn", () => {
     const { abandonOAuthFlowFn } = await loadActions();
 
     const outcome = await callServerFn(
-      () => abandonOAuthFlowFn(),
+      () => abandonOAuthFlowFn({ data: { state: STATE } }),
       await bindingCookie(STATE),
     );
 
     expect(bindingHeader(outcome)).toContain("Max-Age=0");
+  });
+
+  it("keeps a binding cookie that belongs to another browser's flow", async () => {
+    const { abandonOAuthFlowFn } = await loadActions();
+
+    const outcome = await callServerFn(
+      () => abandonOAuthFlowFn({ data: { state: "attacker-state" } }),
+      await bindingCookie(STATE),
+    );
+
+    expect(bindingHeader(outcome)).toBeUndefined();
   });
 });

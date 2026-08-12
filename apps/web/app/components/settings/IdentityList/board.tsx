@@ -4,7 +4,13 @@ import type { IdentityListItemView } from "@repo/core/application/identity/view"
 import { IdentityPolicy } from "@repo/core/domain/identity/services/identityPolicy";
 import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useOptimistic, useState, useTransition } from "react";
+import {
+  useEffect,
+  useOptimistic,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { AddPasswordForm } from "@/components/settings/AddPasswordForm";
 import { ChangePasswordForm } from "@/components/settings/ChangePasswordForm";
 import {
@@ -230,6 +236,22 @@ function MethodRow({
   onCancel: () => void;
   onRemove: () => void;
 }) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // 焦点を動かすのはこの行を操作したときだけ。他の行の確認を開いた結果と
+  // して閉じた場合まで動かすと、開いた側から焦点を奪い返してしまう。
+  const moveFocus = useRef(false);
+
+  // 確認 UI はボタンごと差し替わるので、焦点を移さないと `document.body`
+  // へ落ち、破壊的操作の確認が出たことがどこにも伝わらない。
+  useEffect(() => {
+    if (!moveFocus.current) {
+      return;
+    }
+    moveFocus.current = false;
+    (confirming ? confirmRef : triggerRef).current?.focus();
+  }, [confirming]);
+
   const password = item.kind === "password";
   const name = password
     ? "メールアドレスとパスワード"
@@ -256,6 +278,7 @@ function MethodRow({
         {confirming ? (
           <>
             <button
+              ref={confirmRef}
               type="button"
               className={dangerButtonClass}
               disabled={busy}
@@ -266,18 +289,25 @@ function MethodRow({
             <button
               type="button"
               className={ghostButtonClass}
-              onClick={onCancel}
+              onClick={() => {
+                moveFocus.current = true;
+                onCancel();
+              }}
             >
               やめる
             </button>
           </>
         ) : (
           <button
+            ref={triggerRef}
             type="button"
             className={dangerButtonClass}
             disabled={!canRemove || busy}
             aria-describedby={canRemove ? undefined : LAST_METHOD_HINT_ID}
-            onClick={onConfirm}
+            onClick={() => {
+              moveFocus.current = true;
+              onConfirm();
+            }}
           >
             解除
           </button>
