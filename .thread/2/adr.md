@@ -44,6 +44,8 @@ Proposed
 - 良い点: 「掃除されていない component が ack されている」状態が構造的に作れない。全数宣言なので、後続スライスの登録漏れは「黙って completed する」ではなく「`AbsentReason` が残っている」という**読める形**で表面化し、component 値の追加はコンパイルエラーで検出される。
 - トレードオフ: spec（8 固定）と実装（宣言的部分集合）にずれが生まれるので、spec/domains/index.md に「必須集合は配備に存在する参加者の集合」と書き足す spec-sync が要る。`AbsentReason` のまま放置しても型は通る（不在であること自体は正当な状態なので型では禁じられない）ため、`AbsentReason` の一覧を Issue コメントの縮退記録に必ず載せる運用が要る。
 
+→ `spec/adr/039` に昇格
+
 ---
 
 ## ADR-003: `SignInOAuthClient` は実 Google アダプターを本体とし、ローカル用の dev IdP アダプターを明示的な opt-in で併設する
@@ -71,6 +73,8 @@ Proposed
 - 良い点: 「実装本体が外部プロトコル結合」という #1 の見送り理由が本 Issue で正面から解消され、チェックリストの ADP-identity-033/034 相当が仮実装なしで埋まる。資格情報のない開発機でも OAuth の全状態（成功 / キャンセル / state 不一致 / 期限切れ / 通信失敗）をブラウザー検証でき、マニュアル TC-40（同意のキャンセル）が実行可能になる。**ただしこれはアダプター単体では成立しない** — dev IdP が返す「同意画面」の実体をアプリ内ルートとして持つ必要がある（ADR-021）。
 - トレードオフ: アダプターが 2 本になり、選択ロジック（env による分岐）が composition root に増える。`packages/core` はビルド無しで `.ts` を直接 export する構成なので、composition root が両方を静的 import する限り tree-shaking では dev IdP を落とせない — 実行時の起動ガード（規則 1）とレビューで守る。Google 実装そのものの e2e 検証は資格情報のある環境でしか行えない（適合スイートの Google 側は既定で skip される。縮退として記録する）。
 - **DX への影響**: 現行 `apps/web/.env.example` の必須項目は `APP_URL` 1 つだけなので、**規則 3 は既存の手元 `.env`（コミットされない）をそのまま起動不能にする**。`.env.example` の更新に加えて、Issue コメント（ステップ 34）と `docs/runtime_node.md` に「既存の `.env` に `OAUTH_DEV_MODE=true` を 1 行足す」を明記する。黙って fake に落ちないことを優先した結果の意図的な破壊的変更であり、起動時エラーメッセージにもこの 1 行を含める。
+
+→ `spec/adr/036` に昇格
 
 ---
 
@@ -133,6 +137,8 @@ personal barrier の prune task（`identity.personalBarrierPruneContinued`）の
 - 良い点: `deleteAccount` が `pnpm dev` 上で実際に完走し、マニュアルテスト TC-14 が実行可能になる。継続の契約（冪等・checkpoint）がテストで固定され、#11 の差し替えが運搬路に閉じる。`listDue` が読み取り専用なので、claim の直列化規律（scope UoW の中だけ）は崩れない。
 - トレードオフ: ランナーが単一プロセスなので、削除中にプロセスが落ちると再起動まで継続が止まる（回復は次回起動時のタスク再取得で成立する設計にする）。in-process 実行はレイテンシーの観測値が本番と乖離する。ポートが 1 つ増え、#11 では「中央からは列挙しない」実装（空配列）を書く必要がある — 実装が空になるポートを持つことの説明責任は JSDoc に書く。
 
+→ `spec/adr/040` に昇格（運搬路と継続の規律として）
+
 ---
 
 ## ADR-006: 削除 status ticket は presentation が署名し、application は operationId + status しか返さない
@@ -157,6 +163,8 @@ Proposed
 - 良い点: application が transport / 署名を知らないまま、セッション失効後の進捗照会が成立する。既存の 2 種の ticket と同じ扱い（Cookie にしない・鍵は配備側の composition root が供給）に揃い、`AppConfig` は SSR メタデータの器のまま保たれる。必須 env は増えない（未設定はプロセス毎ランダム鍵）。
 - トレードオフ: 削除実行から完了表示までの間、router キャッシュにはサインアウト済みセッションの RSC ペイロードが残る（同じタブの同じ利用者しか見られない状態で、離脱時のフル遷移で破棄される）。鍵が未設定の配備ではプロセス再起動で ticket が失効するので、P-25 は「ページを閉じても削除は進む」旨を表示して縮退させる。
 
+→ `spec/adr/047` に昇格
+
 ---
 
 ## ADR-007: OAuth コールバックは 1 ルートで 2 ユースケースへ分岐させる（`state` の intent が唯一の分岐根拠）
@@ -173,6 +181,8 @@ Proposed
 ### Consequences
 - 良い点: 「サインイン中かどうか」でユースケースが変わる曖昧さが消え、TC-identity-121（intent: signIn の state で linkOAuthIdentity を呼ぶ）が構造的に拒否される。#4 の integration intent が同じルートに追加できる。
 - トレードオフ: intent ごとに応答の形（セッション Cookie 発行 / 識別子返却 / 連携完了）が変わるので、server function の戻り値が判別共用体になる。
+
+→ `spec/adr/035` に昇格
 
 ---
 
@@ -249,6 +259,8 @@ Proposed
 - 良い点: 配備ごとの URL 形がアダプターに閉じ、#11 の差し替えが usecase に波及しない。期限つき URL（`createDownloadUrl`）と公開 URL（`publicUrl`）の用途が型で分かれる。
 - トレードオフ: spec/domains/storage.md の `ObjectStorage` に 1 メソッド増える（spec-sync 候補）。`publicUrl` は「その鍵が公開配信される」ことを前提にするので、非公開ファイルに使わない規律が要る（本 Issue の呼び出し元は `storeAvatar` のみ）。
 
+→ `spec/adr/049` に昇格
+
 ---
 
 ## ADR-012: scope 平面の operation 重複排除は専用ポートを新設する
@@ -271,6 +283,8 @@ TC-identity-089 は「同じ operation ID で再配送され、`applied_operatio
 ### Consequences
 - 良い点: scope cleanup コマンドの冪等性が「本処理と同一 UoW の 1 行 insert」として型で表現され、適合スイートで固定できる。PK が単一列なので spec / #11 の D1 実装と同形。#3 / #5 / #4 が自分の cleanup 参加者を足すときも同じポートを使える。
 - トレードオフ: 重複排除の仕組みが 2 つ（event 用 / operation 用）になる。どちらを使うかの判断基準を両ポートの JSDoc に書く必要がある。`result` を持たないので「保存済み結果を返す」形の再試行は本 Issue では成立せず、再試行は必ずコマンドの再実行になる（本 Issue のコマンドはすべて冪等なので成立する）。
+
+→ `spec/adr/045` に昇格（キーの意味ごとにポートを分ける判断として）
 
 ---
 
@@ -305,6 +319,8 @@ Proposed
 ### Consequences
 - 良い点: TC-identity-050 / 053 / 105 が「オーケストレーションの書き方」ではなく**ポートの契約**として固定され、適合スイートで検証できる。しきい値がドメインの 1 箇所に集まるので、バックエンドを増やしても値が複製されない。note move（#7）も同じポートを再利用できる。
 - トレードオフ: テーマ A に 1 ステップ増え、`MemoryBackend` の表が 1 つ増える。ポート境界を 1 つ増やす分、deleteAccount 受理経路が触るストアは 4 つ（distributed operation / manifest / admission / user）になる。件数の観測とその判定が別レイヤーに分かれるので、受理経路が「数える → 判定 → 作る」の順を守る責任を負う（同一 transaction 内なので競合は起きない）。なお TC-identity-052（8 件上限そのもの）は `rejected` を作る経路が #3 依存のため行としては見送りで、本 Issue で検証するのはドメインサービスとポートの契約まで。
+
+→ `spec/adr/044` に昇格（しきい値をドメインに置く判断として）
 
 ---
 
@@ -382,6 +398,8 @@ Proposed
 - 良い点: 配備ごとの URL 形が `ObjectStorage` アダプターに閉じたまま、`User.avatarUrl` の値が配備非依存になる。Storage → Identity の書き込み依存が生まれない。`avatarUrl` の検証が VO の 1 箇所に閉じる。
 - トレードオフ: P-21 のアイコン更新が 2 回のサーバー往復になる（アップロード → プロフィール保存）。アップロードだけ成功して保存前に離脱すると、参照されない `StoredFile` が 1 件残る（次回のアイコン差し替え時に「既存アイコン」として消えるとは限らない — orphan 回収は #6 の担当なので、縮退として扱う）。`sumSizeByOwner` には算入されるので `recalculateStorageUsage` の値には現れる。
 
+→ `spec/adr/051` に昇格（保存する値をアプリ相対パスにする判断として）
+
 ---
 
 ## ADR-017: finalize の必須 receipt 集合も composition root の宣言から導出する
@@ -403,6 +421,8 @@ ADR-002 と同型の判断を `AccountDeletionManifestStore` にも適用する�
 ### Consequences
 - 良い点: 本 Issue の配備で finalize が到達可能になり、#4 / #5 は `AbsentReason` を `GlobalParticipant` に差し替えるだけで必須集合に入る。宣言が全数なので差し替え忘れは「`AbsentReason` が残っている」という読める形で表面化する。
 - トレードオフ: #1 が完成させた manifest アダプターと適合スイートに手が入る（ADR-015 / ADR-002 と合わせて 3 ポート）。spec（5 receipt 固定）との差は spec-sync 候補に載せる。
+
+→ `spec/adr/039` に昇格
 
 ---
 
@@ -429,6 +449,8 @@ ADR-002 は本 Issue の `Participant` を `storage` / `usage` / `localProjectio
 - 良い点: 宣言集合が実際に ack される 2 つに一致するので `markCompleted` が到達可能になり、「掃除していない component を ack する」も「二重勘定」も起きない。ブリッジが 1 ファイルに閉じ、応答喪失の再開経路が読み取り 1 本で表現できる。
 - トレードオフ: `ScopeCleanupAdmissionStore` に手が入る（ADR-017 / ADR-015 と同じく #1 の完成物の書き換え）。`localProjection` / `outbox` が `AbsentReason` として残るので、Issue コメントの縮退記録に必ず載せる（ADR-002 の運用）。scope commit と global ack の間で落ちると `personalCleanup` receipt だけが未記録で残るが、継続の再実行が (2) をやり直すので回復する。
 
+→ `spec/adr/039` に昇格（scope→global ブリッジと読み取り 1 本として）
+
 ---
 
 ## ADR-019: global 平面の継続イベント ID は生成元から決定的に導出する
@@ -450,6 +472,8 @@ Proposed
 ### Consequences
 - 良い点: 応答喪失後の再実行が継続を増殖させない、という spec の不変条件が global 平面でも成立する。変更点が 1 関数 + 2 アダプター行に閉じ、ユースケース側は payload に 1 項目足すだけになる。
 - トレードオフ: 同じ ID の再保存が `processedAt` を null へ戻すので、配送済みの継続が 1 度だけ再配送されうる（消費側は冪等なので害はないが、「outbox 行の再利用」という挙動を JSDoc に書く必要がある）。payload に運搬用の項目が 1 つ増える。
+
+→ `spec/adr/041` に昇格
 
 ---
 
@@ -494,6 +518,8 @@ dev IdP の認可エンドポイントをアプリ内のルートとして 1 本
 - 良い点: TC-05 / TC-40 が資格情報なしでブラウザー実行でき、`/auth/callback/$provider` の成功・キャンセル・state 不一致の各状態が実際の遷移で検証できる。dev IdP が「Google の代替プロバイダー実装」であるという ADR-003 の位置づけとも一致する（同意画面を持つのが自然）。
 - トレードオフ: `apps/web` にルートが 1 本増え、production では常に 404 になるコードを持つ。ガードの検証（フラグ off で 404）をプレゼンテーションテストに 1 本足す必要がある。
 
+→ `spec/adr/036` に昇格（同意画面をアプリ内ルートに持つ判断として）
+
 ---
 
 ## ADR-022: `StoredFileRepository` は spec の形を保ち、削除は `findById` の OCC トークン経由で行う
@@ -534,6 +560,8 @@ ADR-005 は `ScopeTaskQueue.listDue` を駆動側のポートとして決めた�
 - 良い点: AC-29 のブラウザー検証が数秒で完走し、kick を落としても 1 秒後には拾える。運搬路の差し替え（#11 の DO Alarm）に触らない tuning 値なので、`listDue` が空配列を返す実装では tick が実質 no-op になる。
 - トレードオフ: dev サーバーが 1 秒ごとに空クエリーを回す（memory では table 走査 1 回）。tuning 値が 1 つ増える。
 
+→ `spec/adr/040` に昇格（kick + tick の駆動として）
+
 ---
 
 ## ADR-024: 購読者の冪等性は「本処理そのものが冪等か」で決め、本 Issue の 2 購読者は `IdempotencyStore` を通さない
@@ -556,6 +584,8 @@ plan.md の未解決事項に「購読者レジストリのどのハンドラー
 - 良い点: 未解決事項が「実装を見て決める」ではなく規則で閉じ、後続スライスも同じ基準で判断できる。冪等性の根拠が購読者のコード上に残る。
 - トレードオフ: `IdempotencyStore` は本 Issue でも実利用者を持たないまま（適合スイートのみ）残る。`WorkerContainer` に UoW プロバイダーが載ったので、次に加減算購読者を足す人が正しく使える状態にはなっている。
 
+→ `spec/adr/045` に昇格
+
 ---
 
 ## ADR-025: 認証残渣クリーンアップの継続イベントには `continuationKey` を載せない
@@ -574,6 +604,8 @@ ADR-019 は「global 平面の継続イベント ID を生成元から決定的�
 ### Consequences
 - 良い点: 継続チェーンが「保存した直後に処理済みへ倒される」欠陥を構造的に避けられる。ADR-019 の適用条件がキー設計の言葉で明確になる。
 - トレードオフ: 応答喪失後の再配送でこの継続だけは 2 系列に増えうる（害は無いが outbox 行が数行増える）。ADR-019 の「global 平面の継続は決定的 ID」という一文が例外を 1 つ持つ。
+
+→ `spec/adr/041` に昇格（決定キーの適用条件として）
 
 ---
 
@@ -596,6 +628,8 @@ Proposed
 - 良い点: 期限の正典が manifest 側 1 か所に残り、2 つの表がずれた期限を持つ状態が作れない。ポート面が 5 メソッドに収まる。
 - トレードオフ: spec の列構成との差（`expires_at` / `attempts` / `next_attempt_at` の不在）が spec-sync 候補に 1 件増える。recovery Cron を足すスライスは `next_attempt_at` をこのポートに追加する必要がある。
 
+→ `spec/adr/044` に昇格（期限の正典を 1 か所に置く判断として）
+
 ---
 
 ## ADR-027: `ObjectStorage` の本体はバイト列に限り、ストリームを受けない
@@ -612,6 +646,8 @@ Proposed
 ### Consequences
 - 良い点: memory アダプターも適合スイートも「バイト列を入れて取り出す」だけで書け、検証されない分岐が残らない。
 - トレードオフ: #6 がポート定義とアダプターを広げる（呼び出し側は `storeAvatar` のみなので影響は小さい）。spec との差は spec-sync 候補に 1 件。
+
+→ `spec/adr/050` に昇格（実体を握る前提として）
 
 ---
 
@@ -760,6 +796,8 @@ spec/usecases/identity.md「Identity uniqueness の物理shard境界」は `rese
 - 良い点: application 層がハッシュ実装を持たずに済み、応答喪失後の再導出も同じ値になる。
 - トレードオフ: 予約行の `operation_id` 列が固定長でなくなる（実バックエンドでは最大 ~320 文字を見込む必要がある）。spec の記述との差はステップ 34 の spec-sync 候補として記録する。ステップ 20 / 23 / 30 も同じヘルパーを使うので、変えるなら 1 箇所で変えられる。
 
+→ `spec/adr/048` に昇格
+
 ---
 
 ## ADR-036: OAuth コールバックのディスパッチャーを application に置き、ユースケースは spec の入力 DTO を保つ
@@ -782,6 +820,8 @@ ADR-007 は「ルート側は state を取り出して 1 本の server function 
 - 良い点: TC-identity-024..038 は spec の入力 DTO のまま検証でき、ルートは ADR-007 の形（1 本の server function → intent 分岐）を保つ。ステップ 20 は `linkIdentity` の case を差し替えるだけで済む。
 - トレードオフ: 同じ処理への入口が 2 つある。`completeOAuthSignInForFlow` を直接呼んでよいのはディスパッチャーだけ、という規約が JSDoc にしか無い。
 
+→ `spec/adr/035` に昇格（ディスパッチャーと入口の分担として）
+
 ---
 
 ## ADR-037: dev IdP の認可コードは署名しない
@@ -798,6 +838,8 @@ dev IdP の同意画面（`apps/web`）が作る認可コードを、dev アダ�
 ### Consequences
 - 良い点: 鍵の受け渡し経路を作らずに済み、PKCE の往復が dev でも実際に検証される（適合スイートの `offline` 側がこれを固定する）。
 - トレードオフ: dev IdP のコードは誰でも組み立てられる。`OAUTH_DEV_MODE` が真の環境でしか通らず、その環境は production と併用できない（ADR-003）ため許容する。
+
+→ `spec/adr/036` に昇格（開発用の認可コードを署名しない判断として）
 
 ---
 
@@ -919,6 +961,8 @@ Accepted
 - 良い点: application 層にハッシュ実装が入らず、ADR-035 と同じ規則で読める。冪等性の根拠が購読者のコード（JSDoc）に残る。
 - トレードオフ: operation ID が `identityId` を平文で含む（内部 ID なので秘匿対象ではない）。spec の `sha256(...)` 表記との差が spec-sync 候補に 1 件増える（ADR-035 と同じ扱い）。
 
+→ `spec/adr/048` / `spec/adr/045` に昇格（合成による導出と、可換性による冪等性の判断として）
+
 ---
 
 ## ADR-045: OAuth コールバックの応答は intent 付きの判別共用体にし、`linkIdentity` は Cookie に触れない
@@ -937,6 +981,8 @@ ADR-007 で `/auth/callback/$provider` は 1 ルート 2 ユースケースに�
 ### Consequences
 - 良い点: 「セッション発行を伴わない intent」が型で表現され、Cookie を焼く経路が signIn の 1 本に閉じる。`integration`（#4）を足すときも同じ形で 1 arm 増やすだけになる。
 - トレードオフ: `completeOAuthCallbackFn` の戻り値型を明示する必要があり（推論だと arm が広がる）、画面側にも分岐が 1 つ増える。
+
+→ `spec/adr/035` に昇格（intent で判別する共用体として）
 
 ---
 
@@ -996,6 +1042,8 @@ Accepted
 - 良い点: 「宣言と実体が食い違う」状態が型として作れない。上限の判定点が 1 つになり、TC-storage-171 / 172 の境界がドメイン単体でも成立する。
 - トレードオフ: spec の入力 DTO から 1 フィールド減る（spec-sync 候補 1 件）。ストリーム取り込み（#6）で「読み切る前に上限で切る」形が要るときは、そのスライスが `size` を戻すか別の手段を選ぶ。
 
+→ `spec/adr/050` に昇格
+
 ---
 
 ## ADR-049: `updateProfile` の handle 予約 operation ID は利用者から合成する
@@ -1015,6 +1063,8 @@ TC-identity-280 は「新 handle の予約後・UserId shard 更新前に失敗�
 - 良い点: 応答喪失からの再開が予約層でも成立し、TC-identity-280 / 281 が仮実装なしで通る。予約行が孤児になっても、同じ利用者の次の試行が必ず同じ ID で拾い直す。
 - トレードオフ: 予約行の `operationId` が推測可能な文字列になる（`IdentityUniqueDirectory` は所有者一致を別に見るので、推測できても他人の鍵は動かせない）。
 
+→ `spec/adr/048` に昇格（親 operation ID を合成する判断として）
+
 ---
 
 ## ADR-050: 保管オブジェクトの配信は splat ルート `/storage/$` で受ける
@@ -1031,6 +1081,8 @@ steps.md は配信ルートを `apps/web/app/routes/storage.$key.tsx` と書く�
 ### Consequences
 - 良い点: memory 配備でアイコンが実際に配信でき、`publicUrl` の形をアダプターに閉じたまま保てる。R2 等の公開ドメインへ移る配備ではこのルートごと落とせる。
 - トレードオフ: steps.md のファイル名と 1 文字違う。splat なので `/storage` 配下の未定義パスもこのハンドラーに入る（不在は 404 を返すので実害は無い）。
+
+→ `spec/adr/049` に昇格（鍵を単一セグメントにしない判断として）
 
 ---
 
@@ -1086,6 +1138,8 @@ Accepted
 - 良い点: 応答喪失の再実行が「同じ turn の再実行」に閉じ、cursor の巻き戻りが構造的に起きない。header 読み取りは #4 / #5 / ステップ 30 の finalize / prune でも使える。
 - トレードオフ: spec の継続 DTO と 1 フィールド差（`cursor`）ができ、ポートに読み取りが 1 本増える。どちらもステップ 34 の spec-sync 候補に載せる。
 
+→ `spec/adr/041` に昇格（1 継続イベント = 1 ターンの判断として）
+
 ---
 
 ## ADR-054: 削除の継続ハンドラーは worker plane の consumer とし、`NoteRouteFanOutReader` は `WorkerContainer` に載せる
@@ -1128,6 +1182,8 @@ turn 側を正とし、結果でランナーに伝える。
 ### Consequences
 - 良い点: 「同一 UoW で継続を保存する」という spec の要求と、claim/settle するランナーの両方が矛盾なく成立する。ステップ 31 は `status` を見るだけで書ける。
 - トレードオフ: spec が出力 DTO を持たない `deleteQuota` にも戻り値ができる（`deletedCount` を持つ `deleteFilesByOwner` は spec の DTO に 1 フィールド追加）。ステップ 34 の spec-sync 候補。
+
+→ `spec/adr/040` に昇格（turn が自分の行を決着させる判断として）
 
 ---
 
@@ -1201,6 +1257,8 @@ ADR-026 は「terminal の回収は manifest の terminal prune が `deleteTermi
 - 良い点: 「header と operation を同じ transaction で消す」が呼び出し側のコードとして書ける。回収対象の列挙という読み取りポートを別に足さずに済む。
 - トレードオフ: #1 の完成物の戻り値型が変わる（呼び出し側は適合スイートのみだった）。spec/database の列構成との差と合わせて spec-sync 候補。
 
+→ `spec/adr/044` に昇格（回収した ID を返す判断として）
+
 ---
 
 ## ADR-060: dispatch 継続は turn 識別子 `cursor` を運び、finalize の再試行は発行元で名前を分ける
@@ -1219,6 +1277,8 @@ ADR-019 は global 平面の継続イベント ID を `continuationKey` から�
 ### Consequences
 - 良い点: 応答喪失後の再実行で継続チェーンが 2 本走らない、という ADR-019 の不変条件が redaction / compaction にも適用でき、同時に ADR-025 の罠を踏まない。finalize の再試行主体が「最後の ack を書いた者」に定まり、待ち合わせのための polling が要らない。
 - トレードオフ: spec の継続 DTO と 1 フィールド差（`cursor`）が 2 種類増える（ADR-053 の build continuation と同じ扱い）。spec-sync 候補。finalize 試行が最大 3 イベントに増える。
+
+→ `spec/adr/041` に昇格（ターン識別子と待ち合わせの再試行として）
 
 ---
 
@@ -1242,6 +1302,8 @@ ADR-005 / ADR-023 はランナーが `ScopeTaskQueue.listDue` で列挙し `scop
 - 良い点: UoW のネスト禁止と「継続の保存は本処理と同一 UoW」の両方が同時に成り立つ。kind を足す = レジストリに 1 行足す、になる。
 - トレードオフ: `ScopeTaskScheduler.claimDue` の実利用者が本 Issue に居なくなる（適合スイートのみ）。複数プロセスでランナーを走らせる場合は claim による排他が要るので、そのときにランナー側へ戻す判断が必要 — #11 への引き継ぎ。
 
+→ `spec/adr/040` に昇格（kind → ハンドラーのレジストリとして）
+
 ---
 
 ## ADR-062: `/settings` の認証ガードは P-25 だけ通す
@@ -1260,6 +1322,8 @@ ADR-006 は「ticket を `sessionStorage` に退避してリロードから復�
 ### Consequences
 - 良い点: ADR-006 のリロード復帰が実際に成立する。変更が `routes/settings/route.tsx` 1 本に閉じる。
 - トレードオフ: `/settings/danger` は未サインインでも 200 を返す（中身は説明文と確認フォームで、`deleteAccountFn` 自体は `requireSession()` を通すので操作はできない）。パスの直書きが 1 箇所増えるので、#3 がワークスペース設定タブ列を足すときにこの分岐を見落とさないこと。
+
+→ `spec/adr/047` に昇格（進捗画面を認証ガードの例外にする判断として）
 
 ---
 
@@ -1299,6 +1363,8 @@ AC-6 は 2 つを同時に求める: (a) Google アダプターの適合スイ�
 - 良い点: AC-6 の 2 条件が同時に成立し、「資格情報が無い」ことでスキップされる範囲が実際に provider を要する部分だけに縮む。
 - トレードオフ: 1 アダプターにつきスイート名が 2 つ出る。`live` provider が資格情報つきで走っても交換系 3 ケースは早期 return のままで、実際に交換を検証するのは `offline`（dev IdP）だけという構造は変わらない。
 
+→ `spec/adr/036` に昇格（適合スイートの分割として）
+
 ---
 
 ## ADR-065: outbox の `save` は id 衝突を「先着行をそのまま残す no-op」として契約する
@@ -1323,6 +1389,8 @@ ADR-019 は継続イベントの ID を `continuationKey` から決定的に導�
 - 良い点: ADR-019 の不変条件がバックエンド横断の契約として固定され、#11 の D1 実装は `ON CONFLICT DO NOTHING` を書くしかなくなる。ADR-019 がトレードオフとして挙げていた「配送済みの継続が 1 度だけ再配送されうる」が消える。
 - トレードオフ: 重複排除は行の寿命と等しく、`pruneProcessed` が id を解放した後は同じ id を再び保存できる。したがって outbox の保持期間は再配送窓を上回っている必要がある（既定では桁で上回る）。`spec/database/index.md` の「同じ PK / outbox ID へ upsert される」は「1 行に畳まれる」意図としては一致するが語が合わないので spec-sync 候補に載せる。ADR-019 の Decision 中の「memory の `save` は upsert なので〜」という根拠づけは本 ADR で置き換わる。
 
+→ `spec/adr/042` に昇格
+
 ---
 
 ## ADR-066: 同一オリジン判定は `SameOriginPolicy` 1 本に集約し、ドメインに置く
@@ -1344,6 +1412,8 @@ Accepted
 ### Consequences
 - 良い点: 3 つの回避形（`//host`・バックスラッシュ・C0 / DEL）が 1 箇所でしか判定されなくなり、片方だけ知識が反映されない状態が作れない。境界値は `domain/identity/__tests__/policies.test.ts` が `new URL` の解決結果と対にして固定している。
 - トレードオフ: 述語は必要より厳しい。`"/x<LF>/y.png"` のように制御文字が先頭スラッシュ直後でない値は同一オリジンに解決するが拒否する。アバターの位置にも遷移先にも制御文字が要る用途は無いので、緩めるより単純さを採る。
+
+→ `spec/adr/051` に昇格
 
 ---
 
@@ -1367,6 +1437,8 @@ gate の判定軸を資格情報から**ハーネスが認可コードを発行�
 - 良い点: Google の交換系は環境によらず 3 件 skip として報告され、「緑だが無検証」が構造的に作れない。skip 件数は 3 のまま変わらない。
 - 良い点: fake token endpoint を注入して Google の交換系を検証できるようにしたスライスは、登録を `offline` に差し替えるだけでよい。
 - トレードオフ: 資格情報を入れても Google の交換系は 1 ケースも走らない。ADR-064 が「資格情報があれば走る」と読める余地を残していたのに対し、本 ADR は走らないことを明示的な契約にする。
+
+→ `spec/adr/036` に昇格（gate の判定軸として）
 
 ---
 
@@ -1461,6 +1533,8 @@ ADR-055 の「turn は自分の UoW を開いて自分の行を決着させる�
 - トレードオフ: 1 ラウンドにつき scope ごとの claim トランザクションが 1 本増える（tick あたり scope 数分）。
 - claim と turn が別トランザクションなので、**複数プロセスでランナーを走らせると同じ行を 2 本駆動しうる**。turn はいずれも冪等で収束するが、真の排他は claim と turn を同一トランザクションに置ける配備（Durable Object alarm など）で得る — #11 への引き継ぎ。ADR-061 の同じ引き継ぎを置き換える。
 
+→ `spec/adr/040` に昇格（ランナーの claim と backoff として）
+
 ---
 
 ## ADR-072: 削除の terminal prune と removal receipt の期限切れ削除は Node runner の日次 prune tick が駆動する
@@ -1501,6 +1575,8 @@ ADR-003 は「`OAUTH_DEV_MODE=true` かつ `NODE_ENV=production` は起動時エ
 ### Consequences
 - 良い点: 最短経路（`.env.example` をコピーして本番形で起動）が dev IdP を公開しなくなり、ADR-003 が守ろうとした性質が配線で満たされる。`pnpm dev` / `pnpm start` の双方で「今 production か」の答えが 1 つになる。
 - トレードオフ: `pnpm dev` を初めて動かす開発者は必ず 1 度起動に失敗する（規則 3 のエラーが `OAUTH_DEV_MODE=true` を外すよう案内する）。ADR-003 の「必須 env は 2 つに留まり、コピーするだけで起動できる」という DX 上の主張はここで撤回する。本番形で dev IdP を使う検証は `NODE_ENV=development pnpm start` が要る。
+
+→ `spec/adr/037` に昇格（起動口が `NODE_ENV` を宣言する判断として）
 
 ---
 
@@ -1581,6 +1657,8 @@ UoW を `try` で囲み、失敗したら `objectStorage.deleteMany([objectKey])
 - 良い点: 「メタデータ行を持たないオブジェクト」という、どの掃除にも掛からない状態がアバター経路から消える。#6 が同じ 2 段（put → UoW）を書くときの手本になる。
 - トレードオフ: ユースケースに `try / catch` が 1 つ増える（CLAUDE.md の「広い catch を避ける」に対しては、UoW に参加できない資源の補償という明示的な境界として許容する）。プロセスが put と巻き戻しの間で落ちれば孤児は残る — その窓は残件として受容し、縮退の記録に含める。
 
+→ `spec/adr/050` に昇格（トランザクション外の書き込みを巻き戻す判断として）
+
 ---
 
 ## ADR-078: アバターの受理は申告 MIME ではなくバイト列の署名で判定する
@@ -1599,6 +1677,8 @@ Accepted
 ### Consequences
 - 良い点: 保管される `mimeType` が必ず実体と一致し、防御が配信ルートの有無に依存しなくなる。「申告と実体が食い違う」状態が `storeAvatar` の入力からも消える（ADR-048 の続き）。
 - トレードオフ: `spec/domains/storage.md` の `ensureAcceptable` の引数・戻り値と差が出る（spec-sync 候補 1 件）。正しい PNG でもヘッダーが壊れていれば拒否になる（実際の画像デコードはしないので、署名以降の破損は検出しない）。#6 が署名を持たない形式を通すとき、入口を「署名があれば署名、無ければ申告」の形へ広げる作業が要る。
+
+→ `spec/adr/050` に昇格
 
 ---
 
@@ -1623,6 +1703,8 @@ Accepted
 - 良い点: 契約が 1 方向になり、checksum を自前で計算するストア（R2 の `md5` / `sha256` ヘッダーを返す実装）がスイートを緩める交渉なしに通る。「measured」が観測可能な形で実際に固定される。
 - トレードオフ: 呼び出し側が計算済み checksum を持っていても再計算になる（本 Issue の呼び出し元は `null` を渡すので現時点の差は無い）。重複保管の回避に checksum を使うスライスが現れたら、`meta.checksum` の意味づけを改めて決める必要がある。
 
+→ `spec/adr/050` に昇格（`put` が実体から測った値を返す契約として）
+
 ---
 
 ## ADR-080: 公開配信は `avatar` に限り、判定は `ObjectKey` から読む
@@ -1641,6 +1723,8 @@ Accepted
 ### Consequences
 - 良い点: 「公開なのは avatar だけ」がコードで守られ、#6 が非公開 purpose を `put` しても配信面が広がらない。将来 `source` / `media` を出す必要が出たら、同じルートに `StoredFileRepository` 越しの所有者検査を足す入口として使える。
 - トレードオフ: `ObjectKey` に読み取り側のメソッドが 1 つ増える（spec の VO 定義との差は `build` と対になる派生なので spec-sync 候補には上げない）。`build` の形（`{owner}/{purpose}/{fileId}`）を変えると配信判定も一緒に直す必要がある。
+
+→ `spec/adr/049` に昇格（公開配信を用途で絞る判断として）
 
 ---
 
@@ -1677,6 +1761,8 @@ Cookie に SHA-256 を載せるのは、`Path=/` の Cookie が同一オリジ�
 - トレードオフ: 別端末で認可を完了する経路（PC で開始してスマートフォンで同意）は成立しない。OAuth の同意は開始したブラウザーの中で完結するのが通常の導線なので、メール確認の別端末フローと違い実質的な縮退にはならない。
 - 中断されたフローの Cookie は 10 分（state 行と同じ）だけ残る。次の開始が上書きし、期限で消える。
 
+→ `spec/adr/034` に昇格
+
 ---
 
 ## ADR-082: アイコン選択の事前チェックは「大きさだけ」に絞り、しきい値と文言は判定側から引く
@@ -1702,6 +1788,8 @@ P-21 の島（`ProfileForm/editor.tsx`）はファイルを選んだ時点で MI
 - 良い点: 上限値の定義が 1 か所（ドメイン）、拒否文言の定義が 1 か所（辞書）に収まる。`UploadValidationPolicy` が 5 MB を変えれば `accept`・ヒント文・事前チェックが同時に追随する。
 - 良い点: 島が「申告 MIME」で判断しなくなったので、画面の挙動と実際の受理規則が食い違わない。
 - トレードオフ: 許可されない形式のファイルを（`accept` を無視して）選んだ場合、拒否が分かるのは往復 1 回のあとになる。バイト列を読まない限り正しい判定はできないので、往復の前に出せるのは推測でしかない。
+
+→ `spec/adr/050` に昇格（画面側の事前チェックを大きさだけにする判断として）
 
 ---
 
@@ -1852,6 +1940,8 @@ Accepted
 - トレードオフ: 購読者レジストリが 2 つに分かれる（ドメインイベント / 継続要求）。ただし両者は「聞き手が居なくてよいか」で規律が違うので、分かれていること自体が意図の表明になる。
 - `continuationSubscribers` を export しているのはテストが網羅を読むためで、配送経路は引き続き `subscribers` 1 本。
 
+→ `spec/adr/040` に昇格（継続要求の購読者を型で縛る判断として）
+
 ---
 
 ## ADR-089: 決定的 operationId を共有する予約は、OCC 敗北時に補償解放しない
@@ -1881,6 +1971,8 @@ Accepted
 - トレードオフ: OCC で敗れた試行が「自分だけが取った予約」を持っていた場合（勝者がハンドルを触らない更新だった場合）、その予約は解放されず TTL（`UNIQUE_RESERVATION_TTL_MS` = 10 分）まで残る。この間は他の利用者がそのハンドルを取れない。恒久的な破れを 10 分の過剰予約に置き換える取引で、`releaseUniqueKeys` の JSDoc が既に「解放が届かなくても TTL までキーが停まるだけ」と定めている許容範囲の内側にある。
 - 補償の条件が `updateProfile` に閉じているので、`uniqueness.ts` の 5 手続きは契約も型も変わらない。決定的 parent id を持つ別のユースケースが同じ形を必要としたときに、そこで同じ 1 行を書けばよい。
 
+→ `spec/adr/048` に昇格（OCC 敗北時に補償解放しない判断として）
+
 ---
 
 ## ADR-090: `User.avatarUrl` は `AvatarUrl` 型で持ち、`reconstruct` は「書き込み時に検証済み」として通す
@@ -1903,6 +1995,8 @@ Accepted
 - 良い点: `User.updateProfile` を呼ぶどの経路も `AvatarUrl` を作らないとコンパイルが通らない。同一オリジン検証の依存先がユースケース 1 箇所から型へ移り、5 項目すべてが「VO 型を持ち、生値からの構築は境界でだけ起きる」形に揃う。
 - トレードオフ: `reconstruct` にキャストが 1 つ入る。DB に外部オリジンの URL を直接書き込まれた場合は素通りするが、それは書き込み経路を型で塞いだ後に残る「DB を直接触る」経路の話で、ドメインの再水和が防ぐべき範囲ではない（理由はその場に WHY コメントとして残した）。
 - `AvatarUrl` はブランド付き `string` なので、`toProfileView` などの読み出し側（`string | null` を返す DTO）は変更不要。適合スイート・memory アダプターのマッピングにも波及しない。
+
+→ `spec/adr/051` に昇格（値オブジェクト型で運ぶ判断として）
 
 ---
 
@@ -2029,6 +2123,8 @@ Accepted
 - トレードオフ: 退避レコードの形が生の文字列から JSON に変わるので、旧形式の値は復元されない。`sessionStorage` はタブ内でしか生きない値なので、配備更新をまたぐ復元は元々成立していない。
 - トレードオフ: 主体を持たない退避（`userId` が読めないレコード）は、サインイン中には復元しない側に倒す。誤表示より復元漏れを選ぶ判断で、セッションが無ければ従来どおり復元される。
 
+→ `spec/adr/047` に昇格（claims を広げず主体を退避側に持つ判断として）
+
 ---
 
 ## ADR-096: 本文サイズの上限は Node 起動口（`listen.node.ts`）に置き、業務上の上限とは別段に保つ
@@ -2055,6 +2151,8 @@ server function は本文を全量 `FormData` / `File` に実体化してから 
 - トレードオフ: 上限が効くのは Node の**本番形だけ**で、`pnpm dev`（vite が listen する）には無い。他ランタイムはプラットフォーム側の上限（Cloudflare / API Gateway / Cloud Run）に委ねる。ランタイムごとの入口が違う以上、共通化するとかえって「どこで切れているか」が読めなくなるため、入口ごとに置く形を取る。
 - 波及: 12 MB を超える本文を要する機能（大きな添付のアップロード等）を足すときは、この定数と `AVATAR_UPLOAD_MAX_BYTES` の関係を同時に見直す必要がある。
 
+→ `spec/adr/050` に昇格（上限を三段に分ける判断として）
+
 ---
 
 ## ADR-097: 公開オブジェクトの配信は `private` キャッシュにし、`Content-Disposition` を明示する
@@ -2075,6 +2173,8 @@ Accepted
 - 良い点: 削除の約束が配信層まで一貫する。共有キャッシュに残った顔写真という形の「消えていない」経路が閉じる。`Content-Disposition` により、`nosniff` + CSP sandbox + マジックバイト由来の MIME に続く 4 枚目の防御が増える。
 - トレードオフ: 将来 CDN を前段に置く配備では、アバターの配信がオリジンに当たり続ける。R2 等の公開ドメインへ移る配備ではこのルート自体が不要（`publicUrl` の形はアダプターに閉じている）なので、CDN を入れる判断とオブジェクトストレージを差し替える判断は同じ場面で行われる。
 - 実測: `Cache-Control: private, max-age=31536000, immutable` / `Content-Disposition: inline; filename="{fileId}.png"` / `X-Content-Type-Options: nosniff` / `Content-Security-Policy: sandbox; default-src 'none'` を本番形で確認済み。
+
+→ `spec/adr/049` に昇格（`private` キャッシュと配信ヘッダーとして）
 
 ---
 
@@ -2128,6 +2228,8 @@ ADR-081 は生成・照合・破棄の 3 経路で束縛を組んだが、破棄
 - （追補）トレードオフ: `state` の無いキャンセル往復では束縛 Cookie が最大 10 分残る。同じブラウザーの次の開始が上書きするので、残骸が壊すのは「放置した前の往復のコールバックへ後から戻ったとき」だけで、その往復はどのみち `state` 行が無く完了できない。
 - （追補）トレードオフ: 消費前の `state` を入手した第三者は束縛を再現できるので破棄も通せる。これは ADR-081 が明記した束縛の非対称性そのままで、その相手はもともとコールバックを消費できる立場にある。
 
+→ `spec/adr/034` に昇格（束縛 Cookie の破棄点として）
+
 ---
 
 ## ADR-100: server function の配線は 1 リクエスト分の実行文脈を組み立てて直接テストする
@@ -2152,6 +2254,8 @@ ADR-081 の束縛は 3 つの純関数（`deriveOAuthStateBinding` / `assertOAut
 - トレードオフ: フレームワーク内部（ALS のグローバルキー、`requestHandler` の形）に依存するので、TanStack Start の更新で組み立て部分が壊れうる。壊れたときに直すのは `callServerFn` ヘルパー 1 か所で、赤くなること自体は検知として正しく働く。
 - トレードオフ: `validator` を通らないので、この経路のテストは入力の形を保証しない。転送境界の検証は zod スキーマと `validateInput` の担当のまま。
 
+→ `spec/adr/034` に昇格（配線の順序を固定するテストとして）
+
 ---
 
 ## ADR-101: 予約 ID は合成のまま残し、ログに出す同一性は `{ parentOperationId, kind }` に分ける
@@ -2171,6 +2275,8 @@ ID をハッシュ化すれば両立するが、決定性の根拠を「合成�
 - 良い点: 予約サガの冪等性（同じ親の再試行が同じ行を掴む）は完全に据え置き。呼び出し側 4 か所の署名も変わらない。
 - 良い点: 障害調査に要る「どの操作のどの種類が落ちたか」はログに残る。鍵そのものが要る場面ではディレクトリ行を引ける。
 - トレードオフ: 予約 1 件につき親 ID を重複して持つ。ログ用の同一性を型に載せることで、`operationId` を安易にログへ回す道を塞ぐ側の効果を取る。
+
+→ `spec/adr/048` に昇格（ログに出す同一性を分ける判断として）
 
 ---
 
@@ -2217,6 +2323,8 @@ Accepted
 - トレードオフ: `markState` は terminal → running を弾かないままなので、同ポートを再利用する #7（note move）が二重呼び出しを起こすと `terminalAt` が消えうる。引き継ぎとして progress.md に記録する。
 - トレードオフ: `listDue` を必須にしたことで、中央列挙を持たないランタイムも実装を求められる。再起動後に未完の継続を拾う経路が他に無い以上、これは縮退ではなく要件。
 
+→ `spec/adr/046` に昇格
+
 ## ADR-104: 予約解放の冪等性は「削除された ID の不在」ではなく「その鍵を名乗る現行 identity の不在」で判定する
 
 ### Status
@@ -2239,6 +2347,8 @@ receipt に directory 行の `operationId` を凍結して `beginRelease` で照
 - 良い点: ポート契約・適合スイート・アダプターは無変更。判定はすべて application 層の 1 ファイルに閉じる。
 - トレードオフ: 解放のたびに `listByUserId` を 1 回追加で読む。identity は 8 件上限なので実質定数コスト。
 - トレードオフ: 「同じ鍵を再連携したあとに旧 removal が再配送される」正常系でも `keep` の warn が出る。理由コード（`providerAccountRelinked`）で異常系と区別できるようにした。
+
+→ `spec/adr/038` に昇格（解放側の述語として）
 
 ## ADR-105: P-25 の「削除されるもの / されないもの」は宣言された participant の集合に合わせる
 
@@ -2289,6 +2399,8 @@ personal cleanup の最後のターンは 1 つのトランザクションで `a
 - 残る穴: barrier を閉じたコミットと arm のあいだでプロセスが落ちると、依然として駆動主体が残らない。塞ぐには `completePersonalCleanupIfDone` と同じ UoW で arm する必要があり、cleanup ユースケース側の変更になるので本ラウンドでは持ち越す（arm が同一 scope への小さな書き込み 1 回なのに対し、塞げた窓は別平面のコミット全体なので、窓は桁で縮んでいる）。
 - kind の定数は runner に置いた。この継続を出すのも受けるのも runner だけで、participant 登録簿（`cleanup/participants.ts`）が並べているのは「掃除に参加する component」であってこの引き渡しはその一員ではない。
 
+→ `spec/adr/043` に昇格
+
 ## ADR-107: P-25 の進捗パネルは「パネルが替わったときだけ」焦点を移す
 
 ### Status
@@ -2336,6 +2448,8 @@ claim を無視して email 経路（新規作成 / 既存への自動リンク�
 - トレードオフ: 解放が恒久的に落ちた場合、その provider account は誰も使えないまま残る（サインインも再連携も `RELEASE_PENDING`）。運用で解放を再駆動するまで固まる形を選んだ — 誤って通すより固まるほうが安全側に倒れる。
 - spec-sync 候補: `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケース表に `PROVIDER_ACCOUNT_RELEASE_PENDING` が無い。手順 3 の要求そのものは満たしたので、表側の追記を spec-sync に回す。
 
+→ `spec/adr/038` に昇格
+
 ---
 
 ## ADR-109: dev IdP の起動ガードは `NODE_ENV` の allowlist にする（ADR-003 / ADR-073 の追補）
@@ -2362,6 +2476,8 @@ ADR-003 の規則 1 と ADR-073 は、dev IdP の production 混入を「`NODE_E
 - 良い点: `.env.example` の「never on a deployed host」という運用約束が、配備者の申告ではなくコードで裏づけられる。
 - トレードオフ: `NODE_ENV=production pnpm start` 相当の本番形で dev IdP を検証する経路は `NODE_ENV=development pnpm start` の 1 通りだけになる（ADR-073 の想定どおり）。`NODE_ENV=test` でユニットテスト以外から起動する運用を将来入れる場合は、この allowlist を明示的に広げる判断が要る。
 
+→ `spec/adr/037` に昇格
+
 ---
 
 ## ADR-110: Cookie の `Secure` も `NODE_ENV` の allowlist で判定する（ADR-109 の追補）
@@ -2386,6 +2502,8 @@ Accepted
 - 良い点: 「denylist なので配備値で緩む」という読みが、コードの向きとコメントの両方で閉じる。
 - 良い点: 実測で `dist/server/rsc/assets/session-*.js` と `oauthStateCookie-*.js` の双方が `isDevelopment = () => false` に畳み込まれ、`secure: !isDevelopment()` は常に真。両ファイルとも `NODE_ENV` の参照は 0 件。
 - トレードオフ: `vite dev` 以外で `NODE_ENV=development` を立てても `Secure` は外れない（成果物は畳み込み済み）。dev の平文 http は `pnpm dev` の 1 経路だけという ADR-109 と同じ前提に乗る。
+
+→ `spec/adr/037` に昇格（Cookie の `Secure` 判定として）
 
 ---
 
@@ -2432,6 +2550,8 @@ ticket の保持がクライアント責務であること自体は ADR-006 の�
 - 良い点: `/settings/danger` が復元経路の例外で `ServerErrorState` に倒れなくなる。
 - トレードオフ: 保持に失敗したことは利用者に見えない。リロードすると進捗を追えなくなるが、その時点の案内（サインインし直して確認する）は既存の `settled` 表示が持つ。
 - CLAUDE.md の「broad catch は境界だけ」との関係: ここは Web Storage という外部資源との境界で、アダプターが driver の例外を畳むのと同じ位置づけになる。
+
+→ `spec/adr/047` に昇格（退避を best-effort にする判断として）
 
 ---
 
