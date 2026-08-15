@@ -11,16 +11,22 @@ Guidance for coding agents working in this repository.
 - Validate at the boundaries (transport in, value-object construction); trust the static type in between.
 - Keep cross-cutting concerns (clock, id generation, logging) behind ports so domain and application code stays deterministic and testable.
 
+## Design canon
+
+`spec/` is the canon for the requirements and design currently in force. Read it before changing behaviour, and revise it when a decision changes — it holds no progress logs or superseded judgements, so what is written there is meant to be true of the code.
+
+- `spec/index.md` — the entry point: scenarios, pages, design tokens, domains, usecases, DB / platform / presentation design, test cases, manual tests.
+- `spec/adr/index.md` — the index of non-obvious design decisions still in force, plus the premise-dependency map between them. Anything surprising in the code usually has an ADR behind it.
+
+`docs/` holds the implementation-side companions: `docs/backend_implementation_example.md` and `docs/frontend_implementation_example.md` (worked patterns), `docs/runtime_node.md` (operating the runtime), `docs/test.md` (test layering, naming, and the fake policy).
+
 ## Workspace layout
 
-pnpm monorepo. One lockfile at the root; packages resolve each other via package `exports` pointing straight at `.ts` sources (no build step for internal packages). `@repo/core` exposes a single flat rule — `"./*": "./src/*.ts"` — so every subpath maps 1:1 to a file and there is no barrel to import from.
+pnpm monorepo. `pnpm-workspace.yaml` declares exactly two package globs — `apps/*` and `packages/*`. One lockfile at the root; packages resolve each other via package `exports` pointing straight at `.ts` sources (no build step for internal packages). `@repo/core` exposes a single flat rule — `"./*": "./src/*.ts"` — so every subpath maps 1:1 to a file and there is no barrel to import from.
 
-- `packages/core` (`@repo/core`) — domain / application / adapters + shared `lib/` primitives. Framework-free; imported everywhere as `@repo/core/*`.
-- `apps/web` (`@repo/web`) — the TanStack Start app: routes, components, the presentation layer, per-runtime server entries and workers, `scripts/`, and all runtime configs (vite / wrangler / drizzle / Dockerfile).
-- `infra/aws` (`@repo/infra-aws`) — CDK stack.
-- `infra/cloudflare/pulumi` (`@repo/infra-cloudflare`) — Pulumi resources and Wrangler-config rendering.
-- `infra/gcp` — Terraform only; it is not an npm package and lives outside the workspace.
-- Root — shared tooling only: Biome, vitest orchestration configs, delegating scripts. `@types/*` are publicly hoisted (see `pnpm-workspace.yaml`) so `.d.ts` files inside the pnpm store can resolve `react` / `vitest` types.
+- `packages/core` (`@repo/core`) — domain / application / adapters, plus the shared `lib/` primitives and `config.ts`. Framework-free; imported everywhere as `@repo/core/*`.
+- `apps/web` (`@repo/web`) — the TanStack Start app: routes, components, the presentation layer, the server entry and worker runner, `scripts/`, and the build config (`vite.config.node.ts`).
+- Root — shared tooling only: Biome, the vitest config, delegating scripts. `@types/*` are publicly hoisted (see `pnpm-workspace.yaml`) so `.d.ts` files inside the pnpm store can resolve `react` / `vitest` types.
 
 A future app (MCP server, CLI, …) is a new `apps/*` package that declares `"@repo/core": "workspace:*"` and owns its DI wiring or reuses one from `packages/core/src/application/di/`. No tsconfig `paths` mirror is needed.
 
@@ -28,11 +34,13 @@ A future app (MCP server, CLI, …) is a new `apps/*` package that declares `"@r
 
 Run from the repo root — root scripts delegate to `@repo/web` where relevant:
 
-- `pnpm dev` / `pnpm build` / `pnpm start`
+- `pnpm dev` / `pnpm build` / `pnpm start` — aliases of `pnpm dev:node` / `pnpm build:node` / `pnpm start:node`, which are also callable directly
 - `pnpm lint` / `pnpm lint:fix` / `pnpm format` / `pnpm format:check` (Biome, whole repo)
-- `pnpm typecheck` (root `tsgo` for the vitest configs + `pnpm -r typecheck` across packages)
-- `pnpm test` / `pnpm test:unit` (vitest runs at the root, spanning `apps/web` and `packages/core`; `test` aliases `test:unit`)
+- `pnpm typecheck` (root `tsgo` for the vitest config + `pnpm -r typecheck` across packages)
+- `pnpm test` / `pnpm test:unit` (one vitest run at the root, spanning `apps/web` and `packages/core`; `test` aliases `test:unit`)
 - Web-only scripts not delegated at the root: `pnpm --filter @repo/web <script>` (or run inside `apps/web`)
+
+Persistence is in-memory, so there is no database to provision and no migration script. Copy `apps/web/.env.example` to `apps/web/.env` before the first `pnpm dev` — that file documents every variable, including which sign-in identity provider to configure.
 
 After changes: `pnpm typecheck && pnpm lint:fix && pnpm format`.
 
@@ -42,33 +50,35 @@ Hexagonal architecture with DDD. Dependencies point inward: presentation → app
 
 ### Layers
 
-- **Domain** (`packages/core/src/domain/`) — Pure business logic: entities, value objects, domain services, port interfaces, domain events. No I/O, no framework, no ambient time / id generation. Throws `BusinessRuleError` for invariant violations.
-- **Application** (`packages/core/src/application/`) — Use cases that orchestrate the domain. Defines ports for cross-cutting concerns (clock, id generation, logging), the unit-of-work abstraction, and application-level errors. DTO projection for the presentation layer lives here.
-- **Adapters** (`packages/core/src/adapters/`) — Concrete implementations of ports per provider (DB, external APIs, etc). Translate driver-specific errors into the shared error contracts.
-- **Presentation** (`apps/web/app/presentation/`) — Framework-specific cross-cutting utilities for TanStack Start: server-function entry point, error-response middleware, transport-boundary input validation, error display helpers. The full `SerializedError` union is assembled here from each layer's variants.
+- **Domain** (`packages/core/src/domain/`) — Pure business logic: entities, value objects, domain services, port interfaces, domain events. No I/O, no framework, no ambient time / id generation. Throws `BusinessRuleError` (`domain/error.ts`) for invariant violations. Eight folders: `common` (events / pagination / time / version primitives shared by the rest), `conversion`, `identity`, `job`, `note`, `storage`, `usage`, `workspace`.
+- **Application** (`packages/core/src/application/`) — Use cases that orchestrate the domain, one folder per domain (`identity/`, `note/`, `storage/`, `usage/`) with DTO projection in each `view.ts`. Alongside them: `ports/` (clock, id generation, logging, and the persistence / infrastructure ports), `execution/` (the two-plane unit of work and deterministic event ids), `scope.ts` (scope keys), `workers/` (relay, outbox prune, scope-task runner, subscriber wiring), `cleanup/` (account-deletion participants), `events/`, `di/` (container wiring), and `errors.ts`.
+- **Adapters** (`packages/core/src/adapters/`) — Concrete implementations of ports per provider. `memory/` is the reference persistence backend (a real backend, not a fake — [ADR 024](spec/adr/024-in-memory-adapter-as-first-class-backend.md)); `node/` holds the in-process queue dispatcher and relay trigger; `oauth/` holds the Google client and the loopback dev identity provider; `conformance/` holds the shared port-conformance suites. Adapters translate driver-specific errors into the shared error contracts.
+- **Presentation** (`apps/web/app/presentation/`) — Framework-specific cross-cutting utilities for TanStack Start. The load-bearing files are `serverAction.ts` (`loadServerDeps` / `serverData` — the DI entry for server-side code), `errorResponseMiddleware.ts` (the redaction + HTTP-status boundary for server functions), `serverFragment.tsx` (the same boundary for RSC fragments that reject mid-stream), `validator.ts` (`validateInput`, the transport-boundary schema check), and `session.ts` (session-cookie transport). The full `SerializedError` union is assembled here from each layer's variants. `apps/web/app/start.ts` re-registers the framework's CSRF middleware, which creating a `createStart` instance would otherwise drop.
 
 ### Not a layer
 
-- `packages/core/src/lib/` — Shared structural primitives (e.g. the `CodedError` base, structural pieces of the serialized-error contract) that every layer may extend. Living outside the layered tree is what lets all four layers depend on it without violating the inward-only direction.
+- `packages/core/src/lib/error.ts` — Shared structural primitives (the `CodedError` base, structural pieces of the serialized-error contract) that every layer may extend. Living outside the layered tree is what lets all four layers depend on it without violating the inward-only direction.
+- `packages/core/src/config.ts` — Static site content (name, default title / description, theme colour) folded into the app config at DI time. Same reasoning: no layer owns it.
 
 ### Frontend
 
-TanStack Start with React 19 / RSC, TanStack Router (file-based routes), Tailwind v4. Components live under `apps/web/app/components/`, routes under `apps/web/app/routes/`. Default to async server components for data fetching and usecase invocation; use server functions (via the presentation-layer entry point) for mutations and loader bridges; drive client mutations through React 19 primitives directly rather than custom wrappers.
+TanStack Start with React 19 / RSC, TanStack Router (file-based routes), Tailwind v4. Components live under `apps/web/app/components/`, routes under `apps/web/app/routes/`. Default to async server components for data fetching and usecase invocation; use server functions for mutations and loader bridges; drive client mutations through React 19 primitives directly rather than custom wrappers. Server functions are declared inline where they are used — route-adjacent `-action.tsx` (e.g. `apps/web/app/routes/settings/-action.tsx`) or component-adjacent `action.ts` — because the compiler rewrites the `createServerFn(...)` chain at its call site.
 
 Mutations are a three-layer concern: server component fetches → `"use client"` island for interaction → React 19 primitives (`useActionState` / `useTransition` / `useOptimistic`) for instant feedback. The third layer is mandatory — a server function wired straight to a `<form>` with no optimistic/pending UI is the default failure mode that yields a sluggish, round-trip-only app.
 
-Ownership follows the kind of change. **In-item mutations** (a field toggle, an inline rename) don't change list membership and the leaf survives them, so the leaf owns its server function, its item-local `useOptimistic`, and its error UI. **List-membership changes** (add/remove) can't use an item-local `useOptimistic` — they're a parent-state change — so move list ownership to a client island seeded by the loader (`apps/web/app/components/todo/TodoBoard`) and have the owner run the server function for them. Delete in particular must run in the owner: the optimistic removal unmounts the leaf before the request settles, so a leaf-owned delete would discard its own error UI. Add is dispatched from the form's action because the form lives outside the list and survives the round trip. Every mutation reconciles with `router.invalidate()`; the optimistic list re-bases onto the refetched data. `apps/web/app/components/todo/` is the reference for all of this.
+Ownership follows the kind of change. **In-item mutations** (a field toggle, an inline rename) don't change list membership and the leaf survives them, so the leaf owns its server function, its item-local `useOptimistic`, and its error UI — `apps/web/app/components/settings/ProfileForm/editor.tsx` is the reference (the avatar swap shows the picked image optimistically while the two-step store-then-update runs). **List-membership changes** (add/remove) can't use an item-local `useOptimistic` — they're a parent-state change — so move list ownership to a client island seeded by the server component and have the owner run the server function for them; `apps/web/app/components/settings/IdentityList/board.tsx` is the reference. Delete in particular must run in the owner: the optimistic removal unmounts the leaf before the request settles, so a leaf-owned delete would discard its own error UI. Every mutation reconciles with `router.invalidate()`; the optimistic list re-bases onto the refetched data. When the mutation navigates away instead of changing a list in place (`apps/web/app/components/note/CreateNoteButton/`), the pending state of `useTransition` is the third layer and no optimistic insert is needed.
 
-Loading fallbacks come in two kinds, by scope. **Per-fragment streaming** is for content tied 1:1 to a URL (lists, details): the loader forwards the `renderServerComponent(...)` promise **without awaiting** it, so navigation settles instantly and the fragment streams in under `<Suspense fallback={<Skeleton/>}>` (resolved client-side by `Deferred`/`use()`). `apps/web/app/routes/todo/index.tsx` is the reference; skeletons live under `apps/web/app/components/ui/Skeleton` (generic) and `apps/web/app/components/todo/TodoListSkeleton` (shaped to the real DOM so it swaps in without layout shift). **Route-level pending** (`router.tsx`'s `defaultPendingComponent` + `defaultPendingMs`/`defaultPendingMinMs`) is the navigation fallback for any route whose loader genuinely *blocks*; a route that streams (like `/todo`) settles its loader immediately and never triggers it. Keep the two roles distinct: skeletons cover the initial/streaming load, the optimistic primitives above cover post-mount mutations.
+Loading fallbacks come in two kinds, by scope. **Per-fragment streaming** is for content tied 1:1 to a URL (lists, details): a `GET` server function returns the `renderServerFragment(...)` promise **unresolved**, and the loader forwards it without awaiting the fragment, so navigation settles instantly and the fragment streams in under `<Suspense fallback={<Skeleton/>}>` (resolved client-side by `Deferred`/`use()`). `apps/web/app/routes/notes/index.tsx` with `apps/web/app/routes/notes/-action.tsx` is the reference; skeletons live under `apps/web/app/components/ui/Skeleton` (generic) and next to each fragment (`components/note/NoteListSkeleton`, `components/settings/IdentityListSkeleton`, …), shaped to the real DOM so they swap in without layout shift. **Route-level pending** (`router.tsx`'s `defaultPendingComponent` + `defaultPendingMs`/`defaultPendingMinMs`) is the navigation fallback for any route whose loader genuinely *blocks*; a route that streams settles its loader immediately and never triggers it. Keep the two roles distinct: skeletons cover the initial/streaming load, the optimistic primitives above cover post-mount mutations.
 
 ## Key concepts
 
 Each of these is enforced in code and documented in library-level JSDoc at the relevant module — read there for the details.
 
-- **Unit of Work** — every transactional usecase runs inside `UnitOfWorkProvider.run(fn)`; the context exposes the repositories the callback may touch and the only path to enqueue domain events.
-- **Outbox / domain events** — events collected during a UoW are persisted transactionally and dispatched out-of-band by a relay worker. Delivery is at-least-once with no ordering guarantee; consumers must be idempotent. The relay worker claims rows under a lease so multiple workers cannot dispatch the same row, and a crashed worker's claim is reclaimable once the lease lapses.
-- **Retry strategy** — driver-level transient errors are retried inside the adapter; application code never sees them. There is intentionally no application-level OCC retry decorator.
-- **Input validation** — validated at exactly two points: the transport boundary (shape / DoS) and value-object construction (business invariants). Usecases trust the static type in between. On the frontend the transport boundary is the route's `validateSearch` (URL params) or `serverAction`'s `inputValidator` (client-posted payloads); `serverData` is **internal-only** and intentionally schemaless — never feed unvalidated external input through it.
+- **Unit of Work** — two planes, kept apart by type ([ADR 023](spec/adr/023-two-plane-unit-of-work.md)): `GlobalUnitOfWorkProvider.run(fn)` for the global control plane and public projections, `ScopeUnitOfWorkProvider.run(scope, fn)` for one scope's business data. Each context exposes only the repositories that plane's callback may touch and the only path to enqueue domain events. **Nesting `run` is forbidden** in either direction. Writes the design deliberately places outside a UoW (the uniqueness reservation saga, the note route saga, the login-attempt counter, best-effort expiry sweeps) go through their own atomic store ports instead.
+- **Outbox / domain events** — events collected during a UoW are persisted transactionally and dispatched out-of-band by the relay worker. Delivery is at-least-once with no ordering guarantee; consumers must be idempotent. The relay worker claims rows under a lease so multiple workers cannot dispatch the same row, and a crashed worker's claim is reclaimable once the lease lapses. A row that exceeds `maxAttempts` is quarantined (`failed_at` stamped) so a poison event stops retrying. The same outbox also carries the continuation requests that drive multi-turn work ([ADR 040](spec/adr/040-continuation-transport.md) / [ADR 041](spec/adr/041-deterministic-continuation-event-id.md)).
+- **Retry strategy** — driver-level transient errors are retried inside the adapter; application code never sees them. There is intentionally no application-level OCC retry decorator. A usecase may still retry one specific call when losing the response would strand a saga — `application/note/createBlankNote.ts` retries `activateCreate` once, converging on the same operation id.
+- **Port contracts and conformance** — the canon of a persistence-port contract is the port definition and its JSDoc; `packages/core/src/adapters/conformance/` is that contract's executable form, written as `describeXxxContract(name, makeBackend)` suites ([ADR 026](spec/adr/026-port-contract-and-conformance.md)). The memory backend runs them from `adapters/memory/__tests__/`; any future backend imports the same suites and must pass them identically. Adding a contractual behaviour means touching both the port JSDoc and the suite.
+- **Input validation** — validated at exactly two points: the transport boundary (shape / DoS) and value-object construction (business invariants). Usecases trust the static type in between. On the frontend the transport boundary is the route's `validateSearch` (URL params) or a server function's `.validator(validateInput(schema))` (client-posted payloads), declared inline on the `createServerFn(...).middleware([errorResponseMiddleware]).validator(...)` chain. `serverData` (from `presentation/serverAction.ts`) is **internal-only** and intentionally schemaless — never feed unvalidated external input through it.
 
 ## Error handling
 
@@ -83,21 +93,20 @@ Each of these is enforced in code and documented in library-level JSDoc at the r
 - **application → presentation**: the server-function boundary catches and serializes any thrown error structurally via its `kind`-tagged form. Usecases themselves do not serialize.
 - **worker → root**: workers wrap per-row processing in `try / catch` for partial-failure tolerance. This is the only place a broad `catch` is expected in application-layer code.
 
-## Reference runtimes
+## Reference runtime
 
-The template ships four reference runtime wirings — Node.js + libSQL (single process), Cloudflare Workers + D1 + Queues, AWS Lambda + Turso + SQS, and GCP Cloud Run + Turso + Pub/Sub — as worked examples of swapping the adapter and entry-point layers while keeping `domain` / `application` / `presentation` intact. **Pick one and delete the others**, or keep multiple if you genuinely need multiple targets; the template does not assume you maintain a multi-runtime deployment.
+There is exactly one runtime wiring: **Node.js + the in-memory adapters** ([ADR 025](spec/adr/025-single-reference-runtime.md)). No database, no container, no cloud account — the HTTP server and the whole outbox lifecycle (relay, scope tasks, prune) run in a single process, and all data resets on restart.
 
-Entry points by runtime:
+- `apps/web/app/server.node.ts` — fetch handler plus the `boot()` that builds the runtime.
+- `apps/web/app/worker/node/runner.ts` — single-process orchestrator of the background roles (relay tick, scope-task tick, prune tick) and the in-process triggers that kick them out of band.
+- `apps/web/scripts/listen.node.ts` — production launcher: loads the built bundle, serves `dist/client` static files, registers the fetch handler with `@hono/node-server`, and owns the shutdown sequence.
+- `packages/core/src/application/di/memoryRuntime.ts` — assembles the adapter graph; `di/serverNode.ts` reads and validates the environment and builds the request / worker containers; `di/containerStore.ts` is what presentation code calls.
+- `apps/web/vite.config.node.ts` — the only build config.
 
-- **Cloudflare**: `apps/web/app/server.cloudflare.ts` (fetch), `apps/web/app/worker/cloudflare/{relay,consumer,pruner,dlq}.ts`, wired by `packages/core/src/application/di/serverCloudflare.ts`.
-- **Node**: `apps/web/app/server.node.ts` (fetch handler + boot), `apps/web/app/worker/node/runner.ts` (single-process orchestrator of all four roles), `apps/web/scripts/listen.node.ts` (production launcher), `apps/web/scripts/migrate.node.ts` (libSQL migrator). Wired by `packages/core/src/application/di/serverNode.ts`.
-- **AWS**: `apps/web/app/server.aws.ts` (API Gateway → fetch), `apps/web/app/worker/aws/{relay,consumer,pruner,dlq}.ts` (thin role-typed wrappers over shared `handlers.ts`), `apps/web/scripts/migrate.aws.ts` (Turso migrator), `infra/aws/` (CDK stack). Wired by `packages/core/src/application/di/serverAws.ts`.
-- **GCP**: `apps/web/app/server.gcp.ts` (Cloud Run role dispatcher), `apps/web/app/worker/gcp/{relay,consumer,dlq}.ts`, `apps/web/scripts/migrate.gcp.ts` (Turso migrator), `infra/gcp/` (Terraform examples). Wired by `packages/core/src/application/di/serverGcp.ts`.
+Operational guidance lives in `docs/runtime_node.md`.
 
-Per-runtime operational guidance lives in `docs/runtime_node.md`, `docs/runtime_cloudflare.md`, `docs/runtime_aws.md`, and `docs/runtime_gcp.md`. The Node runtime is the default for `pnpm dev` / `pnpm build` / `pnpm start`; the other runtimes use the `:cf`, `:aws`, and `:gcp` suffixes.
-
-To target a different runtime (Cloud Run, Fly Machines, etc.), add a new adapter group under `packages/core/src/adapters/{provider}/` and a paired entry point — the inward layers stay put. Existing adapters can usually be reused across runtimes (libSQL works on Lambda / Cloud Run unchanged); the swap is the entry + DI wiring, not the whole stack.
+The final execution platform is Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues (`spec/platform/index.md`, [ADR 021](spec/adr/021-scope-sharded-data-plane.md)). Reaching it means adding an adapter group under `packages/core/src/adapters/{provider}/` plus a paired entry point and DI wiring — the inward layers stay put, and the new backend is held to the same conformance suites the memory backend passes today.
 
 ## Examples
 
-具体的な実装パターンは `docs/backend_implementation_example.md` / `docs/frontend_implementation_example.md` を参照。
+具体的な実装パターンは `docs/backend_implementation_example.md` / `docs/frontend_implementation_example.md` を参照。テストの層と命名は `docs/test.md` を参照。
