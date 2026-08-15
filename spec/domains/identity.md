@@ -358,15 +358,31 @@ interface IdentityUniqueDirectory {
   resolve(kind: "email" | "handle" | "providerAccount", normalizedKey: string): Promise<UserId | null>;
   reserve(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; userId: UserId; operationId: string; expiresAt: Date }): Promise<void>;
   activate(operationId: string, expectedUserVersion: number): Promise<void>;
+  beginRelease(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; expectedUserId: UserId; operationId: string }): Promise<void>;
   release(operationId: string): Promise<void>;
 }
 ```
 
-`UserRepository`はcurrent UserId shardの書き込み用であり、別shardのIDを受けない。`UserBatchReader.resolveMany`は入力最大100 UserIdをhash shard別にgroupingし、最大6接続のwaveでbatch readする。署名済みrouting generationを使い、reshard中は旧新を読み、UserIdごとにversionが大きい行を採る。入力IDから直接routeするため全User shard scanは行わない。
+`UserRepository`はcurrent UserId shardの書き込み用であり、別shardのIDを受けない。`UserBatchReader.resolveMany`は入力最大100 UserIdをhash shard別にgroupingし、最大6接続のwaveでbatch readする。署名済みrouting generationを使い、reshard中は旧新を読み、UserIdごとにversionが大きい行を採る。入力IDから直接routeするため全User shard scanは行わない。入力が 100 件の上限を超えた場合は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない。`NoteRouteStore.resolveMany`（上限 500 件。[domains/note.md](./note.md)）と同じ契約である。
 
 サイトマップに載せる「公開ノートを持つ利用者」の列挙は、公開ノートの有無を判定する必要があるため `NoteQueryService.listPublicAuthors` が担う。母集合は `/@:handle` の一覧（`searchPublicNotes` の `ownerFilter`）と同じ所有者基準で、`listPublicAuthors` が返す利用者 ID を `UserBatchReader.resolveMany` でハンドルに解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。
 
-**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
+`IdentityUniqueDirectory` の行は `reserved` / `active` / `releasing` の 3 状態を取る。確保は 2 相で、`reserve` が正規化鍵を期限付きで operation に割り当て、所有 UoW の commit 後に `activate`（期待 User version を条件とする）が恒久 claim へ昇格させ、失敗時は `release` が解放する。**取り壊しも同じ 2 相の鏡像**であり、`beginRelease` が `active` の行を `releasing` にして解放側の operation へ付け替え、続く `release(operationId)` がその行を落とす。`beginRelease` を operation ID ではなく `normalizedKey` で引くのは、claim を作った operation はとうに終わっており、解放する側がその ID を再導出できないためである。取り壊しを 2 相にするのは、claim が索引であって資格ではなく（[ADR 038](../adr/038-provider-account-claim-and-identity-row.md)）、解放を促すイベントの配送が at-least-once だからである。下の「ドメインイベント」の `identity.identity.removed` が「global consumer が releasing→release する」と書いているのは、この 2 相のことを指す。
+
+**非対称が 4 つある。取り違えない。**
+
+- `resolve` は恒久 claim（`active`）の持ち主だけを返す。まだ `reserved` の鍵と、既に `releasing` の鍵は、どちらも `null` に見える
+- `reserve` は `releasing` の行を**奪えない**。奪えるのは「`reserved` かつ期限切れ」の行だけで、`releasing` の鍵に対しては `ConflictError`（`EMAIL_ALREADY_USED` / `HANDLE_ALREADY_USED` / `PROVIDER_ACCOUNT_ALREADY_LINKED`）を返す。同じ operation ID からの再要求は冪等に期限を延ばすだけである
+- `beginRelease` は `reserved` の行に対して **no-op**。取り壊す対象は恒久 claim だけである。予約を解放側へ付け替えると、続く `release` が `reserved` の行も落とすため、その予約を握って進行中の operation がサガの途中で鍵を失う。行が無い場合と別の利用者が持っている場合も同じく no-op で、解放要求が持ち主から鍵を奪うことはない
+- `release` は当該 operation の `reserved` と `releasing` の行を落とす。`active` の行には触れない（恒久 claim の解放は必ず `beginRelease` を通る）
+
+provider account の一意性は `IdentityUniqueDirectory` が**唯一の担保**であり、`IdentityRepository` は検査しない（claim は索引であって資格ではない — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。
+
+**エラーケース**（`UserRepository`）: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
+
+**エラーケース**（`UserBatchReader`）: `SystemError(DatabaseError)`（入力 100 件の上限超過を含む）
+
+**エラーケース**（`IdentityUniqueDirectory`）: `ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")` / `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（鍵を別の利用者が持っている）、`SystemError(DatabaseError)`
 
 ### IdentityRepository
 
@@ -376,7 +392,9 @@ interface IdentityRepository extends TransactionalRepository<Identity, IdentityI
 }
 ```
 
-**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`、`SystemError(DatabaseError)`
+`(provider, providerAccountId)` の一意性はここでは検査しない。担保は `IdentityUniqueDirectory` の claim 索引だけが持ち、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を投げるのもそちらである（[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。バックエンドが DB 側に一意制約を置くのは自由だが、契約としては要求しない。
+
+**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
 ### SessionRepository
 
@@ -401,12 +419,15 @@ interface SessionRepository {
 interface AuthTokenRepository {
   insert(token: AuthToken): Promise<void>;
   findByTokenHash(userId: UserId, tokenHash: TokenHash): Promise<AuthToken | null>;
+  findPendingByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose): Promise<PendingAuthToken | null>;
   save(token: AuthToken): Promise<void>;
   deleteByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose, limit: number): Promise<number>;
   deleteOlderEpochByUser(userId: UserId, currentEpoch: number, limit: number): Promise<number>;
   deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
 }
 ```
+
+`findPendingByUserAndPurpose` は、`auth_tokens` の (`user_id`, `purpose`) 部分一意索引（[database/index.md](../database/index.md) の `auth_tokens`）が保証する at-most-one live token を読む唯一の口である。「その利用者へ最後にトークンを発行したのはいつか」を答えるのがこの索引だけなので、再送間隔の判定はここを通す（`resendVerificationEmail` / `requestPasswordReset`。[usecases/identity.md](../usecases/identity.md)）。
 
 `save` で `ConsumedAuthToken` を保存するとき、アダプターは `status = 'pending'` の行への条件付き更新（`UPDATE ... SET status = 'consumed' WHERE id = ? AND status = 'pending'`）として実装する。更新行数が 0 なら他の要求が先に消費したものとして `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` を返す。これにより並行する消費のうち 1 件だけが成功する。
 
@@ -448,6 +469,7 @@ interface SecureTokenGenerator {
 
 ```ts
 interface SignInOAuthClient {
+  deriveCodeChallenge(codeVerifier: string): string;   // PKCE S256。純粋・決定的
   buildAuthorizationUrl(params: { provider: OAuthProvider; state: string; codeChallenge: string; redirectUri: string }): string;
   exchangeCode(params: { provider: OAuthProvider; code: string; codeVerifier: string; redirectUri: string }): Promise<OAuthProfile>;
 }
@@ -462,7 +484,9 @@ type OAuthProfile = Readonly<{
 }>;
 ```
 
-**エラーケース**: `SystemError(ExternalServiceError)`（通信・応答不正）、`ValidationError("OAUTH_CODE_INVALID")`（コードの期限切れ・不正）
+`deriveCodeChallenge` を `SecureTokenGenerator` ではなくここに置くのは、PKCE の challenge が S256 の**プロトコル規定の表現**（`base64url(sha256(verifier))`）であって、アダプターが自由に選べる保存用ハッシュではないからである。プロトコルを既に知っているポートに置くことで、application 層をハッシュ表現から解放する（[usecases/identity.md](../usecases/identity.md) の `startOAuthFlow` 手順 3 で「`codeChallenge` を算出する」主体がこれにあたる）。
+
+**エラーケース**: `SystemError(ExternalApiError)`（通信・応答不正）、`ValidationError("OAUTH_CODE_INVALID")`（コードの期限切れ・不正）
 
 ### LoginAttemptStore
 
@@ -519,9 +543,10 @@ payload は変化の通知にとどめ、投影に必要な現在値を運ばな
 ```
 IdentityErrorCode =
   | "InvalidId" | "InvalidEmail" | "InvalidHandle" | "HandleReserved"
-  | "InvalidDisplayName" | "InvalidBio" | "WeakPassword"
+  | "InvalidDisplayName" | "InvalidBio" | "InvalidAvatarUrl" | "WeakPassword"
   | "InvalidProviderAccount" | "TokenExpired"
   | "LastIdentityCannotBeRemoved" | "PasswordIdentityAlreadyExists"
+  | "IdentityLimitExceeded" | "AccountDeletionRetryLimitExceeded"
 ```
 
 ## ユースケース（概要）

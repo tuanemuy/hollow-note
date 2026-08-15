@@ -168,7 +168,9 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 入力DTO
 
-`subjectType`, `subjectId`
+`userId: string`, `subjectType`, `subjectId`
+
+`userId` は**主体ではなく実行者**である。`assertActorWritable` が「誰の依頼か」を要るため入力に持つ（[domains/index.md](../domains/index.md) — 全ドメインの通常 write 入口が `assertWritable` と `assertActorWritable` の両方を呼ぶ）。user 主体の場合は実行者と一致していなければならず、一致しなければ `BusinessRuleError(InsufficientRole)`。workspace 主体の membership 検査は `WorkspaceAuthorization` が入るまで未実施。
 
 ### 出力DTO
 
@@ -223,7 +225,9 @@ scope cleanupに合わせてquota行を消す。workspace deletionはlocal event
 
 ### 出力DTO
 
-なし。
+`ScopeCleanupTurn` — `status`（`settled` / `continued` / `stalled` / `alreadyApplied`）と `personalCleanupCompleted: boolean`。
+
+この turn を駆動した側は、継続を積むか完了 ack を上げるかを件数からは決められない（手順 3 の「100 件未満になってから receipt へ ack を付ける」判断は本ユースケースの内側にある）。呼び出し側が知らなければ制御できない分岐なので、結果として返す。
 
 ### 処理フロー
 

@@ -77,6 +77,7 @@ StorageQuota = {
 | `add` | `quota: StorageQuota, bytes: number, now: Date` | `StorageQuota` | `bytes` が負なら `BusinessRuleError(InvalidDelta)`。加算する |
 | `subtract` | `quota: StorageQuota, bytes: number, now: Date` | `StorageQuota` | 0 を下回る場合は 0 に丸める（防御的措置。重複配送の排除は購読側の重複排除が担う — ドメインイベントの節を参照） |
 | `incrementNotes` / `decrementNotes` | `quota: StorageQuota, now: Date` | `StorageQuota` | ノート件数の増減。0 を下回らない |
+| `replaceTotals` | `quota: StorageQuota, totals: { consumedBytes: number; noteCount: number }, now: Date` | `StorageQuota` | スキャン結果は差分ではなく正本なので、消費量とノート数を置き換える（`recalculateStorageUsage` の棚卸し）。負値・非整数は `BusinessRuleError(InvalidDelta)` |
 | `changeLimit` | `quota: StorageQuota, limit: ByteQuota, now: Date` | `StorageQuota` | 運用による上限変更 |
 | `headroom` | `quota: StorageQuota` | `number` | `max(0, limit - consumedBytes)` |
 | `warningLevel` | `quota: StorageQuota` | `UsageWarningLevel` | 消費率から判定 |
