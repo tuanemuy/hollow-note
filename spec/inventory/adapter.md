@@ -25,7 +25,7 @@
 | ADP-common-017 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する。membership item は prepare ack だけでは完了せず、cleanup phase でも claim できる |
 | ADP-common-018 | `AccountDeletionManifestStore.acknowledge` | `spec/domains/index.md#ScopeKey-と永続化境界` | item phase の完了を冪等に記録する |
 | ADP-common-019 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 配備が宣言した global・personal receipt の完了を記録する。receipt が全部そろっても item の完全 ack を代替しない |
-| ADP-common-020 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | rollback release の全完了を判定する |
+| ADP-common-020 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み membership item の release ack がすべてそろったかを判定する。`personalAbort` receipt は判定対象に含まない（利用者を `active` へ戻す復帰ゲートは述語より強く、ユースケース側が持つ — ADR 053） |
 | ADP-common-021 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み全 item の完全 ack と宣言された全 receipt の両方がそろって初めて true にする。membership item は cleanup レーンが ack して初めて完全 ack になるので、prepare ack ＋ 宣言 receipt だけでは true にならない |
 | ADP-common-022 | `AccountDeletionManifestStore.compactItems` | `spec/domains/index.md#ScopeKey-と永続化境界` | ack 済み item を有界に縮約する |
 | ADP-common-023 | `AccountDeletionManifestStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 成功した manifest を終端・保持期限付きにする |
@@ -56,7 +56,7 @@
 | ADP-identity-007 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約し、鍵の種類に対応する conflict で他者を弾く。奪えるのは失効した `reserved` だけで、`releasing` の鍵は奪えない |
 | ADP-identity-008 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を恒久 claim へ昇格させる |
 | ADP-identity-009 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の `reserved` と `releasing` の行を落とす（`active` には触れない） |
-| ADP-identity-010 | `IdentityRepository.insert` | `spec/domains/identity.md#ポート` | 新規 Identity を保存する |
+| ADP-identity-010 | `IdentityRepository.insert` | `spec/domains/identity.md#ポート` | 新規 Identity を保存する。provider account の一意性はここでは検査しない（担保は `IdentityUniqueDirectory` の claim 索引だけが持つ — ADR 054）。バックエンドが DB 側に一意制約を置くのは自由だが契約としては要求しない |
 | ADP-identity-011 | `IdentityRepository.findById` | `spec/domains/identity.md#ポート` | IdentityId で OCC token 付き Identity を取得する |
 | ADP-identity-012 | `IdentityRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ Identity を更新する |
 | ADP-identity-013 | `IdentityRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ Identity を削除する |

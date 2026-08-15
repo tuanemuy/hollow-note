@@ -249,7 +249,7 @@ describe("deleteFilesByOwner", () => {
     expect(acknowledged(h)).toContain("storage");
   });
 
-  it("TC-storage-043: a batchSize above the ceiling is clamped, so one turn never emits more than 100 events", async () => {
+  it("a batchSize above the ceiling is clamped, so one turn never emits more than 100 events", async () => {
     const h = createTestHarness();
     await openBarrier(h);
     await seedFiles(h, { count: 150 });

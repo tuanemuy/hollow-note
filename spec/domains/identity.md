@@ -341,6 +341,26 @@ ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kin
 
 **依存するポート**: なし（`evaluate` / `initial` は純関数）
 
+### AccountDeletionRetryPolicy
+
+**責務**: 1 人の利用者が保持期間内に残せる退会操作の試行回数を判定する。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `windowStart` | `now: Date` | `Date` | `now - retentionWindowMs`。保持中の terminal 行を数える窓の下端 |
+| `ensureRetryable` | `terminalCount: number` | `void` | `terminalCount >= maxTerminalAttempts` なら `BusinessRuleError(AccountDeletionRetryLimitExceeded)` |
+
+定数（このサービスが公開する。値の正典はここ）:
+
+| 定数 | 値 | 意味 |
+| --- | --- | --- |
+| `retentionWindowMs` | 120 日 | terminal な control-plane 行の保持期間。数える窓の幅はこれと同じ |
+| `maxTerminalAttempts` | 8 | 1 人の利用者が保持中に残せる terminal 行の上限 |
+
+しきい値と窓をここに置き、`DistributedOperationStore.countTerminalSince` には件数の観測だけをさせる（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。数値がバックエンドの数だけ複製されるのを避けるためで、呼ぶ側（[usecases/identity.md](../usecases/identity.md) の `deleteAccount`）は**数えて → 判定して → はじめて作る**順に呼ぶ（作ってからロールバックしない）。新しい operation を作りうる要求だけが判定の対象で、進行中の operation を引き継ぐ再開は terminal 行を増やさないので数えない。
+
+**依存するポート**: なし（`ensureRetryable` / `windowStart` は純関数。件数は呼ぶ側が読む）
+
 ## ポート
 
 ### UserRepository
@@ -382,7 +402,7 @@ provider account の一意性は `IdentityUniqueDirectory` が**唯一の担保*
 
 **エラーケース**（`UserBatchReader`）: `SystemError(DatabaseError)`（入力 100 件の上限超過を含む）
 
-**エラーケース**（`IdentityUniqueDirectory`）: `ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")` / `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（鍵を別の利用者が持っている）、`SystemError(DatabaseError)`
+**エラーケース**（`IdentityUniqueDirectory`）: `ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")` / `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（鍵を別の operation が保持している。判定材料は operation ID であって利用者ではないので、同じ利用者の別 operation からの再予約も同じく衝突する。奪えるのは期限切れの `reserved` だけ）、`SystemError(DatabaseError)`
 
 ### IdentityRepository
 
@@ -551,6 +571,6 @@ IdentityErrorCode =
 
 ## ユースケース（概要）
 
-`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `linkOAuthIdentity`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
+`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `completeOAuthCallback`, `linkOAuthIdentity`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getProfile`, `checkHandleAvailability`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
 
 詳細は [usecases/identity.md](../usecases/identity.md)。

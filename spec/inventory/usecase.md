@@ -2,6 +2,8 @@
 
 生成元: `spec/usecases/`（最終同期: 2026-08-16）
 
+**1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。
+
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
 | UC-conversion-001 | `runConversion` | `spec/usecases/conversion.md#runConversion` | 冪等・リース規則に従って形式、パスワード保護、連携、方針、LLM クォータを判定し、変換済み本文・参照取り込み・要求公開範囲・ジョブ結果を整合して保存する。対象不在、連携不足・失効、機械抽出不可、未対応形式、クォータ超過、変換失敗、強制終端を仕様どおり区別する |
@@ -96,8 +98,8 @@
 | UC-note-035 | `projectNoteChanges` | `spec/usecases/note.md#projectNoteChanges` | local または public plane で current route と Note・tags・Identity・Workspace の atomic snapshot を読み、世代ベクトル付き projection を更新・削除する。tag、author、workspace の fan-out と redaction を有界・冪等 continuation で処理する |
 | UC-note-036 | `rebuildNoteProjection` | `spec/usecases/note.md#rebuildNoteProjection` | 指定 local scope または global active routes を page し、note ごとの再投影要求を積み、任意で正データと合わない orphan projections を削除する |
 | UC-storage-001 | `startBulkUpload` | `spec/usecases/storage.md#startBulkUpload` | 最大 100 files と合計容量、owner 権限、公開 handle、file acceptance、storage quota を検査し、宣言情報から暫定 LLM 件数を返して conversion batch 親を対象所有 scope に登録する |
-| UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る |
-| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す |
+| UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
+| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
 | UC-storage-004 | `storeAvatar` | `spec/usecases/storage.md#storeAvatar` | 本人または workspace 管理権限と avatar 制約を検査し、新 avatar 保存と旧 avatar metadata 削除を同一 UoW で行う。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める。容量 quota は意図的に拒否条件にしない |
 | UC-storage-005 | `issueDownloadUrl` | `spec/usecases/storage.md#issueDownloadUrl` | 入力 scope の file だけを読み、owner 本人または workspace download 権限、artifact 期限を検査して 5 分の download URL を返す |
 | UC-storage-006 | `importExternalReferences` | `spec/usecases/storage.md#importExternalReferences` | referenceImport job の冪等・リース規則に従い、ready 本文の外部 resources と stylesheet 痕跡を SSRF・件数・size・timeout 予算内で最大 6 並行取得し、resources は保管・差替え、CSS は sanitize・inline 化する。本文、試行記録、removed CSS、job を同一 UoW で保存する |

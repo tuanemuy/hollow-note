@@ -2,7 +2,7 @@
 
 ## 設計
 
-本 Issue はドキュメント同期であり、ドメイン・ユースケース・アダプター・UI の**振る舞いを一切変えない**。コード差分はステップ 8 の 8 ファイル（JSDoc とコメント）＋ ステップ 30 の適合スイート 1 ファイル（既存実装が既に満たす主張を 1 つ足すだけ）のみ。したがって通常の「レイヤーの内側から外側へ」ではなく、**同期の向きの決定**と**ドキュメントの依存方向**で設計する。
+本 Issue はドキュメント同期であり、ドメイン・ユースケース・アダプター・UI の**振る舞いを一切変えない**。コード差分は計画時点でステップ 8 の 8 ファイル（JSDoc とコメント）＋ ステップ 30 の適合スイート 1 ファイル（既存実装が既に満たす主張を 1 つ足すだけ）だったが、**レビュー R1 の修正（`review/triage.md` の U7 / U8 / U9）を含めた最終実測は 27 ファイル**（変更 24 / 削除 3）で、増えた分もすべてコメント・JSDoc・`describe` / `it` 名の文字列に閉じる。**件数と内訳の正典は `plan.md` の AC-63 と「コード差分の内訳」表**。したがって通常の「レイヤーの内側から外側へ」ではなく、**同期の向きの決定**と**ドキュメントの依存方向**で設計する。
 
 台帳は 2 系統（`research.md` の SYNC-01〜27 と `research-2.md` の SYNC-201〜244）だが、**1 つの計画として統合済み**。同じファイルを触る項目は系統をまたいで 1 ステップに束ねてある（plan.md のスコープ節の対応表）。
 
@@ -128,7 +128,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 | --- | --- | --- |
 | 1. `spec/adr/` の新設 | 20 | 6 ファイル ＋ `index.md` |
 | 2. `spec/` 本文の追随 | 1〜7, 22〜29, 32 | 本 Issue の中心。大きいので `spec/domains/` → `spec/usecases/` → その他 の 3 コミットに割ってもよい |
-| 3. コード（JSDoc / コメント / 適合スイート） | 8, 30 | 8 ファイル。**振る舞いを変えないことをこのコミット単体で確認できる** |
+| 3. コード（JSDoc / コメント / 適合スイート） | 8, 30 | 計画時 9 ファイル → レビュー R1 の修正込みで **27 ファイル**（`plan.md` AC-63）。**振る舞いを変えないことをこのコミット単体で確認できる** |
 | 4. `spec/inventory/` の追随 | 9〜12, 31 | 生成物。本文コミットとの差分照合がしやすい |
 | 5. `spec/manual-tests/` の追随 | 18 | |
 | 6. `spec/` 外のドキュメント | 13, 14, 15, 19 | `spec/` と共有ファイルが 1 つも無い独立系統 |
@@ -197,7 +197,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
      - `identity.personalCleanupHandoverContinued` の行を 1 行足す（payload と唯一の購読者 = scope 平面の task runner）。根拠は [ADR 043](../adr/043-cross-plane-handover-driver.md)（「引き渡しに専用の継続行を与える」）
   9. **（統合分）** `:121` の `DistributedOperationStore` の 1 行の言及は**そのまま残す**（interface を新設しない — adr.md ADR-015）。ただし `state` の語彙が `running` / `completed` / `rejected` の 3 値であり、`preparing` / `committing` は account deletion manifest header 側の state であることが読めるよう、**1 行の言及に括弧書きを添える**（同じ書き分けをステップ 4-9 と 26 で行う）。**この括弧書きは AC-38 の肯定側の条件**なので、否定側（interface を新設しない）だけを満たして終わらせない
   10. **（統合分・計画レビュー R2 arch:P-008）** 同じ箇条書きに `AppliedOperationStore` の **1 行言及**を足す（`DistributedOperationStore` と同じ粒度。**interface は新設しない** — adr.md ADR-015 の追補）。内容: 「1 つの operation が同じ scope へ配る**コマンドの重複排除**は `AppliedOperationStore` が `(operationId, commandKey)` で担い、barrier receipt を扱う `ScopeCleanupAdmissionStore` とは**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。記録はガードするコマンドと同じ Unit of Work に入る」（実装 `application/ports/appliedOperationStore.ts`）
-     - **`### 新設する横断的ポート` に `IdempotencyStore` と同じ形の interface を書かない。** interface を書けば `spec/inventory/{domain,adapter}.md` に行が要り、`spec/adr/026` の命名規約により適合スイート `adapters/conformance/appliedOperationStore.ts` の `describe` / `it` 名へ ADP ID を付ける差分が発生する（AC-63 のコード差分 9 ファイルを超える）。同じ状態のポートが他に 4 本ある（`DistributedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`）ので、1 本だけ直すと新しい非対称を作る。5 本まとめてステップ 16 の 6. の Issue へ送る
+     - **`### 新設する横断的ポート` に `IdempotencyStore` と同じ形の interface を書かない。** interface を書けば `spec/inventory/{domain,adapter}.md` に行が要り、`spec/adr/026` の命名規約により適合スイート `adapters/conformance/appliedOperationStore.ts` の `describe` / `it` 名へ ADP ID を付ける差分が発生する（AC-63 のコード差分の枠外）。**この理由はレビュー R1 で枠が 27 ファイルへ広がった後も変わらない** — U8 が閉じたのは「本 PR の採番が作った ID の衝突」であって、そもそも spec に定義も inventory 行も持たないポートへの新規採番ではない。同じ状態のポートが他に 4 本ある（`DistributedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`）ので、1 本だけ直すと新しい非対称を作る。5 本まとめてステップ 16 の 6. の Issue へ送る
      - **`### 新設する横断的ポート` 冒頭の「以下の 4 件 … ポートの総数を数えるときは各ドメインの一覧とこの 4 件の和を取る」は触らない**（`AppliedOperationStore` は interface を持たないのでこの 4 件に入らない）
 - **注意:** `personalAbort` receipt が **rollback 完了ゲートから消えるわけではない**。消えるのは「ポート述語 `allRollbackReleased` の判定対象」であって、「User を `active` へ戻す前に personal barrier の解除を確認する」というユースケースの責務は残る（ステップ 4-4）。ここ（ポート契約の正本）には述語の判定対象だけを書く
 - **注意:** 4. / 5. の 3 メソッドは `spec/inventory/{domain,adapter}.md` に**新規行を採番する**（`DOM-common-041` / `DOM-common-042` / `ADP-common-040` / `ADP-common-041`。ステップ 9 / 10、adr.md ADR-011）。`pruneTerminal` は既存行（`DOM-common-026` / `ADP-common-025`）の要点更新のみ
@@ -292,10 +292,11 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
   6. **（統合分）** エラー → HTTP ステータスの対応表に `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` を足す（SYNC-226 の波及。ステップ 4-5 と同じコード）。既存の `PROVIDER_ACCOUNT_ALREADY_LINKED` 行と同じステータス（409）に置く
 - **理由:** (1) は `spec/adr/029` の前提（`:13-15`）が既に無条件版で書かれており、presentation だけが条件付き。(2) は実装 `apps/web/app/server.node.ts:72` が既定として持っている（理由は `:63-68` のコメント）。(4) は `spec/adr/028:20` が「一意性はポート、列挙耐性はユースケース」と決めている
 
-### 8. コード側の契約 JSDoc とコメント（統合で 8 ファイル）
+### 8. コード側の契約 JSDoc とコメント（統合で 8 ファイル → レビュー R1 の修正込みで 26 ファイル）
 
-- **対象ファイル:** `packages/core/src/application/ports/shareTokenProtector.ts`, `packages/core/src/domain/identity/ports/identityRepository.ts`, `packages/core/src/application/ports/accountDeletionManifestStore.ts`, `packages/core/src/domain/identity/errorCode.ts`, `apps/web/app/start.ts`, **`packages/core/src/application/ports/scopeCleanupAdmissionStore.ts`**, **`packages/core/src/domain/storage/errorCode.ts`**, **`packages/core/src/application/di/containerStore.ts`**
-- **台帳 ID:** SYNC-11, SYNC-15（= SYNC-225）, SYNC-14, SYNC-03, SYNC-10, **SYNC-207, SYNC-211, SYNC-244**（統合分）, **台帳外 1 件**（ステップ 14 で発見。adr.md ADR-024）
+- **対象ファイル（計画分 8）:** `packages/core/src/application/ports/shareTokenProtector.ts`, `packages/core/src/domain/identity/ports/identityRepository.ts`, `packages/core/src/application/ports/accountDeletionManifestStore.ts`, `packages/core/src/domain/identity/errorCode.ts`, `apps/web/app/start.ts`, **`packages/core/src/application/ports/scopeCleanupAdmissionStore.ts`**, **`packages/core/src/domain/storage/errorCode.ts`**, **`packages/core/src/application/di/containerStore.ts`**
+- **対象ファイル（レビュー R1 の修正で追加。`review/triage.md` の U7 / U8 / U9。変更内容 9〜11 に対応）:** `packages/core/src/application/identity/{uniqueness,removeIdentity,view,completeOAuthCallback}.ts`, `packages/core/src/domain/identity/ports/identityUniqueDirectory.ts`, `apps/web/app/presentation/{session,oauthStateCookie}.ts`, `apps/web/app/components/settings/DeleteAccountPanel/ticketStorage.ts`（U7 の 8 本）／`packages/core/src/adapters/conformance/{accountDeletionManifestStore,identityUniqueDirectory,noteProjection,objectStorage,authTokenRepository,signInOAuthClient}.ts`, `packages/core/src/application/storage/__tests__/deleteFilesByOwner.test.ts`（U8 の 7 本。8 本目の `conformance/scopeCleanupAdmissionStore.ts` はステップ 30 と重複）／（削除）`apps/web/.dev.vars.example`, `apps/web/.env.aws.example`, `apps/web/.env.gcp.example`, （`packages/` `apps/` 外）`.dockerignore` の 2 行（U9）
+- **台帳 ID:** SYNC-11, SYNC-15（= SYNC-225）, SYNC-14, SYNC-03, SYNC-10, **SYNC-207, SYNC-211, SYNC-244**（統合分）, **台帳外 1 件**（ステップ 14 で発見。adr.md ADR-024）, **レビュー R1 の M-02 / M-11 / M-12 / M-23 / M-31 / M-42 / M-46**（台帳外。`review/triage.md`）
 - **変更内容:**
   1. `shareTokenProtector.ts:11-12` — `Error contract: SystemError(ExternalServiceError)` を `SystemError(DataIntegrityError)` に直す。`ExternalServiceError` は `packages/core/src/application/errors.ts:180-185` の `SystemErrorCode` に存在せず、実装（`adapters/memory/shareTokenProtector.ts:32-36,68-72,79-84`）は `DataIntegrityError` を投げる（SYNC-11）
   2. `identityRepository.ts:6-8` — error contract から `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を落とし、「provider account の一意性は `IdentityUniqueDirectory` が担保する」旨に置き換える（SYNC-15 / adr.md ADR-005）
@@ -305,6 +306,9 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
   6. **（統合分）** `application/ports/scopeCleanupAdmissionStore.ts:36-38` — `assertOwner` の JSDoc「a different id, a missing receipt, or an uncommitted one is rejected」に **`completed` を加える**（SYNC-207）。ステップ 3-6 の spec 本文・ステップ 30 の適合ケースと同じ主張にそろえる。実装（`adapters/memory/repositories/scopeCleanupAdmissionStore.ts:47-57` の `requireOwner` が `row.status !== "running"` を弾く）は既にこの振る舞いを持つ
   7. **（統合分）** `domain/storage/errorCode.ts:1-2` — 冒頭コメント（「`InvalidChecksum` is missing from the enum in spec/domains/storage.md … treated as a spec omission」）を**全文削除する**（SYNC-211）。ステップ 22 で spec の union に足すため
   8. **（台帳外・ステップ 14 で発見）** `application/di/containerStore.ts:29-48` — JSDoc とエラーメッセージが**実在しない** `apps/web/app/server.cloudflare.ts` を名指ししている。実在する唯一のランタイムエントリ `apps/web/app/server.node.ts`（`installContainerStore` の呼び出し元はここだけ）を指すように直し、「両ランタイムで共有」という前提の 1 句も現状（[ADR 025](../adr/025-single-reference-runtime.md) の単一参照ランタイム）に合わせる。**文言のみ**で、投げる条件も型も変えない（adr.md ADR-024）
+  9. **（レビュー R1 / U7）** 実装 JSDoc から**正典を名指しで否定する記述**を落とす（M-02 / M-31 / M-23。adr.md ADR-030）— `identity/{uniqueness,removeIdentity}.ts` の「the spec writes `sha256(...)`」を [ADR 048](../adr/048-uniqueness-reservation-operation-id.md) 参照へ、`identity/view.ts` の「the spec's output table types it as non-null」を削除、`identity/completeOAuthCallback.ts` の `provider` を「display / logging only」から state 照合の入力へ、`domain/identity/ports/identityUniqueDirectory.ts` の `reserve` の conflict 条件を実装の判定材料（`operationId`）へ。あわせて presentation 側の dangling ADR 参照 4 か所（`session.ts` / `oauthStateCookie.ts` ×2 / `DeleteAccountPanel/ticketStorage.ts`）を `spec/adr/` の実在番号へ（M-42。`start.ts` の `AC-15` と同型）
+  10. **（レビュー R1 / U8）** 適合スイート 6 本と単体テスト 1 本の `describe` / `it` 名・ヘッダーコメントを、ステップ 10 / 31 で採番した ADP / TC ID にそろえる（M-11 / M-12。adr.md ADR-029）。**文字列だけを変更し、アサーションとセットアップには触らない**
+  11. **（レビュー R1 / U9）** 他ランタイム用の設定テンプレート 3 本（`apps/web/.dev.vars.example` / `.env.aws.example` / `.env.gcp.example`）を**削除**し、`.dockerignore` から `**/.wrangler` / `infra/aws/cdk.out` の 2 行を落とす（M-46）。[ADR 025](../adr/025-single-reference-runtime.md) の「1 つを選んで他は消す」に対して現物が残っていた分で、これらを読むコードは 0 件
 - **注意:** **振る舞いは 1 行も変えない**。他ポートの JSDoc に残る `ExternalServiceError`（`mailSender.ts` / `pdfRenderer.ts` / `htmlProcessor.ts` / `noteExportComposer.ts` / `secureTokenGenerator.ts` / `passwordHasher.ts`）は触らない（plan.md の SYNC-27）
 - **理由:** `spec/adr/026` の決定 1「JSDoc だけを読んで実装したものがスイートを通る」が、実在しないエラーコード名・実態と異なる担保箇所・spec と同じ側に残った rollback 判定の記述によって成立していない。特に 3. を放置すると、Issue #11 の D1 実装者が JSDoc どおり receipt を見る `allRollbackReleased` を書いて適合スイートで落ちる
 
@@ -471,7 +475,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 - **変更内容:**
   1. 品質ゲート: `pnpm typecheck` / `pnpm lint:fix` / `pnpm format` / `pnpm test:unit` / `pnpm build`
   2. 台帳の追随漏れを grep で検査（plan.md「テスト方針」の全項目）。**合否の形は 3 種類ある**（計画レビュー R3 coverage:S-001）— **「ヒット 0 件」**／**「1 件以上」**（spec を狭めていないことの確認 — AC-62）／**「件数一致」**（AC-55 の 8 / 8 / 3、AC-64 の 24 / 24、**AC-65(b) の `grep -c "declaredMimeType" spec/usecases/storage.md` = 1**）。**向きを取り違えないこと** — とくに AC-65(b) は 0 ではなく **1** が合格（`startBulkUpload` の `files` 列は据え置く — 計画レビュー R3 arch:P-001）。このほかに**出力を人が読む確認が 4 つ**ある（下記 4. / 6. / 9. と、AC-27 の「コメント部分にヒットが無い」）
-  3. `git diff --stat` で、コード差分が **9 ファイル**に限られていることを確認する（ステップ 8 の 8 ファイル = `shareTokenProtector.ts` / `identityRepository.ts` / `accountDeletionManifestStore.ts` / `scopeCleanupAdmissionStore.ts` / `domain/identity/errorCode.ts` / `domain/storage/errorCode.ts` / `start.ts` / `application/di/containerStore.ts` ＋ ステップ 30 の `adapters/conformance/scopeCleanupAdmissionStore.ts`）。それ以外にコード差分が出ていたらスコープ逸脱（AC-63）
+  3. `git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/`（コミット済みと未コミットの両方を含む）で、コード差分が **27 ファイル = 変更 24 / 削除 3 / 追加 0** で、`plan.md`「コード差分の内訳」表の集合と 1 対 1 で一致することを確認する。あわせて**振る舞いを変える差分が 0** であることを機械的に示す — `git diff -U0 $(git merge-base origin/main HEAD) -- packages/ apps/ ':!*.example' | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -vE "^[-+][[:space:]]*(//|/\*|\*|\*/)" | grep -vE '^[-+][[:space:]]*(it|describe)\("'` が **12 行**（適合スイート `ADP-common-008` への追加アサーション 9 行 ＋ `containerStore.ts` のエラーメッセージ文字列 3 行）だけを返す。表に無いファイルが出る、またはこの 12 行以外が返ったらスコープ逸脱（AC-63）
   4. `spec/inventory/{domain,adapter,test,frontend,usecase}.md` の **5 ファイル**の「最終同期」日付が更新されていることを確認する（統合により `usecase.md` が対象に入った — AC-56）
   5. `AGENTS.md` がシンボリックリンクのまま壊れていないことを確認する（`ls -l AGENTS.md`）
   6. `spec/adr/index.md` の一覧・前提依存マップに 052〜057 の **6 件**が載っており、`ls spec/adr/05[2-7]-*.md` が 6 ファイルを返すことを確認する

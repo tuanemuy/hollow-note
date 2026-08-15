@@ -964,3 +964,200 @@ Accepted（ステップ 17 の最終確認で判定）
 
 - 良い点: `resetPassword | 期限切れ・使用済み | TC-26` のカバレッジ行から辿った読者が、見出しと手順で違う操作を読まされない
 - トレードオフ: 見出しが「使用済み」を名乗らない点は残る（本 Issue 以前からの状態）
+
+## ADR-027: `UnauthorizedError` と `ValidationError("UNAUTHENTICATED")` の使い分けを presentation で立法しない
+
+### Status
+
+Proposed（レビュー R1 の M-13 / U5 で判断）
+
+### Context
+
+レビュー R1（`presentation:B-001`）は、`spec/presentation/index.md` の `kind` 既定表に `unauthorized` の行が無く、本 PR が `spec/usecases/identity.md` に足した `UnauthorizedError("UNAUTHENTICATED")` が表の定める既定（「該当しない値は `unknown` として 500」）に落ちることを指摘した。行を足すこと自体は自明である。
+
+自明でないのはその先で、**同じコード `UNAUTHENTICATED` が 2 つのエラー型から投げられる**という事実をどう扱うかだった。`ValidationError("UNAUTHENTICATED")` は「コードによる例外」表に既にあり 401 へ写る。`UnauthorizedError("UNAUTHENTICATED")` は `startOAuthFlow.ts:68` / `linkOAuthIdentity.ts:140` から実際に到達し、`kind` 既定として 401 へ写る。行を足すと、転送境界の正典の中に **401 へ着く 2 系統**が並ぶ。レビューは「どちらを使うかを 1 行で決めておくと次のスライスで割れない」と提案した。
+
+### Decision
+
+**`unauthorized | 401` の行と `forbidden | 403` の行を足すところまでを presentation の仕事とし、「どちらの型を投げるか」の規則は presentation に書かない。** 表には「転送境界は 2 系統を区別せず同じ 401 に着く / どちらを投げるかは各ユースケース文書が決める」と、**分担そのもの**を書く。
+
+`forbidden` は現状どの経路も投げないが、直列化形と写像は実在する。「本設計では権限不足を `NotFoundError` へ畳むため使わない」を添えて、行だけを置く。
+
+### 検討した代替案
+
+- **presentation で「未認証は `UnauthorizedError` に寄せる」と規範を立てる**: 一見きれいだが、`spec/presentation/index.md:189` は自ら「対応表はここが唯一の正典であり、**ユースケース文書はステータスを書かない**」と宣言している。これは「転送の写像は presentation が独占する」という分担であって、「どの型を投げるかまで presentation が決める」ではない。どの型が適切かは主体の状態がどう壊れているか（資格情報が無い / 主体が `active` でない）というユースケース側の知識に依存し、presentation はその知識を持たない。規範を立てると、次に `UnauthorizedError` が要る経路が現れるたびに presentation を改訂する依存が生まれる
+- **`ValidationError("UNAUTHENTICATED")` の例外行を削って 1 系統へ寄せる**: 実装が 2 系統を持っている以上、これは spec を実装より狭める向きで [ADR 046](../adr/046-port-contract-divergence.md) に反する。しかも既存経路の型変更＝振る舞いの変更で、本 PR のスコープ外
+- **行を足さずスコープ外とする**: 表が自分で「唯一の正典」と閉じているので、欠けたままだと spec を正典に転送境界を書き直した実装が 500 を返す。認証系のステータスなので放置の害が大きい
+
+### Consequences
+
+- 良い点: 転送境界の正典は「`kind` → ステータス」の写像だけを持ち、型の選択という**内側の判断**を吸い込まない。ユースケース文書はこれまでどおりステータスを書かず、型だけを書く。両者の責務が交差しない
+- 良い点: 401 が 2 系統ある事実が読者に明示されるので、「片方は誤りではないか」という疑問がレビューのたびに再燃しない
+- トレードオフ: 「どちらを投げるか」の判断は各ユースケース文書に分散したままで、横断的な一貫性は保証されない。実際 `startOAuthFlow` は `UnauthorizedError`、`addPasswordIdentity` は `ValidationError` を使っており、選択理由は各節を読まないと分からない。統一が要ると判断されたときは、**identity ドメインの語彙**として `spec/domains/identity.md` 側に置くのが筋（presentation ではない）
+
+## ADR-028: サービス全体の既定は `spec/inventory/frontend.md` の個別 PAGE 行に写さず本文へ委ねる
+
+### Status
+
+Proposed（レビュー R1 の M-34 / M-35、U3 / U5 で判断）
+
+### Context
+
+レビュー R1 は `spec/inventory/frontend.md` の 2 つの不整合を挙げた。
+
+- **CSRF**（`inventory:W-004`）: 本 PR は `spec/presentation/index.md` の CSRF 規約から「`FormData` を受ける場合は」という条件を外し、**すべての server function 呼び出し**に同一オリジン検証が掛かる規律へ改めた（AC-16）。ところが `PAGE-p12-006` / `PAGE-p13-004` / `PAGE-p21-003` / `PAGE-p31-004` の 4 行が「Origin 検証済み FormData で送る」という条件付きの書き方を保存し続けていた
+- **`Cache-Control`**（`inventory:W-005` / `presentation:W-007`）: 本 PR は `PAGE-p47-001` の要点にだけ `Cache-Control: private, no-store` を足した。しかし同じヘッダーは全応答の既定で、P-41〜P-45 も同じヘッダー集合を扱う面である
+
+どちらも「1 行だけに書くと、その画面固有の要件だと読める」という同型の問題で、選択肢は (a) 該当する全 PAGE 行へ横展開する、(b) PAGE 行から落として本文（`spec/presentation/index.md`）だけに置く、の 2 つだった。
+
+### Decision
+
+**(b) を採る。サービス全体に一様に掛かる既定は `spec/presentation/index.md` にだけ書き、`spec/inventory/frontend.md` の PAGE 行からは落とす。**
+
+- CSRF: 4 行から「Origin 検証済み」を外す。`FormData` を使うこと自体は各画面の実装事実なので残す
+- `Cache-Control`: `PAGE-p47-001` から外す
+
+判定の基準は **その記述が画面ごとに違いうるか**。違いうるなら PAGE 行の要点（例: `/storage/*` の `immutable` は配信口固有なので presentation 本文の例外句に書く）、一様なら本文だけ。
+
+### 検討した代替案
+
+- **(a) 該当する全 PAGE 行へ横展開する**: 台帳の 1 行だけを読んだ実装者にも規約が届く、という利点は本物である。しかし `spec/inventory/frontend.md` は 162 行あり、CSRF は「server function を呼ぶすべての行」、`Cache-Control` は「認証応答を返すすべての行」に掛かる。ほぼ全行に同じ文を複製することになり、次に規約が変わったときの追随箇所が 1 か所から 100 行超へ増える。`spec/inventory/*.md` は本文からの**生成物**（plan.md リスク節）であり、生成物側に既定を複製するのは生成規則を壊す向き
+- **PAGE 行に「本文の既定に従う」と 1 句だけ書く**: 情報量が 0 に近いわりに全行を触ることになり、(a) の保守コストだけが残る
+
+### Consequences
+
+- 良い点: 規約の正典が 1 か所（`spec/presentation/index.md`）に閉じ、改訂の追随先が増えない。本 PR が CSRF 規約を無条件化したときに 4 行が取り残された事故が、構造的に起きなくなる
+- 良い点: PAGE 行の要点欄が「この画面に固有のこと」だけを語るようになり、行の粒度がそろう
+- トレードオフ: `spec/inventory/frontend.md` の 1 行だけを読んで実装する読者には CSRF / `Cache-Control` が見えない。台帳は本文への入口（各行が `spec/pages/index.md#P-xx` へリンクする）であって本文の代替ではない、という前提に依存する。この前提が崩れるなら、直すべきは台帳の書き方ではなく台帳から本文への到達性
+
+## ADR-029: 適合スイートのケース名には複数の ADP ID を連記してよい
+
+### Status
+
+Proposed（レビュー R1 の M-11 / U8 で判断）
+
+### Context
+
+[ADR 052](../adr/052-adapter-inventory-granularity.md) は `spec/inventory/adapter.md` を「**1 行 = 1 ポートメソッド**」の生成物と定め、適合ケースには行を採番せず、**ケースと ID の対応は `describe` / `it` 名で追う**と決めた。本 PR はその規約を立てた当の PR でありながら、新しく採番した ADP ID 8 本のどれも `it` 名に反映しておらず、さらに既存の `it` が別メソッドの ID を名乗る衝突（`ADP-common-012` / `ADP-common-009` / `ADP-identity-009` / `ADP-note-028`）を作っていた（M-11）。
+
+`it` 名を付け替える段になって問題が出た。**1 ケースが 2 つのポートメソッドを同時に拘束している**ものがある。
+
+- `identityUniqueDirectory.ts` の「`beginRelease` then `release` frees an activated claim」— 新設した `beginRelease`（`ADP-identity-041`）と既存の `release`（`ADP-identity-009`）の**協調**が主張の中身で、片方だけを名乗ると主張の半分が台帳から見えなくなる
+- `noteProjection.ts` の `redactAuthor` — `LocalNoteProjectionWriter` / `PublicNoteProjectionWriter` の 2 つの writer（`ADP-note-055` / `056`）に**両面で同じ置換が起きること**が主張である。2 ケースに割ると「両面で」という主張自体が消える
+
+### Decision
+
+**1 ケースが複数のポートメソッドを拘束するときは、`it` 名に ADP ID を連記してよい**（`ADP-identity-041/009` / `ADP-note-055/056`）。ADR 052 の「1 行 = 1 メソッド」は **`spec/inventory/adapter.md` 側の不変**であって、スイート側のケース粒度への制約ではない。
+
+連記の順は**そのケースが第一に拘束するメソッド**を先に置く。上の例では `beginRelease` の契約が主題なので `041/009`。
+
+### 検討した代替案
+
+- **1 ケース = 1 ADP ID を守り、ケースを分割する**: 台帳との対応は機械的になるが、上の 2 例では**主張そのものが壊れる**。協調と両面性は 1 つのシナリオでしか観測できず、分割すると「`beginRelease` は何かをした」「`release` は何かをした」という個別事実だけが残り、`reserve` が再び通るようになるという肝心の帰結が誰の担保でもなくなる
+- **代表 1 本だけを名乗る（現状維持）**: これが M-11 の指摘した状態で、`ADP-identity-041` を採番したのにスイートのどこからも名乗られない行が生まれる。ADR 052 が「`describe`/`it` 名が唯一の追跡手段」と決めた以上、名乗られない ID は追跡不能な ID である
+- **ADR 052 の本文を改訂して連記を明文化する**: 本 PR のスコープ（`spec/` と実装の同期）に対して、直近に新設した ADR の再改訂を重ねることになる。連記は ADR 052 の不変（台帳側の 1 行 1 メソッド）を一切侵していないので、`spec/adr/` を触らずに済ませられる。連記が他スライスでも常態化するなら、そのとき 052 に 1 段落足す
+
+### Consequences
+
+- 良い点: `grep -o "ADP-[a-z]*-[0-9]*" packages/core/src/adapters/conformance/` が採番済み ID を全数拾えるようになり、台帳 → スイートの到達性が回復する
+- 良い点: 主張の単位（1 つの観測可能なシナリオ）を歪めずに ID を付けられる
+- トレードオフ: 「ADP ID → ケース」が 1 対 1 でなくなるので、ID から機械的にケース数を数えることはできない。数えたいのは台帳側の**メソッド数**であって、そちらの 1 対 1 は保たれている
+- トレードオフ: 連記の順（第一に拘束するメソッドを先に）はスイートを書く人の判断で、機械検査できない
+
+## ADR-030: 実装 JSDoc は spec を名指しで否定しない — 否定が要るなら spec を直す
+
+### Status
+
+Proposed（レビュー R1 の M-02 / M-31 / M-23、U7 で判断）
+
+### Context
+
+本 PR は `spec/usecases/identity.md` / `spec/database/index.md` の予約 operation ID を `sha256(...)` から合成式へ改訂し（AC-46 / AC-67）、`verifyEmail` の出力 DTO の `sessionToken` を `string | null` へ改訂した（AC-10）。ところが実装側の JSDoc は「**the spec writes `sha256(...)`**」「**the spec's output table types it as non-null, which cannot represent that path**」と、改訂前の spec を名指しで否定したまま残っていた（M-02）。
+
+同じ PR は `domain/identity/errorCode.ts` の同種のコメント（「spec の記載漏れとして扱った」）を AC-58 で**全文削除**しており、扱いが割れていた。加えて `completeOAuthCallback.ts` の `provider` を「display / logging only」と書いた JSDoc（M-31）と、`identityUniqueDirectory.ts` の `reserve` のエラー契約（M-23）は、spec ではなく**実装自身**と食い違っていた。
+
+### Decision
+
+**実装 JSDoc に「spec はこう書いているが実装はこうする」という形の記述を残さない。** 乖離を見つけたら向きを [ADR 046](../adr/046-port-contract-divergence.md) で判定し、
+
+- **実装が正** → spec を直したうえで、JSDoc は**判断の理由**だけを述べ、根拠として `spec/adr/` を指す（`sha256` の 2 か所は「Composed rather than hashed（`spec/adr/048`）、理由は…」へ）
+- **spec が正** → 実装を直す（本 PR のスコープ外なら Phase 5 へ送り、JSDoc には何も書かない）
+
+`errorCode.ts` の全文削除と同じ扱いを、`uniqueness.ts` / `removeIdentity.ts` / `view.ts` にも当てる。**否定の向きを逆転させただけ**（「spec が間違っている」→「spec が正しくなった」）では AC-67 の目的（実装が spec を名指しで否定している状態の解消）は達成されない。
+
+### 検討した代替案
+
+- **「spec と一致している」旨を JSDoc に書いて残す**: 一致は既定であって書く価値が無く、次に spec が動いたときに再び偽になる。JSDoc が spec の**写し**になると二重管理が始まる（`CLAUDE.md`「Default to no comments」の趣旨）
+- **JSDoc を触らず spec 側にだけ注記する**: `spec/index.md` は正典から進捗・改訂履歴を排しており、「実装のコメントがこう書いている」は正典に置く種類の情報ではない
+- **理由の記述ごと削る**: `sha256` を採らなかった理由（構成要素が曖昧でないのでハッシュ無しで決定性が出る / application 層にハッシュ実装を持ち込まない）は非自明な判断で、[ADR 048](../adr/048-uniqueness-reservation-operation-id.md) に昇格済みでもある。**根拠へのリンクとして残す**のが正しく、消すのは行き過ぎ
+
+### Consequences
+
+- 良い点: `grep -rn "the spec writes\|the spec's" packages/ apps/` が 0 件になり、コードを読む人が「どちらが正か」を判断する必要がなくなる
+- 良い点: 根拠が `spec/adr/` への参照になるので、判断の背景が正典側にあり、実装が動いても参照は生き続ける
+- トレードオフ: JSDoc から spec 本文の引用が消えるので、実装だけを読んでいる人は差分の履歴を辿れない。これは意図した分業（変更の履歴は Git、判断の理由は `spec/adr/`）
+- 副産物: 同じ観点で presentation の 4 か所に `.thread/2/adr.md` にしか存在しない ADR 番号（`ADR-006` / `095` / `099` / `110` / `112`）への dangling 参照が見つかった（M-42）。`start.ts` の `AC-15`（AC-16 / SYNC-10）と同型で、**作業ブランチのローカル ID をコードに残さない**という同じ規律に属する
+
+## ADR-031: `AccountDeletionRetryPolicy` が数えるのは terminal 行であり、spec 全体の語彙をそこへそろえる
+
+### Status
+
+Proposed（レビュー R1 の M-07、U1 / U2 / U4 で判断）
+
+### Context
+
+レビュー R1（`inventory:B-001`）は、本 PR が `spec/database/index.md:154` に `AccountDeletionRetryPolicy` という名前を導入しながら、定義も inventory 行も持たせていないことを指摘した（AC-66 が `AppliedOperationStore` について禁じた「名前だけが宙に浮く」状態そのもの）。
+
+定義を書く段で、`55a5bb9` 時点の spec が **`rejected attempt`（120 日保持中の rejected な試行）** を数えると書いていることが実装と食い違うと分かった。実装 `domain/identity/services/accountDeletionRetryPolicy.ts` と `DistributedOperationStore.countTerminalSince` が数えるのは **terminal 行 = `completed` と `rejected` の両方**である。つまり「削除に成功した過去の試行」も上限 8 件の枠を消費する。これは偶然ではなく、しきい値の目的が「1 人の利用者が制御プレーンに残せる保持中の行数を抑える」ことだからで、成否は関係しない。
+
+古い語彙は 4 か所にあった（`spec/usecases/identity.md` の手順とエラー表、`spec/testcases/identity/deleteAccount.md`、`spec/inventory/test.md` の TC 行）。
+
+### Decision
+
+**`AccountDeletionRetryPolicy` の定義を `spec/domains/identity.md` の `### ドメインサービス` に既存 3 サービスと同じ様式で置き（`spec/inventory/domain.md` に `DOM-identity-063` を採番）、あわせて `rejected attempt` の語彙を「保持中の terminal 行（`completed` / `rejected`）」へ spec 全体でそろえる。**
+
+語彙の置換は本 PR がその名前を導入した箇所（`spec/database/index.md`）に閉じず、**同じ数え方を語る 4 か所すべて**へ及ぼす。
+
+### 検討した代替案
+
+- **定義だけ書き、古い語彙は SYNC-27 と同じく「全域語彙の整合」としてスコープ外へ送る**: 本 PR は `ExternalServiceError` について実際にそうしている（`PasswordHasher` / `SecureTokenGenerator` の 2 件を Phase 5 へ）ので、一貫性の観点では検討に値した。**採らない理由は、2 つが同型でないこと。** `ExternalServiceError` の残置は**未実装ドメイン**（conversion / integration / storage / job）に散っており、「どちらのコードへ写すか」の判定にそのドメインのアダプター実装という**まだ存在しない裏づけ**が要る。`rejected attempt` の 4 か所は**実装済みの 1 つの振る舞い**を指しており、裏づけは `accountDeletionRetryPolicy.ts` の 1 ファイルで完結する。判定に必要な情報が全部あるものを「全域語彙」の名目で先送りすると、次の読者が同じ調査をやり直す
+- **`rejected attempt` を残し、それが両 state を含む旨を注記する**: 語が事実に反したまま脚注で打ち消す形になり、読者は必ず本文を先に読む。しかも `spec/testcases/` の期待結果欄は 1 文なので脚注を置く場所が無い
+- **上限の意味を「拒否された試行の再試行制限」と読み替えて実装を変える**: spec を実装に合わせるのではなく実装を変える向きで、本 PR のスコープ外。かつ制御プレーンの行数を抑えるという設計目的（[ADR 044](../adr/044-business-thresholds-in-domain.md) がドメインへ置いたしきい値）から見て、成功した削除を枠外にする合理性が無い
+
+### Consequences
+
+- 良い点: `grep -rn "rejected attempt" spec/` が 0 件になり、「8 件の上限が何を数えるか」を spec のどこから読んでも同じ答えになる
+- 良い点: しきい値と窓の正典がドメインサービス 1 か所に集まり、`DistributedOperationStore` 側は「件数の観測だけをする」という ADR 044 の分担が台帳（`DOM-identity-063`）からも読める
+- トレードオフ: 利用者から見ると「削除を 8 回**成功**させたら 9 回目が 120 日間できない」という直感に反する挙動が spec に明記されることになる。挙動自体は既存で、本 ADR はそれを可読にしただけだが、UX 上の是非は別途問われうる（現状 P-25 にこの上限の説明は無い）
+- トレードオフ: `ExternalServiceError` は先送りしたまま `rejected attempt` は今直す、という非対称が残る。上の理由（裏づけが揃っているか）で線を引いた旨をここに記録して補う
+
+## ADR-032: 乖離台帳の行番号は振り直さず、冒頭で as-of commit を宣言する
+
+### Status
+
+Proposed（レビュー R1 の M-19 / M-56 / M-60、U10 で判断）
+
+### Context
+
+`.thread/14/research.md` / `research-2.md` は本 Issue では調査の足場ではなく**成果物**である（plan.md「前提: 乖離項目の台帳」）。70 件の乖離台帳そのもので、AC-1〜69 の由来欄とステップの「台帳 ID」欄が SYNC ID で恒久参照している。
+
+レビュー R1（`general:B-002`）は、両ファイルが「現在の spec / 現在の実装は…」という**現在形**で書かれ、`file:line` アンカーを **254 本**持つのに、それがどの commit 基準なのか宣言していないことを指摘した。要修正 59 件は既に反映済みなので、現在形の記述はほぼ全件 `HEAD` では偽であり、行番号もドリフト済みである（実測で確認）。
+
+### Decision
+
+**両ファイルの冒頭に as-of `55a5bb9` の宣言を 1 段落置き、本文の現在形も 254 本の行番号も一切振り直さない。** 読み方（`git show 55a5bb9:<path>` で当たること）と、振り直さない理由（基準 commit を固定するほうが以降の変更に対して安定する）を宣言に含める。
+
+あわせて U10 では**台帳の再調査をしない**。修正は引用ミス（M-18 / M-58）・件数（M-51 / M-52 / M-53 / M-54）・作業経緯の残置（M-55 / M-56 / M-57 / M-60）に限る。
+
+### 検討した代替案
+
+- **行番号を `HEAD` に合わせて振り直す**: 254 本の書き換えで、しかも**本 PR がマージされた時点で再び古くなる**。台帳が参照するのは「乖離があった状態」であり、それを直した後の行番号を指しても意味を成さない。引用文（改訂前の spec の文言）と行番号の対応も壊れる
+- **現在形を過去形へ書き換える**: 「〜だった」に直せば as-of 宣言なしで整合するが、本文全域の文体変更になり、しかも `spec/index.md` が正典から排している「以前は〜だった」の語り口（M-47 で spec 側から 3 か所削ったもの）を作業成果物側に増やすことになる。台帳の役割は「この時点でこうだった」を記録することなので、**基準時刻を 1 か所で宣言して現在形を保つ**ほうが素直
+- **台帳を `HEAD` 基準で再調査する**: 台帳の全数が本 Issue で閉じた後に「乖離が無い」ことを確認し直す作業で、AC の由来欄が指す SYNC ID の意味（何を直したのか）が消える
+
+### Consequences
+
+- 良い点: 台帳が「`55a5bb9` の状態のスナップショット」として自己完結し、`HEAD` が動いても記述の真偽が変わらない。SYNC ID からの恒久参照が壊れない
+- 良い点: 引用文・行番号・判定理由の三者が同じ commit で一貫するので、後から判断を再検討する人が根拠へ確実に辿り着ける
+- トレードオフ: 台帳を読むには `git show 55a5bb9:<path>` という一手間が要る。`55a5bb9` は `origin/main`（PR #17 マージ後）なので消えることはないが、squash merge 等で参照が失われた場合に備え、宣言では commit hash とその意味（PR #17 / Issue #2 マージ済み）を併記している
+- トレードオフ: `.thread/14/` から `spec/` への相対リンク約 50 本は解決しないままである（M-50 は wont-fix）。これも「引用をそのまま残す」という同じ方針の帰結で、機械的に直すと引用と本文の一致が崩れる

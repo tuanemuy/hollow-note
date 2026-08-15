@@ -139,7 +139,7 @@
 | TC-conversion-131 | runRegeneration: 実行中に外部から強制終端された（`trashNote` / `cancelJob` など） — 結果を保存する | spec/testcases/conversion/runRegeneration.md#テストケース-runregeneration | 保存が `ConflictError` になるためジョブを読み直し、終端済みなら差し替え前に取得した変換結果を破棄して成功として返す（ジョブは書き換えない。run 系共通規則の判定 4） |
 | TC-conversion-132 | runRegeneration: 保存の `ConflictError` 後に読み直したジョブが終端していない（別のワーカーが引き継いだ） — 結果を保存する | spec/testcases/conversion/runRegeneration.md#テストケース-runregeneration | `ConflictError` をそのまま投げて再配送に委ねる |
 | TC-conversion-133 | runRegeneration: 実行中 — そのノートを編集する | spec/testcases/conversion/runRegeneration.md#テストケース-runregeneration | `BusinessRuleError(NoteLockedByJob)` が投げられる |
-| TC-identity-001 | addPasswordIdentity: Google のみで登録した利用者 — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `PasswordIdentity` が作られ、`identity.added` が発行される |
+| TC-identity-001 | addPasswordIdentity: Google のみで登録した利用者が再認証を済ませている — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `PasswordIdentity` が作られ、`identity.added` が発行される |
 | TC-identity-002 | addPasswordIdentity: 既にパスワード認証手段を持つ利用者 — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `BusinessRuleError(PasswordIdentityAlreadyExists)` が投げられる |
 | TC-identity-003 | addPasswordIdentity: — — 強度要件を満たさないパスワードで追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `BusinessRuleError(WeakPassword)` が投げられる |
 | TC-identity-004 | addPasswordIdentity: 追加後 — 追加したパスワードでサインインする | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | サインインが成功する |
@@ -175,7 +175,7 @@
 | TC-identity-034 | completeOAuthSignIn: `state` が保存されていない — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられる |
 | TC-identity-035 | completeOAuthSignIn: `state` が既に 1 度使われている — 同じ `state` で再度交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられる（取り出しと同時に削除される） |
 | TC-identity-036 | completeOAuthSignIn: コード交換がプロバイダー側で拒否される — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_CODE_INVALID")` が投げられる |
-| TC-identity-037 | completeOAuthSignIn: プロバイダーとの通信が失敗する — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `SystemError(ExternalServiceError)` が投げられる |
+| TC-identity-037 | completeOAuthSignIn: プロバイダーとの通信が失敗する — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `SystemError(ExternalApiError)` が投げられる |
 | TC-identity-038 | completeOAuthSignIn: `redirectTo` が保存されている — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | 応答に `redirectTo` が含まれる |
 | TC-identity-039 | deleteAccount: 通常の利用者 — 正しいメールアドレスを入力して削除する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | usecaseは`operationId` / `status: accepted`を返し、presentationが読み取り専用status ticketを署名して202応答へ加える。Userは直ちに`deleting`、session / tokenは失効する |
 | TC-identity-040 | deleteAccount: session/token行が各10,000件ある — 削除を受理する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `authEpoch`更新で全件を即時失効し、物理行は各100件pageのack完了までfinalizeを待つ |
@@ -190,7 +190,7 @@
 | TC-identity-049 | deleteAccount: — — 誤ったメールアドレスを入力する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `ValidationError("CONFIRMATION_MISMATCH")`。operationは作られない |
 | TC-identity-050 | deleteAccount: 同じ利用者が同じ`requestId`で削除を再要求する — 同じ確認入力で実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 新しいoperationを作らず既存 `operationId` / status ticketを返し、terminal結果はticketから読める |
 | TC-identity-051 | deleteAccount: 唯一ownerでrejected後、owner移譲を済ませる — 新しい`requestId`で再要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 旧rejected headerを120日保持したまま新operation/manifestを作り、削除を再試行できる |
-| TC-identity-052 | deleteAccount: 120日内のrejected attemptが8件ある — 9つ目の新しい`requestId`で再要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `BusinessRuleError(AccountDeletionRetryLimitExceeded)`となり、terminal control-plane rowを利用者単位で8件以下に保つ |
+| TC-identity-052 | deleteAccount: 120日の窓に保持中のterminal行（`completed` / `rejected`）が8件ある — 9つ目の新しい`requestId`で再要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `BusinessRuleError(AccountDeletionRetryLimitExceeded)`となり、terminal control-plane rowを利用者単位で8件以下に保つ |
 | TC-identity-053 | deleteAccount: running中に別`requestId`で再要求する — 実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | running operationは1件に保ち、そのoperation IDを返す |
 | TC-identity-054 | deleteAccount: `requestId`がUUID形式でない — userRequestを送る | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `ValidationError("INVALID_REQUEST_ID")`でoperationを作らない |
 | TC-identity-055 | deleteAccount: 唯一のownerであるworkspaceがある — prepareする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 全prepare lock/barrierをreleaseしてUserは`active`へ戻り、manifest item縮約後にoperationが`rejected`になる。scope cleanupは始まらない |
@@ -330,8 +330,8 @@
 | TC-identity-189 | requestPasswordReset: `DeletingUser`のメールアドレス — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 未登録と同じ成功応答で、tokenもメールも発行しない |
 | TC-identity-190 | requestPasswordReset: 未登録のメールアドレス — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | メールは送られず、成功として返る（存在を漏らさない） |
 | TC-identity-191 | requestPasswordReset: — — 形式が不正なメールアドレスで要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | `BusinessRuleError(InvalidEmail)` が投げられる |
-| TC-identity-192 | requestPasswordReset: 同じメールアドレスへの要求が短時間に連続する — 要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | レート制限がかかり、メールは送られず成功として返る |
-| TC-identity-193 | requestPasswordReset: 既存の再設定トークンが未消費で残っている — 再度要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 古いトークンは無効になり、新しいトークンだけが有効になる |
+| TC-identity-192 | requestPasswordReset: 同じメールアドレスへの要求が連続する — 要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 60 秒の発行間隔に掛かり、新しいトークンは発行されず、メールも送られず成功として返る（絞りはこの発行間隔ひとつだけ） |
+| TC-identity-193 | requestPasswordReset: 既存の再設定トークンが未消費で残っており、発行から 60 秒以上経過している — 再度要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 古いトークンは無効になり、新しいトークンだけが有効になる |
 | TC-identity-194 | resendVerificationEmail: `PendingUser` が存在する — 再送を要求する | spec/testcases/identity/resendVerificationEmail.md#テストケース-resendverificationemail | 既存の確認トークンが削除され、新しいトークンで確認メールが送られる |
 | TC-identity-195 | resendVerificationEmail: 直近 59 秒以内に再送済み — 再送を要求する | spec/testcases/identity/resendVerificationEmail.md#テストケース-resendverificationemail | メールは送られず、成功として返る |
 | TC-identity-196 | resendVerificationEmail: 直近 61 秒前に再送済み — 再送を要求する | spec/testcases/identity/resendVerificationEmail.md#テストケース-resendverificationemail | 新しいメールが送られる（間隔制限の境界値） |
@@ -404,7 +404,7 @@
 | TC-identity-263 | signUpWithPassword: User/Identity保存後にreservation activate応答を失う — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | User email/version一致を確認し、同じsub-operation IDでactiveへ収束する |
 | TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される |
 | TC-identity-265 | startOAuthFlow: Activeでサインイン済み — `intent: "linkIdentity"` と `userId` を指定して開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、保存された状態に `userId` とcurrent `userAuthEpoch`が含まれる |
-| TC-identity-266 | startOAuthFlow: 削除開始済みまたは削除済み — `intent: "linkIdentity"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | OAuth stateを作らず、認証済み利用者として扱わない |
+| TC-identity-266 | startOAuthFlow: 削除開始済みまたは削除済み — `intent: "linkIdentity"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | OAuth stateを作らず、`UnauthorizedError("UNAUTHENTICATED")` が投げられる（認証済み利用者として扱わない） |
 | TC-identity-267 | startOAuthFlow: — — `intent: "linkIdentity"` で `userId` を省略する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("USER_REQUIRED")` が投げられる |
 | TC-identity-268 | startOAuthFlow: — — 未知のプロバイダーを指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `BusinessRuleError(InvalidProviderAccount)` が投げられる |
 | TC-identity-269 | startOAuthFlow: — — `redirectTo` に外部オリジンの URL を指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("INVALID_REDIRECT")` が投げられる |
@@ -444,14 +444,14 @@
 | TC-identity-303 | verifyEmail: 並行消費で負けた側 — 応答を確認する | spec/testcases/identity/verifyEmail.md#テストケース-verifyemail | エラーにはならず `alreadyVerified: true` が返り、セッションは増えない |
 | TC-identity-304 | verifyEmail: 並行消費で負けた側 — トークンと利用者の状態を確認する | spec/testcases/identity/verifyEmail.md#テストケース-verifyemail | トークンは勝った側の消費のまま 1 回だけ `consumed` になり、利用者は `ActiveUser` のままである |
 | TC-identity-305 | getProfile: `ActiveUser` が自分のプロフィールを持つ — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | `userId` / `displayName` / `bio` / `avatarUrl` / `handle` が返る |
-| TC-identity-306 | getProfile: — — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | 応答にパスワードのハッシュやトークンが含まれない |
+| TC-identity-306 | getProfile: パスワード認証手段を持つ `ActiveUser` — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | 応答にパスワードのハッシュやトークンが含まれない |
 | TC-identity-307 | getProfile: 利用者が不在または削除済み — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `NotFoundError("USER_NOT_FOUND")` が投げられる |
 | TC-identity-308 | getProfile: `PendingUser` — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `ValidationError("EMAIL_NOT_VERIFIED")` が投げられる |
 | TC-identity-309 | getProfile: `DeletingUser` — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `ValidationError("ACCOUNT_UNAVAILABLE")` が投げられる |
 | TC-identity-310 | checkHandleAvailability: 誰も使っていないハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: true` / `ownedBySelf: false` が返る |
 | TC-identity-311 | checkHandleAvailability: 自分が既に使っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: true` / `ownedBySelf: true` が返る |
 | TC-identity-312 | checkHandleAvailability: 他人が使っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: false` / `ownedBySelf: false` が返る |
-| TC-identity-313 | checkHandleAvailability: 他の要求が予約しただけで確定していないハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 空きとして返る（助言的な読み取りで、勝者は `updateProfile` の予約が決める） |
+| TC-identity-313 | checkHandleAvailability: 他の要求が予約しただけで確定していない（`reserved`）ハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 空きとして返る（助言的な読み取りで、勝者は `updateProfile` の予約が決める） |
 | TC-identity-314 | checkHandleAvailability: — — 形式が不正なハンドルで問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `BusinessRuleError(InvalidHandle)` が投げられる |
 | TC-identity-315 | checkHandleAvailability: — — 予約語のハンドルで問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `BusinessRuleError(HandleReserved)` が投げられる |
 | TC-identity-316 | completeOAuthCallback: `intent: "signIn"` の state が保存されている — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | `intent: "signIn"` arm が返り、`sessionToken` を運ぶ |
@@ -461,6 +461,13 @@
 | TC-identity-320 | completeOAuthCallback: — — 同じ state で 2 回続けて処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | 2 回目は state が消費済みのため `ValidationError("OAUTH_STATE_INVALID")` が投げられる |
 | TC-identity-321 | requestPasswordReset: 直近 59 秒以内に要求済み — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 新しいトークンは発行されず、成功として返る |
 | TC-identity-322 | requestPasswordReset: 直近 61 秒前に要求済み — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 新しい再設定メールが送られる（間隔制限の境界値） |
+| TC-identity-323 | addPasswordIdentity: 再認証が済んでいない — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `ValidationError("REAUTHENTICATION_REQUIRED")` が投げられ、`PasswordIdentity` は作られない |
+| TC-identity-324 | addPasswordIdentity: 利用者が不在 — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `NotFoundError("USER_NOT_FOUND")` が投げられる |
+| TC-identity-325 | addPasswordIdentity: 利用者が `ActiveUser` でない（`PendingUser` / `DeletingUser`） — パスワードを追加する | spec/testcases/identity/addPasswordIdentity.md#テストケース-addpasswordidentity | `ValidationError("ACCOUNT_UNAVAILABLE")` が投げられる |
+| TC-identity-326 | checkHandleAvailability: 自分が既に使っているハンドルを大文字小文字・前後の空白の違う表記で指定する — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 入力を正規化してから判定し、`available: true` / `ownedBySelf: true` が返る |
+| TC-identity-327 | checkHandleAvailability: 解除待ち（`releasing`）の claim が残っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 空きとして返る（`resolve` は恒久 claim の持ち主だけを返す。保存は `updateProfile` の予約が拒みうる） |
+| TC-identity-328 | completeOAuthCallback: `intent: "integration"` の state が保存されている — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | 本スライスに受け皿が無いため state を無効として扱い、`ValidationError("OAUTH_STATE_INVALID")` が投げられる（受け皿は外部連携スライスの `completeIntegrationOAuth`） |
+| TC-identity-329 | getProfile: 一度も編集していない `ActiveUser` — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | 登録時の既定が返る（`bio` は空文字列、`handle` と `avatarUrl` は `null`） |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |
@@ -687,7 +694,7 @@
 | TC-job-031 | continueForcedTermination: `origin: { path: "deleteWorkspace", workspaceId, deletionOperationId }` — 処理する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | owner一致を確認し、`listActiveByScope({ type: "workspace", workspaceId })` の**全件**を `Job.cancel` する |
 | TC-job-032 | continueForcedTermination: `origin: { path: "changeMemberRole", workspaceId, memberUserId, nextRole: "viewer" }` — 処理する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | `listActiveByRequesterAndKinds(memberUserId, disallowedKinds, 100)` が最終述語をDBで適用してからlimitする |
 | TC-job-033 | continueForcedTermination: 対象外jobが先頭に100件以上ある — integration / role changeの継続を処理する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | 対象外に遮られず、該当kindを最大100件処理する |
-| TC-job-034 | continueForcedTermination: 同上 — `kind` の絞り込みの出どころを確認する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | `nextRole` から [usecases/workspace.md](../../usecases/workspace.md) の kind → 要ロール表を引いて導く。継続要求に `kind` の並びを焼き付けない（焼き付けると表を変えたときに配送中のメッセージだけが古い規則で動く） |
+| TC-job-034 | continueForcedTermination: 同上 — `kind` の絞り込みの出どころを確認する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | `nextRole` から [usecases/workspace.md](../usecases/workspace.md) の kind → 要ロール表を引いて導く。継続要求に `kind` の並びを焼き付けない（焼き付けると表を変えたときに配送中のメッセージだけが古い規則で動く） |
 | TC-job-035 | continueForcedTermination: `origin: { path: "changeMemberRole", …, nextRole: "viewer" }` で、対象が `bulkExport` の未終端ジョブを持つ — 処理する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | `bulkExport` は viewer でも実行できるため取り消されない（1 巡目と同じ判定） |
 | TC-job-036 | continueForcedTermination: `origin: { path: "trashNote", noteId, excludingJobId }` — 処理する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | `listActiveByTarget({ type: "note", noteId })` を引き、`excludingJobId` に一致するものを除いて `Job.cancel` する。所有文脈の他のノートに対するジョブには触れない |
 | TC-job-037 | continueForcedTermination: 同上（`excludingJobId` が非 `null`） — 除外を確認する | spec/testcases/job/continueForcedTermination.md#経路ごとの網と絞り込みの再現 | 継続の 2 巡目でも除外が効く。1 ノートの網なので実際には 100 件に達しないが、達しないことは規模の見積もりであって型の保証ではないため `origin` に含める |
@@ -873,7 +880,7 @@
 | TC-job-217 | retryFailedChildren: 親が `canceled` で終端していて、キャンセル前に `failed` だった子が残っている — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `BusinessRuleError(JobNotRetryable)` が投げられ、失敗した子は 1 件も `Job.retry` されない（手順 3。`Job.reopenBatch` は `CanceledJob` を受け取らず親を戻せないため、子だけ戻すと `updateBatchProgress` が「終端状態なら何もせず返す」で抜けて結果が行き場を失う。取り消したものは元の操作をやり直す） |
 | TC-job-218 | retryFailedChildren: 親が `succeeded` で終端している — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `Job.reopenBatch` で `running` に戻る（終端状態から戻れる唯一の例外） |
 | TC-job-219 | retryFailedChildren: 親が `failed` で終端している — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `Job.reopenBatch` で `running` に戻り、`failure` と `finishedAt` が捨てられる |
-| TC-job-220 | retryFailedChildren: 親が `succeeded` の `bulkExport` で、組み立て済みの ZIP（`artifact`）を持つ — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `Job.reopenBatch` が `artifact` の参照を捨てるのに合わせ、その保管ファイルが同一 UoW で「保管ファイルの削除手順」により破棄される（[usecases/job.md](../../usecases/job.md) の「親を開き直すときの生成物の破棄」）。開き直しと破棄はどちらかが失敗すれば両方巻き戻る |
+| TC-job-220 | retryFailedChildren: 親が `succeeded` の `bulkExport` で、組み立て済みの ZIP（`artifact`）を持つ — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `Job.reopenBatch` が `artifact` の参照を捨てるのに合わせ、その保管ファイルが同一 UoW で「保管ファイルの削除手順」により破棄される（[usecases/job.md](../usecases/job.md) の「親を開き直すときの生成物の破棄」）。開き直しと破棄はどちらかが失敗すれば両方巻き戻る |
 | TC-job-221 | retryFailedChildren: 親が `failed` / `canceled`、または `bulkExport` 以外の batch 親 — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | 破棄する生成物はない（`artifact` を持つのは `succeeded` のみで、自身の実行を持つのは `bulkExport` 親だけ） |
 | TC-job-222 | retryFailedChildren: 子 500 件の親で失敗した子が 120 件ある — 再試行する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `listChildren` を全ページ走査して 120 件すべてを集める（`limit` の上限は 100 なので 1 ページには収まらない） |
 | TC-job-223 | retryFailedChildren: 終端した親を戻す — `reopenBatch` の第 2 引数を確認する | spec/testcases/job/retryFailedChildren.md#テストケース-retryfailedchildren | `retry` 適用後の子の現況を `BatchProgressCalculator.summarize` で集計し直した `BatchSummary` を渡す（`JobProgress` ではない）。進捗は `reopenBatch` が `{ completed: succeeded + failed + canceled, total: summary.total }` として作り直す |
@@ -1517,7 +1524,7 @@
 | TC-note-578 | searchNotes: 「日本。本語」を含む行が「日本語」で偽陽性ヒットした — 検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 生テキストに一致区間が現れないため `highlightedExcerpt` は `null` になる（FTS のヒットとハイライトは必ずしも一致しない） |
 | TC-note-579 | searchNotes: キーワードを指定しない — 検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | `highlightedExcerpt` は `null` になる |
 | TC-note-580 | searchNotes: 本文に `<script>` のような記号を含む — 検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | `highlightedExcerpt` は HTML エスケープ済みの文字列に `<mark>` を入れたものになる（標識を入れる側がエスケープまで責任を持つ。素の `excerpt` は平文のまま） |
-| TC-note-581 | searchNotes: `highlightedExcerpt` が非 `null` の行と `null` の行が混ざる — 一覧を描画する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 非 `null` の行は HTML 断片として描き（含まれるタグは `<mark>` のみ）、`null` の行は素の `excerpt` を**平文として**描く。HTML の枝と平文の枝を取り違えない（[domains/note.md](../../domains/note.md) の `NoteSummary` の描画契約） |
+| TC-note-581 | searchNotes: `highlightedExcerpt` が非 `null` の行と `null` の行が混ざる — 一覧を描画する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 非 `null` の行は HTML 断片として描き（含まれるタグは `<mark>` のみ）、`null` の行は素の `excerpt` を**平文として**描く。HTML の枝と平文の枝を取り違えない（[domains/note.md](../domains/note.md) の `NoteSummary` の描画契約） |
 | TC-note-582 | searchNotes: 日本語の本文がある — 単語区切りのない語で部分一致検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 該当ノートが返る |
 | TC-note-583 | searchNotes: 本文に「東京都」を含むノートがある — 「東京」（2 文字）で検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 該当ノートが返る（bigram 方式で 2 文字から有効） |
 | TC-note-584 | searchNotes: — — 1 文字で検索する | spec/testcases/note/searchNotes.md#テストケース-searchnotes | 検索語は無視され、全件が返る |
@@ -1632,7 +1639,7 @@
 | TC-note-693 | updateNoteBody: `base` 要素を含む HTML — 保存する | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 除去され、`removed` に含まれる（本文中のすべての相対 URL の解決先をまとめて外部へ向け直せるため） |
 | TC-note-694 | updateNoteBody: `<meta http-equiv="refresh" content="0;url=...">` を含む HTML — 保存する | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | `meta` ごと除去され、`removed` に含まれる（公開ページに自動遷移を仕込めないようにする） |
 | TC-note-695 | updateNoteBody: `<link rel="stylesheet" href="...">` を含む HTML — 保存する | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 除去され、`removed` に含まれる（`ExternalFetchPolicy` を通らない外部取得経路になるため。装飾の保持は `importExternalReferences` による `<style>` へのインライン化で代替する） |
-| TC-note-696 | updateNoteBody: 同上 — 保存後の本文を調べる | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 除去した位置に空の `<style data-stylesheet-href="元の URL">` が残る（カスケード順を保つため。[domains/note.md](../../domains/note.md) の `HtmlProcessor`） |
+| TC-note-696 | updateNoteBody: 同上 — 保存後の本文を調べる | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 除去した位置に空の `<style data-stylesheet-href="元の URL">` が残る（カスケード順を保つため。[domains/note.md](../domains/note.md) の `HtmlProcessor`） |
 | TC-note-697 | updateNoteBody: 同上 — `importReferences: true` で保存する | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 痕跡が `extractExternalReferences` に外部参照として現れるため、参照取り込みジョブが登録される（手順 8 の登録条件を満たす） |
 | TC-note-698 | updateNoteBody: 同上 — `importReferences: false` で保存する | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | **痕跡はそのまま残る**（`data-stylesheet-href` のまま。要素ごと落としも属性の付け替えもしない）。ジョブは登録されないので装飾は当たらない |
 | TC-note-699 | updateNoteBody: `importReferences: false` で保存した本文 — あとで `importReferences: true` で保存し直す | spec/testcases/note/updateNoteBody.md#テストケース-updatenotebody | 残っていた痕跡が抽出に現れ、参照取り込みジョブが登録される（取り込み直せる） |
@@ -1739,7 +1746,7 @@
 | TC-storage-041 | deleteFilesByOwner: 対象が残っているのにそのバッチで 1 件も削除できなかった — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 継続要求を積まず、失敗として返る（キューの再試行と DLQ に委ねる） |
 | TC-storage-042 | deleteFilesByOwner: 継続要求が重複配送され 2 系列が並走する — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 両系列とも「残っているものを読んで消す」だけなので結果は変わらず、対象が 0 件になった系列から順に継続をやめる |
 | TC-storage-043 | deleteFilesByOwner: 1 バッチを処理する — 件数に比例した往復を要求しないことを確認する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 列挙は 1 回だけ。削除できたファイル 1 件につき `storage.fileDeleted` が 1 件。どちらも `batchSize` の件数に比例した追加の往復を要求しない（バックエンドが発行する文の数はここでは約束しない — [ADR 056](../adr/056-performance-budget-placement.md)） |
-| TC-storage-044 | deleteFilesByOwner: `deleteNotesForOwner` の継続 — 形を比べる | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 同一である（1 バッチ処理して残りがあれば専用の継続要求を 1 件積む）。以前あった「ファイル側は保険、ノート側は常用」という違いは解消している |
+| TC-storage-044 | deleteFilesByOwner: `deleteNotesForOwner` の継続 — 形を比べる | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 同一である（1 バッチ処理して残りがあれば専用の継続要求を 1 件積む） |
 | TC-storage-045 | deleteFilesByOwner: ワークスペースのファイルがある — ワークスペースを対象に実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | そのワークスペースのファイルだけが削除される |
 | TC-storage-046 | deleteFilesByOwner: 対象が 0 件 — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | `deletedCount: 0` が返る |
 | TC-storage-047 | deleteFilesByOwner: 1 件の削除が失敗する — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 記録して継続する |
@@ -1816,7 +1823,7 @@
 | TC-storage-118 | importExternalReferences: 取り込みを実行した — 取得記録を確認する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | 扱った参照 1 件につき `ReferenceAttempt` が 1 件書かれる。成功したリソースは `imported`（`fileId` つき）、成功したスタイルシートは `inlined`、失敗は `failed`（`reason` つき）、予算超過で試行しなかったものは `notAttempted` |
 | TC-storage-119 | importExternalReferences: 取り込みを実行した — 保存の単位を確認する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | 本文の保存・取得記録の書き込み・`Job.succeed` が同一の `UnitOfWorkProvider.run` で確定する |
 | TC-storage-120 | importExternalReferences: 前回の実行で `failed` を記録した URL が、今回の実行の対象に含まれない — 実行する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | その行は消えない（`saveAttempts` は今回扱った `(noteId, url)` だけを上書きする。前回の理由が失われてはならない） |
-| TC-storage-121 | importExternalReferences: 取り込みを実行した — `Job.succeed` の引数を確認する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | `notices` は空配列で渡される（取り込みの結果は `notices` に載せない。[ADR 014](../../adr/014-import-result-provenance.md)） |
+| TC-storage-121 | importExternalReferences: 取り込みを実行した — `Job.succeed` の引数を確認する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | `notices` は空配列で渡される（取り込みの結果は `notices` に載せない。[ADR 014](../adr/014-import-result-provenance.md)） |
 | TC-storage-122 | importExternalReferences: `skipped` の判定を確認する — 実行する | spec/testcases/storage/importExternalReferences.md#テストケース-importexternalreferences | 手順 3 で `StorageUrlPolicy.isInternal` が真の参照は対象から外れる。`extractExternalReferences` はサービス内の URL も返すため、この絞り込みは呼び出し側が行う |
 | TC-storage-123 | issueDownloadUrl: 自分が所有するファイル — URL を発行する | spec/testcases/storage/issueDownloadUrl.md#テストケース-issuedownloadurl | 期限つきの URL とファイル名が返る |
 | TC-storage-124 | issueDownloadUrl: ワークスペースの viewer — そのワークスペースのファイルの URL を発行する | spec/testcases/storage/issueDownloadUrl.md#テストケース-issuedownloadurl | 発行できる（`downloadNote` は viewer に許される） |
@@ -2191,7 +2198,7 @@
 | TC-workspace-031 | changeMemberRole: 網が 100 件を返した — 降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 降格と同じ UoW で継続要求 `job.terminationContinued { origin: { path: "changeMemberRole", workspaceId, memberUserId, nextRole } }` を積む。続きは `continueForcedTermination` が引き受ける |
 | TC-workspace-032 | changeMemberRole: 継続要求の `origin` — `kind` の絞り込みの出どころを確認する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | `kind` の並びを焼き付けず `nextRole` だけを運ぶ。続きは下表を引き直して導く — 表を変えたときに配送中のメッセージだけが古い規則で動くのを防ぐ |
 | TC-workspace-033 | changeMemberRole: 対象が要求した `bulkMove` / `bulkVisibility` / `bulkTag` / `bulkDelete` の未終端ジョブがある — viewer に降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | いずれも editor を要する kind のため取り消される |
-| TC-workspace-034 | changeMemberRole: 対象が要求した `driveBackup` / `bulkBackup` の未終端ジョブがある — viewer に降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | いずれも editor を要する kind（[ADR 004](../../adr/004-workspace-roles.md) のロール表）のため取り消される。バックアップはノートに紐づく共有状態（`BackupRecord`）を書き換え、`downloadNote` の範囲を超えるため |
+| TC-workspace-034 | changeMemberRole: 対象が要求した `driveBackup` / `bulkBackup` の未終端ジョブがある — viewer に降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | いずれも editor を要する kind（[ADR 004](../adr/004-workspace-roles.md) のロール表）のため取り消される。バックアップはノートに紐づく共有状態（`BackupRecord`）を書き換え、`downloadNote` の範囲を超えるため |
 | TC-workspace-035 | changeMemberRole: 対象が要求した `pdfExport` / `bulkExport` の未終端ジョブがある — viewer に降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | viewer でも実行できる kind（`downloadNote`）のため取り消されない。要求者個人に帰属する生成物を作るだけでノート側に何も書かない |
 | TC-workspace-036 | changeMemberRole: 対象が owner で、editor に降格する — 降格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 取り消しは 1 件も起きない（owner だけに許される操作に対応する `JobKind` が存在しないため） |
 | TC-workspace-037 | changeMemberRole: 対象が viewer で、editor に昇格する — 昇格する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 取り消しは起きない（降格の場合だけ対象を集める） |

@@ -20,7 +20,7 @@ const sha256Hex = async (body: Uint8Array): Promise<string> => {
 
 /**
  * Shared conformance suite for `ObjectStorage`
- * (ADP-storage-018..020 + `publicUrl`).
+ * (ADP-storage-018..020, 024).
  */
 export function describeObjectStorageContract(
   backendName: string,
@@ -91,7 +91,7 @@ export function describeObjectStorageContract(
       await backend.objectStorage.deleteMany([]);
     });
 
-    it("builds a stable public URL that carries the key", async () => {
+    it("ADP-storage-024: builds a stable public URL that carries the key", async () => {
       const url = backend.objectStorage.publicUrl(key);
       expect(url).toContain(key);
       expect(backend.objectStorage.publicUrl(key)).toBe(url);

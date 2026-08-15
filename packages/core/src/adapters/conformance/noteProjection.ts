@@ -10,7 +10,7 @@ import { makeProjectionEntry, noteId, scopeOf, userId } from "./fixtures";
 /**
  * Shared conformance suite for the projection group: writers with the
  * generation-vector ordering, the snapshot reader, and the revision
- * counter (ADP-note-028..034).
+ * counter (ADP-note-028..034, 055/056).
  */
 export function describeNoteProjectionContract(
   backendName: string,
@@ -84,7 +84,7 @@ export function describeNoteProjectionContract(
       ).toBeNull();
     });
 
-    it("ADP-note-028: redactAuthor replaces the author display on both planes and no-ops otherwise", async () => {
+    it("ADP-note-055/056: redactAuthor replaces the author display on both planes and no-ops otherwise", async () => {
       const version = {
         projectionRevision: 1,
         authorVersion: 1,

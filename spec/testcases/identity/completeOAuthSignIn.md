@@ -15,5 +15,5 @@
 | `state` が保存されていない | 認可コードを交換する | `ValidationError("OAUTH_STATE_INVALID")` が投げられる | |
 | `state` が既に 1 度使われている | 同じ `state` で再度交換する | `ValidationError("OAUTH_STATE_INVALID")` が投げられる（取り出しと同時に削除される） | |
 | コード交換がプロバイダー側で拒否される | 認可コードを交換する | `ValidationError("OAUTH_CODE_INVALID")` が投げられる | |
-| プロバイダーとの通信が失敗する | 認可コードを交換する | `SystemError(ExternalServiceError)` が投げられる | |
+| プロバイダーとの通信が失敗する | 認可コードを交換する | `SystemError(ExternalApiError)` が投げられる | |
 | `redirectTo` が保存されている | 認可コードを交換する | 応答に `redirectTo` が含まれる | |

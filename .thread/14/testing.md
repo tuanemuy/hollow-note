@@ -9,7 +9,7 @@
 
 この Issue の変更を確認するために必要な手順のみ記載（依存パッケージのインストール等、プロジェクト全体のセットアップは省略）。
 
-本 Issue の成果物は **`spec/` / `docs/` / `CLAUDE.md` / `README.md` のドキュメント同期**が主体で、コード差分は **8 ファイル**（ポート JSDoc 4・`errorCode.ts` のコメント 2・`start.ts` のコメント 1・適合スイート 1）に限られ、**振る舞いを変える差分は 0**（AC-63 / adr.md ADR-012）。したがって確認はリポジトリルートで実行するコマンドと、`spec/` 内の ID・リンク整合の検査で完結する。
+本 Issue の成果物は **`spec/` / `docs/` / `CLAUDE.md` / `README.md` のドキュメント同期**が主体で、コード差分は **`plan.md` の AC-63 が列挙するファイル**（ポート / ユースケース / DI の JSDoc、`errorCode.ts` と presentation のコメント、適合スイートと単体テストの `describe` / `it` 名、**および他ランタイム用 `.env*.example` の削除**）に限られ、**振る舞いを変える差分は 0**（AC-63 / adr.md ADR-012）。**件数と内訳の正典は AC-63 だけ**で、この文書には写さない（二重管理にすると片方だけが陳腐化する）。したがって確認はリポジトリルートで実行するコマンドと、`spec/` 内の ID・リンク整合の検査で完結する。
 
 ### 検証環境の起動
 
@@ -32,7 +32,7 @@
 - **`:cf` / `:aws` / `:gcp` のスクリプトは存在しない。** root `package.json` の scripts は `dev` / `dev:node` / `build` / `build:node` / `start` / `start:node` / `typecheck` / `lint` / `lint:fix` / `format` / `format:check` / `test` / `test:unit` の 13 個のみ（`README.md` / `CLAUDE.md` の記述が古い側で、ステップ 13 / 19 の対象）。
 - **Makefile / Taskfile / justfile はリポジトリルートに存在しない**（`ls` で確認）。タスクランナーは pnpm scripts のみ。
 - **CI と同じ検査が使える。** `.github/workflows/ci.yml` は `pnpm lint` → `pnpm format:check` → `pnpm typecheck` → `pnpm test:unit`（`lint-typecheck-unit` ジョブ）と `pnpm build:node`（`build` ジョブ）を回す。本計画の確認項目 1 はこれと同じ集合なので、ローカルで通れば CI も通る。
-- **実行前の基準値（本計画の作成時に実測）**: `pnpm typecheck` = 緑 / `pnpm lint` = 緑（infos 2 件） / `pnpm format:check` = 緑（443 ファイル） / `pnpm test:unit` = **76 ファイル・925 passed・3 skipped** / `pnpm build` = 緑。**この 5 つは Issue 完了後も同じ結果**でなければならない（テスト件数は適合スイートの既存 `it` に主張を 1 つ足すだけなので **925 のまま**。`it` 名も変えない — ステップ 30）。
+- **実行前の基準値（本計画の作成時に実測）**: `pnpm typecheck` = 緑 / `pnpm lint` = 緑（infos 2 件） / `pnpm format:check` = 緑（443 ファイル） / `pnpm test:unit` = **76 ファイル・925 passed・3 skipped** / `pnpm build` = 緑。**この 5 つは Issue 完了後も同じ結果**でなければならない（新しい `it` を 1 つも足さないのでテスト件数は **925 のまま**。適合スイートへの変更は既存 `it` への主張追加と ADP ID の付け替え、すなわち `describe` / `it` 名の文字列だけ — ステップ 30）。
 
 ### デプロイ方法
 
@@ -42,9 +42,9 @@
 
 **画面操作（ブラウザー）の確認項目は 0 件。** 後続フェーズのブラウザー検証はスキップしてよい。根拠は次の 4 点で、いずれも確認項目 2 と 11 で機械的に検証する。
 
-1. **`apps/web/` 配下の差分は `apps/web/app/start.ts` の 1 ファイルだけで、しかもコメント 1 行**（`AC-15` という `.thread/1/plan.md` 由来の dangling 参照を `spec/presentation/index.md` への参照に差し替える — ステップ 8-5）。ルート・コンポーネント・server function・スタイル・vite / router 設定は 1 ファイルも触らない。
-2. **残る 6 つのコード差分は `packages/core` のポート JSDoc とエラーコードの冒頭コメント**で、実行されるコードではない（ステップ 8-1〜8-4 / 8-6 / 8-7）。
-3. **8 つ目の差分は `packages/core/src/adapters/conformance/` の適合スイート**で、テストコードのみ。追加するのは既存 `ADP-common-008` ケースへの主張 1 つで、memory 実装は既にその振る舞いを持つため実装変更は発生しない（AC-59 / adr.md ADR-012）。
+1. **`apps/web/` 配下の差分はコメント行だけ**（`.thread/1/plan.md` 由来の dangling な `AC-15` / ADR 番号参照を `spec/` 側の受け皿に差し替える — ステップ 8-5 ほか）。JSX・server function・スタイル・vite / router 設定は 1 行も触らない。
+2. **`packages/core` の差分はポート / ユースケース / DI の JSDoc とエラーコードの冒頭コメント**で、実行されるコードではない（ステップ 8-1〜8-4 / 8-6 / 8-7）。
+3. **`packages/core/src/adapters/conformance/` と `__tests__/` の差分はテストコードのみ。** 追加するのは既存 `ADP-common-008` ケースへの主張 1 つで（memory 実装は既にその振る舞いを持つため実装変更は発生しない — AC-59 / adr.md ADR-012）、ほかは `describe` / `it` 名が名乗る台帳 ID の付け替えで、アサーションとセットアップには触らない。
 4. **AC-63 が「振る舞いを変える差分は 0」を受け入れ基準として明示**しており、plan.md「テスト方針」も「マニュアルテストの実行は不要（UI の挙動を変えない）」と書いている。`spec/manual-tests/account.md` への変更（TC-42 追加・TC-26 / TC-13 の是正 — AC-30 / AC-54）は**手順書というドキュメントの修正**であって、アプリの挙動の変更ではない。
 
 ## 確認項目
@@ -62,26 +62,18 @@
   4. `pnpm test:unit`
   5. `pnpm build`
 - **期待結果:** 5 つすべてが成功で終了する。`pnpm test:unit` は **76 ファイル・925 passed・3 skipped**（作成時の実測値と同じ）。
-- **確認ポイント:** テスト件数が **926 以上に増えていたらスコープ逸脱**（ステップ 30 が許すのは既存 `it` への主張追加だけで、新しい `it` を足さない — AC-59 / adr.md ADR-012）。逆に **赤になった場合は実装変更で直さない** — memory アダプターが `completed` した barrier への `assertOwner` を既に弾く前提が崩れているので、ステップを止めて判断し直す（ステップ 30 の注意）。整形差分が出たら `pnpm format` を実行してから再確認する。
+- **確認ポイント:** テスト件数が **926 以上に増えていたらスコープ逸脱**（ステップ 30 が許すのは既存 `it` への主張追加と `it` 名の付け替えだけで、新しい `it` を足さない — AC-59 / adr.md ADR-012）。逆に **赤になった場合は実装変更で直さない** — memory アダプターが `completed` した barrier への `assertOwner` を既に弾く前提が崩れているので、ステップを止めて判断し直す（ステップ 30 の注意）。整形差分が出たら `pnpm format` を実行してから再確認する。
 
-### 2. コード差分が 8 ファイルに限られている
+### 2. コード差分が AC-63 の列挙に限られている
 
 - **対応する受け入れ基準:** AC-63、AC-24（上書きされる側）
 - **目的:** ドキュメント同期のはずの Issue が、意図しない実装変更を持ち込んでいないことを確認する
 - **手順:**
-  1. `git diff --stat` を実行し、`packages/` と `apps/` 配下の差分ファイルを数える
-  2. `git diff --name-only -- packages/ apps/` で内訳を確認する
-  3. `git diff -- apps/web/` を目視する
-- **期待結果:** `packages/` と `apps/` の差分がちょうど **8 ファイル** —
-  `packages/core/src/application/ports/shareTokenProtector.ts` /
-  `packages/core/src/domain/identity/ports/identityRepository.ts` /
-  `packages/core/src/application/ports/accountDeletionManifestStore.ts` /
-  `packages/core/src/application/ports/scopeCleanupAdmissionStore.ts` /
-  `packages/core/src/domain/identity/errorCode.ts` /
-  `packages/core/src/domain/storage/errorCode.ts` /
-  `apps/web/app/start.ts` /
-  `packages/core/src/adapters/conformance/scopeCleanupAdmissionStore.ts`
-- **確認ポイント:** **`apps/web/` の差分は `start.ts` のコメント 1 行だけ**であること（これが「画面操作の確認が要らない」判定の根拠。ここに他のファイルが出たら判定をやり直す）。`errorCode.ts` 2 本の差分は**コメント行の削除のみ**で、enum の値定義行は 1 行も動いていないこと（AC-27 / AC-58(b)(c)）。
+  1. `git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/` を実行し、**コミット済みと未コミットの両方**を含めた差分ファイルを追加 / 変更 / **削除**の別に数える
+  2. `AC-63` の「コード差分の内訳」表と 1 対 1 で突き合わせる
+  3. `git diff -U0 $(git merge-base origin/main HEAD) -- packages/ apps/ ':!*.example' | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -vE "^[-+][[:space:]]*(//|/\*|\*|\*/)" | grep -vE '^[-+][[:space:]]*(it|describe)\("'` を実行し、返る行を目視する
+- **期待結果:** `packages/` と `apps/` の差分ファイルが **`plan.md` の AC-63 が列挙する集合と 1 対 1 で一致する**（件数も内訳も AC-63 が正典。ここに写しを置くと片方だけが陳腐化するので置かない）。手順 3 が返すのは AC-63 が明示する **2 種類の行だけ**（適合スイート `ADP-common-008` への追加アサーションと `containerStore.ts` のエラーメッセージ文字列）で、それ以外の追加・削除行はすべてコメント / JSDoc / `describe`・`it` 名。列挙に無いファイル、または AC-63 に無い行が出たらスコープ逸脱。
+- **確認ポイント:** **`git diff --stat` だけでは足りない** — 未コミットの作業ツリーに差分が残っている状態で数えると取りこぼす（削除された `.env*.example` 3 本がそれ）。**`apps/web/` の変更差分がコメント行だけであること**（これが「画面操作の確認が要らない」判定の根拠。JSX・server function・ランタイム設定に差分が出たら判定をやり直す）。**削除 3 本は他ランタイム用の設定テンプレートで、読むコードが 0 件であることが削除の根拠**（`grep -rn "dev.vars\|env.aws\|env.gcp" --include="*.ts" --include="*.json"` が 0 件）。`errorCode.ts` 2 本の差分は**コメント行の削除のみ**で、enum の値定義行は 1 行も動いていないこと（AC-27 / AC-58(b)(c)）。適合スイート / 単体テストの差分は `describe` / `it` 名の文字列と既存 `it` への主張 1 つに限られ、アサーションとセットアップが動いていないこと。
 
 ### 3. 「直すべき記述が残っていない」検査（ヒット 0 件が合否）
 
@@ -195,7 +187,7 @@
   3. 起動ログの `[listen.node] listening on http://...` 行の URL を開く
   4. トップページが表示されること、サインイン画面（`/signin`）へ遷移できることを確認して停止する
 - **期待結果:** ビルドが成功し、サーバーが起動し、トップとサインイン画面が従来どおり描画される。
-- **確認ポイント:** **これは新機能の確認ではなく、コード差分がコメントだけであることの裏づけ。** ここで挙動が変わっていたら確認項目 2 の差分内訳を疑う（`apps/web/` に `start.ts` 以外の差分が入っている可能性）。永続化は in-memory なので、プロセスを止めたデータは消える（仕様どおり）。
+- **確認ポイント:** **これは新機能の確認ではなく、コード差分がコメントだけであることの裏づけ。** ここで挙動が変わっていたら確認項目 2 の差分内訳を疑う（`apps/web/` の**変更**ファイルにコメント以外の差分が入っている可能性。削除した `.env*.example` 3 本は Node ランタイムが読まないので、起動に効くのは `apps/web/.env.example` だけ）。永続化は in-memory なので、プロセスを止めたデータは消える（仕様どおり）。
 
 ## エッジケース・異常系
 

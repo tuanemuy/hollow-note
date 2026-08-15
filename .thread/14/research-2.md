@@ -2,10 +2,12 @@
 
 対象 HEAD: `55a5bb9`（PR #17 / Issue #2 マージ済み）。`.thread/14/research.md` の SYNC-01〜27 とは別系列で、**SYNC-201 番台**を採番する。
 
+> **as-of `55a5bb9`。** 本文の「現在の spec / 現在の実装」という記述と、すべての行番号参照（`path:123` / `L123` の両形式）は `55a5bb9` 時点のものである。Issue #14 は本台帳の「残」を反映したので、HEAD では引用文も行番号も一致しない。台帳を根拠として読むときは `git show 55a5bb9:<path>` で当たること。行番号を HEAD に合わせて振り直していないのは意図的で、基準 commit を固定するほうが以降の変更に対して安定するため。
+
 ## 一次ソースと採番
 
 - Issue #14 のコメント（分類表）は合計 **38 件**と書いているが、Issue #2 のコメント「spec-sync 候補」／`.thread/2/progress.md` L220〜285 の箇条書きを ID 単位でほどくと **42 項目**（SYNC-201〜242）になる（分類表は複数の箇条を 1 行に畳んでいる）。
-- そこに本調査で見つけた同種の乖離 1 件（SYNC-243）と、統合作業で採番した 1 件（SYNC-244）を足し、**台帳は 44 項目**（L497 の集計表と一致。計画レビュー R2 coverage:S-006 で 43 → 44 に訂正した）。
+- そこに本調査で見つけた同種の乖離 1 件（SYNC-243）と、統合作業で採番した 1 件（SYNC-244）を足し、**台帳は 44 項目**（本ファイル「集計」節の表と一致）。
 - すべて `spec/` の該当ファイルと実装コードを実際に読んで裏を取った。progress.md の記述は Issue #2 実装時点のスナップショットとして扱い、そのまま転記していない。
 
 判定の凡例: **残** = まだ乖離あり（本 Issue で直す） / **済** = 既に解消済み（何もしない） / **外** = スコープ外（別 Issue・後続スライス） / **重** = SYNC-01〜27 と重複
@@ -14,7 +16,7 @@
 
 `spec/adr/046-port-contract-divergence.md:22-26` —「一律に JSDoc へ寄せるでも実装へ寄せるでもなく、**その振る舞いの正本がどこにあるか**で倒す向きを決める」「乖離は『見つけたら倒す』対象になり、記録して先送りする選択肢を残さない」。
 
-**本 Issue に固有の重要な事実**: PR #17 は `spec/adr/` に 30 本の ADR を昇格させている（`038`〜`051`）。つまり **Issue #2 の設計判断の多くは既に `spec/` の正典に入っており、追随していないのは下流（`spec/domains/` `spec/usecases/` `spec/pages/` `spec/database/` `spec/inventory/` `spec/manual-tests/`）だけ**である。これは `.thread/14/research.md` の SYNC-02 / SYNC-10 / SYNC-20 と同じ「ADR が正、下流 spec が未追随」の形で、倒す向きの判断材料が既に `spec/` 内にある。
+**本 Issue に固有の重要な事実**: PR #17 は `spec/adr/` へ ADR 29 本（`023`〜`051`）と `index.md` の計 30 ファイルを昇格させている（`git diff --name-only cea6134..55a5bb9 -- spec/adr/`）。つまり **Issue #2 の設計判断の多くは既に `spec/` の正典に入っており、追随していないのは下流（`spec/domains/` `spec/usecases/` `spec/pages/` `spec/database/` `spec/inventory/` `spec/manual-tests/`）だけ**である。これは `.thread/14/research.md` の SYNC-02 / SYNC-10 / SYNC-20 と同じ「ADR が正、下流 spec が未追随」の形で、倒す向きの判断材料が既に `spec/` 内にある。
 
 昇格済み ADR と Issue #2 ADR 番号の対応（本台帳で使う分）:
 
@@ -43,7 +45,7 @@
 #### SYNC-201 — `AuthTokenRepository.findPendingByUserAndPurpose` の追加 【残】
 
 - 反映先: `spec/domains/identity.md:398-408`（`AuthTokenRepository` interface）**と `spec/testcases/identity/requestPasswordReset.md`（テストケース表）**。波及 `spec/inventory/domain.md:88-93`（DOM-identity-042〜047 の次に 1 行）、`spec/inventory/adapter.md:66-71`（ADP-identity-021〜026 の次に 1 行）、`spec/inventory/test.md`（identity 群の末尾に 2 行）
-  - **テストケース表は計画レビュー R2（coverage:S-001）で追加した。** `.thread/2/progress.md` の該当箇条は「`spec/domains/identity.md` のポート定義**とテストケース表の両方**に追記が要る」と書いていたのに、本台帳は反映先を domain と inventory だけにしていた。実物を見ると `spec/testcases/identity/resendVerificationEmail.md` は「直近 59 秒以内 / 直近 61 秒前」の境界 2 行を持つのに、`spec/testcases/identity/requestPasswordReset.md` は「同じメールアドレスへの要求が短時間に連続する｜レート制限がかかり…」の 1 行だけで、60 秒という値も境界も無い（既存行が誤りではないので P ではなく S 扱い）。ステップ 32 で 2 行足す
+  - **テストケース表も反映先に含める。** `.thread/2/progress.md` の該当箇条が「`spec/domains/identity.md` のポート定義**とテストケース表の両方**に追記が要る」と書いており、実物も `spec/testcases/identity/resendVerificationEmail.md` が「直近 59 秒以内 / 直近 61 秒前」の境界 2 行を持つのに対し、`spec/testcases/identity/requestPasswordReset.md` は「同じメールアドレスへの要求が短時間に連続する｜レート制限がかかり…」の 1 行だけで、60 秒という値も境界も無い。ステップ 32 で 2 行足す
 - 現在の spec: interface に `insert` / `findByTokenHash` / `save` / `deleteByUserAndPurpose` / `deleteOlderEpochByUser` / `deleteExpired` の 6 メソッドのみ
 - 現在の実装: `packages/core/src/domain/identity/ports/authTokenRepository.ts:29-32` — `findPendingByUserAndPurpose(userId, purpose): Promise<PendingAuthToken | null>`。JSDoc（`:21-27`）が「`auth_tokens` の (`user_id`, `purpose`) 部分一意索引が保証する at-most-one live token。再送間隔を測る唯一の読み取り」と根拠を書いている。利用者は `resendVerificationEmail.ts:71` / `requestPasswordReset.ts:88`
 - 倒す向き: **実装が正**。当該部分一意索引は既に `spec/database/index.md#auth_tokens` にあり、その索引を読む口が spec のポートに無かっただけ。約束を足す設計判断ではなく記載漏れ
@@ -62,7 +64,7 @@
 #### SYNC-203 — `ObjectStorage` の 3 点差分（`publicUrl` 追加 / bytes 専用 / `createDownloadUrl` 未実装）【残・部分外】
 
 - 反映先: `spec/domains/storage.md:285-305`（`ObjectStorage` interface と説明段落）。波及 `spec/inventory/domain.md:209-212`（DOM-storage-032〜035）、`spec/inventory/adapter.md:161-164`（ADP-storage-018〜021）
-  - **`spec/usecases/storage.md` 側の波及**（計画レビュー R2 arch:P-003 で追加）。domain の署名だけ狭めると同ファイル群に内部矛盾が残る:
+  - **`spec/usecases/storage.md` 側の波及**。domain の署名だけ狭めると同ファイル群に内部矛盾が残る:
     - **宣言値 4 か所** — `:22`（`startBulkUpload` の `files: { fileName; declaredMimeType; size }[]`）/ `:74` `:75`（`storeUpload` の入力 DTO）/ `:136`（`storeMedia`）/ `:167`（`storeAvatar` = SYNC-212 が既に扱う）。**`spec/adr/050` の決定 1「入力から宣言値を落とす」は無条件**なので、`storeAvatar` だけ直すと 3 か所が「昇格済み ADR に下流が未追随」のまま残る
     - **ストリーム入力 2 か所** — `spec/usecases/storage.md:76`（`storeUpload` の `body: ReadableStream<Uint8Array>`）と `spec/usecases/integration.md:332`（`stream: ReadableStream<Uint8Array>`）。**どちらも未実装**なので spec 側は残し、`spec/adr/050` の前提「ストリームを通す用途が現れた時点で、その要求とともに広げる」の要求元として `spec/domains/storage.md` の引き継ぎ段落から名指しする（ステップ 22）
 - 現在の spec:
@@ -90,7 +92,7 @@
 
 - 反映先: `spec/domains/identity.md:357-362`（interface）と `:369`（エラーケース行）。波及 `spec/inventory/domain.md:73-76`（DOM-identity-027〜030）、`spec/inventory/adapter.md:51-54`（ADP-identity-006〜009）
 - 現在の spec: `resolve` / `reserve` / `activate` / `release` の 4 メソッド。`releasing` 状態も `beginRelease` も interface に無い。ただし `spec/domains/identity.md:508`（ドメインイベント表 `identity.identity.removed`）が既に「global consumer が **releasing→release** する」と書いており、**spec の中で状態の存在だけが先に漏れている**
-- 現在の実装: `packages/core/src/domain/identity/ports/identityUniqueDirectory.ts:56-63` — `beginRelease({ kind, normalizedKey, expectedUserId, operationId })`。非対称は JSDoc に明記済み: `resolve` は「merely reserved or already `releasing` は `null`」（`:28-29`）、`beginRelease` は「`reserved` の行は no-op」（`:50-54`）、`release` は「`reserved` と `releasing` を落とす。activate 済みは触らない」（`:64-65`）。**4 つ目の非対称**（計画レビュー R2 coverage:P-007 で追加）: `reserve` は `releasing` の行を**奪えない** — `adapters/memory/repositories/identityUniqueDirectory.ts:48-67` の `reservationLapsed` は `existing.state === "reserved"` かつ期限切れのときだけ真で、`releasing` 行に対しては `ConflictError`（`EMAIL_ALREADY_USED` / `HANDLE_ALREADY_USED` / `PROVIDER_ACCOUNT_ALREADY_LINKED`）を投げる。`.thread/2/progress.md` の該当箇条も「`resolve` は `releasing` を解決せず、**`reserve` は `releasing` を塞ぐ**という非対称」と 2 つの述語を挙げている。契約に無いと、次のバックエンド実装者が「解放途中の鍵を再予約で奪える」実装を書きうる
+- 現在の実装: `packages/core/src/domain/identity/ports/identityUniqueDirectory.ts:56-63` — `beginRelease({ kind, normalizedKey, expectedUserId, operationId })`。非対称は JSDoc に明記済み: `resolve` は「merely reserved or already `releasing` は `null`」（`:28-29`）、`beginRelease` は「`reserved` の行は no-op」（`:50-54`）、`release` は「`reserved` と `releasing` を落とす。activate 済みは触らない」（`:64-65`）。**4 つ目の非対称**: `reserve` は `releasing` の行を**奪えない** — `adapters/memory/repositories/identityUniqueDirectory.ts:48-67` の `reservationLapsed` は `existing.state === "reserved"` かつ期限切れのときだけ真で、`releasing` 行に対しては `ConflictError`（`EMAIL_ALREADY_USED` / `HANDLE_ALREADY_USED` / `PROVIDER_ACCOUNT_ALREADY_LINKED`）を投げる。`.thread/2/progress.md` の該当箇条も「`resolve` は `releasing` を解決せず、**`reserve` は `releasing` を塞ぐ**という非対称」と 2 つの述語を挙げている。契約に無いと、次のバックエンド実装者が「解放途中の鍵を再予約で奪える」実装を書きうる
 - 倒す向き: **実装が正**。ADR-038（昇格済み `spec/adr/038` = claim は索引）が「claim と identity 行が別の物理境界にあり配送が at-least-once」を前提とし、2 相の取り壊しはその帰結
 - 判定: 要修正
 - 根拠: `.thread/2/adr.md` ADR-015 / ADR-028、`spec/adr/038`
@@ -215,8 +217,7 @@
 #### SYNC-218 — OAuth コールバック応答を intent 付き判別共用体にし `linkIdentity` arm に `redirectTo` を載せた 【残】
 
 - 反映先: **SYNC-239 が新設する `spec/usecases/identity.md#completeOAuthCallback` の出力 DTO**（intent 付き判別共用体の `linkIdentity` arm）。波及 `spec/inventory/usecase.md` の**新規行 UC-identity-024**
-  - **計画レビュー R2（arch:P-002）で訂正した。** 旧記載は反映先を `spec/usecases/identity.md:287-291`（`linkOAuthIdentity` の出力 DTO）と `:239-254` にしていたが、これは**誤り**だった。`redirectTo` は `linkOAuthIdentity` の出力ではない
-  - `linkOAuthIdentity` の出力 DTO（`:287-291`）と `spec/inventory/usecase.md:17`（`UC-identity-007`）は **`identityId` のまま据え置く**
+  - **`redirectTo` は `linkOAuthIdentity` の出力ではない。** したがって `linkOAuthIdentity` の出力 DTO（`:287-291`）と `spec/inventory/usecase.md:17`（`UC-identity-007`）は **`identityId` のまま据え置く**
 - 現在の spec: `linkOAuthIdentity` の出力 DTO は `identityId: string` の 1 フィールドのみ。`completeOAuthCallback` の節そのものが無い（SYNC-239）
 - 現在の実装: `packages/core/src/application/identity/view.ts:90-93` の `OAuthCallbackView` が intent で分岐する判別共用体で、`linkIdentity` arm だけが `redirectTo: string | null` を持つ。`completeOAuthCallback.ts:44-50` が `flow.redirectTo`（state に park した値）から詰める。一方 `LinkOAuthIdentityView`（`view.ts:166-168`）は **`{ identityId: string }` の 1 フィールドのみ**で、`linkOAuthIdentity.ts` の 3 つの `return`（`:107` / `:158` / `:179`）もすべて `identityId` しか返さない。`view.ts:86-88` の JSDoc が「`redirectTo` is on the link arm because the usecase's DTO is `identityId` alone: the return path belongs to the flow the dispatcher consumed, not to the linking itself」と明言している。`completeOAuthSignIn` / `linkOAuthIdentity` **個々の入力 DTO は spec のまま保っている**
 - 倒す向き: **実装が正**。`spec/adr/035`（コールバックの単一ルート）が「分岐根拠はサーバーが決めた intent だけに限る」を昇格済みで、単一ルートが 2 usecase の結果を返す以上、応答は判別共用体になる。`redirectTo` は `startOAuthFlow` が state に park した値の戻り
@@ -274,18 +275,18 @@
 - 現在の spec: 「未知のプロバイダーを指定する｜`BusinessRuleError(InvalidProvider)` が投げられる」。`InvalidProvider` は `spec/domains/identity.md:519-525` のエラーコード union にも**存在しない**
 - 現在の実装: `packages/core/src/domain/identity/valueObject.ts:268-272` — `OAuthProvider.create` が `BusinessRuleError(IdentityErrorCode.InvalidProviderAccount)` を投げる。`errorCode.ts:15` — `InvalidProviderAccount: "IDENTITY_INVALID_PROVIDER_ACCOUNT"`
 - 倒す向き: **実装が正**（純粋な呼称ずれ。spec 側が存在しない enum 値を書いている）
-- 判定: 要修正。**反映先は progress.md が挙げた testcases だけでなく `spec/usecases/identity.md:230` にもある**（progress.md はこちらを見落としている）
-- **本 Issue で直すのは identity 側 3 か所だけ。** `InvalidProvider` は `spec/` 全域で 6 件あり、残る 3 件は integration 側（`spec/usecases/integration.md:37` / `spec/testcases/integration/startIntegrationOAuth.md:7` / `spec/inventory/test.md` の TC-integration-170 行）。`spec/domains/integration.md:330` の `IntegrationErrorCode` union にも `InvalidProvider` は**存在しない**ので同型の乖離だが、**integration は未実装ドメイン**で「どちらへ写すか」の実装的裏づけが取れない。SYNC-27（`ExternalServiceError` の全域語彙整合）と同じ扱いで、ステップ 16-4 のフォローアップ Issue に 1 行として相乗りさせる（計画レビュー R2 coverage:P-001）
+- 判定: 要修正。**反映先は progress.md が挙げた testcases だけでなく `spec/usecases/identity.md:230` にもある**（progress.md の一覧には無い箇所）
+- **本 Issue で直すのは identity 側 3 か所だけ。** `InvalidProvider` は `spec/` 全域で 6 件あり、残る 3 件は integration 側（`spec/usecases/integration.md:37` / `spec/testcases/integration/startIntegrationOAuth.md:7` / `spec/inventory/test.md` の TC-integration-170 行）。`spec/domains/integration.md:330` の `IntegrationErrorCode` union にも `InvalidProvider` は**存在しない**ので同型の乖離だが、**integration は未実装ドメイン**で「どちらへ写すか」の実装的裏づけが取れない。SYNC-27（`ExternalServiceError` の全域語彙整合）と同じ扱いで、ステップ 16-4 のフォローアップ Issue に 1 行として相乗りさせる
 - 根拠: `spec/adr/046`。契約の記述と実装の名前が一致していなければ「JSDoc だけを読んで実装したものがスイートを通る」が成立しない
 
 #### SYNC-224 — sub-operation ID を `sha256(...)` ではなく合成で導出した 【残】
 
-- 反映先（**副番号の内訳**。計画レビュー R2 coverage:S-002 で明示、coverage:P-004 で (c) を追加）:
+- 反映先（**副番号の内訳**）:
   - **(a)** `spec/usecases/identity.md:27`（「Identity uniqueness の物理shard境界」節の `reservationOperationId`）— ステップ 4-8
   - **(b)** `spec/database/index.md:57`（`identity_unique_reservations` 節の同じ式）— ステップ 26-1
   - **(c)** `spec/usecases/identity.md:524`（`removeIdentity` 手順 3 の `operationId = sha256("removeIdentity:" + identityId)`）— ステップ 4-8
 - 現在の spec: (a) (b) が `reservationOperationId = sha256(parentOperationId + ":" + kind + ":" + normalizedKey)`、(c) が `operationId = sha256("removeIdentity:" + identityId)`
-- **(c) は計画レビュー R2（coverage:P-004）で追加した。** `.thread/2/progress.md` の該当箇条は「sub-operation ID を … 構成 `${parent}:${kind}:${key}` で導出した（ADR-035）。**`removeIdentity` の `operationId` も同様に `"removeIdentity:" + identityId`（ADR-044）**」と 2 つの ID を 1 箇条で挙げていたが、本台帳は前者だけを採番して後者を落としていた。実装 `packages/core/src/application/identity/removeIdentity.ts:20-30` の JSDoc は「Composed rather than hashed (**the spec writes** `sha256("removeIdentity:" + identityId)`)」と **spec を名指しで否定**しており、`removeIdentity` は Issue #2 で実装済みなので「未実装で裏づけが取れない」除外にも当たらない。AC-46 の検査 `grep -rn "sha256(parentOperationId" spec/` は (a)(b) しか見ないので、(c) には別の検査（AC-67）が要る
+- **(c) が同じ判断に属する根拠。** `.thread/2/progress.md` の該当箇条は「sub-operation ID を … 構成 `${parent}:${kind}:${key}` で導出した（ADR-035）。**`removeIdentity` の `operationId` も同様に `"removeIdentity:" + identityId`（ADR-044）**」と 2 つの ID を 1 箇条で挙げており、(c) はその後者にあたる。実装 `packages/core/src/application/identity/removeIdentity.ts:20-30` の JSDoc は「Composed rather than hashed (**the spec writes** `sha256("removeIdentity:" + identityId)`)」と **spec を名指しで否定**しており、`removeIdentity` は Issue #2 で実装済みなので「未実装で裏づけが取れない」除外にも当たらない。AC-46 の検査 `grep -rn "sha256(parentOperationId" spec/` は (a)(b) しか見ないので、(c) には別の検査（AC-67）が要る
 - 現在の実装: `packages/core/src/application/identity/uniqueness.ts:74-77` — `` `${parentOperationId}:${key.kind}:${key.normalizedKey}` ``。JSDoc `:60-72` が理由を持つ:「合成で決定性と識別性は既に得られる（`kind` は `:` を含まない閉じた列挙で、自由形の鍵が末尾に来る）。application 層にハッシュ実装を持ち込まないため」＋「結果に生の鍵が埋まるのでログや他の sink へ出してはならない — `{ parentOperationId, kind }` を出す」。`removeIdentity.ts:30` も同じ規則で `` `removeIdentity:${identityId}` ``
 - 倒す向き: **実装が正**。`spec/adr/048`（昇格済み）が既に「導出は **`親操作 ID:種別:正規化鍵` の合成**で行う…不可逆性は要らない」「この ID をログに出さない」を決定として持つ
 - 判定: 要修正
@@ -309,12 +310,12 @@
 
 #### SYNC-227 — TC-storage-043 の「3 文」という性能上の約束 【残・両方直す】
 
-- 反映先: `spec/testcases/storage/deleteFilesByOwner.md:11`、`spec/inventory/test.md:1721`（TC-storage-043）、`spec/usecases/storage.md#deleteFilesByOwner` の `batchSize` 説明段落、`spec/platform/index.md#クエリ予算`
+- 反映先: `spec/testcases/storage/deleteFilesByOwner.md:11`、`spec/inventory/test.md:1721`（TC-storage-043）、`spec/usecases/storage.md#deleteFilesByOwner` の `batchSize` 説明段落、`spec/platform/index.md` の `### Scope DO`（`## 実行予算と分割単位` 配下。`#クエリ予算` という見出しは存在しない）
 - 現在の spec: 「列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文で、件数によらず 3 文。`batchSize` の既定 100 はクエリ数ではなく 1 回に発行するイベント数を抑えるための上限である」
-- 現在の実装: memory アダプターは `deleteStoredFiles` が 1 件ずつ読む（`spec/adr/022` = OCC トークンを `findById` から得る、の帰結）。テストは「列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない」に置き換えて緑
-- 倒す向き: **両方直す**。「3 文」は D1 実装なら満たせる**バックエンド依存の性能上の約束**で、テストケース表（バックエンド非依存の契約）に置いた場所が誤り。ADR-046 に照らすと、「1 バッチのコストが件数に比例しない」という**観測可能な性質**がバックエンド共通の必須契約で、「3 文」は `spec/platform/index.md` のクエリ予算が持つべき値
-- 判定: 要修正（テストケース表を観測可能な性質へ書き換え、文の数はクエリ予算側へ移す）。D1 実装を書くスライスがクエリ予算側の行を再検証する
-- 根拠: `.thread/2/adr.md` ADR-057、`spec/adr/022`
+- 現在の実装: memory アダプターは `deleteStoredFiles` が 1 件ずつ読む（`.thread/2/adr.md` の ADR-022「`StoredFileRepository` は spec の形を保ち、削除は `findById` の OCC トークン経由で行う」の帰結。正典側の同じ論拠は `spec/adr/056-performance-budget-placement.md:11`）。テストは「列挙は 1 回だけ / 削除できたファイル 1 件につき `storage.fileDeleted` が 1 件 / どちらも件数に依存しない」に置き換えて緑
+- 倒す向き: **両方直す**。「3 文」は D1 実装なら満たせる**バックエンド依存の性能上の約束**で、テストケース表（バックエンド非依存の契約）に置いた場所が誤り。ADR-046 に照らすと、「1 バッチのコストが件数に比例しない」という**観測可能な性質**がバックエンド共通の必須契約で、「3 文」は `spec/platform/index.md` の実行予算（`### Scope DO`）が持つべき値
+- 判定: 要修正（テストケース表を観測可能な性質へ書き換え、文の数は実行予算側へ移す）。D1 実装を書くスライスが実行予算側の行を再検証する
+- 根拠: `.thread/2/adr.md` ADR-057 / ADR-022、`spec/adr/056-performance-budget-placement.md:11`（**`spec/adr/022` ではない** — 同番号の正典側 ADR は「コマンドパレット航法」で無関係）
 
 ---
 
@@ -322,10 +323,10 @@
 
 #### SYNC-228 — personal cleanup の必須 component 集合を「8 固定」から宣言集合へ 【残】
 
-- 反映先（**副番号の内訳**。計画レビュー R2 coverage:S-002 で明示）:
+- 反映先（**副番号の内訳**）:
   - **(a)** `spec/domains/index.md:80`（`acknowledgePersonalComponent` の引数型に 8 値が直書き）— ステップ 3-7
   - **(b)** 同 `:124`（説明段落「personal barrier resultにはoperation専用の**job/note/tag/storage/backup/usage/localProjection/outbox** component ackを保存し」）— ステップ 3-7
-  - **(c)** `spec/database/index.md:1035-1037`（`applied_operations` の `kind='accountDeletionBarrier'` 説明「**operation専用の全8 component ack**が揃った場合だけcompleted commandを受け」）— ステップ 26-2。**同じ `:1037` 行に 8 component の直書きが 2 か所ある** — 上記の文に加えて `result` の構造リテラル `componentAcks: { job, note, tag, storage, backup, usage, localProjection, outbox }`。片方だけ倒すと 1 行の中で宣言集合と 8 固定が同居する（計画レビュー R2 arch:S-003）
+  - **(c)** `spec/database/index.md:1035-1037`（`applied_operations` の `kind='accountDeletionBarrier'` 説明「**operation専用の全8 component ack**が揃った場合だけcompleted commandを受け」）— ステップ 26-2。**同じ `:1037` 行に 8 component の直書きが 2 か所ある** — 上記の文に加えて `result` の構造リテラル `componentAcks: { job, note, tag, storage, backup, usage, localProjection, outbox }`。片方だけ倒すと 1 行の中で宣言集合と 8 固定が同居する
 - 現在の spec: 3 か所すべてが 8 component 固定
 - 現在の実装: `packages/core/src/application/ports/scopeCleanupAdmissionStore.ts:40-45` — 「`markCompleted` は配備が**宣言した**全 component の ack 後にだけ合法。必須集合は enum 全体では**ない**: composition root が participant registry（`application/cleanup/participants.ts`）から実装へ渡す」。memory アダプター `scopeCleanupAdmissionStore.ts:43` が `options.requiredComponents ?? ALL_COMPONENTS`。適合スイート `conformance/scopeCleanupAdmissionStore.ts:82-93`（ADP-common-009/010）が `DECLARED_COMPONENTS` で一般化
 - 倒す向き: **実装が正**。`spec/adr/039`（昇格済み）が「必須集合は composition root の**全数宣言**から導出する」「アダプターと適合スイートは固定値を持たない」「ダミー ack は置かない」を決定として持つ
@@ -352,7 +353,7 @@
 
 #### SYNC-231 — `DistributedOperationStore` が `expires_at` / `attempts` / `next_attempt_at` を持たない 【外・部分残】
 
-- 反映先（**副番号の内訳**。計画レビュー R2 coverage:S-002 で明示）:
+- 反映先（**副番号の内訳**）:
   - **(a)** `spec/usecases/identity.md:663` / `:675`（`distributed_operations` の state として `preparing` / `committing` を使っている箇所の書き分け）— ステップ 4-9。**同じ副番号がステップ 3-9（`spec/domains/index.md:121` の言及に添える括弧書き）にも現れる**。両者は同じ「state 語彙の書き分け」という 1 つの決定の 2 つの反映先で、指すものが違う（**前者 = ステップ 4-9 は本文の語彙、後者 = ステップ 3-9 は interface を新設しないこと**）
   - **(b)** `spec/database/index.md:130-148`（`distributed_operations.state` 欄に 3 値の CHECK。`attempts` / `next_attempt_at` / `expires_at` の 3 列は**落とさない**）— ステップ 26-4
   - **(列)** `attempts` / `next_attempt_at` / `expires_at` と recovery Cron の未実装そのもの — **スコープ外**（Phase 5）
@@ -361,7 +362,7 @@
 - 倒す向き: **spec が正**（recovery Cron 側）。`.thread/2/progress.md:204` が「本 Issue の `DistributedOperationStore` は `next_attempt_at` を持たず recovery を回すステップも無い…recovery Cron を足すスライスが `next_attempt_at` を追加する必要がある」と記録。これは設計判断ではなく**縮退（未実装）**
 - 判定: **スコープ外**（recovery Cron スライスが実装で追いつく。spec の表から列を落としてはならない）
 - 別途の残: `spec/domains/index.md` に `DistributedOperationStore` の interface が 1 つも無いこと自体が、`ScopeCleanupAdmissionStore` / `AccountDeletionManifestStore` を書いている同じ節の欠落。interface を足すか否かは plan の判断（足す場合は `state` の 3 値と、`preparing`/`committing` が manifest header 側の state であることの書き分けが要る）→ **adr.md ADR-015 で「新設しない」と決着**
-- **追記（計画レビュー R2 arch:P-008）**: この欠落は `DistributedOperationStore` 固有ではなく**系統的**だった。実装に存在して `spec/inventory/` に 1 行も無いポートは 5 つある — `DistributedOperationStore`（`spec/domains/index.md:121` の 1 行言及のみ）/ `AppliedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`（後 3 者は `spec/` 全域に 0 件）。`adapters/conformance/` の 25 本のうち `describe` / `it` 名に **ADP ID を持たないのはこの 5 本だけ**で、inventory 行の欠落と 1 対 1 に対応する。5 ポートまとめて Phase 5（recovery Cron の Issue）へ送る
+- **この欠落は `DistributedOperationStore` 固有ではなく系統的である。** 実装に存在して `spec/inventory/` に 1 行も無いポートは 5 つある — `DistributedOperationStore`（`spec/domains/index.md:121` の 1 行言及のみ）/ `AppliedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`（後 3 者は `spec/` 全域に 0 件）。`adapters/conformance/` の 25 本のうち `describe` / `it` 名に **ADP ID を持たないのはこの 5 本だけ**で、inventory 行の欠落と 1 対 1 に対応する。5 ポートまとめて Phase 5（recovery Cron の Issue）へ送る
 - 根拠: `spec/adr/046`「正本が設計側にある場合は契約をそのまま残す」
 
 #### SYNC-232 — `DistributedOperationStore` の `payload` に uniqueness key を固定した 【済】
@@ -425,7 +426,7 @@
 #### SYNC-238 — `getProfile` / `checkHandleAvailability` の 2 読み取り 【残】
 
 - 反映先: `spec/usecases/identity.md`（新規 2 節。`updateProfile`（`:485` 付近）の直後が自然）。波及 `spec/inventory/usecase.md`（UC-identity-022 / 023 を新設 — 現在の最大は `:31` の UC-identity-021）、`spec/inventory/frontend.md:99,100`（PAGE-p21-001 / p21-002 の要点欄）、**`spec/testcases/identity/{getProfile,checkHandleAvailability}.md`（新設）と `spec/inventory/test.md`（identity 群の末尾に TC 行。現在の最大は `TC-identity-304`）**
-  - **テストケースファイルの新設は計画レビュー R2（arch:P-001）で追加した**（adr.md ADR-016）。TC ID はファイル名の辞書順で振られているので、辞書順の位置に挿入すると `TC-identity-024`（`completeOAuthSignIn` の 1 件目）以降 280 行超が繰り下がる。**群の末尾に採番する**
+  - **テストケースファイルも新設する**（adr.md ADR-016）。TC ID はファイル名の辞書順で振られているので、辞書順の位置に挿入すると `TC-identity-024`（`completeOAuthSignIn` の 1 件目）以降 280 行超が繰り下がる。**群の末尾に採番する**
 - 現在の spec: `getProfile` / `checkHandleAvailability` は spec 全域に **0 件**
 - 現在の実装: `packages/core/src/application/identity/getProfile.ts` / `checkHandleAvailability.ts`。どちらも write を持たない `updateProfile` の対で、P-21 の初期表示とハンドル重複の即時チェックに必要
 - 倒す向き: **実装が正**。`spec/pages/index.md#P-21` の**機能**が「display name、avatar、bio、handle」の表示と「重複候補」の提示を要求しており（`spec/inventory/frontend.md:99` も同様）、それを供給する読み取りが usecase に無かった
@@ -435,7 +436,7 @@
 #### SYNC-239 — `completeOAuthCallback`（コールバックのディスパッチャー）【残】
 
 - 反映先: `spec/usecases/identity.md`（`completeOAuthSignIn`（`:233`）と `linkOAuthIdentity`（`:277`）の間に新規 1 節。**出力 DTO の `linkIdentity` arm が `redirectTo` を運ぶ** — SYNC-218 の反映先はここ）。波及 `spec/inventory/usecase.md`（UC-identity-024 を新設）、`spec/inventory/frontend.md:106`（PAGE-p22-004）、**`spec/testcases/identity/completeOAuthCallback.md`（新設）と `spec/inventory/test.md`（identity 群の末尾に TC 行）**
-  - **テストケースファイルの新設は計画レビュー R2（arch:P-001）で追加した。** 「1 ユースケース = 1 テストケースファイル = 1 UC 行」は全 9 ドメインで厳密に成立しており（identity は 21 / 21 / 21）、UC 行だけ足すと identity が 24 / 21 / 24 になる。SYNC-238（`getProfile` / `checkHandleAvailability`）も同じ（adr.md ADR-016）
+  - **テストケースファイルも新設する。** 「1 ユースケース = 1 テストケースファイル = 1 UC 行」は全 9 ドメインで厳密に成立しており（identity は 21 / 21 / 21）、UC 行だけ足すと identity が 24 / 21 / 24 になる。SYNC-238（`getProfile` / `checkHandleAvailability`）も同じ（adr.md ADR-016）
 - 現在の spec: `completeOAuthCallback` は spec 全域に **0 件**。`completeOAuthSignIn` / `linkOAuthIdentity` が独立した 2 usecase として書かれている
 - 現在の実装: `packages/core/src/application/identity/completeOAuthCallback.ts` — flow state の `intent` で 2 usecase へディスパッチする。**`completeOAuthSignIn` / `linkOAuthIdentity` の入力 DTO は spec のまま保っている**
 - 倒す向き: **実装が正**。`spec/adr/035`（コールバックの単一ルート）が「フロー状態の取り出しが原子的な単回消費であること」を前提に「分岐根拠はサーバーが決めた intent だけに限る」を昇格済み。単一ルートである以上、intent を読んで振り分ける入口が要る
@@ -449,7 +450,7 @@
 #### SYNC-240 — `UploadValidationPolicy.ensureAcceptable` の引数と戻り値 【残】
 
 - 反映先: `spec/domains/storage.md:180-183`（`UploadValidationPolicy` の振る舞い表）と `:185-191`（許可 MIME の表）。波及 `spec/inventory/domain.md` の `UploadValidationPolicy` 行、`spec/usecases/storage.md:167`（SYNC-212 と同じ入力 DTO 行）
-  - **`ensureAcceptable` の呼び出し 4 か所**（計画レビュー R2 arch:P-003 で追加）— `spec/usecases/storage.md:38`（`startBulkUpload` 手順 3）/ `:90`（`storeUpload` 手順 2。**`{ purpose: "source", mimeType, size }` と引数を明示的に書いている唯一の箇所**）/ `:145`（`storeMedia` 手順 2）/ `:176`（`storeAvatar` 手順 2）。振る舞い表の署名だけ直して呼び出しを残すと、改訂後は**存在しない引数を渡す記述**になる。あわせて `:90` 付近の手順 5「宣言サイズと実サイズが食い違う場合は実サイズを採用する」も落とす（宣言サイズが入力から消えるため）
+  - **`ensureAcceptable` の呼び出し 4 か所** — `spec/usecases/storage.md:38`（`startBulkUpload` 手順 3）/ `:90`（`storeUpload` 手順 2。**`{ purpose: "source", mimeType, size }` と引数を明示的に書いている唯一の箇所**）/ `:145`（`storeMedia` 手順 2）/ `:176`（`storeAvatar` 手順 2）。振る舞い表の署名だけ直して呼び出しを残すと、改訂後は**存在しない引数を渡す記述**になる。あわせて `:90` 付近の手順 5「宣言サイズと実サイズが食い違う場合は実サイズを採用する」も落とす（宣言サイズが入力から消えるため）
   - **`spec/usecases/conversion.md:198` / `spec/domains/conversion.md:170` の `declaredMimeType` は触らない。** これは `FormatDetector.detect` が受け取るヒントであって受理判定の入力ではない（別ポート）
 - 現在の spec: `| ensureAcceptable | params: { purpose: FilePurpose; mimeType: MimeType; size: ByteSize } | void | 用途ごとの許可 MIME に反すれば BusinessRuleError(UnsupportedMimeType)、size.exceeds(limitFor(purpose, mimeType)) なら BusinessRuleError(FileTooLarge) |`
 - 現在の実装: `packages/core/src/domain/storage/services/uploadValidationPolicy.ts:101-124` — 引数は `{ purpose, body }`、戻り値は `AcceptedUpload = { mimeType, size }`（`:73`）。JSDoc `:80-88` が「MIME は申告値ではなくバイト列の署名（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る」
@@ -530,6 +531,8 @@
 | F. レビュー R1 で増えた差 | 1 | `spec/domains/storage.md` |
 | G. マニュアルテスト手順の差 | 2 | `spec/manual-tests/account.md` |
 | H. 本調査で追加発見 | 1 | `spec/usecases/identity.md` |
+| I. 統合作業で追加 | 1 | `spec/domains/identity.md` |
+| **合計** | **44** | |
 
 ### 「spec が正」= 実装修正が必要 = 別 Issue 送り
 
@@ -539,7 +542,7 @@
 | SYNC-203(3) | `ObjectStorage.createDownloadUrl` が実装に無い | #6（`issueDownloadUrl` / `exportNote` を持つスライス） |
 | SYNC-214 | `getUsageSnapshot` の workspace ページング未実装 | #3 |
 | SYNC-231 | `DistributedOperationStore` の `attempts` / `next_attempt_at` / `expires_at` 未実装 | recovery Cron を足すスライス |
-| SYNC-237 | P-25 の participant 完備の文言 | participant を足す各スライス（#4 / #5 / 編集・整理スライス） |
+| SYNC-237 | P-25 の participant 完備の文言 | participant を足す後続スライス（#3 / #4 / #5 / #7。起票単位は `plan.md` Phase 5 の 7. が正） |
 | SYNC-220（付随） | `requestPasswordReset` の `passwordResetUnavailable` 分岐が送信間隔を通らない | #18 |
 | SYNC-227（付随） | 「3 文」の性能上の約束の再検証 | D1 実装を書くスライス |
 
@@ -547,26 +550,28 @@
 
 ## 反映先ファイル別の逆引き
 
+件数は同じ行に挙げた SYNC ID の総数（`＋` の後ろも数える）。
+
 | ファイル | 件数 | SYNC ID |
 | --- | --- | --- |
 | `spec/usecases/identity.md` | **12** | 219, 220, 221, 223, 224, 226, 232(済), 238, 239, 243 ＋ 229(:669), 218 |
-| `spec/domains/index.md` | **9** | 206, 207, 208, 209, 216, 217, 228, 229, 231(部分), 236 |
+| `spec/domains/index.md` | **10** | 206, 207, 208, 209, 216, 217, 228, 229, 231(部分), 236 |
 | `spec/domains/identity.md` | **5** | 201, 202, 205, 222, 225(重・SYNC-15) |
-| `spec/database/index.md` | **4** | 224(:57), 228(:1035), 230(:154), 231(:130-148, 外), 233(:33,35,1027) |
+| `spec/database/index.md` | **5** | 224(:57), 228(:1035), 230(:154), 231(:130-148, 外), 233(:33,35,1027) |
 | `spec/domains/storage.md` | **3** | 203, 211, 240 |
 | `spec/usecases/usage.md` | **3** | 213, 214(外), 215 |
 | `spec/usecases/storage.md` | **3** | 212, 215, 240(付随) |
 | `spec/manual-tests/account.md` | **2** | 241, 242 |
-| `spec/pages/index.md` | **2** | 235(P-25), 237(P-25・外) ＋ 221(P-22 は spec が正) |
+| `spec/pages/index.md` | **3** | 235(P-25), 237(P-25・外) ＋ 221(P-22 は spec が正) |
 | `spec/domains/usage.md` | **1** | 204 |
 | `spec/domains/note.md` | **1** | 210 |
-| `spec/presentation/index.md` | **1** | 234 ＋ 226(エラー→ステータス表) |
+| `spec/presentation/index.md` | **2** | 234 ＋ 226(エラー→ステータス表) |
 | `spec/testcases/identity/startOAuthFlow.md` | **1** | 223 |
 | `spec/testcases/storage/deleteFilesByOwner.md` | **1** | 227 |
-| `spec/platform/index.md` | **1** | 227（クエリ予算へ移す先） |
+| `spec/platform/index.md` | **1** | 227（`### Scope DO` へ移す先） |
 | `spec/design/pages/P25-settings-danger.html` | **1** | 237（外） |
-| `spec/inventory/domain.md` | **11** | 201, 202, 203, 204, 205, 206, 208, 209, 210, 211 |
-| `spec/inventory/adapter.md` | **10** | 201, 202, 203, 205, 206, 207, 208, 209, 210 |
+| `spec/inventory/domain.md` | **10** | 201, 202, 203, 204, 205, 206, 208, 209, 210, 211 |
+| `spec/inventory/adapter.md` | **9** | 201, 202, 203, 205, 206, 207, 208, 209, 210 |
 | `spec/inventory/usecase.md` | **10** | 212, 213, 214(外), 215, 218, 219, 226, 238(新設), 239(新設), 243 |
 | `spec/inventory/frontend.md` | **4** | 235, 237(外), 238, 241 |
 | `spec/inventory/test.md` | **2** | 223, 227 |
@@ -585,19 +590,13 @@
 
 ---
 
-## 判断に迷った点 / plan に委ねる論点
+## 台帳の外で決着した論点
 
-> 以下の 6 点は統合作業（2026-08-15）で決着した。結論は `.thread/14/adr.md` の **ADR-011〜ADR-015** と、件数の訂正（6.）は本ファイルの集計表・`research.md` の集計節を参照。
+本台帳の作成にあたって判断が要った 6 点は、いずれも `.thread/14/adr.md` の **ADR-011〜ADR-016** と `spec/adr/052`〜`057`、および plan.md の受け入れ基準で決着している。台帳側では結論だけを指す。
 
-1. **新規 ADP / DOM ID の採番と SYNC-09 の決定の衝突**。`.thread/14/research.md` の SYNC-09 は「新規 ADP ID は採番せず、契約本文に書いて inventory の要点欄を追随させる」と決めている。しかし本台帳の A 群は**実在する新規ポートメソッド**（`findPendingByUserAndPurpose` / `deriveCodeChallenge` / `publicUrl` / `beginRelease` / `describePersonalCleanup` / `describe` / `redactAuthor`）で、inventory の「1 行 = 1 ポートメソッド」規約に従えば行を足さざるを得ない。SYNC-09 が扱っていたのは「1 メソッドに複数の適合ケースが相乗りしている」問題で、本件とは別。**新規メソッドには通常どおり採番する**のが規約に沿うと判断したが、番号の付け方（末尾に追加か、ポート定義の出現順に挿入して以降を繰り下げるか）は plan の判断。繰り下げると既存の全参照が動くため、末尾追加を推奨。
-
-2. **SYNC-207 の適合スイート追加**。契約を明示するには `ADP-common-008` に「completed barrier への `assertOwner` は `ConflictError`」のケースを足す必要があるが、これは**テストコードの変更**でドキュメント同期の枠を出る。`spec/adr/026` が「契約の実行形は共有スイートそのもの」と定めている以上、spec だけ直してスイートを放置すると `spec/adr/046` の「JSDoc だけを読んで実装したものがスイートを通る」が成立しない。plan で「1 ケース追加は本 Issue の範囲」と決めるか、別 Issue に切るかを明示すべき。
-
-3. **SYNC-221 の扱い**。実装のバグではなく**未実装のセキュリティ要件**で、正本は明確に設計側（AC-06）。本 Issue が「spec を実装へ寄せる」だけなら触れず、実装 Issue へ送るのが正しい。ただし `spec/usecases/identity.md#addPasswordIdentity` の手順が AC-06 と食い違ったまま残ると、**次に実装する人が usecase だけを読んで再び再認可なしで書く**。手順への追記（= spec 内部の矛盾解消）を本 Issue に含めるかどうかは判断が要る。私は含める側を推す。
-
-4. **SYNC-227 の「3 文」**。`spec/adr/022`（OCC トークンを `findById` から得る）の帰結で memory では 1 件ずつ読むしかなく、D1 なら 3 文が可能。つまり「実装が正」でも「spec が正」でもなく、**そもそもテストケース表という場所が誤っている**。観測可能な性質（件数に依存しない）を必須契約に残し、文の数は `spec/platform/index.md#クエリ予算` へ移す案を書いたが、クエリ予算節の実物の書式を確認していないので plan で当たり直す必要がある。
-
-5. **SYNC-231 の interface 欠落**。`spec/domains/index.md` は `ScopeCleanupAdmissionStore` / `AccountDeletionManifestStore` / `GlobalMaintenanceRunStore` の 3 つを interface として書いているのに、`DistributedOperationStore` だけ L121 の 1 行の言及しかない。実装は 4 つとも `application/ports/` にあり、扱いが揃っていない。interface を足すのが自然だが、`attempts` / `next_attempt_at` を持たない現行実装をそのまま書くと**縮退を spec に固定化する**ことになる。spec 側は `spec/database/index.md` の表（3 列あり）に合わせて書き、実装がそこへ追いつく形にすべき — つまり「spec に interface を新設するが、実装より広い契約として書く」ことになる。この向きが `spec/adr/046` に合うかは plan で確認したい。
-   - **決着済み（adr.md ADR-015 ＋ その追補）。** 本 Issue では interface を**新設しない**。調査時点では `DistributedOperationStore` 1 本の非対称に見えたが、実測すると `spec/inventory/` に 1 行も持たないポートは **5 本**（`DistributedOperationStore` / `AppliedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`）あり、`adapters/conformance/` で `describe` 名に ADP ID を持たない 5 本と 1 対 1 に対応していた。1 本だけ interface を書くと inventory 行と ADP ID 付与の差分が発生して AC-63（コード差分 8 ファイル）を超え、しかも新しい非対称を作る。本 Issue は `AppliedOperationStore` に 1 行言及を足して「名前だけが宙に浮く」状態を消すところまでにとどめ（AC-66 / ステップ 3-10）、**5 本の interface 化・inventory 採番・ADP ID 付与は Phase 5 の recovery Cron Issue へまとめて送る**（plan.md「Phase 5 で起票するもの」6.）。state 語彙の書き分けだけは本 Issue で直す（AC-38 / SYNC-231(a)(b)）。
-
-6. **Issue #14 の件数表との差**。Issue #14 のコメントは 38 件と書くが実数は 42（+ 本調査の 1 件 = 43）。分類ごとの内訳も違う（ポート 10 → 11、手順 8 → 9、必須集合 8 → 10、「新設した継続 kind 1」は必須集合の 1 行と同一）。plan / Issue コメント側の件数を実数へ直す必要がある。
+1. 新規ポートメソッドの DOM / ADP ID 採番（`research.md` SYNC-09 の「適合ケースには採番しない」との関係）→ **新規メソッドには通常どおり各群の末尾に採番する**（ADR-011）
+2. SYNC-207 の適合スイートへの 1 ケース追加 → **本 Issue に含める**（ADR-012）
+3. SYNC-221 の扱い → **spec 内部の矛盾解消だけを本 Issue で行い、実装は別 Issue**（ADR-013）
+4. SYNC-227 の「3 文」の置き場 → **`spec/platform/index.md` の `### Scope DO`**（ADR-014 / `spec/adr/056`）
+5. SYNC-231 の `DistributedOperationStore` interface → **本 Issue では新設しない**（ADR-015。同じ欠落を持つ 5 ポートごと Phase 5 へ送る。詳細は SYNC-231 の項）
+6. Issue #14 のコメントの件数表（38 件）と実数の差 → **本台帳の実数は 44 件**（「集計」節）

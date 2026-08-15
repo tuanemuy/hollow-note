@@ -170,7 +170,7 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 `userId: string`, `subjectType`, `subjectId`
 
-`userId` は**主体ではなく実行者**である。`assertActorWritable` が「誰の依頼か」を要るため入力に持つ（[domains/index.md](../domains/index.md) — 全ドメインの通常 write 入口が `assertWritable` と `assertActorWritable` の両方を呼ぶ）。user 主体の場合は実行者と一致していなければならず、一致しなければ `BusinessRuleError(InsufficientRole)`。workspace 主体の membership 検査は `WorkspaceAuthorization` が入るまで未実施。
+`userId` は**主体ではなく実行者**である。`assertActorWritable` が「誰の依頼か」を要るため入力に持つ（[domains/index.md](../domains/index.md) — 全ドメインの通常 write 入口が `assertWritable` と `assertActorWritable` の両方を呼ぶ）。user 主体の場合は実行者と一致していなければならず、一致しなければ `BusinessRuleError(InsufficientRole)`。workspace 主体の場合、実行者がその主体のメンバーであることの検査は `WorkspaceAuthorization`（[domains/workspace.md](../domains/workspace.md)）が担う。
 
 ### 出力DTO
 

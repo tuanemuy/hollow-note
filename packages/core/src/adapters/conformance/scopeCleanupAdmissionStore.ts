@@ -25,8 +25,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Shared conformance suite for `ScopeCleanupAdmissionStore`
- * (ADP-common-004..011): the personal account-deletion barrier and its
- * per-component receipt.
+ * (ADP-common-004..011, 040): the personal account-deletion barrier and
+ * its per-component receipt.
  */
 export function describeScopeCleanupAdmissionStoreContract(
   backendName: string,
@@ -65,7 +65,7 @@ export function describeScopeCleanupAdmissionStoreContract(
       );
     });
 
-    it("ADP-common-008: assertOwner rejects a different id and a missing receipt", async () => {
+    it("ADP-common-008: assertOwner rejects a different id, a missing receipt, and a completed barrier", async () => {
       await expectConflict(store.assertOwner("op-1"));
       await store.beginPersonalAccountDeletion("op-1", userId(1));
       await store.assertOwner("op-1");
@@ -129,7 +129,7 @@ export function describeScopeCleanupAdmissionStoreContract(
       await expectConflict(store.assertWritable(), "ACCOUNT_DELETING");
     });
 
-    it("ADP-common-009: describePersonalCleanup reports what a re-driven turn still owes", async () => {
+    it("ADP-common-040: describePersonalCleanup reports what a re-driven turn still owes", async () => {
       expect(await store.describePersonalCleanup("op-1")).toBeNull();
 
       await store.beginPersonalAccountDeletion("op-1", userId(1));

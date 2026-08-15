@@ -2,6 +2,8 @@
 
 生成元: `spec/domains/`（最終同期: 2026-08-16）
 
+**1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。
+
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
 | DOM-common-001 | `ScopeKey` 値オブジェクト | `spec/domains/index.md#ScopeKey-と永続化境界` | user または workspace の所有文脈を判別可能 union で表す |
@@ -12,7 +14,7 @@
 | DOM-common-006 | `ScopeCleanupAdmissionStore.assertActorWritable` | `spec/domains/index.md#ScopeKey-と永続化境界` | actor の削除・除名準備ロックを含め書き込み可否を検査する |
 | DOM-common-007 | `ScopeCleanupAdmissionStore.beginPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 scope の削除 barrier を operation 単位で開始する |
 | DOM-common-008 | `ScopeCleanupAdmissionStore.abortPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 同じ owner operation の個人削除 barrier を解除する |
-| DOM-common-009 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査する |
+| DOM-common-009 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査し、別 ID・欠落・未 commit に加えて完了済みの barrier も拒否する |
 | DOM-common-010 | `ScopeCleanupAdmissionStore.acknowledgePersonalComponent` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 cleanup component の完了を記録する |
 | DOM-common-011 | `ScopeCleanupAdmissionStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 全 component 完了後に barrier を保持期限付きで完了化する |
 | DOM-common-012 | `ScopeCleanupAdmissionStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ完了 barrier を有界に回収する |
@@ -21,11 +23,11 @@
 | DOM-common-015 | `AccountDeletionManifestStore.appendAuthorRoutePage` | `spec/domains/index.md#ScopeKey-と永続化境界` | author route ページを cursor と原子的に固定する |
 | DOM-common-016 | `AccountDeletionManifestStore.markBuilt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 対象固定済みへ遷移する |
 | DOM-common-017 | `AccountDeletionManifestStore.beginRollback` | `spec/domains/index.md#ScopeKey-と永続化境界` | prepare rejection 後の rollback を開始する |
-| DOM-common-018 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する |
+| DOM-common-018 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する。membership item は prepare ack だけでは完了せず、cleanup phase でも claim できる |
 | DOM-common-019 | `AccountDeletionManifestStore.acknowledge` | `spec/domains/index.md#ScopeKey-と永続化境界` | item phase の完了を冪等に記録する |
-| DOM-common-020 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | global・personal receipt の完了を記録する |
-| DOM-common-021 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | rollback release の全完了を判定する |
-| DOM-common-022 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | finalize 必須 ack の全完了を判定する |
+| DOM-common-020 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 配備が宣言した global・personal receipt の完了を記録する。receipt が全部そろっても item の完全 ack を代替しない |
+| DOM-common-021 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み membership item の release ack がすべてそろったかを判定する。`personalAbort` receipt は判定対象に含まない（利用者を `active` へ戻す復帰ゲートは述語より強く、ユースケース側が持つ — ADR 053） |
+| DOM-common-022 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み全 item の完全 ack と宣言された全 receipt の両方がそろって初めて true にする。membership item は cleanup レーンが ack して初めて完全 ack になるので、prepare ack ＋ 宣言 receipt だけでは true にならない |
 | DOM-common-023 | `AccountDeletionManifestStore.compactItems` | `spec/domains/index.md#ScopeKey-と永続化境界` | ack 済み item を有界に縮約する |
 | DOM-common-024 | `AccountDeletionManifestStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 成功した manifest を終端・保持期限付きにする |
 | DOM-common-025 | `AccountDeletionManifestStore.markRejected` | `spec/domains/index.md#ScopeKey-と永続化境界` | rejection manifest を終端・保持期限付きにする |
@@ -108,6 +110,7 @@
 | DOM-identity-060 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を読み、再送間隔の判定に使う |
 | DOM-identity-061 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
 | DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
+| DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
 | DOM-workspace-001 | `WorkspaceId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-002 | `MembershipId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-003 | `InvitationId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
@@ -250,7 +253,7 @@
 | DOM-note-010 | `ShareLink` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | hash・暗号化 token・password hash と更新時刻を一体で保持する |
 | DOM-note-011 | `SharePass` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | token hash・password 世代・24 時間期限を持つ通過証を表す |
 | DOM-note-012 | `NoteFailureReason` 値オブジェクト | `spec/domains/note.md#エンティティ` | integrationRequired を除き canceled を加えた本文失敗語彙を表す |
-| DOM-note-013 | `Note` エンティティ | `spec/domains/note.md#エンティティ` | content・visibility・lifecycle の合法状態と全遷移 event を保つ |
+| DOM-note-013 | `Note` エンティティ | `spec/domains/note.md#エンティティ` | content・visibility・lifecycle の合法状態と全遷移 event を保つ。`ready` 以外の本文と公開・限定公開の組は**どちらの向きからも**作れず、`reconstruct` は ready 本文の必須列の欠落を空文字で補完せず拒否する |
 | DOM-note-014 | `NoteRevision` エンティティ | `spec/domains/note.md#エンティティ` | ready 本文の不変 snapshot を作り最新 20 件保持に使う |
 | DOM-note-015 | `NoteAccessPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | owner・role・lifecycle・公開・share credential の順で権限を判定する |
 | DOM-note-016 | `NoteOwnershipPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | 移動元編集権・移動先作成権・processing lock を検査する |

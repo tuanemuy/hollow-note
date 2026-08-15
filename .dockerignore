@@ -1,6 +1,5 @@
 **/node_modules
 **/dist
-**/.wrangler
 **/.tanstack
 **/data
 **/*.db
@@ -12,4 +11,3 @@
 !.env.*.example
 .git
 .direnv
-infra/aws/cdk.out

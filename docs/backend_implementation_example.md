@@ -344,7 +344,13 @@ export async function removeIdentity({
   await globalUnitOfWorkProvider.run(async (ctx) => {
     const identities = await ctx.identityRepository.listByUserId(userId);
     const target = identities.find((identity) => identity.id === identityId);
-    if (target === undefined) throw new NotFoundError("IDENTITY_NOT_FOUND", "…");
+    if (target === undefined) {
+      // The receipt outlives the row, so a re-sent removal is answered by it
+      // instead of by IDENTITY_NOT_FOUND.
+      const receipt = await ctx.identityRemovalReceiptStore.findByIdentityId(identityId);
+      if (receipt !== null && receipt.userId === userId) return;
+      throw new NotFoundError("IDENTITY_NOT_FOUND", "…");
+    }
     IdentityPolicy.ensureRemovable(identities, identityId);
 
     const versioned = await ctx.identityRepository.findById(identityId);

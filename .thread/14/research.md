@@ -2,6 +2,8 @@
 
 対象 HEAD: `55a5bb9`（PR #17 / Issue #2 マージ済み）。すべての判定は実ファイルを読んで裏を取った。
 
+> **as-of `55a5bb9`。** 本文の「現在の spec / 現在の実装」という記述と、すべての行番号参照（`path:123` / `L123` の両形式）は `55a5bb9` 時点のものである。Issue #14 は本台帳の「残」を反映したので、HEAD では引用文も行番号も一致しない。台帳を根拠として読むときは `git show 55a5bb9:<path>` で当たること。行番号を HEAD に合わせて振り直していないのは意図的で、基準 commit を固定するほうが以降の変更に対して安定するため。
+
 ## あるべきアーキテクチャ（spec/ と CLAUDE.md から読み取ったもの）
 
 ### spec/ の構造と各ファイルの責務
@@ -50,7 +52,7 @@
 
 ## 乖離項目の台帳
 
-`.thread/1/progress.md` の「spec-sync 対象の集約」（L58〜L81）の 24 行に SYNC-01〜24 を採番した。SYNC-25 / 26 は調査および計画レビュー R1 で見つかった同種の乖離、SYNC-27 はスコープ外として記録するもの。
+`.thread/1/progress.md` の「spec-sync 対象の集約」（L58〜L81）の 24 行に SYNC-01〜24 を採番した。SYNC-25 / 26 は本台帳の作成過程で見つかった同種の乖離、SYNC-27 はスコープ外として記録するもの。
 
 **Issue #2（PR #17）由来の spec-sync 候補は本台帳の対象外**。ユーザー判断で本 Issue のスコープに含めることになったが、台帳は `research-2.md` に 201 番台で別途採番する（本ファイルの SYNC-* と衝突させない）。Issue #14 のコメントは 38 件と書いているが、ID 単位でほどいた実数は **44 件**（`research-2.md` の集計）。
 
@@ -75,7 +77,7 @@
 - セッション発行の束縛は `VerifyEmailPanel/action.ts:34-44`（`shouldIssueVerificationSession(readPendingVerificationUserId(), view)`）
 - 根拠 ADR: `spec/adr/029-verification-session-binding.md:22`（決定 4）と `:48-49`（縮退の受容）— **ADR が正、下流 spec が未追随**
 - 反映先: `spec/scenario/account.md:16` `:36` ＋ AC-02 異常系、`spec/pages/index.md:176`、`spec/inventory/frontend.md:17`（PAGE-p03-001）`:18`（PAGE-p03-002）
-- `spec/manual-tests/account.md` TC-02 は同一ブラウザーでの手順なので現状のまま正しい（変更不要）。ただし**新規に足す 2 つの異常系には対応手順が無い**ため、別ブラウザーでの確認を TC-42 として追加し、一時障害は「対象外」として理由を残す（計画レビュー R1 arch:P-006 / adr.md ADR-010、ステップ 18）
+- `spec/manual-tests/account.md` TC-02 は同一ブラウザーでの手順なので現状のまま正しい（変更不要）。ただし**新規に足す 2 つの異常系には対応手順が無い**ため、別ブラウザーでの確認を TC-42 として追加し、一時障害は「対象外」として理由を残す（adr.md ADR-010、ステップ 18）
 
 ### SYNC-03 — `IdentityErrorCode` の記載漏れ 【残・差は拡大】
 
@@ -148,7 +150,7 @@
 - spec: `spec/presentation/index.md:124`（`## CSRF` → `### 規約` 表の 2 行目）が「**`FormData` を受けるサーバー関数を作る場合は `Origin` ヘッダーの検証を必須とする**」と条件付き。`createCsrfMiddleware` への言及ゼロ
 - 実装: `apps/web/app/start.ts:15-19` が `createCsrfMiddleware({ filter: (ctx) => ctx.handlerType === "serverFn" })` を `requestMiddleware` に登録し、**全 server function** に無条件で適用。`:5-11` のコメントが「Without it every server function accepts `multipart/form-data` / `application/x-www-form-urlencoded`（both CORS safelisted）」と、条件が常に成立することを明記
 - `spec/adr/029-verification-session-binding.md:13-15`（前提）は既に無条件版で書かれている → **ADR が正、presentation/index.md が未追随**
-- **AC-15 は spec に存在しない**。`spec/scenario/account.md` の AC は AC-01〜AC-10 のみで、`grep -rn "AC-1[1-9]" spec/` は 0 件。AC-15 は `.thread/1/plan.md:32` の受け入れ基準 ID で、`apps/web/app/start.ts:10` のコメントがそれを参照している（計画凍結時に `.thread/1/` が消えると宙に浮く dangling 参照）→ コメントを `spec/presentation/index.md` の CSRF 規約への参照へ差し替える
+- **AC-15 は spec に存在しない**。`spec/scenario/account.md` の AC は AC-01〜AC-10 のみで、`grep -rn "AC-1[1-9]" spec/` は 0 件。AC-15 は `.thread/1/plan.md:32` の受け入れ基準 ID で、`apps/web/app/start.ts:10` のコメントがそれを参照している（実装コードが別 Issue の作業成果物の受け入れ基準 ID を指し続けるのは不適切）→ コメントを `spec/presentation/index.md` の CSRF 規約への参照へ差し替える
 
 ### SYNC-11 — ShareTokenProtector の失敗エラー 【残】
 
@@ -173,7 +175,7 @@
 ### SYNC-14 — `allRollbackReleased` と `personalAbort` receipt の関係 【残・決着可能】
 
 - spec: `spec/domains/index.md:124`「全 prepare/release/cleanup/redaction item ack と personal/global receipt 集合が finalize/**rollback** の正本」、`spec/usecases/identity.md:669`「`allRollbackReleased` が全 workspace release ack と**personal abort ack を確認した後だけ**」→ rollback の正本に receipt を含める
-- **ポート契約 JSDoc も spec と同じ側**（計画レビュー R1 arch:P-001 で追加）: `packages/core/src/application/ports/accountDeletionManifestStore.ts:95-98`「the full set of item acks plus the personal/global receipt set is the source of truth for finalize / rollback (`allRequiredAcknowledged` / `allRollbackReleased`)」。したがって本項目は「実装 ＋ 契約 JSDoc ＋ 適合スイート」ではなく「**実装 ＋ 適合スイート**（JSDoc は要是正）」が正本。`spec/adr/046` の分類でいえば「JSDoc が実装より強い」ケース
+- **ポート契約 JSDoc も spec と同じ側**: `packages/core/src/application/ports/accountDeletionManifestStore.ts:95-98`「the full set of item acks plus the personal/global receipt set is the source of truth for finalize / rollback (`allRequiredAcknowledged` / `allRollbackReleased`)」。したがって本項目は「実装 ＋ 契約 JSDoc ＋ 適合スイート」ではなく「**実装 ＋ 適合スイート**（JSDoc は要是正）」が正本。`spec/adr/046` の分類でいえば「JSDoc が実装より強い」ケース
 - 実装: `adapters/memory/repositories/accountDeletionManifestStore.ts:121-122`
   ```ts
   const allRollbackReleased = (operationId: string): boolean =>
@@ -181,9 +183,9 @@
   ```
   **release ack のみ。receipt を見ない。** 対して `:124-131` の `allRequiredAcknowledged` は `requiredReceipts.every(...)` を含む。`compactItems` のゲート `:392-397` も同様
 - 適合スイート: `adapters/conformance/accountDeletionManifestStore.ts:495-506` が「beginRollback → release ack 2 件 → `allRollbackReleased === true`」を期待値として固定
-- `personalAbort` は `application/cleanup/participants.ts:68` で `Exclude<AccountDeletionReceipt, "personalAbort">` として除外されているが、**これは `globalCleanupParticipants`（= `allRequiredAcknowledged` が使う finalize の必須 receipt 集合）の型注釈**であり、「rollback と無関係」の根拠にはならない。`.thread/2/progress.md:263` 自身が「`personalAbort` は **rollback 側の receipt** なので必須集合の対象外」と書いている（計画レビュー R1 arch:P-003 で訂正）
+- `personalAbort` は `application/cleanup/participants.ts:68` で `Exclude<AccountDeletionReceipt, "personalAbort">` として除外されているが、**これは `globalCleanupParticipants`（= `allRequiredAcknowledged` が使う finalize の必須 receipt 集合）の型注釈**であり、「rollback と無関係」の根拠にはならない。`.thread/2/progress.md:263` 自身が「`personalAbort` は **rollback 側の receipt** なので必須集合の対象外」と書いている
 - **rollback / prepare 経路そのものは application 層に未配線**。`workers/subscribers.ts:75-133` は `cleanup` / `redaction` / `finalize` の 3 phase のみで、`beginRollback` / `allRollbackReleased` / `abortPersonalAccountDeletion` を呼ぶ application コードは**リポジトリ内に 1 つも存在しない**（参照はポート定義・memory 実装・適合スイートに閉じている）
-- 決着方向: **2 層に分ける**（adr.md ADR-004、計画レビュー R1 で決定を差し替え）。ポート述語 `allRollbackReleased` の判定対象は release ack のみ（実装 ＋ 適合スイートが正本 → `spec/domains/index.md` と JSDoc を追随させる）。ユースケースの復帰ゲート（User を `active` へ戻す前に personal barrier の abort ack を確認する）は実装が存在しないため spec が正本のまま残す（`spec/usecases/identity.md` から落とさない）
+- 決着方向: **2 層に分ける**（adr.md ADR-004）。ポート述語 `allRollbackReleased` の判定対象は release ack のみ（実装 ＋ 適合スイートが正本 → `spec/domains/index.md` と JSDoc を追随させる）。ユースケースの復帰ゲート（User を `active` へ戻す前に personal barrier の abort ack を確認する）は実装が存在しないため spec が正本のまま残す（`spec/usecases/identity.md` から落とさない）
 
 ### SYNC-15 — `PROVIDER_ACCOUNT_ALREADY_LINKED` の担保箇所 【残・決着可能】
 
@@ -203,7 +205,7 @@
   - memory `:15,85-94`、適合 `conformance/noteRouteStore.ts:280-294`（500 成功 / 501 reject）
 - identity 側: `spec/domains/identity.md:365` は「入力最大 100 UserId」だけ。`:369` のエラーケース行は `UserRepository` / `UserBatchReader` / `IdentityUniqueDirectory` の**3 ポート共用**で `SystemError(DatabaseError)` を含むため明示的な矛盾はないが、非自明な判断が読み取れない
   - 実装契約: `domain/identity/ports/userBatchReader.ts:11-15`、memory `:13,21-26`
-- 造語コード `NOTE_ROUTE_BATCH_TOO_LARGE`: `packages/` にも `spec/` にも**残っていない**（ヒットは `.thread/1/` の作業メモ 3 件のみ）→ 廃止は完了済み
+- 造語コード `NOTE_ROUTE_BATCH_TOO_LARGE`: `packages/` にも `spec/` にも**残っていない**（ヒットは `.thread/` の作業メモのみ）→ 廃止は完了済み
 - 反映先: `spec/domains/note.md:657` 付近と `spec/domains/identity.md:365` 付近。波及 `spec/inventory/domain.md:286`（DOM-note-052）`:72`（DOM-identity-026）、`spec/inventory/adapter.md:213`（ADP-note-036）
 
 ### SYNC-17 — `Cache-Control: private, no-store` 【残】
@@ -271,7 +273,7 @@
 
 ### SYNC-24 — `spec/pages/` の L-02 要件 【外】
 
-- spec: `spec/pages/index.md:98`「サインイン済みで訪れた場合はアプリへ戻る導線を表示」、**`:103`**「**状態**: 通常 / サインイン済み」— **明示的に 2 状態を要求**（当初 `:105` と記録していたが実測は `:103`。計画レビュー R1 arch:S-008）
+- spec: `spec/pages/index.md:98`「サインイン済みで訪れた場合はアプリへ戻る導線を表示」、**`:103`**「**状態**: 通常 / サインイン済み」— **明示的に 2 状態を要求**
 - 実装: `apps/web/app/components/layout/PublicShell/index.tsx:10-12` に `signedIn` prop なし、`:26-38` で「サインイン」「はじめる」を無条件レンダー。利用者は `components/layout/LegalPage/index.tsx:19`（`/terms` `/privacy`）と `routes/index.tsx:29`
 - `/terms` `/privacy` はセッションを一切読まない。`/` は `routes/index.tsx:12-17` の `beforeLoad` でサインイン済みを `/notes` へ redirect するため、`signedIn` 分岐が到達不能だった（prop 削除の直接原因）
 - 削除コミットは `ea0fddb`（Issue #1 R2）。`git log -S"signedIn" -- .../PublicShell` は初出 `06b7610` と削除の 2 件のみで、**#2 で復活していない**
@@ -288,8 +290,6 @@
 
 ### SYNC-26 — P-40（トップ）のサインイン済み状態が spec 内部で矛盾している 【残】
 
-計画レビュー R1（arch:P-009）で追加。SYNC-24 の調査が L-02 だけを見ていたため、同じ要件を持つ P-40 が台帳から漏れていた。
-
 - spec 内部の矛盾（**同一ファイル**）:
   - `spec/pages/index.md:20`（URL 表）`| /` | トップ（未サインイン）/ **ノート一覧へのリダイレクト（サインイン済み）** | 公開 |`
   - `spec/pages/index.md:571`（P-40）`**状態**: 通常 / サインイン済み（**アプリへの導線を表示**）`
@@ -302,15 +302,13 @@
 
 `.thread/2/progress.md` の「spec-sync 候補」（ID 単位でほどくと 42 件。`research-2.md` が +2 件を追加発見して**台帳は 44 件**）（`AuthTokenRepository.findPendingByUserAndPurpose` の追加、`IdentityUniqueDirectory.beginRelease` と `releasing` 状態、`ScopeCleanupAdmissionStore.describePersonalCleanup`、`AccountDeletionManifestStore.describe` / `pruneTerminal` の戻り値、`getProfile` / `checkHandleAvailability`、継続 kind `identity.personalCleanupHandoverContinued`、TC-identity-268 の `InvalidProvider` 呼称ずれ、manual-tests の TC-26 / TC-13 ほか）。
 
-**ユーザー判断で本 Issue のスコープに含めることになった**（Issue #14 のコメント）。台帳は `research-2.md` に 201 番台で採番し、受け入れ基準（AC-31 以降）とステップ（22 番以降）は後続の統合作業で追加する。本ファイルでは扱わない。
+**ユーザー判断で本 Issue のスコープに含める**（Issue #14 のコメント）。台帳は `research-2.md` に 201 番台で採番し、受け入れ基準は AC-31 以降、ステップは 22 番以降。本ファイルでは扱わない。
 
-ただし、ステップ 1〜20 と**同一ファイル・同一節に触れる 3 件**は編集競合を避けるためステップ 1〜20 では触らない（plan.md のスコープ節に明示）:
+ただし次の 3 件は SYNC-01〜27 と**同一ファイル・同一節**に触れるため、編集競合を避けて両系列を同じステップ（2 / 3）でまとめて扱う:
 
 - `spec/domains/identity.md:519-525` の enum に `InvalidAvatarUrl` / `AccountDeletionRetryLimitExceeded` が無い（SYNC-03 と同じ 1 つの表 = SYNC-244）
 - `spec/domains/identity.md:357-362` の `IdentityUniqueDirectory` interface に `beginRelease` が無い（SYNC-15 と同じ節 = SYNC-205）
 - `spec/domains/index.md` の `ScopeCleanupAdmissionStore` / `AccountDeletionManifestStore` interface に `describePersonalCleanup` / `describe` が無い（SYNC-14 と同じ節 = SYNC-206 / SYNC-208）
-
-**統合作業（2026-08-15）で解消済み**: 上記 3 件を含む `research-2.md` の台帳は plan.md の AC-31 以降・steps.md のステップ 22 以降へ落とし、同一ファイルに触れるものは既存ステップ（1 / 2 / 3 / 4 / 6 / 7 / 8 / 9〜12 / 18）へ統合した。したがって「ステップ 1〜20 では触らない」という上記の制約は**もう適用されない**（ステップ 2 / 3 が該当項目を含む形に改訂済み）。
 
 ### SYNC-27 — `ExternalServiceError` という存在しないエラーコード名 【一部外】
 
@@ -331,13 +329,13 @@
 | スコープ外（実装変更・別 Issue） | **3** | SYNC-08,23,24 |
 | スコープ外（全域語彙の整合・別 Issue） | **1** | SYNC-27 |
 
-progress.md 由来の 24 件（SYNC-01〜24）の内訳は「残 19 / 済 1 / 乖離なし 1 / 外 3」。SYNC-25 は本調査で追加、SYNC-26（P-40 のサインイン済み状態が spec 内部で矛盾）は計画レビュー R1 で追加、SYNC-27 は境界の記録。Issue #2 由来の 44 件は本 Issue のスコープ内だが台帳は `research-2.md`（201 番台）。両台帳を合わせた実数は **70 件**（重複 SYNC-225 = SYNC-15 を 1 件として数えた場合）で、内訳は「要修正 59 / スコープ外 8 / 解消済み 2 / 乖離なし 1」。
+progress.md 由来の 24 件（SYNC-01〜24）の内訳は「残 19 / 済 1 / 乖離なし 1 / 外 3」。SYNC-25（NoteTitle 上限超過時の挙動）と SYNC-26（P-40 のサインイン済み状態が spec 内部で矛盾）は本台帳で追加、SYNC-27 は境界の記録。Issue #2 由来の 44 件は本 Issue のスコープ内だが台帳は `research-2.md`（201 番台）。両台帳を合わせた実数は **70 件**（重複 SYNC-225 = SYNC-15 を 1 件として数えた場合）で、内訳は「要修正 59 / スコープ外 8 / 解消済み 2 / 乖離なし 1」。
 
-**Issue #2（PR #17）のマージで解消された項目は 0 件**。PR #17 が `spec/` に加えた変更は `spec/adr/*.md` の 30 ファイル追加のみで（`git diff --stat cea6134..HEAD -- spec/`）、`spec/domains/` `spec/usecases/` `spec/testcases/` `spec/inventory/` はいずれも `cea6134`（2026-08-09）のまま。SYNC-03 と SYNC-14 はむしろ差が広がった。
+**Issue #2（PR #17）のマージで解消された項目は 0 件**。PR #17 が `spec/` に加えた変更は `spec/adr/*.md` の 30 ファイル追加のみで（ADR 29 本 `023`〜`051` ＋ `index.md`。`git diff --name-only cea6134..55a5bb9 -- spec/`）、`spec/domains/` `spec/usecases/` `spec/testcases/` `spec/inventory/` はいずれも `cea6134`（2026-08-09）のまま。SYNC-03 と SYNC-14 はむしろ差が広がった。
 
 ## 依存関係
 
 - `spec/inventory/*.md` はヘッダーに「生成元」と「最終同期」日付を持つ生成物。本文（`spec/domains/` `spec/pages/`）を直したら inventory の要点欄と最終同期日を追随させる
 - `AGENTS.md` は `CLAUDE.md` へのシンボリックリンク
 - `docs/*_implementation_example.md` は `CLAUDE.md`（Examples 節）と `README.md:47` と `spec/usecases/usage.md:120` と `apps/web/app/presentation/pagination.ts:5` から参照される
-- `.thread/1/plan.md` は計画凍結時に削除されるため、`apps/web/app/start.ts:10` の AC-15 参照は本 Issue で spec への参照に差し替えないと宙に浮く
+- `apps/web/app/start.ts:10` は `.thread/1/plan.md` の受け入れ基準 ID（AC-15）を参照している。実装コードが別 Issue の作業成果物を指し続けるのは不適切なので、本 Issue で `spec/presentation/index.md` の CSRF 規約への参照に差し替える

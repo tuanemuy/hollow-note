@@ -37,7 +37,7 @@ HTTP 境界で下す決定を 1 か所に集める。扱うのは資格情報の
 | 属性 | 値 | 理由 |
 | --- | --- | --- |
 | `HttpOnly` | 付ける | このトークン単体でアカウント全体を操作できるため、JavaScript から読めてはならない。本サービスは利用者由来の HTML を自分のオリジンで描画する（[ADR 006](../adr/006-html-content-model.md) / [ADR 013](../adr/013-html-sanitization-policy.md)）ので、スクリプト実行の抜け道が 1 つ通るとそのままアカウント乗っ取りに直結する。**ブラウザに既定値はなく、指定しなければ JS から読める**ため、明示的な規定を置く |
-| `Secure` | 付ける | 平文経路に載せない。これもブラウザの既定ではない |
+| `Secure` | 付ける | 平文経路に載せない。これもブラウザの既定ではない。外すのは平文 `http` で動く `development` の配備だけで、判定は許可リストで行う（[ADR 037](../adr/037-node-env-allowlist.md)） |
 | `SameSite` | `Lax` | 下記の理由により `Strict` は採れず、`None` は CSRF に対して無防備になる |
 | `Path` | `/` | アプリのすべての経路で必要になる。個別の経路に絞る意味がない |
 | `Domain` | 指定しない | 発行元ホストだけに限定する。サブドメインへ広げると、将来別用途のサブドメインを置いたときにそこへも送られる |
@@ -123,7 +123,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 | 規約 | 理由 |
 | --- | --- |
 | 状態を変更する経路は原則として **JSON を受け取る POST** とする | 転送境界の既定（`createServerFn({ method: "POST" })`）がこれに当たる。クロスサイトの `<form>` は `application/json` の本文を送れないため、この経路には到達できない |
-| **すべての server function 呼び出しに同一オリジン検証を強制する**（要求ミドルウェア `createCsrfMiddleware`） | フレームワークが全 server function に対して `multipart/form-data` / `application/x-www-form-urlencoded`（どちらも CORS safelisted）の経路を常に開けているため、「`FormData` を受ける場合は」という条件は常に成立する。アプリ側がその形を書いていないことは攻撃者を縛らない。`Origin` が自分のオリジンと一致しない、または欠けている要求は拒否する |
+| **すべての server function 呼び出しに同一オリジン検証を強制する**（要求ミドルウェア `createCsrfMiddleware`） | フレームワークが全 server function に対して `multipart/form-data` / `application/x-www-form-urlencoded`（どちらも CORS safelisted）の経路を常に開けているため、「`FormData` を受ける場合は」という条件は常に成立する。アプリ側がその形を書いていないことは攻撃者を縛らない。同一オリジンであることを **`Sec-Fetch-Site` → `Origin` → `Referer` の順**に確認し（先に見つかった手掛かりだけで判定する）、いずれの手掛かりも持たない要求は拒否する |
 | **状態を変更する GET 経路を作らない** | `SameSite=Lax` はトップレベルのナビゲーションによる GET には Cookie を添付する。副作用を持つ GET を作ると、一次防御を素通りして単なるリンクから起動できる |
 
 ### この節の対象外
@@ -180,7 +180,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 | --- | --- | --- |
 | `X-Content-Type-Options` | `nosniff` | 利用者が上げたファイルや生成物を配信する経路があるため、内容から MIME 型を推測されると宣言した型と違う扱いを受けうる |
 | `Referrer-Policy` | 参照元のパスを外部へ送らない方針 | 共有リンクの URL（`/s/:token`）そのものが秘密であり、外部リンクを踏んだときに `Referer` として漏れてはならない |
-| `Cache-Control` | `private, no-store` | Cookie 認証で利用者固有になる応答に freshness 指示が無いと、前段のキャッシュが他人の応答を配りうる。自前の `Cache-Control` を持つ応答（静的アセット）は上書きしない |
+| `Cache-Control` | `private, no-store` | Cookie 認証で利用者固有になる応答に freshness 指示が無いと、前段のキャッシュが他人の応答を配りうる。自前の `Cache-Control` を持つ応答は上書きしない — 静的アセットと、**鍵が内容に一意な保管オブジェクトの配信**（アバター等。鍵にファイル ID が入るので中身は不変で、長期の `immutable` を付ける）。後者は `private` を外さない。共有キャッシュに載せると退会後もオリジンに無い画像が読め、P-25 の削除の約束が破れる |
 
 ---
 
@@ -193,6 +193,8 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 | エラー | `kind` | ステータス | 備考 |
 | --- | --- | --- | --- |
 | `ValidationError` | `validation` | 422 | 転送境界での形の違反、および入力値に起因する拒否 |
+| `UnauthorizedError` | `unauthorized` | **401** | 主体が認証されていない。資格情報そのものが無い / 無効な場合に加えて、セッションは解決できたが主体が `active` でなくなっている場合（削除開始済み・削除済み）もここに含む。下記「コードによる例外」の `ValidationError("UNAUTHENTICATED")` と同じ 401 に着き、**転送境界は 2 系統を区別しない**（どちらを投げるかは各ユースケース文書が決める） |
+| `ForbiddenError` | `forbidden` | **403** | 直列化形と対応づけは実在するが、**本設計ではどの経路も投げない** — 権限不足は存在を漏らさないため次行の `NotFoundError` へ畳む。畳み込みを採らない経路が現れたときの受け皿として、対応づけだけを定めておく |
 | `NotFoundError` | `notFound` | 404 | 存在を漏らさないための「見つかりません」もここに含む（権限不足を 403 と区別しない設計判断は各ユースケースが下している） |
 | `BusinessRuleError` | `business` | 422 | 要求の形は正しく、不変条件に反する |
 | `ConflictError` | `conflict` | 409 | 版の不一致・一意制約違反・二重消費。provider account が別の利用者に紐づいている（`PROVIDER_ACCOUNT_ALREADY_LINKED`）と、解放の収束を待っている（`PROVIDER_ACCOUNT_RELEASE_PENDING`）はどちらもこの既定のままで、下記のコードによる例外を持たない |
