@@ -1,5 +1,3 @@
-// `InvalidChecksum` is missing from the enum in spec/domains/storage.md
-// while the `Checksum` value object needs it — treated as a spec omission.
 export const StorageErrorCode = {
   InvalidId: "STORAGE_INVALID_ID",
   InvalidChecksum: "STORAGE_INVALID_CHECKSUM",

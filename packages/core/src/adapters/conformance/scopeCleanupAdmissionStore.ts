@@ -70,6 +70,18 @@ export function describeScopeCleanupAdmissionStoreContract(
       await store.beginPersonalAccountDeletion("op-1", userId(1));
       await store.assertOwner("op-1");
       await expectConflict(store.assertOwner("op-2"));
+
+      for (const component of DECLARED_COMPONENTS) {
+        await store.acknowledgePersonalComponent("op-1", component);
+      }
+      await store.markCompleted(
+        "op-1",
+        new Date(backend.clock.now().getTime() + 120 * DAY_MS),
+      );
+      // Ownership is the right to keep cleaning, so it lapses on
+      // completion even though a late ack stays idempotent
+      // (ADP-common-009/010).
+      await expectConflict(store.assertOwner("op-1"));
     });
 
     it("ADP-common-007: abort by the running owner reopens writes", async () => {

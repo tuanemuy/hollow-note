@@ -34,8 +34,11 @@ export type PersonalCleanupProgress = Readonly<{
  * scheduled tasks. `abortPersonalAccountDeletion` may only be called by
  * the same running owner and deletes the receipt, reopening writes.
  * `assertOwner` verifies cleanup-operation ownership without reading
- * remote state — a different id, a missing receipt, or an uncommitted
- * one is rejected.
+ * remote state — a different id, a missing receipt, an uncommitted one,
+ * or one already completed is rejected. It asks whether cleaning may
+ * still proceed, so unlike the idempotent late-ack path below it turns
+ * false at completion: admitting work after that would let a delivery
+ * arriving past `pruneCompleted` walk the barrier back to `running`.
  *
  * `markCompleted` is only legal once every component the deployment
  * declares has acknowledged. The required set is **not** the whole enum:
