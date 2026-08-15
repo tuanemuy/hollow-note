@@ -1,6 +1,8 @@
 # Inventory — adapter
 
-生成元: `spec/domains/`（最終同期: 2026-08-09）
+生成元: `spec/domains/`（最終同期: 2026-08-16）
+
+**1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、`describe` 名に ADP ID を含める命名規約で追う。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -11,24 +13,24 @@
 | ADP-common-005 | `ScopeCleanupAdmissionStore.assertActorWritable` | `spec/domains/index.md#ScopeKey-と永続化境界` | actor の削除・除名準備ロックを含め書き込み可否を検査する |
 | ADP-common-006 | `ScopeCleanupAdmissionStore.beginPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 scope の削除 barrier を operation 単位で開始する |
 | ADP-common-007 | `ScopeCleanupAdmissionStore.abortPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 同じ owner operation の個人削除 barrier を解除する |
-| ADP-common-008 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査する |
+| ADP-common-008 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査し、別 ID・欠落・未 commit に加えて完了済みの barrier も拒否する |
 | ADP-common-009 | `ScopeCleanupAdmissionStore.acknowledgePersonalComponent` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 cleanup component の完了を記録する |
 | ADP-common-010 | `ScopeCleanupAdmissionStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 全 component 完了後に barrier を保持期限付きで完了化する |
 | ADP-common-011 | `ScopeCleanupAdmissionStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ完了 barrier を有界に回収する |
-| ADP-common-012 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する |
+| ADP-common-012 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する。再投入された `begin` は既に記録済みのものをすべて保つ |
 | ADP-common-013 | `AccountDeletionManifestStore.appendMembershipPage` | `spec/domains/index.md#ScopeKey-と永続化境界` | membership edge を有界ページで manifest に固定する |
 | ADP-common-014 | `AccountDeletionManifestStore.appendAuthorRoutePage` | `spec/domains/index.md#ScopeKey-と永続化境界` | author route ページを cursor と原子的に固定する |
 | ADP-common-015 | `AccountDeletionManifestStore.markBuilt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 対象固定済みへ遷移する |
 | ADP-common-016 | `AccountDeletionManifestStore.beginRollback` | `spec/domains/index.md#ScopeKey-と永続化境界` | prepare rejection 後の rollback を開始する |
-| ADP-common-017 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する |
+| ADP-common-017 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する。membership item は prepare ack だけでは完了せず、cleanup phase でも claim できる |
 | ADP-common-018 | `AccountDeletionManifestStore.acknowledge` | `spec/domains/index.md#ScopeKey-と永続化境界` | item phase の完了を冪等に記録する |
-| ADP-common-019 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | global・personal receipt の完了を記録する |
+| ADP-common-019 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 配備が宣言した global・personal receipt の完了を記録する。receipt が全部そろっても item の完全 ack を代替しない |
 | ADP-common-020 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | rollback release の全完了を判定する |
-| ADP-common-021 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | finalize 必須 ack の全完了を判定する |
+| ADP-common-021 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み全 item の完全 ack と宣言された全 receipt の両方がそろって初めて true にする。membership item は cleanup レーンが ack して初めて完全 ack になるので、prepare ack ＋ 宣言 receipt だけでは true にならない |
 | ADP-common-022 | `AccountDeletionManifestStore.compactItems` | `spec/domains/index.md#ScopeKey-と永続化境界` | ack 済み item を有界に縮約する |
 | ADP-common-023 | `AccountDeletionManifestStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 成功した manifest を終端・保持期限付きにする |
 | ADP-common-024 | `AccountDeletionManifestStore.markRejected` | `spec/domains/index.md#ScopeKey-と永続化境界` | rejection manifest を終端・保持期限付きにする |
-| ADP-common-025 | `AccountDeletionManifestStore.pruneTerminal` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ terminal manifest を keyset で回収する |
+| ADP-common-025 | `AccountDeletionManifestStore.pruneTerminal` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ terminal manifest を keyset で回収し、件数ではなく回収した operationId 列を返す |
 | ADP-common-026 | `GlobalMaintenanceRunStore.beginOrResumeKind` | `spec/domains/index.md#ScopeKey-と永続化境界` | kind ごとの最古 run を開始または再開し lease 状態を返す |
 | ADP-common-027 | `GlobalMaintenanceRunStore.claimLanes` | `spec/domains/index.md#ScopeKey-と永続化境界` | maintenance lane を有界に claim する |
 | ADP-common-028 | `GlobalMaintenanceRunStore.checkpointLane` | `spec/domains/index.md#ScopeKey-と永続化境界` | cursor と次 command key を原子的に checkpoint する |
@@ -43,15 +45,17 @@
 | ADP-common-037 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | state を原子的に取得・削除する |
 | ADP-common-038 | `OAuthStateStore.deleteExpired` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 期限切れ state を cursor と limit で回収する |
 | ADP-common-039 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
+| ADP-common-040 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |
+| ADP-common-041 | `AccountDeletionManifestStore.describe` | `spec/domains/index.md#ScopeKey-と永続化境界` | manifest header の読み取り射影（2 つの build cursor と所有 user）を返し、既に消えていれば null を返す |
 | ADP-identity-001 | `UserRepository.insert` | `spec/domains/identity.md#ポート` | 新規 User を保存する |
 | ADP-identity-002 | `UserRepository.findById` | `spec/domains/identity.md#ポート` | UserId で OCC token 付き User を取得する |
 | ADP-identity-003 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |
 | ADP-identity-004 | `UserRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を削除する |
-| ADP-identity-005 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決する |
-| ADP-identity-006 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーから UserId を解決する |
-| ADP-identity-007 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約する |
-| ADP-identity-008 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を有効化する |
-| ADP-identity-009 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の一意予約を解放する |
+| ADP-identity-005 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決し、上限超過は `SystemError(DatabaseError)` にする |
+| ADP-identity-006 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える） |
+| ADP-identity-007 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約し、鍵の種類に対応する conflict で他者を弾く。奪えるのは失効した `reserved` だけで、`releasing` の鍵は奪えない |
+| ADP-identity-008 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を恒久 claim へ昇格させる |
+| ADP-identity-009 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の `reserved` と `releasing` の行を落とす（`active` には触れない） |
 | ADP-identity-010 | `IdentityRepository.insert` | `spec/domains/identity.md#ポート` | 新規 Identity を保存する |
 | ADP-identity-011 | `IdentityRepository.findById` | `spec/domains/identity.md#ポート` | IdentityId で OCC token 付き Identity を取得する |
 | ADP-identity-012 | `IdentityRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ Identity を更新する |
@@ -81,6 +85,9 @@
 | ADP-identity-036 | `LoginAttemptStore.recordFailure` | `spec/domains/identity.md#ポート` | 失敗回数を単一原子操作で加算し加算後状態を返す |
 | ADP-identity-037 | `LoginAttemptStore.clear` | `spec/domains/identity.md#ポート` | 認証成功時に失敗記録を削除する |
 | ADP-identity-038 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
+| ADP-identity-039 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を返し、無ければ null を返す |
+| ADP-identity-040 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
+| ADP-identity-041 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
 | ADP-workspace-001 | `WorkspaceRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Workspace を保存する |
 | ADP-workspace-002 | `WorkspaceRepository.findById` | `spec/domains/workspace.md#ポート` | WorkspaceId で OCC token 付き集約を取得する |
 | ADP-workspace-003 | `WorkspaceRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Workspace を更新する |
@@ -158,12 +165,13 @@
 | ADP-storage-015 | `ReferenceImportRecordRepository.listAttemptsByNote` | `spec/domains/storage.md#ポート` | ノートの取得試行記録を返す |
 | ADP-storage-016 | `ReferenceImportRecordRepository.findSummaryByNote` | `spec/domains/storage.md#ポート` | ノートの最新取り込み要約を取得する |
 | ADP-storage-017 | `ReferenceImportRecordRepository.deleteByNote` | `spec/domains/storage.md#ポート` | attempt と summary を合わせて有界削除する |
-| ADP-storage-018 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | stream または bytes を保存し実サイズと checksum を返す |
-| ADP-storage-019 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | object body と metadata を取得する |
-| ADP-storage-020 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除する |
+| ADP-storage-018 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | バイト列だけを受けて保存し実サイズと checksum を測って返す。既存 key は上書きする（ストリーム受けは契約に持たない） |
+| ADP-storage-019 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | バイト列と metadata を持つ `ObjectBody` を取得し、未知の key では null を返す |
+| ADP-storage-020 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除し、存在しない key も許容する |
 | ADP-storage-021 | `ObjectStorage.createDownloadUrl` | `spec/domains/storage.md#ポート` | file name と期限付きの download URL を発行する |
 | ADP-storage-022 | `RemoteResourceFetcher.fetch` | `spec/domains/storage.md#ポート` | byte 上限と timeout を守って外部 URL を取得する |
 | ADP-storage-023 | `DnsResolver.resolve` | `spec/domains/storage.md#ポート` | hostname を IP address 群へ解決する |
+| ADP-storage-024 | `ObjectStorage.publicUrl` | `spec/domains/storage.md#ポート` | 公開配信してよい object の読み取り先 URL を同じ key に対して安定して組み立てる |
 | ADP-conversion-001 | `FormatDetector.detect` | `spec/domains/conversion.md#ポート` | 内容と申告 MIME から形式・実 MIME・password 保護を判定する |
 | ADP-conversion-002 | `FileContentReader.readBytes` | `spec/domains/conversion.md#ポート` | StoredFileId の全 bytes を読む |
 | ADP-conversion-003 | `FileContentReader.readText` | `spec/domains/conversion.md#ポート` | 指定または推定 encoding で text を読む |
@@ -189,13 +197,13 @@
 | ADP-note-012 | `NoteRepository.listByIds` | `spec/domains/note.md#ポート` | current scope の複数 Note を ID で取得する |
 | ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を有界列挙する |
 | ADP-note-014 | `NoteRepository.countByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle 条件の Note 数を返す |
-| ADP-note-015 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note をページングする |
+| ADP-note-015 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note を `updatedAt DESC, id DESC` の全順序でページングし、ページ境界で重複・欠落を出さない |
 | ADP-note-016 | `NoteRevisionRepository.insert` | `spec/domains/note.md#ポート` | 不変な NoteRevision を保存する |
 | ADP-note-017 | `NoteRevisionRepository.listByNote` | `spec/domains/note.md#ポート` | ノートの最新 revision を limit 件返す |
 | ADP-note-018 | `NoteRevisionRepository.findById` | `spec/domains/note.md#ポート` | RevisionId で revision を取得する |
 | ADP-note-019 | `NoteRevisionRepository.deleteOlderThanNewest` | `spec/domains/note.md#ポート` | 最新 keep 件を残し古い revision を削除する |
 | ADP-note-020 | `NoteRevisionRepository.deleteByNote` | `spec/domains/note.md#ポート` | ノートの revision を全削除する |
-| ADP-note-021 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する |
+| ADP-note-021 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する。`highlightedExcerpt` は投影が持つマークアップをエスケープしてから強調を付ける |
 | ADP-note-022 | `LocalNoteQueryService.listMonthsWithNotes` | `spec/domains/note.md#ポート` | owner のノートがある現地暦月を列挙する |
 | ADP-note-023 | `LocalNoteQueryService.countByDay` | `spec/domains/note.md#ポート` | 半開期間を time zone の日別に集計する |
 | ADP-note-024 | `LocalNoteQueryService.countByContentStatus` | `spec/domains/note.md#ポート` | owner・本文状態の Note 数を返す |
@@ -210,7 +218,7 @@
 | ADP-note-033 | `NoteProjectionSnapshotReader.read` | `spec/domains/note.md#ポート` | Note・tag・projection revision を同一 read transaction で返す |
 | ADP-note-034 | `NoteProjectionRevisionStore.bump` | `spec/domains/note.md#ポート` | Note の projection revision を原子的に増やす |
 | ADP-note-035 | `NoteRouteStore.resolve` | `spec/domains/note.md#ポート` | 外部 read 可能な Note route を解決する |
-| ADP-note-036 | `NoteRouteStore.resolveMany` | `spec/domains/note.md#ポート` | 最大 500 Note route を shard 横断解決する |
+| ADP-note-036 | `NoteRouteStore.resolveMany` | `spec/domains/note.md#ポート` | 最大 500 Note route を shard 横断解決し、501 件目からは `SystemError(DatabaseError)` にする |
 | ADP-note-037 | `NoteRouteStore.reserveCreate` | `spec/domains/note.md#ポート` | Note 作成 route を TTL 付き予約する |
 | ADP-note-038 | `NoteRouteStore.activateCreate` | `spec/domains/note.md#ポート` | 作成 route を active にする |
 | ADP-note-039 | `NoteRouteStore.abandonCreate` | `spec/domains/note.md#ポート` | 作成途中の route を破棄する |
@@ -220,15 +228,17 @@
 | ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
 | ADP-note-044 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | ADP-note-045 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
-| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の route を署名 cursor で shard 横断列挙する |
-| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の route を署名 cursor で shard 横断列挙する |
-| ADP-note-048 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する |
-| ADP-note-049 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する |
+| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する |
+| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する |
+| ADP-note-048 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する。失敗は `SystemError(DataIntegrityError)` |
+| ADP-note-049 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する。未知の keyVersion・ciphertext の破損は `SystemError(DataIntegrityError)` |
 | ADP-note-050 | `NoteMovePort.freezeSource` | `spec/domains/note.md#ポート` | source を再認可して move snapshot を固定する |
 | ADP-note-051 | `NoteMovePort.stageTarget` | `spec/domains/note.md#ポート` | target を再認可し snapshot を冪等 stage する |
 | ADP-note-052 | `NoteMovePort.activateTarget` | `spec/domains/note.md#ポート` | staged target を指定 route version で有効化する |
 | ADP-note-053 | `NoteMovePort.retireSource` | `spec/domains/note.md#ポート` | switch 後の source データを退役させる |
 | ADP-note-054 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
+| ADP-note-055 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| ADP-note-056 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | ADP-tag-001 | `TagRepository.insert` | `spec/domains/tag.md#ポート` | 新規 Tag を保存する |
 | ADP-tag-002 | `TagRepository.findById` | `spec/domains/tag.md#ポート` | TagId で OCC token 付き Tag を取得する |
 | ADP-tag-003 | `TagRepository.save` | `spec/domains/tag.md#ポート` | 期待版一致時だけ Tag を更新する |

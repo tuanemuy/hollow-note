@@ -1,6 +1,8 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-09）
+生成元: `spec/testcases/`（最終同期: 2026-08-16）
+
+**1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 |----|------|---------|------------------------------|
@@ -397,14 +399,14 @@
 | TC-identity-258 | signUpWithPassword: 期限切れの招待トークン — 招待トークンつきで登録する | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 通常の登録として扱われ、エラーにはならない |
 | TC-identity-259 | signUpWithPassword: メール送信基盤が失敗する — 有効な入力で登録する | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 登録は成功として返り、送信失敗が記録される |
 | TC-identity-260 | signUpWithPassword: 短時間に同一発信元から大量の試行がある — 登録する | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | `ValidationError("RATE_LIMITED")` が投げられる |
-| TC-identity-261 | signUpWithPassword: 同じメールアドレスで 2 つの要求が同時に走る — 両方が登録する | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 片方は成功、もう片方は `ConflictError("EMAIL_ALREADY_USED")` になる |
+| TC-identity-261 | signUpWithPassword: 同じメールアドレスで 2 つの要求が同時に走る — 同時に 2 つの登録要求を出す | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 両方の応答 shape が同一（`emailVerificationRequired: true` / セッションなし）で、返る decoy id は別値。利用者はちょうど 1 人。一意性違反は `IdentityUniqueDirectory` のポート契約として送出されるが、ユースケースが畳む |
 | TC-identity-262 | signUpWithPassword: email reservation確保後にUser保存が失敗する — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | reservationをreleaseし、同じemailが恒久的に塞がらない |
 | TC-identity-263 | signUpWithPassword: User/Identity保存後にreservation activate応答を失う — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | User email/version一致を確認し、同じsub-operation IDでactiveへ収束する |
 | TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される |
 | TC-identity-265 | startOAuthFlow: Activeでサインイン済み — `intent: "linkIdentity"` と `userId` を指定して開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、保存された状態に `userId` とcurrent `userAuthEpoch`が含まれる |
 | TC-identity-266 | startOAuthFlow: 削除開始済みまたは削除済み — `intent: "linkIdentity"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | OAuth stateを作らず、認証済み利用者として扱わない |
 | TC-identity-267 | startOAuthFlow: — — `intent: "linkIdentity"` で `userId` を省略する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("USER_REQUIRED")` が投げられる |
-| TC-identity-268 | startOAuthFlow: — — 未知のプロバイダーを指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `BusinessRuleError(InvalidProvider)` が投げられる |
+| TC-identity-268 | startOAuthFlow: — — 未知のプロバイダーを指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `BusinessRuleError(InvalidProviderAccount)` が投げられる |
 | TC-identity-269 | startOAuthFlow: — — `redirectTo` に外部オリジンの URL を指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("INVALID_REDIRECT")` が投げられる |
 | TC-identity-270 | startOAuthFlow: — — `redirectTo` に相対パスを指定する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、保存された状態に `redirectTo` が含まれる |
 | TC-identity-271 | startOAuthFlow: — — 2 回続けて開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 異なる `state` が 2 件保存され、どちらも有効 |
@@ -441,6 +443,24 @@
 | TC-identity-302 | verifyEmail: 同じトークンで 2 つの要求が同時に走る — 両方が確認する | spec/testcases/identity/verifyEmail.md#テストケース-verifyemail | 片方が成功してセッションを受け取り、負けた側はトークンの条件付き更新が `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` になる。トランザクションを巻き戻したうえで利用者を引き直し、`active` なら `alreadyVerified: true` を返す（セッションは発行しない）。確認が二重に成立することも、失敗として見えることもない |
 | TC-identity-303 | verifyEmail: 並行消費で負けた側 — 応答を確認する | spec/testcases/identity/verifyEmail.md#テストケース-verifyemail | エラーにはならず `alreadyVerified: true` が返り、セッションは増えない |
 | TC-identity-304 | verifyEmail: 並行消費で負けた側 — トークンと利用者の状態を確認する | spec/testcases/identity/verifyEmail.md#テストケース-verifyemail | トークンは勝った側の消費のまま 1 回だけ `consumed` になり、利用者は `ActiveUser` のままである |
+| TC-identity-305 | getProfile: `ActiveUser` が自分のプロフィールを持つ — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | `userId` / `displayName` / `bio` / `avatarUrl` / `handle` が返る |
+| TC-identity-306 | getProfile: — — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | 応答にパスワードのハッシュやトークンが含まれない |
+| TC-identity-307 | getProfile: 利用者が不在または削除済み — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `NotFoundError("USER_NOT_FOUND")` が投げられる |
+| TC-identity-308 | getProfile: `PendingUser` — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `ValidationError("EMAIL_NOT_VERIFIED")` が投げられる |
+| TC-identity-309 | getProfile: `DeletingUser` — 読み出す | spec/testcases/identity/getProfile.md#テストケース-getprofile | `ValidationError("ACCOUNT_UNAVAILABLE")` が投げられる |
+| TC-identity-310 | checkHandleAvailability: 誰も使っていないハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: true` / `ownedBySelf: false` が返る |
+| TC-identity-311 | checkHandleAvailability: 自分が既に使っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: true` / `ownedBySelf: true` が返る |
+| TC-identity-312 | checkHandleAvailability: 他人が使っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `available: false` / `ownedBySelf: false` が返る |
+| TC-identity-313 | checkHandleAvailability: 他の要求が予約しただけで確定していないハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 空きとして返る（助言的な読み取りで、勝者は `updateProfile` の予約が決める） |
+| TC-identity-314 | checkHandleAvailability: — — 形式が不正なハンドルで問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `BusinessRuleError(InvalidHandle)` が投げられる |
+| TC-identity-315 | checkHandleAvailability: — — 予約語のハンドルで問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | `BusinessRuleError(HandleReserved)` が投げられる |
+| TC-identity-316 | completeOAuthCallback: `intent: "signIn"` の state が保存されている — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | `intent: "signIn"` arm が返り、`sessionToken` を運ぶ |
+| TC-identity-317 | completeOAuthCallback: `intent: "linkIdentity"` の state が保存されている — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | `intent: "linkIdentity"` arm が返り、`identityId` と `redirectTo` を運ぶ |
+| TC-identity-318 | completeOAuthCallback: 経路の `:provider` が state に保存されたものと一致しない — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | state を無効として扱い、`ValidationError("OAUTH_STATE_INVALID")` が投げられる |
+| TC-identity-319 | completeOAuthCallback: state が存在しない・期限切れ — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | `ValidationError("OAUTH_STATE_INVALID")` が投げられる |
+| TC-identity-320 | completeOAuthCallback: — — 同じ state で 2 回続けて処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | 2 回目は state が消費済みのため `ValidationError("OAUTH_STATE_INVALID")` が投げられる |
+| TC-identity-321 | requestPasswordReset: 直近 59 秒以内に要求済み — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 新しいトークンは発行されず、成功として返る |
+| TC-identity-322 | requestPasswordReset: 直近 61 秒前に要求済み — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 新しい再設定メールが送られる（間隔制限の境界値） |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |
@@ -1718,7 +1738,7 @@
 | TC-storage-040 | deleteFilesByOwner: 継続要求を受け取る — 処理する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 残っているものを先頭から `batchSize` 件読んで続きを削除する（カーソルは持たない） |
 | TC-storage-041 | deleteFilesByOwner: 対象が残っているのにそのバッチで 1 件も削除できなかった — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 継続要求を積まず、失敗として返る（キューの再試行と DLQ に委ねる） |
 | TC-storage-042 | deleteFilesByOwner: 継続要求が重複配送され 2 系列が並走する — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 両系列とも「残っているものを読んで消す」だけなので結果は変わらず、対象が 0 件になった系列から順に継続をやめる |
-| TC-storage-043 | deleteFilesByOwner: 1 バッチを処理する — 発行するクエリ数を確認する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 列挙 1 文 + 多行 DELETE 1 文 + 多行 outbox INSERT 1 文で、件数によらず 3 文。`batchSize` の既定 100 はクエリ数ではなく 1 回に発行するイベント数を抑えるための上限である |
+| TC-storage-043 | deleteFilesByOwner: 1 バッチを処理する — 件数に比例した往復を要求しないことを確認する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 列挙は 1 回だけ。削除できたファイル 1 件につき `storage.fileDeleted` が 1 件。どちらも `batchSize` の件数に比例した追加の往復を要求しない（バックエンドが発行する文の数はここでは約束しない — [ADR 056](../adr/056-performance-budget-placement.md)） |
 | TC-storage-044 | deleteFilesByOwner: `deleteNotesForOwner` の継続 — 形を比べる | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 同一である（1 バッチ処理して残りがあれば専用の継続要求を 1 件積む）。以前あった「ファイル側は保険、ノート側は常用」という違いは解消している |
 | TC-storage-045 | deleteFilesByOwner: ワークスペースのファイルがある — ワークスペースを対象に実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | そのワークスペースのファイルだけが削除される |
 | TC-storage-046 | deleteFilesByOwner: 対象が 0 件 — 実行する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | `deletedCount: 0` が返る |
