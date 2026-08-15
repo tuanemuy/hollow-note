@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { WITHDRAWN_AUTHOR_DISPLAY_NAME } from "../../domain/note/ports/localNoteProjectionWriter";
 import type {
   ConformanceBackend,
   MakeConformanceBackend,
@@ -81,6 +82,88 @@ export function describeNoteProjectionContract(
       expect(
         await scoped.noteProjectionSnapshotReader.read(noteId(1)),
       ).toBeNull();
+    });
+
+    it("ADP-note-028: redactAuthor replaces the author display on both planes and no-ops otherwise", async () => {
+      const version = {
+        projectionRevision: 1,
+        authorVersion: 1,
+        workspaceVersion: 0,
+      };
+      await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+        entry(),
+        [],
+        version,
+      );
+      await backend.publicNoteProjectionWriter.replaceSnapshotIfNewer(
+        makeProjectionEntry(1, userId(1), backend.clock.now(), {
+          visibility: "public",
+        }),
+        [],
+        { ...version, routeVersion: 1 },
+      );
+      const redaction = {
+        noteId: noteId(1),
+        createdBy: userId(1),
+        redactionVersion: 4,
+      };
+
+      expect(
+        await scoped.localNoteProjectionWriter.redactAuthor(redaction),
+      ).toBe(true);
+      expect(
+        await backend.publicNoteProjectionWriter.redactAuthor(redaction),
+      ).toBe(true);
+      const redacted = await scoped.noteProjectionSnapshotReader.read(
+        noteId(1),
+      );
+      expect(redacted?.entry.author).toEqual({
+        displayName: WITHDRAWN_AUTHOR_DISPLAY_NAME,
+        handle: null,
+        version: 4,
+      });
+      const published = await backend.publicNoteQueryService.searchPublic({
+        keyword: null,
+        tagNames: [],
+        ownerFilter: null,
+        updatedWithin: null,
+        cursor: null,
+        limit: 10,
+      });
+      expect(published.items.map((item) => item.authorDisplayName)).toEqual([
+        WITHDRAWN_AUTHOR_DISPLAY_NAME,
+      ]);
+
+      // Repeats, other authors, and absent rows change nothing.
+      expect(
+        await scoped.localNoteProjectionWriter.redactAuthor(redaction),
+      ).toBe(false);
+      expect(
+        await scoped.localNoteProjectionWriter.redactAuthor({
+          ...redaction,
+          createdBy: userId(2),
+          redactionVersion: 9,
+        }),
+      ).toBe(false);
+      expect(
+        await scoped.localNoteProjectionWriter.redactAuthor({
+          ...redaction,
+          noteId: noteId(2),
+        }),
+      ).toBe(false);
+
+      // A note event from before the redaction cannot restore the name.
+      expect(
+        await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+          entry(),
+          [],
+          { projectionRevision: 1, authorVersion: 1, workspaceVersion: 0 },
+        ),
+      ).toBe("stale");
+      expect(
+        (await scoped.noteProjectionSnapshotReader.read(noteId(1)))?.entry
+          .author.displayName,
+      ).toBe(WITHDRAWN_AUTHOR_DISPLAY_NAME);
     });
 
     it("ADP-note-034: bump increments the note's projection revision monotonically", async () => {

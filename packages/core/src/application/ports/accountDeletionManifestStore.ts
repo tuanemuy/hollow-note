@@ -52,6 +52,30 @@ export type AccountDeletionReceipt =
   | "jobHistory"
   | "uniquenessRelease";
 
+export type AccountDeletionManifestStatus =
+  | "building"
+  | "built"
+  | "rollingBack"
+  | "completed"
+  | "rejected";
+
+/**
+ * Header projection returned by `describe`. It carries the two build
+ * cursors and the owning user because a continuation request names only
+ * the operation (spec/usecases/identity.md 手順 3 keeps the page position
+ * on the header rather than in the continuation payload).
+ */
+export type AccountDeletionManifestHeader = Readonly<{
+  operationId: string;
+  userId: UserId;
+  status: AccountDeletionManifestStatus;
+  membershipCursor: string | null;
+  authorRouteCursor: string | null;
+  receipts: readonly AccountDeletionReceipt[];
+  terminalAt: Date | null;
+  retainUntil: Date | null;
+}>;
+
 /**
  * Application orchestration port for account deletion, placed on the
  * UserId shard.
@@ -78,11 +102,18 @@ export type AccountDeletionReceipt =
  * command key. Compaction (`compactItems`, 100 per pass) may only start
  * after every release ack.
  *
+ * The finalize receipt set is **not** fixed by this contract: the
+ * deployment declares which participants exist and passes that set to
+ * the implementation, so `allRequiredAcknowledged` answers
+ * against the declared set rather than the full enum.
+ *
  * Error contract: `ConflictError` (state-machine violations),
  * `SystemError(DatabaseError)`.
  */
 export interface AccountDeletionManifestStore {
   begin(operationId: string, userId: UserId): Promise<void>;
+  /** Read-only header projection; `null` when the manifest is gone. */
+  describe(operationId: string): Promise<AccountDeletionManifestHeader | null>;
   appendMembershipPage(
     operationId: string,
     afterEdgeKey: string | null,
@@ -125,9 +156,16 @@ export interface AccountDeletionManifestStore {
     terminalAt: Date,
     retainUntil: Date,
   ): Promise<void>;
+  /**
+   * Names the operations it reclaimed rather than counting them: the
+   * control-plane row of each is dropped by the caller in this very
+   * transaction, and a count cannot say which.
+   */
   pruneTerminal(
     asOf: Date,
     cursor: string | null,
     limit: number,
-  ): Promise<Readonly<{ removed: number; nextCursor: string | null }>>;
+  ): Promise<
+    Readonly<{ operationIds: readonly string[]; nextCursor: string | null }>
+  >;
 }

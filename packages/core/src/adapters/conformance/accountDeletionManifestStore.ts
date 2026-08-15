@@ -7,13 +7,19 @@ import { noteId, userId } from "./fixtures";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The declaration this suite drives the backend with. It is a strict
+ * subset of the receipt enum on purpose: finalize waits for what
+ * the deployment declares, so a backend that hard-codes the full set
+ * fails here.
+ */
 const FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
   "authResidue",
-  "externalConnections",
-  "jobHistory",
   "uniquenessRelease",
 ];
+
+const UNDECLARED_RECEIPT: AccountDeletionReceipt = "jobHistory";
 
 /**
  * Shared conformance suite for `AccountDeletionManifestStore`
@@ -31,7 +37,9 @@ export function describeAccountDeletionManifestStoreContract(
     let backend: ConformanceBackend;
 
     beforeEach(async () => {
-      backend = await makeBackend();
+      backend = await makeBackend({
+        requiredFinalizeReceipts: FINALIZE_RECEIPTS,
+      });
     });
 
     const store = () => backend.accountDeletionManifestStore;
@@ -48,11 +56,15 @@ export function describeAccountDeletionManifestStoreContract(
       );
     };
 
-    const finalizeAll = async (operationId = "op-1"): Promise<void> => {
+    const acknowledgeItems = async (operationId = "op-1"): Promise<void> => {
       const pending = await store().claimPending(operationId, "redaction", 100);
       const keys = pending.map((item) => item.key);
       await store().acknowledge(operationId, keys, "localRedaction");
       await store().acknowledge(operationId, keys, "publicRedaction");
+    };
+
+    const finalizeAll = async (operationId = "op-1"): Promise<void> => {
+      await acknowledgeItems(operationId);
       for (const receipt of FINALIZE_RECEIPTS) {
         await store().acknowledgeReceipt(operationId, receipt);
       }
@@ -85,6 +97,31 @@ export function describeAccountDeletionManifestStoreContract(
       );
     });
 
+    it("ADP-common-012: describe reports the header a continuation resumes from", async () => {
+      expect(await store().describe("op-1")).toBeNull();
+
+      await beginWithRoutes();
+      const building = await store().describe("op-1");
+      expect(building).toMatchObject({
+        operationId: "op-1",
+        userId: userId(1),
+        status: "building",
+        membershipCursor: null,
+        authorRouteCursor: null,
+        receipts: [],
+        terminalAt: null,
+        retainUntil: null,
+      });
+
+      await store().markBuilt("op-1");
+      await finalizeAll();
+      const built = await store().describe("op-1");
+      expect(built?.status).toBe("built");
+      expect(built?.receipts).toEqual(
+        expect.arrayContaining([...FINALIZE_RECEIPTS]),
+      );
+    });
+
     it("ADP-common-013: appendMembershipPage on an empty edge source fixes zero targets", async () => {
       await store().begin("op-1", userId(1));
       expect(await store().appendMembershipPage("op-1", null, 100)).toEqual({
@@ -103,10 +140,13 @@ export function describeAccountDeletionManifestStoreContract(
       );
       await store().markBuilt("op-1");
       const claimed = await store().claimPending("op-1", "redaction", 100);
-      expect(claimed.map((item) => item.key).sort()).toEqual([
-        "authorRoute:note-001",
-        "authorRoute:note-002",
-      ]);
+      expect(claimed).toHaveLength(2);
+      expect(new Set(claimed.map((item) => item.key)).size).toBe(2);
+      expect(
+        claimed
+          .map((item) => (item.kind === "authorRoute" ? item.noteId : null))
+          .sort(),
+      ).toEqual([noteId(1), noteId(2)]);
     });
 
     it("ADP-common-015: target fixing is rejected after markBuilt", async () => {
@@ -169,9 +209,63 @@ export function describeAccountDeletionManifestStoreContract(
         store().markCompleted("op-1", terminalAt, retainUntil),
       );
 
+      // A receipt nothing declares does not move finalize forward.
+      await store().acknowledgeReceipt("op-1", UNDECLARED_RECEIPT);
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
+
       await finalizeAll();
       expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
       await store().markCompleted("op-1", terminalAt, retainUntil);
+      await store().markCompleted("op-1", terminalAt, retainUntil);
+    });
+
+    it("ADP-common-019/021: every declared receipt is required, one missing at a time", async () => {
+      for (const [index, missing] of FINALIZE_RECEIPTS.entries()) {
+        const operationId = `op-missing-${index}`;
+        await beginWithRoutes(operationId);
+        await store().markBuilt(operationId);
+        await acknowledgeItems(operationId);
+        for (const receipt of FINALIZE_RECEIPTS) {
+          if (receipt !== missing) {
+            await store().acknowledgeReceipt(operationId, receipt);
+          }
+        }
+
+        // Items are fully acked, so only the missing receipt can hold
+        // finalize back — a backend requiring less than what is declared
+        // would let it through here.
+        expect(await store().allRequiredAcknowledged(operationId)).toBe(false);
+        const terminalAt = backend.clock.now();
+        const retainUntil = new Date(terminalAt.getTime() + 120 * DAY_MS);
+        await expectConflict(
+          store().markCompleted(operationId, terminalAt, retainUntil),
+        );
+
+        await store().acknowledgeReceipt(operationId, missing);
+        expect(await store().allRequiredAcknowledged(operationId)).toBe(true);
+        await store().markCompleted(operationId, terminalAt, retainUntil);
+      }
+    });
+
+    it("ADP-common-019/021: every fixed item is required, the receipt set alone does not finalize", async () => {
+      await beginWithRoutes();
+      await store().markBuilt("op-1");
+      for (const receipt of FINALIZE_RECEIPTS) {
+        await store().acknowledgeReceipt("op-1", receipt);
+      }
+
+      // Every declared receipt is in hand, so the fixed items are the only
+      // thing left holding finalize back — a backend that weighs receipts
+      // alone would let this through.
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
+      const terminalAt = backend.clock.now();
+      const retainUntil = new Date(terminalAt.getTime() + 120 * DAY_MS);
+      await expectConflict(
+        store().markCompleted("op-1", terminalAt, retainUntil),
+      );
+
+      await acknowledgeItems();
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
       await store().markCompleted("op-1", terminalAt, retainUntil);
     });
 
@@ -220,11 +314,11 @@ export function describeAccountDeletionManifestStoreContract(
       await store().begin("op-live", userId(2));
 
       const early = await store().pruneTerminal(backend.clock.now(), null, 100);
-      expect(early.removed).toBe(0);
+      expect(early.operationIds).toEqual([]);
 
       backend.clock.advance(120 * DAY_MS);
       const first = await store().pruneTerminal(backend.clock.now(), null, 1);
-      expect(first.removed).toBe(1);
+      expect(first.operationIds).toHaveLength(1);
       expect(first.nextCursor).not.toBeNull();
 
       const second = await store().pruneTerminal(
@@ -232,7 +326,12 @@ export function describeAccountDeletionManifestStoreContract(
         first.nextCursor,
         100,
       );
-      expect(second.removed).toBe(1);
+      // Naming what it reclaimed is the contract: the caller drops each
+      // operation's control-plane row in the same transaction.
+      expect([...first.operationIds, ...second.operationIds].sort()).toEqual([
+        "op-1",
+        "op-2",
+      ]);
       expect(second.nextCursor).toBeNull();
 
       // The live manifest survives.
@@ -298,14 +397,14 @@ export function describeAccountDeletionManifestStoreContract(
         null,
         1_000,
       );
-      expect(first.removed).toBe(100);
+      expect(first.operationIds).toHaveLength(100);
       expect(first.nextCursor).not.toBeNull();
       const second = await store().pruneTerminal(
         backend.clock.now(),
         first.nextCursor,
         1_000,
       );
-      expect(second).toEqual({ removed: 1, nextCursor: null });
+      expect(second).toEqual({ operationIds: ["op-100"], nextCursor: null });
     });
 
     it("ADP-common-013: appendMembershipPage caps a page at 100 edges (seeded backend)", async (ctx) => {
@@ -426,7 +525,11 @@ export function describeAccountDeletionManifestStoreContract(
       await store().markBuilt("op-1");
 
       const prepared = await store().claimPending("op-1", "prepare", 100);
-      expect(prepared.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      expect(
+        prepared.map((item) =>
+          item.kind === "membership" ? item.membershipId : null,
+        ),
+      ).toEqual(["membership-1"]);
       await store().acknowledge(
         "op-1",
         prepared.map((item) => item.key),
@@ -442,7 +545,11 @@ export function describeAccountDeletionManifestStoreContract(
       expect(await store().allRequiredAcknowledged("op-1")).toBe(false);
 
       const cleanup = await store().claimPending("op-1", "cleanup", 100);
-      expect(cleanup.map((item) => item.key)).toEqual(["membership:edge-a"]);
+      // The very item the prepare lane acked is what the cleanup lane
+      // sees, whatever the backend encodes its key as.
+      expect(cleanup.map((item) => item.key)).toEqual(
+        prepared.map((item) => item.key),
+      );
       await store().acknowledge(
         "op-1",
         cleanup.map((item) => item.key),

@@ -7,8 +7,10 @@ import {
   type InProcessRelayTrigger,
 } from "@repo/core/adapters/node/inProcessRelayTrigger";
 import type { WorkerContainer } from "@repo/core/application/di/types";
+import { pruneAccountDeletionManifests } from "@repo/core/application/identity/deleteAccount/terminalPrune";
 import type { Logger } from "@repo/core/application/ports/logger";
 import type { RelayTrigger } from "@repo/core/application/ports/relayTrigger";
+import type { ScopeTaskTrigger } from "@repo/core/application/ports/scopeTaskTrigger";
 import {
   type EventDispatcher,
   type ProcessOutboxEventsOptions,
@@ -18,11 +20,19 @@ import {
   DEFAULT_OUTBOX_RETENTION_MS,
   pruneOutbox,
 } from "@repo/core/application/workers/outboxPrune";
+import { runDueScopeTasks } from "@repo/core/application/workers/scopeTaskRunner";
 import type { DomainEvent } from "@repo/core/domain/common/event";
 
 export type NodeWorkerRunnerTuning = Readonly<{
   relayIntervalMs?: number;
   pruneIntervalMs?: number;
+  /**
+   * Safety net behind the commit kick for scope-plane continuations. A
+   * second, not the relay's minute: a deletion advances one turn per
+   * round, so the interval is the worst-case wait per turn when a kick
+   * is lost.
+   */
+  scopeTaskIntervalMs?: number;
   outboxRetentionMs?: number;
   relayOptions?: ProcessOutboxEventsOptions;
   consumerConcurrency?: number;
@@ -40,18 +50,25 @@ export type NodeWorkerRunner = Readonly<{
   start(): void;
   stop(): Promise<void>;
   relayTrigger: RelayTrigger;
+  scopeTaskTrigger: ScopeTaskTrigger;
 }>;
 
 const DEFAULT_RELAY_INTERVAL_MS = 60_000;
 const DEFAULT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SCOPE_TASK_INTERVAL_MS = 1_000;
+const RECEIPT_SWEEP_PAGE_LIMIT = 100;
+const RECEIPT_SWEEP_MAX_PAGES = 100;
 
 /**
  * Single-process orchestrator for the four background roles of the Node
- * runtime (relay, consumer, pruner, dlq). `start()` registers timers +
- * signal handlers,
- * `relayTrigger.kick()` schedules an out-of-band relay tick collapsed
- * with concurrent kicks, `stop()` drains in-flight work and runs
- * `cleanup`. All three are idempotent.
+ * runtime (relay, consumer, pruner, dlq). `start()` drives one round of
+ * each periodic role immediately and then registers its timers + signal
+ * handlers, `relayTrigger.kick()` schedules an out-of-band relay tick
+ * collapsed with concurrent kicks, `stop()` releases the timers and the
+ * process listeners, drains in-flight work and runs `cleanup`. All three
+ * are idempotent — and `stop()` leaving nothing registered is what lets
+ * a caller replace a runner (`server.node.ts` does so on a dev reload)
+ * without two of them ticking the same store.
  *
  * The "DLQ" role is satisfied by `processOutboxEvents`'s existing
  * `[outbox] quarantining event …` log line when `failed_at` is stamped;
@@ -65,6 +82,8 @@ export function createNodeWorkerRunner(
 
   const relayIntervalMs = tuning.relayIntervalMs ?? DEFAULT_RELAY_INTERVAL_MS;
   const pruneIntervalMs = tuning.pruneIntervalMs ?? DEFAULT_PRUNE_INTERVAL_MS;
+  const scopeTaskIntervalMs =
+    tuning.scopeTaskIntervalMs ?? DEFAULT_SCOPE_TASK_INTERVAL_MS;
   const outboxRetentionMs =
     tuning.outboxRetentionMs ?? DEFAULT_OUTBOX_RETENTION_MS;
 
@@ -77,8 +96,13 @@ export function createNodeWorkerRunner(
       // that pairing inside its own usecase — a standalone
       // `markProcessed` in this dispatch loop would commit the record
       // without any effect and violate the contract.
+
+      // Identifiers only: payloads carry profile fields and provider
+      // account keys, and this line runs on every delivery in production.
       container.logger.info(`[queue] received ${event.type} ${event.id}`, {
-        event,
+        eventId: event.id,
+        eventType: event.type,
+        aggregateId: event.aggregateId,
       });
       await handler(event);
     },
@@ -104,11 +128,69 @@ export function createNodeWorkerRunner(
     logger,
   });
 
+  const runScopeTaskTick = async (): Promise<void> => {
+    try {
+      await runDueScopeTasks(container);
+    } catch (cause) {
+      logger.error("[runner.node] scope task tick threw", { cause });
+    }
+  };
+
+  // Same serialization discipline as the relay: at most one round in
+  // flight, concurrent kicks collapsed into a single re-run.
+  const scopeTaskTrigger: InProcessRelayTrigger = createInProcessRelayTrigger({
+    runTick: runScopeTaskTick,
+    logger,
+  });
+
+  /**
+   * Reclaims the removal receipts whose 30 days are up.
+   *
+   * `identity_removal_receipts` is also a lane of `pruneExpiredAuthState`,
+   * but nothing schedules that usecase in this runtime yet (its cron
+   * wiring is Issue #15), so this direct sweep is what actually enforces
+   * the retention window today. The two are expected to collapse into
+   * the lane once #15 gives it a driver; until then the duplication is
+   * deliberate, and harmless because both only ever remove expired rows.
+   *
+   * The bound lives here rather than in the store: a page cap keeps one
+   * tick from monopolizing the process, and the next tick resumes from
+   * the start for the same reason.
+   */
+  const sweepIdentityRemovalReceipts = async (): Promise<void> => {
+    let cursor: string | null = null;
+    for (let page = 0; page < RECEIPT_SWEEP_MAX_PAGES; page += 1) {
+      const swept = await container.identityRemovalReceiptStore.deleteExpired(
+        container.clock.now(),
+        cursor,
+        RECEIPT_SWEEP_PAGE_LIMIT,
+      );
+      if (swept.nextCursor === null) return;
+      cursor = swept.nextCursor;
+    }
+  };
+
+  // The three sweeps are isolated from one another: they reclaim
+  // unrelated tables, and the deletion ones carry personal data whose
+  // retention must not hinge on the outbox prune succeeding.
   const runPruneTick = async (): Promise<void> => {
     try {
       await pruneOutbox(container, { retentionMs: outboxRetentionMs });
     } catch (cause) {
       logger.error("[runner.node] prune tick threw", { cause });
+    }
+    try {
+      await pruneAccountDeletionManifests({
+        container,
+        input: { type: "cron" },
+      });
+    } catch (cause) {
+      logger.error("[runner.node] manifest prune threw", { cause });
+    }
+    try {
+      await sweepIdentityRemovalReceipts();
+    } catch (cause) {
+      logger.error("[runner.node] removal receipt sweep threw", { cause });
     }
   };
 
@@ -117,6 +199,7 @@ export function createNodeWorkerRunner(
 
   let relayTimer: ReturnType<typeof setInterval> | null = null;
   let pruneTimer: ReturnType<typeof setInterval> | null = null;
+  let scopeTaskTimer: ReturnType<typeof setInterval> | null = null;
 
   // Tracked so `stop()` awaits every outstanding promise scheduled
   // outside the trigger.
@@ -141,8 +224,17 @@ export function createNodeWorkerRunner(
     if (started) return;
     started = true;
 
-    // Drain crash-leftover backlog without waiting a full interval.
+    // Drain crash-leftover backlog without waiting a full interval —
+    // including the scope-plane continuations a previous process left
+    // due, which live in the task table rather than in its memory. The
+    // drain goes through the trigger so it collapses with a commit kick
+    // arriving in the same moment instead of racing it.
     track(runRelayTick());
+    scopeTaskTrigger.kick();
+    // The prune tick carries personal-data retention (deletion manifests,
+    // removal receipts), so it cannot be reachable only by a process that
+    // outlives its 24-hour interval.
+    track(runPruneTick());
 
     relayTimer = setInterval(() => {
       track(runRelayTick());
@@ -150,11 +242,15 @@ export function createNodeWorkerRunner(
     pruneTimer = setInterval(() => {
       track(runPruneTick());
     }, pruneIntervalMs);
+    scopeTaskTimer = setInterval(() => {
+      scopeTaskTrigger.kick();
+    }, scopeTaskIntervalMs);
 
     // Let the event loop exit naturally in tests / scripts; production
     // holds the loop open via the HTTP server.
     relayTimer.unref?.();
     pruneTimer.unref?.();
+    scopeTaskTimer.unref?.();
 
     process.on("SIGTERM", onSigterm);
     process.on("SIGINT", onSigint);
@@ -171,10 +267,15 @@ export function createNodeWorkerRunner(
         clearInterval(pruneTimer);
         pruneTimer = null;
       }
+      if (scopeTaskTimer !== null) {
+        clearInterval(scopeTaskTimer);
+        scopeTaskTimer = null;
+      }
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
 
       await relayTrigger.stop();
+      await scopeTaskTrigger.stop();
       // Snapshot via `Array.from` so concurrently-finishing entries that
       // mutate the Set don't disturb iteration.
       await Promise.all(Array.from(pendingSweeps));
@@ -194,5 +295,6 @@ export function createNodeWorkerRunner(
     start,
     stop,
     relayTrigger,
+    scopeTaskTrigger,
   };
 }

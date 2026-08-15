@@ -4,7 +4,7 @@ import type { OAuthFlowState } from "@repo/core/application/ports/oauthStateStor
 import { AuthToken } from "@repo/core/domain/identity/authToken";
 import { LoginThrottlePolicy } from "@repo/core/domain/identity/services/loginThrottlePolicy";
 import { Session } from "@repo/core/domain/identity/session";
-import { UserId } from "@repo/core/domain/identity/valueObject";
+import { IdentityId, UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import type { AuthStateTable, ExpirySweep } from "../../di/types";
@@ -106,6 +106,19 @@ function seedOAuthState(
     expiresAt,
   });
   return state;
+}
+
+function seedRemovalReceipt(h: TestHarness, expiresAt: Date): string {
+  const id = nextSeedId();
+  h.backend.identityRemovalReceipts.set(id, {
+    operationId: `removeIdentity:${id}`,
+    identityId: IdentityId.create(id),
+    userId: UserId.create("user-1"),
+    kind: "oauth",
+    providerAccountKey: `google:${id}`,
+    expiresAt,
+  });
+  return id;
 }
 
 const cron = (h: TestHarness) =>
@@ -268,7 +281,18 @@ describe("pruneExpiredAuthState", () => {
     expect(await store.take(state)).not.toBeNull();
   });
 
-  it("TC-identity-162: all four targets empty succeeds with zeros", async () => {
+  it("an identity removal receipt past its retention is deleted while one inside it survives", async () => {
+    const h = createTestHarness();
+    const now = h.clock.now();
+    seedRemovalReceipt(h, new Date(now.getTime() - 1));
+    const kept = seedRemovalReceipt(h, new Date(now.getTime() + DAY_MS));
+
+    const view = await cron(h);
+    expect(view.identityRemovalReceipts).toBe(1);
+    expect([...h.backend.identityRemovalReceipts.keys()]).toEqual([kept]);
+  });
+
+  it("TC-identity-162: every sweep target empty succeeds with zeros", async () => {
     const h = createTestHarness();
     const view = await cron(h);
     expect(view).toEqual({
@@ -276,6 +300,7 @@ describe("pruneExpiredAuthState", () => {
       authTokens: 0,
       loginAttempts: 0,
       oauthFlowStates: 0,
+      identityRemovalReceipts: 0,
       continued: false,
     });
   });
@@ -296,6 +321,7 @@ describe("pruneExpiredAuthState", () => {
       authTokens: 0,
       loginAttempts: 0,
       oauthFlowStates: 0,
+      identityRemovalReceipts: 0,
       continued: false,
     });
   });
@@ -561,7 +587,7 @@ describe("pruneExpiredAuthState", () => {
     // hint cannot name.
     const h = createTestHarness({
       maintenanceTablesByKind: {
-        authStatePrune: ["oauth_flow_states", "sessions"],
+        authStatePrune: ["identity_removal_receipts", "sessions"],
       },
     });
     seedSession(h, new Date(h.clock.now().getTime() - 1));
@@ -593,7 +619,7 @@ describe("pruneExpiredAuthState", () => {
     // `releaseLane`'s catch is defensive and has no observable path yet.
     const h = createTestHarness({
       maintenanceTablesByKind: {
-        authStatePrune: ["oauth_flow_states", "sessions"],
+        authStatePrune: ["identity_removal_receipts", "sessions"],
       },
     });
     seedSession(h, new Date(h.clock.now().getTime() - 1));

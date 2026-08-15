@@ -22,14 +22,18 @@ import { loadServerDeps } from "./serverAction";
 const SESSION_COOKIE_NAME = "hollow_session";
 
 /**
- * Marks the browser that asked for a verification mail (ADR 029). The
+ * Marks the browser that asked for a verification mail (spec/adr/029). The
  * value is the `userId` the sign-up response projected; `verifyEmail`
  * only issues a session when it matches the token's owner, so following
  * somebody else's verification link can never sign the visitor in.
  */
 const PENDING_VERIFICATION_COOKIE_NAME = "hollow_pending_verification";
 
-const isProduction = (): boolean => process.env.NODE_ENV === "production";
+// 免除は allowlist で判定する（ADR-110）。`Secure` を外す理由は「dev の
+// 平文 http」であって「production ではない」ではないので、分類できない
+// `NODE_ENV` は免除しない側へ倒す。Vite は `process.env.NODE_ENV` をビルド
+// 時に畳み込むため、本番ビルドの成果物ではこの述語は定数 false になる。
+const isDevelopment = (): boolean => process.env.NODE_ENV === "development";
 
 export function readSessionToken(): string | null {
   const value = getCookie(SESSION_COOKIE_NAME);
@@ -41,7 +45,7 @@ export function setSessionCookie(token: string, expiresAt: Date): void {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: isProduction(),
+    secure: !isDevelopment(),
     expires: expiresAt,
   });
 }
@@ -51,7 +55,7 @@ export function clearSessionCookie(): void {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: isProduction(),
+    secure: !isDevelopment(),
   });
 }
 
@@ -71,7 +75,7 @@ export function setPendingVerificationCookie(userId: string, now: Date): void {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: isProduction(),
+    secure: !isDevelopment(),
     expires: new Date(
       now.getTime() + AuthTokenPurpose.ttlMs("email_verification"),
     ),
@@ -83,7 +87,7 @@ export function clearPendingVerificationCookie(): void {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: isProduction(),
+    secure: !isDevelopment(),
   });
 }
 

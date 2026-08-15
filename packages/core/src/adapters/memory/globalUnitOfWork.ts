@@ -1,11 +1,18 @@
+import { mintEventIdFor } from "../../application/execution/eventId";
 import type {
   GlobalUnitOfWorkContext,
   GlobalUnitOfWorkProvider,
 } from "../../application/execution/unitOfWork";
+import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import type { RelayTrigger } from "../../application/ports/relayTrigger";
+import type { PersonalCleanupComponent } from "../../application/ports/scopeCleanupAdmissionStore";
+import type { ScopeTaskTrigger } from "../../application/ports/scopeTaskTrigger";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
+import { createMemoryAccountDeletionManifestStore } from "./repositories/accountDeletionManifestStore";
 import { createMemoryAuthTokenRepository } from "./repositories/authTokenRepository";
+import { createMemoryDistributedOperationStore } from "./repositories/distributedOperationStore";
+import { createMemoryIdentityRemovalReceiptStore } from "./repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "./repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "./repositories/identityUniqueDirectory";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
@@ -15,6 +22,16 @@ import type { MemoryBackend } from "./store";
 
 export type MemoryUnitOfWorkOptions = Readonly<{
   relayTrigger?: RelayTrigger;
+  /** Kicked after a scope commit that stored a continuation. */
+  scopeTaskTrigger?: ScopeTaskTrigger;
+  /**
+   * Cleanup participants this deployment declares
+   * (`application/cleanup/participants.ts`). Both default to the whole
+   * enum inside the stores, so omitting them stalls a deletion rather
+   * than completing one nothing cleaned up.
+   */
+  requiredCleanupComponents?: readonly PersonalCleanupComponent[];
+  requiredFinalizeReceipts?: readonly AccountDeletionReceipt[];
 }>;
 
 /**
@@ -43,9 +60,21 @@ export function createMemoryGlobalUnitOfWorkProvider(
           sessionRepository: createMemorySessionRepository(backend),
           authTokenRepository: createMemoryAuthTokenRepository(backend),
           identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
+          identityRemovalReceiptStore:
+            createMemoryIdentityRemovalReceiptStore(backend),
+          distributedOperationStore:
+            createMemoryDistributedOperationStore(backend),
+          accountDeletionManifestStore:
+            createMemoryAccountDeletionManifestStore(backend, {
+              ...(options.requiredFinalizeReceipts !== undefined
+                ? { requiredFinalizeReceipts: options.requiredFinalizeReceipts }
+                : {}),
+            }),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
-              ...attachEventIds(drafts, () => backend.mintEventId()),
+              ...attachEventIds(drafts, (draft) =>
+                mintEventIdFor(draft, () => backend.mintEventId()),
+              ),
             );
           },
         };

@@ -10,7 +10,7 @@ import { signInSchema } from "../schema";
  * 失敗の内訳（INVALID_CREDENTIALS / EMAIL_NOT_VERIFIED / THROTTLED /
  * LOCKED / ACCOUNT_DELETING）は kind タグ + code でクライアントへ渡り、
  * 待機秒・解除時刻は `fieldErrors.waitSeconds` / `unlockAt` に載る
- * （ADR 028）。
+ * （spec/adr/028）。
  */
 export const signInFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])

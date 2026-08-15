@@ -1,16 +1,26 @@
 import { createServerFn } from "@tanstack/react-start";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
+import { loadServerDeps } from "@/presentation/serverAction";
 
 /**
- * サインアウト glue: Cookie 破棄のみの presentation 限定処理。
- * UC-identity-009（セッション行の削除）は後続スライスの正規実装に譲る。
- * JSON POST に限定する（ADR 030）— Cookie 破棄も認証状態の変更であり、GET にすると
- * SameSite=Lax 下で外部リンクからのログアウト強制が成立してしまう。
+ * サインアウト（UC-identity-009）。セッション行の削除は usecase が行い、
+ * Cookie の破棄はこの応答にしか載せられないのでここで行う。
+ *
+ * JSON POST に限定する（spec/adr/030）— GET にすると SameSite=Lax 下で
+ * 外部リンクからのログアウト強制が成立してしまう。Cookie が無い / 不正
+ * でも usecase は成功するので、この入口は常に成功応答を返す。
  */
 export const signOutFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .handler(async () => {
-    const { clearSessionCookie } = await import("@/presentation/session");
-    clearSessionCookie();
+    const [{ container, module }, session] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/identity/signOut")),
+      import("@/presentation/session"),
+    ]);
+    const sessionToken = session.readSessionToken();
+    if (sessionToken !== null) {
+      await module.signOut({ container, input: { sessionToken } });
+    }
+    session.clearSessionCookie();
     return { signedOut: true };
   });

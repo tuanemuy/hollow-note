@@ -8,16 +8,18 @@ import type {
 } from "./backend";
 import { scopeOf, userId } from "./fixtures";
 
-const ALL_COMPONENTS: readonly PersonalCleanupComponent[] = [
-  "job",
-  "note",
-  "tag",
+/**
+ * The declaration this suite drives the backend with. It is a strict
+ * subset of the enum on purpose: the contract is "every declared
+ * component and nothing else", so a backend that quietly demands the
+ * full enum fails here.
+ */
+const DECLARED_COMPONENTS: readonly PersonalCleanupComponent[] = [
   "storage",
-  "backup",
   "usage",
-  "localProjection",
-  "outbox",
 ];
+
+const UNDECLARED_COMPONENT: PersonalCleanupComponent = "note";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -35,7 +37,9 @@ export function describeScopeCleanupAdmissionStoreContract(
     let store: ScopedConformancePorts["scopeCleanupAdmissionStore"];
 
     beforeEach(async () => {
-      backend = await makeBackend();
+      backend = await makeBackend({
+        requiredCleanupComponents: DECLARED_COMPONENTS,
+      });
       store = backend.forScope(scopeOf(1)).scopeCleanupAdmissionStore;
     });
 
@@ -75,7 +79,7 @@ export function describeScopeCleanupAdmissionStoreContract(
       await store.assertWritable();
     });
 
-    it("ADP-common-009/010: markCompleted requires every component ack", async () => {
+    it("ADP-common-009/010: markCompleted requires every declared component ack", async () => {
       await store.beginPersonalAccountDeletion("op-1", userId(1));
       const retainUntil = new Date(
         backend.clock.now().getTime() + 120 * DAY_MS,
@@ -83,22 +87,66 @@ export function describeScopeCleanupAdmissionStoreContract(
 
       await expectConflict(store.markCompleted("op-1", retainUntil));
 
-      for (const component of ALL_COMPONENTS) {
+      for (const component of DECLARED_COMPONENTS.slice(0, -1)) {
         await store.acknowledgePersonalComponent("op-1", component);
       }
+      // One declared component short is still not complete, and a
+      // component nothing declares cannot stand in for it.
+      await store.acknowledgePersonalComponent("op-1", UNDECLARED_COMPONENT);
+      await expectConflict(store.markCompleted("op-1", retainUntil));
+
+      const last = DECLARED_COMPONENTS.at(-1);
+      if (last === undefined) {
+        throw new Error("the suite declares at least one component");
+      }
+      await store.acknowledgePersonalComponent("op-1", last);
       // Duplicate acks inside the retention window no-op safely.
-      await store.acknowledgePersonalComponent("op-1", "note");
+      await store.acknowledgePersonalComponent("op-1", last);
 
       await store.markCompleted("op-1", retainUntil);
       await store.markCompleted("op-1", retainUntil);
+      // As does one that arrives after completion: a late ack must not
+      // walk the receipt back to `running`, which would leave
+      // `pruneCompleted` nothing to reclaim.
+      await store.acknowledgePersonalComponent("op-1", last);
+      expect((await store.describePersonalCleanup("op-1"))?.status).toBe(
+        "completed",
+      );
 
       // Completion never reopens the scope.
       await expectConflict(store.assertWritable(), "ACCOUNT_DELETING");
     });
 
+    it("ADP-common-009: describePersonalCleanup reports what a re-driven turn still owes", async () => {
+      expect(await store.describePersonalCleanup("op-1")).toBeNull();
+
+      await store.beginPersonalAccountDeletion("op-1", userId(1));
+      expect(await store.describePersonalCleanup("op-1")).toEqual({
+        status: "running",
+        acknowledged: [],
+      });
+      // A foreign operation reads nothing at all.
+      expect(await store.describePersonalCleanup("op-2")).toBeNull();
+
+      const retainUntil = new Date(
+        backend.clock.now().getTime() + 120 * DAY_MS,
+      );
+      for (const component of DECLARED_COMPONENTS) {
+        await store.acknowledgePersonalComponent("op-1", component);
+      }
+      expect(
+        (await store.describePersonalCleanup("op-1"))?.acknowledged,
+      ).toEqual(expect.arrayContaining([...DECLARED_COMPONENTS]));
+
+      await store.markCompleted("op-1", retainUntil);
+      expect((await store.describePersonalCleanup("op-1"))?.status).toBe(
+        "completed",
+      );
+    });
+
     it("ADP-common-011: pruneCompleted reclaims only after retainUntil", async () => {
       await store.beginPersonalAccountDeletion("op-1", userId(1));
-      for (const component of ALL_COMPONENTS) {
+      for (const component of DECLARED_COMPONENTS) {
         await store.acknowledgePersonalComponent("op-1", component);
       }
       const retainUntil = new Date(
@@ -115,7 +163,7 @@ export function describeScopeCleanupAdmissionStoreContract(
 
     it("ADP-common-011: pruneCompleted accepts an over-cap limit (one scope holds at most one receipt, so no page cap can bind)", async () => {
       await store.beginPersonalAccountDeletion("op-1", userId(1));
-      for (const component of ALL_COMPONENTS) {
+      for (const component of DECLARED_COMPONENTS) {
         await store.acknowledgePersonalComponent("op-1", component);
       }
       const retainUntil = new Date(

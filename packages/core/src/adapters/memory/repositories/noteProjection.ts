@@ -1,10 +1,12 @@
 import type {
+  AuthorRedaction,
   LocalNoteProjectionWriter,
   NoteProjectionEntry,
   ProjectedTagName,
   ProjectionVersion,
   ProjectionWriteResult,
 } from "../../../domain/note/ports/localNoteProjectionWriter";
+import { WITHDRAWN_AUTHOR_DISPLAY_NAME } from "../../../domain/note/ports/localNoteProjectionWriter";
 import type { NoteProjectionRevisionStore } from "../../../domain/note/ports/noteProjectionRevisionStore";
 import type { NoteProjectionSnapshotReader } from "../../../domain/note/ports/noteProjectionSnapshotReader";
 import type { PublicNoteProjectionWriter } from "../../../domain/note/ports/publicNoteProjectionWriter";
@@ -42,6 +44,40 @@ const compareVectors = (
   return "incomparable";
 };
 
+type ProjectionRow = Readonly<{
+  entry: NoteProjectionEntry;
+  authorVersion: number;
+}>;
+
+/**
+ * `null` when the row must stay as it is: absent, another author's, or
+ * already published at this redaction generation or later.
+ */
+const redactedRow = <TRow extends ProjectionRow>(
+  stored: TRow | undefined,
+  input: AuthorRedaction,
+): TRow | null => {
+  if (
+    stored === undefined ||
+    stored.entry.createdBy !== input.createdBy ||
+    stored.authorVersion >= input.redactionVersion
+  ) {
+    return null;
+  }
+  return {
+    ...stored,
+    entry: {
+      ...stored.entry,
+      author: {
+        displayName: WITHDRAWN_AUTHOR_DISPLAY_NAME,
+        handle: null,
+        version: input.redactionVersion,
+      },
+    },
+    authorVersion: input.redactionVersion,
+  };
+};
+
 export function createMemoryLocalNoteProjectionWriter(
   scope: ScopeStore,
 ): LocalNoteProjectionWriter {
@@ -72,6 +108,15 @@ export function createMemoryLocalNoteProjectionWriter(
 
     async remove(noteId: NoteId): Promise<void> {
       table.delete(noteId);
+    },
+
+    async redactAuthor(input: AuthorRedaction): Promise<boolean> {
+      const redacted = redactedRow(table.get(input.noteId), input);
+      if (redacted === null) {
+        return false;
+      }
+      table.set(input.noteId, redacted);
+      return true;
     },
   };
 }
@@ -158,6 +203,15 @@ export function createMemoryPublicNoteProjectionWriter(
         return false;
       }
       table.delete(noteId);
+      return true;
+    },
+
+    async redactAuthor(input: AuthorRedaction): Promise<boolean> {
+      const redacted = redactedRow(table.get(input.noteId), input);
+      if (redacted === null) {
+        return false;
+      }
+      table.set(input.noteId, redacted);
       return true;
     },
 

@@ -11,16 +11,23 @@ import type {
   NoteProjectionEntry,
   ProjectedTagName,
 } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
+import type { StoredFile } from "@repo/core/domain/storage/storedFile";
+import type { LlmUsage } from "@repo/core/domain/usage/llmUsage";
+import type { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import { type Clock, SystemClock } from "../../application/ports/clock";
+import type { DistributedOperation } from "../../application/ports/distributedOperationStore";
 import type { MaintenanceKind } from "../../application/ports/globalMaintenanceRunStore";
+import type { IdentityRemovalReceipt } from "../../application/ports/identityRemovalReceiptStore";
 import {
   type IdGenerator,
   UuidV7Generator,
 } from "../../application/ports/idGenerator";
 import type { OAuthFlowState } from "../../application/ports/oauthStateStore";
+import type { ObjectMeta } from "../../application/ports/objectStorage";
 import type { PersonalCleanupComponent } from "../../application/ports/scopeCleanupAdmissionStore";
+import type { ScopeTaskPayload } from "../../application/ports/scopeTaskScheduler";
 import {
   type ScopeKey,
   ScopeKey as ScopeKeyOps,
@@ -149,10 +156,15 @@ export type DirectoryRow = Readonly<{
   kind: IdentityUniqueKind;
   normalizedKey: string;
   userId: UserId;
-  state: "reserved" | "active";
+  state: "reserved" | "active" | "releasing";
   operationId: string;
   expiresAt: Date | null;
   userVersion: number | null;
+}>;
+
+export type StoredObjectRow = Readonly<{
+  bytes: Uint8Array;
+  meta: ObjectMeta;
 }>;
 
 export type LoginAttemptRow = Readonly<{
@@ -306,14 +318,29 @@ export type LocalProjectionRow = Readonly<{
   workspaceVersion: number;
 }>;
 
+export type ScheduledTaskRow = Readonly<{
+  kind: string;
+  operationId: string;
+  payload: ScopeTaskPayload;
+  dueAt: Date;
+  attempt: number;
+  state: "pending" | "failed";
+}>;
+
 export type ScopeStore = Readonly<{
   key: string;
+  scope: ScopeKey;
   notes: MemTable<Note>;
   noteRevisions: MemTable<NoteRevision>;
   cleanupReceipts: MemTable<CleanupReceiptRow>;
   actorLocks: MemTable<true>;
   localProjection: MemTable<LocalProjectionRow>;
   projectionRevisions: MemTable<number>;
+  scheduledTasks: MemTable<ScheduledTaskRow>;
+  appliedOperations: MemTable<true>;
+  storageQuotas: MemTable<StorageQuota>;
+  llmUsages: MemTable<LlmUsage>;
+  storedFiles: MemTable<StoredFile>;
 }>;
 
 export type MemoryBackendOptions = Readonly<{
@@ -331,6 +358,7 @@ const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
     "sessions",
     "login_attempts",
     "oauth_flow_states",
+    "identity_removal_receipts",
   ],
   jobTombstonePrune: ["job_tombstones"],
   accountManifestPrune: ["account_deletion_manifests"],
@@ -357,6 +385,9 @@ export class MemoryBackend {
   readonly sessions = this.table<Session>();
   readonly authTokens = this.table<AuthToken>();
   readonly uniqueDirectory = this.table<DirectoryRow>();
+  readonly identityRemovalReceipts = this.table<IdentityRemovalReceipt>();
+  readonly distributedOperations = this.table<DistributedOperation>();
+  readonly objects = this.table<StoredObjectRow>();
   readonly loginAttempts = this.table<LoginAttemptRow>();
   readonly oauthStates = this.table<OAuthStateRow>();
   readonly outbox = this.table<OutboxRow>();
@@ -389,12 +420,18 @@ export class MemoryBackend {
     }
     const created: ScopeStore = {
       key,
+      scope,
       notes: this.table<Note>(),
       noteRevisions: this.table<NoteRevision>(),
       cleanupReceipts: this.table<CleanupReceiptRow>(),
       actorLocks: this.table<true>(),
       localProjection: this.table<LocalProjectionRow>(),
       projectionRevisions: this.table<number>(),
+      scheduledTasks: this.table<ScheduledTaskRow>(),
+      appliedOperations: this.table<true>(),
+      storageQuotas: this.table<StorageQuota>(),
+      llmUsages: this.table<LlmUsage>(),
+      storedFiles: this.table<StoredFile>(),
     };
     this.scopes.set(key, created);
     return created;

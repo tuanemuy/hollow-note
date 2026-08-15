@@ -1,5 +1,6 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "./errorCode";
+import { SameOriginPolicy } from "./services/sameOriginPolicy";
 
 declare const userIdBrand: unique symbol;
 declare const identityIdBrand: unique symbol;
@@ -9,6 +10,7 @@ declare const emailBrand: unique symbol;
 declare const handleBrand: unique symbol;
 declare const displayNameBrand: unique symbol;
 declare const bioBrand: unique symbol;
+declare const avatarUrlBrand: unique symbol;
 declare const passwordHashBrand: unique symbol;
 declare const plainPasswordBrand: unique symbol;
 declare const tokenHashBrand: unique symbol;
@@ -126,6 +128,14 @@ export const DisplayName = {
     }
     return trimmed as DisplayName;
   },
+
+  /**
+   * Shortens instead of rejecting, for names supplied by a source that
+   * never agreed to the limit (an OAuth provider profile). An empty name
+   * is still a rejection: the caller owns the fallback.
+   */
+  truncate: (raw: string): DisplayName =>
+    DisplayName.create(raw.trim().slice(0, DISPLAY_NAME_MAX_LENGTH)),
 };
 
 const BIO_MAX_LENGTH = 500;
@@ -139,6 +149,54 @@ export const Bio = {
     return raw as Bio;
   },
 };
+
+const AVATAR_URL_MAX_LENGTH = 2048;
+
+/**
+ * Same-origin location of the profile picture.
+ *
+ * Two accepted forms: an app-relative path (`/storage/...`) or an
+ * absolute URL on the app's own origin. The relative form is the
+ * canonical one — a stored value then survives a change of deployment
+ * origin — and the absolute form exists for object stores served from
+ * their own public domain.
+ *
+ * `appUrl` is a parameter rather than something this module reads:
+ * a value object never reaches for configuration.
+ */
+export type AvatarUrl = string & { readonly [avatarUrlBrand]: true };
+export const AvatarUrl = {
+  create: (raw: string, appUrl: string): AvatarUrl => {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0 || trimmed.length > AVATAR_URL_MAX_LENGTH) {
+      throw invalidAvatarUrl();
+    }
+    if (trimmed.startsWith("/")) {
+      if (!SameOriginPolicy.isSameOriginPath(trimmed)) {
+        throw invalidAvatarUrl();
+      }
+      return trimmed as AvatarUrl;
+    }
+    let candidate: URL;
+    let base: URL;
+    try {
+      candidate = new URL(trimmed);
+      base = new URL(appUrl);
+    } catch {
+      throw invalidAvatarUrl();
+    }
+    if (candidate.origin !== base.origin) {
+      throw invalidAvatarUrl();
+    }
+    return trimmed as AvatarUrl;
+  },
+};
+
+const invalidAvatarUrl = () =>
+  new BusinessRuleError(
+    IdentityErrorCode.InvalidAvatarUrl,
+    "Avatar URL must be same-origin",
+  );
 
 /**
  * Opaque password hash. The only legitimate producer is the
@@ -158,8 +216,13 @@ export const PasswordHash = {
   },
 };
 
-const PASSWORD_MIN_LENGTH = 8;
-const PASSWORD_MAX_LENGTH = 128;
+/**
+ * The password bounds, published so a form can hint and pre-check the same
+ * limits it will be judged against. The rule itself stays with
+ * `PlainPassword.create` below — readers only borrow the numbers.
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
 
 /**
  * Plain-text password in transit toward `PasswordHasher`. Never log or

@@ -12,17 +12,19 @@ import {
 import { renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { footLinkClass } from "../formStyles";
+import { ResendVerificationForm } from "../ResendVerificationForm";
 import { verifyEmailFn } from "./action";
 
 /**
  * P-03 メール確認（spec/pages/index.md#P-03、モック P03-verify-email.html）。
  * GET は「処理中」を描画するだけで、マウント後にトークンを POST して消費
- * する（ADR 029）。状態: 処理中 / 成功（/notes へ遷移）/ 確認済み・サイン
+ * する（spec/adr/029）。状態: 処理中 / 成功（/notes へ遷移）/ 確認済み・サイン
  * インが必要 / 期限切れ / 使用済み（サインインへ）/ 無効 / 一時障害。
- * 再送導線は resendVerificationEmail が本スライス外のため出さない。
+ * 期限切れ・無効からは確認メールを再送できる（PAGE-p03-003）。リンク
+ * からの来訪でアドレスは分からないので、再送フォームが自分で受け取る。
  *
  * `verifiedSignInRequired` は「確認は成立したがセッションは出なかった」
- * 状態（ADR 029）。別端末でリンクを開いた正当な利用者がここへ落ちる。
+ * 状態（spec/adr/029）。別端末でリンクを開いた正当な利用者がここへ落ちる。
  * `alreadyVerified`（トークンが使用済み）とは原因が違うので別状態にする。
  */
 
@@ -158,14 +160,8 @@ function PhaseResult({
         <Result
           icon={<ClockIcon className="text-warning" />}
           title="この確認リンクは期限が切れています"
-          body="確認メールは 24 時間で無効になります。もう一度サインアップすると、案内が届きます。"
-          actions={
-            <p className="text-sm text-ink-secondary">
-              <Link to="/signup" className={footLinkClass}>
-                サインアップへ
-              </Link>
-            </p>
-          }
+          body="確認メールは 24 時間で無効になります。新しいリンクを送り直せます。"
+          actions={<ResendActions variant="primary" />}
         />
       );
     case "invalid":
@@ -173,14 +169,8 @@ function PhaseResult({
         <Result
           icon={<CrossIcon className="text-error" />}
           title="このリンクは使えません"
-          body="リンクが途中で切れているか、書き換えられている可能性があります。メールのリンクをもう一度開いてください。"
-          actions={
-            <p className="text-sm text-ink-secondary">
-              <Link to="/signin" className={footLinkClass}>
-                サインインへ
-              </Link>
-            </p>
-          }
+          body="リンクが途中で切れているか、書き換えられている可能性があります。メールのリンクをもう一度開くか、確認メールを送り直してください。"
+          actions={<ResendActions variant="outline" />}
         />
       );
     case "failed":
@@ -197,6 +187,24 @@ function PhaseResult({
         />
       );
   }
+}
+
+/**
+ * 再送フォームはメールアドレス欄を伴うので、横並びのボタン列ではなく
+ * 1 列に積む。サインイン導線は「再送はしない」利用者の逃げ道として
+ * 下に残す。
+ */
+function ResendActions({ variant }: { variant: "primary" | "outline" }) {
+  return (
+    <div className="w-full max-w-xs text-center">
+      <ResendVerificationForm email={null} variant={variant} />
+      <p className="mt-4 text-sm text-ink-secondary">
+        <Link to="/signin" className={footLinkClass}>
+          サインインへ
+        </Link>
+      </p>
+    </div>
+  );
 }
 
 function Result({

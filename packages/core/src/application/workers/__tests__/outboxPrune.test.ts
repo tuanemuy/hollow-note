@@ -3,6 +3,7 @@ import type { Clock } from "@repo/core/application/ports/clock";
 import type { OutboxRepository } from "@repo/core/application/ports/outboxRepository";
 import { describe, expect, it, vi } from "vitest";
 import { FakeLogger } from "../../__tests__/fakes";
+import { createTestHarness } from "../../__tests__/helpers";
 import { pruneOutbox } from "../outboxPrune";
 
 /**
@@ -38,9 +39,10 @@ function makeStubOutboxRepository({
 
 function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
   // The worker reaches for `clock`, `logger`, `outboxRepository`. The
-  // remaining shared deps are stubbed at minimal viable shape since
-  // they aren't observed by `pruneOutbox`.
+  // remaining deps come from the real memory runtime since they aren't
+  // observed by `pruneOutbox`; only the three above are stubbed.
   return {
+    ...createTestHarness().workerContainer,
     outboxRepository:
       overrides.outboxRepository ?? makeStubOutboxRepository({ deleted: 0 }),
     idempotencyStore: {
@@ -70,6 +72,9 @@ function makeContainer(overrides: Partial<WorkerContainer>): WorkerContainer {
         deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
       },
       oauth_flow_states: {
+        deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
+      },
+      identity_removal_receipts: {
         deleteExpired: async () => ({ deleted: 0, nextCursor: null }),
       },
     },

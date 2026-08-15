@@ -11,13 +11,23 @@ import type { IdentityId } from "../valueObject";
  */
 export const IdentityPolicy = {
   maxIdentitiesPerUser: 8,
+  minIdentitiesPerUser: 1,
+
+  /**
+   * Whether removal is open at all — a property of the *set*, not of a
+   * row: with a single method every row is locked. The screen asks this
+   * instead of counting, so what it offers and what `ensureRemovable`
+   * admits cannot drift apart.
+   */
+  isRemovable: (identities: readonly Identity[]): boolean =>
+    identities.length > IdentityPolicy.minIdentitiesPerUser,
 
   ensureRemovable: (
     identities: readonly Identity[],
     targetId: IdentityId,
   ): void => {
     const remaining = identities.filter((identity) => identity.id !== targetId);
-    if (remaining.length === 0) {
+    if (remaining.length < IdentityPolicy.minIdentitiesPerUser) {
       throw new BusinessRuleError(
         IdentityErrorCode.LastIdentityCannotBeRemoved,
         "The last identity cannot be removed",

@@ -19,8 +19,13 @@ import appCss from "../styles/index.css?url";
 import "@/components/auth/SignUpForm/action";
 import "@/components/auth/SignInForm/action";
 import "@/components/auth/VerifyEmailPanel/action";
+import "@/components/auth/ResendVerificationForm/action";
+import "@/components/auth/ResetPasswordPanel/action";
 import "@/components/layout/AccountMenu/action";
 import "@/components/note/CreateNoteButton/action";
+import "@/routes/auth/-action";
+import "@/routes/dev/-action";
+import "@/routes/settings/-action";
 
 export const loadAppContext = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])

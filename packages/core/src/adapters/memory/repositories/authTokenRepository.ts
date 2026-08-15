@@ -1,6 +1,9 @@
 import { ConflictError } from "../../../application/errors";
 import type { PrunePage } from "../../../domain/common/pagination";
-import type { AuthToken } from "../../../domain/identity/authToken";
+import type {
+  AuthToken,
+  PendingAuthToken,
+} from "../../../domain/identity/authToken";
 import type { AuthTokenRepository } from "../../../domain/identity/ports/authTokenRepository";
 import type {
   AuthTokenPurpose,
@@ -35,6 +38,21 @@ export function createMemoryAuthTokenRepository(
         .values()
         .find(
           (token) => token.userId === userId && token.tokenHash === tokenHash,
+        );
+      return found === undefined ? null : clone(found);
+    },
+
+    async findPendingByUserAndPurpose(
+      userId: UserId,
+      purpose: AuthTokenPurpose,
+    ): Promise<PendingAuthToken | null> {
+      const found = table
+        .values()
+        .find(
+          (token): token is PendingAuthToken =>
+            token.userId === userId &&
+            token.purpose === purpose &&
+            token.status === "pending",
         );
       return found === undefined ? null : clone(found);
     },

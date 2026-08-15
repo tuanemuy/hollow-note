@@ -10,6 +10,11 @@ export type PersonalCleanupComponent =
   | "localProjection"
   | "outbox";
 
+export type PersonalCleanupProgress = Readonly<{
+  status: "running" | "completed";
+  acknowledged: readonly PersonalCleanupComponent[];
+}>;
+
 /**
  * Write-admission barrier bound to the **current scope**.
  *
@@ -32,12 +37,25 @@ export type PersonalCleanupComponent =
  * remote state — a different id, a missing receipt, or an uncommitted
  * one is rejected.
  *
- * `markCompleted` is only legal after every local task / event consumer
- * ack; until then the receipt has no expiry and must not be pruned.
- * Completion stores (in the same UoW) a prune task for `retainUntil`
- * (120 days), after which `pruneCompleted` reclaims at most `limit`
- * receipts per pass; late duplicate deliveries inside the retention
- * window no-op safely.
+ * `markCompleted` is only legal once every component the deployment
+ * declares has acknowledged. The required set is **not** the whole enum:
+ * it is supplied to the implementation by the composition root from the
+ * participant registry (`application/cleanup/participants.ts`), so a
+ * component nothing cleans up is never acknowledged on its behalf.
+ * Until completion the receipt has no expiry and must not be pruned.
+ * The **caller** stores the prune task for `retainUntil` (120 days) in
+ * the same unit of work as `markCompleted` (a single-table store must
+ * not write another port's table), after which
+ * `pruneCompleted` reclaims at most `limit` receipts per pass.
+ *
+ * Late duplicate deliveries inside the retention window no-op safely:
+ * `markCompleted` is idempotent for the owner it already completed, and
+ * `acknowledgePersonalComponent` succeeds without effect once the
+ * receipt is completed. `describePersonalCleanup` is what makes a
+ * re-driven continuation cheap to settle — it says whether the barrier
+ * is still running and which components have acknowledged, so a replay
+ * processes only what is left, or, when it is already completed, only
+ * re-acknowledges the global receipt.
  *
  * Error contract: `ConflictError` (barrier violations, foreign
  * operation), `SystemError(DatabaseError)`.
@@ -51,6 +69,10 @@ export interface ScopeCleanupAdmissionStore {
   ): Promise<void>;
   abortPersonalAccountDeletion(operationId: string): Promise<void>;
   assertOwner(operationId: string): Promise<void>;
+  /** `null` when no receipt exists or another operation owns the scope. */
+  describePersonalCleanup(
+    operationId: string,
+  ): Promise<PersonalCleanupProgress | null>;
   acknowledgePersonalComponent(
     operationId: string,
     component: PersonalCleanupComponent,

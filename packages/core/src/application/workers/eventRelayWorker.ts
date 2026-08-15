@@ -5,10 +5,13 @@ import {
 } from "@repo/core/domain/common/event";
 import type { IdentityEvent } from "@repo/core/domain/identity/events";
 import type { NoteEvent } from "@repo/core/domain/note/events";
+import type { StorageEvent } from "@repo/core/domain/storage/events";
 import type { WorkerContainer } from "../di/types";
+import type { IdentityContinuationEvent } from "../identity/continuations";
 import { identityEventDecoders } from "../identity/eventDecoders";
 import { noteEventDecoders } from "../note/eventDecoders";
 import type { OutboxEntry, OutboxFailure } from "../ports/outboxRepository";
+import { storageEventDecoders } from "../storage/eventDecoders";
 
 // Delivery is at-least-once with NO ordering guarantee. Per-row failures
 // bump `attempts` and schedule a backed-off retry; once a row exceeds
@@ -42,9 +45,14 @@ export type EventDispatcher = (
   events: readonly DomainEvent[],
 ) => Promise<readonly EventDispatchOutcome[]>;
 
-// The closed union of every event the outbox may carry. Add a domain's
-// event union here before registering its decoders below.
-type AllDomainEvents = IdentityEvent | NoteEvent;
+// The closed union of every event the outbox may carry — domain events
+// plus the application-level continuation requests that ride the same
+// transport. Add a union here before registering its decoders below.
+export type AllDomainEvents =
+  | IdentityEvent
+  | IdentityContinuationEvent
+  | NoteEvent
+  | StorageEvent;
 
 export type DefaultEventDecoderRegistry = {
   readonly [K in AllDomainEvents["type"]]: EventDecoder<
@@ -61,6 +69,7 @@ export type EventDecoderRegistry = Partial<DefaultEventDecoderRegistry>;
 export const defaultEventDecoderRegistry = {
   ...identityEventDecoders,
   ...noteEventDecoders,
+  ...storageEventDecoders,
 } satisfies DefaultEventDecoderRegistry;
 
 export type ProcessOutboxEventsOptions = {

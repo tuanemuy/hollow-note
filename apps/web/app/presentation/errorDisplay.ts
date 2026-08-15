@@ -10,6 +10,14 @@ const NOTE_INACCESSIBLE_MESSAGE =
   "このノートは見つかりません。URL が変わったか、削除された可能性があります。";
 
 /**
+ * 認可の往復が途中で切れたときの文言。P-05 は `SerializedError` を伴わ
+ * ない失敗（プロバイダーが `code` / `state` を返さない）も同じ状態に畳む
+ * ので、辞書の外からも同じ文字列を読めるようにしてある。
+ */
+export const OAUTH_FLOW_INTERRUPTED_MESSAGE =
+  "認可の手続きが途中で切れました。もう一度やり直してください。";
+
+/**
  * UI に出るエラー文言の唯一の辞書（spec/design/index.md §9・§10）。
  *
  * `SerializedError` から読むのは `kind` と `code` だけ。原文 message・
@@ -46,11 +54,31 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "パスワードの条件を満たしていません。8 文字以上で、英字と数字の両方を含めてください。",
 
   IDENTITY_TOKEN_EXPIRED:
-    "この確認リンクは期限が切れています。もう一度サインアップすると、案内が届きます。",
+    "このリンクは期限が切れています。新しいリンクを送り直してください。",
   AUTH_TOKEN_NOT_FOUND:
-    "このリンクは使えません。メールのリンクをもう一度開いてください。",
+    "このリンクは使えません。メールのリンクをもう一度開くか、送り直してください。",
   AUTH_TOKEN_ALREADY_CONSUMED:
     "このリンクはすでに使われています。そのままサインインしてください。",
+
+  OAUTH_STATE_INVALID: OAUTH_FLOW_INTERRUPTED_MESSAGE,
+  OAUTH_CODE_INVALID:
+    "認可の手続きを完了できませんでした。もう一度やり直してください。",
+  OAUTH_EMAIL_UNVERIFIED:
+    "メールアドレスが確認されていないため、この方法ではサインインできません。プロバイダー側でメールアドレスを確認してからお試しください。",
+  EXISTING_ACCOUNT_UNVERIFIED:
+    "このメールアドレスは登録済みですが、確認が済んでいません。確認メールのリンクを開いてからお試しください。",
+  ACCOUNT_UNAVAILABLE:
+    "このアカウントは使用できません。削除の処理が完了するまでサインインできません。",
+  PROVIDER_ACCOUNT_ALREADY_LINKED:
+    "この外部アカウントは別の利用者に紐づいています。別のアカウントでお試しください。",
+  PROVIDER_ACCOUNT_RELEASE_PENDING:
+    "この外部アカウントの解除処理が進行中です。少し待ってからもう一度お試しください。",
+  IDENTITY_LIMIT_EXCEEDED:
+    "登録できるログイン方法は 8 件までです。使っていない方法を解除してからお試しください。",
+  INVALID_REDIRECT:
+    "遷移先が正しくありません。もう一度最初からお試しください。",
+  USER_REQUIRED:
+    "サインインが必要です。サインインしてからもう一度お試しください。",
 
   NOTE_NOT_FOUND: NOTE_INACCESSIBLE_MESSAGE,
   NOTE_GONE: "このノートは削除されています。ノート一覧からお探しください。",
@@ -60,7 +88,49 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   NOTE_CONTENT_TOO_LARGE:
     "内容が上限を超えています。分割してからもう一度お試しください。",
 
+  IDENTITY_PASSWORD_IDENTITY_ALREADY_EXISTS:
+    "この方法はすでに登録されています。パスワードを変えたいときは「パスワードを変更」をお使いください。",
+  IDENTITY_LAST_IDENTITY_CANNOT_BE_REMOVED:
+    "最後のログイン方法は解除できません。別の方法を追加してから解除してください。",
+  IDENTITY_NOT_FOUND:
+    "このログイン方法は見つかりません。画面を再読み込みしてもう一度お試しください。",
+  PASSWORD_IDENTITY_NOT_FOUND:
+    "パスワードが登録されていません。先にパスワードを追加してください。",
+  USER_NOT_FOUND:
+    "アカウントが見つかりません。サインインし直してからお試しください。",
+
+  HANDLE_ALREADY_USED:
+    "このハンドルは使われています。別のハンドルでお試しください。",
+  IDENTITY_INVALID_HANDLE:
+    "ハンドルは英小文字・数字・ハイフン・アンダースコアの 3〜30 文字です。入力内容を確認してもう一度お試しください。",
+  IDENTITY_HANDLE_RESERVED:
+    "このハンドルは予約されていて使えません。別のハンドルでお試しください。",
+  IDENTITY_INVALID_BIO:
+    "自己紹介は 500 文字までです。短くしてからもう一度お試しください。",
+  IDENTITY_INVALID_AVATAR_URL:
+    "このアイコンの場所は保存できません。画像を選び直してからお試しください。",
+
+  STORAGE_UNSUPPORTED_MIME_TYPE:
+    "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
+  STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
+  WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
+
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
+
+  CONFIRMATION_MISMATCH:
+    "メールアドレスが一致しません。アカウントのメールアドレスをそのまま入力してください。",
+  INVALID_REQUEST_ID:
+    "削除の要求を組み立てられませんでした。画面を再読み込みしてもう一度お試しください。",
+  IDENTITY_ACCOUNT_DELETION_RETRY_LIMIT_EXCEEDED:
+    "削除のやり直しが続いたため、しばらく受け付けられません。時間をおいてからお試しください。",
+  ACCOUNT_DELETION_OPERATION_MISMATCH:
+    "別の削除処理が進行中です。画面を再読み込みして進捗をご確認ください。",
+  DELETION_OPERATION_NOT_FOUND:
+    "この削除処理は見つかりません。サインインし直して状態をご確認ください。",
+  DELETION_TICKET_INVALID:
+    "進捗を確認できませんでした。削除の処理はこのまま進みます。",
+  DELETION_TICKET_EXPIRED:
+    "進捗を確認できる期間を過ぎました。削除の処理はこのまま進みます。",
 };
 
 const MESSAGE_BY_KIND: Readonly<Record<SerializedErrorKind, string>> = {

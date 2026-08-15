@@ -5,14 +5,14 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 
 /**
- * P-11 の本文描画。本文 HTML は Shadow DOM に隔離する（ADR 007 /
+ * P-11 の本文描画。本文 HTML は Shadow DOM に隔離する（spec/adr/007 /
  * spec/presentation/index.md#Declarative-Shadow-DOM-に関する注意）。
  *
  * マークアップは `<template shadowrootmode="open">` で出す — サーバー
  * 描画の HTML をブラウザーがパースする経路では宣言的に shadow root に
  * なる。一方 RSC ストリーミング後のクライアント描画（Flight payload →
  * DOM API）は宣言的 Shadow DOM を解釈しないため、effect が残った
- * template を `attachShadow` に昇格させる（ADR 032）。
+ * template を `attachShadow` に昇格させる（spec/adr/032）。
  *
  * ホストは絶対配置の包含ブロック（relative）にする — 本文の
  * `position: absolute` の基準を本文の内側に閉じるのは描画側の責務。

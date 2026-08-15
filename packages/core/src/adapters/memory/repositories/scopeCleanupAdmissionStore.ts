@@ -1,6 +1,7 @@
 import { ConflictError } from "../../../application/errors";
 import type {
   PersonalCleanupComponent,
+  PersonalCleanupProgress,
   ScopeCleanupAdmissionStore,
 } from "../../../application/ports/scopeCleanupAdmissionStore";
 import type { UserId } from "../../../domain/identity/valueObject";
@@ -19,6 +20,15 @@ const ALL_COMPONENTS: readonly PersonalCleanupComponent[] = [
   "outbox",
 ];
 
+export type MemoryScopeCleanupAdmissionOptions = Readonly<{
+  /**
+   * Components that must acknowledge before completion. Defaults to the
+   * whole enum — the strictest reading — so a deployment that forgets to
+   * declare its participants stalls instead of completing early.
+   */
+  requiredComponents?: readonly PersonalCleanupComponent[];
+}>;
+
 const foreignOperation = (operationId: string): ConflictError =>
   new ConflictError(
     "CLEANUP_OPERATION_MISMATCH",
@@ -27,8 +37,10 @@ const foreignOperation = (operationId: string): ConflictError =>
 
 export function createMemoryScopeCleanupAdmissionStore(
   scope: ScopeStore,
+  options: MemoryScopeCleanupAdmissionOptions = {},
 ): ScopeCleanupAdmissionStore {
   const table = scope.cleanupReceipts;
+  const requiredComponents = options.requiredComponents ?? ALL_COMPONENTS;
 
   const receipt = (): CleanupReceiptRow | undefined => table.get(RECEIPT_KEY);
 
@@ -101,10 +113,29 @@ export function createMemoryScopeCleanupAdmissionStore(
       requireOwner(operationId);
     },
 
+    async describePersonalCleanup(
+      operationId: string,
+    ): Promise<PersonalCleanupProgress | null> {
+      const row = receipt();
+      if (row === undefined || row.operationId !== operationId) {
+        return null;
+      }
+      return { status: row.status, acknowledged: [...row.acknowledged] };
+    },
+
     async acknowledgePersonalComponent(
       operationId: string,
       component: PersonalCleanupComponent,
     ): Promise<void> {
+      const completed = receipt();
+      if (
+        completed !== undefined &&
+        completed.operationId === operationId &&
+        completed.status === "completed"
+      ) {
+        // A delayed duplicate inside the retention window.
+        return;
+      }
       const row = requireOwner(operationId);
       if (row.acknowledged.includes(component)) {
         return;
@@ -125,7 +156,7 @@ export function createMemoryScopeCleanupAdmissionStore(
         return;
       }
       const running = requireOwner(operationId);
-      const missing = ALL_COMPONENTS.filter(
+      const missing = requiredComponents.filter(
         (component) => !running.acknowledged.includes(component),
       );
       if (missing.length > 0) {

@@ -1,3 +1,4 @@
+import { mintEventIdFor } from "../../application/execution/eventId";
 import type {
   ScopeUnitOfWorkContext,
   ScopeUnitOfWorkProvider,
@@ -6,11 +7,19 @@ import type { ScopeKey } from "../../application/scope";
 import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import type { MemoryUnitOfWorkOptions } from "./globalUnitOfWork";
-import { createMemoryNoteProjectionRevisionStore } from "./repositories/noteProjection";
+import { createMemoryAppliedOperationStore } from "./repositories/appliedOperationStore";
+import { createMemoryLlmUsageRepository } from "./repositories/llmUsageRepository";
+import {
+  createMemoryLocalNoteProjectionWriter,
+  createMemoryNoteProjectionRevisionStore,
+} from "./repositories/noteProjection";
 import { createMemoryNoteRepository } from "./repositories/noteRepository";
 import { createMemoryNoteRevisionRepository } from "./repositories/noteRevisionRepository";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
 import { createMemoryScopeCleanupAdmissionStore } from "./repositories/scopeCleanupAdmissionStore";
+import { createMemoryScopeTaskScheduler } from "./repositories/scopeTaskScheduler";
+import { createMemoryStorageQuotaRepository } from "./repositories/storageQuotaRepository";
+import { createMemoryStoredFileRepository } from "./repositories/storedFileRepository";
 import type { MemoryBackend } from "./store";
 
 /**
@@ -33,18 +42,42 @@ export function createMemoryScopeUnitOfWorkProvider(
     ): Promise<T> {
       const scopeStore = backend.scope(scope);
       let dispatched = false;
+      let scheduled = false;
+      const scopeTaskScheduler = createMemoryScopeTaskScheduler(scopeStore);
       const result = await backend.transactions.run(async () => {
         const buffered: DomainEvent[] = [];
         const ctx: ScopeUnitOfWorkContext = {
           noteRepository: createMemoryNoteRepository(scopeStore),
           noteRevisionRepository:
             createMemoryNoteRevisionRepository(scopeStore),
-          cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore),
+          cleanupAdmission: createMemoryScopeCleanupAdmissionStore(scopeStore, {
+            ...(options.requiredCleanupComponents !== undefined
+              ? { requiredComponents: options.requiredCleanupComponents }
+              : {}),
+          }),
           noteProjectionRevisionStore:
             createMemoryNoteProjectionRevisionStore(scopeStore),
+          localNoteProjectionWriter:
+            createMemoryLocalNoteProjectionWriter(scopeStore),
+          scopeTaskScheduler: {
+            ...scopeTaskScheduler,
+            // Observed rather than kicked from inside: the trigger must
+            // only fire once the row is actually committed.
+            async schedule(input) {
+              await scopeTaskScheduler.schedule(input);
+              scheduled = true;
+            },
+          },
+          appliedOperationStore: createMemoryAppliedOperationStore(scopeStore),
+          storageQuotaRepository:
+            createMemoryStorageQuotaRepository(scopeStore),
+          llmUsageRepository: createMemoryLlmUsageRepository(scopeStore),
+          storedFileRepository: createMemoryStoredFileRepository(scopeStore),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
-              ...attachEventIds(drafts, () => backend.mintEventId()),
+              ...attachEventIds(drafts, (draft) =>
+                mintEventIdFor(draft, () => backend.mintEventId()),
+              ),
             );
           },
         };
@@ -57,6 +90,9 @@ export function createMemoryScopeUnitOfWorkProvider(
       });
       if (dispatched) {
         options.relayTrigger?.kick();
+      }
+      if (scheduled) {
+        options.scopeTaskTrigger?.kick();
       }
       return result;
     },

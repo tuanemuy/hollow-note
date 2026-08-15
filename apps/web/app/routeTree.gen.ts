@@ -11,12 +11,22 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
+import { Route as SettingsRouteRouteImport } from './routes/settings/route'
 import { Route as SigninRouteImport } from './routes/signin'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
+import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
+import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
+import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
+import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
+import { Route as StorageSplatRouteImport } from './routes/storage.$'
+import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
+import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -26,6 +36,16 @@ const IndexRoute = IndexRouteImport.update({
 const PrivacyRoute = PrivacyRouteImport.update({
   id: '/privacy',
   path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRouteRoute = SettingsRouteRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SigninRoute = SigninRouteImport.update({
@@ -58,80 +78,183 @@ const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
   path: '/notes/$noteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const SettingsAuthRoute = SettingsAuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const SettingsDangerRoute = SettingsDangerRouteImport.update({
+  id: '/danger',
+  path: '/danger',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const SettingsProfileRoute = SettingsProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const SettingsUsageRoute = SettingsUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
+  getParentRoute: () => SettingsRouteRoute,
+} as any)
+const StorageSplatRoute = StorageSplatRouteImport.update({
+  id: '/storage/$',
+  path: '/storage/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthCallbackProviderRoute = AuthCallbackProviderRouteImport.update({
+  id: '/auth/callback/$provider',
+  path: '/auth/callback/$provider',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DevOauthAuthorizeRoute = DevOauthAuthorizeRouteImport.update({
+  id: '/dev/oauth/authorize',
+  path: '/dev/oauth/authorize',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes': typeof NotesIndexRoute
+  '/settings': typeof SettingsIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/settings': typeof SettingsRouteRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signin': typeof SigninRoute
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/settings/auth': typeof SettingsAuthRoute
+  '/settings/danger': typeof SettingsDangerRoute
+  '/settings/profile': typeof SettingsProfileRoute
+  '/settings/usage': typeof SettingsUsageRoute
+  '/storage/$': typeof StorageSplatRoute
   '/notes/': typeof NotesIndexRoute
+  '/settings/': typeof SettingsIndexRoute
+  '/auth/callback/$provider': typeof AuthCallbackProviderRoute
+  '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/settings'
     | '/privacy'
+    | '/reset-password'
     | '/signin'
     | '/signup'
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
+    | '/settings/danger'
+    | '/settings/profile'
+    | '/settings/usage'
+    | '/storage/$'
     | '/notes/'
+    | '/settings/'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/privacy'
+    | '/reset-password'
     | '/signin'
     | '/signup'
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
+    | '/settings/danger'
+    | '/settings/profile'
+    | '/settings/usage'
+    | '/storage/$'
     | '/notes'
+    | '/settings'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   id:
     | '__root__'
     | '/'
+    | '/settings'
     | '/privacy'
+    | '/reset-password'
     | '/signin'
     | '/signup'
     | '/terms'
     | '/verify-email'
     | '/notes/$noteId'
+    | '/settings/auth'
+    | '/settings/danger'
+    | '/settings/profile'
+    | '/settings/usage'
+    | '/storage/$'
     | '/notes/'
+    | '/settings/'
+    | '/auth/callback/$provider'
+    | '/dev/oauth/authorize'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SettingsRouteRoute: typeof SettingsRouteRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   SigninRoute: typeof SigninRoute
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   VerifyEmailRoute: typeof VerifyEmailRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
+  StorageSplatRoute: typeof StorageSplatRoute
   NotesIndexRoute: typeof NotesIndexRoute
+  AuthCallbackProviderRoute: typeof AuthCallbackProviderRoute
+  DevOauthAuthorizeRoute: typeof DevOauthAuthorizeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -148,6 +271,20 @@ declare module '@tanstack/react-router' {
       path: '/privacy'
       fullPath: '/privacy'
       preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signin': {
@@ -192,18 +329,99 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesNoteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/settings/auth': {
+      id: '/settings/auth'
+      path: '/auth'
+      fullPath: '/settings/auth'
+      preLoaderRoute: typeof SettingsAuthRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/settings/danger': {
+      id: '/settings/danger'
+      path: '/danger'
+      fullPath: '/settings/danger'
+      preLoaderRoute: typeof SettingsDangerRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/settings/profile': {
+      id: '/settings/profile'
+      path: '/profile'
+      fullPath: '/settings/profile'
+      preLoaderRoute: typeof SettingsProfileRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/settings/usage': {
+      id: '/settings/usage'
+      path: '/usage'
+      fullPath: '/settings/usage'
+      preLoaderRoute: typeof SettingsUsageRouteImport
+      parentRoute: typeof SettingsRouteRoute
+    }
+    '/storage/$': {
+      id: '/storage/$'
+      path: '/storage/$'
+      fullPath: '/storage/$'
+      preLoaderRoute: typeof StorageSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/callback/$provider': {
+      id: '/auth/callback/$provider'
+      path: '/auth/callback/$provider'
+      fullPath: '/auth/callback/$provider'
+      preLoaderRoute: typeof AuthCallbackProviderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dev/oauth/authorize': {
+      id: '/dev/oauth/authorize'
+      path: '/dev/oauth/authorize'
+      fullPath: '/dev/oauth/authorize'
+      preLoaderRoute: typeof DevOauthAuthorizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
+interface SettingsRouteRouteChildren {
+  SettingsAuthRoute: typeof SettingsAuthRoute
+  SettingsDangerRoute: typeof SettingsDangerRoute
+  SettingsProfileRoute: typeof SettingsProfileRoute
+  SettingsUsageRoute: typeof SettingsUsageRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
+}
+
+const SettingsRouteRouteChildren: SettingsRouteRouteChildren = {
+  SettingsAuthRoute: SettingsAuthRoute,
+  SettingsDangerRoute: SettingsDangerRoute,
+  SettingsProfileRoute: SettingsProfileRoute,
+  SettingsUsageRoute: SettingsUsageRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+}
+
+const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
+  SettingsRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SettingsRouteRoute: SettingsRouteRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   SigninRoute: SigninRoute,
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   VerifyEmailRoute: VerifyEmailRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
+  StorageSplatRoute: StorageSplatRoute,
   NotesIndexRoute: NotesIndexRoute,
+  AuthCallbackProviderRoute: AuthCallbackProviderRoute,
+  DevOauthAuthorizeRoute: DevOauthAuthorizeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

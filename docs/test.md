@@ -1,6 +1,6 @@
 # Testing
 
-Tests are classified along two axes: **layer × purpose**. The whole suite currently runs at unit speed against the in-memory reference adapters (`packages/core/src/adapters/memory/`) — a regular adapter backend, not a test fake (ADR-002 of Issue #1). The shared port-conformance suites double as the "integration" layer until a real backend (D1 / Durable Objects, Issue #11) arrives and imports the same suites under its own integration config.
+Tests are classified along two axes: **layer × purpose**. The whole suite currently runs at unit speed against the in-memory reference adapters (`packages/core/src/adapters/memory/`) — a regular adapter backend, not a test fake. The shared port-conformance suites double as the "integration" layer until a real backend (D1 / Durable Objects, Issue #11) arrives and imports the same suites under its own integration config.
 
 ## Test layer classification
 
@@ -32,9 +32,13 @@ Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 - Concurrency tests fire the usecase twice with `Promise.all` and assert one winner (the UoW mutex + conditional updates make the outcome deterministic in-process).
 - Seed unusual persisted states (deleted users, stale epochs, expired rows) by writing rows directly to `harness.backend` tables via the domain `reconstruct` factories.
 
+## Determinism
+
+- `vitest.config.ts` pins `TZ=Asia/Tokyo` for the whole run. A UTC runner (which CI is) would make UTC-only assertions — `BillingPeriod`'s UTC calendar month — pass against a local-time implementation too, so the suite runs in a non-UTC zone to keep them discriminating. Everything else must stay TZ-independent.
+
 ## Timeout / flakiness
 
-- The configs use Vitest's default timeouts; everything runs in-process with a controlled clock, so flakiness should be treated as a bug, not retried around.
+- `testTimeout` is raised to 10s for the scrypt(N=16384) password cases — the slowest tests in the suite (~300ms against single-digit ms elsewhere), which have overrun the 5s default under parallel load. Everything else uses Vitest's defaults and runs in-process with a controlled clock, so flakiness should be treated as a bug, not retried around.
 
 ## Commands
 

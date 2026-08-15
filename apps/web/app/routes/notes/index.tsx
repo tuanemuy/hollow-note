@@ -37,7 +37,7 @@ function NotesPage() {
   const { NoteList } = Route.useLoaderData();
   const { user } = Route.useRouteContext();
   return (
-    <AppShell displayName={user.displayName}>
+    <AppShell displayName={user.displayName} avatarUrl={user.avatarUrl}>
       <Suspense fallback={<NoteListSkeleton />}>
         <Deferred promise={NoteList} />
       </Suspense>

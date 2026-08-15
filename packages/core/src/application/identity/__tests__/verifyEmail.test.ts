@@ -10,8 +10,6 @@ import { overwriteUser, signUpPending } from "./authFlowHelpers";
 
 const HOUR_MS = 60 * 60 * 1000;
 
-// verifyEmail is walking-skeleton glue for AC-01, so coverage focuses on the
-// end-to-end-critical paths of spec/testcases/identity/verifyEmail.md.
 describe("verifyEmail", () => {
   it("TC-identity-294: activates the user, consumes the token, and issues a usable session", async () => {
     const h = createTestHarness();
@@ -64,6 +62,9 @@ describe("verifyEmail", () => {
     );
     expect(h.backend.users.get(userId)?.status).toBe("pending");
     expect(h.backend.sessions.size).toBe(0);
+    expect(h.backend.authTokens.values().map((token) => token.status)).toEqual([
+      "pending",
+    ]);
   });
 
   it("TC-identity-297: returns alreadyVerified without a session for a consumed token", async () => {
@@ -85,6 +86,9 @@ describe("verifyEmail", () => {
       alreadyVerified: true,
     });
     expect(h.backend.sessions.size).toBe(sessionsAfterFirst);
+    expect(
+      h.backend.authTokens.values().filter((t) => t.status === "consumed"),
+    ).toHaveLength(1);
   });
 
   it("TC-identity-298: rejects an unknown token", async () => {
@@ -101,7 +105,7 @@ describe("verifyEmail", () => {
 
   it("TC-identity-299: rejects a token whose purpose is password_reset", async () => {
     const h = createTestHarness();
-    const { verificationToken } = await signUpPending(h);
+    const { userId, verificationToken } = await signUpPending(h);
     const stored = h.backend.authTokens.values()[0];
     if (stored === undefined) {
       throw new Error("missing token row");
@@ -119,6 +123,8 @@ describe("verifyEmail", () => {
       (error) =>
         isNotFoundError(error) && error.code === "AUTH_TOKEN_NOT_FOUND",
     );
+    expect(h.backend.sessions.size).toBe(0);
+    expect(h.backend.users.get(userId)?.status).toBe("pending");
   });
 
   it("TC-identity-300: rejects when the user has been deleted", async () => {
@@ -163,6 +169,9 @@ describe("verifyEmail", () => {
         isNotFoundError(error) && error.code === "AUTH_TOKEN_NOT_FOUND",
     );
     expect(h.backend.sessions.size).toBe(0);
+    // The stale row is not deleted here: rejection has to hold even while
+    // it is still physically present.
+    expect(h.backend.authTokens.size).toBe(1);
   });
 
   it("TC-identity-302 / TC-identity-303 / TC-identity-304: resolves a concurrent double-consume to one winner and one alreadyVerified", async () => {

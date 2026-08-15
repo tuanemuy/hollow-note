@@ -18,13 +18,16 @@ import {
   inputInvalidClass,
   submitButtonClass,
 } from "../formStyles";
+import { OAuthButton } from "../OAuthButton";
+import { ResendVerificationForm } from "../ResendVerificationForm";
 import { signInFn } from "./action";
 
 /**
  * P-02 サインイン（spec/pages/index.md#P-02、モック P02-signin.html）。
  * 状態: 入力 / 認証失敗（共通文言）/ 未確認 / 待機中（THROTTLED、残秒を
- * 数えて再開）/ ロック中（LOCKED、解除時刻 + 再設定の文言のみ — P-04 は
- * 本スライス外）/ 送信中。Google・再送・再設定導線は出さない。
+ * 数えて再開）/ ロック中（LOCKED、解除時刻 + P-04 への導線）/ 送信中。
+ * 未確認からは確認メールを再送でき（PAGE-p02-006）、パスワード欄の脇と
+ * ロック中のアラートから P-04 へ移動できる（PAGE-p02-004）。
  *
  * 失敗後の画面は単一の `Phase` 直和で持ち、THROTTLED の残り時間は
  * deadline からの導出にする。サーバー側の判定が正で、この時間はあくまで
@@ -94,6 +97,11 @@ function classify(error: SerializedError): Phase {
 function remainingSeconds(deadline: Date, now: number): number {
   return Math.max(0, Math.ceil((deadline.getTime() - now) / 1000));
 }
+
+// アラート内の次の一手。`ResendVerificationForm` の compact 変種と同じ
+// 寸法にして、未確認とロック中でボタン列の見え方を揃える。
+const alertActionClass =
+  "inline-flex h-8 items-center justify-center gap-2 rounded-pill border border-hairline-strong bg-bg px-3 text-xs font-medium text-ink transition-colors hover:bg-surface";
 
 const unlockTimeFormat = new Intl.DateTimeFormat("ja-JP", {
   month: "long",
@@ -181,7 +189,7 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
           with its text is not announced. Swapping the content of a region
           that was already there is what makes it speak. */}
       <div ref={alertRef} tabIndex={-1} role="status" aria-live="polite">
-        <PhaseAlert phase={phase} now={now} waiting={waiting} />
+        <PhaseAlert phase={phase} now={now} waiting={waiting} email={email} />
       </div>
 
       <form action={formAction} noValidate>
@@ -210,9 +218,17 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
           </p>
         </div>
         <div className="mb-4">
-          <label className={fieldLabelClass} htmlFor={passwordId}>
-            パスワード
-          </label>
+          {/* `fieldLabelClass` の下マージンは行ごと持つので、ここでは
+              ラベル単体のクラスを書く（`mb-0` の重ね掛けは Tailwind の
+              出力順に依存して効かない）。 */}
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <label className="block text-sm font-medium" htmlFor={passwordId}>
+              パスワード
+            </label>
+            <Link to="/reset-password" className={`${footLinkClass} text-xs`}>
+              パスワードを忘れた
+            </Link>
+          </div>
           <input
             id={passwordId}
             type="password"
@@ -233,6 +249,8 @@ export function SignInForm({ redirectTo }: { redirectTo: string }) {
         </button>
       </form>
 
+      <OAuthButton provider="google" redirectTo={redirectTo} />
+
       <p className="mt-8 text-center text-sm text-ink-secondary">
         アカウントがまだですか？{" "}
         <Link to="/signup" className={footLinkClass}>
@@ -247,10 +265,12 @@ function PhaseAlert({
   phase,
   now,
   waiting,
+  email,
 }: {
   phase: Phase;
   now: number;
   waiting: boolean;
+  email: string;
 }) {
   // Every alert here renders with `role="note"` (no role attribute): the
   // caller already wraps them in one persistent `role="status"` region, and
@@ -300,6 +320,11 @@ function PhaseAlert({
           tone="error"
           title="サインインを一時的に停止しました"
           role="note"
+          actions={
+            <Link to="/reset-password" className={alertActionClass}>
+              パスワードを再設定
+            </Link>
+          }
         >
           {phase.unlockAt !== null
             ? `失敗が続いたため ${unlockTimeFormat.format(phase.unlockAt)} まで停止しています。`
@@ -323,8 +348,9 @@ function PhaseAlert({
           tone="warning"
           title="メールアドレスの確認が済んでいません"
           role="note"
+          actions={<ResendVerificationForm email={email} variant="compact" />}
         >
-          登録時に送った確認メールのリンクを開いてください。
+          登録時に送った確認メールのリンクを開いてください。届いていない場合は送り直せます。
         </Alert>
       );
     case "accountDeleting":

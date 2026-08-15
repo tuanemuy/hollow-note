@@ -235,4 +235,22 @@ describe("createBlankNote", () => {
       h.backend.noteRoutes.values().find((row) => row.noteId === abandonedId),
     ).toBeUndefined();
   });
+
+  it("TC-identity-045: a note created after the deletion barrier is refused", async () => {
+    const h = createTestHarness();
+    await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+      ctx.cleanupAdmission.beginPersonalAccountDeletion(
+        "deletion-1",
+        UserId.create(USER),
+      ),
+    );
+
+    await expect(create(h)).rejects.toSatisfy(
+      (error: unknown) =>
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ACCOUNT_DELETING",
+    );
+  });
 });

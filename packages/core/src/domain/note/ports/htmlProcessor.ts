@@ -17,7 +17,7 @@ export type ExternalReference = Readonly<{
  * from the body root (e.g. `"2.0.1"`), stable over `process` output.
  * `expected` is the string the node held before editing. Text nodes
  * inside `<style>` are never assigned a path — edits addressing them
- * fall out as `pathNotFound` (ADR 013 bypass prevention).
+ * fall out as `pathNotFound` (spec/adr/013 bypass prevention).
  */
 export type TextNodeEdit = Readonly<{
   path: string;
@@ -51,13 +51,13 @@ export type ProcessedHtml = Readonly<{
 }>;
 
 /**
- * Sanitizes raw HTML per ADR 013 (the single application point of the
+ * Sanitizes raw HTML per spec/adr/013 (the single application point of the
  * sanitize policy) and derives the persisted projections in one pass.
  * `extractExternalReferences` returns **all** attribute-based URL
  * references, including internal storage URLs — internal/external
  * splitting is the caller's job (`StorageUrlPolicy.isInternal`).
  * External stylesheet traces use the three `data-stylesheet-*` states
- * (ADR 014); only `data-stylesheet-href` is extraction-eligible.
+ * (spec/adr/014); only `data-stylesheet-href` is extraction-eligible.
  *
  * Port definition only in the walking-skeleton slice — the adapter ships
  * with the import slice.

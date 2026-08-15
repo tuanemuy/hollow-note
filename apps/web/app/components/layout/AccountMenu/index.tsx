@@ -1,16 +1,27 @@
 "use client";
 
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { SETTINGS_TABS } from "@/components/layout/SettingsTabs";
 import { displayError } from "@/presentation/errorDisplay";
 import { signOutFn } from "./action";
 
+/** 設定の入口はタブ列の先頭（P-21 プロフィール設定）。 */
+const SETTINGS_ENTRY_HREF = SETTINGS_TABS[0].href;
+
 /**
- * L-01 アカウントメニュー（最小形）。本スライスの項目はサインアウトのみ
- * — プロフィール・処理履歴・設定は対応画面が未実装のため並べない
+ * L-01 アカウントメニュー（最小形）。項目は設定とサインアウトのみ —
+ * プロフィール・処理履歴は対応画面が未実装のため並べない
  * （placeholder 禁止）。
  */
-export function AccountMenu({ displayName }: { displayName: string }) {
+export function AccountMenu({
+  displayName,
+  avatarUrl = null,
+}: {
+  displayName: string;
+  avatarUrl?: string | null;
+}) {
   const signOut = useServerFn(signOutFn);
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -54,8 +65,9 @@ export function AccountMenu({ displayName }: { displayName: string }) {
   return (
     <div ref={rootRef} className="relative">
       {/* Disclosure, not an ARIA menu: a menu role promises full
-          arrow-key/focus management, which a one-item popover doesn't
-          implement — `aria-expanded` alone keeps the contract honest. */}
+          arrow-key/focus management, which this popover does not implement
+          at any item count — `aria-expanded` alone keeps the contract
+          honest. */}
       <button
         type="button"
         aria-label="アカウントメニュー"
@@ -63,18 +75,35 @@ export function AccountMenu({ displayName }: { displayName: string }) {
         onClick={() => setOpen((value) => !value)}
         className="inline-flex size-8 items-center justify-center rounded-md text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
       >
-        <span
-          aria-hidden="true"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-linear-135 from-[#c9d3df] to-[#8e99a8] text-[10px] font-medium text-bg"
-        >
-          {initials}
-        </span>
+        {avatarUrl === null ? (
+          <span
+            aria-hidden="true"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-linear-135 from-[#c9d3df] to-[#8e99a8] text-[10px] font-medium text-bg"
+          >
+            {initials}
+          </span>
+        ) : (
+          <img
+            src={avatarUrl}
+            alt=""
+            width={28}
+            height={28}
+            className="size-7 shrink-0 rounded-full object-cover"
+          />
+        )}
       </button>
       {open ? (
         <div className="absolute top-full right-0 z-50 mt-2 min-w-44 rounded-lg border border-hairline bg-bg py-2 shadow-sm">
           <div className="truncate px-4 py-1.5 text-xs text-ink-tertiary">
             {displayName}
           </div>
+          <Link
+            to={SETTINGS_ENTRY_HREF}
+            onClick={() => setOpen(false)}
+            className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
+          >
+            設定
+          </Link>
           <button
             type="button"
             disabled={isPending}
