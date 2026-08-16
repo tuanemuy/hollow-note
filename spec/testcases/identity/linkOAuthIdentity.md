@@ -11,3 +11,4 @@
 | Password/OAuth合計8件のIdentityがある | 9件目をリンクする | `BusinessRuleError(IdentityLimitExceeded)`。provider reservationをreleaseし、Identityを追加しない | |
 | 7件の状態から2件を同時にリンクする | 両callbackを処理する | UserId shard UoW/DB triggerにより一方だけ成功し、合計8件を超えない | |
 | 同じ Google アカウントが既に自分に紐づいている | 認可コードを交換する | 既存として扱われ、重複した `Identity` は作られない | |
+| directory の claim は残っているが対応する identity が居ない | 解除した直後の同じプロバイダーアカウントをリンクする | `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` が投げられ、`Identity` は追加されない（他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` とは別のコード — [ADR 038](../../adr/038-provider-account-claim-and-identity-row.md)） | |

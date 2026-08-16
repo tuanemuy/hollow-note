@@ -6,7 +6,7 @@ import { expectConflict } from "./asserts";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 import { makeAuthToken, userId } from "./fixtures";
 
-/** Shared conformance suite for `AuthTokenRepository` (ADP-identity-021..026). */
+/** Shared conformance suite for `AuthTokenRepository` (ADP-identity-021..026, ADP-identity-039). */
 export function describeAuthTokenRepositoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,
@@ -78,7 +78,7 @@ export function describeAuthTokenRepositoryContract(
       expect(conflicts).toHaveLength(1);
     });
 
-    it("findPendingByUserAndPurpose yields the single live row of the pair", async () => {
+    it("ADP-identity-039: findPendingByUserAndPurpose yields the single live row of the pair", async () => {
       const now = backend.clock.now();
       const consumedSource = makeAuthToken(
         1,

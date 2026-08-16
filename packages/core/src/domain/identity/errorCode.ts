@@ -1,8 +1,3 @@
-// `IdentityLimitExceeded` is missing from the enum in
-// spec/domains/identity.md while `IdentityPolicy.ensureAddable` requires
-// it — treated as a spec omission. `InvalidAvatarUrl` is the same kind of
-// omission: `updateProfile` specs the field as "同一オリジンの URL" but
-// the enum has no code for a violation.
 export const IdentityErrorCode = {
   InvalidId: "IDENTITY_INVALID_ID",
   InvalidEmail: "IDENTITY_INVALID_EMAIL",

@@ -13,12 +13,6 @@ import {
   signUpVerified,
 } from "./authFlowHelpers";
 
-/**
- * The settings form's seed read. It has no spec TC of its own, so what
- * is pinned is the projection and the status gate it shares with
- * every other authenticated read.
- */
-
 const read = (h: TestHarness, userId: string) =>
   getProfile({ container: h.container, input: { userId } });
 

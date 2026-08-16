@@ -493,7 +493,7 @@ describe("updateProfile", () => {
 });
 
 describe("updateProfile avatar URL", () => {
-  it("accepts the app-relative path the object storage hands out", async () => {
+  it("TC-identity-332: accepts the app-relative path the object storage hands out", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
 
@@ -505,7 +505,7 @@ describe("updateProfile avatar URL", () => {
     expect(view.avatarUrl).toBe("/storage/users/u/avatar/f.png");
   });
 
-  it("refuses a cross-origin URL and a protocol-relative one", async () => {
+  it("TC-identity-333 / TC-identity-334: refuses a cross-origin URL and a protocol-relative one", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
 
@@ -519,7 +519,7 @@ describe("updateProfile avatar URL", () => {
     );
   });
 
-  it("clears the icon when null is passed", async () => {
+  it("TC-identity-335: clears the icon when null is passed", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
     await update(h, { userId, avatarUrl: "/storage/a.png" });

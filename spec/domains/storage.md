@@ -44,7 +44,7 @@
 ### Checksum
 
 - **フィールド**: `algorithm: "sha256"`, `value: string`
-- **バリデーション**: `value` は 64 文字の 16 進数
+- **バリデーション**: `value` は 64 文字の 16 進数。違反時 `BusinessRuleError(InvalidChecksum)`
 
 ### FilePurpose
 
@@ -180,7 +180,7 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `limitFor` | `purpose: FilePurpose, mimeType: MimeType` | `ByteSize` | 下表の上限を引く |
-| `ensureAcceptable` | `params: { purpose: FilePurpose; mimeType: MimeType; size: ByteSize }` | `void` | 用途ごとの許可 MIME に反すれば `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)` |
+| `ensureAcceptable` | `params: { purpose: FilePurpose; body: Uint8Array }` | `AcceptedUpload = { mimeType: MimeType; size: ByteSize }` | MIME は申告値ではなく**先頭バイトの署名**（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る。どの許可形式にも一致しなければ `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)`。判定結果を返すので、呼び出し側は申告値を保管できない（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)） |
 
 | 用途 | 許可する MIME | 上限 |
 | --- | --- | --- |
@@ -189,6 +189,8 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | `reference` | 任意（取得できたもの） | 1 件 20 MB |
 | `artifact` | `application/pdf`, `application/zip`, `text/html`, `text/markdown` | 1 GB |
 | `avatar` | `image/png`, `image/jpeg`, `image/webp` | 5 MB |
+
+`ensureAcceptable` が署名から判定できるのは、現時点では PNG / JPEG / WebP である。**署名を持たない形式（`text/markdown`、`image/svg+xml` など）を許可する purpose を足すスライスが、入口の形をさらに広げる**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。
 
 `limitFor` はユースケースからは直接呼ばない。上限の表を引く責務を切り出して `ensureAcceptable` の実装に使うもので、外向きの入口は `ensureAcceptable` に限る。
 
@@ -287,16 +289,21 @@ interface ReferenceImportRecordRepository {
 
 ```ts
 interface ObjectStorage {
-  put(key: ObjectKey, body: ReadableStream<Uint8Array> | Uint8Array, meta: ObjectMeta): Promise<PutResult>;
+  put(key: ObjectKey, body: Uint8Array, meta: ObjectMeta): Promise<PutResult>;
   get(key: ObjectKey): Promise<ObjectBody | null>;
   deleteMany(keys: readonly ObjectKey[]): Promise<void>;
+  publicUrl(key: ObjectKey): string;
   createDownloadUrl(key: ObjectKey, params: { fileName: FileName; expiresInMs: number }): Promise<string>;
 }
 
 type ObjectMeta = Readonly<{ mimeType: MimeType; size: ByteSize; checksum: Checksum | null }>;
-type ObjectBody = Readonly<{ stream: ReadableStream<Uint8Array>; meta: ObjectMeta }>;
+type ObjectBody = Readonly<{ bytes: Uint8Array; meta: ObjectMeta }>;
 type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
 ```
+
+`publicUrl` は公開配信するオブジェクトの読み取り先を組み立てる。**公開 URL の組み立てをポートに持たせ、配備ごとの形をアダプターに閉じる** — アプリ相対の配信パスを返す配備も、公開ドメインを持つストレージの URL を返す配備も、呼び出し側は戻り値をそのまま返すだけになる。**期限つき URL と公開 URL は別のメソッドとして型で分ける**（[ADR 049](../adr/049-object-storage-public-url.md)）。`createDownloadUrl` は短命なダウンロード用なので、プロフィールに埋め込むような長命な参照には流用できない。使ってよいのは公開してよい用途に限る（現時点では `avatar`）。
+
+`put` が受けるのはバイト列だけで、ストリーム受け（`ReadableStream<Uint8Array>`）は契約に持たない。受理判定を実体から行う形（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)）が「受理判定の時点で実体を握っていること」「ポートがバイト列だけを受ける形であること（ストリームを通す用途が現れた時点で、その要求とともに広げる）」を前提に置いているためで、**契約を弱めた側として責務の移転をここに残す**。**ストリームを入力に持つ要求元は設計上すでに実在する** — [usecases/storage.md](../usecases/storage.md) の `storeUpload` で、入力 DTO の `body: ReadableStream<Uint8Array>` と、**同ユースケース手順 2 の `UploadValidationPolicy.ensureAcceptable` 呼び出し**がそれに当たる（バイト列が手に入るのは手順 5 の `put` 以降なので、実体判定を手順 2 で行う形への手順の組み替えもそのスライスの仕事になる）。**この経路を実装するスライスが、上記の前提に従って `put` の入口を広げ、読み切る前に上限で切る形をそこで設計する。**
 
 `createDownloadUrl` の `expiresInMs` は**呼び出し側が渡す**が、値そのものは配備で変わらない設計上の決定なので正典を 1 か所に置く — [platform/index.md](../platform/index.md) の「転送境界」に **5 分**として記す。この値は独立に選べない: `exportNote` が既存の生成物を再利用してよい下限（`expiresAt >= now + 35 分`。[usecases/note.md](../usecases/note.md)）は「`ExportTicket` の有効期間 30 分 + ダウンロード URL の有効期間」として導かれており、URL の有効期間を伸ばすなら下限も同じだけ伸びる。
 
@@ -348,7 +355,7 @@ interface DnsResolver {
 
 ```
 StorageErrorCode =
-  | "InvalidId" | "InvalidObjectKey" | "InvalidByteSize"
+  | "InvalidId" | "InvalidChecksum" | "InvalidObjectKey" | "InvalidByteSize"
   | "UnsupportedMimeType" | "FileTooLarge"
   | "RefusedUrl" | "FetchBudgetExceeded"
 ```

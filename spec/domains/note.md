@@ -24,7 +24,8 @@
 ### NoteTitle
 
 - **フィールド**: `value: string`, `origin: "auto" | "manual"`
-- **バリデーション**: 前後の空白を除去して 200 文字以内。空になった場合は `"無題"` に置き換える（例外を投げない）
+- **バリデーション**: 前後の空白を除去して 200 文字以内（**UTF-16 コード単位**。[ADR 033](../adr/033-character-count-unit.md)）。超過した場合は `BusinessRuleError(InvalidTitle)`
+- **空文字の扱い**: 空白の除去で空になった場合は `"無題"` に置き換える。この置換だけは例外を投げない（上限超過の拒否とは別の規則）
 - **等価性**: `value` が一致（`origin` は等価性に関与しない）
 - `origin` はタイトルの由来。アップロード時のファイル名や変換結果からの自動命名は `auto`、利用者が入力したものは `manual`。`auto` のタイトルだけが変換結果によって上書きされる
 - **補助**: `NoteTitle.auto(value: string)`, `NoteTitle.manual(value: string)`, `NoteTitle.isAuto(title): boolean`
@@ -46,12 +47,12 @@
 ### Excerpt
 
 - **フィールド**: `value: string`
-- **バリデーション**: 200 文字以内。`Excerpt.fromText(text, 200)` で切り出す
+- **バリデーション**: 200 文字以内（**UTF-16 コード単位**。[ADR 033](../adr/033-character-count-unit.md)）。`Excerpt.fromText(text, 200)` で切り出す。切り詰めはサロゲートペアを割らない（対を割ると単独サロゲートが残り、UTF-8 化で U+FFFD に化けて読み取りモデルへ届く）
 
 ### NoteHeading
 
 - **フィールド**: `level: number`（1〜6）, `text: string`, `anchorId: string`
-- **バリデーション**: `level` は 1〜6 の整数、`anchorId` は空文字列不可、`text` は 100 文字以内（超過分は切り捨てる）
+- **バリデーション**: `level` は 1〜6 の整数、`anchorId` は空文字列不可、`text` は 100 文字以内（**UTF-16 コード単位**。超過分は切り捨てる。`Excerpt` と同じく切り詰めはサロゲートペアを割らない。[ADR 033](../adr/033-character-count-unit.md)）
 - **生成**: `HtmlProcessor.process` の結果からのみ構築する。本文の保存時に算出して保持し、取得のたびに再計算しない
 - **件数**: 1 ノートあたり 200 件まで。超えた見出しは捨てる（目次の網羅性より行サイズの保証を優先する。[ADR 017](../adr/017-content-size-budget.md)）
 
@@ -169,7 +170,8 @@ Note = ActiveNote | TrashedNote
 
 **不変条件**
 
-- `content.status !== "ready"` のノートは公開・限定公開にできない
+- `content.status !== "ready"` のノートは公開・限定公開にできない。この規則は**双方向**であり、逆向き — 公開・限定公開のノートの本文を `failed` / `awaitingIntegration` へ降格すること — も同じく禁じる。どちらの向きから来ても `{ visibility: public, content: failed }` という同じ不正な組に到達するため、`makeUnlisted` / `makePublic` の本文検査と、`markConversionFailed` / `markAwaitingIntegration` の公開ステータス検査を対で置く
+- `Note.reconstruct` は ready 本文の必須列（`html` / `text` / `excerpt`）の欠落を空文字で補完せず `RehydrationError` で拒否する。空の本文（空文字の `html`）は正当だが、**列の欠落**は別であり、`""` に丸めると次の OCC 保存がその穴を本文として書き戻して本文を失う
 - `public` のノートはパスワード保護を持たない（`dormantShareLink.password` は常に `null`）
 - `TrashedNote` に対する本文・公開設定・所属の変更はできない
 - `purgeAfter = trashedAt + 30 日`
@@ -178,15 +180,15 @@ Note = ActiveNote | TrashedNote
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `createFromUpload` | `params: { id: string; owner: NoteOwner; createdBy: UserId; title: string; sourceFileId: StoredFileId; initialContent: InitialContentState; styleMode: StyleMode }, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 非公開・`lifecycle: "active"` で生成。`initialContent` は Conversion の `InitialContentState`（`ready` を含まない）をそのまま `content` に据える。`note.created` を発行 |
-| `createBlank` | `params: { id: string; owner: NoteOwner; createdBy: UserId; title: string }, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 本文は空の `ready`（`html` は `""`）で生成。`styleMode` は `default`。`note.created` を発行 |
+| `createFromUpload` | `params: { id: string; owner: NoteOwner; createdBy: UserId; title: string; sourceFileId: StoredFileId; initialContent: InitialContentState; styleMode: StyleMode; projectionRevision: number }, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 非公開・`lifecycle: "active"` で生成。`initialContent` は Conversion の `InitialContentState`（`ready` を含まない）をそのまま `content` に据える。`note.created` を発行 |
+| `createBlank` | `params: { id: string; owner: NoteOwner; createdBy: UserId; title: string; projectionRevision: number }, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 本文は空の `ready`（`html` は `""`）で生成。`styleMode` は `default`。`note.created` を発行 |
 | `applyConversionResult` | `note: ActiveNote, result: { html: NoteHtml; text: PlainTextContent; excerpt: Excerpt; headings: readonly NoteHeading[]; styleMode: StyleMode; title: NoteTitle \| null }, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content` を `ready` にする。`title` が渡され、かつ `NoteTitle.isAuto(note.title)` が真のときだけタイトルを差し替える。`note.contentUpdated` を発行（タイトルが変わった場合は `note.renamed` も併発） |
-| `markConversionFailed` | `note: ActiveNote, reason: NoteFailureReason, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content` を `failed` にする。`note.conversionFailed` を発行 |
-| `markAwaitingIntegration` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content` を `awaitingIntegration` にする。初回変換の結果としてのみ呼ばれる。`note.awaitingIntegration` を発行 |
+| `markConversionFailed` | `note: ActiveNote, reason: NoteFailureReason, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `visibility.status !== "private"` なら `BusinessRuleError(CannotPublishEmptyNote)`（`makeUnlisted` / `makePublic` の本文検査と対のガード）。`content` を `failed` にする。`note.conversionFailed` を発行 |
+| `markAwaitingIntegration` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `visibility.status !== "private"` なら `BusinessRuleError(CannotPublishEmptyNote)`（同上）。`content` を `awaitingIntegration` にする。初回変換の結果としてのみ呼ばれる。`note.awaitingIntegration` を発行 |
 | `updateBody` | `note: ActiveNote, processed: ProcessedHtml, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 編集による本文差し替え。`content` を `ready` に更新。`note.contentUpdated` を発行 |
 | `rename` | `note: ActiveNote, title: string, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `NoteTitle.create` で正規化。`note.renamed` を発行 |
 | `changeStyleMode` | `note: ActiveNote, mode: string, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `StyleMode.create` で検証して更新。`note.styleModeChanged` を発行 |
-| `moveTo` | `note: ActiveNote, owner: NoteOwner, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 同じ所有者なら変更もイベントもなし。異なれば更新し `note.moved`（旧所有者を含む）を発行 |
+| `moveTo` | `note: ActiveNote, owner: NoteOwner, routeVersion: number, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 同じ所有者なら変更もイベントもなし。異なれば更新し `note.moved`（旧所有者と `routeVersion` を含む）を発行。`routeVersion` は `NoteRouteStore` の移動サガが決める値で集約は導出できないため、引数で受ける |
 | `makePrivate` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 現在の共有リンクを休眠として保持したまま `private` へ。`note.visibilityChanged` を発行 |
 | `makeUnlisted` | `note: ActiveNote, newLink: ShareLink \| null, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content.status !== "ready"` なら `BusinessRuleError(CannotPublishEmptyNote)`。休眠リンクがあれば復活させ、なければ `newLink` を使う。どちらもなければ `BusinessRuleError(ShareLinkRequired)`。`note.visibilityChanged` を発行 |
 | `makePublic` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content.status !== "ready"` なら `BusinessRuleError(CannotPublishEmptyNote)`。共有リンクのパスワードを解除して休眠させる。`note.visibilityChanged` と `note.published` を発行 |
@@ -414,6 +416,7 @@ interface NoteRepository extends TransactionalRepository<Note, NoteId> {
 }
 ```
 
+- `listByOwner` の順序は `updatedAt DESC, id DESC` である。`id` のタイブレークが順序を全順序にする — 半順序に対してオフセットページングを掛けると、同じ行が 1 ページ目に出て次のページから消えるといった重複・欠落が起きる。ここを入口に列挙する projection の再構築は、失敗もせずにノートを取りこぼすことになる
 - `listByOwner` の `lifecycle` は `countByOwner` と同じ 3 値を取る。ゴミ箱だけを対象にする `emptyTrash`、生死を問わない `deleteNotesForOwner` / `rebuildNoteProjection` がそれぞれ別の値で呼ぶため、件数と一覧で絞り込みの語彙を揃える
 - repository は現在の ScopeKey に束縛され、scope をまたぐ全件走査を提供しない。local projection の再構築は `listByOwner(currentScope, "all", ...)`、public projection の再構築は global D1 の `note_routes` を入口にする
 
@@ -534,6 +537,8 @@ type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;   // 個
 
 **目的**: 読み取りモデルを更新する。イベント購読側（プロジェクション）から呼ばれる。本体・タグ・FTS・著者・workspace表示をノート単位の完全snapshotとして置換する（[ADR 011](../adr/011-bigram-search.md) / [ADR 017](../adr/017-content-size-budget.md)、詳細は database 設計）。著者やworkspaceの一括行更新は提供しない。
 
+例外は `redactAuthor` 1 本で、これは一括行更新ではなく**1 行単位の置換**である — 保存済みの著者表示を `redactionVersion` の退会既定値に置き換えるだけで、行が無い / 別人が作った / 既に同世代以降である、のいずれもすべて no-op になる。したがって at-least-once の redaction fan-out が何度届いても収束する。`redactionVersion` は退会 1 回につき 1 つ固定し、その identity が持っていたどの `authorVersion` より大きく取るため、退会処理と競合して飛んでいた古い Note イベントが旧名を復活させることはない。著者 redaction を完全 snapshot 置換（`replaceSnapshotIfNewer`）で受けるか `redactAuthor` で受けるかは、`projectNoteChanges`（[usecases/note.md](../usecases/note.md)）を実装する側が選べる。どちらも同じ世代ベクトルの規則に従うため結果は変わらず、前者は他の表示列も同時に最新化し、後者は著者列だけを 1 行更新する。
+
 bigram 前処理済みのテキストは**どこにも保存されない**（FTS5 は contentless 構成。[ADR 017](../adr/017-content-size-budget.md)）。索引を書き換えるときの旧値は、`note_search` の生テキスト列に前処理関数を再適用して求める。前処理は純関数なので同じ値が必ず得られる。
 
 local writer は対象 scope の scheduled task / Alarm から呼ばれる。orderingはNote entity versionだけでなく、Note本体/tag集合の `projectionRevision`、Identityの `authorVersion`、Workspaceの `workspaceVersion` を持つ世代ベクトルで判定する。
@@ -542,11 +547,13 @@ local writer は対象 scope の scheduled task / Alarm から呼ばれる。ord
 interface LocalNoteProjectionWriter {
   replaceSnapshotIfNewer(entry: NoteProjectionEntry, tags: readonly ProjectedTagName[], version: ProjectionVersion): Promise<"written" | "stale" | "incomparable">;
   remove(noteId: NoteId): Promise<void>;
+  redactAuthor(input: AuthorRedaction): Promise<boolean>;   // 行が変わったかを返す
 }
 
 interface PublicNoteProjectionWriter {
   replaceSnapshotIfNewer(entry: NoteProjectionEntry, tags: readonly ProjectedTagName[], version: ProjectionVersion & { routeVersion: number }): Promise<"written" | "stale" | "incomparable">;
   removeIfNewer(noteId: NoteId, routeVersion: number, projectionRevision: number): Promise<boolean>;
+  redactAuthor(input: AuthorRedaction): Promise<boolean>;
   removeForPurge(input: { noteId: NoteId; operationId: string; routeVersion: number; projectionRevision: number }): Promise<void>;
 }
 
@@ -562,6 +569,12 @@ type ProjectionVersion = Readonly<{
   projectionRevision: number;
   authorVersion: number;
   workspaceVersion: number; // personal noteは0
+}>;
+
+type AuthorRedaction = Readonly<{
+  noteId: NoteId;
+  createdBy: UserId;            // この利用者が作成した行だけを対象にする
+  redactionVersion: number;     // 退会 1 回につき固定。旧 authorVersion より必ず大きい
 }>;
 
 type ProjectedTagName = Readonly<{ name: string; normalized: string }>;   // TagName の表示名と正規化名
@@ -654,13 +667,19 @@ interface NoteMovePort {
 
 `reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`の削除+ack transactionを維持する。
 
-`resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。
+`resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。500 件の上限を超える入力は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない（`UserBatchReader.resolveMany` の 100 件上限と同じ契約。[domains/identity.md](./identity.md)）。
+
+**エラーケース**（`NoteRouteStore`）: `ConflictError("STALE_SCOPE_ROUTE")`（routeVersion の CAS 不一致）、`ConflictError`（状態機械の違反・別 operation からの要求）、`NotFoundError("NOTE_NOT_FOUND")`、`SystemError(DatabaseError)`（`resolveMany` の上限超過を含む）
 
 `NoteRouteFanOutReader`はNoteId hash配置に対する二次キー走査の唯一のportである。`limit`は全shard合計で最大200。最大32 shardを同時6接続で読み、NoteId昇順へmergeする。署名opaque cursorはquery kind/fingerprint、shard generation、旧新各shardの`afterNoteId`を持つ。reshard中は旧新を読み、NoteIdで重複排除して大きいrouteVersionを採用する。空shardを含め全shardの位置を進めるため、createdBy/scope fan-out、account deletionの固定、workspace表示refreshはいずれも漏れなく有界に再開できる。
+
+列挙対象は**作成が commit 済みの route すべて** — `active` / `moving` / `purging` — であり、除外するのは `reserved`（対応するノートが存在しないまま終わりうる）だけである。これは `NoteRouteStore.resolve`（`reserved` に加えて `purging` も隠す）より**意図的に広い**。`resolve` は「外部の読み取りがこのノートに到達してよいか」を答える口で、fan-out は「scope 全体の修正がどの route に触れなければならないか」を答える口であり、移動中・完全削除中のノートも著者 route の redaction の義務を負ったままだからである。ここを `active` だけに絞ると、それらのノートが account deletion の manifest から落ち、永久に未処理のまま残る。`tombstone` の扱いは unspecified で、アダプターは失効まで残しても物理的に回収してもよく、呼び出し側はどちらも許容しなければならない。
 
 moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。完了後に`abortMove`が同じmigration IDの`moving → active(source)`をCASする。routeが既にtargetならabortを拒否する。
 
 `ShareTokenProtector` は版付き鍵で共有トークンを暗号化する application port である。新規暗号化には現行版、復号には `keyVersion` が指す旧版を含む鍵束を使う。鍵はデータベースへ置かず、供給とローテーションはアダプターの責務とする。復号は所有者に共有 URL を返す経路だけで使い、共有リンクからの読み取りでは使わない。
+
+**エラーケース**（`ShareTokenProtector`）: `SystemError(DataIntegrityError)`（未知の `keyVersion`、ciphertext の破損）
 
 `NoteMoveSnapshot` は Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage deltaを含む。R2 bytes は移動しない。同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
 

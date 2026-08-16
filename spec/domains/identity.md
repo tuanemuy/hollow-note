@@ -43,6 +43,14 @@
 - **フィールド**: `value: string`
 - **バリデーション**: 500 文字以内。空文字列を許す
 
+### AvatarUrl
+
+- **フィールド**: `value: string`
+- **バリデーション**: 前後の空白を除去して 1〜2048 文字。`/` で始まる値はアプリ相対パスとして扱い `SameOriginPolicy.isSameOriginPath` を満たすこと、それ以外は絶対 URL として解釈でき `appUrl` と同一オリジンであること。違反時 `BusinessRuleError(IdentityErrorCode.InvalidAvatarUrl)`
+- **構築**: `create(raw: string, appUrl: string)`。自オリジンの情報は引数で受け取り、値オブジェクトは設定を読みに行かない
+
+保存する値は**アプリ相対パス**を正とする（配備のオリジンが変わっても保存済みの値が壊れない）。自オリジンの絶対 URL 形は、自分の公開ドメインで配信する object store のために受理する。永続化からの再構築は「書き込み時に検証済み」として通し、再検証しない（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
+
 ### PasswordHash
 
 - **フィールド**: `value: string`
@@ -91,7 +99,7 @@ UserBase = {
   email: Email
   displayName: DisplayName
   bio: Bio
-  avatarUrl: string | null      // 公開 URL。Storage への依存を持たないための取り決め
+  avatarUrl: AvatarUrl | null   // 公開 URL。Storage への依存を持たないための取り決め
   handle: Handle | null
   authEpoch: number             // 全session/tokenをO(1)で論理失効する単調増加世代
   version: number
@@ -131,13 +139,15 @@ User = PendingUser | ActiveUser | DeletingUser | DeletedUser
 | `create` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<PendingUser, IdentityEvent>` | VO を構築し `status: "pending"`、`authEpoch: 0`、`version: 0` で生成。`user.created` を発行 |
 | `createVerified` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | OAuth サインアップ・招待経由サインアップ用。`authEpoch: 0`の確認済みとして生成。`user.created` と `user.emailVerified` を発行 |
 | `verifyEmail` | `user: PendingUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `status` を `active` にし `verifiedAt` を設定。`user.emailVerified` を発行 |
-| `updateProfile` | `user: ActiveUser, params: { displayName?: string; bio?: string; avatarUrl?: string \| null }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | 指定された項目のみ VO を再構築して更新。`displayName` が変わったときのみ `user.profileUpdated` を発行 |
+| `updateProfile` | `user: ActiveUser, params: { displayName?: string; bio?: string; avatarUrl?: AvatarUrl \| null }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | 指定された `displayName` / `bio` のみ VO を再構築して更新し、`avatarUrl` は受け取った値をそのまま置く。`displayName` が変わったときのみ `user.profileUpdated` を発行 |
 | `assignHandle` | `user: ActiveUser, handle: string, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `Handle.create` で検証して設定。`user.handleChanged`（旧ハンドルを payload に含む。未設定からの初回設定なら `previousHandle: null`）を無条件で発行 |
 | `clearHandle` | `user: ActiveUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `handle` を `null` にする。`user.handleChanged` を発行 |
 | `advanceAuthEpoch` | `user: ActiveUser, now: Date` | `ActiveUser` | `authEpoch + 1`へ進め、既存session/tokenを論理失効する |
 | `beginDeletion` | `user: ActiveUser, operationId: string, now: Date` | `DeletingUser` | `authEpoch + 1`へ進め、新しい認証・membership・Jobを拒否する状態へ移す |
 | `rejectDeletion` | `user: DeletingUser, operationId: string, now: Date` | `ActiveUser` | 事前検査失敗時だけactiveへ戻す |
 | `finalizeDeletion` | `user: DeletingUser, operationId: string, now: Date` | `WithEventDrafts<DeletedUser, IdentityEvent>` | 全cleanup ack後にPIIを落とし `identity.user.deleted` を発行 |
+
+`updateProfile` の `avatarUrl` だけが構築済みの VO で渡るのは、`AvatarUrl.create` が `appUrl` を要するためである。集約は設定を読まないので、生値からの構築はユースケース側（[usecases/identity.md](../usecases/identity.md) の `updateProfile`）が行う。集約のメソッドが生の文字列を受けない形にしておくことで、将来の別経路が同一オリジン検証を素通りできない（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
 
 `assignHandle` が初回設定でもイベントを出すのは、読み取りモデルの `note_search.author_handle` を埋める唯一の経路がこのイベントだからである。ハンドル未設定のままワークスペース所有の公開ノートを作り、あとからハンドルを設定した場合、初回設定を無音にすると `author_handle` が `null` のまま残り、`searchPublicNotes` の結果に著者リンクが出ない一方 `getPublicNote` は Identity から直接引くので詳細だけ正しい、という不整合になる。`previousHandle: null` は payload の型で表現済みなので、購読側は初回設定と変更を区別せず現在値で上書きすればよい。`clearHandle` が常に発行するのと対称になる。
 
@@ -341,6 +351,40 @@ ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kin
 
 **依存するポート**: なし（`evaluate` / `initial` は純関数）
 
+### AccountDeletionRetryPolicy
+
+**責務**: 1 人の利用者が保持期間内に残せる退会操作の試行回数を判定する。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `windowStart` | `now: Date` | `Date` | `now - retentionWindowMs`。保持中の terminal 行を数える窓の下端 |
+| `ensureRetryable` | `terminalCount: number` | `void` | `terminalCount >= maxTerminalAttempts` なら `BusinessRuleError(AccountDeletionRetryLimitExceeded)` |
+
+定数（このサービスが公開する。値の正典はここ）:
+
+| 定数 | 値 | 意味 |
+| --- | --- | --- |
+| `retentionWindowMs` | 120 日 | terminal な control-plane 行の保持期間。数える窓の幅はこれと同じ |
+| `maxTerminalAttempts` | 8 | 1 人の利用者が保持中に残せる terminal 行の上限 |
+
+しきい値と窓をここに置き、`DistributedOperationStore.countTerminalSince` には件数の観測だけをさせる（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。数値がバックエンドの数だけ複製されるのを避けるためで、呼ぶ側（[usecases/identity.md](../usecases/identity.md) の `deleteAccount`）は**数えて → 判定して → はじめて作る**順に呼ぶ（作ってからロールバックしない）。新しい operation を作りうる要求だけが判定の対象で、進行中の operation を引き継ぐ再開は terminal 行を増やさないので数えない。
+
+**依存するポート**: なし（`ensureRetryable` / `windowStart` は純関数。件数は呼ぶ側が読む）
+
+### SameOriginPolicy
+
+**責務**: 与えられた値が、どのオリジンに対して解決しても必ずそのオリジンに収まるアプリ相対パスかを判定する。「自オリジンに限る」判定の唯一の置き場で、呼び出し元は保存するアバターの位置（`AvatarUrl`）と、認可の往復のあとに再生する遷移先（[usecases/identity.md](../usecases/identity.md) の `startOAuthFlow` の `redirectTo`）の 2 つ。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `isSameOriginPath` | `value: string` | `boolean` | `/` で始まり、`//` で始まらず、バックスラッシュと C0 制御文字（`U+0000`〜`U+001F` と `U+007F`）を含まないなら `true` |
+
+先頭が `/` で `//` ではないことだけでは足りない。URL パーサーは特別スキームでバックスラッシュを区切りとして扱い、解決の前に C0 制御文字を除去するため、`"/\evil.test/x"` や先頭スラッシュ直後に制御文字を挟んだ値は素朴な前置検査を通り抜けて**別オリジンへ解決する**。判定を 1 本に集めるのは、この 3 つの回避形の知識が片方の呼び出し元にしか反映されない状態を作れなくするためである。
+
+真偽値だけを返し、違反をどう倒すかは呼び出し側が決める（`AvatarUrl.create` は `BusinessRuleError(InvalidAvatarUrl)`、`startOAuthFlow` は `ValidationError("INVALID_REDIRECT")`）。必要より厳しくてよく、同一オリジンへ解決する値でも制御文字を含めば拒否する（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
+
+**依存するポート**: なし（`isSameOriginPath` は純関数）
+
 ## ポート
 
 ### UserRepository
@@ -358,15 +402,31 @@ interface IdentityUniqueDirectory {
   resolve(kind: "email" | "handle" | "providerAccount", normalizedKey: string): Promise<UserId | null>;
   reserve(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; userId: UserId; operationId: string; expiresAt: Date }): Promise<void>;
   activate(operationId: string, expectedUserVersion: number): Promise<void>;
+  beginRelease(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; expectedUserId: UserId; operationId: string }): Promise<void>;
   release(operationId: string): Promise<void>;
 }
 ```
 
-`UserRepository`はcurrent UserId shardの書き込み用であり、別shardのIDを受けない。`UserBatchReader.resolveMany`は入力最大100 UserIdをhash shard別にgroupingし、最大6接続のwaveでbatch readする。署名済みrouting generationを使い、reshard中は旧新を読み、UserIdごとにversionが大きい行を採る。入力IDから直接routeするため全User shard scanは行わない。
+`UserRepository`はcurrent UserId shardの書き込み用であり、別shardのIDを受けない。`UserBatchReader.resolveMany`は入力最大100 UserIdをhash shard別にgroupingし、最大6接続のwaveでbatch readする。署名済みrouting generationを使い、reshard中は旧新を読み、UserIdごとにversionが大きい行を採る。入力IDから直接routeするため全User shard scanは行わない。入力が 100 件の上限を超えた場合は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない。`NoteRouteStore.resolveMany`（上限 500 件。[domains/note.md](./note.md)）と同じ契約である。
 
 サイトマップに載せる「公開ノートを持つ利用者」の列挙は、公開ノートの有無を判定する必要があるため `NoteQueryService.listPublicAuthors` が担う。母集合は `/@:handle` の一覧（`searchPublicNotes` の `ownerFilter`）と同じ所有者基準で、`listPublicAuthors` が返す利用者 ID を `UserBatchReader.resolveMany` でハンドルに解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。
 
-**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
+`IdentityUniqueDirectory` の行は `reserved` / `active` / `releasing` の 3 状態を取る。確保は 2 相で、`reserve` が正規化鍵を期限付きで operation に割り当て、所有 UoW の commit 後に `activate`（期待 User version を条件とする）が恒久 claim へ昇格させ、失敗時は `release` が解放する。**取り壊しも同じ 2 相の鏡像**であり、`beginRelease` が `active` の行を `releasing` にして解放側の operation へ付け替え、続く `release(operationId)` がその行を落とす。`beginRelease` を operation ID ではなく `normalizedKey` で引くのは、claim を作った operation はとうに終わっており、解放する側がその ID を再導出できないためである。取り壊しを 2 相にするのは、claim が索引であって資格ではなく（[ADR 038](../adr/038-provider-account-claim-and-identity-row.md)）、解放を促すイベントの配送が at-least-once だからである。下の「ドメインイベント」の `identity.identity.removed` が「global consumer が releasing→release する」と書いているのは、この 2 相のことを指す。
+
+**非対称が 4 つある。取り違えない。**
+
+- `resolve` は恒久 claim（`active`）の持ち主だけを返す。まだ `reserved` の鍵と、既に `releasing` の鍵は、どちらも `null` に見える
+- `reserve` は `releasing` の行を**奪えない**。奪えるのは「`reserved` かつ期限切れ」の行だけで、`releasing` の鍵に対しては `ConflictError`（`EMAIL_ALREADY_USED` / `HANDLE_ALREADY_USED` / `PROVIDER_ACCOUNT_ALREADY_LINKED`）を返す。同じ operation ID からの再要求は冪等に期限を延ばすだけである
+- `beginRelease` は `reserved` の行に対して **no-op**。取り壊す対象は恒久 claim だけである。予約を解放側へ付け替えると、続く `release` が `reserved` の行も落とすため、その予約を握って進行中の operation がサガの途中で鍵を失う。行が無い場合と別の利用者が持っている場合も同じく no-op で、解放要求が持ち主から鍵を奪うことはない
+- `release` は当該 operation の `reserved` と `releasing` の行を落とす。`active` の行には触れない（恒久 claim の解放は必ず `beginRelease` を通る）
+
+provider account の一意性は `IdentityUniqueDirectory` が**唯一の担保**であり、`IdentityRepository` は検査しない（claim は索引であって資格ではない — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。
+
+**エラーケース**（`UserRepository`）: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
+
+**エラーケース**（`UserBatchReader`）: `SystemError(DatabaseError)`（入力 100 件の上限超過を含む）
+
+**エラーケース**（`IdentityUniqueDirectory`）: `ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")` / `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（鍵を別の operation が保持している。判定材料は operation ID であって利用者ではないので、同じ利用者の別 operation からの再予約も同じく衝突する。奪えるのは期限切れの `reserved` だけ）、`SystemError(DatabaseError)`
 
 ### IdentityRepository
 
@@ -376,7 +436,9 @@ interface IdentityRepository extends TransactionalRepository<Identity, IdentityI
 }
 ```
 
-**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`、`SystemError(DatabaseError)`
+`(provider, providerAccountId)` の一意性はここでは検査しない。担保は `IdentityUniqueDirectory` の claim 索引だけが持ち、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を投げるのもそちらである（[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。バックエンドが DB 側に一意制約を置くのは自由だが、契約としては要求しない。
+
+**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
 ### SessionRepository
 
@@ -401,12 +463,15 @@ interface SessionRepository {
 interface AuthTokenRepository {
   insert(token: AuthToken): Promise<void>;
   findByTokenHash(userId: UserId, tokenHash: TokenHash): Promise<AuthToken | null>;
+  findPendingByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose): Promise<PendingAuthToken | null>;
   save(token: AuthToken): Promise<void>;
   deleteByUserAndPurpose(userId: UserId, purpose: AuthTokenPurpose, limit: number): Promise<number>;
   deleteOlderEpochByUser(userId: UserId, currentEpoch: number, limit: number): Promise<number>;
   deleteExpired(now: Date, cursor: string | null, limit: number): Promise<Readonly<{ deleted: number; nextCursor: string | null }>>;
 }
 ```
+
+`findPendingByUserAndPurpose` は、`auth_tokens` の (`user_id`, `purpose`) 部分一意索引（[database/index.md](../database/index.md) の `auth_tokens`）が保証する at-most-one live token を読む唯一の口である。「その利用者へ最後にトークンを発行したのはいつか」を答えるのがこの索引だけなので、再送間隔の判定はここを通す（`resendVerificationEmail` / `requestPasswordReset`。[usecases/identity.md](../usecases/identity.md)）。
 
 `save` で `ConsumedAuthToken` を保存するとき、アダプターは `status = 'pending'` の行への条件付き更新（`UPDATE ... SET status = 'consumed' WHERE id = ? AND status = 'pending'`）として実装する。更新行数が 0 なら他の要求が先に消費したものとして `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` を返す。これにより並行する消費のうち 1 件だけが成功する。
 
@@ -448,6 +513,7 @@ interface SecureTokenGenerator {
 
 ```ts
 interface SignInOAuthClient {
+  deriveCodeChallenge(codeVerifier: string): string;   // PKCE S256。純粋・決定的
   buildAuthorizationUrl(params: { provider: OAuthProvider; state: string; codeChallenge: string; redirectUri: string }): string;
   exchangeCode(params: { provider: OAuthProvider; code: string; codeVerifier: string; redirectUri: string }): Promise<OAuthProfile>;
 }
@@ -462,7 +528,9 @@ type OAuthProfile = Readonly<{
 }>;
 ```
 
-**エラーケース**: `SystemError(ExternalServiceError)`（通信・応答不正）、`ValidationError("OAUTH_CODE_INVALID")`（コードの期限切れ・不正）
+`deriveCodeChallenge` を `SecureTokenGenerator` ではなくここに置くのは、PKCE の challenge が S256 の**プロトコル規定の表現**（`base64url(sha256(verifier))`）であって、アダプターが自由に選べる保存用ハッシュではないからである。プロトコルを既に知っているポートに置くことで、application 層をハッシュ表現から解放する（[usecases/identity.md](../usecases/identity.md) の `startOAuthFlow` 手順 3 で「`codeChallenge` を算出する」主体がこれにあたる）。
+
+**エラーケース**: `SystemError(ExternalApiError)`（通信・応答不正）、`ValidationError("OAUTH_CODE_INVALID")`（コードの期限切れ・不正）
 
 ### LoginAttemptStore
 
@@ -519,13 +587,14 @@ payload は変化の通知にとどめ、投影に必要な現在値を運ばな
 ```
 IdentityErrorCode =
   | "InvalidId" | "InvalidEmail" | "InvalidHandle" | "HandleReserved"
-  | "InvalidDisplayName" | "InvalidBio" | "WeakPassword"
+  | "InvalidDisplayName" | "InvalidBio" | "InvalidAvatarUrl" | "WeakPassword"
   | "InvalidProviderAccount" | "TokenExpired"
   | "LastIdentityCannotBeRemoved" | "PasswordIdentityAlreadyExists"
+  | "IdentityLimitExceeded" | "AccountDeletionRetryLimitExceeded"
 ```
 
 ## ユースケース（概要）
 
-`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `linkOAuthIdentity`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
+`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `completeOAuthCallback`, `linkOAuthIdentity`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getProfile`, `checkHandleAvailability`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
 
 詳細は [usecases/identity.md](../usecases/identity.md)。

@@ -77,27 +77,53 @@ interface ScopeCleanupAdmissionStore {
   beginPersonalAccountDeletion(operationId: string, userId: UserId): Promise<void>;
   abortPersonalAccountDeletion(operationId: string): Promise<void>;
   assertOwner(operationId: string): Promise<void>;
-  acknowledgePersonalComponent(operationId: string, component: "job" | "note" | "tag" | "storage" | "backup" | "usage" | "localProjection" | "outbox"): Promise<void>;
+  describePersonalCleanup(operationId: string): Promise<PersonalCleanupProgress | null>;
+  acknowledgePersonalComponent(operationId: string, component: PersonalCleanupComponent): Promise<void>;
   markCompleted(operationId: string, retainUntil: Date): Promise<void>;
   pruneCompleted(asOf: Date, limit: number): Promise<number>;
 }
 
+// component の語彙。必須集合ではない（必須集合は配備が宣言した部分集合）
+type PersonalCleanupComponent =
+  | "job" | "note" | "tag" | "storage" | "backup" | "usage" | "localProjection" | "outbox";
+
+type PersonalCleanupProgress = Readonly<{
+  status: "running" | "completed";
+  acknowledged: readonly PersonalCleanupComponent[];
+}>;
+
 interface AccountDeletionManifestStore {
   begin(operationId: string, userId: UserId): Promise<void>;
+  describe(operationId: string): Promise<AccountDeletionManifestHeader | null>;   // header の読み取り射影。manifest が消えていれば null
   appendMembershipPage(operationId: string, afterEdgeKey: string | null, limit: number): Promise<Readonly<{ count: number; nextCursor: string | null }>>;
   appendAuthorRoutePage(operationId: string, routes: readonly AccountDeletionAuthorRoute[], nextCursor: string | null): Promise<void>;
   markBuilt(operationId: string): Promise<void>;
   beginRollback(operationId: string): Promise<void>;
   claimPending(operationId: string, phase: "prepare" | "release" | "cleanup" | "redaction", limit: number): Promise<readonly AccountDeletionManifestItem[]>;
   acknowledge(operationId: string, itemKeys: readonly string[], phase: "prepare" | "release" | "cleanup" | "localRedaction" | "publicRedaction"): Promise<void>;
-  acknowledgeReceipt(operationId: string, receipt: "personalAbort" | "personalCleanup" | "authResidue" | "externalConnections" | "jobHistory" | "uniquenessRelease"): Promise<void>;
+  acknowledgeReceipt(operationId: string, receipt: AccountDeletionReceipt): Promise<void>;
   allRollbackReleased(operationId: string): Promise<boolean>;
   allRequiredAcknowledged(operationId: string): Promise<boolean>;
   compactItems(operationId: string, limit: number): Promise<Readonly<{ removed: number; remaining: boolean }>>;
   markCompleted(operationId: string, terminalAt: Date, retainUntil: Date): Promise<void>;
   markRejected(operationId: string, terminalAt: Date, retainUntil: Date): Promise<void>;
-  pruneTerminal(asOf: Date, cursor: string | null, limit: number): Promise<Readonly<{ removed: number; nextCursor: string | null }>>;
+  pruneTerminal(asOf: Date, cursor: string | null, limit: number): Promise<Readonly<{ operationIds: readonly string[]; nextCursor: string | null }>>;
 }
+
+// receipt の語彙。finalize の必須集合ではない（必須集合は配備が宣言した部分集合で、`personalAbort` は rollback 側）
+type AccountDeletionReceipt =
+  | "personalAbort" | "personalCleanup" | "authResidue" | "externalConnections" | "jobHistory" | "uniquenessRelease";
+
+type AccountDeletionManifestHeader = Readonly<{
+  operationId: string;
+  userId: UserId;
+  status: "building" | "built" | "rollingBack" | "completed" | "rejected";   // ポートが公開する粒度。永続化列の細かいstateは database/index.md の `account_deletion_manifests`
+  membershipCursor: string | null;
+  authorRouteCursor: string | null;
+  receipts: readonly AccountDeletionReceipt[];
+  terminalAt: Date | null;
+  retainUntil: Date | null;
+}>;
 
 type AccountDeletionManifestItem =
   | Readonly<{ key: string; kind: "membership"; workspaceId: WorkspaceId; edgeState: "active" | "removing" | "pending"; membershipId: string | null; prepareCommandKey: string | null; prepareDispatchedAt: Date | null; prepareAckedAt: Date | null; releaseCommandKey: string | null; releaseDispatchedAt: Date | null; releaseAckedAt: Date | null; cleanupAckedAt: Date | null }>
@@ -118,10 +144,11 @@ interface GlobalMaintenanceRunStore {
 - 1 UoW は 1 scope object の repository と local outbox だけを公開する
 - 別 scope または global D1 の UoW を入れ子にしない
 - scope 内の Job / Note / StoredFile metadata / Membership の強制終端は同じ UoW に入る
-- scope をまたぐ note move と account deletion は `DistributedOperationStore` が持つ operation ID / state で再開する
-- `ScopeCleanupAdmissionStore`はcurrent scopeに束縛する。`assertWritable`はworkspace scopeではWorkspace deletion state、personal scopeではaccount deletion barrier receiptを検査する。`assertActorWritable`は加えてworkspaceのmembership removal prepare lockをactor UserIdで検査し、当該actor由来のNote/Tag/Storage/Usage/Integration/Job writeをlocal commit時に拒否する。全ドメインの通常write入口が両方を呼ぶ。`beginPersonalAccountDeletion`はpersonal DOの直列化点でbarrier receiptを保存し、先行writeはbarrier前に確定して後続scanに拾わせ、後続writeは`ACCOUNT_DELETING`で拒否する。workspace cleanup ownerは`Workspace.deleting`または削除manifest header、personal cleanup ownerはbarrier receiptのoperation IDを照合する。cleanup consumerはremote D1を読まず、別ID・欠落・未commitを拒否する。personal barrier resultにはoperation専用のjob/note/tag/storage/backup/usage/localProjection/outbox component ackを保存し、unrelated scheduled taskの有無を完了条件にしない
+- scope をまたぐ note move と account deletion は `DistributedOperationStore` が持つ operation ID / state で再開する（`state` の語彙は `running` / `completed` / `rejected` の 3 値。`preparing` / `committing` は account deletion manifest header 側の state であって、この 3 値には含まれない）
+- 1 つの operation が同じ scope へ配る**コマンドの重複排除**は `AppliedOperationStore` が `(operationId, commandKey)` で担い、barrier receipt を扱う `ScopeCleanupAdmissionStore` とは**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。記録はガードするコマンドと同じ Unit of Work に入る
+- `ScopeCleanupAdmissionStore`はcurrent scopeに束縛する。`assertWritable`はworkspace scopeではWorkspace deletion state、personal scopeではaccount deletion barrier receiptを検査する。`assertActorWritable`は加えてworkspaceのmembership removal prepare lockをactor UserIdで検査し、当該actor由来のNote/Tag/Storage/Usage/Integration/Job writeをlocal commit時に拒否する。全ドメインの通常write入口が両方を呼ぶ。`beginPersonalAccountDeletion`はpersonal DOの直列化点でbarrier receiptを保存し、先行writeはbarrier前に確定して後続scanに拾わせ、後続writeは`ACCOUNT_DELETING`で拒否する。workspace cleanup ownerは`Workspace.deleting`または削除manifest header、personal cleanup ownerはbarrier receiptのoperation IDを照合する。cleanup consumerはremote D1を読まず、別ID・欠落・未commit・完了済みを拒否する。`assertOwner`が完了後に偽になるのは、これが「まだ掃除して良いか」を問う述語だからで、完了済みを冪等に受ける`markCompleted` / `acknowledgePersonalComponent`（[ADR 039](../adr/039-cleanup-participants-declaration.md)）とは問いが違う。完了後のackを通すと、`pruneCompleted`が回収した後の遅延配送がbarrierを`running`へ戻しうる。personal barrier resultには配備が宣言した全component（composition rootがparticipant registryから実装へ渡す集合であって、enum全体ではない）のackをoperation専用に保存する。宣言していないcomponentへダミーackを置かず、unrelated scheduled taskの有無も完了条件にしない。`describePersonalCleanup`は再駆動された継続を安く決着させるための読み取りで、barrierがまだrunningか、どのcomponentがack済みかを答える。already completedなら残りを処理せずglobal receiptを再ackするだけで済む。receiptが無い場合と別operationがscopeを持つ場合は`null`を返す
 - `abortPersonalAccountDeletion`は同じrunning ownerだけが呼べ、receiptを削除して通常writeを再開する。account deletion receiptは全local task/event consumer ack前に`markCompleted`できず、それまではexpiryを持たずprune禁止。完了時に同じUoWで120日後のprune taskを保存し、期限到達後はscope Alarmが最大100件ずつ消す。遅延重複を保持窓内は安全にno-op化する
-- `AccountDeletionManifestStore`はapplication orchestration portでUserId shardに置く。membership pageはco-locateしたactive/removing/pending edgeをedge key順に最大100件固定する。author routeは`NoteRouteFanOutReader`の署名generation cursorで最大100件読んだpageを冪等appendし、header cursorと同じtransactionで進める。itemはoperation ID+kind+対象IDで一意、全prepare/release/cleanup/redaction item ackとpersonal/global receipt集合がfinalize/rollbackの正本である。各remote commandは送信前に`claimPending`で決定的command key/dispatchedAtを最大100件保存する。prepare rejectionはprepare ackの有無でなくprepare dispatched全件をrelease対象にし、未取得lockへのreleaseは同じcommand keyでno-op成功する。100件page・最大6接続で全release ack後だけ縮約へ進む。成功/prepare rejectionのどちらもitemsを100件ずつ縮約し、terminal headerだけを120日保持した後、generation/shard/run付きglobal maintenance laneで100件ずつ回収する
+- `AccountDeletionManifestStore`はapplication orchestration portでUserId shardに置く。membership pageはco-locateしたactive/removing/pending edgeをedge key順に最大100件固定する。author routeは`NoteRouteFanOutReader`の署名generation cursorで最大100件読んだpageを冪等appendし、header cursorと同じtransactionで進める。`describe`はheaderの読み取り射影で、2つのbuild cursorと所有userを返す（継続要求はoperationしか名指さないため、page位置はheaderが持つ）。manifestが既に消えていれば`null`を返す。itemはoperation ID+kind+対象IDで一意。finalizeとrollbackの完了判定は**別の問い**なので非対称である（[ADR 053](../adr/053-account-deletion-rollback-completion.md)）。**finalizeの正本**は固定済み全itemの完全ackと宣言された全receiptの両方（`allRequiredAcknowledged`）で、「全参加者が終えたか」を問う。**rollbackの正本**は固定済みmembership itemのrelease ackだけ（`allRollbackReleased`）で、「prepareを出した先へ解放を配り切ったか」を問う。`personalAbort` receiptはこの述語の判定対象に入らない。必須集合はどちらも**配備が宣言した集合**（composition rootがparticipant registryから実装へ渡す集合）から導き、enum全体でも固定件数でもない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。`personalAbort`はrollback側のreceiptなのでfinalizeの必須receipt集合には入らない。**membership itemの完全ackはcleanup phaseのackを含む** — prepare ackだけでは`allRequiredAcknowledged`は満たされず、cleanupレーンが同じitemをackして初めてitemが完全ackになる。各remote commandは送信前に`claimPending`で決定的command key/dispatchedAtを最大100件保存する。prepare rejectionはprepare ackの有無でなくprepare dispatched全件をrelease対象にし、未取得lockへのreleaseは同じcommand keyでno-op成功する。100件page・最大6接続で全release ack後だけ縮約へ進む。成功/prepare rejectionのどちらもitemsを100件ずつ縮約し、terminal headerだけを120日保持した後、generation/shard/run付きglobal maintenance laneで100件ずつ回収する。`pruneTerminal`は回収したoperationを件数ではなくID列で返す。[database/index.md](../database/index.md) の`account_deletion_manifests`がheaderとoperationを同じUserId shardのtransactionで消すと定めており、件数だけでは`DistributedOperationStore.deleteTerminal`へ渡すIDが取れないためである
 - `GlobalMaintenanceRunStore`はauth/Job prunerが共有するapplication portでrouting catalog shardに置く。kindごとにrunning runは1つだけで、次hourのCronも未完了runを最古の`asOf`のまま再開し、完了後だけcandidate runを新規作成する。lane claim、page checkpoint+次Queue outbox、shard ack+次claim、全完了判定はそれぞれ原子的で、kind全体のactive laneは最大6。target shardのDELETEとはtransactionを共有しないため、応答喪失時は同じ入力cursorのDELETEを冪等再実行してからcheckpointする。10分leaseのownerだけが進捗を更新できる。completed runは30日保持後に`(expiresAt, runId)` keysetで1回100件ずつ回収する
 - routeVersion が古い mutation は adapter が `ConflictError("STALE_SCOPE_ROUTE")` に写し、application が route を 1 回だけ引き直す。2 回目も競合したらそのまま返す
 
@@ -269,9 +296,10 @@ interface IdempotencyStore {
 | `job.globalTombstonePruneCron` | `{ type: "job.globalTombstonePruneCron" }` | Cron → [`pruneJobHistory`](../usecases/job.md) のglobal run開始分岐 |
 | `identity.authStatePruneContinued` | `{ runId, generation, shardId, table, cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) |
 | `identity.userAuthResidueCleanupContinued` | `{ userId, authEpoch, table: "sessions" | "authTokens", deletionOperationId? }` | global Queue → password/session失効後の旧世代Session/AuthToken回収 |
-| `identity.accountDeletionManifestBuildContinued` | `{ operationId, phase: "memberships" | "authorRoutes" }` | global Queue → [`deleteAccount`](../usecases/identity.md) の対象固定phase |
-| `identity.accountDeletionDispatchContinued` | `{ operationId, phase: "prepare" | "rollbackRelease" | "cleanup" | "redaction" | "finalize" }` | global Queue → [`deleteAccount`](../usecases/identity.md) のbounded fan-out |
-| `identity.accountDeletionManifestCompactContinued` | `{ operationId }` | global Queue → [`deleteAccount`](../usecases/identity.md) の完了manifest縮約 |
+| `identity.accountDeletionManifestBuildContinued` | `{ operationId, phase: "memberships" | "authorRoutes", cursor: string | null, continuationKey: string }` | global Queue → [`deleteAccount`](../usecases/identity.md) の対象固定phase |
+| `identity.accountDeletionDispatchContinued` | `{ operationId, phase: "prepare" | "rollbackRelease" | "cleanup" | "redaction" | "finalize", cursor: string | null, continuationKey: string }` | global Queue → [`deleteAccount`](../usecases/identity.md) のbounded fan-out |
+| `identity.accountDeletionManifestCompactContinued` | `{ operationId, cursor: string | null, continuationKey: string }` | global Queue → [`deleteAccount`](../usecases/identity.md) の完了manifest縮約 |
+| `identity.personalCleanupHandoverContinued` | `{ deletionOperationId }` | scope Alarm → scope平面のtask runnerが閉じたbarrierの引き渡しを行い、global manifestへ`personalCleanup` receiptをackする |
 | `identity.accountDeletionManifestPruneContinued` | `{ runId, generation, shardId, cursor, asOf }` | global Queue → [`deleteAccount`](../usecases/identity.md) のterminal manifest回収 |
 | `identity.personalBarrierPruneContinued` | `{ scope, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
 | `global.maintenanceRunPruneContinued` | `{ cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) の共通maintenance run回収分岐（唯一の購読者） |
@@ -281,7 +309,7 @@ interface IdempotencyStore {
 
 規約は 4 つ。
 
-scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operation_id`は生成元operation/event/command IDと対象ID・version・cursorから決定的に導出する。同じ生成元が複数Noteへ`projection.reprojectRequested`を積む場合もNoteIdとprojectionRevisionを含めるため、1件へ潰れず、応答喪失時にも増殖しない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める。
+scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operation_id`は生成元operation/event/command IDと対象ID・version・cursorから決定的に導出する。同じ生成元が複数Noteへ`projection.reprojectRequested`を積む場合もNoteIdとprojectionRevisionを含めるため、1件へ潰れず、応答喪失時にも増殖しない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める。global outboxで運ぶ継続要求では同じ役割を payload の`continuationKey`が担い、導出式は `` `${eventType}:${operationId}:${phase}:${cursor ?? "-"}` `` である。payloadに`phase`を持たない継続（`identity.accountDeletionManifestCompactContinued`）は、`phase`の位置に固定文字列`compact`を置く。commit応答を失ったターンが同じ鍵を再導出するため、再実行は先着の1行へ潰れて鎖が分岐しない（[ADR 041](../adr/041-deterministic-continuation-event-id.md) / [ADR 042](../adr/042-outbox-save-id-collision.md)）。鍵はターンごとに変わらなければならない。自分と同じ鍵を再発行するターンは、直後のrelay finalizeに処理済みとして印を付けられ、鎖がそこで止まる。global outboxで運ぶidentity系の継続要求のうちこの鍵を持たないのは`identity.userAuthResidueCleanupContinued`だけで、理由はカーソルを持たない継続だからである（仕事そのもの＝行の削除が次ターンの母集合から対象を外すので、ターンを鍵で区別しなくても常に前へ進む）。
 
 - **購読者を 1 つに保つ**。既存のイベントを再投入して継続する形は採らない（購読者の数だけコピーが増え、outbox とキューを水増しする）
 - **継続要求は、続きを引き直すのに必要な情報をすべて運ぶ**。次の実行で網を引き直す形の継続（`job.terminationContinued`）では、payload が**元の経路の選択述語をそのまま再現できなければならない**。再現できないと、続きが元より広い集合を処理してしまう。強制終端の 9 経路は対象の選び方（対象・スコープ・要求者・`kind`）と当てる遷移（`cancel` か `fail` か）が経路ごとに違うため、payload は**どの経路の続きか**を判別子で持つ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）
@@ -295,7 +323,7 @@ scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operatio
 
 | ドメイン | ユースケース数 |
 | --- | --- |
-| Identity | 21 |
+| Identity | 24 |
 | Workspace | 21 |
 | Note | 36 |
 | Tag | 14 |
@@ -304,6 +332,6 @@ scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operatio
 | Integration | 15 |
 | Job | 12 |
 | Usage | 7 |
-| 合計 | 143 |
+| 合計 | 146 |
 
 詳細は `spec/usecases/${domain}.md` に定義する。

@@ -6,15 +6,13 @@ import { type ProfileView, toProfileView } from "./view";
 export type GetProfileInput = Readonly<{ userId: string }>;
 
 /**
- * Reads back the fields P-21 edits.
+ * Reads back the fields P-21 edits (UC-identity-022,
+ * spec/usecases/identity.md#getprofile).
  *
- * A read of one's own profile has no usecase in the spec — `updateProfile`
- * defines the projection and `getPublicProfile` is keyed by handle, so it
- * cannot serve a user who has not set one. The settings form still has to
- * start from the stored values (`bio` in particular is projected nowhere
- * else), and reaching into `userReader` from the presentation layer would
- * put a repository read outside the application layer. Hence this
- * read-only sibling of `updateProfile`.
+ * The read-only sibling of `updateProfile`: `getPublicProfile` is keyed by
+ * handle, so it cannot serve a user who has not set one, and reaching into
+ * `userReader` from the presentation layer would put a repository read
+ * outside the application layer.
  */
 export async function getProfile({
   container,

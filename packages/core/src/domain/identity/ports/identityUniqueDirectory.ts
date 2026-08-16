@@ -22,7 +22,8 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
  * Error contract: `ConflictError("EMAIL_ALREADY_USED")` /
  * `ConflictError("HANDLE_ALREADY_USED")` /
  * `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` when the key is held
- * by another user, `SystemError(DatabaseError)` otherwise.
+ * by another operation (a lapsed `reserved` row aside),
+ * `SystemError(DatabaseError)` otherwise.
  */
 export interface IdentityUniqueDirectory {
   /** Resolves the owner of a durable (`active`) claim; a key that is

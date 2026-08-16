@@ -1,6 +1,8 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-09）
+生成元: `spec/usecases/`（最終同期: 2026-08-16）
+
+**1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -12,15 +14,15 @@
 | UC-identity-002 | `verifyEmail` | `spec/usecases/identity.md#verifyEmail` | locator 付き確認トークンを単回消費して利用者を有効化し、同一 UoW でセッションを発行する。使用済みの並行要求は `alreadyVerified` に収束させ、用途違い、期限切れ、世代不一致を拒否する |
 | UC-identity-003 | `resendVerificationEmail` | `spec/usecases/identity.md#resendVerificationEmail` | 未確認利用者に限り発行間隔を守って既存確認トークンを置換し、commit 後に確認メールを送る。利用者不在、確認済み、制限中は存在を漏らさず成功として返す |
 | UC-identity-004 | `signInWithPassword` | `spec/usecases/identity.md#signInWithPassword` | 発信元とメールの鍵で待機・施錠を判定し、資格情報を照合して有効利用者に current epoch のセッションを発行する。認証失敗、未確認、削除中、待機、ロックを区別し、失敗加算を原子的に行う |
-| UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代を 10 分保存して認可 URL を返す |
-| UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を単回消費し、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。未確認、別利用者への紐づき、上限、削除中を拒否する |
-| UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | link intent の OAuth state と認証世代を検査し、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する |
+| UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代を 10 分保存して認可 URL と `state` を返す（`state` は URL が既に運ぶが、転送境界がブラウザーへ束縛できるよう別に露出する）。`linkIdentity` intent で主体が active でなければ（削除開始済みを含む）state 行を作らず `UnauthorizedError("UNAUTHENTICATED")` にする |
+| UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を単回消費し、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。未確認、別利用者への紐づき、上限、削除中を拒否し、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
+| UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | link intent の OAuth state と認証世代を検査し、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する。出力は `identityId` だけで、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
 | UC-identity-008 | `authenticateSession` | `spec/usecases/identity.md#authenticateSession` | locator とハッシュからセッションと利用者を読み、期限、有効状態、認証世代を検査して利用者射影を返す。すべての無効要因を `UNAUTHENTICATED` に畳み、認証時にセッションを書き換えない |
 | UC-identity-009 | `signOut` | `spec/usecases/identity.md#signOut` | セッショントークンから対象行を解決して存在すれば削除し、形式不正・不在を含め常に成功として返す |
 | UC-identity-010 | `signOutOtherSessions` | `spec/usecases/identity.md#signOutOtherSessions` | 現在のセッションを検証し、利用者の認証世代を進めつつ現在のセッションだけ新世代へ追随させ、他セッションを即時失効させて旧世代行の有界回収を開始する |
-| UC-identity-011 | `requestPasswordReset` | `spec/usecases/identity.md#requestPasswordReset` | 有効利用者の password identity の有無に応じたメールを送り、既存 reset token を置換して current epoch の単回トークンを発行する。不在や無効状態でも同じ成功応答にする |
+| UC-identity-011 | `requestPasswordReset` | `spec/usecases/identity.md#requestPasswordReset` | 有効利用者の password identity の有無に応じたメールを送り、`findPendingByUserAndPurpose` で測る 60 秒の発行間隔を守って既存 reset token を置換し、current epoch の単回トークンを発行する。不在や無効状態でも同じ成功応答にする |
 | UC-identity-012 | `resetPassword` | `spec/usecases/identity.md#resetPassword` | 有効な未消費 reset token を検査・消費して password identity を作成または更新し、認証世代を進めて全セッションを即時失効させる。並行消費は token not found に収束させる |
-| UC-identity-013 | `addPasswordIdentity` | `spec/usecases/identity.md#addPasswordIdentity` | 有効利用者の現在の認証手段集合を再検査し、password identity がなく総数上限内の場合だけ強度検証済みパスワード手段を追加する |
+| UC-identity-013 | `addPasswordIdentity` | `spec/usecases/identity.md#addPasswordIdentity` | 現在のセッションの再認証（Google 再認可）が済んでいることを確認したうえで有効利用者の現在の認証手段集合を再検査し、password identity がなく総数上限内の場合だけ強度検証済みパスワード手段を追加する。再認証が未了なら `REAUTHENTICATION_REQUIRED`、利用者が不在なら `USER_NOT_FOUND`、`active` でなければ `ACCOUNT_UNAVAILABLE` を返す |
 | UC-identity-014 | `changePassword` | `spec/usecases/identity.md#changePassword` | 現在のセッションとパスワードを再認証して password identity を更新し、認証世代を進めながら現在のセッションだけ残し、他のセッション・旧世代トークンを失効・回収する |
 | UC-identity-015 | `removeIdentity` | `spec/usecases/identity.md#removeIdentity` | 本人の認証手段で最後の 1 件でないことを確認して削除し、OAuth provider account の一意予約を正データ削除後に冪等解放する。再要求は receipt から成功へ収束させる |
 | UC-identity-016 | `listIdentities` | `spec/usecases/identity.md#listIdentities` | 利用者の最大 8 件の認証手段を秘密情報なしで射影し、2 件以上なら削除可能として返す |
@@ -29,6 +31,9 @@
 | UC-identity-019 | `listPublicProfiles` | `spec/usecases/identity.md#listPublicProfiles` | 個人所有の公開ノートを持つ利用者だけを public author projection からページングし、current user 情報でハンドルを解決してサイトマップ用の公開プロフィールを返す |
 | UC-identity-020 | `deleteAccount` | `spec/usecases/identity.md#deleteAccount` | 確認入力と冪等 request ID から削除 operation を開始し、認証世代と全通常書き込みを閉じる barrier、membership・著者 route manifest、rollback、scope cleanup、認証残渣・一意予約・PII の解放、投影 redaction、tombstone 化を有界・再開可能に統括する。唯一 owner 等では破壊前に rejected へ戻す |
 | UC-identity-021 | `pruneExpiredAuthState` | `spec/usecases/identity.md#pruneExpiredAuthState` | 固定 as-of と maintenance run により全 routing generation の session、auth token、login attempt、OAuth state を shard・表ごとに 100 件ずつ冪等回収し、部分失敗を隔離して継続・完了管理する |
+| UC-identity-022 | `getProfile` | `spec/usecases/identity.md#getProfile` | 書き込みを持たない `updateProfile` の対として、`ActiveUser` の `displayName` / `bio` / `avatarUrl` / `handle` を P-21 の初期表示へ射影する。秘匿値は 1 つも射影せず、不在・削除済みを `USER_NOT_FOUND`、未確認を `EMAIL_NOT_VERIFIED`、`active` でない状態を `ACCOUNT_UNAVAILABLE` で区別する |
+| UC-identity-023 | `checkHandleAvailability` | `spec/usecases/identity.md#checkHandleAvailability` | 保存前の公開ハンドルの空きを handle directory の `resolve` で答え、`available` と `ownedBySelf` を返す。claim ではなく助言的な読み取りなので、他の要求が予約しただけの鍵は空きと読め、勝者は `updateProfile` の予約が決める。形式違反・予約語は `BusinessRuleError` |
+| UC-identity-024 | `completeOAuthCallback` | `spec/usecases/identity.md#completeOAuthCallback` | 単一のコールバック経路で flow state の `intent` だけを根拠に `completeOAuthSignIn` / `linkOAuthIdentity` へ振り分け、返り値は intent 付きの判別共用体にする。`linkIdentity` arm が `identityId` に加えて `redirectTo` を運ぶ（戻り先は消費した flow のもの）。state の不一致・期限切れ・経路の `:provider` 不一致・本スライスに受け皿の無い `integration` intent はすべて `OAUTH_STATE_INVALID` に畳む |
 | UC-integration-001 | `startIntegrationOAuth` | `spec/usecases/integration.md#startIntegrationOAuth` | 有効利用者と provider、同一オリジン遷移先を検査し、認証世代付き state・PKCE を保存して OpenRouter または Drive の認可 URL を返す。Google identity があれば Drive の login hint に使う |
 | UC-integration-002 | `completeIntegrationOAuth` | `spec/usecases/integration.md#completeIntegrationOAuth` | OAuth state を単回消費し、コード、必要 scope、Drive refresh token、疎通を検査して暗号化資格情報を接続または再接続する。OpenRouter 新規接続時は LLM 待ちノート件数を返す |
 | UC-integration-003 | `listConnections` | `spec/usecases/integration.md#listConnections` | 利用者の接続状態・アカウント表示・最終利用・設定を資格情報なしで返し、未接続 provider も disconnected として補完する |
@@ -93,9 +98,9 @@
 | UC-note-035 | `projectNoteChanges` | `spec/usecases/note.md#projectNoteChanges` | local または public plane で current route と Note・tags・Identity・Workspace の atomic snapshot を読み、世代ベクトル付き projection を更新・削除する。tag、author、workspace の fan-out と redaction を有界・冪等 continuation で処理する |
 | UC-note-036 | `rebuildNoteProjection` | `spec/usecases/note.md#rebuildNoteProjection` | 指定 local scope または global active routes を page し、note ごとの再投影要求を積み、任意で正データと合わない orphan projections を削除する |
 | UC-storage-001 | `startBulkUpload` | `spec/usecases/storage.md#startBulkUpload` | 最大 100 files と合計容量、owner 権限、公開 handle、file acceptance、storage quota を検査し、宣言情報から暫定 LLM 件数を返して conversion batch 親を対象所有 scope に登録する |
-| UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る |
-| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す |
-| UC-storage-004 | `storeAvatar` | `spec/usecases/storage.md#storeAvatar` | 本人または workspace 管理権限と avatar 制約を検査し、新 avatar 保存と旧 avatar metadata 削除を同一 UoW で行う。容量 quota は意図的に拒否条件にしない |
+| UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
+| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
+| UC-storage-004 | `storeAvatar` | `spec/usecases/storage.md#storeAvatar` | 本人または workspace 管理権限と avatar 制約を検査し、新 avatar 保存と旧 avatar metadata 削除を同一 UoW で行う。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める。容量 quota は意図的に拒否条件にしない |
 | UC-storage-005 | `issueDownloadUrl` | `spec/usecases/storage.md#issueDownloadUrl` | 入力 scope の file だけを読み、owner 本人または workspace download 権限、artifact 期限を検査して 5 分の download URL を返す |
 | UC-storage-006 | `importExternalReferences` | `spec/usecases/storage.md#importExternalReferences` | referenceImport job の冪等・リース規則に従い、ready 本文の外部 resources と stylesheet 痕跡を SSRF・件数・size・timeout 予算内で最大 6 並行取得し、resources は保管・差替え、CSS は sanitize・inline 化する。本文、試行記録、removed CSS、job を同一 UoW で保存する |
 | UC-storage-007 | `deleteFiles` | `spec/usecases/storage.md#deleteFiles` | file IDs の存在する metadata だけを同一 UoW の共有削除手順で削除し、object key と cleanup operation を含む fileDeleted events を発行して実体削除へ委ねる |
@@ -104,7 +109,7 @@
 | UC-storage-010 | `collectOrphanMedia` | `spec/usecases/storage.md#collectOrphanMedia` | current scope で作成から 30 日超の media を最大 100 件ずつ調べ、所属 note 本文から参照されない、または note 不在の files を削除して日次・即時継続を設定する |
 | UC-storage-011 | `relocateFilesForNote` | `spec/usecases/storage.md#relocateFilesForNote` | move Saga の phase ごとに source・media・reference metadata を snapshot、同一 object key の target stage、R2 delete event なしの source retire として冪等移送する。artifact は移さない |
 | UC-storage-012 | `deleteFilesForNote` | `spec/usecases/storage.md#deleteFilesForNote` | note purge に追随し、cleanup owner を検査して source・media・reference files と reference import records を各 100 件ずつ削除・継続し、artifact を対象外にする |
-| UC-storage-013 | `deleteFilesByOwner` | `spec/usecases/storage.md#deleteFilesByOwner` | scope cleanup owner を各 UoW で検査し、owner files を最大 100 件ずつ metadata delete と fileDeleted event 発行へ進め、残件時だけ専用 continuation を同一 UoW で積む |
+| UC-storage-013 | `deleteFilesByOwner` | `spec/usecases/storage.md#deleteFilesByOwner` | scope cleanup owner を各 UoW で検査し、owner files を最大 100 件ずつ metadata delete と fileDeleted event 発行へ進め、残件時だけ専用 continuation を同一 UoW で積む。出力は `ScopeCleanupTurn & { deletedCount }` で、turn の `status`（`settled` / `continued` / `stalled` / `alreadyApplied`）と `personalCleanupCompleted` を呼び出し側へ返す |
 | UC-tag-001 | `assignTag` | `spec/usecases/tag.md#assignTag` | primary note route と current scope の編集権限・lifecycle を検査し、tag name を正規化して既存または新 tag を使い、note あたり上限・operation lock・重複を守って assignment と projection revision event を保存する |
 | UC-tag-002 | `unassignTag` | `spec/usecases/tag.md#unassignTag` | current note scope と編集権限を検査し、存在する assignment を operation lock 下で削除して projection revision event を保存する。不在 assignment は成功にする |
 | UC-tag-003 | `listTagsWithUsage` | `spec/usecases/tag.md#listTagsWithUsage` | current tag scope の閲覧権限を確認し、keyword・sort・pagination で usage count・last used 付き tags と管理可否を返す |
@@ -123,9 +128,9 @@
 | UC-usage-002 | `ensureUploadAllowed` | `spec/usecases/usage.md#ensureUploadAllowed` | subject storage quota と必要時の当月 LLM usage を読み、不在は初期値として扱って追加 bytes・calls が上限内か純粋に判定する。レコードは作らない |
 | UC-usage-003 | `applyStorageDelta` | `spec/usecases/usage.md#applyStorageDelta` | current scope の file・note events または move phase を同一 UoW の idempotency key で単回化し、artifact を除外して bytes・note count を加減算する。競合は最大 5 回再適用し、削除済み subject を減算で復活させない |
 | UC-usage-004 | `consumeLlmCall` | `spec/usecases/usage.md#consumeLlmCall` | 当月 usage を初期化または読み、上限検査後 calls を消費して headroom を返す。競合は最大 5 回再適用し、上限 event を発行する。後続変換失敗でも消費は戻さない |
-| UC-usage-005 | `recalculateStorageUsage` | `spec/usecases/usage.md#recalculateStorageUsage` | owner の artifact を除く file size 合計と全 note count を正データから再計算し、storage quota 集計値を置換する |
+| UC-usage-005 | `recalculateStorageUsage` | `spec/usecases/usage.md#recalculateStorageUsage` | 実行者 `userId`（主体ではなく `assertActorWritable` が要る依頼者）を受け取り、user 主体が実行者と一致しなければ `BusinessRuleError(InsufficientRole)` で拒否したうえで、owner の artifact を除く file size 合計と全 note count を正データから再計算して storage quota 集計値を置換する。workspace 主体のメンバー検査は `WorkspaceAuthorization` が担う |
 | UC-usage-006 | `initializeQuota` | `spec/usecases/usage.md#initializeQuota` | user・workspace 作成 event に対し、subject 主キーの quota が不在の場合だけ初期行を作り、重複作成は既存として成功する |
-| UC-usage-007 | `deleteQuota` | `spec/usecases/usage.md#deleteQuota` | scope cleanup owner を検査して storage quota を削除し、user では LLM usage を 100 件ずつ削除・継続してから cleanup ack を付ける。不在・遅延減算でも行を復活させない |
+| UC-usage-007 | `deleteQuota` | `spec/usecases/usage.md#deleteQuota` | scope cleanup owner を検査して storage quota を削除し、user では LLM usage を 100 件ずつ削除・継続してから cleanup ack を付ける。出力は `ScopeCleanupTurn`（`status` と `personalCleanupCompleted`）で、継続を積むか完了 ack を上げるかを呼び出し側が件数から決められないため turn を返す。不在・遅延減算でも行を復活させない |
 | UC-workspace-001 | `resolveWorkspaceAccess` | `spec/usecases/workspace.md#resolveWorkspaceAccess` | current workspace scope の存在と membership を読み、workspace 情報と owner・editor・viewer または null role を返す。削除済みは not found にする |
 | UC-workspace-002 | `createWorkspace` | `spec/usecases/workspace.md#createWorkspace` | user の owner 数上限と name・description・slug を検査し、slug reservation を経て workspace と owner membership を同一 scope に作り、global membership・workspace directories を operation ID で active 化する |
 | UC-workspace-003 | `updateWorkspaceProfile` | `spec/usecases/workspace.md#updateWorkspaceProfile` | manageWorkspace 権限と profile 値を検査し、name・description・avatar URL を更新して name 変更時の projection refresh event を保存する |

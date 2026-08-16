@@ -168,7 +168,9 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 入力DTO
 
-`subjectType`, `subjectId`
+`userId: string`, `subjectType`, `subjectId`
+
+`userId` は**主体ではなく実行者**である。`assertActorWritable` が「誰の依頼か」を要るため入力に持つ（[domains/index.md](../domains/index.md) — 全ドメインの通常 write 入口が `assertWritable` と `assertActorWritable` の両方を呼ぶ）。user 主体の場合は実行者と一致していなければならず、一致しなければ `BusinessRuleError(InsufficientRole)`。workspace 主体の場合、実行者がその主体のメンバーであることの検査は `WorkspaceAuthorization`（[domains/workspace.md](../domains/workspace.md)）が担う。
 
 ### 出力DTO
 
@@ -176,13 +178,17 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 処理フロー
 
-1. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
-2. `NoteRepository.countByOwner(owner, "all")` を引く
-3. `StorageQuota` の値を置き換えて保存する
+1. 実行者と主体の対応を検査する。user 主体なら `subjectId` が実行者（`userId`）と一致していなければ `BusinessRuleError(InsufficientRole)`。workspace 主体では、実行者がその主体のメンバーであることの検査を `WorkspaceAuthorization`（[domains/workspace.md](../domains/workspace.md)）が担う
+2. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
+3. `NoteRepository.countByOwner(owner, "all")` を引く
+4. `StorageQuota` の値を置き換えて保存する
 
 ### エラーケース
 
-`SystemError(DatabaseError)`
+| 条件 | 種類 |
+| --- | --- |
+| user 主体が実行者と一致しない | `BusinessRuleError(InsufficientRole)` |
+| 書き込みの失敗 | `SystemError(DatabaseError)` |
 
 ## initializeQuota
 
@@ -223,7 +229,9 @@ scope cleanupに合わせてquota行を消す。workspace deletionはlocal event
 
 ### 出力DTO
 
-なし。
+`ScopeCleanupTurn` — `status`（`settled` / `continued` / `stalled` / `alreadyApplied`）と `personalCleanupCompleted: boolean`。
+
+この turn を駆動した側は、継続を積むか完了 ack を上げるかを件数からは決められない（手順 3 の「100 件未満になってから receipt へ ack を付ける」判断は本ユースケースの内側にある）。呼び出し側が知らなければ制御できない分岐なので、結果として返す。
 
 ### 処理フロー
 

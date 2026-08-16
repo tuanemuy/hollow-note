@@ -8,12 +8,6 @@ import { checkHandleAvailability } from "../checkHandleAvailability";
 import { updateProfile } from "../updateProfile";
 import { signUpVerified } from "./authFlowHelpers";
 
-/**
- * The profile form's advisory handle read. It has no spec TC of its
- * own; what is pinned is the three verdicts the form renders and
- * the fact that "free" is a hint rather than a claim.
- */
-
 const check = (h: TestHarness, userId: string, handle: string) =>
   checkHandleAvailability({
     container: h.container,

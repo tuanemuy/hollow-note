@@ -24,7 +24,7 @@
 
 ### Identity uniqueness の物理shard境界
 
-email・handle・provider accountの作成/変更は、normalized key shardの `identity_unique_reservations` をoperation ID付きでreserveし、UserId shardのUser/Identityを更新してからactivateする。1つの親operationで複数keyを予約する場合は `reservationOperationId = sha256(parentOperationId + ":" + kind + ":" + normalizedKey)` を使い、各rowに別のIDを与える。User保存に失敗すれば確保済みsub-operationをすべてreleaseする。activate応答を失った場合はreservationとUser versionを読み、値が一致すればactivate、不一致ならreleaseする。複数予約の途中停止はoperation payloadに固定した全sub-operationを照合し、不足分reserve、正データ未commitなら全release、commit済みなら全activateへ収束させる。旧値は新値activate後にreleasingへ進めるため、途中停止は一時的な過剰予約にしかならない。sign-up、OAuth sign-in/link、email/handle変更はすべてこの共通状態機械を使い、User rowのUNIQUEとcross-shard transactionを前提にしない。
+email・handle・provider accountの作成/変更は、normalized key shardの `identity_unique_reservations` をoperation ID付きでreserveし、UserId shardのUser/Identityを更新してからactivateする。1つの親operationで複数keyを予約する場合は `` reservationOperationId = `${parentOperationId}:${kind}:${normalizedKey}` `` を使い、各rowに別のIDを与える。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。User保存に失敗すれば確保済みsub-operationをすべてreleaseする。activate応答を失った場合はreservationとUser versionを読み、値が一致すればactivate、不一致ならreleaseする。複数予約の途中停止はoperation payloadに固定した全sub-operationを照合し、不足分reserve、正データ未commitなら全release、commit済みなら全activateへ収束させる。旧値は新値activate後にreleasingへ進めるため、途中停止は一時的な過剰予約にしかならない。sign-up、OAuth sign-in/link、email/handle変更はすべてこの共通状態機械を使い、User rowのUNIQUEとcross-shard transactionを前提にしない。
 
 ### 認証資格発行と削除開始の直列化
 
@@ -67,7 +67,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 7. `Identity.createPassword` を呼ぶ
 8. `UnitOfWorkProvider.run` の中で `userRepository.insert` / `identityRepository.insert`を実行し、確認済みならSession、未確認ならemail verification AuthTokenも同じUserId shard UoWでcurrent status/epochを再検査してinsertする。イベントを `collectEvents` する
 9. User/Identity commit後にemail reservationをactivateする。手順8が失敗したらreleaseする。activate応答を失った場合はUserId shardのUser email/versionを確認し、一致すれば同じsub-operation IDでactivate、不一致またはUser不在ならreleaseする
-10. 確認済みの経路はUoWで作成済みのSessionの平文トークンを返す。有効期間は `Session.ttlMs`（30 日の絶対期限）をドメインが与える
+10. 確認済みの経路はUoWで作成済みのSessionの平文トークンを返す。有効期間は `Session.ttlMs`（30 日の絶対期限）をドメインが与える。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
 11. 未確認ならUoWで作成済みAuthTokenの `MailSender.send({ kind: "emailVerification" })` をcommit後に送る
 
 ### エラーケース
@@ -77,7 +77,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 | 規約未同意 | `ValidationError("TERMS_NOT_ACCEPTED")` |
 | メール形式・パスワード強度・表示名の違反 | `BusinessRuleError`（`InvalidEmail` / `WeakPassword` / `InvalidDisplayName`） |
 | 招待トークンが無効・期限切れ・メール不一致 | 招待を無視して通常の登録として扱う（エラーにしない） |
-| email reservationの競合 | `ConflictError("EMAIL_ALREADY_USED")` |
+| 一意性 directory が email 予約の競合を返した（`ConflictError("EMAIL_ALREADY_USED")`） | エラーにせず既登録メールと同一の応答へ畳む（列挙耐性 — [ADR 028](../adr/028-account-enumeration-resistance.md)。手順 4 / 9） |
 | メール送信の失敗 | 記録して継続（登録は成功として返す） |
 | レート制限 | `ValidationError("RATE_LIMITED")` |
 
@@ -98,8 +98,10 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 | フィールド | 型 |
 | --- | --- |
 | `userId` | `string` |
-| `sessionToken` | `string` |
+| `sessionToken` | `string \| null` |
 | `alreadyVerified` | `boolean` |
+
+`alreadyVerified` の経路（手順 3 / 手順 6 の畳み込み）ではセッションを発行しないため、`sessionToken` は `null` になる。
 
 ### 処理フロー
 
@@ -109,7 +111,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 4. `UserRepository.findById` で利用者を引き、`token.authEpoch`がcurrent Userと違えば`NotFoundError("AUTH_TOKEN_NOT_FOUND")`
 5. `AuthToken.consume(token, now)` を呼び、`PendingUser` なら `User.verifyEmail` を適用する（期限切れは `BusinessRuleError(TokenExpired)`）
 6. `UnitOfWorkProvider.run` で利用者とトークンを保存し、同じUoWでactiveになったUser/current epochを再検査してSessionもinsertし、イベントを収集する。トークンの保存は `status = 'pending'` の行への条件付き更新であり（[domains/identity.md](../domains/identity.md) の `AuthTokenRepository`）、並行する要求が先に消費していれば `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` になる。この場合はSessionを含むtransactionを巻き戻したうえで手順 3 と同じ扱いに落とす
-7. UoWで作成済みSessionの平文トークンを返す（有効期間は `Session.ttlMs`）
+7. UoWで作成済みSessionの平文トークンを返す（有効期間は `Session.ttlMs`）。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
 
 ### エラーケース
 
@@ -181,7 +183,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 5. 利用者が `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`（失敗として記録しない。資格情報は正しく、再送すれば通る状態のため）
 6. 利用者が`DeletingUser`なら`ValidationError("ACCOUNT_DELETING")`、`DeletedUser`なら`ValidationError("INVALID_CREDENTIALS")`。どちらもSessionを発行しない
 7. `LoginAttemptStore.clear(key)` で失敗の記録を消す
-8. `ActiveUser`のcurrent `authEpoch`で`Session.create`を作って保存し、平文トークンを返す（有効期間は `Session.ttlMs`）
+8. `ActiveUser`のcurrent `authEpoch`で`Session.create`を作って保存し、平文トークンを返す（有効期間は `Session.ttlMs`）。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
 
 `login_attempts` への書き込みはこのユースケースと `verifySharePassword`（[usecases/note.md](./note.md)）の 2 か所だけで、どちらも同じ順序（`get` → `evaluate` → 失敗なら `put` / 成功なら `clear`）に従う。Unit of Work には入れない — 記録は集約の不変条件に関与せず、認証が失敗して例外を投げる経路でも書き込みが残らなければレート制限が機能しないため。書き込みの失敗は記録して継続し、認証の結果そのものは変えない。
 
@@ -213,12 +215,15 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 
 | フィールド | 型 |
 | --- | --- |
+| `state` | `string` |
 | `authorizationUrl` | `string` |
+
+`state` は `authorizationUrl` が既に運んでいるが、転送境界がプロバイダーの URL を再パースせずに**フローを開始したブラウザーへ束縛**できるよう別に露出する（[ADR 034](../adr/034-oauth-callback-browser-binding.md)）。
 
 ### 処理フロー
 
 1. `OAuthProvider.create(input.provider)` を構築する
-2. `intent === "linkIdentity"` で `userId` が `null` なら `ValidationError("USER_REQUIRED")`。指定時はUserId shardで`ActiveUser`を確認し、current `authEpoch`を読む
+2. `intent === "linkIdentity"` で `userId` が `null` なら `ValidationError("USER_REQUIRED")`。指定時はUserId shardで`ActiveUser`を確認し、current `authEpoch`を読む。`active`でなければ（削除を開始した利用者を含む）`UnauthorizedError("UNAUTHENTICATED")`。削除を開始した利用者はもはや認証済み主体ではないので、state 行そのものを作らない
 3. `state` と `codeVerifier` を `SecureTokenGenerator.issue` で作り、`codeChallenge` を算出する
 4. `OAuthStateStore.put(state, flowState, 10 分)` で保存する。`linkIdentity`は認証済み`userId`と取得した`userAuthEpoch`を必ず保存し、`signIn`は両方`null`にする
 5. `SignInOAuthClient.buildAuthorizationUrl` の結果を返す
@@ -227,8 +232,9 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 
 | 条件 | 種類 |
 | --- | --- |
-| 未知のプロバイダー | `BusinessRuleError(InvalidProvider)` |
+| 未知のプロバイダー | `BusinessRuleError(InvalidProviderAccount)` |
 | `redirectTo` が外部 URL | `ValidationError("INVALID_REDIRECT")` |
+| `linkIdentity` intent で主体が active でない（削除開始済みを含む） | `UnauthorizedError("UNAUTHENTICATED")` |
 
 ## completeOAuthSignIn
 
@@ -261,18 +267,59 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 5. `createNew` → 親operationからemail/providerAccount別のsub-operation IDを導出して両reservationを確保し、UserId shardで `User.createVerified` と `Identity.createOAuth` を保存後に両方activateする。2つ目のreserveまたはUser保存が失敗したら確保済みreservationをすべてreleaseする。応答喪失時は両reservationとUser/Identity versionを照合し、正データcommit済みなら不足分をreserveして両方activate、未commitなら両方releaseする
 6. `linkToExisting` → providerAccount reservationを確保し、既存UserId shardで `Identity.createOAuth` を保存後にactivateする
 7. `refuse` → 理由に応じた `ValidationError` を返す
-8. 既存Userの各分岐はUser/IdentityをUserId shard UoWで読み直し、`ActiveUser`とcurrent epoch（および既存Identity version）を確認し、current Identity集合へ`IdentityPolicy.ensureAddable`を適用してからIdentity追加とSession insertを同じtransactionで行う。上限8件ならreservationをreleaseして`BusinessRuleError(IdentityLimitExceeded)`を返す。新規分岐もUser/Identity/Sessionを同じUoWでinsertする。作成済み平文トークンと `redirectTo` を返す
+8. 既存Userの各分岐はUser/IdentityをUserId shard UoWで読み直し、`ActiveUser`とcurrent epoch（および既存Identity version）を確認し、current Identity集合へ`IdentityPolicy.ensureAddable`を適用してからIdentity追加とSession insertを同じtransactionで行う。上限8件ならreservationをreleaseして`BusinessRuleError(IdentityLimitExceeded)`を返す。新規分岐もUser/Identity/Sessionを同じUoWでinsertする。作成済み平文トークンと `redirectTo` を返す（有効期間は `Session.ttlMs`）。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | `state` の不一致・期限切れ | `ValidationError("OAUTH_STATE_INVALID")` |
-| コード交換の失敗 | `ValidationError("OAUTH_CODE_INVALID")` / `SystemError(ExternalServiceError)` |
+| コード交換の失敗 | `ValidationError("OAUTH_CODE_INVALID")` / `SystemError(ExternalApiError)` |
 | プロバイダー側のメール未確認 | `ValidationError("OAUTH_EMAIL_UNVERIFIED")` |
 | 既存利用者がメール未確認 | `ValidationError("EXISTING_ACCOUNT_UNVERIFIED")` |
 | 紐づけ先が別の利用者 | `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`（providerAccount reservationの競合） |
+| directory の claim は残っているが対応する identity が居ない | `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")`（解除済み claim の収束待ち。他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` とは別のコード — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)） |
 | 既存利用者の認証手段が8件 | `BusinessRuleError(IdentityLimitExceeded)` |
+
+## completeOAuthCallback
+
+### 概要
+
+OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flow state の `intent` だけを根拠に `completeOAuthSignIn` と `linkOAuthIdentity` へ振り分ける（AC-03 / AC-06）。
+
+### 入力DTO
+
+| フィールド | 型 | 必須 | バリデーション |
+| --- | --- | --- | --- |
+| `provider` | `string` | ○ | 経路のパスパラメーター。state に保存された provider との照合に使う（手順 2） |
+| `state` | `string` | ○ | 空文字列でないこと |
+| `code` | `string` | ○ | 空文字列でないこと |
+
+### 出力DTO
+
+`intent` を判別子に持つ判別共用体。
+
+| arm | フィールド |
+| --- | --- |
+| `intent: "signIn"` | `completeOAuthSignIn` の出力そのまま（`userId` / `sessionToken` / `redirectTo` / `created`） |
+| `intent: "linkIdentity"` | `linkOAuthIdentity` の出力（`identityId`）＋ `redirectTo: string \| null` |
+
+`redirectTo` が `linkIdentity` arm にあるのは、戻り先が**ディスパッチャーが消費した flow のもの**であって紐づけ自体のものではないため（`startOAuthFlow` が state に park した値をそのまま詰める）。`linkOAuthIdentity` 自身の出力 DTO は `identityId` だけで変わらない。
+
+### 処理フロー
+
+1. `OAuthStateStore.take(input.state)` で取り出す。`null` なら `ValidationError("OAUTH_STATE_INVALID")`
+2. 経路の `:provider` が state に保存されたものと一致しなければ、state を無効として扱う（`ValidationError("OAUTH_STATE_INVALID")`）
+3. `intent` で振り分ける。`signIn` は `completeOAuthSignIn`、`linkIdentity` は `linkOAuthIdentity` の処理を、取り出し済みの flow state に対して実行する。`integration` は本スライスに受け皿が無いため state を無効として扱う（`ValidationError("OAUTH_STATE_INVALID")`。受け皿は外部連携スライスの `completeIntegrationOAuth` — [usecases/integration.md](./integration.md)）。分岐根拠はサーバーが決めた `intent` だけに限り、クエリ文字列や現在のセッションを根拠にしない（[ADR 035](../adr/035-oauth-callback-single-route.md)）
+4. 実行した側の出力へ `intent` を付けて返す。`linkIdentity` では flow state の `redirectTo` を添える
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| `state` の不一致・期限切れ・`:provider` 不一致 | `ValidationError("OAUTH_STATE_INVALID")` |
+| flow state の `intent` が `integration` | `ValidationError("OAUTH_STATE_INVALID")`（本スライスに受け皿が無いため state を無効として扱う） |
+| 振り分け先のユースケースが返すもの | `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケースをそのまま伝える |
 
 ## linkOAuthIdentity
 
@@ -294,12 +341,12 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 
 1. `OAuthStateStore.take` で取り出し、`intent` が `linkIdentity` でなければ `ValidationError("OAUTH_STATE_INVALID")`
 2. `SignInOAuthClient.exchangeCode` でプロフィールを得る
-3. providerAccount directoryを解決し、別userIdのactive/reserved行があれば `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`。なければreservationを確保する
+3. providerAccount directoryを解決する（`resolve` が返すのは恒久 claim の持ち主だけ — [domains/identity.md](../domains/identity.md)）。別userIdが持っていれば `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`。持ち主が居なければreservationを確保する。進行中の `reserved` や解除待ちの `releasing` との競合は、後続の `reserve` が同じコードで返す
 4. UserId shard UoWでUserとcurrent Identity集合を読み直し、`ActiveUser`かつcurrent epochがflow stateの`userAuthEpoch`と一致し、`IdentityPolicy.ensureAddable`を満たすことを確認してから `Identity.createOAuth` を保存する。削除開始済み・世代不一致・上限8件なら保存せずreservationをreleaseする。成功後にreservationをactivateする
 
 ### エラーケース
 
-`completeOAuthSignIn` と同じ分類に加え、`NotFoundError("USER_NOT_FOUND")`。認証手段が8件なら`BusinessRuleError(IdentityLimitExceeded)`。
+`completeOAuthSignIn` と同じ分類に加え、`NotFoundError("USER_NOT_FOUND")`。認証手段が8件なら`BusinessRuleError(IdentityLimitExceeded)`。directory の claim は残っているが対応する identity が居ない場合は`ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")`で、他人が持っている`PROVIDER_ACCOUNT_ALREADY_LINKED`とは別のコードである（解除済み claim の収束待ち — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)）。
 
 ## authenticateSession
 
@@ -407,8 +454,8 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 
 1. email directoryを解決し、返ったUserId shardのUserを引く。不在または`ActiveUser`以外なら何もせず返す
 2. `IdentityPolicy.findPassword` が `null` なら `MailSender.send({ kind: "passwordResetUnavailable" })` を送って返す
-3. 既存の`password_reset` pending tokenは部分一意制約下で`deleteByUserAndPurpose(userId, purpose, 1)`により消す
-4. UserId shard UoWで`ActiveUser`とcurrent epochを再検査し、既存token削除と`AuthToken.issue(purpose: "password_reset")`を同じtransactionで保存する。commit後に`MailSender.send({ kind: "passwordReset" })` を送る
+3. UserId shard UoWで`ActiveUser`とcurrent epochを再検査し、**同じtransactionで** `AuthTokenRepository.findPendingByUserAndPurpose(userId, "password_reset")` を引く。発行から 60 秒未満のlive tokenがあれば新規発行せず成功として返す。そうでなければ既存の`password_reset` pending tokenを部分一意制約下の`deleteByUserAndPurpose(userId, purpose, 1)`で消し、`AuthToken.issue(purpose: "password_reset")`を同じtransactionで保存する。間隔判定・削除・発行をtransactionの外へ割ると、並行する要求が 60 秒の間隔をすり抜けてlive tokenを 2 つ残しうる
+4. commit後に`MailSender.send({ kind: "passwordReset" })` を送る
 
 ### エラーケース
 
@@ -465,14 +512,19 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 
 ### 処理フロー
 
-1. `IdentityRepository.listByUserId` を引き、`IdentityPolicy.ensureAddable`と`ensurePasswordAddable`を呼ぶ。最終UserId shard UoWでもcurrent集合に対して両方を再検査する
-2. `PlainPassword.create` と `PasswordHasher.hash` を実行する
-3. `Identity.createPassword` を作って保存する
+1. 現在のセッションの再認証（Google 再認可）が済んでいることを確認する。済んでいなければ追加せず `ValidationError("REAUTHENTICATION_REQUIRED")` を返し、P-22 は「再認証要求」状態で認可フローへ誘導する（AC-06。パスワードは以後のサインイン資格そのものなので、既存セッションの保持だけを根拠に増やさない）
+2. `IdentityRepository.listByUserId` を引き、`IdentityPolicy.ensureAddable`と`ensurePasswordAddable`を呼ぶ。最終UserId shard UoWでもcurrent集合に対して両方を再検査する
+3. `PlainPassword.create` と `PasswordHasher.hash` を実行する
+4. 最終UserId shard UoWでUserを読み直す。不在なら `NotFoundError("USER_NOT_FOUND")`、`ActiveUser`でなければ `ValidationError("ACCOUNT_UNAVAILABLE")`
+5. `Identity.createPassword` を作って保存する
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
+| 再認証が未了 | `ValidationError("REAUTHENTICATION_REQUIRED")` |
+| 利用者が不在 | `NotFoundError("USER_NOT_FOUND")` |
+| 利用者が `active` でない | `ValidationError("ACCOUNT_UNAVAILABLE")` |
 | 既にパスワード手段がある | `BusinessRuleError(PasswordIdentityAlreadyExists)` |
 | 認証手段が8件 | `BusinessRuleError(IdentityLimitExceeded)` |
 | パスワード強度の違反 | `BusinessRuleError(WeakPassword)` |
@@ -521,7 +573,7 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 
 1. `IdentityRepository.listByUserId` を引き、対象が利用者のものであることを確認する
 2. `IdentityPolicy.ensureRemovable(identities, identityId)` を呼ぶ
-3. `operationId = sha256("removeIdentity:" + identityId)`を導出する。UserId shardの同じUoWで `identityRepository.delete`、30日保持の`identity_removal_receipt`、`identity.identity.removed { identityId, userId, kind, providerAccountKey, operationId }` outboxを保存する。passwordではproviderAccountKeyをnullにする
+3. `` operationId = `removeIdentity:${identityId}` ``を導出する。固定prefixと`:`を含まないIDの合成なので、これで決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。UserId shardの同じUoWで `identityRepository.delete`、30日保持の`identity_removal_receipt`、`identity.identity.removed { identityId, userId, kind, providerAccountKey, operationId }` outboxを保存する。passwordではproviderAccountKeyをnullにする
 4. global consumerはOAuth eventのproviderAccountKeyを使ってreservationをreleasing→releaseする。event再配送はoperation IDで冪等にし、正データ削除後にだけ解放する。手順3の応答を失って同じ要求が来た場合はreceiptを読み、削除済み成功を返す。したがってIdentity不在後にkeyを復元する必要がなく、consumer停止は一時的な過剰予約にだけなる
 
 ### エラーケース
@@ -577,7 +629,7 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 ### 処理フロー
 
 1. `UserRepository.findById` で引く。`PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`
-2. handleを新規設定/変更するならnormalized handle reservationをoperation ID付きで確保する。別userのactive/reserved行があれば `ConflictError("HANDLE_ALREADY_USED")`
+2. handleを新規設定/変更するならnormalized handle reservationをoperation ID付きで確保する。鍵を別のoperationが保持していれば `ConflictError("HANDLE_ALREADY_USED")`（判定材料は operation ID であって利用者ではないので、同じ利用者の別 operation からの再予約も同じく衝突する — [domains/identity.md](../domains/identity.md)）。奪えるのは期限切れの `reserved` だけで、解除待ちの `releasing` の行は奪えない
 3. `User.updateProfile` を適用し、`handle` の指定があれば `User.assignHandle` または `User.clearHandle` を続けて適用する
 4. UserId shardのUoWで保存し、成功後にreservationをexpected User versionでactivateする。旧handleはその後releasingへ進める。`displayName` が変わったときはprofile eventを発行する
 
@@ -589,6 +641,62 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 | ハンドルの重複 | `ConflictError("HANDLE_ALREADY_USED")` |
 | 表示名・自己紹介の違反 | `BusinessRuleError` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
+
+## getProfile
+
+### 概要
+
+自分のプロフィールを読み出す（AC-07）。`updateProfile` が編集する項目を P-21 の初期表示へ供給する、書き込みを持たない対のユースケース。
+
+### 入力DTO
+
+`userId: string`
+
+### 出力DTO
+
+`updateProfile` と同じ利用者の射影（`userId`, `displayName`, `bio`, `avatarUrl`, `handle`）。パスワードハッシュ・トークンなどの秘匿値は 1 つも射影しない。
+
+### 処理フロー
+
+1. `UserRepository.findById` で引く。不在または `deleted` なら `NotFoundError("USER_NOT_FOUND")`
+2. `PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`
+3. それ以外で `ActiveUser` でなければ `ValidationError("ACCOUNT_UNAVAILABLE")`
+4. `ActiveUser` を射影して返す
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 利用者が不在・削除済み | `NotFoundError("USER_NOT_FOUND")` |
+| メール未確認 | `ValidationError("EMAIL_NOT_VERIFIED")` |
+| 利用者が `active` でない（削除開始済み） | `ValidationError("ACCOUNT_UNAVAILABLE")` |
+
+## checkHandleAvailability
+
+### 概要
+
+保存前に公開ハンドルが空いているかを答える（AC-07）。P-21 のハンドル重複の即時チェックに使う。
+
+### 入力DTO
+
+`userId: string`, `handle: string`
+
+### 出力DTO
+
+`handle: string`, `available: boolean`, `ownedBySelf: boolean`
+
+### 処理フロー
+
+1. `Handle.create(input.handle)` を構築する（形式違反・予約語は `BusinessRuleError`）
+2. handle directoryを `resolve("handle", handle)` で引く。`null` または自分の `userId` なら `available: true` とし、自分のものなら `ownedBySelf: true` を添える
+
+**助言的な読み取りであって claim ではない**。勝者を決めるのは `updateProfile` の予約だけなので、空きと答えたハンドルが競合に負けて `ConflictError("HANDLE_ALREADY_USED")` として返ることはありうる。`resolve` は確定した claim だけを解決し、他の要求が予約しただけの鍵は空きと読める — ヒントとしては保守的な向きである。公開ハンドルは URL として公開されるので、これに答えること自体は [ADR 028](../adr/028-account-enumeration-resistance.md) が防ぐ列挙オラクルには当たらない。呼び出し元は認証済みセッションに限る。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| ハンドルの形式違反・予約語 | `BusinessRuleError(InvalidHandle)` / `BusinessRuleError(HandleReserved)` |
 
 ## getPublicProfile
 
@@ -649,7 +757,7 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 
 ### 入力DTO
 
-`{ type: "userRequest"; userId: string; confirmationEmail: string; requestId: string } | { type: "identity.accountDeletionManifestBuildContinued"; operationId: string; phase: "memberships" | "authorRoutes" } | { type: "identity.accountDeletionDispatchContinued"; operationId: string; phase: "prepare" | "rollbackRelease" | "cleanup" | "redaction" | "finalize" } | { type: "identity.accountDeletionManifestCompactContinued"; operationId: string } | { type: "identity.accountDeletionManifestPruneContinued"; runId: string; generation: string; shardId: string; cursor: string | null; asOf: Date } | { type: "identity.personalBarrierPruneContinued"; scope: ScopeKey; asOf: Date }`
+`{ type: "userRequest"; userId: string; confirmationEmail: string; requestId: string } | { type: "identity.accountDeletionManifestBuildContinued"; operationId: string; phase: "memberships" | "authorRoutes"; cursor: string | null } | { type: "identity.accountDeletionDispatchContinued"; operationId: string; phase: "prepare" | "rollbackRelease" | "cleanup" | "redaction" | "finalize"; cursor: string | null } | { type: "identity.accountDeletionManifestCompactContinued"; operationId: string; cursor: string | null } | { type: "identity.accountDeletionManifestPruneContinued"; runId: string; generation: string; shardId: string; cursor: string | null; asOf: Date } | { type: "identity.personalBarrierPruneContinued"; scope: ScopeKey; asOf: Date }`
 
 ### 出力DTO
 
@@ -660,19 +768,19 @@ userRequest / operation continuationは`operationId: string`, `status: "accepted
 ### 処理フロー
 
 1. `userRequest`だけが`UserRepository.findById`と`confirmationEmail` / UUID `requestId`を検査する。operation continuationは利用者認証/確認入力を再要求せず、UserId shardのdistributed operation/manifest owner・stateから再開する。account manifest pruneは固定run/generation/shard/asOf/cursor、personal barrier pruneは固定scope/asOfだけでterminal rowを回収し、operation ownerを要求しない
-2. UserId shard transaction で User を `deleting` にして`authEpoch + 1`へ進め、`distributed_operations(kind: "accountDeletion", partitionKey: userId, requestKey: requestId, state: "preparing")` を作る。同じrequest keyなら既存operationを返し、別request keyでもrunning operationがあればそれを返す。rejected後の新request keyだけが新operationを作れるが、120日保持中のrejected attemptは利用者ごとに最大8件とし、8件なら`BusinessRuleError(AccountDeletionRetryLimitExceeded)`で新operationを作らない。続いてpersonal scope DOへbarrier commandを送り、`beginPersonalAccountDeletion(operationId, userId)`とreceiptを同じlocal transactionで保存したackを待つ。DO直列化により先行中のNote/Tag/Storage/Usage/Integration/Job writeはbarrier前に確定して後続scanが拾い、barrier後は全通常write入口の`assertWritable`が`ACCOUNT_DELETING`で拒否する。cleanup tokenだけが`assertOwner`で通る。barrier ack前にprepare/destructive cleanupへ進まない。事前検査でactiveへ戻す場合も世代は巻き戻さずbarrierをreleaseして再サインインを要求する
+2. UserId shard transaction で User を `deleting` にして`authEpoch + 1`へ進め、`distributed_operations(kind: "accountDeletion", partitionKey: userId, requestKey: requestId, state: "running")` を作り、同じUserId shardのmanifest headerを`preparing`で開く。`distributed_operations.state`の語彙は`running` / `completed` / `rejected`の3値で、`preparing` / `committing`はaccount deletion manifest headerのstateである（[database/index.md](../database/index.md) の`account_deletion_manifests`）。同じrequest keyなら既存operationを返し、別request keyでもrunning operationがあればそれを返す。rejected後の新request keyだけが新operationを作れる。新operationを作る手前で、当該利用者の保持中のterminal行（`completed` / `rejected`）を`DistributedOperationStore.countTerminalSince`で数え、`AccountDeletionRetryPolicy.ensureRetryable`に渡す。上限（`maxTerminalAttempts` = 8件）と数える窓（`retentionWindowMs` = 120日）の正典はこのドメインサービスが持ち（[domains/identity.md](../domains/identity.md)）、storeは件数を観測するだけである。上限に達していれば`BusinessRuleError(AccountDeletionRetryLimitExceeded)`で新operationを作らない。数えてから判定し、判定を通ってから作る（作ってから巻き戻さない）。再開（同じoperationの継続）はterminal行を増やさないので判定の対象にしない。続いてpersonal scope DOへbarrier commandを送り、`beginPersonalAccountDeletion(operationId, userId)`とreceiptを同じlocal transactionで保存したackを待つ。DO直列化により先行中のNote/Tag/Storage/Usage/Integration/Job writeはbarrier前に確定して後続scanが拾い、barrier後は全通常write入口の`assertWritable`が`ACCOUNT_DELETING`で拒否する。cleanup tokenだけが`assertOwner`で通る。barrier ack前にprepare/destructive cleanupへ進まない。事前検査でactiveへ戻す場合も世代は巻き戻さずbarrierをreleaseして再サインインを要求する
 3. orchestrator はUserId shardのaccount deletion manifestを100件pageで構築する。Userをdeletingにした時点で新しいmembership activation claimは閉じている。まず`MembershipDirectoryReservationStore.listActivatingByUser(userId, 100)`で先行accept Sagaを有界に回復し、activating edgeが0件になるまでmanifest scanを開始しない。active/abandonedへ収束後、`appendMembershipPage`が`membership_directory`のactive/removing/pending edgeをedge key順に固定し、page/cursor/次のbuild continuationを同じtransactionで保存する。membership固定後、`claimPending(..., "prepare", 100)`が決定的prepare command keyと`prepareDispatchedAt`を送信前に保存し、そのpageを最大6 workspace waveで処理する。active edgeはMembership version/owner lockに加えて当該actorの全通常writeをlocal commit時に閉じるbarrier、removing edgeは先行cleanup完了待ち、pending edgeは`MembershipDirectoryReservationStore.prepareAccountDeletion`でreservation変更を閉じるprepare lockを取得する。pending reservationの取消はcommit後のcleanupで行い、prepare中は破壊しない。itemごとのprepare ackと次のdispatch continuationを同じUserId-shard transactionで保存する
 
    全membership barrier ack後だけ`NoteRouteFanOutReader.listByCreatedBy(userId, cursor, 100)`のauthor route固定へ進む。これによりbarrier前に確定したin-flight workspace writeはroute scanが拾い、barrier後は新しいcreatedBy routeが増えない。route readerは最大32 shard・同時6接続の署名generation cursorで読み、page item/cursor/次build continuationをmanifestへ冪等appendする。全route固定後にmarkBuiltする。operation payloadへ全ID配列を載せない。1scopeでもprepare不能なら全workspace barrier/personal barrierをreleaseしてrollbackへ進み、redactionを含むdestructive cleanupは始めない
 prepare leaseはTTL 10分で2分ごとにrenewする。全ack後も残存5分以上を確認し、全scope lockを非失効の`committed`へ進めてからdestructive cleanupを始める。renew失敗時はcommitへ入らずrecoveryを待つ。期限切れprepared lockはmembership操作側が無視せず、global recoveryがD1 operation stateに従ってrenewまたはreleaseする。
 
-prepareが1scopeでも失敗した場合は`beginRollback`でmanifestを`rollingBack`へ進める。`claimPending(operationId, "release", 100)`はprepare dispatched済みでrelease未ackのmembership itemをprepare ack有無にかかわらずclaimし、決定的release command key/`releaseDispatchedAt`を保存してから最大6 workspace接続のwaveでlock releaseを冪等配送する。prepareがremote commit後・中央ack前に止まっていても対象に含み、実際にはlock未取得だったitemへのreleaseはno-op ackになる。各release ack pageと次`rollbackRelease` continuationを同じUserId-shard transactionで保存する。personal scopeの`abortPersonalAccountDeletion(operationId)`も`personalAbort` receiptとして再送可能にする。`allRollbackReleased`が全workspace release ackとpersonal abort ackを確認した後だけUserを`active`へ戻してmanifestを`compactingRejected`へ進める。同じcompact continuationでitemsを1turn100件ずつ消し、item 0件のtransactionでmanifestとoperationを`rejected`にして`expiresAt = now + 120日`を設定する。barrier解除応答を失った場合はoperation IDで再送し、全release ack前およびmanifest縮約前はactive/rejectedの終端結果を公開しない。destructive cleanup開始後はabortしない。
+prepareが1scopeでも失敗した場合は`beginRollback`でmanifestを`rollingBack`へ進める。`claimPending(operationId, "release", 100)`はprepare dispatched済みでrelease未ackのmembership itemをprepare ack有無にかかわらずclaimし、決定的release command key/`releaseDispatchedAt`を保存してから最大6 workspace接続のwaveでlock releaseを冪等配送する。prepareがremote commit後・中央ack前に止まっていても対象に含み、実際にはlock未取得だったitemへのreleaseはno-op ackになる。各release ack pageと次`rollbackRelease` continuationを同じUserId-shard transactionで保存する。personal scopeの`abortPersonalAccountDeletion(operationId)`も`personalAbort` receiptとして再送可能にする。`allRollbackReleased`（＝固定済みmembership itemのrelease ackがすべて揃ったこと）の**判定対象にpersonal abort ackは含まない**。ユースケースは`allRollbackReleased`とpersonal barrierのabort ack（`personalAbort` receipt）の**両方**を確認してからUserを`active`へ戻し、manifestを`compactingRejected`へ進める（[ADR 053](../adr/053-account-deletion-rollback-completion.md)）。述語1つを復帰の条件にすると、Userはactiveに戻ったのにpersonal scopeのbarrier receiptが残っていて自分のノートに書けない状態を許してしまう。finalize側の必須receipt集合も同様に**配備が宣言した集合**であって、enum全体でも5 receipt固定でもない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。`personalAbort`はrollback側のreceiptなのでfinalizeの必須集合には入らない。同じcompact continuationでitemsを1turn100件ずつ消し、item 0件のtransactionでmanifestとoperationを`rejected`にして`expiresAt = now + 120日`を設定する。barrier解除応答を失った場合はoperation IDで再送し、全release ack前およびmanifest縮約前はactive/rejectedの終端結果を公開しない。destructive cleanup開始後はabortしない。
 
 pending edge itemのprepare/release/cleanupはそれぞれ`MembershipDirectoryReservationStore.prepareAccountDeletion` / `releaseAccountDeletion` / `commitAccountDeletion`を使う。active edgeのworkspace-local lockと同じdeletion operation IDで管理し、rollbackはpending reservationを元の状態へ戻し、commit後だけ取消す。
 
 rollback compactionのitem 0件transactionは`markRejected(operationId, now, now + 120日)`を呼び、headerとmatching distributed operationへ同じterminal時刻/期限を設定する。
 
-4. author route manifest完成後にだけoperationを`committing`へ進め、`claimPending`で各phase最大100 itemのcommand key/dispatchedAtを送信前に保存し、外部scope最大6接続のwaveに分けてcommandを配送する。各ack pageと残件がある場合の次`identity.accountDeletionDispatchContinued`を同じUserId-shard transactionで保存する。各 scope object は operation ID を `applied_operations` で重複排除し、100件ずつ `scheduled_tasks` / Alarm で継続する
+4. author route manifest完成後にだけmanifest headerを`committing`へ進め（`distributed_operations.state`は`running`のまま。3値の語彙に`committing`は無い）、`claimPending`で各phase最大100 itemのcommand key/dispatchedAtを送信前に保存し、外部scope最大6接続のwaveに分けてcommandを配送する。各ack pageと残件がある場合の次`identity.accountDeletionDispatchContinued`を同じUserId-shard transactionで保存する。各 scope object は operation ID を `applied_operations` で重複排除し、100件ずつ `scheduled_tasks` / Alarm で継続する
    - personal scope: scope 内 Job を強制終端し、その後始末、Note / Tag / Storage / Backup / Usage の削除を1つの local transaction列として完了させる
    - 各 workspace scope: prepared lockを確認し、`requestedBy = userId` のactive Jobを強制終端してJob正データとBackupRecordを削除し、残るノートの著者表示を「退会した利用者」に更新してからMembershipを削除する。`MembershipRemovalPreparationStore.commit`も同じlocal transaction列で完了する
    - global cleanup: Session/AuthTokenの物理行を各100件ずつ、ExternalConnection、global job history、public projection の著者表示を処理し、Userのhandle / emailと最大8件のIdentityに対応する全OAuth providerAccount reservationを最大6接続のwaveでfinalize時にreleasing→releaseする。`identity.userAuthResidueCleanupContinued { userId, authEpoch, table, deletionOperationId }`は各page/phaseを保存し、AuthToken残件0のack前はfinalizeしない。応答喪失はoperation payloadに固定したkeyから再開する
@@ -703,7 +811,7 @@ active noteMoveが同userをactor/source/targetに持つ場合、scope cleanup�
 | --- | --- |
 | 確認入力の不一致 | `ValidationError("CONFIRMATION_MISMATCH")` |
 | requestIdがUUID形式でない | `ValidationError("INVALID_REQUEST_ID")` |
-| 120日保持中のrejected attemptが8件 | `BusinessRuleError(AccountDeletionRetryLimitExceeded)` |
+| 保持中のterminal行（`completed` / `rejected`）が上限に達している（`AccountDeletionRetryPolicy` — 120日の窓で8件） | `BusinessRuleError(AccountDeletionRetryLimitExceeded)` |
 | 唯一の owner であるワークスペースがある | `BusinessRuleError(LastOwnerCannotLeave)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 

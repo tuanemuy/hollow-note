@@ -8,7 +8,7 @@ import type { ProtectedShareToken } from "@repo/core/domain/note/valueObject";
  * to re-display the share URL to the owner, never on the shared-link
  * read path (which compares hashes).
  *
- * Error contract: `SystemError(ExternalServiceError)` (unknown key
+ * Error contract: `SystemError(DataIntegrityError)` (unknown key
  * version, corrupt ciphertext).
  */
 export interface ShareTokenProtector {

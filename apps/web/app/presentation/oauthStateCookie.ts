@@ -20,7 +20,7 @@ import {
  */
 const OAUTH_STATE_COOKIE_NAME = "hollow_oauth_state";
 
-// 免除は allowlist で判定する（ADR-110）。Vite が `process.env.NODE_ENV` を
+// 免除は allowlist で判定する（spec/adr/037）。Vite が `process.env.NODE_ENV` を
 // ビルド時に畳み込むため、本番ビルドの成果物では定数 false になる。
 const isDevelopment = (): boolean => process.env.NODE_ENV === "development";
 
@@ -63,7 +63,7 @@ export function clearOAuthStateCookie(): void {
  * 照合を通さずに終わる往復（キャンセル・引数欠落）のための破棄。
  * **束縛が一致した Cookie だけ**を捨てる — 一致しない Cookie は別の
  * ブラウザーが進行中のフローのものなので、コールバック URL を踏ませる
- * だけで他人のフローを壊せる経路になる（ADR-099）。
+ * だけで他人のフローを壊せる経路になる（spec/adr/034）。
  */
 export async function clearBoundOAuthStateCookie(state: string): Promise<void> {
   const value = getCookie(OAUTH_STATE_COOKIE_NAME);

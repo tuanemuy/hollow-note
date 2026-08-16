@@ -1,6 +1,8 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-09）
+生成元: `spec/domains/`（最終同期: 2026-08-16）
+
+**1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -12,24 +14,24 @@
 | DOM-common-006 | `ScopeCleanupAdmissionStore.assertActorWritable` | `spec/domains/index.md#ScopeKey-と永続化境界` | actor の削除・除名準備ロックを含め書き込み可否を検査する |
 | DOM-common-007 | `ScopeCleanupAdmissionStore.beginPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 scope の削除 barrier を operation 単位で開始する |
 | DOM-common-008 | `ScopeCleanupAdmissionStore.abortPersonalAccountDeletion` | `spec/domains/index.md#ScopeKey-と永続化境界` | 同じ owner operation の個人削除 barrier を解除する |
-| DOM-common-009 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査する |
+| DOM-common-009 | `ScopeCleanupAdmissionStore.assertOwner` | `spec/domains/index.md#ScopeKey-と永続化境界` | cleanup operation の所有権を検査し、別 ID・欠落・未 commit に加えて完了済みの barrier も拒否する |
 | DOM-common-010 | `ScopeCleanupAdmissionStore.acknowledgePersonalComponent` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 cleanup component の完了を記録する |
 | DOM-common-011 | `ScopeCleanupAdmissionStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 全 component 完了後に barrier を保持期限付きで完了化する |
 | DOM-common-012 | `ScopeCleanupAdmissionStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ完了 barrier を有界に回収する |
-| DOM-common-013 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する |
+| DOM-common-013 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する。再投入された `begin` は既に記録済みのものをすべて保つ |
 | DOM-common-014 | `AccountDeletionManifestStore.appendMembershipPage` | `spec/domains/index.md#ScopeKey-と永続化境界` | membership edge を有界ページで manifest に固定する |
 | DOM-common-015 | `AccountDeletionManifestStore.appendAuthorRoutePage` | `spec/domains/index.md#ScopeKey-と永続化境界` | author route ページを cursor と原子的に固定する |
 | DOM-common-016 | `AccountDeletionManifestStore.markBuilt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 対象固定済みへ遷移する |
 | DOM-common-017 | `AccountDeletionManifestStore.beginRollback` | `spec/domains/index.md#ScopeKey-と永続化境界` | prepare rejection 後の rollback を開始する |
-| DOM-common-018 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する |
+| DOM-common-018 | `AccountDeletionManifestStore.claimPending` | `spec/domains/index.md#ScopeKey-と永続化境界` | 指定 phase の未処理 item を最大 limit 件 claim する。membership item は prepare ack だけでは完了せず、cleanup phase でも claim できる |
 | DOM-common-019 | `AccountDeletionManifestStore.acknowledge` | `spec/domains/index.md#ScopeKey-と永続化境界` | item phase の完了を冪等に記録する |
-| DOM-common-020 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | global・personal receipt の完了を記録する |
-| DOM-common-021 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | rollback release の全完了を判定する |
-| DOM-common-022 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | finalize 必須 ack の全完了を判定する |
+| DOM-common-020 | `AccountDeletionManifestStore.acknowledgeReceipt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 配備が宣言した global・personal receipt の完了を記録する。receipt が全部そろっても item の完全 ack を代替しない |
+| DOM-common-021 | `AccountDeletionManifestStore.allRollbackReleased` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み membership item の release ack がすべてそろったかを判定する。`personalAbort` receipt は判定対象に含まない（利用者を `active` へ戻す復帰ゲートは述語より強く、ユースケース側が持つ — ADR 053） |
+| DOM-common-022 | `AccountDeletionManifestStore.allRequiredAcknowledged` | `spec/domains/index.md#ScopeKey-と永続化境界` | 固定済み全 item の完全 ack と宣言された全 receipt の両方がそろって初めて true にする。membership item は cleanup レーンが ack して初めて完全 ack になるので、prepare ack ＋ 宣言 receipt だけでは true にならない |
 | DOM-common-023 | `AccountDeletionManifestStore.compactItems` | `spec/domains/index.md#ScopeKey-と永続化境界` | ack 済み item を有界に縮約する |
 | DOM-common-024 | `AccountDeletionManifestStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 成功した manifest を終端・保持期限付きにする |
 | DOM-common-025 | `AccountDeletionManifestStore.markRejected` | `spec/domains/index.md#ScopeKey-と永続化境界` | rejection manifest を終端・保持期限付きにする |
-| DOM-common-026 | `AccountDeletionManifestStore.pruneTerminal` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ terminal manifest を keyset で回収する |
+| DOM-common-026 | `AccountDeletionManifestStore.pruneTerminal` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ terminal manifest を keyset で回収し、件数ではなく回収した operationId 列を返す |
 | DOM-common-027 | `GlobalMaintenanceRunStore.beginOrResumeKind` | `spec/domains/index.md#ScopeKey-と永続化境界` | kind ごとの最古 run を開始または再開し lease 状態を返す |
 | DOM-common-028 | `GlobalMaintenanceRunStore.claimLanes` | `spec/domains/index.md#ScopeKey-と永続化境界` | maintenance lane を有界に claim する |
 | DOM-common-029 | `GlobalMaintenanceRunStore.checkpointLane` | `spec/domains/index.md#ScopeKey-と永続化境界` | cursor と次 command key を原子的に checkpoint する |
@@ -44,6 +46,8 @@
 | DOM-common-038 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | state を原子的に取得・削除する |
 | DOM-common-039 | `OAuthStateStore.deleteExpired` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 期限切れ state を cursor と limit で回収する |
 | DOM-common-040 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
+| DOM-common-041 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |
+| DOM-common-042 | `AccountDeletionManifestStore.describe` | `spec/domains/index.md#ScopeKey-と永続化境界` | manifest header の読み取り射影（2 つの build cursor と所有 user）を返し、既に消えていれば null を返す |
 | DOM-identity-001 | `UserId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-identity-002 | `IdentityId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-identity-003 | `SessionId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
@@ -62,19 +66,19 @@
 | DOM-identity-016 | `Identity` エンティティ | `spec/domains/identity.md#エンティティ` | password・OAuth 認証手段の生成と password 変更 event を担う |
 | DOM-identity-017 | `Session` エンティティ | `spec/domains/identity.md#エンティティ` | authEpoch と発行から 30 日の絶対期限を保持する |
 | DOM-identity-018 | `AuthToken` エンティティ | `spec/domains/identity.md#エンティティ` | purpose TTL・authEpoch・pending から consumed の単回遷移を保つ |
-| DOM-identity-019 | `IdentityPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 最終認証手段・件数上限・password 重複を検査する |
+| DOM-identity-019 | `IdentityPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 最終認証手段・password 重複を検査し、8 件の上限超過を `BusinessRuleError(IdentityLimitExceeded)` にする |
 | DOM-identity-020 | `AccountLinkingPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | provider email 確認と既存 User 状態から linking 判定を返す |
 | DOM-identity-021 | `LoginThrottlePolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 失敗数から delay・15 分 lock を純粋に導出する |
 | DOM-identity-022 | `UserRepository.insert` | `spec/domains/identity.md#ポート` | 新規 User を保存する |
 | DOM-identity-023 | `UserRepository.findById` | `spec/domains/identity.md#ポート` | UserId で OCC token 付き User を取得する |
 | DOM-identity-024 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |
 | DOM-identity-025 | `UserRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を削除する |
-| DOM-identity-026 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決する |
-| DOM-identity-027 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーから UserId を解決する |
-| DOM-identity-028 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約する |
-| DOM-identity-029 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を有効化する |
-| DOM-identity-030 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の一意予約を解放する |
-| DOM-identity-031 | `IdentityRepository.insert` | `spec/domains/identity.md#ポート` | 新規 Identity を保存する |
+| DOM-identity-026 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決し、上限超過は `SystemError(DatabaseError)` にする |
+| DOM-identity-027 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える） |
+| DOM-identity-028 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約する。provider account の一意性を担保する唯一の場所で、`releasing` の鍵は奪えず conflict を返す（奪えるのは失効した `reserved` だけ） |
+| DOM-identity-029 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を恒久 claim へ昇格させる |
+| DOM-identity-030 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の `reserved` と `releasing` の行を落とす（`active` には触れない） |
+| DOM-identity-031 | `IdentityRepository.insert` | `spec/domains/identity.md#ポート` | 新規 Identity を保存する。provider account の一意性はここでは検査しない（担保は `IdentityUniqueDirectory` の claim 索引だけが持つ） |
 | DOM-identity-032 | `IdentityRepository.findById` | `spec/domains/identity.md#ポート` | IdentityId で OCC token 付き Identity を取得する |
 | DOM-identity-033 | `IdentityRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ Identity を更新する |
 | DOM-identity-034 | `IdentityRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ Identity を削除する |
@@ -103,6 +107,12 @@
 | DOM-identity-057 | `LoginAttemptStore.recordFailure` | `spec/domains/identity.md#ポート` | 失敗回数を単一原子操作で加算し加算後状態を返す |
 | DOM-identity-058 | `LoginAttemptStore.clear` | `spec/domains/identity.md#ポート` | 認証成功時に失敗記録を削除する |
 | DOM-identity-059 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
+| DOM-identity-060 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を読み、再送間隔の判定に使う |
+| DOM-identity-061 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
+| DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
+| DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
+| DOM-identity-064 | `AvatarUrl` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | trim 後 1〜2048 文字で、アプリ相対パスか `appUrl` と同一オリジンの絶対 URL だけを許し、違反を `BusinessRuleError(InvalidAvatarUrl)` にする。自オリジンの情報は引数で受け取る |
+| DOM-identity-065 | `SameOriginPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | `//` 始まり・バックスラッシュ・C0 制御文字を拒む自オリジン述語を 1 本だけ持ち、真偽値だけを返す |
 | DOM-workspace-001 | `WorkspaceId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-002 | `MembershipId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-003 | `InvitationId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
@@ -180,13 +190,13 @@
 | DOM-storage-003 | `FileName` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜255 文字へ安全化し path separator・制御文字を除く |
 | DOM-storage-004 | `MimeType` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | type/subtype を保証し未知値を octet-stream に落とす |
 | DOM-storage-005 | `ByteSize` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 0 以上の整数と上限比較を提供する |
-| DOM-storage-006 | `Checksum` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | sha256 と 64 桁 hex を保証する |
+| DOM-storage-006 | `Checksum` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | sha256 と 64 桁 hex を保証し、違反は `BusinessRuleError(InvalidChecksum)` にする |
 | DOM-storage-007 | `FilePurpose` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | source・media・reference・artifact・avatar の用途を表す |
 | DOM-storage-008 | `StorageOwner` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | user または workspace の容量帰属を表す |
 | DOM-storage-009 | `ReferenceAttempt` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | resource・stylesheet と結果の合法な組合せを保証する |
 | DOM-storage-010 | `ReferenceImportSummary` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 最新取り込みの CSS 除去を分類別件数で有界保持する |
 | DOM-storage-011 | `StoredFile` エンティティ | `spec/domains/storage.md#エンティティ` | provenance と persistent・ephemeral を型で結び artifact に期限を必須化する |
-| DOM-storage-012 | `UploadValidationPolicy` ドメインサービス | `spec/domains/storage.md#ドメインサービス` | purpose・MIME ごとの許可形式と byte 上限を検査する |
+| DOM-storage-012 | `UploadValidationPolicy` ドメインサービス | `spec/domains/storage.md#ドメインサービス` | `{ purpose, body }` を受け、MIME を先頭バイトの署名で・サイズを実バイト長で決めた `AcceptedUpload` を返す。許可形式外と byte 上限超過は拒否する |
 | DOM-storage-013 | `ExternalFetchPolicy` ドメインサービス | `spec/domains/storage.md#ドメインサービス` | SSRF 条件と 200 件・100 MiB の取得 budget を検査する |
 | DOM-storage-014 | `StorageUrlPolicy` ドメインサービス | `spec/domains/storage.md#ドメインサービス` | URL が service 内 storage を指すか構成依存で判定する |
 | DOM-storage-015 | `StoredFileRepository.insert` | `spec/domains/storage.md#ポート` | 新規 StoredFile を保存する |
@@ -206,12 +216,13 @@
 | DOM-storage-029 | `ReferenceImportRecordRepository.listAttemptsByNote` | `spec/domains/storage.md#ポート` | ノートの取得試行記録を返す |
 | DOM-storage-030 | `ReferenceImportRecordRepository.findSummaryByNote` | `spec/domains/storage.md#ポート` | ノートの最新取り込み要約を取得する |
 | DOM-storage-031 | `ReferenceImportRecordRepository.deleteByNote` | `spec/domains/storage.md#ポート` | attempt と summary を合わせて有界削除する |
-| DOM-storage-032 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | stream または bytes を保存し実サイズと checksum を返す |
-| DOM-storage-033 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | object body と metadata を取得する |
-| DOM-storage-034 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除する |
+| DOM-storage-032 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | バイト列だけを受けて保存し実サイズと checksum を返す（ストリーム受けは契約に持たない） |
+| DOM-storage-033 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | バイト列と metadata を持つ `ObjectBody` を取得し、未知の key では null を返す |
+| DOM-storage-034 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除し、存在しない key も許容する |
 | DOM-storage-035 | `ObjectStorage.createDownloadUrl` | `spec/domains/storage.md#ポート` | file name と期限付きの download URL を発行する |
 | DOM-storage-036 | `RemoteResourceFetcher.fetch` | `spec/domains/storage.md#ポート` | byte 上限と timeout を守って外部 URL を取得する |
 | DOM-storage-037 | `DnsResolver.resolve` | `spec/domains/storage.md#ポート` | hostname を IP address 群へ解決する |
+| DOM-storage-038 | `ObjectStorage.publicUrl` | `spec/domains/storage.md#ポート` | 公開配信してよい object の読み取り先 URL を組み立てる（期限つき URL とは別のメソッドとして型で分ける） |
 | DOM-conversion-001 | `SourceFormat` 値オブジェクト | `spec/domains/conversion.md#値オブジェクト` | detector 由来の既知入力形式だけを表す |
 | DOM-conversion-002 | `ConversionCapability` 値オブジェクト | `spec/domains/conversion.md#値オブジェクト` | LLM の available・unavailable・declined を区別する |
 | DOM-conversion-003 | `ConversionPlan` 値オブジェクト | `spec/domains/conversion.md#値オブジェクト` | 変換手段と unavailable 理由を判別可能 union で表す |
@@ -234,17 +245,17 @@
 | DOM-conversion-020 | `TranscriptionModel.transcribe` | `spec/domains/conversion.md#ポート` | 音声 bytes を指定 model で空でない transcript にする |
 | DOM-note-001 | `NoteId` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-note-002 | `RevisionId` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
-| DOM-note-003 | `NoteTitle` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 200 文字以内へ正規化し auto・manual origin を保持する |
+| DOM-note-003 | `NoteTitle` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 200 文字（UTF-16 コード単位）超は `BusinessRuleError(InvalidTitle)` で拒否し、空になった場合だけ `"無題"` に置換して auto・manual origin を保持する |
 | DOM-note-004 | `NoteHtml` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | sanitize 済み HTML を 800,000 UTF-8 bytes 以内に制限する |
 | DOM-note-005 | `PlainTextContent` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 抽出平文を 800,000 UTF-8 bytes 以内に制限する |
-| DOM-note-006 | `Excerpt` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 平文から最大 200 文字を切り出す |
-| DOM-note-007 | `NoteHeading` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | level 1〜6・短い text・anchor を保証し最大 200 件にする |
+| DOM-note-006 | `Excerpt` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | 平文から最大 200 文字（UTF-16 コード単位）を切り出し、切り詰めでサロゲートペアを割らない |
+| DOM-note-007 | `NoteHeading` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | level 1〜6・100 文字（UTF-16 コード単位）以内へ切り詰めた text・anchor を保証し最大 200 件にする。切り詰めでサロゲートペアを割らない |
 | DOM-note-008 | `StyleMode` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | default または preserve のみを表す |
 | DOM-note-009 | `NoteOwner` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | user・workspace と対応 ID の合法な組合せを表す |
 | DOM-note-010 | `ShareLink` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | hash・暗号化 token・password hash と更新時刻を一体で保持する |
 | DOM-note-011 | `SharePass` 値オブジェクト | `spec/domains/note.md#値オブジェクト` | token hash・password 世代・24 時間期限を持つ通過証を表す |
 | DOM-note-012 | `NoteFailureReason` 値オブジェクト | `spec/domains/note.md#エンティティ` | integrationRequired を除き canceled を加えた本文失敗語彙を表す |
-| DOM-note-013 | `Note` エンティティ | `spec/domains/note.md#エンティティ` | content・visibility・lifecycle の合法状態と全遷移 event を保つ |
+| DOM-note-013 | `Note` エンティティ | `spec/domains/note.md#エンティティ` | content・visibility・lifecycle の合法状態と全遷移 event を保つ。`ready` 以外の本文と公開・限定公開の組は**どちらの向きからも**作れず、`reconstruct` は ready 本文の必須列の欠落を空文字で補完せず拒否する |
 | DOM-note-014 | `NoteRevision` エンティティ | `spec/domains/note.md#エンティティ` | ready 本文の不変 snapshot を作り最新 20 件保持に使う |
 | DOM-note-015 | `NoteAccessPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | owner・role・lifecycle・公開・share credential の順で権限を判定する |
 | DOM-note-016 | `NoteOwnershipPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | 移動元編集権・移動先作成権・processing lock を検査する |
@@ -262,13 +273,13 @@
 | DOM-note-028 | `NoteRepository.listByIds` | `spec/domains/note.md#ポート` | current scope の複数 Note を ID で取得する |
 | DOM-note-029 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を有界列挙する |
 | DOM-note-030 | `NoteRepository.countByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle 条件の Note 数を返す |
-| DOM-note-031 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note をページングする |
+| DOM-note-031 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note を `updatedAt DESC, id DESC` の全順序でページングする |
 | DOM-note-032 | `NoteRevisionRepository.insert` | `spec/domains/note.md#ポート` | 不変な NoteRevision を保存する |
 | DOM-note-033 | `NoteRevisionRepository.listByNote` | `spec/domains/note.md#ポート` | ノートの最新 revision を limit 件返す |
 | DOM-note-034 | `NoteRevisionRepository.findById` | `spec/domains/note.md#ポート` | RevisionId で revision を取得する |
 | DOM-note-035 | `NoteRevisionRepository.deleteOlderThanNewest` | `spec/domains/note.md#ポート` | 最新 keep 件を残し古い revision を削除する |
 | DOM-note-036 | `NoteRevisionRepository.deleteByNote` | `spec/domains/note.md#ポート` | ノートの revision を全削除する |
-| DOM-note-037 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する |
+| DOM-note-037 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する。`highlightedExcerpt` は投影が持つマークアップをエスケープしてから強調を付ける |
 | DOM-note-038 | `LocalNoteQueryService.listMonthsWithNotes` | `spec/domains/note.md#ポート` | owner のノートがある現地暦月を列挙する |
 | DOM-note-039 | `LocalNoteQueryService.countByDay` | `spec/domains/note.md#ポート` | 半開期間を time zone の日別に集計する |
 | DOM-note-040 | `LocalNoteQueryService.countByContentStatus` | `spec/domains/note.md#ポート` | owner・本文状態の Note 数を返す |
@@ -283,7 +294,7 @@
 | DOM-note-049 | `NoteProjectionSnapshotReader.read` | `spec/domains/note.md#ポート` | Note・tag・projection revision を同一 read transaction で返す |
 | DOM-note-050 | `NoteProjectionRevisionStore.bump` | `spec/domains/note.md#ポート` | Note の projection revision を原子的に増やす |
 | DOM-note-051 | `NoteRouteStore.resolve` | `spec/domains/note.md#ポート` | 外部 read 可能な Note route を解決する |
-| DOM-note-052 | `NoteRouteStore.resolveMany` | `spec/domains/note.md#ポート` | 最大 500 Note route を shard 横断解決する |
+| DOM-note-052 | `NoteRouteStore.resolveMany` | `spec/domains/note.md#ポート` | 最大 500 Note route を shard 横断解決し、上限超過は `SystemError(DatabaseError)` にする |
 | DOM-note-053 | `NoteRouteStore.reserveCreate` | `spec/domains/note.md#ポート` | Note 作成 route を TTL 付き予約する |
 | DOM-note-054 | `NoteRouteStore.activateCreate` | `spec/domains/note.md#ポート` | 作成 route を active にする |
 | DOM-note-055 | `NoteRouteStore.abandonCreate` | `spec/domains/note.md#ポート` | 作成途中の route を破棄する |
@@ -293,15 +304,17 @@
 | DOM-note-059 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
 | DOM-note-060 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | DOM-note-061 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
-| DOM-note-062 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の route を署名 cursor で shard 横断列挙する |
-| DOM-note-063 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の route を署名 cursor で shard 横断列挙する |
-| DOM-note-064 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する |
-| DOM-note-065 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する |
+| DOM-note-062 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の `active` / `moving` / `purging` route を署名 cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
+| DOM-note-063 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の `active` / `moving` / `purging` route を署名 cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
+| DOM-note-064 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する。失敗は `SystemError(DataIntegrityError)` |
+| DOM-note-065 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する。未知の keyVersion・ciphertext の破損は `SystemError(DataIntegrityError)` |
 | DOM-note-066 | `NoteMovePort.freezeSource` | `spec/domains/note.md#ポート` | source を再認可して move snapshot を固定する |
 | DOM-note-067 | `NoteMovePort.stageTarget` | `spec/domains/note.md#ポート` | target を再認可し snapshot を冪等 stage する |
 | DOM-note-068 | `NoteMovePort.activateTarget` | `spec/domains/note.md#ポート` | staged target を指定 route version で有効化する |
 | DOM-note-069 | `NoteMovePort.retireSource` | `spec/domains/note.md#ポート` | switch 後の source データを退役させる |
 | DOM-note-070 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
+| DOM-note-071 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| DOM-note-072 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | DOM-tag-001 | `TagId` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-tag-002 | `AssignmentId` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-tag-003 | `TagName` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 1〜50 文字を表示名と NFKC 相当の正規化名で保持する |
@@ -445,7 +458,7 @@
 | DOM-usage-003 | `LlmCallQuota` 値オブジェクト | `spec/domains/usage.md#値オブジェクト` | 0 以上の月間 call 上限と利用者 300 回既定値を持つ |
 | DOM-usage-004 | `BillingPeriod` 値オブジェクト | `spec/domains/usage.md#値オブジェクト` | UTC の年・1〜12 月を表し等価比較する |
 | DOM-usage-005 | `UsageWarningLevel` 値オブジェクト | `spec/domains/usage.md#値オブジェクト` | 消費率から none・warning・exceeded を表す |
-| DOM-usage-006 | `StorageQuota` エンティティ | `spec/domains/usage.md#エンティティ` | bytes・note count・limit の増減、残量、警告、保存可否を保つ |
+| DOM-usage-006 | `StorageQuota` エンティティ | `spec/domains/usage.md#エンティティ` | bytes・note count・limit の増減と、スキャン結果を正本として消費量・ノート数を上書きする `replaceTotals`、残量、警告、保存可否を保つ |
 | DOM-usage-007 | `LlmUsage` エンティティ | `spec/domains/usage.md#エンティティ` | user・period の call 消費、残量、警告、呼出可否を保つ |
 | DOM-usage-008 | `QuotaEnforcement` ドメインサービス | `spec/domains/usage.md#ドメインサービス` | upload 前の storage・LLM quota 検査と表示 snapshot をまとめる |
 | DOM-usage-009 | `StorageQuotaRepository.find` | `spec/domains/usage.md#ポート` | QuotaSubject の OCC token 付き quota を取得する |

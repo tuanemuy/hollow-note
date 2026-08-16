@@ -92,11 +92,19 @@ export type AccountDeletionManifestHeader = Readonly<{
  * generation/shard/run-scoped global maintenance lane via `pruneTerminal`
  * (keyset cursor, max 100 per pass).
  *
- * Items are unique per operation + kind + target id; the full set of
- * item acks plus the personal/global receipt set is the source of truth
- * for finalize / rollback (`allRequiredAcknowledged` /
- * `allRollbackReleased`). Each remote command claims a deterministic
- * command key and `dispatchedAt` via `claimPending` (max 100) before
+ * Items are unique per operation + kind + target id. The two completion
+ * predicates are asymmetric on purpose, because they ask different
+ * questions. Finalize (`allRequiredAcknowledged`) asks whether every
+ * participant finished: it needs the full ack of every fixed item plus
+ * the declared receipt set, and a membership item is fully acked only
+ * once the cleanup phase acked it too — a prepare ack plus the declared
+ * receipts is not enough. Rollback (`allRollbackReleased`) asks whether
+ * the releases reached everyone prepare was dispatched to: it looks at
+ * the release acks of the fixed membership items and at nothing else, so
+ * no receipt — `personalAbort` included — is part of it.
+ *
+ * Each remote command claims a deterministic command key and
+ * `dispatchedAt` via `claimPending` (max 100) before
  * sending. Prepare rejection releases everything prepare-*dispatched*
  * (not just acked); releasing an unacquired lock no-ops under the same
  * command key. Compaction (`compactItems`, 100 per pass) may only start

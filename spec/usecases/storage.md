@@ -23,6 +23,8 @@
 | `visibility` | `"private" \| "unlisted" \| "public"` | ○ | 既定は `private` |
 | `conversionPreference` | `"auto" \| "machineOnly"` | ○ | 既知の値。既定は `auto` |
 
+`files[]` の宣言 MIME・宣言サイズは**受理判定の入力ではなく、事前の合計サイズ検査（手順 1）と暫定判定（手順 5）のためのヒント**である。確定判定は実体を握る `storeUpload` が行う（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) の前提「受理判定の時点で実体を握っていること」がこのユースケースでは成立しないため）。
+
 ### 出力DTO
 
 `parentJobId: string`, `accepted: { index: number; fileName: string; format: string; requiresLlm: boolean }[]`, `rejected: { index: number; fileName: string; reason: string }[]`, `llmRequiredCount: number`, `llmAvailable: boolean`
@@ -71,12 +73,12 @@
 | `ownerType` | `"user" \| "workspace"` | ○ | 既知の値 |
 | `ownerWorkspaceId` | `string \| null` | — | `ownerType === "workspace"` のとき必須 |
 | `fileName` | `string` | ○ | `FileName` の規則 |
-| `declaredMimeType` | `string` | ○ | `MimeType` の規則 |
-| `size` | `number` | ○ | `ByteSize` の規則 |
 | `body` | `ReadableStream<Uint8Array>` | ○ | — |
 | `parentJobId` | `string \| null` | — | `startBulkUpload` が返した親ジョブの ID |
 | `visibility` | `"private" \| "unlisted" \| "public"` | ○ | 既定は `private` |
 | `conversionPreference` | `"auto" \| "machineOnly"` | ○ | 既知の値。既定は `auto`。`machineOnly` は LLM 構造化を使わずに取り込む |
+
+**入力から宣言値を落としている**（宣言 MIME も宣言サイズも受けない）。サイズは実バイト長、型は先頭バイトの署名から決め、申告値を保管する経路を型から消す（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) の決定 1）。保管する型とサイズは `UploadValidationPolicy.ensureAcceptable` の戻り値 `AcceptedUpload` から取る（[domains/storage.md](../domains/storage.md)）。
 
 ### 出力DTO
 
@@ -87,10 +89,10 @@
 ### 処理フロー
 
 1. 所有者を組み立て、ワークスペースなら `WorkspaceAuthorization.ensureCan(role, "createNote")` を呼ぶ。`visibility` が `public` なら公開に必要な所有文脈も併せて検査する — 個人所有は `owner.userId` の公開ハンドル、ワークスペース所有は公開スラッグ。未設定なら保管を始める前に `ValidationError("PUBLIC_HANDLE_REQUIRED")` を返す（`startBulkUpload` と同じ事前検査。単体アップロードの経路でも、バイト列を預けてから公開できないと分かる事態を避ける）
-2. `UploadValidationPolicy.ensureAcceptable({ purpose: "source", mimeType, size })` を呼ぶ
+2. `UploadValidationPolicy.ensureAcceptable({ purpose: "source", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）を `llmCalls: 0` で呼び、容量の残量を確認する（LLM 回数の検査は方針が決まる 7 で行う）
 4. `IdGenerator.next()` で `fileId` を採番し、`ObjectKey.build` で鍵を作る
-5. `ObjectStorage.put` で保管し、実サイズとチェックサムを得る。宣言サイズと実サイズが食い違う場合は実サイズを採用する。あわせて**流したストリームの先頭 8192 バイトを退避**し、手順 6 の `head` に渡す。`StoredFile` の登録は手順 8 なので、この時点では `FileContentReader.readHead(fileId, 8192)` で読み直せない（読む範囲は `runConversion` / `requestRegeneration` の `readHead` と同じ 8192 バイトに揃える。[usecases/conversion.md](./conversion.md)）
+5. `ObjectStorage.put` で保管し、実サイズとチェックサムを得る。あわせて**流したストリームの先頭 8192 バイトを退避**し、手順 6 の `head` に渡す。`StoredFile` の登録は手順 8 なので、この時点では `FileContentReader.readHead(fileId, 8192)` で読み直せない（読む範囲は `runConversion` / `requestRegeneration` の `readHead` と同じ 8192 バイトに揃える。[usecases/conversion.md](./conversion.md)）
 6. `ConversionCapability` の `llm` を決める — `conversionPreference === "machineOnly"` なら `"declined"`、そうでなければ `ExternalConnectionRepository.findByUserAndProvider(userId, "openrouter")` の有無で `"available"` / `"unavailable"`。これを手順 5 で退避した `head` とともに `planConversionForUpload`（Conversion）に渡し、形式・方針（`ConversionPlan`）・本文の初期値（`InitialContentState`）を得る
 7. 方針が LLM を要する場合（`ConversionPlan.requiresLlm(plan)` が真）、`ensureUploadAllowed` を `llmCalls: 1` で呼び、LLM 実行回数の残量を確認する
 8. `StoredFile.register` と `Note.createFromUpload` を作る。`FileProvenance` は `{ purpose: "source", noteId, uploadedBy: userId }`（[domains/storage.md](../domains/storage.md)）。`initialContent` には 6 で得た `initialContent` をそのまま渡す — 状態と理由が 1 つの値に閉じているため、`failed(machineExtractionUnavailable)` と `failed(unsupportedFormat)` と `failed(passwordProtected)` は取り違えようがなく、`awaitingIntegration` との区別もここで再判定しない
@@ -133,7 +135,9 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 
 ### 入力DTO
 
-`userId`, `noteId`, `fileName`, `declaredMimeType`, `size`, `body`
+`userId`, `noteId`, `fileName`, `body`
+
+**入力から宣言値を落としている**（宣言 MIME も宣言サイズも受けない）。型は先頭バイトの署名、サイズは実バイト長から決める（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) の決定 1）。
 
 ### 出力DTO
 
@@ -164,7 +168,9 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 
 ### 入力DTO
 
-`userId`, `subjectType: "user" | "workspace"`, `subjectId`, `fileName`, `declaredMimeType`, `size`, `body`
+`userId`, `subjectType: "user" | "workspace"`, `subjectId`, `fileName`, `body`
+
+**入力から宣言値を落とす**（宣言 MIME も宣言サイズも受けない）。サイズは実バイト長、型は先頭バイトの署名から決め、申告値を保管する経路を型から消す（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) の決定 1）。
 
 ### 出力DTO
 
@@ -481,7 +487,9 @@ scope cleanup commandに従って所有file metadataを回収する。継続はc
 
 ### 出力DTO
 
-`deletedCount: number`
+`ScopeCleanupTurn & { deletedCount: number }` — `status: "settled" | "continued" | "stalled" | "alreadyApplied"`, `personalCleanupCompleted: boolean`, `deletedCount: number`
+
+件数だけを返さないのは、下の手順が「残りがあれば継続要求を 1 件だけ積む」「対象が残っているのに 1 件も削除できなかった場合は継続を積まず backoff する」「再配送された command は何もせずに終わる」という**呼び出し側が知らなければ制御できない分岐**を定めているためである。`continued` を返した turn は自分の task 行を積み直しているので、その行を掴んだ実行者はそれを settle してはならない。`personalCleanupCompleted` は、この turn の ack が personal barrier を閉じたかどうかを global 側の受領へ伝える。
 
 ### 処理フロー
 
@@ -489,13 +497,13 @@ scope cleanup commandに従って所有file metadataを回収する。継続はc
 2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { scope, deletionOperationId }` を 1 件だけ**、その削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
 3. 対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まず、現在taskをbackoffする。上限到達時は `failed` + global運用通知とする。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）
 
-`batchSize` の既定 100 は、1 バッチのクエリ数（列挙 1 + 多行 DELETE 1 + 多行 outbox INSERT 1 = 3。件数によらない）ではなく、**1 回で発行するイベント数**を抑えるための上限である。`deleteFiles` はファイル 1 件につき `storage.fileDeleted` を出し、その購読者（`deleteStoredObjects`）が R2 の実体を消す。正典は [platform/index.md](../platform/index.md) の「クエリ予算」。
+`batchSize` の既定 100 は、**1 回で発行するイベント数**を抑えるための上限である。`deleteFiles` はファイル 1 件につき `storage.fileDeleted` を出し、その購読者（`deleteStoredObjects`）が R2 の実体を消す。性能上の性質（1 turn の SQL 文数がバッチ件数に比例しないこと）はここでは扱わない — 実行基盤の設計目標として [platform/index.md](../platform/index.md) の `## 実行予算と分割単位` → `### Scope DO` に置き、全バックエンドに課す契約のほうは観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く（[ADR 056](../adr/056-performance-budget-placement.md)）。
 
 冪等性: `IdempotencyStore` は使わない。削除済みのファイルは `listByOwner` に現れないため、同じイベントを 2 回受け取っても 2 回目は 0 件で終わる（`deleteFilesForNote` と同じ根拠。[domains/index.md](../domains/index.md) の「使わない」分類）。
 
 継続要求があるため、重複配送では同じ所有者に対して 2 系列が並走しうる。並走しても結果は変わらない — 両系列とも「残っているものを読んで消す」だけで、同じファイルを両方が拾った場合は先に消したほうだけが `deleteFiles` の `listByIds` に載せ、遅れたほうは対象が消えているので 0 件で終わる（`storage.fileDeleted` も 1 件につき 1 回しか出ない）。終了条件も系列ごとに独立で、対象が 0 件になった系列から順に継続をやめる。カーソルを持たないのは、対象が処理するそばから消えるため先頭から読むだけで必ず前に進むからである（[domains/index.md](../domains/index.md) の「継続要求」）。
 
-継続の形は `deleteNotesForOwner`（[usecases/note.md](./note.md)）と同一である。以前は両者で異なっていた（ファイル側は消し切れなかったときだけの保険、ノート側はバッチごとの常用経路）が、どちらも「1 バッチ処理して残りがあれば専用の継続要求を 1 件積む」に揃った。
+継続の形は `deleteNotesForOwner`（[usecases/note.md](./note.md)）と同一である — どちらも 1 バッチ処理して残りがあれば専用の継続要求を 1 件積む。
 
 ### エラーケース
 

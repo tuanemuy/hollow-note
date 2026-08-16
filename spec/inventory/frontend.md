@@ -1,6 +1,6 @@
 # Inventory — frontend
 
-生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-09）
+生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-16）
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -14,10 +14,10 @@
 | PAGE-p02-004 | パスワード再設定へ移動 | `spec/pages/index.md#P-02: サインイン` | P-04 の申請状態へ遷移する |
 | PAGE-p02-005 | サインアップへ移動 | `spec/pages/index.md#P-02: サインイン` | P-01 へ遷移する |
 | PAGE-p02-006 | 確認メールを再送 | `spec/pages/index.md#P-02: サインイン` | 未確認状態からメール再送を要求し、存在や発行制限を漏らさない同一の完了表示にする |
-| PAGE-p03-001 | P-03 メール確認ページ | `spec/pages/index.md#P-03: メール確認` | token 処理中、成功、期限切れ、使用済み、無効を表示し、成功時は session Cookie 設定後にアプリへ遷移する |
-| PAGE-p03-002 | 確認 token を消費 | `spec/pages/index.md#P-03: メール確認` | URL token を一度だけ検証要求へ渡し、成功・既確認・期限切れ・無効に応じて状態を切り替える |
-| PAGE-p03-003 | 確認メールを再送 | `spec/pages/index.md#P-03: メール確認` | 期限切れ状態から email を送信して、存在秘匿された再送完了を表示する |
-| PAGE-p03-004 | サインインへ移動 | `spec/pages/index.md#P-03: メール確認` | 使用済み・無効状態から P-02 へ遷移する |
+| PAGE-p03-001 | P-03 メール確認ページ | `spec/pages/index.md#P-03: メール確認` | token 処理中、成功、確認済み・サインインが必要、使用済み、期限切れ、無効、一時障害（再試行）の 7 状態を表示し、成功時は session Cookie 設定後にアプリへ遷移する。「確認済み・サインインが必要」は、確認を要求したブラウザーの印（確認待ち Cookie）が無い、または確認した token の持ち主と一致しない場合に出る（別ブラウザーで開いた場合が代表例だが、Cookie 削除・プライベートウィンドウ・確認待ち Cookie の寿命切れでも到達する） |
+| PAGE-p03-002 | 確認 token を消費 | `spec/pages/index.md#P-03: メール確認` | URL token を一度だけ検証要求へ渡し、成功・既確認・確認済み（確認要求元のブラウザーではないためセッションを発行しない）・期限切れ・無効・一時障害に応じて状態を切り替える |
+| PAGE-p03-003 | 確認メールを再送 | `spec/pages/index.md#P-03: メール確認` | 期限切れ・無効の状態から email を送信して、存在秘匿された再送完了を表示する |
+| PAGE-p03-004 | サインインへ移動 | `spec/pages/index.md#P-03: メール確認` | 確認済み・サインインが必要 / 使用済み / 期限切れ / 無効の 4 状態から P-02 へ遷移する。期限切れ・無効では主導線が再送であり、サインインは再送フォームに従属する逃げ道として置く |
 | PAGE-p04-001 | P-04 パスワード再設定ページ | `spec/pages/index.md#P-04: パスワード再設定` | email による申請と token による新 password 設定を扱い、送信中、一定文言の申請完了、実行成功、token 無効・期限切れを表示する |
 | PAGE-p04-002 | パスワード再設定を申請 | `spec/pages/index.md#P-04: パスワード再設定` | email を送信し、利用者・password identity の有無によらず同一の完了文言を表示する |
 | PAGE-p04-003 | 新しいパスワードを設定 | `spec/pages/index.md#P-04: パスワード再設定` | token と一致確認済みの新 password を送信し、強度違反、token 無効・期限切れ、成功を表示する |
@@ -65,13 +65,13 @@
 | PAGE-p12-003 | 編集モードを切り替え | `spec/pages/index.md#P-12: ノート編集` | visual・HTML・WYSIWYG を切替え、WYSIWYG の損失 warning を確認し、既存 note の端末内 preference だけを保存する |
 | PAGE-p12-004 | 本文を自動保存 | `spec/pages/index.md#P-12: ノート編集` | mode に応じて text-node edits または raw HTML、expected version、reference import option を送信し、pending・saved・unsaved、sanitize removals、processing lock、競合を扱う |
 | PAGE-p12-005 | タイトルを保存 | `spec/pages/index.md#P-12: ノート編集` | expected version 付き title 変更を autosave 系列に統合し、本文更新との version 競合を再取得で解決する |
-| PAGE-p12-006 | メディアを挿入 | `spec/pages/index.md#P-12: ノート編集` | file を FormData で送る場合は Origin を必須検証し、進捗・形式・size・quota・権限失敗を表示して返った internal URL を本文へ挿入する |
+| PAGE-p12-006 | メディアを挿入 | `spec/pages/index.md#P-12: ノート編集` | file を送信し、進捗・形式・size・quota・権限失敗を表示して返った internal URL を本文へ挿入する |
 | PAGE-p12-007 | 過去の版を復元 | `spec/pages/index.md#P-12: ノート編集` | revisions を取得し、対象 revision と expected version を送信して復元後本文を再取得する。外部参照再取り込みの進捗は P-11 へ委ねる |
 | PAGE-p12-008 | 編集を破棄して戻る | `spec/pages/index.md#P-12: ノート編集` | 未保存内容があれば確認し、破棄または local fallback 保存後に P-11 へ遷移する |
 | PAGE-p13-001 | P-13 アップロードページ | `spec/pages/index.md#P-13: アップロード` | files、検証、owner、visibility、conversion preference、LLM warning、全体・個別進捗、cancel、結果内訳を表示する。public handle 不足と machine-only 不可を開始前に案内する |
 | PAGE-p13-002 | ファイル・フォルダを選択 | `spec/pages/index.md#P-13: アップロード` | chooser または drop から files を列挙し、name・size・宣言形式を検証して除外可能な選択一覧を作る |
 | PAGE-p13-003 | 取り込み設定を変更 | `spec/pages/index.md#P-13: アップロード` | owner、visibility、auto・machineOnly を変更し、public handle・slug と暫定 LLM required count に応じた警告を更新する |
-| PAGE-p13-004 | アップロードを開始 | `spec/pages/index.md#P-13: アップロード` | bulk metadata を JSON POST して parent job を作り、accepted files は Origin 検証済み FormData または stream action で個別保管する。個別 conversion job の状態と最終内訳を追う |
+| PAGE-p13-004 | アップロードを開始 | `spec/pages/index.md#P-13: アップロード` | bulk metadata を JSON POST して parent job を作り、accepted files は FormData または stream action で個別保管する。個別 conversion job の状態と最終内訳を追う |
 | PAGE-p13-005 | アップロードをキャンセル | `spec/pages/index.md#P-13: アップロード` | 未送信 files を止め、登録済み jobs は取消可能なものを cancel し、完了・失敗・未送信の内訳を残す |
 | PAGE-p13-006 | 失敗分を再試行 | `spec/pages/index.md#P-13: アップロード` | 保存前失敗は同じ file 設定で再送し、job failure は P-15 の retry 経路または設定変更後の取り込み直しへ分ける |
 | PAGE-p13-007 | 連携・handle 設定へ移動 | `spec/pages/index.md#P-13: アップロード` | LLM 未接続は P-23、公開 identifier 不足は P-21 または P-31 へ復帰先付きで遷移する |
@@ -98,7 +98,7 @@
 | PAGE-p20-002 | 設定セクションを切り替え | `spec/pages/index.md#P-20: 設定タブ` | current 個人・workspace 設定 context を保って対応 route へ遷移し、異なる tab 列を混在させない |
 | PAGE-p21-001 | P-21 プロフィール設定ページ | `spec/pages/index.md#P-21: プロフィール設定` | display name、avatar、bio、handle と public preview を表示し、重複候補、不正・予約語、upload error、saving、warning、failure を表現する |
 | PAGE-p21-002 | プロフィールを保存 | `spec/pages/index.md#P-21: プロフィール設定` | 変更 fields を JSON POST し、handle 重複・validation・競合を表示して current profile を更新する |
-| PAGE-p21-003 | アイコンをアップロード | `spec/pages/index.md#P-21: プロフィール設定` | Origin 検証済み FormData で avatar を送信し、形式・size error と preview を表示する |
+| PAGE-p21-003 | アイコンをアップロード | `spec/pages/index.md#P-21: プロフィール設定` | FormData で avatar を送信し、形式・size error と preview を表示する |
 | PAGE-p21-004 | 公開プロフィールを preview | `spec/pages/index.md#P-21: プロフィール設定` | current handle の P-42 を新しい navigation として開く |
 | PAGE-p22-001 | P-22 ログイン方法設定ページ | `spec/pages/index.md#P-22: ログイン方法設定` | 最大 8 identities と削除可否を表示し、password・Google の追加変更解除、再認証、他 session 失効、最後 1 件不可を表現する |
 | PAGE-p22-002 | パスワード認証を追加 | `spec/pages/index.md#P-22: ログイン方法設定` | 新 password と確認を送信し、強度、既存 password、identity 上限を表示する |
@@ -116,16 +116,16 @@
 | PAGE-p24-001 | P-24 使用量ページ | `spec/pages/index.md#P-24: 使用量` | personal・workspace storage、note count、当月 LLM calls、updated time を表示し、20 件 page、workspace partial unavailable、80% warning、limit、global error を表現する |
 | PAGE-p24-002 | workspace 使用量を追加読込 | `spec/pages/index.md#P-24: 使用量` | opaque cursor で次の 20 memberships を取得し、available・unavailable items を既存一覧へ追加する |
 | PAGE-p24-003 | 削除画面へ移動 | `spec/pages/index.md#P-24: 使用量` | personal は P-25、workspace は P-34 へ current context 付きで遷移する |
-| PAGE-p25-001 | P-25 アカウント削除ページ | `spec/pages/index.md#P-25: アカウント削除` | 削除対象・workspace 所有 note の残存を説明し、email 確認、唯一 owner rejection、即時 sign-out 後の multi-scope progress、完了を表示する |
+| PAGE-p25-001 | P-25 アカウント削除ページ | `spec/pages/index.md#P-25: アカウント削除` | 削除対象・workspace 所有 note の残存を説明し、email 確認、唯一 owner rejection、即時 sign-out 後の multi-scope progress、完了を表示する。**この 1 画面だけが認証ガードの明示的な例外**で、受理と同時にセッションが消えるため到達性をセッションに依存させず、セッションが無い状態では他の導線を描かない |
 | PAGE-p25-002 | アカウント削除を開始 | `spec/pages/index.md#P-25: アカウント削除` | confirmation email と新 UUID request ID を JSON POST し、202 operation ID と signed 30 分 status ticket を受け、session Cookie を破棄して progress へ移る |
-| PAGE-p25-003 | 削除 operation を照会 | `spec/pages/index.md#P-25: アカウント削除` | session なしで status ticket を明示送信し、accepted・running・completed・rejected・failed を表示する。ticket は当該 operation 読取以外に使わない |
-| PAGE-p25-004 | 唯一 owner 問題を解消 | `spec/pages/index.md#P-25: アカウント削除` | rejected 後に sign-in へ進み、該当 workspace の P-32 または P-34 へ誘導する |
+| PAGE-p25-003 | 削除 operation を照会 | `spec/pages/index.md#P-25: アカウント削除` | session なしで status ticket を明示送信し、accepted・running・completed・rejected・failed を表示する（running・completed・rejected は `distributed_operations.state` の 3 値そのもの、accepted は 202 応答の転送 status、failed は再試行不能と確定した場合の表示語彙で、そこへ移す遷移を定めた箇所は設計に無い）。読み取り権限は ticket が持ち、ticket が名指す 1 件しか返らない。ticket は当該 operation 読取以外に使わない。ticket の失効（発行から 30 分。削除が長引けば正常系でも到達する）と無効では進捗を追えず、ticket を捨ててトップページへの導線だけを出す。進捗取得の一時障害では ticket を保ち、同じ ticket で追い直す導線を出す |
+| PAGE-p25-004 | 唯一 owner 問題を解消 | `spec/pages/index.md#P-25: アカウント削除` | rejected（P-25 の状態直和では「実行不可」）後に sign-in へ進み、該当 workspace の P-32 または P-34 へ誘導する |
 | PAGE-p30-001 | P-30 ワークスペース作成ページ | `spec/pages/index.md#P-30: ワークスペース作成` | name、description、slug を入力し、slug 重複候補、不正、owner 上限、作成中、完了、failure を表示する |
 | PAGE-p30-002 | ワークスペースを作成 | `spec/pages/index.md#P-30: ワークスペース作成` | 入力を送信し、作成成功時は新 workspace context と P-32 の invitation 導線を表示する |
 | PAGE-p31-001 | P-31 ワークスペース一般設定ページ | `spec/pages/index.md#P-31: ワークスペース一般設定` | name、description、avatar、slug を表示し、owner 以外の read-only、slug 重複・不正、変更 warning、saving、failure を表現する |
 | PAGE-p31-002 | ワークスペース profile を保存 | `spec/pages/index.md#P-31: ワークスペース一般設定` | name、description、avatar URL を送信し、role・validation・version failure を表示する |
 | PAGE-p31-003 | ワークスペース slug を変更 | `spec/pages/index.md#P-31: ワークスペース一般設定` | slug を送信し、重複・予約語・公開中解除不可を表示して public URL を更新する |
-| PAGE-p31-004 | ワークスペース icon をアップロード | `spec/pages/index.md#P-31: ワークスペース一般設定` | Origin 検証済み FormData で avatar を送信し、manage 権限と file validation を扱う |
+| PAGE-p31-004 | ワークスペース icon をアップロード | `spec/pages/index.md#P-31: ワークスペース一般設定` | FormData で avatar を送信し、manage 権限と file validation を扱う |
 | PAGE-p32-001 | P-32 メンバー管理ページ | `spec/pages/index.md#P-32: メンバー管理` | members、owner count、pending invitations を表示し、read-only、invite states、expiry、role change、last owner 禁止、remove・leave confirmations を表現する |
 | PAGE-p32-002 | メンバーを招待 | `spec/pages/index.md#P-32: メンバー管理` | email と role を送信し、already member、在庫上限、rate limit、mail warning を表示して invitation URL を返す |
 | PAGE-p32-003 | 招待リンクをコピー | `spec/pages/index.md#P-32: メンバー管理` | invitation URL を clipboard へコピーし、成功・permission failure を局所表示する |
@@ -140,10 +140,10 @@
 | PAGE-p34-001 | P-34 ワークスペース削除ページ | `spec/pages/index.md#P-34: ワークスペース削除` | 影響、note 移動案内、name confirmation を表示し、mismatch、running、completed、read-only を表現する |
 | PAGE-p34-002 | ワークスペース削除を開始 | `spec/pages/index.md#P-34: ワークスペース削除` | workspace name confirmation を送信して 202 operation を開始し、通常操作を無効化して完了まで状態を追う |
 | PAGE-p34-003 | ノート移動へ進む | `spec/pages/index.md#P-34: ワークスペース削除` | 削除前案内から P-10 selection または各 P-11 move action へ遷移する |
-| PAGE-p40-001 | P-40 トップページ | `spec/pages/index.md#P-40: トップ` | service 説明、public search、sign-up・sign-in を表示し、sign-in 済みには app への導線を出す |
+| PAGE-p40-001 | P-40 トップページ | `spec/pages/index.md#P-40: トップ` | service 説明、public search、sign-up・sign-in を表示する。状態は「通常」のみで、sign-in 済みはノート一覧へリダイレクトするため P-40 に到達しない。導線の出し分けの分岐は持たない |
 | PAGE-p40-002 | 公開検索を開始 | `spec/pages/index.md#P-40: トップ` | keyword を P-41 の query state に載せて遷移する |
 | PAGE-p40-003 | サインアップ・サインインへ移動 | `spec/pages/index.md#P-40: トップ` | P-01 または P-02 へ遷移する |
-| PAGE-p40-004 | アプリへ戻る | `spec/pages/index.md#P-40: トップ` | sign-in 済み user を current または personal P-10 へ遷移する |
+| PAGE-p40-004 | サインイン済みのリダイレクト（`/` → P-10） | `spec/pages/index.md#P-40: トップ` | sign-in 済み user を current または personal P-10 へ送る。P-40 は画面内の導線ではなく `/` のリダイレクトでこの役割を果たすため、sign-in 済みの訪問者はこの画面を見ない |
 | PAGE-p41-001 | P-41 公開検索ページ | `spec/pages/index.md#P-41: 公開検索` | keyword、tags、UTC updated period と results を表示し、initial、searching、results、zero、short query、rate limit、error を表現する。公開 CSP と referrer policy を適用する |
 | PAGE-p41-002 | 公開ノートを検索・絞り込み | `spec/pages/index.md#P-41: 公開検索` | 2 文字以上 keyword、tags、inclusive date range を送信し、署名 cursor の query fingerprint を保持する。発信元 rate limit と範囲 error を扱う |
 | PAGE-p41-003 | 公開検索結果を追加読込 | `spec/pages/index.md#P-41: 公開検索` | 同一 filter の opaque cursor で次 page を読み、results を追加する |

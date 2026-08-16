@@ -14,10 +14,10 @@ import { loadServerDeps } from "./serverAction";
  * and RSC data loaders so `@tanstack/react-start/server` never enters a
  * client graph.
  *
- * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside
- * dev (the spec mandates it unconditionally; dev over plain http is the
- * one accepted degradation), no `Domain`, and `Expires` = the session's
- * server-side expiry so the cookie never outlives the row.
+ * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside the
+ * plain-http `development` deployment (spec/adr/037), no `Domain`, and
+ * `Expires` = the session's server-side expiry so the cookie never
+ * outlives the row.
  */
 const SESSION_COOKIE_NAME = "hollow_session";
 
@@ -29,7 +29,7 @@ const SESSION_COOKIE_NAME = "hollow_session";
  */
 const PENDING_VERIFICATION_COOKIE_NAME = "hollow_pending_verification";
 
-// 免除は allowlist で判定する（ADR-110）。`Secure` を外す理由は「dev の
+// 免除は allowlist で判定する（spec/adr/037）。`Secure` を外す理由は「dev の
 // 平文 http」であって「production ではない」ではないので、分類できない
 // `NODE_ENV` は免除しない側へ倒す。Vite は `process.env.NODE_ENV` をビルド
 // 時に畳み込むため、本番ビルドの成果物ではこの述語は定数 false になる。

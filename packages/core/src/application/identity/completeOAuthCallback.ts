@@ -7,7 +7,8 @@ import { linkOAuthIdentityForFlow } from "./linkOAuthIdentity";
 import type { OAuthCallbackView } from "./view";
 
 export type CompleteOAuthCallbackInput = Readonly<{
-  /** Path parameter of the callback route — display / logging only. */
+  /** Path parameter of the callback route, matched against the provider
+   * stored on the flow state. */
   provider: string;
   state: string;
   code: string;

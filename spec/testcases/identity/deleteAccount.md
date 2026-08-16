@@ -15,7 +15,7 @@
 | — | 誤ったメールアドレスを入力する | `ValidationError("CONFIRMATION_MISMATCH")`。operationは作られない | |
 | 同じ利用者が同じ`requestId`で削除を再要求する | 同じ確認入力で実行する | 新しいoperationを作らず既存 `operationId` / status ticketを返し、terminal結果はticketから読める | |
 | 唯一ownerでrejected後、owner移譲を済ませる | 新しい`requestId`で再要求する | 旧rejected headerを120日保持したまま新operation/manifestを作り、削除を再試行できる | |
-| 120日内のrejected attemptが8件ある | 9つ目の新しい`requestId`で再要求する | `BusinessRuleError(AccountDeletionRetryLimitExceeded)`となり、terminal control-plane rowを利用者単位で8件以下に保つ | |
+| 120日の窓に保持中のterminal行（`completed` / `rejected`）が8件ある | 9つ目の新しい`requestId`で再要求する | `BusinessRuleError(AccountDeletionRetryLimitExceeded)`となり、terminal control-plane rowを利用者単位で8件以下に保つ | |
 | running中に別`requestId`で再要求する | 実行する | running operationは1件に保ち、そのoperation IDを返す | |
 | `requestId`がUUID形式でない | userRequestを送る | `ValidationError("INVALID_REQUEST_ID")`でoperationを作らない | |
 | 唯一のownerであるworkspaceがある | prepareする | 全prepare lock/barrierをreleaseしてUserは`active`へ戻り、manifest item縮約後にoperationが`rejected`になる。scope cleanupは始まらない | |

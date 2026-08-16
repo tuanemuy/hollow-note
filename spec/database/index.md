@@ -32,7 +32,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 | scope DO: local projection | `note_search`, `note_search_tags`, `note_search_fts` |
 | scope DO: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scheduled_tasks`, `tag_operations`, `tag_operation_locks`, `job_removal_manifests`, `scope_job_admission_leases`, `move_authorization_locks`, `applied_operations` |
 
-`processed_events` の主キーは global / scope とも (`consumer`, `event_id`) とする。`scheduled_tasks` は (`kind`, `operation_id`) を一意にし、`due_at` 索引で次の Alarm を決める。`applied_operations` は note move・membership command・account deletion の operation ID を scope ごとに重複排除する。
+`processed_events` の主キーは global / scope とも (`consumer`, `event_id`) とする。`scheduled_tasks` は (`kind`, `operation_id`) を一意にし、`due_at` 索引で次の Alarm を決める。`applied_operations` は note move・membership command・account deletion の operation ID を scope ごとに重複排除する（`AppliedOperationStore.markApplied` の `(operationId, commandKey)`。列は 2 つに分けず 1 つへ畳む — 下記 `applied_operations`）。同じ表が account deletion の barrier receipt も持つが、そちらは `ScopeCleanupAdmissionStore` の担当で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。
 
 `scheduled_tasks.operation_id`とpublic projection outbox event IDは必ず生成元の安定IDから決定的に導出し、保存時に乱数を採番しない。1つのoperationがNoteごとのtaskを積む場合は `sha256(producerKind + ":" + producerOperationId + ":" + plane + ":" + noteId + ":" + projectionRevision)` を用いる。tag delete/mergeはtag operation ID、tag renameはevent ID、rebuild/author/workspace fan-outはそれぞれの開始operation/command IDを`producerOperationId`とする。continuationは生成元IDとcursorを材料にする。このためtransactionの応答喪失後に同じpageを再実行しても同じPK/outbox IDへupsertされ、別Noteのtaskを1件へ潰さず、重複taskも増やさない。
 
@@ -54,7 +54,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `expires_at` | integer | reserved時NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `sha256(parentOperationId + ":" + kind + ":" + normalizedKey)` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。
+同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `` `${parentOperationId}:${kind}:${normalizedKey}` `` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。
 
 ### membership_directory
 
@@ -135,7 +135,7 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 | `kind` | text | NOT NULL, CHECK IN ('noteMove','notePurge','workspaceDeletion','accountDeletion','membershipChange','nameChange','integrationDisconnect') |
 | `partition_key` | text | NOT NULL |
 | `request_key` | text | accountDeletionのuserRequestではNOT NULL |
-| `state` | text | NOT NULL |
+| `state` | text | NOT NULL, CHECK IN ('running','completed','rejected') |
 | `payload` | text | NOT NULL（JSON） |
 | `attempts` | integer | NOT NULL DEFAULT 0 |
 | `next_attempt_at` | integer | NULL 可 |
@@ -145,13 +145,13 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 
 `next_attempt_at` の partial index（非 NULL）を recovery Cron が使う。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
 
-accountDeletionは`UNIQUE(partition_key, request_key)`で同じ送信を再生し、`UNIQUE(partition_key) WHERE kind = 'accountDeletion' AND state NOT IN ('completed','rejected')`でrunning operationを1件にする。rejected後は別request keyで新operationを許す。manifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。
+accountDeletionは`UNIQUE(partition_key, request_key)`で同じ送信を再生し、`UNIQUE(partition_key) WHERE kind = 'accountDeletion' AND state NOT IN ('completed','rejected')`でrunning operationを1件にする。rejected後は別request keyで新operationを許す。manifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合（`preparing` / `committing` など）はこの3値ではなく`account_deletion_manifests.state`が持つ。
 
 物理分割時、noteMove/notePurgeの`partition_key = noteId`で、対応する`note_routes`とpublic projectionと同じnote coordination shardへ置く。workspaceDeletionはworkspaceIdをpartition keyとしてglobal tombstone/ackを持ち、route key正本はworkspace scopeのmanifestに残す。accountDeletion/nameChangeはUserId shard、membershipChangeはそのdirectoryの調停key、integrationDisconnectはUserId shardへ置く。1つのoperationが別shardの正データを直接transaction更新せず、既存のreserve/command/ack Sagaを使う。
 
 ### account_deletion_manifests
 
-UserId shardに置く。headerは`operation_id` PK、`user_id`（非UNIQUE）、`request_key`、`state` (`buildingMemberships` / `preparing` / `rollingBack` / `buildingAuthorRoutes` / `committing` / `compacting` / `compactingRejected` / `completed` / `rejected`)、membership edge cursor、author route署名generation cursor、`redaction_version`、`completed_at`、`expires_at`を持つ。`UNIQUE(user_id, request_key)`で同じ要求を再生し、`UNIQUE(user_id) WHERE state NOT IN ('completed','rejected')`でrunning manifestを1件にする。terminal headerを保持中でも別request keyの新manifestを許すが、`(user_id, state, expires_at)` indexで未失効rejectedを同transaction内に数え、8件以上なら9件目を拒否する。itemsは(`operation_id`, `kind`, `target_key`) PKとし、membership itemはworkspaceId・edge state・membershipId・prepare/release command key・dispatchedAt・ack・cleanup ack、authorRoute itemはNoteId・routeVersion・local/public redaction ackを持つ。
+UserId shardに置く。headerは`operation_id` PK、`user_id`（非UNIQUE）、`request_key`、`state` (`buildingMemberships` / `preparing` / `rollingBack` / `buildingAuthorRoutes` / `committing` / `compacting` / `compactingRejected` / `completed` / `rejected`)、membership edge cursor、author route署名generation cursor、`redaction_version`、`completed_at`、`expires_at`を持つ。`UNIQUE(user_id, request_key)`で同じ要求を再生し、`UNIQUE(user_id) WHERE state NOT IN ('completed','rejected')`でrunning manifestを1件にする。terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。itemsは(`operation_id`, `kind`, `target_key`) PKとし、membership itemはworkspaceId・edge state・membershipId・prepare/release command key・dispatchedAt・ack・cleanup ack、authorRoute itemはNoteId・routeVersion・local/public redaction ackを持つ。
 
 membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。成功時は`compacting`、rollback完了時は`compactingRejected`へ進め、どちらもitemsを100件ずつcompactする。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`expires_at = terminal_at + 120日`を設定する。`(expires_at, operation_id) WHERE state IN ('completed','rejected')` indexから1command最大100件でterminal headerを回収し、running/building/compacting headerは対象外にする。
 
@@ -1030,11 +1030,13 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 | --- | --- | --- |
 | `operation_id` | text | PK |
 | `kind` | text | NOT NULL |
-| `result` | text | NOT NULL（同じ command の再試行へ返す JSON） |
+| `result` | text | NOT NULL（同じ command の再試行へ返す JSON。**値を返すコマンドを足すスライスが使う**列） |
 | `applied_at` | integer | NOT NULL |
 | `expires_at` | integer | NULL可。進行中account deletion barrierはNULL |
 
-`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { job, note, tag, storage, backup, usage, localProjection, outbox } }`を持つ。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。operation専用の全8 component ackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
+この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`(operationId, commandKey)`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
+
+`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
 
 鍵と秘密はテーブルに置かない。供給元（`AppConfig`）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
 

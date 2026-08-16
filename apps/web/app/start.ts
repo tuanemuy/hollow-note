@@ -7,7 +7,8 @@ import { appServerErrorAdapter } from "@/presentation/appServerErrorAdapter";
  * be re-registered here explicitly. Without it every server function accepts
  * `multipart/form-data` / `application/x-www-form-urlencoded` (both CORS
  * safelisted, so reachable from a cross-site `<form>` with no preflight),
- * which is what AC-15 requires an `Origin` check for.
+ * which is what the CSRF rule in `spec/presentation/index.md` requires the
+ * same-origin check (`Sec-Fetch-Site` → `Origin` → `Referer`) for.
  *
  * `createCsrfMiddleware` is server-only and folds to `undefined` in the
  * client bundle; only `serializationAdapters` is read there.

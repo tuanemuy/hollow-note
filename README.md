@@ -12,11 +12,11 @@ The goal is to give you a worked example of:
 ## Features
 
 - **TanStack Start + React 19 / RSC** — File-based routing (TanStack Router), server components as the default for data fetching, mutations driven through server functions.
-- **Interactive by default** — Server functions are only the transport; `useActionState` / `useTransition` / `useOptimistic` sit on top for instant feedback. The `/todo` route is the worked example (optimistic toggle, optimistic inline edit, optimistic list add/remove). Skipping this layer is what produces a round-trip-only, sluggish UI.
+- **Interactive by default** — Server functions are only the transport; `useActionState` / `useTransition` / `useOptimistic` sit on top for instant feedback. `/notes` and `/settings/auth` are the worked examples (streamed fragments with skeletons, optimistic list add/remove, optimistic avatar swap). Skipping this layer is what produces a round-trip-only, sluggish UI.
 - **Hexagonal architecture + DDD** — Enforces a one-way dependency flow `domain → application → adapters → presentation`. Side effects are confined to the boundary via port / adapter separation.
-- **Drizzle ORM + SQLite dialect** — Schema, migrations, and repositories share a single Drizzle definition. Adapter classes translate driver-specific errors into the shared error contracts.
+- **In-memory reference adapters** — `packages/core/src/adapters/memory/` is a regular backend, not a test fake: it backs `pnpm dev` and is held to the shared port-conformance suites (`adapters/conformance/`) that any future backend must pass identically.
 - **Outbox pattern** — Domain events are persisted in the same transaction as aggregate writes, then a relay publishes them to consumers. At-least-once delivery, no ordering guarantees, idempotency is the subscriber's responsibility.
-- **TypeScript / Biome / Vitest / fast-check** — Type checking with `tsgo`, lint and format via Biome, two-tier Vitest setup (unit / integration).
+- **TypeScript / Biome / Vitest** — Type checking with `tsgo`, lint and format via Biome, a single Vitest run covering domain, usecases, and port conformance.
 - **Structured error serialization** — Each layer carries its own `kind`-tagged serialized form; presentation composes the union structurally. HTTP status mapping lives only in presentation.
 
 ## Directory layout
@@ -26,58 +26,49 @@ packages/
 └─ core/              # @repo/core — framework-free, imported as @repo/core/*
    └─ src/
       ├─ domain/      # entities, value objects, port interfaces, domain events
-      ├─ application/ # use cases, UoW, cross-cutting ports (clock / id / logger), DTO projection
-      ├─ adapters/    # concrete port implementations (DB, workers, external services)
+      ├─ application/ # use cases, UoW, cross-cutting ports (clock / id / logger), DTO projection, DI
+      ├─ adapters/    # memory (reference backend), node, oauth, conformance (shared port suites)
       └─ lib/         # structural primitives shared by every layer (e.g. CodedError)
 apps/
-└─ web/               # @repo/web — the TanStack Start app + its runtime configs
+└─ web/               # @repo/web — the TanStack Start app + its build config
    ├─ app/
-   │  ├─ presentation/ # server-function entry, error responses, input validation
+   │  ├─ presentation/ # server-function DI entry, error responses, input validation, session
    │  ├─ routes/       # TanStack Router (file-based)
    │  ├─ components/
    │  ├─ styles/
-   │  ├─ worker/       # background-worker entries (relay / consumer / pruner / dlq)
-   │  └─ server.*.ts   # server fetch entries
-   └─ scripts/         # migration and production launcher scripts
-infra/                # aws (CDK, workspace member), cloudflare (Pulumi), gcp (Terraform)
-docs/                 # implementation pattern examples + runtime guides
-spec/                 # entry point for the /spec workflow
+   │  ├─ worker/       # background-worker runner (relay / scope tasks / prune)
+   │  └─ server.node.ts # server fetch entry
+   └─ scripts/         # production launcher
+docs/                 # implementation pattern examples, runtime guide, test policy
+spec/                 # the canon for the requirements and design in force (see spec/index.md)
 ```
+
+The workspace has exactly two package globs, `apps/*` and `packages/*`.
 
 For the deeper rationale, see [`CLAUDE.md`](CLAUDE.md), [`docs/backend_implementation_example.md`](docs/backend_implementation_example.md), and [`docs/frontend_implementation_example.md`](docs/frontend_implementation_example.md).
 
-## Reference runtimes
+## Reference runtime
 
-The template ships **four reference runtime wirings** as worked examples of how the adapter and entry-point layers can be swapped while the inward layers stay intact:
+There is **one** runtime wiring — **Node.js + the in-memory adapters** ([ADR 025](spec/adr/025-single-reference-runtime.md)). No database, no Docker, no cloud account: the HTTP server and the full outbox lifecycle (relay, scope tasks, prune) run in a single process, and all data resets on restart. This is what `pnpm dev` / `pnpm build` / `pnpm start` run.
 
-- **Node.js + libSQL** — single-process, no Docker or cloud account required. The data file lives at `apps/web/data/app.db`. This is the default for `pnpm dev` / `pnpm build` / `pnpm start`.
-- **Cloudflare Workers + D1 + Queues** — multi-worker, edge-distributed, managed queues. Reached via the `:cf` script suffix.
-- **AWS Lambda + Turso + SQS** — Lambda entries and CDK infrastructure. Reached via the `:aws` script suffix.
-- **GCP Cloud Run + Turso + Pub/Sub** — one container image serving four roles, with Terraform examples. Reached via the `:gcp` script suffix.
+The final execution platform is Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues ([`spec/platform/index.md`](spec/platform/index.md)). Getting there means adding an adapter group under `packages/core/src/adapters/{provider}/` plus a paired entry point and DI wiring — the inward layers stay put, and the new backend is held to the same port-conformance suites the memory backend passes today.
 
-**Pick one and delete the others** when you start a real project. Or, if you genuinely need multiple targets, keep them. The template does not assume you maintain a multi-runtime deployment.
-
-To target a different runtime (Bun, Fly Machines, etc.), add a new adapter group under `packages/core/src/adapters/{provider}/` and a paired entry point — the inward layers stay put.
-
-Per-runtime operational guidance: [`docs/runtime_node.md`](docs/runtime_node.md) / [`docs/runtime_cloudflare.md`](docs/runtime_cloudflare.md) / [`docs/runtime_aws.md`](docs/runtime_aws.md) / [`docs/runtime_gcp.md`](docs/runtime_gcp.md).
+Operational guidance: [`docs/runtime_node.md`](docs/runtime_node.md). Test layering and fake policy: [`docs/test.md`](docs/test.md).
 
 ## Requirements
 
 - Node.js (the `flake.nix` / `.envrc` direnv environment is recommended)
 - pnpm
-- The matching cloud CLI/account only for runtimes you keep
 
 ## Quick Start
 
-The default scripts target the Node runtime.
-
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env   # edit DATABASE_URL / APP_URL / PORT if needed
-pnpm db:generate           # generate SQL from the Drizzle schema
-pnpm db:migrate            # creates apps/web/data/app.db and applies SQL migrations
-pnpm dev                   # vite dev server on http://localhost:3000
+cp apps/web/.env.example apps/web/.env   # set APP_URL and pick a sign-in identity provider
+pnpm dev                                 # vite dev server on http://localhost:3000
 ```
+
+`apps/web/.env.example` documents every variable. Exactly one identity provider must be configured — the loopback dev consent screen (`OAUTH_DEV_MODE=true`, development only) or real Google credentials — or boot refuses to start.
 
 For a production build:
 
@@ -85,8 +76,6 @@ For a production build:
 pnpm build
 pnpm start
 ```
-
-If you want to try the Cloudflare wiring instead, see [`docs/runtime_cloudflare.md`](docs/runtime_cloudflare.md).
 
 ## Development commands
 
@@ -98,7 +87,7 @@ pnpm build                       # alias of pnpm build:node
 pnpm build:node
 
 pnpm start                       # alias of pnpm start:node
-pnpm start:node                  # node HTTP listener (scripts/listen.node.ts)
+pnpm start:node                  # node HTTP listener (apps/web/scripts/listen.node.ts)
 
 pnpm typecheck                   # tsgo (@typescript/native-preview)
 pnpm lint                        # Biome lint
@@ -116,18 +105,7 @@ Recommended routine after changes:
 pnpm typecheck && pnpm lint:fix && pnpm format
 ```
 
-## Database migrations
-
-The template ships no migrations — `schema.ts` is the artefact, and the SQL is yours to generate once the schema is yours. Commit what you generate from then on.
-
-```bash
-pnpm db:generate                       # generate libSQL SQL (alias of db:generate:node)
-pnpm db:migrate                        # apply to local libSQL via Drizzle's programmatic migrator
-pnpm db:generate:cf                    # generate D1 SQL
-pnpm db:migrate:cf                     # wrangler d1 migrations apply (local D1)
-```
-
-For per-stage D1 migration management, see [`docs/runtime_cloudflare.md`](docs/runtime_cloudflare.md).
+Persistence is in-memory, so there is no schema to generate and no migration command.
 
 ## License
 

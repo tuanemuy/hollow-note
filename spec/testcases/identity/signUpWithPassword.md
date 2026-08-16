@@ -16,6 +16,6 @@
 | 期限切れの招待トークン | 招待トークンつきで登録する | 通常の登録として扱われ、エラーにはならない | |
 | メール送信基盤が失敗する | 有効な入力で登録する | 登録は成功として返り、送信失敗が記録される | |
 | 短時間に同一発信元から大量の試行がある | 登録する | `ValidationError("RATE_LIMITED")` が投げられる | |
-| 同じメールアドレスで 2 つの要求が同時に走る | 両方が登録する | 片方は成功、もう片方は `ConflictError("EMAIL_ALREADY_USED")` になる | |
+| 同じメールアドレスで 2 つの要求が同時に走る | 同時に 2 つの登録要求を出す | 両方の応答 shape が同一（`emailVerificationRequired: true` / セッションなし）で、返る decoy id は別値。利用者はちょうど 1 人。一意性違反は `IdentityUniqueDirectory` のポート契約として送出されるが、ユースケースが畳む | |
 | email reservation確保後にUser保存が失敗する | recoveryする | reservationをreleaseし、同じemailが恒久的に塞がらない | |
 | User/Identity保存後にreservation activate応答を失う | recoveryする | User email/version一致を確認し、同じsub-operation IDでactiveへ収束する | |

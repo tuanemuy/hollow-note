@@ -24,3 +24,7 @@
 | — | 51 文字の表示名にする | `BusinessRuleError(InvalidDisplayName)` が投げられる | |
 | — | 501 文字の自己紹介にする | `BusinessRuleError(InvalidBio)` が投げられる | |
 | 同時に別の要求が同じ利用者を更新した | 更新する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
+| `ActiveUser` がいる | object store が払い出したアプリ相対パス（`/storage/...`）をアイコンに設定する | `AvatarUrl` として受理され、射影の `avatarUrl` にその値がそのまま返る | |
+| — | 別オリジンの絶対 URL をアイコンに設定する | `BusinessRuleError(InvalidAvatarUrl)` が投げられる | |
+| — | プロトコル相対の値（`//` で始まる）をアイコンに設定する | `BusinessRuleError(InvalidAvatarUrl)` が投げられる（`//` はアプリ相対パスとして扱わない） | |
+| アイコンを設定済みの `ActiveUser` | `avatarUrl` に `null` を渡す | アイコンが解除され、射影の `avatarUrl` が `null` になる | |

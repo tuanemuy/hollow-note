@@ -37,7 +37,8 @@ export type MakeSignInOAuthClientHarness = () =>
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 /**
- * Shared conformance suite for `SignInOAuthClient` (ADP-identity-033/034).
+ * Shared conformance suite for `SignInOAuthClient`
+ * (ADP-identity-033, ADP-identity-034, ADP-identity-040).
  *
  * Split in two so that each half reports honestly (AC-6): the
  * authorization-request half is pure — challenge derivation and URL
@@ -77,7 +78,7 @@ export function describeSignInOAuthClientContract(
       harness = await makeHarness();
     });
 
-    it("derives a 43-character base64url S256 challenge, deterministically", () => {
+    it("ADP-identity-040: derives a 43-character base64url S256 challenge, deterministically", () => {
       const challenge = harness.client.deriveCodeChallenge("verifier-1");
       expect(challenge).toHaveLength(43);
       expect(challenge).toMatch(BASE64URL);
