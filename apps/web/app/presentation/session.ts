@@ -15,21 +15,21 @@ import { loadServerDeps } from "./serverAction";
  * client graph.
  *
  * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside the
- * plain-http `development` deployment (spec/adr/037), no `Domain`, and
+ * plain-http `development` deployment, no `Domain`, and
  * `Expires` = the session's server-side expiry so the cookie never
  * outlives the row.
  */
 const SESSION_COOKIE_NAME = "hollow_session";
 
 /**
- * Marks the browser that asked for a verification mail (spec/adr/029). The
+ * Marks the browser that asked for a verification mail. The
  * value is the `userId` the sign-up response projected; `verifyEmail`
  * only issues a session when it matches the token's owner, so following
  * somebody else's verification link can never sign the visitor in.
  */
 const PENDING_VERIFICATION_COOKIE_NAME = "hollow_pending_verification";
 
-// 免除は allowlist で判定する（spec/adr/037）。`Secure` を外す理由は「dev の
+// 免除は allowlist で判定する。`Secure` を外す理由は「dev の
 // 平文 http」であって「production ではない」ではないので、分類できない
 // `NODE_ENV` は免除しない側へ倒す。Vite は `process.env.NODE_ENV` をビルド
 // 時に畳み込むため、本番ビルドの成果物ではこの述語は定数 false になる。

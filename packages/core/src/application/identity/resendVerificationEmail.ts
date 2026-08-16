@@ -19,7 +19,7 @@ const UNIFORM_RESPONSE: ResendVerificationEmailView = {};
  * Every state of the address — unregistered, already active, pending but
  * throttled, pending and mailed — resolves to the same empty success.
  * The only branch is whether a mail leaves, so the response can never be
- * read as an account oracle (spec/adr/028-account-enumeration-resistance.md).
+ * read as an account oracle.
  *
  * Issuing runs in the UserId shard transaction so the pending-status
  * re-check, the resend-interval read, the removal of the superseded

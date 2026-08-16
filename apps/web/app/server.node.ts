@@ -44,9 +44,9 @@ installContainerStore({ getStore: () => storage.getStore() });
  * Boots node-runtime resources (env → worker runner → request factory)
  * and returns a fetch handler plus a shutdown hook.
  *
- * Persistence is the in-memory reference backend (spec/adr/024): request and
- * worker containers share one process-wide store, and a restart starts
- * blank by design.
+ * Persistence is the in-memory reference backend: request and worker
+ * containers share one process-wide store, and a restart starts blank by
+ * design.
  */
 export type NodeServerBoot = Readonly<{
   fetch: (request: Request) => Promise<Response>;

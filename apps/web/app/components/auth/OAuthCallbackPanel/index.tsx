@@ -22,7 +22,7 @@ import {
 /**
  * P-05 OAuth コールバック（spec/pages/index.md#P-05、モック
  * P05-oauth-callback.html）。GET はこの画面を描くだけで、マウント後に
- * `state` / `code` を POST で消費する（spec/adr/029 の GET/POST 分離）。
+ * `state` / `code` を POST で消費する（GET/POST 分離）。
  *
  * 状態: 処理中 / 成功（`redirectTo` へ）/ キャンセル / 失敗（state 不一致・
  * 期限切れ・通信失敗）/ 再許可（プロバイダーから受け取った情報では

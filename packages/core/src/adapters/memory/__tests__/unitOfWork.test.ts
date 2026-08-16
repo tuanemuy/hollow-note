@@ -14,7 +14,7 @@ import { makeMemoryConformanceBackend } from "./conformanceBackend";
 // serialization is the in-memory approximation of transaction isolation.
 // A real transactional backend (D1/DO) interleaves callbacks and must
 // still be correct, so the shared suite asserts only per-run atomicity.
-describe("memory global unit of work serialization (spec/adr/024)", () => {
+describe("memory global unit of work serialization", () => {
   let backend: ConformanceBackend;
 
   beforeEach(() => {
@@ -53,7 +53,7 @@ describe("memory global unit of work serialization (spec/adr/024)", () => {
 // Backend-local as well: the trigger is an option of this provider
 // (`createMemoryRuntime` binds the runner's own), so the shared
 // conformance backend has nothing to observe it with.
-describe("memory scope unit of work commit kick (spec/adr/023)", () => {
+describe("memory scope unit of work commit kick", () => {
   const scope = scopeOf(1);
   let backend: MemoryBackend;
   let kicks: number;

@@ -114,7 +114,7 @@ const truncateWithoutSplittingPair = (value: string, max: number): string => {
 /**
  * Sanitized HTML fragment. Producers are `HtmlProcessor` results and
  * `NoteHtml.empty()`. The 800,000-byte cap keeps the full `notes` row
- * within the platform's 2,000,000-byte row budget (spec/adr/017).
+ * within the platform's 2,000,000-byte row budget.
  */
 export type NoteHtml = string & { readonly [noteHtmlBrand]: true };
 export const NoteHtml = {
@@ -172,7 +172,7 @@ export const Excerpt = {
 
 const HEADING_TEXT_MAX_LENGTH = 100;
 
-/** Per-note cap; headings past this are dropped by the entity (spec/adr/017). */
+/** Per-note cap; headings past this are dropped by the entity. */
 export const MAX_HEADINGS_PER_NOTE = 200;
 
 /**

@@ -9,8 +9,8 @@ import { signInSchema } from "../schema";
  * Cookie を焼き込む — Set-Cookie はこの応答にしか載せられないため。
  * 失敗の内訳（INVALID_CREDENTIALS / EMAIL_NOT_VERIFIED / THROTTLED /
  * LOCKED / ACCOUNT_DELETING）は kind タグ + code でクライアントへ渡り、
- * 待機秒・解除時刻は `fieldErrors.waitSeconds` / `unlockAt` に載る
- * （spec/adr/028）。
+ * 待機秒・解除時刻は `fieldErrors.waitSeconds` / `unlockAt` に載る —
+ * アプリケーション層のエラーが運べる構造化ペイロードはこれだけのため。
  */
 export const signInFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])

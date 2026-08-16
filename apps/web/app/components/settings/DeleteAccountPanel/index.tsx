@@ -100,7 +100,7 @@ const newRequestId = (): string => {
 
 const leave = (): void => {
   // フル遷移。router キャッシュにはサインアウト済みセッションの RSC
-  // ペイロードが残っているので、SPA 遷移では捨てられない（spec/adr/030）。
+  // ペイロードが残っているので、SPA 遷移では捨てられない。
   window.location.assign("/");
 };
 

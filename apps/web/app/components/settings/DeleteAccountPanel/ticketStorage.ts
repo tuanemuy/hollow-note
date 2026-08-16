@@ -1,5 +1,5 @@
 /**
- * P-25 の削除 ticket をタブに退避する境界（spec/adr/047）。
+ * P-25 の削除 ticket をタブに退避する境界。
  *
  * `sessionStorage` から戻る値は信頼できないので、デコード
  * （`parseStoredTicket`）と復元の可否（`canRestoreTicket`）は DOM に依存

@@ -57,9 +57,8 @@ export type NoteSummary = Readonly<{
 }>;
 
 /**
- * Read side over the owner scope's local read model (spec/adr/009). Keyword
- * search uses the write-time bigram scheme (spec/adr/011): queries of 2+
- * characters are effective. Period filters are half-open
+ * Read side over the owner scope's local read model. Keyword search uses
+ * the write-time bigram scheme: queries of 2+ characters are effective. Period filters are half-open
  * (`from <= x < toExclusive`), resolved in the viewer's time zone.
  *
  * Error contract: `SystemError(DatabaseError)`,

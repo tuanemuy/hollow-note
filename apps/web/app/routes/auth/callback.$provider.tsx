@@ -6,7 +6,7 @@ import { buildHead } from "@/presentation/head";
 import { abandonOAuthFlowFn } from "./-action";
 
 // GET はこの画面を描くだけで、state / code の消費はマウント後の POST が
-// 行う（spec/adr/029 の GET / POST 分離）。プロバイダーが返す値は欠落・型不正でも「失敗」
+// 行う（GET / POST 分離）。プロバイダーが返す値は欠落・型不正でも「失敗」
 // 状態として画面が扱うので、ここでは落とさない。
 const searchSchema = z.object({
   state: z.string().min(1).max(512).optional().catch(undefined),
