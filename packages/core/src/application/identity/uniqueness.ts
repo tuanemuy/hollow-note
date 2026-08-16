@@ -60,7 +60,7 @@ export const providerAccountKey = (
 /**
  * Sub-operation id for one key of a parent operation.
  *
- * Composed rather than hashed (spec/adr/048): the components are
+ * Composed rather than hashed: the components are
  * unambiguous in this order — `kind` is a closed enum without `:` and the
  * free-form key comes last — so composition already gives distinctness and
  * determinism, and it keeps a hash implementation out of the application

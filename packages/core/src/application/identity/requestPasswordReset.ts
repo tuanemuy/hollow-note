@@ -21,8 +21,7 @@ const UNIFORM_RESPONSE: RequestPasswordResetView = {};
  * pending, deleting, and throttled send nothing, an account without a
  * password identity gets the `passwordResetUnavailable` guidance instead,
  * and only an active user with a password identity gets a reset link. The
- * response never reveals which branch ran
- * (spec/adr/028-account-enumeration-resistance.md).
+ * response never reveals which branch ran.
  *
  * Issuing runs in the UserId shard transaction so the status/epoch
  * re-check, the interval read, the removal of the superseded token, and

@@ -18,9 +18,8 @@ export type CheckHandleAvailabilityInput = Readonly<{
  * conservative direction for a hint.
  *
  * Public handles are public by construction (they are URLs), so answering
- * this is not the kind of oracle
- * spec/adr/028-account-enumeration-resistance.md guards against; the
- * caller is still an authenticated session.
+ * this is not the kind of account-existence oracle the uniform auth
+ * responses exist to remove; the caller is still an authenticated session.
  */
 export async function checkHandleAvailability({
   container,

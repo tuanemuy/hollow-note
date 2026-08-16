@@ -2,7 +2,7 @@ import { ValidationError } from "@repo/core/application/errors";
 
 /**
  * OAuth の認可往復の消費に、Cookie が揃っていることを要求する
- * （spec/adr/029 と同型の login CSRF 対策）。
+ * （login CSRF 対策）。
  *
  * これが無いと、攻撃者は自分のフローを同意まで進めて最終ナビゲーション
  * だけを止め、`?state=…&code=…` の付いたコールバック URL を被害者に踏

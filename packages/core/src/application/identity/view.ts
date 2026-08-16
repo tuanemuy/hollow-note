@@ -26,9 +26,9 @@ export type VerifyEmailView = Readonly<{
 
 /**
  * Deliberately empty. `resendVerificationEmail` answers identically for
- * every state of the address (spec/adr/028-account-enumeration-resistance.md),
- * so there is no field it could carry that would not also be the oracle
- * the uniform response exists to remove — not even "a mail went out".
+ * every state of the address, so there is no field it could carry that
+ * would not also be the oracle the uniform response exists to remove —
+ * not even "a mail went out".
  */
 export type ResendVerificationEmailView = Readonly<Record<string, never>>;
 
@@ -103,9 +103,8 @@ export type PruneExpiredAuthStateView = Readonly<{
 /**
  * Deliberately empty, for the same reason as
  * `ResendVerificationEmailView`: every state of the address — unknown,
- * deleting, password-less, throttled, mailed — answers identically
- * (spec/adr/028-account-enumeration-resistance.md), so there is no field
- * it could carry that would not reintroduce the oracle.
+ * deleting, password-less, throttled, mailed — answers identically, so
+ * there is no field it could carry that would not reintroduce the oracle.
  */
 export type RequestPasswordResetView = Readonly<Record<string, never>>;
 

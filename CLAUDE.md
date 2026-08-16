@@ -7,7 +7,7 @@ Guidance for coding agents working in this repository.
 - Prioritize type safety; lean on TypeScript's type system fully.
 - Prefer stateless, pure functional code in domain / application layers. Adapter classes are fine when they encapsulate a single external resource and keep mutable state internal.
 - Make illegal states unrepresentable at the type level before falling back to runtime checks.
-- Default to no comments. Add one only when the WHY is non-obvious — a hidden constraint, an invariant, a workaround. Library-level JSDoc on exported APIs is welcome.
+- Default to no comments. Add one only when the WHY is non-obvious — a hidden constraint, an invariant, a workaround. Library-level JSDoc on exported APIs is welcome. Never cite an ADR number or path from a comment — write the reason itself; `spec/adr/index.md` is the index of design decisions.
 - Validate at the boundaries (transport in, value-object construction); trust the static type in between.
 - Keep cross-cutting concerns (clock, id generation, logging) behind ports so domain and application code stays deterministic and testable.
 

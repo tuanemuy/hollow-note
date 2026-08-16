@@ -6,8 +6,7 @@ import { requestPasswordResetSchema, resetPasswordSchema } from "../schema";
 
 /**
  * P-04 状態 1 の申請。応答は成否のみで、宛先が登録済みか・パスワード
- * 認証手段を持つか・発行間隔にかかったかを一切載せない
- * （spec/adr/028-account-enumeration-resistance.md）。usecase 自身も
+ * 認証手段を持つか・発行間隔にかかったかを一切載せない。usecase 自身も
  * 全経路で同じ空の成功を返すので、ここで潰す分岐は無い。
  */
 export const requestPasswordResetFn = createServerFn({ method: "POST" })

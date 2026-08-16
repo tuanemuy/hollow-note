@@ -1,5 +1,5 @@
 /**
- * spec/adr/029: a session cookie is issued only to the browser that asked for the
+ * A session cookie is issued only to the browser that asked for the
  * verification. `pendingUserId` is the `userId` left behind by `signUpFn` in
  * the pending-verification cookie (`null` when absent); `view` is the result
  * of the `verifyEmail` usecase.

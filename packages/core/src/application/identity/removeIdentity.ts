@@ -18,7 +18,7 @@ export const IDENTITY_REMOVAL_RECEIPT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /**
  * Operation id of one removal.
  *
- * Composed rather than hashed (spec/adr/048), for the same reason as
+ * Composed rather than hashed, for the same reason as
  * `reservationOperationId`: the components are unambiguous — a fixed
  * prefix and an id that cannot contain `:` — so composition already gives
  * determinism, and it keeps a hash implementation out of the application
