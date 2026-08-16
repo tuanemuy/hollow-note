@@ -363,7 +363,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
     - `ADP-common-040` `describePersonalCleanup` / `ADP-common-041` `describe`
     - `ADP-identity-039` `findPendingByUserAndPurpose` / `ADP-identity-040` `deriveCodeChallenge` / `ADP-identity-041` `beginRelease`
     - `ADP-note-055` / `ADP-note-056` `redactAuthor` × 2 / `ADP-storage-024` `publicUrl`
-  - **ヘッダーに生成規則を 1 行足す** — 「**1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、`describe` 名に ADP ID を含める命名規約で追う。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）」。この不変はどの spec ファイルにも明文化されておらず、次の spec-sync で必ず再燃する
+  - **ヘッダーに生成規則を 1 行足す** — 「**1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、ケース名（`it` の第 1 引数）の先頭に ADP ID を置く命名規約で追う（複数メソッドを拘束するケースは ID を短縮せず並べる）。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）」。この不変はどの spec ファイルにも明文化されておらず、次の spec-sync で必ず再燃する
   - ヘッダーの「最終同期」日付を更新
 - **理由:** ラウンド4（`faab0f2`、2026-08-10）で追加した適合ケースが、最終同期 2026-08-09 の台帳に未反映のまま
 
@@ -474,7 +474,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 - **対象:** リポジトリ全体
 - **変更内容:**
   1. 品質ゲート: `pnpm typecheck` / `pnpm lint:fix` / `pnpm format` / `pnpm test:unit` / `pnpm build`
-  2. 台帳の追随漏れを grep で検査（plan.md「テスト方針」の全項目）。**合否の形は 3 種類ある**（計画レビュー R3 coverage:S-001）— **「ヒット 0 件」**／**「1 件以上」**（spec を狭めていないことの確認 — AC-62）／**「件数一致」**（AC-55 の 8 / 8 / 3、AC-64 の 24 / 24、**AC-65(b) の `grep -c "declaredMimeType" spec/usecases/storage.md` = 1**）。**向きを取り違えないこと** — とくに AC-65(b) は 0 ではなく **1** が合格（`startBulkUpload` の `files` 列は据え置く — 計画レビュー R3 arch:P-001）。このほかに**出力を人が読む確認が 4 つ**ある（下記 4. / 6. / 9. と、AC-27 の「コメント部分にヒットが無い」）
+  2. 台帳の追随漏れを grep で検査（plan.md「テスト方針」の全項目）。**合否の形は 3 種類ある**（計画レビュー R3 coverage:S-001）— **「ヒット 0 件」**／**「1 件以上」**（spec を狭めていないことの確認 — AC-62）／**「件数一致」**（AC-55 / AC-64、**AC-65(b) の `grep -c "declaredMimeType" spec/usecases/storage.md` = 1**。**件数と検査の形の正典は plan.md の各 AC だけで、この文書には写さない**）。**向きを取り違えないこと** — とくに AC-65(b) は 0 ではなく **1** が合格（`startBulkUpload` の `files` 列は据え置く — 計画レビュー R3 arch:P-001）。このほかに**出力を人が読む確認が 4 つ**ある（下記 4. / 6. / 9. と、AC-27 の「コメント部分にヒットが無い」）
   3. `git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/`（コミット済みと未コミットの両方を含む）で、コード差分が `plan.md`「コード差分の内訳」表の集合と 1 対 1 で一致することを確認する。あわせて**振る舞いを変える差分が 0** であることを機械的に示す — `git diff -U0 $(git merge-base origin/main HEAD) -- packages/ apps/ ':!*.example' | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -vE "^[-+][[:space:]]*(//|/\*|\*|\*/)" | grep -vE '^[-+][[:space:]]*(it|describe)\("'` が AC-63 の挙げる残り行だけを返す。**件数と内訳の正典は AC-63 だけで、この文書には写さない。** 表に無いファイルが出る、または AC-63 の内訳以外が返ったらスコープ逸脱
   4. `spec/inventory/{domain,adapter,test,frontend,usecase}.md` の **5 ファイル**の「最終同期」日付が更新されていることを確認する（統合により `usecase.md` が対象に入った — AC-56）
   5. `AGENTS.md` がシンボリックリンクのまま壊れていないことを確認する（`ls -l AGENTS.md`）
@@ -523,7 +523,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
   1. **採番の確認を最初に行う。** `spec/adr/` の番号は**永久割り当て**で、廃止した ADR（015 / 016 / 018 / 019 / 020 — コミット `bea92db` で削除）の番号は**再利用されていない**。したがって空き番号を埋めず、現在の最大採番（051）の次から連番を取る。**`ls spec/adr/` で最大採番を再確認してから 6 本のファイルを作り、そのあとで A フェーズへ進む**。先に消費されていたらブロックごと後ろへずらす（6 本は連番に保つ）
      - 番号確定だけを先に済ませて本文執筆を後回しにしたい場合は、このステップを **20a（採番確定と空ファイル作成）** / **20b（本文と `index.md`）** に割ってよい。守るべき順序は「採番の確定 → 本文リンクを書く」であって「ADR 本文の完成 → 本文リンク」ではない
   2. `.thread/14/adr.md` の 16 件を記録基準（寿命テスト / 波及テスト）にかけ、**両方 Yes の 8 件を昇格**する。**作るファイルは 6 本**（052〜057）で、**ADR-011 と ADR-016 は独立番号を取らず 052 の本文に 1 段落ずつ統合する**ため判断の数（8）とファイルの数（6）が一致しない（計画レビュー R3 coverage:S-004。旧文「両方 Yes の 6 件を昇格する（うち ADR-011 と ADR-016 は…）」は、6 を判断の数と読むと ADR-011 / 016 が「うち」に入らず、ファイルの数と読むと「うち」が成立しなかった）。昇格する 8 件は **ADR-002 / 004 / 005 / 007 / 010 / 011 / 014 / 016**。ADR-001（倒す向きの判定規則）は `spec/adr/046` が既に定めているので昇格しない。ADR-003（`docs/*` の書き直し）/ ADR-006（スコープ外の切り出し）/ ADR-012（適合ケース 1 本の扱い）/ ADR-013（SYNC-221 の分割）/ ADR-015（interface を新設しない判断）は本 Issue 限りの進め方・スコープ判断なので昇格しない。**ADR-010 は計画レビュー R2（arch:S-001）で昇格対象に加わった**（下記 057）
-     - `spec/adr/052-adapter-inventory-granularity.md` ← adr.md **ADR-002**（`spec/inventory/adapter.md` は 1 行 = 1 ポートメソッド。適合ケースに ADP ID を新規採番せず、`describe` 名の命名規約で追う）
+     - `spec/adr/052-adapter-inventory-granularity.md` ← adr.md **ADR-002**（`spec/inventory/adapter.md` は 1 行 = 1 ポートメソッド。適合ケースに ADP ID を新規採番せず、ケース名（`it` の第 1 引数）の命名規約で追う）
      - `spec/adr/053-account-deletion-rollback-completion.md` ← adr.md **ADR-004**（`allRollbackReleased` は membership release ack のみを見る。personal barrier の abort ack はユースケースの復帰ゲートとして別に確認する）
      - `spec/adr/054-provider-account-uniqueness-owner.md` ← adr.md **ADR-005**（provider account の一意性担保は `IdentityUniqueDirectory` に一本化し、`IdentityRepository` の契約からは落とす）
      - `spec/adr/055-session-expiry-derivation.md` ← adr.md **ADR-007**（`expiresAt` を View に載せず、転送境界が `Session.ttlMs` から再導出する）
@@ -658,7 +658,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 - **変更内容:** `it("ADP-common-008: assertOwner rejects a different id and a missing receipt", …)` のケースに、**completed した barrier への `assertOwner` が `ConflictError` になる**主張を足す（adr.md ADR-012）。
   - 既存ヘルパーだけで書ける: `DECLARED_COMPONENTS` を全部 ack → `markCompleted(operationId, retainUntil)` → `await expectConflict(store.assertOwner("op-1"))`
   - `retainUntil` の作り方は同ファイルの `ADP-common-009/010` のケース（`backend.clock.now().getTime() + 120 * DAY_MS`）に合わせる
-  - describe 名 / it 名の `ADP-common-008` は**変えない**（`spec/inventory/adapter.md` の行と対応する命名規約 — `spec/adr/026`、adr.md ADR-002）
+  - `it` 名の `ADP-common-008` は**変えない**（`spec/inventory/adapter.md` の行と対応する命名規約 — `spec/adr/052`、adr.md ADR-002 / ADR-034）
   - **これ以外のテストを追加しない。** 本 Issue で許される唯一のテスト差分
 - **注意:** memory アダプター（`adapters/memory/repositories/scopeCleanupAdmissionStore.ts:47-57` の `requireOwner` が `row.status !== "running"` を弾く）は**既にこの振る舞いを持つ**ので、実装変更は発生しない。`pnpm test:unit` が緑のままであることを確認する。**赤になったら前提が崩れているので、実装を変えずにステップを止めて判断し直す**
 - **理由:** spec とポート JSDoc だけを直してスイートを放置すると、「completed を通す実装」も同時に緑になり、`spec/adr/026` の決定 1（JSDoc だけを読んで実装したものがスイートを通る）が成立しない（`spec/adr/046`）

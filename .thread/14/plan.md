@@ -65,7 +65,7 @@ SYNC-225 は `research.md` の SYNC-15 と同一項目なので、統合後も *
 | AC-17 | `spec/presentation/index.md` のセキュリティヘッダー表に `Cache-Control: private, no-store` の行があり、Cookie 認証の応答を前段キャッシュに配らせないという理由が添えられている（SYNC-17） | progress.md L74 | 7 |
 | AC-18 | `spec/domains/note.md` の `ShareTokenProtector` 節に `**エラーケース**: SystemError(DataIntegrityError)`（未知の keyVersion / ciphertext 破損）が書かれ、`packages/core/src/application/ports/shareTokenProtector.ts` の JSDoc から実在しない `ExternalServiceError` が消えている（SYNC-11） | progress.md L68 | 1, 8 |
 | AC-19a | `spec/inventory/domain.md` / `adapter.md` / `test.md` / `frontend.md` の該当行が本文修正（ステップ 1〜7）に追随し、**4 ファイルそれぞれ**のヘッダーの「最終同期」日付が更新されている。**この範囲（SYNC-01〜27 の波及）では**新しい DOM / ADP / TC / PAGE ID は採番されていない（adr.md ADR-002）。**統合後は AC-55 / AC-56 が上書きする** — 対象は 5 ファイルになり、Issue #2 由来の新規ポートメソッド 8 本と新規ユースケース 3 本には採番する（adr.md ADR-011） | progress.md L66 + 各項目の波及 ＋ 統合作業 | 9〜12 |
-| AC-19b | ラウンド4の適合ケース 8 本（`ADP-note-015` / `ADP-note-021` / `ADP-note-046` / `ADP-note-047` / `ADP-common-012` / `ADP-common-017` / `ADP-common-019` / `ADP-common-021`）の要点欄が、対応する describe 名の主張を読める内容になっている。本文修正を伴わない 2 本（`ADP-note-021` のエスケープ契約は `spec/domains/note.md` に既述、`ADP-common-012` の replayed begin）も対象に含む（SYNC-09） | progress.md L66 | 10 |
+| AC-19b | ラウンド4の適合ケース 8 本（`ADP-note-015` / `ADP-note-021` / `ADP-note-046` / `ADP-note-047` / `ADP-common-012` / `ADP-common-017` / `ADP-common-019` / `ADP-common-021`）の要点欄が、対応するケース名の主張を読める内容になっている。本文修正を伴わない 2 本（`ADP-note-021` のエスケープ契約は `spec/domains/note.md` に既述、`ADP-common-012` の replayed begin）も対象に含む（SYNC-09） | progress.md L66 | 10 |
 | AC-20 | `CLAUDE.md` に Cloudflare / AWS / GCP のエントリ・DI・`docs/runtime_*.md`・`migrate.*.ts`・`:cf`/`:aws`/`:gcp` スクリプト・`infra/*` ワークスペース・`components/todo/` / `routes/todo/` / `TodoBoard`・`serverAction` の `inputValidator` の記述が存在せず、実在するもの（Node ＋ memory 一本、二面 UoW、Identity / Note ほか 8 ドメイン、`adapters/conformance/`、`.validator()`、`spec/` と `spec/adr/`）が書かれている。下記「テスト方針」の**実在しない固有名 grep が 0 件**（SYNC-18） | progress.md L75 | 13 |
 | AC-21 | `docs/backend_implementation_example.md` の File Layout と Adapter Layer 節が現行構成（`adapters/{memory,node,oauth,conformance}/`、`apps/web/app/presentation/`、二面 UoW）で書かれ、D1 / Drizzle / `serverCloudflare` への参照が残っていない（SYNC-19 / adr.md ADR-003） | progress.md L76 | 14 |
 | AC-22 | `docs/frontend_implementation_example.md` の参照パス・識別子がすべて実在するもの（`routes/notes/index.tsx`、`components/note/*`、`components/settings/IdentityList/board.tsx` ほか）に差し替わっており、`grep -in "todo" docs/frontend_implementation_example.md` が 0 件（SYNC-19 / adr.md ADR-003） | progress.md L76 | 15 |
@@ -287,7 +287,7 @@ V7 が触る 2 ファイル（`conformance/noteProjection.ts` = 20、`conformanc
 - 台帳の追随漏れを機械的に検査する grep（ステップ 17）。**合否の形は 3 種類ある**（計画レビュー R3 coverage:S-001。前置きを「すべて 0 件」と断言していたが、配下の実態と食い違っていた）。**どれに当たるかを取り違えないこと**:
   - **0 件検査** — 直すべき記述が残っていないこと（下記の大半）
   - **1 件以上検査** — spec を狭めていないこと（AC-62。**合否の向きが逆**）
-  - **件数一致検査** — 採番・追随の件数が想定どおりであること（AC-55 の 8 / 8 / 3、AC-64 の 24 / 24、AC-65(b) の 1、`ls spec/adr/05[2-7]-*.md` の 6）
+  - **件数一致検査** — 採番・追随の件数が想定どおりであること（AC-55 の ID 集合差分 = 追加 DOM 11 / ADP 8 / UC 3・消えた ID 0、AC-64 の 24 / 24、AC-65(b) の 1、`ls spec/adr/05[2-7]-*.md` の 6）
   - このほかに**出力を人が読む確認が 4 つ**ある（ステップ 17 が担当する。機械判定にできないものを無理に grep へ畳まない）— AC-27 の「コメント部分にヒットが無い」/ inventory 5 ファイルの「最終同期」日付 / `spec/adr/index.md` の 2 表に 6 行 / AC-68 のリンク先実在
 - 0 件が合否の検査:
   - `grep -rn "NOTE_ROUTE_BATCH_TOO_LARGE" spec/ packages/ apps/` → 0 件
@@ -316,11 +316,10 @@ V7 が触る 2 ファイル（`conformance/noteProjection.ts` = 20、`conformanc
     - 残す 1 件は `startBulkUpload` の `files` 列（`:22`）。**このユースケースはバイト列を持たない**ので `spec/adr/050` の前提「受理判定の時点で実体を握っていること」が成立せず、`files[].declaredMimeType` / `size` は受理判定の入力ではなく**手順 1 の合計サイズ検査と手順 5 の暫定判定のヒント**である。落とすと同じファイルの手順 1・手順 5・出力 DTO の説明段落が根拠を失う（`spec/adr/046`「実装が未実装の側で spec を狭めない」）。`spec/usecases/conversion.md:198` の `declaredMimeType`（`FormatDetector.detect` のヒント）を除外したのと同じ切り分け
   - **spec を狭めていないことの検査**（すべて「ヒット 1 件以上」が合否。AC-62。上の 0 件検査と**合否の向きが逆**なので取り違えないこと）:
     `grep -n "createDownloadUrl" spec/domains/storage.md` / `grep -n "workspaceCursor" spec/usecases/usage.md` / `grep -n "next_attempt_at" spec/database/index.md`
-  - 新規 inventory 行の採番検査（AC-55）。**3 本とも `-E` に統一する**（BRE と ERE を混ぜない）:
-    - `grep -cE "DOM-common-04[12]|DOM-identity-06[012]|DOM-note-07[12]|DOM-storage-038" spec/inventory/domain.md` → 8
-    - `grep -cE "ADP-common-04[01]|ADP-identity-0(39|4[01])|ADP-note-05[56]|ADP-storage-024" spec/inventory/adapter.md` → 8
-    - `grep -cE "UC-identity-02[234]" spec/inventory/usecase.md` → 3
-    - **旧案の ADP 行は壊れていた。** BRE に ERE のグループ `(39|4[01])` を混ぜていたため `ADP-identity-039〜041` の 3 行を永久に検出できず、8 行すべてを正しく採番した合成ファイルに対する実測が **5**（期待 8）だった。`-E` を付けた形は同じ合成ファイルで **8** を返す。現状の 3 ファイルに対しては 3 本とも **0**（未採番なので正しい）
+  - 新規 inventory 行の採番検査（AC-55）。**AC-55 本文が正とする ID 集合の差分で見る**（base との差が追加分だけで、消えた ID が 0 件であること）。1 本のコマンドで 3 ファイルを回す:
+    `for f in domain adapter usecase; do B="$(git merge-base origin/main HEAD):spec/inventory/$f.md"; P='^\| [A-Z]+-[a-z]+-[0-9]+'; echo "== $f"; comm -13 <(git show "$B" | grep -oE "$P" | sed 's/^| //' | sort -u) <(grep -oE "$P" "spec/inventory/$f.md" | sed 's/^| //' | sort -u); echo "消えた ID: $(comm -23 <(git show "$B" | grep -oE "$P" | sed 's/^| //' | sort -u) <(grep -oE "$P" "spec/inventory/$f.md" | sed 's/^| //' | sort -u) | wc -l)"; done`
+    - 期待は **`domain` に 11 / `adapter` に 8 / `usecase` に 3** の ID が並び、**3 ファイルとも「消えた ID: 0」**。並んだ ID が AC-55 の列挙と 1 対 1 であることまで見る（件数だけを見ない）
+    - **ID をパターンで列挙する形にはしない。** 新規 ID が増えるたびに正規表現へ書き足す必要があり、書き漏らすと**少ない件数を返して合格になる**（AC-55 は「実測が正」で、実測を取りこぼす検査は AC の判定に使えない）。集合差分なら列挙も件数も実測から出る
   - `grep -rn "adr/05[2-7]-" spec/` の参照先ファイルがすべて実在する（AC-68。ADR 番号がずれたときに本文リンクだけが取り残されるのを検出する。現状は 0 件）
   - **新設テストケースの採番検査**（AC-64）: `ls spec/testcases/identity/*.md | wc -l` が **24**、`grep -c "^| UC-identity-" spec/inventory/usecase.md` が **24**、新規 TC 行が `TC-identity-305` 以降で、`grep -n "^| TC-identity-024 " spec/inventory/test.md` が `completeOAuthSignIn` の行を指したまま（現状は 21 / 21 / `completeOAuthSignIn`）
 - マニュアルテストの実行は不要（UI の挙動を変えない）。ただし手順書側（`spec/manual-tests/account.md`）は scenario の下流成果物なので、AC-02 の新規異常系に TC-42 を追随させ（AC-30）、TC-26 / TC-13 の 2 行を実装・usecase 側の正本に合わせる（AC-54）
