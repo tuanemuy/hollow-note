@@ -1032,6 +1032,8 @@ Proposed（レビュー R1 の M-34 / M-35、U3 / U5 で判断）
 
 ## ADR-029: 適合スイートのケース名には複数の ADP ID を連記してよい
 
+→ `spec/adr/052-adapter-inventory-granularity.md` の決定に統合
+
 ### Status
 
 Proposed（レビュー R1 の M-11 / U8 で判断）
@@ -1203,6 +1205,8 @@ Proposed（レビュー R2 の M-70、V5 / V9 で判断）
 
 ## ADR-034: ADP ID と適合ケースの対応を追う命名規約は、ADR 026 から引かず ADR 052 自身の決定として立てる
 
+→ `spec/adr/052-adapter-inventory-granularity.md` の前提節と決定に統合
+
 ### Status
 
 Proposed（レビュー R2 の M-62、V1 で判断）
@@ -1238,6 +1242,8 @@ Proposed（レビュー R2 の M-62、V1 で判断）
 
 ## ADR-035: 適合ケース名の ADP ID 連記は後続を短縮せず全形で書く
 
+→ `spec/adr/052-adapter-inventory-granularity.md` の決定と影響節に統合
+
 ### Status
 
 Proposed（レビュー R2 の M-71 / M-72、V7 / V1 で判断）
@@ -1268,6 +1274,8 @@ Proposed（レビュー R2 の M-71 / M-72、V7 / V1 で判断）
 
 ## ADR-036: ADR 057 の追随の軸を「ユースケースの失敗経路」へ広げ、行の同一性を「ユースケース × 条件」で定める
 
+→ `spec/adr/057-manual-test-followthrough.md` のコンテキストと決定に統合
+
 ### Status
 
 Proposed（レビュー R2 の M-68、V6 で判断）
@@ -1297,6 +1305,8 @@ Proposed（レビュー R2 の M-68、V6 で判断）
 - トレードオフ: 「条件が同じか」の判定に人の読みが要る。エラーコードで数えるより曖昧だが、表の目的（手で確かめる手順の網羅）に対しては条件のほうが正しい単位
 
 ## ADR-037: 台帳 ID を名乗るのは適合ケースだけで、TC ID とユースケース実装の UC ID は名乗りを規約にしない
+
+→ `spec/adr/058-ledger-id-callout-scope.md` に昇格
 
 ### Status
 
@@ -1330,6 +1340,8 @@ TC と UC にはその事情が無い。TC 行は `spec/testcases/{domain}/{usec
 - トレードオフ: 名乗る / 名乗らないがファイルごとに分かれるので、`grep -c "TC-"` のような一括計数はコード側では意味を持たない。計数の正典は台帳側だけになる
 
 ## ADR-038: 台帳の DOM 行 ↔ ADP 行の非対称は、片側の主張が本文に由来するときだけそろえる
+
+→ `spec/adr/059-ledger-row-asymmetry.md` に昇格
 
 ### Status
 
