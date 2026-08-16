@@ -555,16 +555,25 @@
 | signInWithPassword | 待機中 | TC-23 | |
 | signInWithPassword | ロック中 | TC-23 | |
 | signInWithPassword | 失敗回数の記録単位と消去 | TC-23 | 手順 4〜7。「メールアドレス × 発信元」ごとの記録で、未確認は記録せず、成功で消える |
+| startOAuthFlow | `linkIdentity` intent で主体が active でない | 対象外 | 削除は受理と同時にサインアウトされる（TC-14 手順 3）ため、削除開始済みの利用者で `/settings/auth` の追加操作に到達できない |
 | completeOAuthSignIn | `state` の不一致・期限切れ | 対象外 | URL の直接改ざんが必要。自動テストで担保する |
 | completeOAuthSignIn | 同意のキャンセル | TC-40 | |
 | completeOAuthSignIn | プロバイダー側のメール未確認 | 対象外 | Google 側の状態を作れない |
 | completeOAuthSignIn | 既存利用者がメール未確認 | 対象外 | 同上 |
+| completeOAuthSignIn | claim は残っているが identity が居ない | 対象外 | 解除済み claim の収束待ちという一時状態を UI から作れない。自動テストで担保する |
+| completeOAuthCallback | `state` の不一致・期限切れ・`:provider` 不一致 | 対象外 | URL の直接改ざんが必要。自動テストで担保する |
+| completeOAuthCallback | flow state の `intent` が `integration` | 対象外 | `integration` の認可を開始する導線が本スライスに無い |
+| completeOAuthCallback | 振り分け先のユースケースが返すもの | 対象外 | 固有の分岐を持たずそのまま伝えるだけ。確認は `completeOAuthSignIn` / `linkOAuthIdentity` の各行で行う |
 | linkOAuthIdentity | 別の利用者に紐づき済み | TC-29 | |
+| linkOAuthIdentity | claim は残っているが identity が居ない | 対象外 | 解除済み claim の収束待ちという一時状態を UI から作れない。自動テストで担保する |
 | requestPasswordReset | 未登録のメールアドレス | TC-24 | |
 | requestPasswordReset | パスワード手段なし | TC-25 | |
 | resetPassword | 期限切れ・使用済み | TC-26 | |
 | resetPassword | パスワード強度の違反 | TC-17 | 同じ検証規則 |
 | resetPassword | 入力の不一致 | TC-27 | |
+| addPasswordIdentity | 再認証が未了 | 対象外 | 追加フォームは再認可を済ませないと開けない（TC-07 手順 2・3）ため UI から到達できない |
+| addPasswordIdentity | 利用者が不在 | 対象外 | 削除済み利用者のセッションという極端な状態。自動テストで担保する |
+| addPasswordIdentity | 利用者が `active` でない | 対象外 | 削除は受理と同時にサインアウトされる（TC-14 手順 3）ため設定画面に到達できない |
 | addPasswordIdentity | 既にパスワード手段がある | 対象外 | 設定済みの場合は追加ボタンが出ないため UI から到達できない |
 | changePassword | 現在のパスワードの相違 | TC-30 | |
 | removeIdentity | 最後の 1 件 | TC-28 | |
@@ -574,11 +583,16 @@
 | updateProfile | 表示名・自己紹介の違反 | TC-34 | |
 | updateProfile | アイコンの形式・サイズ | TC-36 | |
 | updateProfile | 版の競合 | 対象外 | 同一利用者が同時に 2 か所からプロフィールを更新する状況。自動テストで担保する |
+| getProfile | 利用者が不在・削除済み | 対象外 | 削除済み利用者のセッションという極端な状態。自動テストで担保する |
+| getProfile | メール未確認 | 対象外 | 未確認ではサインインできない（TC-21）ため `/settings/profile` に到達できない |
+| getProfile | 利用者が `active` でない | 対象外 | 削除は受理と同時にサインアウトされる（TC-14 手順 3）ため設定画面に到達できない |
+| checkHandleAvailability | ハンドルの形式違反・予約語 | TC-32 | 手順 1・2。入力中の候補チェックが返す。長さの境界は TC-33 |
 | deleteAccount | 確認入力の不一致 | TC-38 | |
 | deleteAccount | 唯一の owner | TC-39 | |
 | deleteAccount | 実行中ジョブの取り消しと後始末 | TC-14 | 手順 5〜7。ワークスペースに残るノートが取り消し済みの状態に戻り、止めた batch 親の既に成功した子の生成物が破棄される |
 | updateProfile | 初回のハンドル設定と著者ハンドルの投影 | TC-10 | 手順 6・7。初回設定でも公開検索の著者リンクが出る |
 | getUsageSnapshot | 取得の失敗 | 対象外 | インフラ障害 |
+| recalculateStorageUsage | user 主体が実行者と一致しない | 対象外 | UI は自分の主体しか再計算しないため、実行者と主体が食い違う要求を作れない |
 
 ### 観点チェックリスト
 

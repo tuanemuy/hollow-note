@@ -8,8 +8,8 @@ const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * Shared conformance suite for `IdentityUniqueDirectory`
- * (ADP-identity-006..009, 041): two-phase reservation, per-kind conflict
- * codes, and lost-response idempotency.
+ * (ADP-identity-006..009, ADP-identity-041): two-phase reservation,
+ * per-kind conflict codes, and lost-response idempotency.
  */
 export function describeIdentityUniqueDirectoryContract(
   backendName: string,
@@ -100,7 +100,7 @@ export function describeIdentityUniqueDirectoryContract(
       ).toBe(userId(2));
     });
 
-    it("ADP-identity-007/008: reserve and activate are idempotent per operation (lost response)", async () => {
+    it("ADP-identity-007/ADP-identity-008: reserve and activate are idempotent per operation (lost response)", async () => {
       await reserveEmail("op-1");
       await reserveEmail("op-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
@@ -176,7 +176,7 @@ export function describeIdentityUniqueDirectoryContract(
         operationId,
       });
 
-    it("ADP-identity-041/009: beginRelease then release frees an activated claim for another user", async () => {
+    it("ADP-identity-041/ADP-identity-009: beginRelease then release frees an activated claim for another user", async () => {
       await reserveEmail("op-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
 
@@ -193,7 +193,7 @@ export function describeIdentityUniqueDirectoryContract(
       ).toBe(userId(2));
     });
 
-    it("ADP-identity-041: a releasing key stays blocked for another user until release", async () => {
+    it("ADP-identity-041/ADP-identity-007: a releasing key stays blocked for another user until release", async () => {
       await reserveEmail("op-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
       await beginRelease("release-1");
@@ -207,7 +207,7 @@ export function describeIdentityUniqueDirectoryContract(
       await reserveEmail("op-2", userId(2));
     });
 
-    it("ADP-identity-041/009: beginRelease and release are idempotent for the same operation", async () => {
+    it("ADP-identity-041/ADP-identity-009: beginRelease and release are idempotent for the same operation", async () => {
       await reserveEmail("op-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
 

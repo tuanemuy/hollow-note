@@ -18,7 +18,7 @@
 | DOM-common-010 | `ScopeCleanupAdmissionStore.acknowledgePersonalComponent` | `spec/domains/index.md#ScopeKey-と永続化境界` | 個人 cleanup component の完了を記録する |
 | DOM-common-011 | `ScopeCleanupAdmissionStore.markCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 全 component 完了後に barrier を保持期限付きで完了化する |
 | DOM-common-012 | `ScopeCleanupAdmissionStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ完了 barrier を有界に回収する |
-| DOM-common-013 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する |
+| DOM-common-013 | `AccountDeletionManifestStore.begin` | `spec/domains/index.md#ScopeKey-と永続化境界` | account deletion manifest を冪等に開始する。再投入された `begin` は既に記録済みのものをすべて保つ |
 | DOM-common-014 | `AccountDeletionManifestStore.appendMembershipPage` | `spec/domains/index.md#ScopeKey-と永続化境界` | membership edge を有界ページで manifest に固定する |
 | DOM-common-015 | `AccountDeletionManifestStore.appendAuthorRoutePage` | `spec/domains/index.md#ScopeKey-と永続化境界` | author route ページを cursor と原子的に固定する |
 | DOM-common-016 | `AccountDeletionManifestStore.markBuilt` | `spec/domains/index.md#ScopeKey-と永続化境界` | 対象固定済みへ遷移する |
@@ -111,6 +111,8 @@
 | DOM-identity-061 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
 | DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
 | DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
+| DOM-identity-064 | `AvatarUrl` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | trim 後 1〜2048 文字で、アプリ相対パスか `appUrl` と同一オリジンの絶対 URL だけを許し、違反を `BusinessRuleError(InvalidAvatarUrl)` にする。自オリジンの情報は引数で受け取る |
+| DOM-identity-065 | `SameOriginPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | `//` 始まり・バックスラッシュ・C0 制御文字を拒む自オリジン述語を 1 本だけ持ち、真偽値だけを返す |
 | DOM-workspace-001 | `WorkspaceId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-002 | `MembershipId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-003 | `InvitationId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
@@ -216,7 +218,7 @@
 | DOM-storage-031 | `ReferenceImportRecordRepository.deleteByNote` | `spec/domains/storage.md#ポート` | attempt と summary を合わせて有界削除する |
 | DOM-storage-032 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | バイト列だけを受けて保存し実サイズと checksum を返す（ストリーム受けは契約に持たない） |
 | DOM-storage-033 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | バイト列と metadata を持つ `ObjectBody` を取得する |
-| DOM-storage-034 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除する |
+| DOM-storage-034 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除し、存在しない key も許容する |
 | DOM-storage-035 | `ObjectStorage.createDownloadUrl` | `spec/domains/storage.md#ポート` | file name と期限付きの download URL を発行する |
 | DOM-storage-036 | `RemoteResourceFetcher.fetch` | `spec/domains/storage.md#ポート` | byte 上限と timeout を守って外部 URL を取得する |
 | DOM-storage-037 | `DnsResolver.resolve` | `spec/domains/storage.md#ポート` | hostname を IP address 群へ解決する |
@@ -277,7 +279,7 @@
 | DOM-note-034 | `NoteRevisionRepository.findById` | `spec/domains/note.md#ポート` | RevisionId で revision を取得する |
 | DOM-note-035 | `NoteRevisionRepository.deleteOlderThanNewest` | `spec/domains/note.md#ポート` | 最新 keep 件を残し古い revision を削除する |
 | DOM-note-036 | `NoteRevisionRepository.deleteByNote` | `spec/domains/note.md#ポート` | ノートの revision を全削除する |
-| DOM-note-037 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する |
+| DOM-note-037 | `LocalNoteQueryService.search` | `spec/domains/note.md#ポート` | local projection を条件・sort・pagination で検索する。`highlightedExcerpt` は投影が持つマークアップをエスケープしてから強調を付ける |
 | DOM-note-038 | `LocalNoteQueryService.listMonthsWithNotes` | `spec/domains/note.md#ポート` | owner のノートがある現地暦月を列挙する |
 | DOM-note-039 | `LocalNoteQueryService.countByDay` | `spec/domains/note.md#ポート` | 半開期間を time zone の日別に集計する |
 | DOM-note-040 | `LocalNoteQueryService.countByContentStatus` | `spec/domains/note.md#ポート` | owner・本文状態の Note 数を返す |

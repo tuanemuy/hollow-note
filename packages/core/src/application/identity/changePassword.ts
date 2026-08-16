@@ -23,7 +23,7 @@ const invalidCredentials = (): ValidationError =>
   new ValidationError("INVALID_CREDENTIALS", "Current password is incorrect");
 
 /**
- * Replaces the password and drops every other session (UC-identity-013,
+ * Replaces the password and drops every other session (UC-identity-014,
  * spec/usecases/identity.md#changepassword).
  *
  * Revocation is the `authEpoch` bump, so it costs the same for one

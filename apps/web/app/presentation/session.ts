@@ -14,10 +14,10 @@ import { loadServerDeps } from "./serverAction";
  * and RSC data loaders so `@tanstack/react-start/server` never enters a
  * client graph.
  *
- * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside
- * dev (the spec mandates it unconditionally; dev over plain http is the
- * one accepted degradation), no `Domain`, and `Expires` = the session's
- * server-side expiry so the cookie never outlives the row.
+ * Attributes: `HttpOnly` / `SameSite=Lax` / `Path=/`, `Secure` outside the
+ * plain-http `development` deployment (spec/adr/037), no `Domain`, and
+ * `Expires` = the session's server-side expiry so the cookie never
+ * outlives the row.
  */
 const SESSION_COOKIE_NAME = "hollow_session";
 

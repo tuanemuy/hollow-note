@@ -629,7 +629,7 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 ### 処理フロー
 
 1. `UserRepository.findById` で引く。`PendingUser` なら `ValidationError("EMAIL_NOT_VERIFIED")`
-2. handleを新規設定/変更するならnormalized handle reservationをoperation ID付きで確保する。別userのactive/reserved行があれば `ConflictError("HANDLE_ALREADY_USED")`
+2. handleを新規設定/変更するならnormalized handle reservationをoperation ID付きで確保する。鍵を別のoperationが保持していれば `ConflictError("HANDLE_ALREADY_USED")`（判定材料は operation ID であって利用者ではないので、同じ利用者の別 operation からの再予約も同じく衝突する — [domains/identity.md](../domains/identity.md)）。奪えるのは期限切れの `reserved` だけで、解除待ちの `releasing` の行は奪えない
 3. `User.updateProfile` を適用し、`handle` の指定があれば `User.assignHandle` または `User.clearHandle` を続けて適用する
 4. UserId shardのUoWで保存し、成功後にreservationをexpected User versionでactivateする。旧handleはその後releasingへ進める。`displayName` が変わったときはprofile eventを発行する
 

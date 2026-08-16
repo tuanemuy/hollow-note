@@ -178,13 +178,17 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 処理フロー
 
-1. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
-2. `NoteRepository.countByOwner(owner, "all")` を引く
-3. `StorageQuota` の値を置き換えて保存する
+1. 実行者と主体の対応を検査する。user 主体なら `subjectId` が実行者（`userId`）と一致していなければ `BusinessRuleError(InsufficientRole)`。workspace 主体では、実行者がその主体のメンバーであることの検査を `WorkspaceAuthorization`（[domains/workspace.md](../domains/workspace.md)）が担う
+2. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
+3. `NoteRepository.countByOwner(owner, "all")` を引く
+4. `StorageQuota` の値を置き換えて保存する
 
 ### エラーケース
 
-`SystemError(DatabaseError)`
+| 条件 | 種類 |
+| --- | --- |
+| user 主体が実行者と一致しない | `BusinessRuleError(InsufficientRole)` |
+| 書き込みの失敗 | `SystemError(DatabaseError)` |
 
 ## initializeQuota
 

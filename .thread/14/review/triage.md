@@ -169,3 +169,176 @@
 2. `spec/` 内の相対リンクを実際に解決して存在確認（`docs:B-001` / `docs:W-006` の再発防止。AC-68 の検査手順の是正込み）
 3. `grep -rn "ExternalServiceError" spec/usecases/identity.md spec/testcases/identity/ spec/inventory/test.md` の identity 分が 0 件
 4. `spec/inventory/*.md` 5 ファイルの「最終同期」日付を再更新
+
+---
+
+# 指摘台帳 — PR #22 レビュー R2 のトリアージ
+
+**対象:** `.thread/14/review/review-002-{domain,usecase,inventory,presentation,docs}.md`（Blockers 11 / Warnings 18 = **29 件**）
+**束ね後:** **25 件**
+**判定:** fix **25** / wont-fix **0** / defer **0** / 既出継承 **0**
+**別枠:** M-87 は指摘由来ではなく、V2 が M-63 の作業中に発見した同クラスの欠落（`updateProfile` の avatar 関連 TC 行の追随）。追加単位 V12 で対応した。表は 26 行。R1 の M-61 と同じ扱い。
+
+## 前提
+
+- 妥当性は全件、`spec/` の実物と実装コード（`git diff 55a5bb9 HEAD` を含む）に当たって裏を取った。**事実として誤っていた指摘は 0 件**（軽微な計数のぶれ 1 件のみ。末尾「実地検証の結果」）。
+- R1 の `wont-fix`（M-50）/ `defer`（M-06）と Key の一致する再指摘は 5 観点いずれからも無く、**既出継承は 0 件**。R2 の Key はすべて新規なので `M-62` 以降を連番で採る（R1 の M-01〜M-61 は動かさない）。
+- 本 PR はドキュメント同期で振る舞いを変えない（AC-63）。fix の内容はすべて (a) `spec/` 本文・台帳・手順書・ADR の記述、(b) コメント / JSDoc / テストの `it` 名、(c) `.thread/14/` の作業成果物、(d) `.dockerignore` の 1 行、のいずれかに閉じる。**実行される振る舞いを変える修正は 1 件も無い。**
+- **`spec/` を狭める提案は採らない。** M-70（削除 status の語彙）は「`failed` を落とす」向きを採らず、語彙の帰属を明記したうえで生成経路の決定を Phase 5 へ送る（`spec/adr/046`）。
+- **AC-63 のコード差分件数は再び成立しなくなる**（M-67 / M-69 / M-71 / M-72 / M-75 / M-76 / M-87 が `.ts` / `.tsx` を触り、うち **8 ファイル**は差分に新規参入する）。R1 の M-61 と同じ扱いで実測へ改める（M-80 に含める）。**実測は 35 ファイル = 変更 32 / 削除 3 / 追加 0**。
+
+## 束ねた指摘
+
+3 組を 1 件に束ねた（29 → 25）。
+
+| 束ね後 Key | 元の指摘 ID | 束ねた理由 |
+| --- | --- | --- |
+| M-62 | `domain:B-002` + `inventory:B-001` + `docs:B-001` | 同一問題。ADR 052 / 台帳ヘッダー / ADR 索引が追跡手段を `describe` 名と規定しているが実体は `it` 名、かつ ADR 026 への誤帰属。3 観点が独立に到達した |
+| M-71 | `domain:W-001` + `docs:W-002` | 同一問題の表裏。`ADP-note-056` が短縮連記で grep 到達不能なこと（コード側）と、それを「全数拾える」と主張する `.thread/14/adr.md` ADR-029 影響節（記録側） |
+| M-80 | `inventory:W-002` + `docs:W-003` | どちらも `.thread/14/plan.md` の採番系 AC が実測に追随していない件。AC-55 と AC-64 で対象 AC が重なる |
+
+## 台帳
+
+| Key | 指摘 | 判定 | 理由 | 再指摘回数 |
+| --- | --- | --- | --- | --- |
+| M-62 `spec/adr/052 + spec/inventory/adapter.md:5 + spec/adr/index.md:114:ADP 追跡規約` | 適合ケースの唯一の追跡手段を「`describe` 名に ADP ID を含める命名規約」と規範化しているが実体は `it` 名。さらにその規約を ADR 026 の決定として引用しているが 026 に規定が無い（`domain:B-002` + `inventory:B-001` + `docs:B-001`） | fix | 実測: `grep -rn 'describe(' packages/core/src/adapters/conformance/*.ts \| grep -c "ADP-"` = **0**（`describe` は全 34 本が `` `Xxx conformance [${backendName}]` `` 形式）、ADP ID を名乗る `it` は **166 本**。`spec/adr/026` の決定 2 は `describeXxxContract(name, makeBackend)` というスイート関数名の話だけで、ID 命名規約も ADP ID も出てこない。**採る修正は 2 つだけ** — (a) ADR 052 の 4 か所（`:13` / `:19` / `:23` / `:52`）・`spec/inventory/adapter.md:5`・`spec/adr/index.md:114` の文言を「`describe` / `it` 名」（実際は `it` 名が主で、ポート群の範囲はファイル冒頭 JSDoc が示す）へ改める、(b) `:19` の前提を ADR 026 から引ける範囲（契約の正本がポート定義にあり、検証が共有適合スイートであること）に留め、**ID 命名規約は 052 自身の決定として立てる**。**`describe` 名へコードを付け替える案は採らない** — コード差分が膨らみ AC-63 の趣旨（振る舞いを変えない最小の同期）から外れる。`.thread/14/plan.md:215` は既に「`describe` / `it` 名」と書いており、正しいのは plan 側 | 0 |
+| M-63 `spec/domains/identity.md:566 + :94 + :134:AvatarUrl / SameOriginPolicy` | `InvalidAvatarUrl` を union に足したのに、それを投げる値オブジェクト・ドメインサービスが `spec/` に無い。唯一の追跡先だった `errorCode.ts` の冒頭コメントは AC-58(b) で全文削除済み（`domain:B-001`） | fix | **実装が実在するので spec を追随させる**（本 PR の趣旨どおり）。実測: `packages/core/src/domain/identity/valueObject.ts:167-199` の `AvatarUrl`（trim 後 1〜2048 文字、`/` 始まりは `SameOriginPolicy.isSameOriginPath`、絶対 URL は `appUrl` と同一 origin、違反は `BusinessRuleError(InvalidAvatarUrl)`、`appUrl` は引数）、`packages/core/src/domain/identity/services/sameOriginPolicy.ts` の `SameOriginPolicy.isSameOriginPath`（`//` 始まり・バックスラッシュ・C0 制御文字を拒否）。`grep -rn "AvatarUrl\|SameOriginPolicy" spec/` は union の 1 件のみ。設計判断は既に `spec/adr/051-自オリジンの述語` として正典にあり、**本文・台帳だけが欠けている**状態なので、新しい設計を決める作業ではない。`SameOriginPolicy` は `AvatarUrl` と `startOAuthFlow` の `redirectTo`（`application/identity/startOAuthFlow.ts:47`）の 2 か所から呼ばれるので、責務欄はその 2 用途を書く。あわせて `UserBase.avatarUrl` を `AvatarUrl \| null` へ（実装 `user.ts:21`）、`updateProfile` の振る舞い行の引数を `avatarUrl?: AvatarUrl \| null` へ改め「`avatarUrl` は `appUrl` を要するのでユースケース側（`application/identity/updateProfile.ts:163`）で構築して渡す」を 1 句添える（`displayName` / `bio` だけがエンティティ側で再構築される） | 0 |
+| M-64 `spec/testcases/identity/{completeOAuthSignIn,linkOAuthIdentity}.md:PROVIDER_ACCOUNT_RELEASE_PENDING` | usecase のエラー表と UC 要点欄には入ったのに、テストケース表と `spec/inventory/test.md` に行が無い（`usecase:B-001`） | fix | R1 の M-05 と同型の残り。実測: `spec/usecases/identity.md:281` / `:349`、`spec/inventory/usecase.md:18,19` には有り、`spec/testcases/identity/` と `spec/inventory/test.md` は 0 件。実装 `application/identity/completeOAuthSignIn.ts:56` に実在し、自動テスト `__tests__/removeIdentity.test.ts:200,224` が 2 経路とも拘束している。「`PROVIDER_ACCOUNT_ALREADY_LINKED` と混同しない」は本 PR の主眼のひとつ。両ファイルに 1 行ずつ足し、identity 群末尾へ `TC-identity-330` / `331` を採番する（実測の最大は `TC-identity-329`） | 0 |
+| M-65 `spec/usecases/usage.md:173:recalculateStorageUsage` | 実行者一致検査が入力 DTO の説明段落にだけ書かれ、処理フロー・エラーケース表・テストケース・台帳のどこにも無い（`usecase:B-002`） | fix | 節の内部で自己矛盾している（説明段落は `BusinessRuleError(InsufficientRole)` を明言、同じ節のエラーケース表は `SystemError(DatabaseError)` のみ）。実装 `application/usage/recalculateStorageUsage.ts:38-46` は `subjectType === "user" && subjectId !== actorUserId` で `InsufficientRole` を投げ、`__tests__/recalculateStorageUsage.test.ts:267` が拘束する。R1 の M-28 で「実装ステータスの追認を落として担い手を正典に書く」と決めた向きの片側だけが完了した状態。(a) 処理フロー先頭に検査の手順を足して以降を繰り下げる、(b) エラーケースを 2 行の表にする、(c) TC 1 行を足して usage 群末尾へ `TC-usage-073` を採番する（実測の最大は `TC-usage-072`） | 0 |
+| M-66 `spec/testcases/storage/storeUpload.md:36 + spec/inventory/test.md:1926` | AC-65 で入力 DTO から宣言サイズを落としたのに「宣言サイズと実サイズが食い違う」行が残り、成立しえない前提になった（`usecase:B-003`） | fix | 実測: `git diff 55a5bb9 HEAD -- spec/usecases/storage.md` が `storeUpload` の入力表から `declaredMimeType` / `size` を削り、手順 5 から「宣言サイズと実サイズが食い違う場合は実サイズを採用する」を削っている。`grep -rn declaredMimeType packages/ apps/` は 0 件。**削除ではなく書き換える**（M-26 と同じく連番に穴を空けない）— 「宣言 MIME・宣言サイズを渡す経路が無い ／ アップロードする ／ 保管する型は先頭バイトの署名、サイズは実バイト長から決まる（`AcceptedUpload`）」。`TC-storage-221` の台帳行も同文へ | 0 |
+| M-67 `application/identity/getProfile.ts:11 ほか 3 か所:spec を否定するコメント` | 本 PR が新設した `getProfile` / `checkHandleAvailability` の spec 節・TC ファイル・UC 行を、実装コメントが名指しで否定したまま（`usecase:B-004`） | fix | R1 の M-02（AC-67 / `.thread/14/adr.md` ADR-030）を同じ PR 内の別ファイルに適用していない。実測の 4 か所: `getProfile.ts:11`（"A read of one's own profile has no usecase in the spec"）/ `__tests__/getProfile.test.ts:17`（"It has no spec TC of its own"）/ `__tests__/checkHandleAvailability.test.ts:12`（同）/ `apps/web/app/components/settings/ProfileForm/action.ts:4`（"UC-identity-017 の対になる読み side" — 実在するのは `UC-identity-022`）。**コメント文字列のみを変更し、式・型・引数は 1 文字も触らない**（U7 と同じ扱い） | 0 |
+| M-68 `spec/manual-tests/account.md:535-581:ユースケースエラーケース対応表` | 本 PR が新設した ADR 057 の追随規則を、その ADR を新設した本 PR 自身が破っている（`usecase:B-005`） | fix | R1 の M-17 と同型の再発（追随先が集計行から対応表本体へ移っただけ）。実測: 本 PR は usecase のエラーケースを 10 行以上足している（`startOAuthFlow` の `UNAUTHENTICATED` / `completeOAuthSignIn` と `linkOAuthIdentity` の `PROVIDER_ACCOUNT_RELEASE_PENDING` / `addPasswordIdentity` 3 行 / `getProfile` 3 行 / `checkHandleAvailability` 1 行 / `completeOAuthCallback` 2 行 / `recalculateStorageUsage` の `InsufficientRole`）が、`git diff` で対応表に増えた行は `verifyEmail \| 一時障害（再試行導線） \| 対象外` の **1 行だけ**。UI から再現できないものは既存様式どおり `対象外` ＋ 理由 1 行でよい。あわせて `spec/adr/057` の決定に「本文（scenario）由来で手作業再現不能な経路も対応表に `対象外` として残す」を明記し、表と ADR の言うことを一致させる（既存の「一時障害」行を消さずに正当化する向き。TC の増減が無いので `spec/manual-tests/index.md` の集計は動かない） | 0 |
+| M-69 `apps/web/app/presentation/session.ts:17-18:Secure の JSDoc` | 「the spec mandates it unconditionally」が M-40 の spec 修正で偽になった（`presentation:B-001`） | fix | R1 の M-40 の片側置き去り。実測: `spec/presentation/index.md:40` は「外すのは平文 `http` で動く `development` の配備だけで、判定は許可リストで行う（ADR 037）」へ改訂済みなのに、`session.ts:17-19` は今も「spec は無条件だが自分は外している」と述べる。M-02 / ADR-030 と同型（実装が spec を名指しで否定する）。同ファイル `:32` の中立な書き方（`spec/adr/037` 参照）と `oauthStateCookie.ts:17-19` へ寄せれば足りる。コメント文字列のみ | 0 |
+| M-70 `spec/presentation/index.md:236 + spec/inventory/frontend.md:121:削除 status の語彙` | `failed` を含む 5 値の表示要求が、新設した 3 値 CHECK と矛盾（`presentation:B-002`） | fix | **どちらも正本ではなく、名前空間が 2 つ混ざっている**というのが実測の結論。3 値（`running` / `completed` / `rejected`）は `packages/core/src/application/ports/distributedOperationStore.ts:11` と `spec/database/index.md:138` の CHECK と `spec/domains/index.md:147` に一貫し、`getAccountDeletionStatus.ts:35` が `operation.state` をそのまま返す。`accepted` は 202 応答の transport status で `spec/presentation/index.md:234` に説明がある。`failed` だけが**どこにも生成経路を持たない**（manifest header の state 集合にも無く、`deleteAccount` の手順が `failed` へ移す記述も無い）。**spec を狭める向き（`failed` を落とす）は採らない**（`spec/adr/046`）。**CHECK を 4 値へ広げる向きも採らない**（生成する遷移が設計に無い以上、実装に無い遷移を spec が新設することになり AC-63 の趣旨から外れる）。採る修正は語彙の帰属の明記に限る — `spec/presentation/index.md:236` に (a) `running` / `completed` / `rejected` は `distributed_operations.state` の 3 値そのもの、(b) `accepted` は 202 応答の transport status、(c) `rejected` が P-25 の状態直和の「実行不可」に着くこと、を書き、`PAGE-p25-003` / `PAGE-p25-004` を同じ粒度へそろえる。**`failed` の生成経路（`failed` を状態語彙に足して遷移を定義するか、`rejected` に畳むか）の決定は Phase 5 の起票へ 1 項目足して追跡する**（M-28 と同じ扱い） | 0 |
+| M-71 `conformance/noteProjection.ts:13,87 + .thread/14/adr.md:1062:ADP-note-056 の到達性` | 短縮連記のため `ADP-note-056` が grep で 0 件、その一方で ADR-029 影響節は「全数拾える」と書いている（`domain:W-001` + `docs:W-002`） | fix | 実測: `grep -rn "ADP-note-056" packages/` = **0 件**（`it("ADP-note-055/056: …")` から `-o` が取れるのは `ADP-note-055` だけ）。`spec/inventory/adapter.md:241` に `ADP-note-056`（`PublicNoteProjectionWriter.redactAuthor`）は本 PR が新規採番した行なので、M-11 が問題にした「採番したのにスイートのどこからも名乗られない ID」が 1 本残っている。`ADP-identity-041/009` の `009` は別ケースが単記するので到達性が保たれており、同型ではない。**連記は ID を省略せず全形で書く**（`ADP-note-055/ADP-note-056`、ヘッダーも `ADP-note-028..034, ADP-note-055, ADP-note-056`）。あわせて ADR-029 影響節の検査を実行可能な形へ直す（`-r` が無い / 連記を分解しない）か、トレードオフ節へ「連記は素朴な `-o` 抽出では拾えない」を明記する | 0 |
+| M-72 `conformance/identityUniqueDirectory.ts:196:ADP-identity-007 の連記` | `ADP-identity-007` に新設した契約（`releasing` の鍵は奪えない）を拘束する唯一のケースが、その ID を名乗っていない（`domain:W-002`） | fix | `spec/inventory/adapter.md:56` の要点欄に足した主張を拘束するのは `it("ADP-identity-041: a releasing key stays blocked for another user until release")` の 1 本だけで、`ADP-identity-007` を名乗る 4 本（`:62` `:70` `:92` `:103`）はいずれも `releasing` を扱わない。主張の中身は `beginRelease`（041）と `reserve`（007）の協調なので、ADR-029 が `041/009` を認めたのと同じ根拠で連記が要る。`it` 名の文字列のみ（M-71 の全形連記に合わせる） | 0 |
+| M-73 `spec/domains/index.md:312:continuationKey の除外条件` | 「identity 系でこの鍵を持たないのは 1 つだけ」の断定が、同じ diff で追加した `identity.personalCleanupHandoverContinued` と噛み合わない（`domain:W-003`） | fix | 実測: `:302` に本 PR が足した `identity.personalCleanupHandoverContinued` の payload は `{ deletionOperationId }` で `continuationKey` を持たない。既存の `identity.personalBarrierPruneContinued` も同じ。どちらも scope 平面（`scheduled_tasks` の `(kind, operation_id)`）で、直前の文が既にその導出を述べているので読み替えれば整合するが、断定の主語（ドメイン軸の「identity 系」）と除外の軸（平面）が揃っていない。「**global outbox で運ぶ identity 系の継続要求のうち**この鍵を持たないのは…」と平面を明示する（M-22 と同じ精度） | 0 |
+| M-74 `spec/usecases/identity.md:632:updateProfile 手順 2` | M-23 で精密化した `reserve` の衝突条件が `updateProfile` 手順 2 へ伝播していない（`domain:W-004`） | fix | 実測: `:344`（`linkOAuthIdentity` 手順 3）は M-20 の fix で「`resolve` が返すのは恒久 claim の持ち主だけ／進行中の `reserved` や解除待ちの `releasing` との競合は後続の `reserve` が同じコードで返す」へ書き換わったのに、構造的に同型の `:632` は「別 user の active/reserved 行があれば `ConflictError("HANDLE_ALREADY_USED")`」のまま。実装 `adapters/memory/repositories/identityUniqueDirectory.ts:50-68` の判定材料は `operationId` の一致と失効 `reserved` の例外であって利用者ではない。`:344` と同じ粒度へそろえる（R1 で最も多かった「片側だけ直して対になる側が置き去り」の同型） | 0 |
+| M-75 `domain/identity/ports/authTokenRepository.ts:21-27:JSDoc の呼び出し元` | 本 PR が spec 側で名指しした 2 つの呼び出し元のうち 1 つしか挙げていない（`domain:W-005`） | fix | 実測: `spec/domains/identity.md:449` は「再送間隔の判定はここを通す（`resendVerificationEmail` / `requestPasswordReset`）」と 2 つを名指しし、実装も両方が呼ぶ（`application/identity/resendVerificationEmail.ts:65` / `requestPasswordReset.ts:88`）。ポート JSDoc は `resendVerificationEmail` のみ。ADR 026 が契約の正本をポート定義に置く以上、JSDoc だけを読んだ実装者が「パスワード再設定の 60 秒間隔はこの索引の担保外」と読みうる。1 語の併記 | 0 |
+| M-76 `application/identity/{addPasswordIdentity,changePassword}.ts:UC ID` | 名乗る UC ID が台帳と入れ替わっている（`usecase:W-001`） | fix | 実測: `addPasswordIdentity.ts:15` が `UC-identity-014`、`changePassword.ts:26` が `UC-identity-013` を名乗るが、`spec/inventory/usecase.md:26,27` は `013` = `addPasswordIdentity` / `014` = `changePassword`。本 PR 由来ではない既存の取り違えだが、本 PR は AC-56 で `UC-identity-013` の要点欄を再認証の記述で書き換えており、その ID を名乗るファイルが `changePassword.ts` である状態が残る。ADR 052 の「ID は識別子であって行位置ではない」を前提にすると、ID を名乗る側の誤りは台帳の並び順より害が大きい。コメント文字列のみの入れ替え | 0 |
+| M-77 `spec/testcases/identity/requestPasswordReset.md:10 + spec/inventory/test.md:333` | 期待結果に、そのテストケースからは観測できない全称否定（「絞りはこの発行間隔ひとつだけ」）が入っている（`usecase:W-002`） | fix | M-26 のトリアージが要求したのは `:10` を「60 秒の発行間隔に掛かり…」へ書き換えるところまでで、括弧内は**指摘への回答**が期待結果欄に残った形。「絞りが 1 つしかない」は 1 回の要求から観測できず判定基準にならない。同じ事実は `spec/usecases/identity.md` の処理フローとエラーケース表が既に定めている。括弧を落として止める（台帳行も同文） | 0 |
+| M-78 `spec/testcases/identity/startOAuthFlow.md:5 + spec/inventory/test.md:405` | 出力 DTO に `state` を足したのに、TC 行が応答の `state` に触れていない（`usecase:W-003`） | fix | 実測: `spec/usecases/identity.md:216-220` が出力 DTO に `state` を足し「転送境界がプロバイダーの URL を再パースせずにフローを開始したブラウザーへ束縛できるよう別に露出する（ADR 034）」と理由まで書き、`spec/inventory/usecase.md:17` も追随済み。自動テスト `__tests__/startOAuthFlow.test.ts:35` の `expect(view.state).toBe(state)` も拘束している。TC 行だけが「保存される」しか言わない。`TC-identity-264` の期待結果に 1 句追記（新規採番は不要） | 0 |
+| M-79 `spec/inventory/domain.md:280 ほか 2 組:DOM 行 ↔ ADP 行の非対称` | 同じポートメソッドの DOM 行と ADP 行が本 PR で新たに食い違った 3 組（`inventory:W-001`） | fix | 実測で 3 組とも `origin/main` では要点欄が一字一句同じで、本 PR が ADP 側だけを伸ばした: `DOM-note-037` ↔ `ADP-note-021`（`highlightedExcerpt` のエスケープ）/ `DOM-common-013` ↔ `ADP-common-012`（再投入された `begin` は記録済みをすべて保つ）/ `DOM-storage-034` ↔ `ADP-storage-020`（存在しない key も許容する）。とくに `ADP-note-021` の主張は `spec/domains/note.md:525-528` の**描画契約**（ドメイン側の正本）由来でアダプター実装の詳細ではなく、M-32 で `DOM-common-009/018/020/022` を直した基準がそのまま当たる。残り 2 組は DOM 行の「冪等に開始する」「冪等に削除する」でおおむね含意されるが、1 句そろえるほうが安く、非対称を欠陥と読ませない。3 組とも DOM 行へ 1 句足す（ADR 052 に例外規定を書き足す案は採らない — 直近に新設した ADR の再改訂を重ねない） | 0 |
+| M-80 `.thread/14/plan.md:111,125:AC-55 / AC-64` | 台帳・TC の実測が受け入れ基準を追い越したまま、採番系 AC が更新されていない（`inventory:W-002` + `docs:W-003`） | fix | 実測: AC-55 は「新規 19 行」と閉じた列挙で書くが、R1 の M-07 で `DOM-identity-063`（`AccountDeletionRetryPolicy`）が増え実測は **20 行**（列挙にも無い）。AC-55 の grep 検査はパターンが `063` を含まないので機械検査ではこのずれを検出できない。AC-64 は採番対象を「新設 3 ファイルの行 ＋ `requestPasswordReset.md` の境界 2 行」と書くが、実測は `TC-identity-305`〜`329` の **25 行**で、内訳は `getProfile` 6 / `checkHandleAvailability` 8 / `completeOAuthCallback` 6 / `requestPasswordReset` 2 / **`addPasswordIdentity` 3**（M-05 由来）。M-61 が AC-63 を実測へ改めたのと同じ理由で台帳側だけが取り残された。「列挙に無い行が出たらスコープ逸脱」と読む検証者が正しい PR を逸脱と判定しうる。**M-63 / M-64 / M-65 が新たに採番する `DOM-identity-064,065` / `TC-identity-330,331` / `TC-usage-073` も同じ AC に反映する**。AC-63 のコード差分件数も同時に実測へ改める（M-67 / M-69 / M-71 / M-72 / M-75 / M-76 の分） | 0 |
+| M-81 `spec/inventory/usecase.md:36:UC-identity-024` | 要点欄だけが `intent: "integration"` の拒否分岐を落としている（`inventory:W-003`） | fix | 本 PR は M-24 の fix として `spec/usecases/identity.md` の手順 3・エラーケース表・`spec/testcases/identity/completeOAuthCallback.md`・`TC-identity-328` の **4 か所すべて**に「`integration` は本スライスに受け皿が無いため state を無効として扱う」を入れたのに、同じ PR が新設した `UC-identity-024` の要点欄だけが判別共用体の 3 番目の arm と 4 つ目の畳み込み条件に触れていない。台帳だけを読むと `intent` が 2 値に見え、新設ユースケースなので実装者が最初に当たる行でもある。畳み込み条件の列挙に 1 語加える | 0 |
+| M-82 `spec/inventory/frontend.md:20 + spec/pages/index.md:176:PAGE-p03-004` | 状態列挙が R1 の修正で「無効」を落とし、実装より狭くなった（`presentation:W-001`） | fix | 実測: `origin/main` は「使用済み・無効状態から P-02 へ遷移する」、本 PR は「確認済み・サインインが必要 / 使用済みの状態から」で**無効を落とした**（M-10 の波及が生んだ退行）。実装 `apps/web/app/components/auth/VerifyEmailPanel/index.tsx` は `verifiedSignInRequired`（`:141`）と `alreadyVerified`（`:151`）が `PrimaryLink to="/signin"` を、`expired`（`:160`）と `invalid`（`:167`）が `ResendActions` 内の「サインインへ」リンク（`:200-204`）を描くので、導線は **4 状態**から出る。同じ PR が `PAGE-p03-003` では「期限切れ・無効」と正しく 2 状態を書いており、隣接行で粒度が割れている。**対になる `spec/pages/index.md:176` の状態行も同時に直す** — 現状は「使用済み（サインインへ）/ 期限切れ（再送）/ 無効（再送）」で、期限切れ・無効が再送フォーム下にサインイン導線を持つことを書いていない。台帳だけを直すと本文との乖離を新設する | 0 |
+| M-83 `spec/database/index.md:35,1027-1037:applied_operations の鍵` | ポートの鍵を `(operationId, commandKey)` と書きながら、列定義には `command_key` が無く PK は `operation_id` 単独のまま（`presentation:W-002`） | fix | 実測: 本 PR が `:35` と `:1037` の 2 か所で `(operationId, commandKey)` を正典として書いたが、直下の列表は `operation_id \| text \| PK` のまま。実装は衝突しない — `adapters/memory/repositories/appliedOperationStore.ts:9-13` が `sha256("${operationId}:${commandKey}")` を単一列へ畳んでおり、その JSDoc は「mirroring the single `operation_id` primary key of spec/database's `applied_operations`」と spec を根拠にしている。**畳み込み規則が spec 側にだけ無い**。同じ文書は `scheduled_tasks.operation_id` については導出式を明記しているので様式としても非対称。**列を増やして PK を 2 列にする案は採らない**（barrier receipt と同居する表の設計を変えることになり、実装の JSDoc も偽になる）。新設段落に畳み込み式の 1 文を足す | 0 |
+| M-84 `.thread/14/adr.md:1096:ADR-030 の影響節` | 挙げている検証コマンドが HEAD で 0 件にならない（`docs:W-001`） | fix | 実測: `grep -rn "the spec writes\|the spec's" packages/ apps/` は **2 件**（`application/identity/uniqueness.ts:193` の "per the spec's convergence" / `application/identity/updateProfile.ts:36` の "the spec's spelling of"。ほかに `apps/web/dist/` のビルド成果物 1 件）。どちらも spec を**否定**しておらず ADR-030 の決定自体は達成されているが、読者に渡した機械検査が落ちる。ADR-024 / ADR-031 が同じ様式で書いた grep は実際に 0 件で通るので、ここだけ検査として成立しない。検査語を否定形に絞る（`"the spec writes"` / `"has no usecase in the spec"` / `"no spec TC"` / `"spec の記載漏れ"`）か、影響節から grep を落として決定文だけを残す。**M-67 の fix 後に語を確定させる** | 0 |
+| M-85 `.dockerignore:11:!.env.*.example` | U9 の削除で対象を失った否定パターンが残っている（`docs:W-004`） | fix | 実測: `git ls-files` で `.env.*.example` に一致する追跡ファイルは **0 件**（`apps/web/.env.example` は直前の `!.env.example` が拾い、`.envrc.example` は `.env.` で始まらない）。U9（M-46）は同じファイルから `**/.wrangler` / `infra/aws/cdk.out` を落としたが、削除 3 本を再包含するためのこの行だけが残った。片側だけ直して対になる行が残った形。1 行削除。Phase 5 の 13.（`.dockerignore` をファイルごと消すか）はこの行に触れていないので、本 PR で落とす | 0 |
+| M-86 `.thread/14/research-2.md:448,531:「レビュー R1」の見出し` | 乖離台帳が「レビュー R1」を本 PR のレビュー R1 とは別の意味（計画レビュー R1）で使っている（`docs:W-005`） | fix | 台帳は冒頭で as-of `55a5bb9` を宣言しており（M-19）、本 PR のレビュー R1 より前の状態を記録する成果物。同じ `.thread/14/` の `plan.md` / `adr.md` / `review/triage.md` は「レビュー R1」を **PR レビュー R1** の意味で一貫して使う（`adr.md:972` / `plan.md:210`）。同じ語が同じディレクトリで 2 つのラウンドを指し、「as-of 以降の出来事が台帳に混ざっている」と誤読させる。M-56 が台帳からレビュー経緯を落とした結果、この 1 語だけが残った。由来を書かない中立な見出しへ改める（plan.md の他所は `計画レビュー R1 / R2 / R3` と明示しているので、台帳だけが省略形） | 0 |
+| M-87 `spec/testcases/identity/updateProfile.md + spec/inventory/test.md:avatar 関連 TC 行` | `AvatarUrl` の契約を spec 本文と台帳に足したのに、それを拘束する自動テスト 3 本に対応する TC 行が無い（**指摘由来ではない。V2 が M-63 の作業中に発見**） | fix | M-63 と同クラスの欠落で、片側（本文・DOM 行）だけ直して対になる側（TC 行）が置き去りになる R2 で最も多かった形。実測: `__tests__/updateProfile.test.ts` の `describe("updateProfile avatar URL")` が 3 ケース（アプリ相対パスの受理 / 別オリジンとプロトコル相対の拒否 / `null` での解除）を拘束するのに、`spec/testcases/identity/updateProfile.md` と `spec/inventory/test.md` には行が無い。M-63 が `AvatarUrl`（`DOM-identity-064`）と `SameOriginPolicy`（`065`）を台帳に載せた以上、その契約を確かめる TC が台帳から辿れない状態は残せない。**追加単位 V12 で対応** — `updateProfile.md` に 4 行（拒否は 2 条件なので 2 行に割る）、identity 群末尾へ `TC-identity-332`〜`335` を採番、`it` 名 3 本に ID を名乗らせる（1 本は `TC-identity-333 / TC-identity-334` の連記。**ADR-035 と同じ全形**）。**対応済み** | 0 |
+
+## 実地検証の結果
+
+**29 件すべてについて `spec/` の実物・実装コード・`git diff 55a5bb9 HEAD` に当たった。事実として誤っていた指摘は 0 件。** 主な確認:
+
+- `describe` 名に ADP ID を持つケースは 0 件、`it` 名は 166 件。`spec/adr/026` に ID 命名規約の記述が無いこと（M-62）
+- `AvatarUrl` / `SameOriginPolicy` が実装に実在し、`spec/` には `InvalidAvatarUrl` の union 行しか無いこと。設計判断は `spec/adr/051` に既にあること（M-63）
+- `PROVIDER_ACCOUNT_RELEASE_PENDING` が usecase / UC 台帳・実装・自動テストに実在し、テストケース表と `spec/inventory/test.md` にだけ無いこと（M-64）
+- `recalculateStorageUsage.ts:38-46` が `InsufficientRole` を投げること（M-65）
+- `storeUpload` の入力から宣言値が落ち、`declaredMimeType` を受ける実装経路が 0 件であること（M-66）
+- `git diff` で対応表に増えた行が `verifyEmail \| 一時障害` の 1 行だけであること（M-68）
+- `DistributedOperationState` が 3 値で `failed` の生成経路が `spec/` のどこにも無いこと、`accepted` は 202 の transport status として説明が付くこと（M-70）
+- `grep -rn "ADP-note-056" packages/` = 0 件（M-71）
+- `.env.*.example` に一致する追跡ファイルが 0 件（M-85）
+
+**軽微な計数のぶれが 1 件**（指摘の成否には影響しない）: `domain:B-002` は `describe` を 31 本、`inventory:B-001` は 34 本と書き、`docs:B-001` は本数を書いていない。実測は **34 本**（`grep -c 'describe('`。入れ子の `describe` を含む）。いずれも「ADP ID を含むものが 0 本」という主張は同じで、修正内容は変わらない。
+
+## 修正の実行計画
+
+編集ファイルが重ならないよう **12 単位**に分割した（V12 は M-87 の発見後に追加）。**V1〜V10 / V12 は並列実行可**。V11 のみ V7 / V8 / V9 / V12 の完了後に走らせる。
+
+R1 で最も多かった失敗は「片側だけ直して対になる側が置き去り」なので、各単位に**対になる側**を明記する。単位をまたぐ対は、先に確定する側の文言をそのまま写すこと。
+
+### V1 — ADP 追跡規約（ADR ＋ 台帳ヘッダー ＋ ADR 索引）
+
+- 担当: M-62
+- 編集ファイル: `spec/adr/052-adapter-inventory-granularity.md`（`:13` / `:19` / `:23` / `:52`）, `spec/inventory/adapter.md:5`, `spec/adr/index.md:114`
+- 対になる側: **適合スイートの `it` 名**（V7 が触る）。V1 は「`describe` / `it` 名に ADP ID を含める命名規約（実際は `it` 名が主で、ポート群の範囲はファイル冒頭 JSDoc が示す）」で統一し、V7 はその規約に合う形で連記を全形化する。**`describe` 名へコードを付け替えない**
+- 順序制約: なし。`:19` の前提は ADR 026 から引ける範囲に留め、ID 命名規約は 052 自身の決定として立てる（`spec/adr/026` は本 PR の対象外なので触らない）
+
+### V2 — `spec/domains/` ＋ `spec/inventory/domain.md`
+
+- 担当: M-63, M-73, M-79
+- 編集ファイル: `spec/domains/identity.md`, `spec/domains/index.md`, `spec/inventory/domain.md`
+- 対になる側: **本文と台帳の両方をこの単位が持つ**（M-63 の `AvatarUrl` / `SameOriginPolicy` は定義と `DOM-identity-064` / `065` の両方、M-79 は DOM 行と既存 ADP 行の文言そろえ）。`spec/inventory/adapter.md` は V1 の担当なので**書き換えない** — M-79 は DOM 行を ADP 行へ寄せる向きだけ
+- 順序制約: `AvatarUrl` は既存 VO 節（`DisplayName` / `Bio`）と同じ様式（**フィールド** / **バリデーション**）、`SameOriginPolicy` は既存 4 ドメインサービスと同じ様式で書く。`spec/adr/051` を根拠としてリンクする。台帳行は既存の VO 行 / ドメインサービス行と同じ粒度（`DOM-identity-006〜008` / `019〜021` / `063`）。新規採番は identity 群の末尾（実測の最大は `DOM-identity-063`）
+
+### V3 — `spec/usecases/` ＋ `spec/inventory/usecase.md`
+
+- 担当: M-65（本文）, M-74, M-81
+- 編集ファイル: `spec/usecases/identity.md`, `spec/usecases/usage.md`, `spec/inventory/usecase.md`
+- 対になる側: **M-65 のテストケース行と台帳行は V4 が担当**（`BusinessRuleError(InsufficientRole)` の文言をそろえる）。**M-64 の usecase 側は既に入っている**ので V3 は触らない
+- 順序制約: M-74 は `spec/usecases/identity.md:344`（`linkOAuthIdentity` 手順 3）と**同じ粒度・同じ語**へそろえる。M-65 の処理フローは手順を 1 本足して以降を繰り下げるので、この節の手順番号を外部から参照している箇所が無いことを `grep "手順 [0-9]"` で再確認する（R1 の M-03 と同じ検査）
+
+### V4 — `spec/testcases/**` ＋ `spec/inventory/test.md`
+
+- 担当: M-64, M-65（TC 行）, M-66, M-77, M-78
+- 編集ファイル: `spec/testcases/identity/{completeOAuthSignIn,linkOAuthIdentity,requestPasswordReset,startOAuthFlow}.md`, `spec/testcases/usage/recalculateStorageUsage.md`, `spec/testcases/storage/storeUpload.md`, `spec/inventory/test.md`
+- 対になる側: **テストケースファイルと `spec/inventory/test.md` の行は必ず同文で対にする**（1 ファイル = 1 群、行数一致）。M-65 の本文側は V3、M-64 の usecase / UC 台帳側は既存
+- 順序制約: 新規採番は各群の末尾 — `TC-identity-330` / `331`（実測の最大は `329`）、`TC-usage-073`（実測の最大は `072`）。M-66 と M-77 は**行の削除ではなく書き換え**（連番に穴を空けない）。M-78 は既存行への追記で新規採番しない
+
+### V5 — `spec/pages/index.md` ＋ `spec/presentation/index.md` ＋ `spec/inventory/frontend.md` ＋ `spec/database/index.md`
+
+- 担当: M-70, M-82, M-83
+- 編集ファイル: `spec/pages/index.md`, `spec/presentation/index.md`, `spec/inventory/frontend.md`, `spec/database/index.md`
+- 対になる側: **M-70 は `spec/presentation/index.md:236` と `PAGE-p25-003` / `PAGE-p25-004` の 3 か所を同時に**。**M-82 は `spec/inventory/frontend.md:20`（`PAGE-p03-004`）と `spec/pages/index.md:176`（P-03 の状態行）の 2 か所を同時に** — 台帳だけを直すと本文との乖離を新設する。M-83 は `spec/database/index.md` の `:35` と `:1037` の 2 か所が同じ鍵を書いているので、畳み込み式は列表の直下の新設段落へ 1 文
+- 順序制約: **M-70 は `failed` を削らず、CHECK も広げない**。`running` / `completed` / `rejected` が `distributed_operations.state` の 3 値そのもの、`accepted` が 202 応答の transport status、`rejected` が P-25 の「実行不可」に着くことを書く。`failed` の生成経路の決定は V9 が Phase 5 の起票骨子へ 1 項目足して追跡する
+
+### V6 — `spec/manual-tests/` ＋ `spec/adr/057`
+
+- 担当: M-68
+- 編集ファイル: `spec/manual-tests/account.md`, `spec/adr/057-manual-test-followthrough.md`
+- 対になる側: **本 PR が増やした usecase エラーケースの全数**（`startOAuthFlow` の `UNAUTHENTICATED` / `completeOAuthSignIn` と `linkOAuthIdentity` の `PROVIDER_ACCOUNT_RELEASE_PENDING` / `addPasswordIdentity` の 3 行 / `getProfile` の 3 行 / `checkHandleAvailability` の 1 行 / `completeOAuthCallback` の 2 行 / `recalculateStorageUsage` の `InsufficientRole`）。V3 / V4 が触る `spec/usecases/` のエラー表を**読んで**数え、表に載せる（V3 / V4 のファイルは編集しない）
+- 順序制約: TC は増やさないので `spec/manual-tests/index.md` の集計行は動かさない（動かしたら ADR 057 の決定どおり実測で更新する）。既存の `verifyEmail \| 一時障害` 行は消さず、ADR 057 の決定へ「本文（scenario）由来で手作業再現不能な経路も `対象外` として残す」を明記して軸を広げる
+
+### V7 — コード: 適合スイートの ID 命名
+
+- 担当: M-71（コード側）, M-72
+- 編集ファイル: `packages/core/src/adapters/conformance/noteProjection.ts`（`:13` ヘッダー / `:87` の `it` 名）, `packages/core/src/adapters/conformance/identityUniqueDirectory.ts`（`:196` の `it` 名）
+- 対になる側: **V1 の規約文言**（`describe` / `it` 名）と **`.thread/14/adr.md` ADR-029 の影響節**（V11 が直す）
+- 順序制約: **`it` 名の文字列とヘッダーコメントだけを変更する**。アサーション・セットアップには触らない。連記は全形（`ADP-note-055/ADP-note-056`、`ADP-identity-041/ADP-identity-007`）。完了後に `grep -rn "ADP-note-056" packages/` と `grep -rn "ADP-identity-007" packages/core/src/adapters/conformance/` がヒットすることを確認し、`pnpm test:unit` で緑を確認
+
+### V8 — コード: application / port / presentation の JSDoc とコメント
+
+- 担当: M-67, M-69, M-75, M-76
+- 編集ファイル: `packages/core/src/application/identity/getProfile.ts`, `packages/core/src/application/identity/__tests__/{getProfile,checkHandleAvailability}.test.ts`, `apps/web/app/components/settings/ProfileForm/action.ts`, `apps/web/app/presentation/session.ts`, `packages/core/src/domain/identity/ports/authTokenRepository.ts`, `packages/core/src/application/identity/{addPasswordIdentity,changePassword}.ts`
+- 対になる側: M-67 の対は**本 PR が新設した spec 節・TC ファイル・UC 行**（`spec/usecases/identity.md#getProfile` / `#checkHandleAvailability`、`UC-identity-022` / `023`）。M-69 の対は `spec/presentation/index.md:40`（既に改訂済み）と同ファイル `:32` の中立な書き方。M-75 の対は `spec/domains/identity.md:449`。M-76 の対は `spec/inventory/usecase.md:26,27`
+- 順序制約: **コメント / JSDoc の文字列のみを変更し、式・型・引数・戻り値は 1 文字も触らない**（U7 / ADR-030 と同じ扱い）。`ProfileForm/action.ts` は `UC-identity-022` を指す
+
+### V9 — リポジトリの残骸 ＋ Phase 5 起票骨子
+
+- 担当: M-85 ＋ M-70 の追跡（Phase 5 の起票骨子へ 1 項目）
+- 編集ファイル: `.dockerignore`, `.thread/14/plan.md` の Phase 5 スコープ節
+- 対になる側: `.dockerignore:11` の対は U9 が削除した 3 本の `.env*.example`（既に削除済み）。M-70 の対は V5 が書く `spec/presentation/index.md:236`
+- 順序制約: `.thread/14/plan.md` は V11 も触るので、**V9 は Phase 5 スコープ節（`:155` 付近）だけ**を編集し、AC 表（`:105`〜`:130`）には触れない。競合を避けるため V9 → V11 の順で走らせてもよい
+
+### V10 — 乖離台帳（`.thread/14/research-2.md`）
+
+- 担当: M-86
+- 編集ファイル: `.thread/14/research-2.md`（`:448` / `:531`）
+- 対になる側: `.thread/14/plan.md` の「計画レビュー R1 / R2 / R3」という明示形（変更しない側）
+- 順序制約: **台帳の再調査はしない。** 見出しの語の是正のみで、件数・分類・as-of には触らない（M-19 / M-51〜M-60 で確定済み）
+
+### V12 — `updateProfile` の avatar 関連 TC 行（追加単位）
+
+- 担当: M-87
+- 編集ファイル: `spec/testcases/identity/updateProfile.md`, `spec/inventory/test.md`, `packages/core/src/application/identity/__tests__/updateProfile.test.ts`
+- 対になる側: **V2 が書く `AvatarUrl` / `SameOriginPolicy` の定義と `DOM-identity-064` / `065`**（文言をそろえる）。V4 も `spec/inventory/test.md` を触るので、**採番は V4 の `TC-identity-330` / `331` の後ろ**（`332` 起点）
+- 順序制約: 新規採番は identity 群の末尾。`it` 名は**文字列のみ**を変更し、アサーションには触らない。連記は全形（`TC-identity-333 / TC-identity-334`）
+
+### V11 — `.thread/14/adr.md` / `plan.md` の受け入れ基準・ADR 更新
+
+- 担当: M-71（ADR-029 影響節）, M-80, M-84
+- 編集ファイル: `.thread/14/adr.md`, `.thread/14/plan.md`（AC 表）
+- 対になる側: M-71 の対は V7 の連記全形化（**V7 の後に走らせて実際に grep が全数を返すことを確認してから**影響節を閉じる）。M-84 の対は V8 の M-67（残る否定語を確定させてから検査語を決める）。M-80 の対は V2 / V4 の新規採番（`DOM-identity-064,065` / `TC-identity-330,331` / `TC-usage-073`）と V7 / V8 のコード差分
+- 順序制約: **V7 / V8 / V9 / V12 の完了後**に走らせる（`git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/` の実測でコード差分ファイル数を確定させるため。**実測は R1 の 27 ファイル ＋ V8 / V12 の新規参入 8 ファイル = 35 ファイル**）。AC-55 は **22 行**（DOM 11 / ADP 8 / UC 3）、AC-64 は **`TC-identity-305`〜`335` ＋ `TC-usage-073` = 32 行**、AC-63 は **35 ファイル / 機械検査 14 行**へ実測で改める。`.thread/14/adr.md` ADR-029 の代替案節が「連記は ADR 052 の不変を一切侵していない」と述べた根拠は、V1 で 052 の文言が `it` 名へ直った後に 1 文で再確認する
+
+### 全単位の完了後
+
+1. `pnpm typecheck && pnpm lint:fix && pnpm format && pnpm test:unit`
+2. `spec/` 内の相対リンクを実際に解決して存在確認（M-63 が足す `spec/adr/051` リンク、M-68 が触る ADR 057 のリンクを含む）
+3. `grep -rn 'describe(' packages/core/src/adapters/conformance/*.ts | grep -c "ADP-"` が 0 であることと、`spec/inventory/adapter.md:5` / ADR 052 の文言がそれと矛盾しないこと（M-62 の閉じ方の確認）
+4. `grep -rhoE "ADP-[a-z]+-[0-9]+" packages/core/src/adapters/conformance/ | sort -u` と `spec/inventory/adapter.md` の ADP ID 集合の差分（M-71 / M-72 の到達性）
+5. `grep -rn "the spec writes\|the spec's output table\|has no usecase in the spec\|no spec TC\|the spec mandates it unconditionally\|spec の記載漏れ" packages/ apps/` が 0 件（M-67 / M-69 / M-84）。**検査語は否定形に絞る** — `the spec's` 単体は spec を否定していない 2 件を、`the spec mandates` 単体は `noteAccessPolicy.ts:51`（実装が spec に従っている旨）を拾って 0 件にならない
+6. `spec/inventory/*.md` 5 ファイルの「最終同期」日付を再更新

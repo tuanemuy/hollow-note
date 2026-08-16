@@ -12,7 +12,7 @@ export type AddPasswordIdentityInput = Readonly<{
 
 /**
  * Adds a password to an account that signs in through OAuth only
- * (UC-identity-014, spec/usecases/identity.md#addpasswordidentity).
+ * (UC-identity-013, spec/usecases/identity.md#addpasswordidentity).
  *
  * `ensureAddable` / `ensurePasswordAddable` run twice on purpose: once
  * up front so a hopeless request never pays for a password hash, and

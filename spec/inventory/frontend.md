@@ -17,7 +17,7 @@
 | PAGE-p03-001 | P-03 メール確認ページ | `spec/pages/index.md#P-03: メール確認` | token 処理中、成功、確認済み・サインインが必要、使用済み、期限切れ、無効、一時障害（再試行）の 7 状態を表示し、成功時は session Cookie 設定後にアプリへ遷移する。「確認済み・サインインが必要」は、確認を要求したブラウザーの印（確認待ち Cookie）が無い、または確認した token の持ち主と一致しない場合に出る（別ブラウザーで開いた場合が代表例だが、Cookie 削除・プライベートウィンドウ・確認待ち Cookie の寿命切れでも到達する） |
 | PAGE-p03-002 | 確認 token を消費 | `spec/pages/index.md#P-03: メール確認` | URL token を一度だけ検証要求へ渡し、成功・既確認・確認済み（確認要求元のブラウザーではないためセッションを発行しない）・期限切れ・無効・一時障害に応じて状態を切り替える |
 | PAGE-p03-003 | 確認メールを再送 | `spec/pages/index.md#P-03: メール確認` | 期限切れ・無効の状態から email を送信して、存在秘匿された再送完了を表示する |
-| PAGE-p03-004 | サインインへ移動 | `spec/pages/index.md#P-03: メール確認` | 確認済み・サインインが必要 / 使用済みの状態から P-02 へ遷移する |
+| PAGE-p03-004 | サインインへ移動 | `spec/pages/index.md#P-03: メール確認` | 確認済み・サインインが必要 / 使用済み / 期限切れ / 無効の 4 状態から P-02 へ遷移する。期限切れ・無効では主導線が再送であり、サインインは再送フォームに従属する逃げ道として置く |
 | PAGE-p04-001 | P-04 パスワード再設定ページ | `spec/pages/index.md#P-04: パスワード再設定` | email による申請と token による新 password 設定を扱い、送信中、一定文言の申請完了、実行成功、token 無効・期限切れを表示する |
 | PAGE-p04-002 | パスワード再設定を申請 | `spec/pages/index.md#P-04: パスワード再設定` | email を送信し、利用者・password identity の有無によらず同一の完了文言を表示する |
 | PAGE-p04-003 | 新しいパスワードを設定 | `spec/pages/index.md#P-04: パスワード再設定` | token と一致確認済みの新 password を送信し、強度違反、token 無効・期限切れ、成功を表示する |
@@ -118,8 +118,8 @@
 | PAGE-p24-003 | 削除画面へ移動 | `spec/pages/index.md#P-24: 使用量` | personal は P-25、workspace は P-34 へ current context 付きで遷移する |
 | PAGE-p25-001 | P-25 アカウント削除ページ | `spec/pages/index.md#P-25: アカウント削除` | 削除対象・workspace 所有 note の残存を説明し、email 確認、唯一 owner rejection、即時 sign-out 後の multi-scope progress、完了を表示する。**この 1 画面だけが認証ガードの明示的な例外**で、受理と同時にセッションが消えるため到達性をセッションに依存させず、セッションが無い状態では他の導線を描かない |
 | PAGE-p25-002 | アカウント削除を開始 | `spec/pages/index.md#P-25: アカウント削除` | confirmation email と新 UUID request ID を JSON POST し、202 operation ID と signed 30 分 status ticket を受け、session Cookie を破棄して progress へ移る |
-| PAGE-p25-003 | 削除 operation を照会 | `spec/pages/index.md#P-25: アカウント削除` | session なしで status ticket を明示送信し、accepted・running・completed・rejected・failed を表示する。読み取り権限は ticket が持ち、ticket が名指す 1 件しか返らない。ticket は当該 operation 読取以外に使わない。ticket の失効（発行から 30 分。削除が長引けば正常系でも到達する）と無効では進捗を追えず、ticket を捨ててトップページへの導線だけを出す。進捗取得の一時障害では ticket を保ち、同じ ticket で追い直す導線を出す |
-| PAGE-p25-004 | 唯一 owner 問題を解消 | `spec/pages/index.md#P-25: アカウント削除` | rejected 後に sign-in へ進み、該当 workspace の P-32 または P-34 へ誘導する |
+| PAGE-p25-003 | 削除 operation を照会 | `spec/pages/index.md#P-25: アカウント削除` | session なしで status ticket を明示送信し、accepted・running・completed・rejected・failed を表示する（running・completed・rejected は `distributed_operations.state` の 3 値そのもの、accepted は 202 応答の転送 status、failed は再試行不能と確定した場合の表示語彙で、そこへ移す遷移を定めた箇所は設計に無い）。読み取り権限は ticket が持ち、ticket が名指す 1 件しか返らない。ticket は当該 operation 読取以外に使わない。ticket の失効（発行から 30 分。削除が長引けば正常系でも到達する）と無効では進捗を追えず、ticket を捨ててトップページへの導線だけを出す。進捗取得の一時障害では ticket を保ち、同じ ticket で追い直す導線を出す |
+| PAGE-p25-004 | 唯一 owner 問題を解消 | `spec/pages/index.md#P-25: アカウント削除` | rejected（P-25 の状態直和では「実行不可」）後に sign-in へ進み、該当 workspace の P-32 または P-34 へ誘導する |
 | PAGE-p30-001 | P-30 ワークスペース作成ページ | `spec/pages/index.md#P-30: ワークスペース作成` | name、description、slug を入力し、slug 重複候補、不正、owner 上限、作成中、完了、failure を表示する |
 | PAGE-p30-002 | ワークスペースを作成 | `spec/pages/index.md#P-30: ワークスペース作成` | 入力を送信し、作成成功時は新 workspace context と P-32 の invitation 導線を表示する |
 | PAGE-p31-001 | P-31 ワークスペース一般設定ページ | `spec/pages/index.md#P-31: ワークスペース一般設定` | name、description、avatar、slug を表示し、owner 以外の read-only、slug 重複・不正、変更 warning、saving、failure を表現する |

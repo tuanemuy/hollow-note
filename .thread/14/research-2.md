@@ -445,7 +445,7 @@
 
 ---
 
-### F. レビュー R1 で増えた差（1 件）
+### F. 計画レビュー R1 で増えた差（1 件）
 
 #### SYNC-240 — `UploadValidationPolicy.ensureAcceptable` の引数と戻り値 【残】
 
@@ -528,7 +528,7 @@
 | C. 手順・エラー表の差 | 9 | `spec/usecases/identity.md` / `spec/domains/identity.md` / `spec/testcases/` |
 | D. 必須集合・データモデルの差 | 10 | `spec/domains/index.md` / `spec/database/index.md` / `spec/presentation/index.md` / `spec/pages/index.md` |
 | E. spec に無い application 入口 | 2 | `spec/usecases/identity.md` / `spec/inventory/usecase.md` |
-| F. レビュー R1 で増えた差 | 1 | `spec/domains/storage.md` |
+| F. 計画レビュー R1 で増えた差 | 1 | `spec/domains/storage.md` |
 | G. マニュアルテスト手順の差 | 2 | `spec/manual-tests/account.md` |
 | H. 本調査で追加発見 | 1 | `spec/usecases/identity.md` |
 | I. 統合作業で追加 | 1 | `spec/domains/identity.md` |

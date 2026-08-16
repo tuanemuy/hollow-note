@@ -43,6 +43,14 @@
 - **フィールド**: `value: string`
 - **バリデーション**: 500 文字以内。空文字列を許す
 
+### AvatarUrl
+
+- **フィールド**: `value: string`
+- **バリデーション**: 前後の空白を除去して 1〜2048 文字。`/` で始まる値はアプリ相対パスとして扱い `SameOriginPolicy.isSameOriginPath` を満たすこと、それ以外は絶対 URL として解釈でき `appUrl` と同一オリジンであること。違反時 `BusinessRuleError(IdentityErrorCode.InvalidAvatarUrl)`
+- **構築**: `create(raw: string, appUrl: string)`。自オリジンの情報は引数で受け取り、値オブジェクトは設定を読みに行かない
+
+保存する値は**アプリ相対パス**を正とする（配備のオリジンが変わっても保存済みの値が壊れない）。自オリジンの絶対 URL 形は、自分の公開ドメインで配信する object store のために受理する。永続化からの再構築は「書き込み時に検証済み」として通し、再検証しない（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
+
 ### PasswordHash
 
 - **フィールド**: `value: string`
@@ -91,7 +99,7 @@ UserBase = {
   email: Email
   displayName: DisplayName
   bio: Bio
-  avatarUrl: string | null      // 公開 URL。Storage への依存を持たないための取り決め
+  avatarUrl: AvatarUrl | null   // 公開 URL。Storage への依存を持たないための取り決め
   handle: Handle | null
   authEpoch: number             // 全session/tokenをO(1)で論理失効する単調増加世代
   version: number
@@ -131,13 +139,15 @@ User = PendingUser | ActiveUser | DeletingUser | DeletedUser
 | `create` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<PendingUser, IdentityEvent>` | VO を構築し `status: "pending"`、`authEpoch: 0`、`version: 0` で生成。`user.created` を発行 |
 | `createVerified` | `params: { id: string; email: string; displayName: string }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | OAuth サインアップ・招待経由サインアップ用。`authEpoch: 0`の確認済みとして生成。`user.created` と `user.emailVerified` を発行 |
 | `verifyEmail` | `user: PendingUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `status` を `active` にし `verifiedAt` を設定。`user.emailVerified` を発行 |
-| `updateProfile` | `user: ActiveUser, params: { displayName?: string; bio?: string; avatarUrl?: string \| null }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | 指定された項目のみ VO を再構築して更新。`displayName` が変わったときのみ `user.profileUpdated` を発行 |
+| `updateProfile` | `user: ActiveUser, params: { displayName?: string; bio?: string; avatarUrl?: AvatarUrl \| null }, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | 指定された `displayName` / `bio` のみ VO を再構築して更新し、`avatarUrl` は受け取った値をそのまま置く。`displayName` が変わったときのみ `user.profileUpdated` を発行 |
 | `assignHandle` | `user: ActiveUser, handle: string, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `Handle.create` で検証して設定。`user.handleChanged`（旧ハンドルを payload に含む。未設定からの初回設定なら `previousHandle: null`）を無条件で発行 |
 | `clearHandle` | `user: ActiveUser, now: Date` | `WithEventDrafts<ActiveUser, IdentityEvent>` | `handle` を `null` にする。`user.handleChanged` を発行 |
 | `advanceAuthEpoch` | `user: ActiveUser, now: Date` | `ActiveUser` | `authEpoch + 1`へ進め、既存session/tokenを論理失効する |
 | `beginDeletion` | `user: ActiveUser, operationId: string, now: Date` | `DeletingUser` | `authEpoch + 1`へ進め、新しい認証・membership・Jobを拒否する状態へ移す |
 | `rejectDeletion` | `user: DeletingUser, operationId: string, now: Date` | `ActiveUser` | 事前検査失敗時だけactiveへ戻す |
 | `finalizeDeletion` | `user: DeletingUser, operationId: string, now: Date` | `WithEventDrafts<DeletedUser, IdentityEvent>` | 全cleanup ack後にPIIを落とし `identity.user.deleted` を発行 |
+
+`updateProfile` の `avatarUrl` だけが構築済みの VO で渡るのは、`AvatarUrl.create` が `appUrl` を要するためである。集約は設定を読まないので、生値からの構築はユースケース側（[usecases/identity.md](../usecases/identity.md) の `updateProfile`）が行う。集約のメソッドが生の文字列を受けない形にしておくことで、将来の別経路が同一オリジン検証を素通りできない（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
 
 `assignHandle` が初回設定でもイベントを出すのは、読み取りモデルの `note_search.author_handle` を埋める唯一の経路がこのイベントだからである。ハンドル未設定のままワークスペース所有の公開ノートを作り、あとからハンドルを設定した場合、初回設定を無音にすると `author_handle` が `null` のまま残り、`searchPublicNotes` の結果に著者リンクが出ない一方 `getPublicNote` は Identity から直接引くので詳細だけ正しい、という不整合になる。`previousHandle: null` は payload の型で表現済みなので、購読側は初回設定と変更を区別せず現在値で上書きすればよい。`clearHandle` が常に発行するのと対称になる。
 
@@ -360,6 +370,20 @@ ThrottleDecision = { kind: "allow" } | { kind: "delay"; waitMs: number } | { kin
 しきい値と窓をここに置き、`DistributedOperationStore.countTerminalSince` には件数の観測だけをさせる（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。数値がバックエンドの数だけ複製されるのを避けるためで、呼ぶ側（[usecases/identity.md](../usecases/identity.md) の `deleteAccount`）は**数えて → 判定して → はじめて作る**順に呼ぶ（作ってからロールバックしない）。新しい operation を作りうる要求だけが判定の対象で、進行中の operation を引き継ぐ再開は terminal 行を増やさないので数えない。
 
 **依存するポート**: なし（`ensureRetryable` / `windowStart` は純関数。件数は呼ぶ側が読む）
+
+### SameOriginPolicy
+
+**責務**: 与えられた値が、どのオリジンに対して解決しても必ずそのオリジンに収まるアプリ相対パスかを判定する。「自オリジンに限る」判定の唯一の置き場で、呼び出し元は保存するアバターの位置（`AvatarUrl`）と、認可の往復のあとに再生する遷移先（[usecases/identity.md](../usecases/identity.md) の `startOAuthFlow` の `redirectTo`）の 2 つ。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `isSameOriginPath` | `value: string` | `boolean` | `/` で始まり、`//` で始まらず、バックスラッシュと C0 制御文字（`U+0000`〜`U+001F` と `U+007F`）を含まないなら `true` |
+
+先頭が `/` で `//` ではないことだけでは足りない。URL パーサーは特別スキームでバックスラッシュを区切りとして扱い、解決の前に C0 制御文字を除去するため、`"/\evil.test/x"` や先頭スラッシュ直後に制御文字を挟んだ値は素朴な前置検査を通り抜けて**別オリジンへ解決する**。判定を 1 本に集めるのは、この 3 つの回避形の知識が片方の呼び出し元にしか反映されない状態を作れなくするためである。
+
+真偽値だけを返し、違反をどう倒すかは呼び出し側が決める（`AvatarUrl.create` は `BusinessRuleError(InvalidAvatarUrl)`、`startOAuthFlow` は `ValidationError("INVALID_REDIRECT")`）。必要より厳しくてよく、同一オリジンへ解決する値でも制御文字を含めば拒否する（[ADR 051](../adr/051-same-origin-url-predicate.md)）。
+
+**依存するポート**: なし（`isSameOriginPath` は純関数）
 
 ## ポート
 

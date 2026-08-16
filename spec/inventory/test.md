@@ -330,7 +330,7 @@
 | TC-identity-189 | requestPasswordReset: `DeletingUser`のメールアドレス — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 未登録と同じ成功応答で、tokenもメールも発行しない |
 | TC-identity-190 | requestPasswordReset: 未登録のメールアドレス — 再設定を要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | メールは送られず、成功として返る（存在を漏らさない） |
 | TC-identity-191 | requestPasswordReset: — — 形式が不正なメールアドレスで要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | `BusinessRuleError(InvalidEmail)` が投げられる |
-| TC-identity-192 | requestPasswordReset: 同じメールアドレスへの要求が連続する — 要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 60 秒の発行間隔に掛かり、新しいトークンは発行されず、メールも送られず成功として返る（絞りはこの発行間隔ひとつだけ） |
+| TC-identity-192 | requestPasswordReset: 同じメールアドレスへの要求が連続する — 要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 60 秒の発行間隔に掛かり、新しいトークンは発行されず、メールも送られず成功として返る |
 | TC-identity-193 | requestPasswordReset: 既存の再設定トークンが未消費で残っており、発行から 60 秒以上経過している — 再度要求する | spec/testcases/identity/requestPasswordReset.md#テストケース-requestpasswordreset | 古いトークンは無効になり、新しいトークンだけが有効になる |
 | TC-identity-194 | resendVerificationEmail: `PendingUser` が存在する — 再送を要求する | spec/testcases/identity/resendVerificationEmail.md#テストケース-resendverificationemail | 既存の確認トークンが削除され、新しいトークンで確認メールが送られる |
 | TC-identity-195 | resendVerificationEmail: 直近 59 秒以内に再送済み — 再送を要求する | spec/testcases/identity/resendVerificationEmail.md#テストケース-resendverificationemail | メールは送られず、成功として返る |
@@ -402,7 +402,7 @@
 | TC-identity-261 | signUpWithPassword: 同じメールアドレスで 2 つの要求が同時に走る — 同時に 2 つの登録要求を出す | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 両方の応答 shape が同一（`emailVerificationRequired: true` / セッションなし）で、返る decoy id は別値。利用者はちょうど 1 人。一意性違反は `IdentityUniqueDirectory` のポート契約として送出されるが、ユースケースが畳む |
 | TC-identity-262 | signUpWithPassword: email reservation確保後にUser保存が失敗する — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | reservationをreleaseし、同じemailが恒久的に塞がらない |
 | TC-identity-263 | signUpWithPassword: User/Identity保存後にreservation activate応答を失う — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | User email/version一致を確認し、同じsub-operation IDでactiveへ収束する |
-| TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される |
+| TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される。応答は `authorizationUrl` と併せて保存した `state` も返す（転送境界がフローを開始したブラウザーへ束縛するため — [ADR 034](../adr/034-oauth-callback-browser-binding.md)） |
 | TC-identity-265 | startOAuthFlow: Activeでサインイン済み — `intent: "linkIdentity"` と `userId` を指定して開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、保存された状態に `userId` とcurrent `userAuthEpoch`が含まれる |
 | TC-identity-266 | startOAuthFlow: 削除開始済みまたは削除済み — `intent: "linkIdentity"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | OAuth stateを作らず、`UnauthorizedError("UNAUTHENTICATED")` が投げられる（認証済み利用者として扱わない） |
 | TC-identity-267 | startOAuthFlow: — — `intent: "linkIdentity"` で `userId` を省略する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("USER_REQUIRED")` が投げられる |
@@ -468,6 +468,12 @@
 | TC-identity-327 | checkHandleAvailability: 解除待ち（`releasing`）の claim が残っているハンドル — 利用可否を問い合わせる | spec/testcases/identity/checkHandleAvailability.md#テストケース-checkhandleavailability | 空きとして返る（`resolve` は恒久 claim の持ち主だけを返す。保存は `updateProfile` の予約が拒みうる） |
 | TC-identity-328 | completeOAuthCallback: `intent: "integration"` の state が保存されている — コールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | 本スライスに受け皿が無いため state を無効として扱い、`ValidationError("OAUTH_STATE_INVALID")` が投げられる（受け皿は外部連携スライスの `completeIntegrationOAuth`） |
 | TC-identity-329 | getProfile: 一度も編集していない `ActiveUser` — 自分のプロフィールを読む | spec/testcases/identity/getProfile.md#テストケース-getprofile | 登録時の既定が返る（`bio` は空文字列、`handle` と `avatarUrl` は `null`） |
+| TC-identity-330 | completeOAuthSignIn: directory の claim は残っているが対応する identity が居ない — 同じプロバイダーアカウントで認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` が投げられ、セッションは発行されない（他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` とは別のコード — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)） |
+| TC-identity-331 | linkOAuthIdentity: directory の claim は残っているが対応する identity が居ない — 解除した直後の同じプロバイダーアカウントをリンクする | spec/testcases/identity/linkOAuthIdentity.md#テストケース-linkoauthidentity | `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` が投げられ、`Identity` は追加されない（他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` とは別のコード — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)） |
+| TC-identity-332 | updateProfile: `ActiveUser` がいる — object store が払い出したアプリ相対パス（`/storage/...`）をアイコンに設定する | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | `AvatarUrl` として受理され、射影の `avatarUrl` にその値がそのまま返る |
+| TC-identity-333 | updateProfile: — — 別オリジンの絶対 URL をアイコンに設定する | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | `BusinessRuleError(InvalidAvatarUrl)` が投げられる |
+| TC-identity-334 | updateProfile: — — プロトコル相対の値（`//` で始まる）をアイコンに設定する | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | `BusinessRuleError(InvalidAvatarUrl)` が投げられる（`//` はアプリ相対パスとして扱わない） |
+| TC-identity-335 | updateProfile: アイコンを設定済みの `ActiveUser` — `avatarUrl` に `null` を渡す | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | アイコンが解除され、射影の `avatarUrl` が `null` になる |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |
@@ -1923,7 +1929,7 @@
 | TC-storage-218 | storeUpload: 公開ハンドル未設定の個人所有で `visibility: "public"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる。検査は保管を始める前に行われるため、オブジェクトストレージへの `put` もノートの作成も起きない |
 | TC-storage-219 | storeUpload: 公開スラッグ未設定のワークスペース所有で `visibility: "public"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 同じく保管前に `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる（検査の基準は所有者であり `createdBy` ではない） |
 | TC-storage-220 | storeUpload: 公開ハンドル未設定で `visibility: "unlisted"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 公開ハンドルを要さないため成功する |
-| TC-storage-221 | storeUpload: 宣言サイズと実サイズが食い違う — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 実サイズが採用される |
+| TC-storage-221 | storeUpload: 宣言 MIME・宣言サイズを渡す経路が無い — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 保管する型は先頭バイトの署名、サイズは実バイト長から決まる（`AcceptedUpload`） |
 | TC-storage-222 | storeUpload: オブジェクトストレージが失敗する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | `SystemError(ExternalServiceError)` が投げられ、ノートは作られない |
 | TC-storage-223 | storeUpload: 同名ファイルを 2 回アップロードする — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 別のノートが 2 件作られる |
 | TC-storage-224 | storeUpload: 同一内容のファイルを 2 回アップロードする — 保管記録を確認する | spec/testcases/storage/storeUpload.md#テストケース-storeupload | チェックサムによる重複保管の回避は行わず、ノートごとに別の `StoredFile` が作られる |
@@ -2165,6 +2171,7 @@
 | TC-usage-070 | recalculateStorageUsage: クォータのレコードがない — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | 作られてから値が入る |
 | TC-usage-071 | recalculateStorageUsage: 2 回続けて実行する — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | 結果が変わらない |
 | TC-usage-072 | recalculateStorageUsage: ワークスペースを対象にする — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | そのワークスペースの分だけが計算される |
+| TC-usage-073 | recalculateStorageUsage: user 主体が実行者と一致しない — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |

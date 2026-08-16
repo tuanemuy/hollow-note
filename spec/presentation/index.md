@@ -233,7 +233,7 @@ PDF 書き出しの結果に到達するための証（[usecases/note.md](../use
 
 `deleteAccount` と `disconnectIntegration` は複数の Durable Object を同一要求で完了させない。転送境界は `operationId` と `status: "accepted"` を **202 Accepted** で返し、クライアントは operation status をpollする。`deleteAccount` はsessionを直ちに失効させるため、応答に30分有効の署名済みstatus ticketを含める。このticketは当該operationの状態だけを読め、再実行・取消・他データの取得には使えない。
 
-状態は `accepted` / `running` / `completed` / `rejected` / `failed`。`rejected` は唯一のworkspace ownerなど事前条件の不成立で、UIは解消方法を示す。`failed` は再試行不能と確定した場合だけで、通信失敗・応答喪失は `running` のままserver-side recoveryが続ける。同じ冪等keyの再要求には既存operationを返す。
+状態は `accepted` / `running` / `completed` / `rejected` / `failed` で、**この語彙は 2 つの名前空間が混ざる**。`running` / `completed` / `rejected` は operation record の状態そのもの（`distributed_operations.state` の 3 値。[database/index.md](../database/index.md)）で、status 照会はその値をそのまま返す。`accepted` は 202 応答が名乗る**転送境界の status** であって、operation record には現れない。`rejected` は唯一のworkspace ownerなど事前条件の不成立で、P-25 の状態直和の「実行不可」（[pages/index.md](../pages/index.md)）に着き、UIは解消方法を示す。`failed` は再試行不能と確定した場合だけに出す表示語彙で、`distributed_operations.state` の 3 値にも account deletion manifest header の state にも無く、**この状態へ移す遷移を定めた箇所が本設計に無い**。通信失敗・応答喪失は `running` のままserver-side recoveryが続ける。同じ冪等keyの再要求には既存operationを返す。
 
 ## レート制限
 
