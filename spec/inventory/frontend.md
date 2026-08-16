@@ -96,8 +96,8 @@
 | PAGE-p16-008 | タグでノート一覧へ移動 | `spec/pages/index.md#P-16: タグ管理` | 選択 tag の正規化名を P-10 の filter URL に載せて current scope の一覧へ遷移する |
 | PAGE-p20-001 | P-20 設定タブ | `spec/pages/index.md#P-20: 設定タブ` | L-01 内で個人設定と workspace 設定を別々の水平 tab 列として表示し、mobile は列だけ横 scroll させる |
 | PAGE-p20-002 | 設定セクションを切り替え | `spec/pages/index.md#P-20: 設定タブ` | current 個人・workspace 設定 context を保って対応 route へ遷移し、異なる tab 列を混在させない |
-| PAGE-p21-001 | P-21 プロフィール設定ページ | `spec/pages/index.md#P-21: プロフィール設定` | 初期表示を `getProfile` から供給し、display name、avatar、bio、handle と public preview を表示して、重複候補、不正・予約語、upload error、saving、warning、failure を表現する |
-| PAGE-p21-002 | プロフィールを保存 | `spec/pages/index.md#P-21: プロフィール設定` | 変更 fields を JSON POST し、handle 重複・validation・競合を表示して current profile を更新する。入力中の重複候補は `checkHandleAvailability` から供給する |
+| PAGE-p21-001 | P-21 プロフィール設定ページ | `spec/pages/index.md#P-21: プロフィール設定` | display name、avatar、bio、handle と public preview を表示し、重複候補、不正・予約語、upload error、saving、warning、failure を表現する |
+| PAGE-p21-002 | プロフィールを保存 | `spec/pages/index.md#P-21: プロフィール設定` | 変更 fields を JSON POST し、handle 重複・validation・競合を表示して current profile を更新する |
 | PAGE-p21-003 | アイコンをアップロード | `spec/pages/index.md#P-21: プロフィール設定` | FormData で avatar を送信し、形式・size error と preview を表示する |
 | PAGE-p21-004 | 公開プロフィールを preview | `spec/pages/index.md#P-21: プロフィール設定` | current handle の P-42 を新しい navigation として開く |
 | PAGE-p22-001 | P-22 ログイン方法設定ページ | `spec/pages/index.md#P-22: ログイン方法設定` | 最大 8 identities と削除可否を表示し、password・Google の追加変更解除、再認証、他 session 失効、最後 1 件不可を表現する |

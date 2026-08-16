@@ -217,7 +217,7 @@
 | DOM-storage-030 | `ReferenceImportRecordRepository.findSummaryByNote` | `spec/domains/storage.md#ポート` | ノートの最新取り込み要約を取得する |
 | DOM-storage-031 | `ReferenceImportRecordRepository.deleteByNote` | `spec/domains/storage.md#ポート` | attempt と summary を合わせて有界削除する |
 | DOM-storage-032 | `ObjectStorage.put` | `spec/domains/storage.md#ポート` | バイト列だけを受けて保存し実サイズと checksum を返す（ストリーム受けは契約に持たない） |
-| DOM-storage-033 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | バイト列と metadata を持つ `ObjectBody` を取得する |
+| DOM-storage-033 | `ObjectStorage.get` | `spec/domains/storage.md#ポート` | バイト列と metadata を持つ `ObjectBody` を取得し、未知の key では null を返す |
 | DOM-storage-034 | `ObjectStorage.deleteMany` | `spec/domains/storage.md#ポート` | 指定 object key 群を冪等に削除し、存在しない key も許容する |
 | DOM-storage-035 | `ObjectStorage.createDownloadUrl` | `spec/domains/storage.md#ポート` | file name と期限付きの download URL を発行する |
 | DOM-storage-036 | `RemoteResourceFetcher.fetch` | `spec/domains/storage.md#ポート` | byte 上限と timeout を守って外部 URL を取得する |
@@ -313,8 +313,8 @@
 | DOM-note-068 | `NoteMovePort.activateTarget` | `spec/domains/note.md#ポート` | staged target を指定 route version で有効化する |
 | DOM-note-069 | `NoteMovePort.retireSource` | `spec/domains/note.md#ポート` | switch 後の source データを退役させる |
 | DOM-note-070 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
-| DOM-note-071 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換する。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
-| DOM-note-072 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換する。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| DOM-note-071 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| DOM-note-072 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | DOM-tag-001 | `TagId` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-tag-002 | `AssignmentId` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-tag-003 | `TagName` 値オブジェクト | `spec/domains/tag.md#値オブジェクト` | 1〜50 文字を表示名と NFKC 相当の正規化名で保持する |

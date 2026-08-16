@@ -25,7 +25,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Shared conformance suite for `ScopeCleanupAdmissionStore`
- * (ADP-common-004..011, 040): the personal account-deletion barrier and
+ * (ADP-common-004..011, ADP-common-040): the personal account-deletion barrier and
  * its per-component receipt.
  */
 export function describeScopeCleanupAdmissionStoreContract(

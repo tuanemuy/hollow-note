@@ -228,8 +228,8 @@
 | ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
 | ADP-note-044 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | ADP-note-045 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
-| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する |
-| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する |
+| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
+| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
 | ADP-note-048 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する。失敗は `SystemError(DataIntegrityError)` |
 | ADP-note-049 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する。未知の keyVersion・ciphertext の破損は `SystemError(DataIntegrityError)` |
 | ADP-note-050 | `NoteMovePort.freezeSource` | `spec/domains/note.md#ポート` | source を再認可して move snapshot を固定する |

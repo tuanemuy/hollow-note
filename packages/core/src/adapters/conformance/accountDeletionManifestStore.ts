@@ -23,7 +23,7 @@ const UNDECLARED_RECEIPT: AccountDeletionReceipt = "jobHistory";
 
 /**
  * Shared conformance suite for `AccountDeletionManifestStore`
- * (ADP-common-012..025, 041): header state machine, idempotent target fixing,
+ * (ADP-common-012..025, ADP-common-041): header state machine, idempotent target fixing,
  * command-key claiming, and terminal retention.
  *
  * Membership-page content cases run only when the backend provides

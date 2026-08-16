@@ -38,7 +38,7 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Shared conformance suite for `SignInOAuthClient`
- * (ADP-identity-033/034, 040).
+ * (ADP-identity-033, ADP-identity-034, ADP-identity-040).
  *
  * Split in two so that each half reports honestly (AC-6): the
  * authorization-request half is pure — challenge derivation and URL

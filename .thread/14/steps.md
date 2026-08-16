@@ -2,7 +2,7 @@
 
 ## 設計
 
-本 Issue はドキュメント同期であり、ドメイン・ユースケース・アダプター・UI の**振る舞いを一切変えない**。コード差分は計画時点でステップ 8 の 8 ファイル（JSDoc とコメント）＋ ステップ 30 の適合スイート 1 ファイル（既存実装が既に満たす主張を 1 つ足すだけ）だったが、**レビュー R1 の修正（`review/triage.md` の U7 / U8 / U9）を含めた最終実測は 27 ファイル**（変更 24 / 削除 3）で、増えた分もすべてコメント・JSDoc・`describe` / `it` 名の文字列に閉じる。**件数と内訳の正典は `plan.md` の AC-63 と「コード差分の内訳」表**。したがって通常の「レイヤーの内側から外側へ」ではなく、**同期の向きの決定**と**ドキュメントの依存方向**で設計する。
+本 Issue はドキュメント同期であり、ドメイン・ユースケース・アダプター・UI の**振る舞いを一切変えない**。コード差分は計画時点でステップ 8 の JSDoc・コメント ＋ ステップ 30 の適合スイート 1 ファイル（既存実装が既に満たす主張を 1 つ足すだけ）で、レビューの修正ラウンドで増えた分もすべてコメント・JSDoc・`describe` / `it` 名の文字列に閉じる。**件数と内訳の正典は `plan.md` の AC-63 と「コード差分の内訳」表で、この文書には写さない**。したがって通常の「レイヤーの内側から外側へ」ではなく、**同期の向きの決定**と**ドキュメントの依存方向**で設計する。
 
 台帳は 2 系統（`research.md` の SYNC-01〜27 と `research-2.md` の SYNC-201〜244）だが、**1 つの計画として統合済み**。同じファイルを触る項目は系統をまたいで 1 ステップに束ねてある（plan.md のスコープ節の対応表）。
 
@@ -128,7 +128,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 | --- | --- | --- |
 | 1. `spec/adr/` の新設 | 20 | 6 ファイル ＋ `index.md` |
 | 2. `spec/` 本文の追随 | 1〜7, 22〜29, 32 | 本 Issue の中心。大きいので `spec/domains/` → `spec/usecases/` → その他 の 3 コミットに割ってもよい |
-| 3. コード（JSDoc / コメント / 適合スイート） | 8, 30 | 計画時 9 ファイル → レビュー R1 の修正込みで **27 ファイル**（`plan.md` AC-63）。**振る舞いを変えないことをこのコミット単体で確認できる** |
+| 3. コード（JSDoc / コメント / 適合スイート） | 8, 30 | 件数と内訳の正典は `plan.md` の AC-63（「コード差分の内訳」表）。**振る舞いを変えないことをこのコミット単体で確認できる** |
 | 4. `spec/inventory/` の追随 | 9〜12, 31 | 生成物。本文コミットとの差分照合がしやすい |
 | 5. `spec/manual-tests/` の追随 | 18 | |
 | 6. `spec/` 外のドキュメント | 13, 14, 15, 19 | `spec/` と共有ファイルが 1 つも無い独立系統 |
@@ -197,7 +197,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
      - `identity.personalCleanupHandoverContinued` の行を 1 行足す（payload と唯一の購読者 = scope 平面の task runner）。根拠は [ADR 043](../adr/043-cross-plane-handover-driver.md)（「引き渡しに専用の継続行を与える」）
   9. **（統合分）** `:121` の `DistributedOperationStore` の 1 行の言及は**そのまま残す**（interface を新設しない — adr.md ADR-015）。ただし `state` の語彙が `running` / `completed` / `rejected` の 3 値であり、`preparing` / `committing` は account deletion manifest header 側の state であることが読めるよう、**1 行の言及に括弧書きを添える**（同じ書き分けをステップ 4-9 と 26 で行う）。**この括弧書きは AC-38 の肯定側の条件**なので、否定側（interface を新設しない）だけを満たして終わらせない
   10. **（統合分・計画レビュー R2 arch:P-008）** 同じ箇条書きに `AppliedOperationStore` の **1 行言及**を足す（`DistributedOperationStore` と同じ粒度。**interface は新設しない** — adr.md ADR-015 の追補）。内容: 「1 つの operation が同じ scope へ配る**コマンドの重複排除**は `AppliedOperationStore` が `(operationId, commandKey)` で担い、barrier receipt を扱う `ScopeCleanupAdmissionStore` とは**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。記録はガードするコマンドと同じ Unit of Work に入る」（実装 `application/ports/appliedOperationStore.ts`）
-     - **`### 新設する横断的ポート` に `IdempotencyStore` と同じ形の interface を書かない。** interface を書けば `spec/inventory/{domain,adapter}.md` に行が要り、`spec/adr/026` の命名規約により適合スイート `adapters/conformance/appliedOperationStore.ts` の `describe` / `it` 名へ ADP ID を付ける差分が発生する（AC-63 のコード差分の枠外）。**この理由はレビュー R1 で枠が 27 ファイルへ広がった後も変わらない** — U8 が閉じたのは「本 PR の採番が作った ID の衝突」であって、そもそも spec に定義も inventory 行も持たないポートへの新規採番ではない。同じ状態のポートが他に 4 本ある（`DistributedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`）ので、1 本だけ直すと新しい非対称を作る。5 本まとめてステップ 16 の 6. の Issue へ送る
+     - **`### 新設する横断的ポート` に `IdempotencyStore` と同じ形の interface を書かない。** interface を書けば `spec/inventory/{domain,adapter}.md` に行が要り、`spec/adr/052` の命名規約により適合スイート `adapters/conformance/appliedOperationStore.ts` の `it` 名へ ADP ID を付ける差分が発生する（AC-63 のコード差分の枠外）。**この理由はレビューの修正ラウンドでコード差分の枠が広がった後も変わらない** — U8 が閉じたのは「本 PR の採番が作った ID の衝突」であって、そもそも spec に定義も inventory 行も持たないポートへの新規採番ではない。同じ状態のポートが他に 4 本ある（`DistributedOperationStore` / `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`）ので、1 本だけ直すと新しい非対称を作る。5 本まとめてステップ 16 の 6. の Issue へ送る
      - **`### 新設する横断的ポート` 冒頭の「以下の 4 件 … ポートの総数を数えるときは各ドメインの一覧とこの 4 件の和を取る」は触らない**（`AppliedOperationStore` は interface を持たないのでこの 4 件に入らない）
 - **注意:** `personalAbort` receipt が **rollback 完了ゲートから消えるわけではない**。消えるのは「ポート述語 `allRollbackReleased` の判定対象」であって、「User を `active` へ戻す前に personal barrier の解除を確認する」というユースケースの責務は残る（ステップ 4-4）。ここ（ポート契約の正本）には述語の判定対象だけを書く
 - **注意:** 4. / 5. の 3 メソッドは `spec/inventory/{domain,adapter}.md` に**新規行を採番する**（`DOM-common-041` / `DOM-common-042` / `ADP-common-040` / `ADP-common-041`。ステップ 9 / 10、adr.md ADR-011）。`pruneTerminal` は既存行（`DOM-common-026` / `ADP-common-025`）の要点更新のみ
@@ -444,12 +444,12 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
   - 現行にあって未記載の 2 点を足す: `renderServerFragment`（`presentation/serverFragment.tsx`、RSC ストリーム中エラーの秘匿 — ADR-031）と `apps/web/app/start.ts` の CSRF ミドルウェア
 - **注意:** `serverData` / `loadServerDeps` の表（L266-272）と `.validator` の記述は既に実装と一致しているので触らない。`apps/web/app/presentation/pagination.ts:5` が本ファイルを参照しているので、該当のページング記述を消さない
 
-### 16. スコープ外のフォローアップ起票（新規 7 本 ＋ 既存 4 Issue へのコメント）
+### 16. スコープ外のフォローアップ起票
 
 - **対象:** GitHub Issue（`gh issue create` / `gh issue comment`）
 - **台帳 ID:** SYNC-08, SYNC-23, SYNC-24, SYNC-27 ＋ **SYNC-221, SYNC-231, SYNC-237（新規）/ SYNC-203(3), SYNC-214, SYNC-220 付随, SYNC-227 付随（既存 Issue へコメント）**（統合分）
-- **変更内容:** **新規 Issue を 7 本起票し、既存 Issue 4 件へコメントする**。各 Issue / コメントには現状・根拠（`research.md` / `research-2.md` の該当節）・選択肢とトレードオフを書く。起票後、**7 つの Issue 番号と 4 つのコメント URL を本 Issue の完了コメントに列挙する**（AC-23 / AC-60）。
-  - 「新規 Issue か既存 Issue へのコメントか」は**受け皿の有無で決める**（どちらでもよい形にすると済んだかを判定できない）。受け皿となるスライス Issue が既に存在する 4 件だけがコメント、残りは新規 Issue。
+- **変更内容:** **起票する項目の一覧と件数の正典は `plan.md` の「Phase 5 で起票するもの」節**で、この文書には写さない（下記 1〜7 はその節の 1〜7 に対応する骨子で、レビューの修正ラウンドで足りた 8 以降の骨子は plan 側だけが持つ）。各 Issue / コメントには現状・根拠（`research.md` / `research-2.md` の該当節）・選択肢とトレードオフを書く。起票後、Issue 番号とコメント URL を本 Issue の完了コメントに列挙する（AC-23 / AC-60）。
+  - 「新規 Issue か既存 Issue へのコメントか」は**受け皿の有無で決める**（どちらでもよい形にすると済んだかを判定できない）。受け皿となるスライス Issue が既に存在するものだけがコメント、残りは新規 Issue。
   1. **`Note.reconstruct` の visibility × content 交差検査をどう扱うか**（SYNC-08）— 現状は未検査（`note.ts:771-804`）。書き込み経路は両方向を守る。「拒否する実装を足す」か「再検査しない契約を spec に明記する」かの選択
   2. **フォーカスリングが accent 背景で判別できない**（SYNC-23）— `--shadow-focus: 0 0 0 2px var(--color-accent)` の再設計（内側リング / オフセット）。影響は実装 CSS 2 ＋ 実装 TS 1（`formStyles.ts` の `focus:outline-none` と `focus:` → `focus-visible:`）＋ 設計ドキュメント 2 ＋ モック HTML 43 の 47 ファイル
   3. **L-02 のサインイン済み状態が実装されていない**（SYNC-24）— `spec/pages/index.md` の L-02 が要件を持ち、`PublicShell` が `signedIn` prop を持たない。`/terms` `/privacy` にセッション読み取りを足す必要がある。将来 L-02 配下に増える P-41〜P-45 も同じ要件を継ぐ。**P-40（トップ）は本 Issue の SYNC-26 で閉じたので含めない**（この Issue の対象は L-02 の 2 か所と `PublicShell` / `LegalPage`）
@@ -457,7 +457,7 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
      - **（計画レビュー R2 coverage:P-001）本文に 1 行足す**: 「同型の『実在しない enum 値名』が integration 側にも 3 か所ある — `spec/usecases/integration.md:37` / `spec/testcases/integration/startIntegrationOAuth.md:7` / `spec/inventory/test.md` の TC-integration-170 行の `BusinessRuleError(InvalidProvider)`。`spec/domains/integration.md:330` の `IntegrationErrorCode` union に `InvalidProvider` は**存在しない**。identity 側の同じ呼称ずれは Issue #14 が `InvalidProviderAccount` へ直したが、integration は**未実装ドメイン**で『どちらへ写すか』の実装的裏づけが無いため同じ扱いにする」
   5. **（統合分・新規）** **`addPasswordIdentity` に Google 再認可（再認証）が無い**（SYNC-221 / adr.md ADR-013）— `spec/scenario/account.md:127`（AC-06）/ P-22 の「再認証要求」状態 / manual TC-07 が求めるセキュリティ要件を実装が満たしていない。本 Issue はステップ 4-6 で **spec の内部矛盾（usecase 手順に再認可が無い）だけを解消**しており、実装は未着手であることを明記する。`startOAuthFlow` の intent と再認証状態の保持（`spec/adr/034` / `035` の束縛）に触れる実装スライスとして起票する
   6. **（統合分・新規）** **`distributed_operations` の `attempts` / `next_attempt_at` / `expires_at` と recovery Cron が未実装**（SYNC-231 / adr.md ADR-015）— `spec/database/index.md:130-148` は 3 列と partial index を定めるが実装のポート型に無い。あわせて「**`spec/domains/index.md` に `DistributedOperationStore` の interface を新設する**」を同じ Issue に含める（本 Issue では新設しない。メソッドの形を決めることが設計判断になるため）
-     - **（計画レビュー R2 arch:P-008）対象を 5 ポートに広げる**。実装に存在して `spec/inventory/` に 1 行も無いポートは 5 つある — `DistributedOperationStore`（`spec/domains/index.md:121` に 1 行言及のみ）/ `AppliedOperationStore`（本 Issue のステップ 3-10 で 1 行言及を足す）/ `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`（後 3 者は `spec/` 全域に 0 件）。`adapters/conformance/` の 25 本のうち `describe` / `it` 名に **ADP ID を持たないのはこの 5 本だけ**で、inventory 行の欠落と 1 対 1 に対応している。Issue 本文に「5 ポートの interface 新設 ＋ inventory 行の採番 ＋ 適合スイートへの ADP ID 付与」をまとめて書く（`spec/adr/026` の命名規約と ADR-011 の Consequences「実装すべきメソッドの全数を台帳から数えられる」がこの 5 本については成立していない）
+     - **（計画レビュー R2 arch:P-008）対象を 5 ポートに広げる**。実装に存在して `spec/inventory/` に 1 行も無いポートは 5 つある — `DistributedOperationStore`（`spec/domains/index.md:121` に 1 行言及のみ）/ `AppliedOperationStore`（本 Issue のステップ 3-10 で 1 行言及を足す）/ `IdentityRemovalReceiptStore` / `OutboxRepository` / `ScopeTaskScheduler`（後 3 者は `spec/` 全域に 0 件）。`adapters/conformance/` の 31 スイートのうち `it` 名に **ADP ID を持たないのはこの 5 本だけ**で、inventory 行の欠落と 1 対 1 に対応している。Issue 本文に「5 ポートの interface 新設 ＋ inventory 行の採番 ＋ 適合スイートの `it` 名への ADP ID 付与（`describe` には付けない）」をまとめて書く（`spec/adr/052` の命名規約と ADR-011 の Consequences「実装すべきメソッドの全数を台帳から数えられる」がこの 5 本については成立していない）
   7. **（統合分・新規）** **P-25 の「削除されるもの / されないもの」と完了文言が participant の実態まで狭められている**（SYNC-237）— 受け皿が複数スライス（#3 / #4 / #5 / #7）に跨るため 1 本にまとめ、各スライスが自分の participant を宣言した時点で `spec/pages/index.md#P-25` と `spec/design/pages/P25-settings-danger.html` の文言へ実装が追いつく形にする。**spec は狭めていない**ことを本文に書く
   - **（統合分）既存 Issue へのコメント 4 件**（新規 Issue を作らない。受け皿がすでにあり、そのスライスが実装で追いつくため）
     - **#6** — `ObjectStorage.createDownloadUrl` が実装に無い（SYNC-203(3)）。`issueDownloadUrl` / `exportNote` を持つスライスが実装する。spec の行は残してある
@@ -475,12 +475,12 @@ spec/inventory/{domain,adapter,frontend,test,usecase}.md, spec/manual-tests/acco
 - **変更内容:**
   1. 品質ゲート: `pnpm typecheck` / `pnpm lint:fix` / `pnpm format` / `pnpm test:unit` / `pnpm build`
   2. 台帳の追随漏れを grep で検査（plan.md「テスト方針」の全項目）。**合否の形は 3 種類ある**（計画レビュー R3 coverage:S-001）— **「ヒット 0 件」**／**「1 件以上」**（spec を狭めていないことの確認 — AC-62）／**「件数一致」**（AC-55 の 8 / 8 / 3、AC-64 の 24 / 24、**AC-65(b) の `grep -c "declaredMimeType" spec/usecases/storage.md` = 1**）。**向きを取り違えないこと** — とくに AC-65(b) は 0 ではなく **1** が合格（`startBulkUpload` の `files` 列は据え置く — 計画レビュー R3 arch:P-001）。このほかに**出力を人が読む確認が 4 つ**ある（下記 4. / 6. / 9. と、AC-27 の「コメント部分にヒットが無い」）
-  3. `git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/`（コミット済みと未コミットの両方を含む）で、コード差分が **27 ファイル = 変更 24 / 削除 3 / 追加 0** で、`plan.md`「コード差分の内訳」表の集合と 1 対 1 で一致することを確認する。あわせて**振る舞いを変える差分が 0** であることを機械的に示す — `git diff -U0 $(git merge-base origin/main HEAD) -- packages/ apps/ ':!*.example' | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -vE "^[-+][[:space:]]*(//|/\*|\*|\*/)" | grep -vE '^[-+][[:space:]]*(it|describe)\("'` が **12 行**（適合スイート `ADP-common-008` への追加アサーション 9 行 ＋ `containerStore.ts` のエラーメッセージ文字列 3 行）だけを返す。表に無いファイルが出る、またはこの 12 行以外が返ったらスコープ逸脱（AC-63）
+  3. `git diff --name-status $(git merge-base origin/main HEAD) -- packages/ apps/`（コミット済みと未コミットの両方を含む）で、コード差分が `plan.md`「コード差分の内訳」表の集合と 1 対 1 で一致することを確認する。あわせて**振る舞いを変える差分が 0** であることを機械的に示す — `git diff -U0 $(git merge-base origin/main HEAD) -- packages/ apps/ ':!*.example' | grep -E "^[-+]" | grep -vE "^(\+\+\+|---)" | grep -vE "^[-+][[:space:]]*(//|/\*|\*|\*/)" | grep -vE '^[-+][[:space:]]*(it|describe)\("'` が AC-63 の挙げる残り行だけを返す。**件数と内訳の正典は AC-63 だけで、この文書には写さない。** 表に無いファイルが出る、または AC-63 の内訳以外が返ったらスコープ逸脱
   4. `spec/inventory/{domain,adapter,test,frontend,usecase}.md` の **5 ファイル**の「最終同期」日付が更新されていることを確認する（統合により `usecase.md` が対象に入った — AC-56）
   5. `AGENTS.md` がシンボリックリンクのまま壊れていないことを確認する（`ls -l AGENTS.md`）
   6. `spec/adr/index.md` の一覧・前提依存マップに 052〜057 の **6 件**が載っており、`ls spec/adr/05[2-7]-*.md` が 6 ファイルを返すことを確認する
-  7. ステップ 16 で起票した **7 つの Issue 番号と 4 つのコメント URL**が本 Issue の完了コメントに列挙されていることを確認する（AC-23 / AC-60）
-  8. 新規 inventory 行の採番を確認する（`DOM` 8 行 / `ADP` 8 行 / `UC` 3 行 / **`TC` は identity 群の末尾に `TC-identity-305` 以降 — 新設 3 ファイルの行と `requestPasswordReset` の境界 2 行の両方**。AC-55 / AC-64）。**`spec/inventory/test.md` のヘッダーに TC 採番規則の 1 行が入っている**ことも確認する（計画レビュー R3 arch:S-001。ステップ 11）。**既存 ID の指す要素が変わっていない**ことを `git diff spec/inventory/` で目視する（既存行の ID 列に差分が出ていたら繰り下げが起きている）
+  7. ステップ 16 で起票した Issue 番号とコメント URL が本 Issue の完了コメントに列挙されていることを確認する。**件数と内訳の正典は AC-23 / AC-60 と `plan.md` の Phase 5 スコープ節だけで、この文書には写さない**
+  8. 新規 inventory 行の採番を確認する（`DOM` / `ADP` / `UC` は AC-55、`TC` は identity 群の末尾に `TC-identity-305` 以降で AC-64。**件数と内訳の正典はその 2 つの AC だけで、この文書には写さない**）。**`spec/inventory/test.md` のヘッダーに TC 採番規則の 1 行が入っている**ことも確認する（計画レビュー R3 arch:S-001。ステップ 11）。**既存 ID の指す要素が変わっていない**ことを `git diff spec/inventory/` で目視する（既存行の ID 列に差分が出ていたら繰り下げが起きている）
   9. **（計画レビュー R2 arch:P-007）ADR リンクの参照先が実在することを確認する** — `grep -rn "adr/05[2-7]-" spec/` が返す各リンクのファイル名が `ls spec/adr/05[2-7]-*.md` の 6 ファイルに含まれること。6. の「ファイルが 6 つある」「index に 6 行ある」だけでは、番号がずれたときの本文リンク切れを検出できない（AC-68）
   10. **（計画レビュー R2 arch:P-001）「1 ユースケース = 1 テストケースファイル = 1 UC 行」を確認する** — `ls spec/testcases/identity/*.md | wc -l` と `grep -c "^| UC-identity-" spec/inventory/usecase.md` がともに **24**（AC-64）
 - **理由:** ドキュメント同期は自動テストで守られないため、機械的に検査できる不変を明示的に確認する

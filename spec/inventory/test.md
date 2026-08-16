@@ -1929,7 +1929,7 @@
 | TC-storage-218 | storeUpload: 公開ハンドル未設定の個人所有で `visibility: "public"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる。検査は保管を始める前に行われるため、オブジェクトストレージへの `put` もノートの作成も起きない |
 | TC-storage-219 | storeUpload: 公開スラッグ未設定のワークスペース所有で `visibility: "public"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 同じく保管前に `ValidationError("PUBLIC_HANDLE_REQUIRED")` が投げられる（検査の基準は所有者であり `createdBy` ではない） |
 | TC-storage-220 | storeUpload: 公開ハンドル未設定で `visibility: "unlisted"` を指定する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 公開ハンドルを要さないため成功する |
-| TC-storage-221 | storeUpload: 宣言 MIME・宣言サイズを渡す経路が無い — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 保管する型は先頭バイトの署名、サイズは実バイト長から決まる（`AcceptedUpload`） |
+| TC-storage-221 | storeUpload: 実バイト長が 3 MB の画像ファイル — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 保管する型は先頭バイトの署名、サイズは実バイト長から決まる（`AcceptedUpload`）。宣言 MIME・宣言サイズを渡す経路は入力 DTO に無い |
 | TC-storage-222 | storeUpload: オブジェクトストレージが失敗する — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | `SystemError(ExternalServiceError)` が投げられ、ノートは作られない |
 | TC-storage-223 | storeUpload: 同名ファイルを 2 回アップロードする — アップロードする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 別のノートが 2 件作られる |
 | TC-storage-224 | storeUpload: 同一内容のファイルを 2 回アップロードする — 保管記録を確認する | spec/testcases/storage/storeUpload.md#テストケース-storeupload | チェックサムによる重複保管の回避は行わず、ノートごとに別の `StoredFile` が作られる |

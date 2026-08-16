@@ -342,3 +342,86 @@ R1 で最も多かった失敗は「片側だけ直して対になる側が置�
 4. `grep -rhoE "ADP-[a-z]+-[0-9]+" packages/core/src/adapters/conformance/ | sort -u` と `spec/inventory/adapter.md` の ADP ID 集合の差分（M-71 / M-72 の到達性）
 5. `grep -rn "the spec writes\|the spec's output table\|has no usecase in the spec\|no spec TC\|the spec mandates it unconditionally\|spec の記載漏れ" packages/ apps/` が 0 件（M-67 / M-69 / M-84）。**検査語は否定形に絞る** — `the spec's` 単体は spec を否定していない 2 件を、`the spec mandates` 単体は `noteAccessPolicy.ts:51`（実装が spec に従っている旨）を拾って 0 件にならない
 6. `spec/inventory/*.md` 5 ファイルの「最終同期」日付を再更新
+
+---
+
+# 指摘台帳 — PR #22 レビュー R3 のトリアージ
+
+**対象:** `.thread/14/review/review-003-{domain,usecase,inventory,presentation,docs}.md`（Blockers **0** / Warnings **17 件**）
+**束ね後:** **15 件**
+**判定:** fix **11** / wont-fix **4** / defer 0 / 既出継承 **0**
+
+## 前提
+
+- R1 の `wont-fix`（M-50）/ `defer`（M-06）と Key の一致する再指摘は 5 観点いずれからも無く、**既出継承は 0 件**。R3 の Key はすべて新規なので `M-88` 以降を連番で採る（M-01〜M-87 は動かさない）。
+- 妥当性は全件、`spec/` の実物・実装コード・`git diff` に当たって裏を取った。**事実として誤っていた指摘は 0 件。ただし判定の前提が実測と食い違った指摘が 1 件ある**（末尾「実地検証の結果」の `inventory:W-001`）。
+- 本 PR はドキュメント同期で振る舞いを変えない（AC-63）。fix の内容はすべて (a) `spec/` 本文・台帳、(b) コメント / JSDoc / テストの `it` 名、(c) `.thread/14/` の作業成果物、のいずれかに閉じる。**実行される振る舞いを変える修正は 1 件も無い。**
+- **AC-63 のコード差分件数は変わらない**（M-93 / M-97 / M-102 が触る 7 ファイルは 35 ファイルの内訳にすべて既出。新規参入 0）。機械検査の残り行も **14 行**のまま（実測で再確認）。
+- **`spec/` を狭める提案は採らない。** M-99（`ObjectStorage.put` の上書き契約）は「ADP 行から落とす」向きも「本文に無い主張を DOM 行へ足す」向きも採らず、非対称を理由つきで残した（ADR-038）。
+
+## 束ねた指摘
+
+3 組を 1 件に束ね、1 件を判定の割れで 2 行に分けた（17 → 15）。
+
+| 束ね後 Key | 元の指摘 ID | 束ねた / 分けた理由 |
+| --- | --- | --- |
+| M-90 | `docs:W-003` + `domain:W-003` | 同一問題。`.thread/14/adr.md` の ADR-029 / ADR-035 が書く「到達不能 ID 21 本」の係り受け。2 観点が独立に到達し、実測値（`it` 名由来 20 ＋ ヘッダー由来 1）まで一致した |
+| M-93 | `domain:W-002` + `inventory:W-002` | 同一問題の表裏。ADR-035 の「ヘッダーコメントの範囲表記も全形」が 5 ヘッダーに未適用であること（domain）と、そのうち `signInOAuthClient.ts:41` の短縮で `ADP-identity-034` が grep 0 件になること（inventory） |
+| M-94 | `usecase:W-001` + `usecase:W-002` | 同一問題。台帳 → コードの到達性を TC ID / UC ID にも要求するかという 1 つの規約面。usecase 観点自身が「W-001 と同じ単位で処理できる」と書いている |
+| M-98 / M-99 | `inventory:W-001` | 8 組を 1 件として扱うと判定が割れる。片側の主張が**本文に由来する 3 組**（fix = M-98）と、**由来しない / 言い換え / アダプター固有の注記である 5 組**（wont-fix = M-99）に分けた |
+
+## 台帳
+
+| Key | 指摘 | 判定 | 理由 | 再指摘回数 |
+| --- | --- | --- | --- | --- |
+| M-88 `.thread/14/steps.md:5,131,451,478,482,483:実測値` | 最終確認手順・コミット表・起票ステップの件数が R1 時点のまま残り、R2 で実測へ改めた `plan.md` の AC と食い違う（`docs:W-001`） | fix | 実測で 3 か所とも確認: 17-3 / `:131` / `:5` は「27 ファイル = 変更 24 / 削除 3」「機械検査 12 行」で AC-63 の 35 ファイル / 14 行と食い違う、17-8 は「`DOM` 8 行」で AC-55 の 11 行と食い違う、17-7 は「7 つの Issue 番号」で AC-60 の参照数と食い違う。**ステップ 17 は実行手順なので、手順どおり検証すると正しい PR がスコープ逸脱と判定される**（R1 の M-45 が `testing.md` について直したのと同じ形が `steps.md` にだけ 2 ラウンド残っていた）。**採る修正は数値の書き換えではなく参照への置き換え** — `testing.md` が採った「件数と内訳の正典は AC-63 だけで、この文書には写さない」と同じ解き方にする（数値を書き直すだけでは次のラウンドでまた陳腐化する）。**あわせてレビューの列挙に無い 2 か所も直す**（下記「実地検証の結果」）— ステップ 16 の見出しと本文が「新規 7 本 ＋ コメント 4 件」と書き、Phase 5 の 12〜17 を落としている（起票の実行手順なので M-89 と同じ「そのまま Issue になる」経路）。`:200` / `:460` の「`spec/adr/026` の命名規約」「`describe` / `it` 名」「25 本」も M-89 と同根 | 0 |
+| M-89 `.thread/14/plan.md:169,219:ADP ID 規約` | Phase 5 の起票骨子とリスク節が「適合スイートの `describe` / `it` 名に ADP ID を付ける」と書き、V1（M-62）が確定させた `spec/adr/052` の決定と食い違う（`docs:W-002`） | fix | **そのまま Issue 本文になる骨子が、052 が明示的に棄却した成果物（34 本の `describe` への ADP ID 付与）を指示してしまう。** R2 の M-62 は「plan 側が正しい」と判定したが、その後 V1 が規約を `it` 名一本へ絞ったので両論併記だった plan 側が緩い側になった（`.thread/14/adr.md` ADR-034 の代替案節も「両論併記のまま残す」を明示的に棄却している）。付随する件数も実測と違う — `:219` の「他 20 本は持つ」に対し、`adapters/conformance/` の**スイートは 31 本**（`export function describeXxxContract` の実測。ヘルパー 4 ファイルを除く）で、ADP ID を 1 つも持たないのは列挙どおり **5 本**、持つのは **26 本**。同じ誤りが `.thread/14/adr.md:589`（ADR-015 の Context）にもあるので同時に直す — **片方だけ直すと R1 / R2 で最も多かった「対になる側が置き去り」を作る** | 0 |
+| M-90 `.thread/14/adr.md:1063,1261,1267:到達不能 ID の計数` | 「`it` 名の短縮連記 31 ケース、**そのうち**到達できない ID が 21 本」の係り先が実測と 1 本ずれる（`docs:W-003` + `domain:W-003`） | fix | 自作の走査（`it()` の第 1 引数だけを展開し、ディレクトリ全体の `ADP-[a-z]+-[0-9]+` との差を取る）で独立に再実測: 短縮連記は **31 ケースで一致**、そこから到達不能になる ID は **20 本**（列挙とは `ADP-identity-034` の 1 本だけ違う）。21 本目の `ADP-identity-034` は `it` 名に一度も現れず `signInOAuthClient.ts:41` の**ファイル冒頭 JSDoc** 由来で、これは M-93 の 5 ヘッダーの 1 つ。**M-93 を直すと `ADP-identity-034` は単体 grep に当たるようになる**ので、係り受けを直すのではなく **20 本へ改め、列挙から `034` を落とす**（修正後に再実測して 20 / `it` 名由来のみを確認済み） | 0 |
+| M-91 `spec/usecases/note.md:847,977:改訂履歴` | 「以前は〜だった」の記述が 2 か所残っている（`docs:W-004`） | wont-fix | **本 PR の編集対象ファイルではない**（`git diff` に現れない）。R1 の M-47 が同型の 3 か所を落としたのは、いずれも本 PR が同じファイルを編集していたため。レビュアー自身も「本 PR では触らない」と結論している。**Phase 5 の 17.(a) として起票リストへ送る**（`spec/` 全域を走査してこの 2 か所以外に同型の残置が無いことも記録した） | 0 |
+| M-92 `spec/inventory/domain.md:316,317:DOM-note-071/072` | 本 PR が**同時に新設した** DOM ↔ ADP の対で、ADP 側だけが「行が変わったかを返す」を持つ（`domain:W-001`） | fix | 実測で 4 行とも本 PR の新規採番。主張の出どころは `spec/domains/note.md:550` の interface の戻り値（`Promise<boolean>` ＋ `// 行が変わったかを返す`）で、**ドメイン契約であってアダプター実装の詳細ではない**。M-32 / M-79 が採った基準がそのまま当たり、しかも同時に新設した対なので「本 PR が作った非対称」に当たる。DOM 2 行へ 1 句足して ADP 行と同文にする | 0 |
+| M-93 `conformance/*.ts:ヘッダーの短縮連記 5 行` | ADR-035 の「ヘッダーコメントの範囲表記も全形」が、本 PR が**この回で書き換えた** 5 行に適用されていない。うち `signInOAuthClient.ts:41` は `ADP-identity-034` を grep 0 件にしている（`domain:W-002` + `inventory:W-002`） | fix | 実測: `authTokenRepository.ts:9`（`, 039`）/ `accountDeletionManifestStore.ts:26`（`, 041`）/ `objectStorage.ts:23`（`, 024`）/ `scopeCleanupAdmissionStore.ts:28`（`, 040`）/ `signInOAuthClient.ts:41`（`ADP-identity-033/034, 040`）。**5 行とも本 PR がこの回で追記した行**で、ADR 052 の影響節が定める「全形への書き換えはそのケースに触れた回で行う」に自ら反している。V7 が触った 2 ファイル（`noteProjection.ts:13` / `identityUniqueDirectory.ts:11`）は既に全形なので、同一 PR 内で扱いが割れている。**ADR-035 の決定からヘッダーの一文を落とす案は採らない** — 落とすと `ADP-identity-034` の到達不能が規約上正当化され、M-71 が閉じた面が別の場所で開く。文字列のみの変更で、修正後に `grep -rn "ADP-identity-034" packages/` が 1 件ヒットすることを確認した | 0 |
+| M-94 `spec/inventory/{test,usecase}.md ↔ コード:TC / UC ID の名乗り` | 新規採番した TC 32 行のうちコードから到達できるのは 4 行、新設 UC 3 本のうち名乗るのは 1 本（`usecase:W-001` + `usecase:W-002`） | wont-fix | **規約として意図的に許容する。ただし扱いが割れている理由を記録する（`.thread/14/adr.md` ADR-037）。** ADP ID の名乗りが規約なのは、ADR 052 が適合ケースに台帳行を採番しないと決めた結果、**行を持たないケースと行を持つメソッドを結ぶ手段が `it` 名しか無い**ためで、TC / UC にはその事情が無い（TC 行は `spec/testcases/{domain}/{usecase}.md` の 1 行と、UC 行は「1 ユースケース = 1 テストケースファイル = 1 UC 行」の不変で節と、それぞれ 1 対 1）。**全 TC / 全 UC に名乗らせる案は採らない** — 本 PR の採番分だけが名乗る新しい非対称を別の場所に作り直すことになり、既存 2440 行には掛からない。**逆に既に名乗っている分（`TC-identity-332`〜`335` / `UC-identity-022` / identity の application 19 ファイル）を外す案も採らない** — R2 の M-87 が閉じた到達性が戻る | 0 |
+| M-95 `spec/manual-tests/account.md:535-581:対応表` | `requestPasswordReset \| レート制限` の行だけが対応表に無い（`usecase:W-003`） | wont-fix | **本 PR 由来ではない既存の欠落。** 実測: 対応するエラーケース行は `origin/main` の `spec/usecases/identity.md:418` に既にあり、本 PR が増やした失敗経路ではない（M-68 / ADR-036 が対応表へ足す対象は「本 PR が増やした条件」で、この行はそれに当たらない）。**Phase 5 の 17.(b) として起票リストへ送る** | 0 |
+| M-96 `spec/testcases/storage/storeUpload.md:36 + spec/inventory/test.md:1932:TC-storage-221` | 前提条件が「宣言 MIME・宣言サイズを渡す経路が無い」で、手で用意できる状態ではなく入力 DTO の形の言明になっている（`usecase:W-004`） | fix | **本 PR（R2 の M-66）が書いた文言**で、テストケース表の前提条件欄の様式（実際に用意できる状態）に反する。M-77 が `TC-identity-192` の期待結果から落とした「そのテストケースからは観測できない主張」と同じクラスが、欄を変えて残った形。**行の削除ではなく書き換え**（連番に穴を空けない）で、前提条件を実バイト長の具体値へ、入力 DTO の言明を期待結果の後半へ移す。`spec/inventory/test.md` の行も同文にする。要素欄が変わるが、R3 の inventory 観点が「同じ要素の言い換え」として扱った 8 行と同じ扱いで、ID の指す先は変えない | 0 |
+| M-97 `deleteFilesByOwner.test.ts:358:it 名` | `TC-storage-043 (without the statement-count promise)` の括弧書きが改訂前との差分を述べている（`usecase:W-005`） | fix | `spec/index.md:5` / `CLAUDE.md:16` が正典から排した「以前は〜だった」と同じ形。R1 の M-47 が `spec/` の 3 か所から落とした際にテスト側のこの 1 か所が残った（M-12 は `:252` の接頭辞を外すところまでで `:358` の文言に触れていない）。改訂後の台帳行が「バックエンドが発行する文の数はここでは約束しない」と明記しているので、括弧書きが担う情報は無い。`it` 名の文字列のみ | 0 |
+| M-98 `spec/inventory/{domain,adapter}.md:本文由来の主張が片側にしか無い 3 組` | `ObjectStorage.get` / `NoteRouteFanOutReader.listByCreatedBy` / `listByScope` で、片側にしか無い主張が本文に由来する（`inventory:W-001` の一部） | fix | 実測: 3 組とも `origin/main` では要点欄が一字一句同じで、**本 PR が片側だけを伸ばした**（M-79 が直した 3 組と同じ形）。主張の出どころも本文にある — `ObjectStorage.get` の「未知の key では null を返す」は `spec/domains/storage.md:292` の interface が `Promise<ObjectBody \| null>` と型で書いている契約そのもので、DOM 行だけが落としている。`tombstone` unspecified は `spec/domains/note.md:676` が「**アダプターは**失効まで残しても物理的に回収してもよく、呼び出し側はどちらも許容しなければならない」と**アダプター向けに**書いた段落で、ADP 行に無いのは届く先が逆。薄い側へ 1 句足す（DOM 1 行 ＋ ADP 2 行） | 0 |
+| M-99 `spec/inventory/{domain,adapter}.md:残り 5 組` | 同じポートメソッドの DOM 行と ADP 行が食い違う残り 5 組（`inventory:W-001` の残り） | wont-fix | 一行理由: **片側の主張が本文に由来しない / 同じ主張の言い換え / アダプター実装者だけに向いた注記**で、そろえると台帳が本文を追い越す（`.thread/14/adr.md` ADR-038）。内訳 — `ObjectStorage.put` の「既存 key は上書きする」は `spec/domains/storage.md` の `ObjectStorage` 節に記述が無く、DOM 行へ足すと R3 の `inventory:W-004` が指摘したのと同じ「台帳が本文を追い越す」形を別の行で作る（ADP 行から落とす向きは spec を狭めるので採らない）。`NoteRepository.listByOwner` の「ページ境界で重複・欠落を出さない」は DOM 行の「`updatedAt DESC, id DESC` の全順序」が含意する。`NoteRouteStore.resolveMany` の「上限超過は」/「501 件目からは」と `IdentityUniqueDirectory.reserve` の 2 文は同じ主張の言い換え。`IdentityRepository.insert` の「DB 側に一意制約を置くのは自由だが契約としては要求しない ＋ ADR 054」は**アダプター実装者に向けた注記**で、`adapter.md` にあることが正しい | 0 |
+| M-100 `.thread/14/plan.md:112:AC-56` | 本 PR が要点欄を書き換えた UC 行は 11 行だが AC-56 の列挙は 9 行で、`UC-storage-002` / `003` を plan のどの AC も指していない（`inventory:W-003`） | fix | 独立に実測（`git diff` の `spec/inventory/usecase.md` で追加された表行の UC ID を数える）: 変更 14 行のうち 3 行は新設（`UC-identity-022`〜`024` = AC-55 の担当）で、残り **11 行**が要点欄の改訂 — `UC-identity-005,006,007,011,013` / `UC-storage-002,003,004,013` / `UC-usage-005,007`。差の 2 行は R1 の M-08（ADR 050 の DTO 縮小）由来で、`grep -n "UC-storage-002" .thread/14/plan.md` は **0 件**。M-80 が AC-55 / AC-63 / AC-64 に入れた「実測と列挙が一致するかで見る」但し書きが、同じ採番・台帳系の AC-56 にだけ掛かっていない | 0 |
+| M-101 `spec/inventory/frontend.md:99,100:PAGE-p21-001/002` | 台帳が、定義場所として指す本文に無い主張（`getProfile` / `checkHandleAvailability` からの供給）を持つ（`inventory:W-004`） | fix | **レビューは「本文へ足すか台帳から落とすかどちらでもよい」としているが、実測すると一方は規約違反になる。** `spec/pages/index.md:5` が「**この文書はユースケース名を書かない**（意図的な記法）」と明言し、理由（同じ対応が 2 か所に分かれ、ユースケースの分割・改名のたびに両方を直す必要が生じる）まで書いている。したがって**本文へ足す向きは採れず、台帳から落とす**。実測の裏づけ: (a) `spec/inventory/frontend.md` 162 行のうちユースケース名を持つのはこの 2 行だけ、(b) 本 PR は P-21 の本文を 1 文字も変えていない（`git diff spec/pages/index.md` は URL 表 / P-03 / P-25 / P-40 の 4 か所のみ）ので、この 2 行は**何にも追随していない**。落とすと 2 行が base と同一に戻るので、**AC-57 の列挙からも `PAGE-p21-001,002` を外す**（対になる側の置き去りを作らない） | 0 |
+| M-102 `apps/web/app/start.ts:10,11:CSRF コメント` | 規約を `Origin` 検査に切り詰めており、M-38 で改めた spec の判定順と割れている（`presentation:W-001`） | fix | `spec/presentation/index.md:126` は R1 の M-38 で「`Sec-Fetch-Site` → `Origin` → `Referer` の順に確認し、いずれの手掛かりも持たない要求は拒否する」へ改まり、実装 `createCsrfMiddleware` もその順で判定する。**この文は本 PR が AC-16 で書き換えた当の行**でありながら規約の記述が事実より狭い。同じ規約を語る `apps/web/app/routes/settings/-action.tsx:167-169` は既に 3 ヘッダーの順を正しく書いており、同一 PR 内で粒度が割れている。コメント文字列のみ | 0 |
+
+## 実地検証の結果
+
+**17 件すべてについて `spec/` の実物・実装コード・`git diff 55a5bb9 HEAD` に当たった。事実として誤っていた指摘は 0 件。** 独立に再実測して一致したもの:
+
+- `it` 名の短縮連記 **31 ケース** / そこから到達不能な ID **20 本**（列挙も完全一致）/ `ADP-identity-034` はヘッダー由来の 1 本（M-90）
+- `adapters/conformance/` のスイートは **31 本**、ADP ID を持たないのは **5 本**、持つのは **26 本**（M-89 の「他 20 本」が実測と違うこと）
+- `spec/inventory/usecase.md` の要点欄改訂は **11 行**（M-100）
+- `spec/pages/index.md:5` が「この文書はユースケース名を書かない」と定めていること、`spec/inventory/frontend.md` でユースケース名を持つ行が `PAGE-p21-001/002` の 2 行だけであること（M-101）
+- `requestPasswordReset | レート制限` のエラーケース行が `origin/main` の `spec/usecases/identity.md:418` に既にあること（M-95）
+- AC-63 の実測が修正後も **35 ファイル = 変更 32 / 削除 3 / 追加 0**、機械検査の残りが **14 行**のままであること
+
+**判定の前提が実測と食い違った指摘が 1 件ある**（指摘そのものの成否には影響しない）: `inventory:W-001` の 8 組は「M-79 の同クラス残存」として挙げられており、R3 のレビュー本文は「`origin/main` では要点欄が一字一句同じで HEAD では食い違う組が 11 組」と正しく書いている。8 組を実際に `merge-base` と比較すると **8 組すべてが本 PR で食い違いを生じている**（`origin/main` では DOM 行と ADP 行が同文）。したがって「本 PR が作ったものではない既存の欠陥だから送る」という切り方はこの 8 組には当たらない。判定は**由来（本 PR か否か）ではなく、片側の主張が本文に由来するか**で切り直した（M-98 / M-99、ADR-038）。
+
+**レビューの列挙に無い 2 件を追加で検出した**（どちらも M-88 / M-89 と同根なので同じ Key に含めた）:
+
+- `.thread/14/steps.md:451` のステップ 16 が「**新規 Issue を 7 本起票し、既存 Issue 4 件へコメントする**」と書き、`plan.md` の Phase 5 リストの 12〜17 を落としている。**起票の実行手順**なので、`docs:W-002` が指摘した「そのまま Issue になる」経路と同じ実害を持つ
+- `.thread/14/adr.md:589`（ADR-015 の Context）と `:595`、`.thread/14/steps.md:200` / `:460` が「`spec/adr/026` の命名規約」「`describe` / `it` 名」「25 本」と書いている。M-62 / ADR-034 が帰属を 052 へ直し、V1 が規約を `it` 名へ絞った後も残っていた同型
+
+## 修正の実行
+
+単独で実行した。編集順序は (1) `spec/` 本文 → (2) `spec/inventory/` → (3) コード（コメント・`it` 名のみ）→ (4) `.thread/14/{plan,steps,adr}.md`（コード差分の件数が確定してから）。
+
+| 順 | 対象 | Key |
+| --- | --- | --- |
+| 1 | `spec/testcases/storage/storeUpload.md` | M-96 |
+| 2 | `spec/inventory/{domain,adapter,test,frontend}.md` | M-92, M-96, M-98, M-101 |
+| 3 | `packages/core/src/adapters/conformance/{authTokenRepository,accountDeletionManifestStore,objectStorage,scopeCleanupAdmissionStore,signInOAuthClient}.ts` | M-93 |
+| 4 | `packages/core/src/application/storage/__tests__/deleteFilesByOwner.test.ts`, `apps/web/app/start.ts` | M-97, M-102 |
+| 5 | `.thread/14/steps.md` | M-88 |
+| 6 | `.thread/14/plan.md`（AC-56 / AC-57 / AC-60 / Phase 5 の 6. / リスク節 / 起票リスト 17.） | M-89, M-91, M-95, M-100, M-101 |
+| 7 | `.thread/14/adr.md`（ADR-015 / ADR-029 / ADR-035 の是正、ADR-037 / ADR-038 の新設） | M-89, M-90, M-94, M-99 |
+
+**新設した ADR**: ADR-037（台帳 ID を名乗るのは適合ケースだけで、TC ID とユースケース実装の UC ID は名乗りを規約にしない）/ ADR-038（台帳の DOM 行 ↔ ADP 行の非対称は、片側の主張が本文に由来するときだけそろえる）。
+
+**Phase 5 へ送ったもの**: M-91 / M-95 を `plan.md` の Phase 5 リストへ **17.** として追加した（既存の 1〜16 と重複しない）。M-94 / M-99 は ADR に記録して閉じ、起票しない（どちらも「規約どおりであって欠陥ではない」という判定で、追跡すべき残作業を持たない）。

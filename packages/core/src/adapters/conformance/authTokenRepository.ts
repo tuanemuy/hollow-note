@@ -6,7 +6,7 @@ import { expectConflict } from "./asserts";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 import { makeAuthToken, userId } from "./fixtures";
 
-/** Shared conformance suite for `AuthTokenRepository` (ADP-identity-021..026, 039). */
+/** Shared conformance suite for `AuthTokenRepository` (ADP-identity-021..026, ADP-identity-039). */
 export function describeAuthTokenRepositoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,

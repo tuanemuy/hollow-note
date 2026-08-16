@@ -355,7 +355,7 @@ describe("deleteFilesByOwner", () => {
     );
   });
 
-  it("TC-storage-043 (without the statement-count promise): one turn enumerates once and emits one event per file, whatever the count", async () => {
+  it("TC-storage-043: one turn enumerates once and emits one event per file, whatever the count", async () => {
     const h = createTestHarness();
     await openBarrier(h);
     await seedFiles(h, { count: 40 });
