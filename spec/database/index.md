@@ -605,7 +605,7 @@ global D1 に置く。サインイン用と連携用の両方の認可フロー�
 - **CHECK**: `intent IN ('linkIdentity','integration')` なら `user_id IS NOT NULL AND user_auth_epoch IS NOT NULL`。`signIn`なら両方NULL
 - **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 同一expiryを安定keysetで回収する
 
-`take` は束縛が一致したときだけ削除する条件付きの `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` になる。
+`take` は束縛が一致したときだけ削除する条件付きの操作で、`DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す。`WHERE` に期限を混ぜないのは、混ぜると束縛が一致した期限切れの行が残ってしまうため。
 
 ---
 

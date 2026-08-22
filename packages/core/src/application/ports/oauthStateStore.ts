@@ -42,8 +42,10 @@ export type OAuthFlowState = Readonly<{
  * So a request that merely knows `state` cannot consume the row — that is a
  * property of the single atomic operation, not of the caller's ordering.
  * Judgement order is not normative; a backend may implement it as
- * `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` (no
- * expiry in the `WHERE`) or as read → compare → delete → expiry check.
+ * `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`,
+ * answering `null` when the returned row's `expires_at` has passed, or as
+ * read → compare → delete → expiry check. Expiry must stay out of the
+ * `WHERE`: mixing it in would leave a matched-but-expired row behind.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */

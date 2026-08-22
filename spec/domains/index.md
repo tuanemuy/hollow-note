@@ -238,7 +238,7 @@ type OAuthFlowState = Readonly<{
 
 `provider` を原始型のままにしているのは、Identity と Integration が別々の列挙を持つため。値の解釈は取り出した側が自分の値オブジェクトで再構築する。期限切れの回収は 1 か所に寄せ、Identity の [`pruneExpiredAuthState`](../usecases/identity.md) が両方の `intent` をまとめて掃除する（Integration 側に同種の定期掃除は置かない）。
 
-`take` の「取得と同時に削除する」は**原子的でなければならない**。削除の条件は 1 本のルールに畳む — **削除するのは束縛が一致したときだけ。一致すれば期限切れでも削除して `null` を返す。不一致は常に行を残して `null` を返す**。`stateBindingHash` はストアにとって不透明な digest で、その由来も運搬手段もストアは知らない。判定の順序は契約ではなく実装ノートで、global D1 なら `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` の 1 文（`WHERE` に期限を混ぜない）で満たす。
+`take` の「取得と同時に削除する」は**原子的でなければならない**。削除の条件は 1 本のルールに畳む — **削除するのは束縛が一致したときだけ。一致すれば期限切れでも削除して `null` を返す。不一致は常に行を残して `null` を返す**。`stateBindingHash` はストアにとって不透明な digest で、その由来も運搬手段もストアは知らない。判定の順序は契約ではなく実装ノートで、global D1 なら `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`（`WHERE` に期限を混ぜない）で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す。
 
 束縛が一致しない要求で行が消費されないことは、呼び出し側の順序ではなくこの 1 回の原子操作の性質として保証する。
 

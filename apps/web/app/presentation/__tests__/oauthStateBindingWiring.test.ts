@@ -282,9 +282,10 @@ describe("abandonOAuthFlowFn", () => {
       cookieOf(BINDING),
     );
 
-    // 応答 `null` はこの harness では常に `TypeError` になるので、主張は
-    // 「例外が無い」ではなく「ストアの失敗が呼び出し側へ漏れない」に置く。
-    expect(outcome.error).not.toBe(failure);
+    // 応答 `null` はこの harness では常に `TypeError` になるので、「例外が
+    // 無い」ではなく「投げ返るのは harness 由来のものだけ」を見る。畳むのを
+    // やめるとストアの失敗そのものが投げ返り、この行が落ちる。
+    expect(outcome.error).toBeInstanceOf(TypeError);
     expect(logger.error).toHaveBeenCalledWith(
       "Abandoning the OAuth flow failed",
       { cause: failure },

@@ -275,6 +275,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 | 条件 | 種類 |
 | --- | --- |
 | `state` の不一致・期限切れ | `ValidationError("OAUTH_STATE_INVALID")` |
+| 束縛（`stateBinding`）の不一致 | `ValidationError("OAUTH_STATE_INVALID")`（行は消費しないので、フローを開始したブラウザーは後から完了できる） |
 | コード交換の失敗 | `ValidationError("OAUTH_CODE_INVALID")` / `SystemError(ExternalApiError)` |
 | プロバイダー側のメール未確認 | `ValidationError("OAUTH_EMAIL_UNVERIFIED")` |
 | 既存利用者がメール未確認 | `ValidationError("EXISTING_ACCOUNT_UNVERIFIED")` |
@@ -320,6 +321,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 | 条件 | 種類 |
 | --- | --- |
 | `state` の不一致・期限切れ・`:provider` 不一致 | `ValidationError("OAUTH_STATE_INVALID")` |
+| 束縛（`stateBinding`）の不一致 | `ValidationError("OAUTH_STATE_INVALID")`（行は消費しないので、フローを開始したブラウザーは後から完了できる） |
 | flow state の `intent` が `integration` | `ValidationError("OAUTH_STATE_INVALID")`（本スライスに受け皿が無いため state を無効として扱う） |
 | 振り分け先のユースケースが返すもの | `completeOAuthSignIn` / `linkOAuthIdentity` のエラーケースをそのまま伝える |
 

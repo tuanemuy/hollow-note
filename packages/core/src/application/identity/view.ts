@@ -94,9 +94,11 @@ export type OAuthCallbackView =
       LinkOAuthIdentityView);
 
 /**
- * `abandoned` says the binding matched and the flow row was released, so
+ * `abandoned` says a live flow row was taken with the matching binding, so
  * the caller may drop the cookie it carried. It is the only evidence the
- * transport boundary has that the cookie is its own.
+ * transport boundary has that the cookie is its own. A matching binding on
+ * an already-expired row also releases the row but answers `false`, since
+ * the store folds "expired" into "nothing to hand back".
  */
 export type AbandonOAuthFlowView = Readonly<{
   abandoned: boolean;

@@ -14,7 +14,7 @@
 
 ## 前提
 
-認可の開始が自オリジンの POST であり、そこで Cookie を焼けること。`SameSite=Lax` により、攻撃者が自分の Cookie を被害者のブラウザーへ持ち込む経路が無いこと。コールバックの消費が単回であること（[ADR 035](./035-oauth-callback-single-route.md)）。束縛の照合が `state` の消費と同一の原子操作であること（[ADR 026](./026-port-contract-and-conformance.md) の契約としてポートに載せる）。
+認可の開始が自オリジンの POST であり、そこで Cookie を焼けること。`SameSite=Lax` により、攻撃者が自分の Cookie を被害者のブラウザーへ持ち込む経路が無いこと。コールバックの消費が単回であること（[ADR 035](./035-oauth-callback-single-route.md)）。フロー状態の取り出しが原子的であること。振る舞いをポートの契約として規定し、適合スイートで全バックエンドへ強制できること（[ADR 026](./026-port-contract-and-conformance.md)）。
 
 ## 決定
 

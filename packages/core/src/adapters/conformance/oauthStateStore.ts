@@ -19,6 +19,16 @@ const signInState: OAuthFlowState = {
   stateBindingHash: BINDING_HASH,
 };
 
+const integrationState: OAuthFlowState = {
+  provider: "googleDrive",
+  codeVerifier: "verifier-2",
+  redirectTo: null,
+  intent: "integration",
+  userId: userId(1),
+  userAuthEpoch: 4,
+  stateBindingHash: OTHER_BINDING_HASH,
+};
+
 /**
  * Shared conformance suite for `OAuthStateStore` (ADP-common-036..038).
  * `take` must be an atomic get + delete that removes the row only when
@@ -44,6 +54,25 @@ export function describeOAuthStateStoreContract(
       expect(
         await backend.oauthStateStore.take("state-1", BINDING_HASH),
       ).toBeNull();
+    });
+
+    it("ADP-common-036/037: a take is keyed by state as well as binding, so it never consumes another row", async () => {
+      await backend.oauthStateStore.put("state-a", signInState, TTL_MS);
+      await backend.oauthStateStore.put("state-b", integrationState, TTL_MS);
+
+      expect(
+        await backend.oauthStateStore.take("state-a", OTHER_BINDING_HASH),
+      ).toBeNull();
+      expect(
+        await backend.oauthStateStore.take("state-unstored", BINDING_HASH),
+      ).toBeNull();
+
+      expect(
+        await backend.oauthStateStore.take("state-a", BINDING_HASH),
+      ).toEqual(signInState);
+      expect(
+        await backend.oauthStateStore.take("state-b", OTHER_BINDING_HASH),
+      ).toEqual(integrationState);
     });
 
     it("ADP-common-037: a take whose binding does not match returns null and leaves the row", async () => {
@@ -96,15 +125,6 @@ export function describeOAuthStateStoreContract(
     });
 
     it("ADP-common-038: deleteExpired sweeps both sign-in and integration intents in pages", async () => {
-      const integrationState: OAuthFlowState = {
-        provider: "googleDrive",
-        codeVerifier: "verifier-2",
-        redirectTo: null,
-        intent: "integration",
-        userId: userId(1),
-        userAuthEpoch: 4,
-        stateBindingHash: OTHER_BINDING_HASH,
-      };
       await backend.oauthStateStore.put("state-a", signInState, TTL_MS);
       await backend.oauthStateStore.put("state-b", integrationState, TTL_MS);
       await backend.oauthStateStore.put("state-later", signInState, TTL_MS * 3);

@@ -1,3 +1,4 @@
+import type { RequestContainer } from "@repo/core/application/di/types";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { serializeError } from "@/presentation/errorResponse";
@@ -54,7 +55,9 @@ const abandonSchema = z.object({
  *
  * 後始末の失敗はここで畳んで記録する。呼び出し元はコールバック画面の
  * loader で、投げ返すと「失敗した往復の理由」を描く画面そのものが落ちる —
- * 掃除できなかった Cookie と `state` 行は TTL が引き取る。
+ * 掃除できなかった Cookie と `state` 行は TTL が引き取る。畳む対象には
+ * コンテナの取得も含める。取得自体が失敗したときは記録先の logger も無い
+ * ので、記録は残らず画面だけが生き残る。
  */
 export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -65,11 +68,13 @@ export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
     if (stateBinding === null) {
       return null;
     }
-    const { container, module } = await loadServerDeps(
-      () => import("@repo/core/application/identity/abandonOAuthFlow"),
-    );
+    let container: RequestContainer | null = null;
     try {
-      const view = await module.abandonOAuthFlow({
+      const deps = await loadServerDeps(
+        () => import("@repo/core/application/identity/abandonOAuthFlow"),
+      );
+      container = deps.container;
+      const view = await deps.module.abandonOAuthFlow({
         container,
         input: { state: data.state, stateBinding },
       });
@@ -77,7 +82,7 @@ export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
         stateCookie.clearOAuthStateCookie();
       }
     } catch (cause) {
-      container.logger.error("Abandoning the OAuth flow failed", { cause });
+      container?.logger.error("Abandoning the OAuth flow failed", { cause });
     }
     return null;
   });
@@ -130,10 +135,12 @@ export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
           },
         });
       } catch (error) {
-        // 照合を通らなかったと言い切れない限り捨てない — 他人のブラウザーの
-        // 進行中フローを落とせる経路を作らないため。判定を `instanceof` で
-        // 書くと、動的 import でモジュールグラフが分かれたときに取りこぼし
-        // が「捨てる」側へ倒れる。
+        // `OAUTH_STATE_INVALID` と言い切れるときだけ残す — 束縛が `state`
+        // と噛み合わなかったという答えは「この Cookie はまだ進行中の別の
+        // フローのもの」を意味し、捨てると踏ませるだけで他人のフローを壊せ
+        // る。判らないものまで残すと消費済みの Cookie が取り残されるので、
+        // それ以外は捨てる。判定を `instanceof` で書くと、動的 import でモ
+        // ジュールグラフが分かれたときに取りこぼしが「捨てる」側へ倒れる。
         const serialized = serializeError(error);
         if (
           !(

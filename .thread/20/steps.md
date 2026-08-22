@@ -37,7 +37,7 @@ export interface OAuthStateStore {
 - **削除するのは束縛が一致したときだけ。一致すれば期限切れでも削除して `null` を返す。不一致は常に行を残して `null` を返す**
 - `stateBindingHash` は不透明な digest であり、ストアはその由来も運搬手段も知らない
 
-削除条件のこの 1 本のルールで 4 象限（一致／不一致 × 期限内／期限切れ）がすべて決まる。判定の順序は契約ではなく実装ノート — memory は「引く → 束縛比較 → 削除 → 期限判定」で、D1 は `DELETE … WHERE state = ? AND binding_hash = ? RETURNING *`（WHERE に期限を混ぜない）で、どちらもこのルールをそのまま満たす。観測差が出ないので適合スイートに象限ごとのケースは要らない。
+削除条件のこの 1 本のルールで 4 象限（一致／不一致 × 期限内／期限切れ）がすべて決まる。判定の順序は契約ではなく実装ノート — memory は「引く → 束縛比較 → 削除 → 期限判定」、D1 は `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`（`WHERE` に期限を混ぜない）で削除してから返った行の `expires_at` を見て期限切れなら `null`。どちらもこのルールをそのまま満たす。4 象限は行が残るかどうかの差として（`deleteExpired` の件数として）観測できるので、適合スイートも 4 象限とケースを 1 対 1 に対応させる。
 
 `state` を握っただけの要求で行が消費されないことを、呼び出し側の順序ではなく 1 回の原子操作の性質にする。引数として束縛を必ず渡すことは型が保証するが、「Cookie が無い要求を弾く」のは転送境界の `requireOAuthStateCookie()` の役目で、ポート側ではない。
 
@@ -53,8 +53,8 @@ export interface OAuthStateStore {
 
 - `adapters/memory/repositories/oauthStateStore.ts` — `take` を条件付きに。行を引き、`row.value.stateBindingHash !== stateBindingHash` なら**削除せず** `null`。一致したら削除し、期限切れなら `null`、そうでなければ `clone(row.value)`。同期の get → 比較 → delete なのでこのバックエンドでは原子的（現状の `take` と同じ根拠）
 - `adapters/memory/store.ts` — `OAuthStateRow` は `value: OAuthFlowState` を丸ごと持つので**変更不要**（実装時に確認する）
-- `adapters/conformance/oauthStateStore.ts` — fixture に `stateBindingHash` を足し、全ケースを新署名へ。「不一致では消費されない」ケースを追加
-- 将来の D1 実装は `DELETE … WHERE state = ? AND binding_hash = ? RETURNING *` の 1 文で満たせる（spec/domains/index.md に書く）
+- `adapters/conformance/oauthStateStore.ts` — fixture に `stateBindingHash` を足し、全ケースを新署名へ。4 象限（一致／不一致 × 期限内／期限切れ）にケースを 1 対 1 で対応させる
+- 将来の D1 実装は `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す形で満たせる（spec/domains/index.md に書く）
 
 ### UI / プレゼンテーション
 
@@ -78,8 +78,8 @@ export interface OAuthStateStore {
 - **変更内容:**
   - ADR 034: H1 タイトルから「転送境界で」を落とす（照合が転送境界から `take` の原子操作へ移るため。ファイル名 `034-oauth-callback-browser-binding.md` は依然正しいので変えない）。前提に「照合が消費と同一の原子操作であること」を足す。決定 1 を「束縛 Cookie の値は `state` と独立した一回限りの乱数（その digest をフロー行が持つ）」に、決定 2 を「消費は束縛が一致したときだけ起きる条件付きの原子操作で行い、Cookie の不在は転送境界で畳む」に、決定 5 を「Cookie の運搬（焼く・読む・捨てる）は転送境界、値の照合は消費と同じ原子操作」に書き換える。決定 3/4 は破棄の条件を「`OAUTH_STATE_INVALID` 以外なら捨てる／`OAUTH_STATE_INVALID` では捨てない」に具体化する。**番号付きリストの外にある本文も同時に直す** — 決定の見出し直後の前文「[ADR 029] と同じ分担で**転送境界に閉じる**。フロー状態にもユースケースにもブラウザー束縛の概念を入れない。」は改訂後の決定 1 / 2 と正面から矛盾するので、「束縛の秘密の digest だけをフロー状態に持たせ、Cookie の運搬と不在判定は転送境界に残す」旨へ書き換える（読み手が最初に受け取る宣言文なので、ここを残すと改訂後の正典が自己矛盾する）。リスト後の理由段落は 2 つが対象 — 「照合を消費より先に置くのは…」は「照合が消費と同一の原子操作なので、通っていない `state` は消費されない」へ、「Cookie に `state` そのものではなくハッシュを載せるのは…照合に必要なのは同値性だけなので、束縛の強さは変わらない」は末尾の一文（Issue #20 が誤りと判定した主張そのもの）を落とし、前半の理由（`Path=/` の Cookie に単回消費の資格情報を常時運ばせない）を残したうえで「だから Cookie に載せるのは `state` と独立した一回限りの秘密にする」へ書き直す。この前半は改訂後も生きており、検討した代替案で `state` を Cookie 値の digest にする案（`state = sha256(nonce)`）を却下する根拠でもあるので、段落と代替案の記述を対応させる。無条件破棄にしない理由の段落は現在も有効なので維持する。検討した代替案の「フロー状態の行にブラウザー識別子を持たせる」を、採らなかった 2 案（`state` の鍵付き MAC / `state` を Cookie 値の digest にする）に差し替える。同じく検討した代替案の「照合をユースケースの中に置く」は、却下対象を「**消費した後に照合する（`take` の後で比較する）**」形へ限定して書き直す — 改訂後の決定 2 が採るのは照合が消費と同一の原子操作になる条件付き `take` であって、却下されるのは消費が先に走る形だけである（この限定をしないと、却下したはずの案を決定として採っていると読める）。影響から「Cookie に載せるのは `state` の SHA-256」を前提にした記述を落とし、「`state` 単体でも Cookie 単体でも完了できない」を足す。あわせて影響に「消費済みでも Cookie が残るケースがある（provider 不一致・`integration` intent。`OAUTH_STATE_INVALID` は消費の有無と 1 対 1 でないため、安全側に倒して捨てない）。行が消えている以上その Cookie はもう何も通せず、寿命は `state` 行と同じで次の開始が上書きする」を書き足す
   - `spec/adr/index.md`: 一覧行（034 のリンクテキスト）からも「転送境界で」を落とす。前提依存マップの 034 の行は、依存している前提に「照合と消費が同一の原子操作であること」とポート契約・適合スイート（026）を足す。設計上の境界（3 列目）は現在の「認可の完了は開始したブラウザーに束縛する」を**置き換えず併記**する — 「認可の完了は開始したブラウザーに束縛する。運搬と不在判定は転送境界、照合は消費と同じ原子操作」。本 Issue はこの不変条件を初めて成立させる変更なので、層の分担で置き換えると索引から性質そのものが消え、029 行の「認証状態の変更は要求元ブラウザーに束縛する」との対応も崩れる
-  - `spec/domains/index.md#OAuthStateStore`: `OAuthFlowState` に `stateBindingHash` を、`take` に第 2 引数を足し、契約をポート JSDoc と同じ 1 本のルールで書く — 「削除するのは束縛が一致したときだけ。一致すれば期限切れでも削除して `null` を返す。不一致は常に行を残して `null` を返す」。実装ノートとして「D1 では `DELETE … WHERE state = ? AND binding_hash = ? RETURNING *` の 1 文（`WHERE` に期限を混ぜない）」を添える
-  - `spec/database/index.md#oauth_flow_states`: 列に `state_binding_hash | text | NOT NULL` を足す。この表は `OAuthFlowState` の列を 1 対 1 で写した正典なので、必須フィールドを 1 つ増やしたことがここに出ないと、同じステップで `spec/domains/index.md` に足す `DELETE … WHERE state = ? AND binding_hash = ?` が「`WHERE` に使う列が表定義に無い」正典どうしの矛盾になる。intent と `user_id` / `user_auth_epoch` の CHECK と `oauth_flow_states_expires_idx` は変わらない（束縛は intent を問わず必須で、期限の回収経路も変えないため）。表の下に「`take` は束縛が一致したときだけ削除する条件付き `DELETE … RETURNING` になる」を 1 行添える
+  - `spec/domains/index.md#OAuthStateStore`: `OAuthFlowState` に `stateBindingHash` を、`take` に第 2 引数を足し、契約をポート JSDoc と同じ 1 本のルールで書く — 「削除するのは束縛が一致したときだけ。一致すれば期限切れでも削除して `null` を返す。不一致は常に行を残して `null` を返す」。実装ノートとして「D1 では `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`（`WHERE` に期限を混ぜない）で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す」を添える
+  - `spec/database/index.md#oauth_flow_states`: 列に `state_binding_hash | text | NOT NULL` を足す。この表は `OAuthFlowState` の列を 1 対 1 で写した正典なので、必須フィールドを 1 つ増やしたことがここに出ないと、同じステップで `spec/domains/index.md` に足す `DELETE … WHERE state = ? AND state_binding_hash = ?` が「`WHERE` に使う列が表定義に無い」正典どうしの矛盾になる。intent と `user_id` / `user_auth_epoch` の CHECK と `oauth_flow_states_expires_idx` は変わらない（束縛は intent を問わず必須で、期限の回収経路も変えないため）。表の下に「`take` は束縛が一致したときだけ削除する条件付き `DELETE … RETURNING` になる」を 1 行添える
 - **理由:** spec/ は現在有効な設計の正典で、ADR 034 の決定 1 は本 Issue の変更後は偽になる。コードより先に正典を確定させ、以降のステップはそれに従う
 
 ### 2. ポート契約を変える
@@ -97,7 +97,7 @@ export interface OAuthStateStore {
 ### 4. 適合スイートに契約を書き足す
 
 - **対象ファイル:** `packages/core/src/adapters/conformance/oauthStateStore.ts`
-- **変更内容:** fixture（`signInState` / `integrationState`）に `stateBindingHash` を追加。既存 4 ケースを新署名へ。ケース追加: 「ADP-common-037: 束縛が一致しない `take` は `null` を返し、行を消費しない（続けて正しい束縛で `take` すると flow が返る）」。並行 `take` のケースは同じ束縛で行い、非 `null` がちょうど 1 つを維持
+- **変更内容:** fixture（`signInState` / `integrationState`）に `stateBindingHash` を追加。既存 4 ケースを新署名へ。ケース追加は 4 象限とケースが 1 対 1 になるように — 「束縛が一致しない `take` は `null` を返し、行を消費しない（続けて正しい束縛で `take` すると flow が返る）」「一致 × 期限切れは `null` を返し、行を削除する」「不一致 × 期限切れは `null` を返し、行を残す」。あわせて「`take` の鍵は `state` と束縛の両方で、他の行を消費しない」を足す。並行 `take` のケースは同じ束縛で行い、非 `null` がちょうど 1 つを維持
 - **理由:** 契約的振る舞いを足したらスイートも触る（CLAUDE.md「Port contracts and conformance」）。「不一致では消費されない」の検証はここが正本
 
 ### 5. `startOAuthFlow` と view を変える
@@ -158,17 +158,18 @@ export interface OAuthStateStore {
 
 ### 11. spec の下流成果物と台帳を追随させる
 
-- **対象ファイル:** `spec/domains/identity.md`、`spec/usecases/identity.md`、`spec/usecases/integration.md`、`spec/testcases/identity/{startOAuthFlow,completeOAuthSignIn,completeOAuthCallback,linkOAuthIdentity}.md` と新規 `abandonOAuthFlow.md`、`spec/inventory/{domain,adapter,usecase,test}.md`
+- **対象ファイル:** `spec/domains/identity.md`、`spec/usecases/identity.md`、`spec/usecases/integration.md`、`spec/testcases/identity/{startOAuthFlow,completeOAuthSignIn,completeOAuthCallback,linkOAuthIdentity}.md` と新規 `abandonOAuthFlow.md`、`spec/inventory/{domain,adapter,usecase,test}.md`、`spec/manual-tests/account.md`
 - **変更内容:**
   - `spec/domains/identity.md`: 「ユースケース（概要）」の列挙（現在 24 件＝ UC-identity-001..024）に `abandonOAuthFlow` を足す。台帳はこの本文からの生成物なので、ここを直さないと UC 台帳との整合も崩れる
   - `spec/usecases/identity.md`: `startOAuthFlow` の出力 DTO を `stateBinding` / `authorizationUrl` に置き換え、出力 DTO 表の直下にある「`state` は `authorizationUrl` が既に運んでいるが…別に露出する」の**本文 1 段落**を「束縛の秘密だけを露出する」旨に書き換える（表だけ直すとこの段落が残って偽になる）。手順 3/4 に束縛の秘密の発行と保存を追記。`completeOAuthSignIn` / `completeOAuthCallback` / `linkOAuthIdentity` の入力 DTO に `stateBinding` を足し、手順 1 を「束縛が一致したときだけ取り出して削除する。不一致・不在は `OAUTH_STATE_INVALID`（行は消費しない）」に。`abandonOAuthFlow` の節を新設（概要・入出力 DTO・処理フロー・エラーケース）
   - `spec/usecases/integration.md`（実装はしないが、記述が偽になるので正典として直す）: `startIntegrationOAuth` の手順 2 に束縛の秘密の発行と `stateBindingHash` の保存を書き、出力 DTO（現在 `authorizationUrl: string` のみ）に束縛の秘密を足す。`completeIntegrationOAuth` の手順 1「`OAuthStateStore.take(state)` で取り出す」を「束縛が一致したときだけ取り出して削除する」に直し、入力 DTO（現在 `userId`, `state`, `code`）に束縛を足す
   - `spec/testcases/identity/`: 既存表の該当行の期待結果を更新し、行を追加（束縛不一致で消費されない、`stateBindingHash` が保存される、放棄の一致／不一致）。とくに `startOAuthFlow.md` の 1 行目「応答は `authorizationUrl` と併せて保存した `state` も返す（転送境界がフローを開始したブラウザーへ束縛するため）」＝ TC-identity-264 は名指しで書き換える。新規 `abandonOAuthFlow.md`
   - 台帳: DOM-common-038 と ADP-common-037 の説明を「束縛が一致したときだけ state を原子的に取得・削除する」に。UC-identity-005 / UC-identity-024 の説明を更新し、`abandonOAuthFlow` を **UC-identity-025** として追加。TC 行は `spec/inventory/test.md` の identity 節へ **TC-identity-336 以降**で追加（採番は追加時点の最大 +1 を再確認する）。**TC-identity-264 の行**（`spec/inventory/test.md`）も同じ文言で書き換える。ADP / DOM は行＝ポートメソッドなので採番は増えない。`spec/inventory/{domain,adapter,usecase,test}.md` 冒頭の「最終同期」日付（現在 2026-08-16）を作業日へ進める
+  - `spec/manual-tests/account.md`: 「ユースケースエラーケース対応表」も本文の下流成果物なので、増えたエラーケース（`completeOAuthSignIn` / `completeOAuthCallback` の束縛不一致、新規 `abandonOAuthFlow` のストア障害）の行を足す。いずれも手作業で再現できないので `対象外` と理由を 1 行添える形（既存の `対象外` 行と同じ様式）。TC-40 の手順は利用者から見える振る舞いが変わらないので改訂不要で、`spec/manual-tests/index.md` の集計も動かない
 - **理由:** 台帳は本文からの生成物で、1 行 = 1 ポートメソッド／1 ユースケース／1 テストケース（ADR 052 / 058）。ユースケースを増やしたら UC / TC の行も増える
 
 ### 12. 仕上げ
 
 - **対象ファイル:** なし（コマンド実行）
-- **変更内容:** `pnpm typecheck && pnpm lint:fix && pnpm format` と `pnpm test`。落ちた箇所は該当ステップへ戻す。最後に AC-6 が列挙する spec 成果物と実装（Cookie 値・照合の置き場所・破棄の条件）を読み合わせ、目視で確認する — `spec/adr/034` の**タイトル**と本文（決定セクションの**前文**・決定リスト・リスト後の**理由段落**・**検討した代替案**・影響）、`spec/adr/index.md` の一覧行と前提依存マップ、`spec/domains/index.md`、`spec/database/index.md` の `oauth_flow_states` 表、`spec/domains/identity.md` の「ユースケース（概要）」の列挙、`spec/usecases/identity.md` と `spec/usecases/integration.md`、`spec/testcases/identity/`、`spec/inventory/` の各行と「最終同期」日付
+- **変更内容:** `pnpm typecheck && pnpm lint:fix && pnpm format` と `pnpm test`。落ちた箇所は該当ステップへ戻す。最後に AC-6 が列挙する spec 成果物と実装（Cookie 値・照合の置き場所・破棄の条件）を読み合わせ、目視で確認する — `spec/adr/034` の**タイトル**と本文（決定セクションの**前文**・決定リスト・リスト後の**理由段落**・**検討した代替案**・影響）、`spec/adr/index.md` の一覧行と前提依存マップ、`spec/domains/index.md`、`spec/database/index.md` の `oauth_flow_states` 表、`spec/domains/identity.md` の「ユースケース（概要）」の列挙、`spec/usecases/identity.md` と `spec/usecases/integration.md`、`spec/testcases/identity/`、`spec/inventory/` の各行と「最終同期」日付、`spec/manual-tests/account.md` のユースケースエラーケース対応表
 - **理由:** CLAUDE.md の「After changes」

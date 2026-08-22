@@ -45,7 +45,7 @@ describe("startOAuthFlow", () => {
     );
   });
 
-  it("TC-identity-336: the binding secret is stored as its digest and cannot be derived from the state", async () => {
+  it("TC-identity-336: the binding secret is stored as its digest and is neither the state nor its digest", async () => {
     const h = createTestHarness();
 
     const view = await start(h);
@@ -58,8 +58,9 @@ describe("startOAuthFlow", () => {
     expect(saved?.stateBindingHash).toBe(
       h.container.secureTokenGenerator.hashOf(view.stateBinding),
     );
-    // `state` round-trips through the provider's URLs, so anyone who sees
-    // it must still be unable to reproduce the binding.
+    // `state` round-trips through the provider's URLs, so the two values a
+    // third party who saw it could hand back — `state` itself and its
+    // digest — must both be refused as the binding.
     expect(view.stateBinding).not.toBe(state);
     expect(saved?.stateBindingHash).not.toBe(
       h.container.secureTokenGenerator.hashOf(state),
