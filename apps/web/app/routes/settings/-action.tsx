@@ -312,7 +312,7 @@ export const startOAuthLinkFn = createServerFn({ method: "POST" })
         redirectTo: "/settings/auth",
       },
     });
-    await stateCookie.setOAuthStateCookie(view.state, container.clock.now());
+    stateCookie.setOAuthStateCookie(view.stateBinding, container.clock.now());
     return { authorizationUrl: view.authorizationUrl };
   });
 

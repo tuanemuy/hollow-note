@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { OAuthFlowState } from "../../application/ports/oauthStateStore";
+import { TokenHash } from "../../domain/identity/valueObject";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 import { userId } from "./fixtures";
 
 const TTL_MS = 10 * 60 * 1000;
+
+const BINDING_HASH = TokenHash.create("binding-hash-1");
+const OTHER_BINDING_HASH = TokenHash.create("binding-hash-2");
 
 const signInState: OAuthFlowState = {
   provider: "google",
@@ -12,12 +16,14 @@ const signInState: OAuthFlowState = {
   intent: "signIn",
   userId: null,
   userAuthEpoch: null,
+  stateBindingHash: BINDING_HASH,
 };
 
 /**
  * Shared conformance suite for `OAuthStateStore` (ADP-common-036..038).
- * `take` must be an atomic get + delete; expired rows for every intent
- * are swept by the same `deleteExpired`.
+ * `take` must be an atomic get + delete that removes the row only when
+ * the binding matches; expired rows for every intent are swept by the
+ * same `deleteExpired`.
  */
 export function describeOAuthStateStoreContract(
   backendName: string,
@@ -30,19 +36,31 @@ export function describeOAuthStateStoreContract(
       backend = await makeBackend();
     });
 
-    it("ADP-common-036/037: put then take returns the state exactly once", async () => {
+    it("ADP-common-036/037: put then take with the matching binding returns the state exactly once", async () => {
       await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
-      expect(await backend.oauthStateStore.take("state-1")).toEqual(
-        signInState,
-      );
-      expect(await backend.oauthStateStore.take("state-1")).toBeNull();
+      expect(
+        await backend.oauthStateStore.take("state-1", BINDING_HASH),
+      ).toEqual(signInState);
+      expect(
+        await backend.oauthStateStore.take("state-1", BINDING_HASH),
+      ).toBeNull();
+    });
+
+    it("ADP-common-037: a take whose binding does not match returns null and leaves the row", async () => {
+      await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
+      expect(
+        await backend.oauthStateStore.take("state-1", OTHER_BINDING_HASH),
+      ).toBeNull();
+      expect(
+        await backend.oauthStateStore.take("state-1", BINDING_HASH),
+      ).toEqual(signInState);
     });
 
     it("ADP-common-037: concurrent takes yield exactly one non-null result", async () => {
       await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
       const results = await Promise.all([
-        backend.oauthStateStore.take("state-1"),
-        backend.oauthStateStore.take("state-1"),
+        backend.oauthStateStore.take("state-1", BINDING_HASH),
+        backend.oauthStateStore.take("state-1", BINDING_HASH),
       ]);
       expect(results.filter((result) => result !== null)).toHaveLength(1);
     });
@@ -50,7 +68,9 @@ export function describeOAuthStateStoreContract(
     it("ADP-common-037: an expired state is not returned", async () => {
       await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
       backend.clock.advance(TTL_MS);
-      expect(await backend.oauthStateStore.take("state-1")).toBeNull();
+      expect(
+        await backend.oauthStateStore.take("state-1", BINDING_HASH),
+      ).toBeNull();
     });
 
     it("ADP-common-038: deleteExpired sweeps both sign-in and integration intents in pages", async () => {
@@ -61,6 +81,7 @@ export function describeOAuthStateStoreContract(
         intent: "integration",
         userId: userId(1),
         userAuthEpoch: 4,
+        stateBindingHash: OTHER_BINDING_HASH,
       };
       await backend.oauthStateStore.put("state-a", signInState, TTL_MS);
       await backend.oauthStateStore.put("state-b", integrationState, TTL_MS);

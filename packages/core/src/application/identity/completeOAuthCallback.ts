@@ -11,6 +11,8 @@ export type CompleteOAuthCallbackInput = Readonly<{
    * stored on the flow state. */
   provider: string;
   state: string;
+  /** Plaintext of the secret the flow handed to the starting browser. */
+  stateBinding: string;
   code: string;
 }>;
 
@@ -24,12 +26,18 @@ export type CompleteOAuthCallbackInput = Readonly<{
  * the intent is exactly what the server decided when the flow began.
  * The route's `:provider` must agree with the stored one or the state is
  * treated as invalid.
+ *
+ * A request whose binding does not match leaves the `state` unconsumed,
+ * so the browser that started the flow can still complete it.
  */
 export async function completeOAuthCallback({
   container,
   input,
 }: ServiceArgs<CompleteOAuthCallbackInput>): Promise<OAuthCallbackView> {
-  const flow = await container.oauthStateStore.take(input.state);
+  const flow = await container.oauthStateStore.take(
+    input.state,
+    container.secureTokenGenerator.hashOf(input.stateBinding),
+  );
   if (flow === null || flow.provider !== input.provider) {
     throw oauthStateInvalid();
   }

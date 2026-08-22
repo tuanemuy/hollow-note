@@ -27,6 +27,8 @@ import type { CompleteOAuthSignInView } from "./view";
 
 export type CompleteOAuthSignInInput = Readonly<{
   state: string;
+  /** Plaintext of the secret the flow handed to the starting browser. */
+  stateBinding: string;
   code: string;
 }>;
 
@@ -89,7 +91,10 @@ export async function completeOAuthSignIn({
   container,
   input,
 }: ServiceArgs<CompleteOAuthSignInInput>): Promise<CompleteOAuthSignInView> {
-  const flow = await container.oauthStateStore.take(input.state);
+  const flow = await container.oauthStateStore.take(
+    input.state,
+    container.secureTokenGenerator.hashOf(input.stateBinding),
+  );
   // `take` is a single atomic get + delete, so a replayed state lands
   // here as "not stored" and can never reach the exchange twice.
   if (flow === null || flow.intent !== "signIn") {

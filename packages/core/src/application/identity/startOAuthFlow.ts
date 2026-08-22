@@ -28,6 +28,11 @@ export const oauthRedirectUri = (appUrl: string, provider: string): string =>
  * decides which usecase to run from it alone, so a
  * `linkIdentity` flow records the authenticated user and the epoch it
  * started under, and a `signIn` flow records neither.
+ *
+ * A third secret is minted alongside `state` / `codeVerifier`: its digest
+ * goes on the flow row and its plaintext is handed to the browser that
+ * started the flow, so completing the round trip needs both halves and
+ * neither can be derived from the other.
  */
 export async function startOAuthFlow({
   container,
@@ -73,6 +78,7 @@ export async function startOAuthFlow({
 
   const state = secureTokenGenerator.issue();
   const codeVerifier = secureTokenGenerator.issue();
+  const binding = secureTokenGenerator.issue();
   const flowState: OAuthFlowState = {
     provider,
     codeVerifier: codeVerifier.token,
@@ -80,11 +86,12 @@ export async function startOAuthFlow({
     intent: input.intent,
     userId,
     userAuthEpoch,
+    stateBindingHash: binding.hash,
   };
   await oauthStateStore.put(state.token, flowState, OAUTH_STATE_TTL_MS);
 
   return {
-    state: state.token,
+    stateBinding: binding.token,
     authorizationUrl: signInOAuthClient.buildAuthorizationUrl({
       provider,
       state: state.token,

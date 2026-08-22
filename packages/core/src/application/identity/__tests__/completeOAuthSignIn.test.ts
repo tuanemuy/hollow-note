@@ -37,14 +37,15 @@ const required = (value: string | null, name: string): string => {
 async function beginFlow(
   h: TestHarness,
   redirectTo: string | null = null,
-): Promise<{ state: string; codeChallenge: string }> {
-  const { authorizationUrl } = await startOAuthFlow({
+): Promise<{ state: string; stateBinding: string; codeChallenge: string }> {
+  const { authorizationUrl, stateBinding } = await startOAuthFlow({
     container: h.container,
     input: { provider: "google", intent: "signIn", redirectTo },
   });
   const url = new URL(authorizationUrl);
   return {
     state: required(url.searchParams.get("state"), "state"),
+    stateBinding,
     codeChallenge: required(
       url.searchParams.get("code_challenge"),
       "code_challenge",
@@ -66,10 +67,10 @@ async function signInWithOAuth(
   grant: Grant = {},
   redirectTo: string | null = null,
 ) {
-  const { state, codeChallenge } = await beginFlow(h, redirectTo);
+  const { state, stateBinding, codeChallenge } = await beginFlow(h, redirectTo);
   return completeOAuthSignIn({
     container: h.container,
-    input: { state, code: codeFor(codeChallenge, grant) },
+    input: { state, stateBinding, code: codeFor(codeChallenge, grant) },
   });
 }
 
@@ -353,7 +354,7 @@ describe("completeOAuthSignIn", () => {
 
     const error = await completeOAuthSignIn({
       container: h.container,
-      input: { state: "never-issued", code: "code" },
+      input: { state: "never-issued", stateBinding: "binding", code: "code" },
     }).catch((thrown: unknown) => thrown);
 
     expect(isValidationError(error) && error.code).toBe("OAUTH_STATE_INVALID");
@@ -361,16 +362,16 @@ describe("completeOAuthSignIn", () => {
 
   it("TC-identity-035: a state can only be exchanged once", async () => {
     const h = createTestHarness();
-    const { state, codeChallenge } = await beginFlow(h);
+    const { state, stateBinding, codeChallenge } = await beginFlow(h);
     const code = codeFor(codeChallenge, {});
     await completeOAuthSignIn({
       container: h.container,
-      input: { state, code },
+      input: { state, stateBinding, code },
     });
 
     const error = await completeOAuthSignIn({
       container: h.container,
-      input: { state, code },
+      input: { state, stateBinding, code },
     }).catch((thrown: unknown) => thrown);
 
     expect(isValidationError(error) && error.code).toBe("OAUTH_STATE_INVALID");
@@ -390,11 +391,11 @@ describe("completeOAuthSignIn", () => {
 
   it("TC-identity-037: a provider that cannot be reached surfaces as a system error", async () => {
     const h = createTestHarness();
-    const { state } = await beginFlow(h);
+    const { state, stateBinding } = await beginFlow(h);
 
     const error = await completeOAuthSignIn({
       container: { ...h.container, signInOAuthClient: failing() },
-      input: { state, code: "code" },
+      input: { state, stateBinding, code: "code" },
     }).catch((thrown: unknown) => thrown);
 
     expect(isSystemError(error) && error.code).toBe(

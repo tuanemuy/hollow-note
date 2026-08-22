@@ -1,6 +1,6 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-16）
+生成元: `spec/usecases/`（最終同期: 2026-08-22）
 
 **1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -14,7 +14,7 @@
 | UC-identity-002 | `verifyEmail` | `spec/usecases/identity.md#verifyEmail` | locator 付き確認トークンを単回消費して利用者を有効化し、同一 UoW でセッションを発行する。使用済みの並行要求は `alreadyVerified` に収束させ、用途違い、期限切れ、世代不一致を拒否する |
 | UC-identity-003 | `resendVerificationEmail` | `spec/usecases/identity.md#resendVerificationEmail` | 未確認利用者に限り発行間隔を守って既存確認トークンを置換し、commit 後に確認メールを送る。利用者不在、確認済み、制限中は存在を漏らさず成功として返す |
 | UC-identity-004 | `signInWithPassword` | `spec/usecases/identity.md#signInWithPassword` | 発信元とメールの鍵で待機・施錠を判定し、資格情報を照合して有効利用者に current epoch のセッションを発行する。認証失敗、未確認、削除中、待機、ロックを区別し、失敗加算を原子的に行う |
-| UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代を 10 分保存して認可 URL と `state` を返す（`state` は URL が既に運ぶが、転送境界がブラウザーへ束縛できるよう別に露出する）。`linkIdentity` intent で主体が active でなければ（削除開始済みを含む）state 行を作らず `UnauthorizedError("UNAUTHENTICATED")` にする |
+| UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代・束縛の秘密の digest を 10 分保存して認可 URL と束縛の秘密（`stateBinding`）を返す（`state` は転送境界へ出さない）。`linkIdentity` intent で主体が active でなければ（削除開始済みを含む）state 行を作らず `UnauthorizedError("UNAUTHENTICATED")` にする |
 | UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を単回消費し、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。未確認、別利用者への紐づき、上限、削除中を拒否し、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
 | UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | link intent の OAuth state と認証世代を検査し、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する。出力は `identityId` だけで、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
 | UC-identity-008 | `authenticateSession` | `spec/usecases/identity.md#authenticateSession` | locator とハッシュからセッションと利用者を読み、期限、有効状態、認証世代を検査して利用者射影を返す。すべての無効要因を `UNAUTHENTICATED` に畳み、認証時にセッションを書き換えない |
@@ -33,7 +33,8 @@
 | UC-identity-021 | `pruneExpiredAuthState` | `spec/usecases/identity.md#pruneExpiredAuthState` | 固定 as-of と maintenance run により全 routing generation の session、auth token、login attempt、OAuth state を shard・表ごとに 100 件ずつ冪等回収し、部分失敗を隔離して継続・完了管理する |
 | UC-identity-022 | `getProfile` | `spec/usecases/identity.md#getProfile` | 書き込みを持たない `updateProfile` の対として、`ActiveUser` の `displayName` / `bio` / `avatarUrl` / `handle` を P-21 の初期表示へ射影する。秘匿値は 1 つも射影せず、不在・削除済みを `USER_NOT_FOUND`、未確認を `EMAIL_NOT_VERIFIED`、`active` でない状態を `ACCOUNT_UNAVAILABLE` で区別する |
 | UC-identity-023 | `checkHandleAvailability` | `spec/usecases/identity.md#checkHandleAvailability` | 保存前の公開ハンドルの空きを handle directory の `resolve` で答え、`available` と `ownedBySelf` を返す。claim ではなく助言的な読み取りなので、他の要求が予約しただけの鍵は空きと読め、勝者は `updateProfile` の予約が決める。形式違反・予約語は `BusinessRuleError` |
-| UC-identity-024 | `completeOAuthCallback` | `spec/usecases/identity.md#completeOAuthCallback` | 単一のコールバック経路で flow state の `intent` だけを根拠に `completeOAuthSignIn` / `linkOAuthIdentity` へ振り分け、返り値は intent 付きの判別共用体にする。`linkIdentity` arm が `identityId` に加えて `redirectTo` を運ぶ（戻り先は消費した flow のもの）。state の不一致・期限切れ・経路の `:provider` 不一致・本スライスに受け皿の無い `integration` intent はすべて `OAUTH_STATE_INVALID` に畳む |
+| UC-identity-024 | `completeOAuthCallback` | `spec/usecases/identity.md#completeOAuthCallback` | 単一のコールバック経路で flow state の `intent` だけを根拠に `completeOAuthSignIn` / `linkOAuthIdentity` へ振り分け、返り値は intent 付きの判別共用体にする。`linkIdentity` arm が `identityId` に加えて `redirectTo` を運ぶ（戻り先は消費した flow のもの）。state は束縛が一致したときだけ消費し、束縛の不一致・期限切れ・経路の `:provider` 不一致・本スライスに受け皿の無い `integration` intent はすべて `OAUTH_STATE_INVALID` に畳む |
+| UC-identity-025 | `abandonOAuthFlow` | `spec/usecases/identity.md#abandonOAuthFlow` | 消費要求が起きずに終わった往復の後始末として、束縛が一致したときだけ flow 行を解放し `abandoned` を返す。不一致・不在は行を残して `abandoned: false` にし、転送境界が束縛 Cookie を無条件に捨てられないようにする |
 | UC-integration-001 | `startIntegrationOAuth` | `spec/usecases/integration.md#startIntegrationOAuth` | 有効利用者と provider、同一オリジン遷移先を検査し、認証世代付き state・PKCE を保存して OpenRouter または Drive の認可 URL を返す。Google identity があれば Drive の login hint に使う |
 | UC-integration-002 | `completeIntegrationOAuth` | `spec/usecases/integration.md#completeIntegrationOAuth` | OAuth state を単回消費し、コード、必要 scope、Drive refresh token、疎通を検査して暗号化資格情報を接続または再接続する。OpenRouter 新規接続時は LLM 待ちノート件数を返す |
 | UC-integration-003 | `listConnections` | `spec/usecases/integration.md#listConnections` | 利用者の接続状態・アカウント表示・最終利用・設定を資格情報なしで返し、未接続 provider も disconnected として補完する |

@@ -20,12 +20,14 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 出力DTO
 
-`authorizationUrl: string`
+`authorizationUrl: string`, `stateBinding: string`
+
+`stateBinding` は認可を開始したブラウザーにだけ渡す一回限りの秘密で、転送境界が Cookie で運ぶ（[ADR 034](../adr/034-oauth-callback-browser-binding.md)）。
 
 ### 処理フロー
 
 1. `ProviderKind.create`を構築し、UserId shardで`ActiveUser`とcurrent `authEpoch`を確認する
-2. `state` と `codeVerifier` を作り、`userAuthEpoch`を含めて`OAuthStateStore.put` に 10 分で保存する
+2. `state` と `codeVerifier`、および束縛の秘密を作り、束縛の秘密の `hash` を `stateBindingHash`、`userAuthEpoch` を含めて`OAuthStateStore.put` に 10 分で保存する。束縛の秘密の平文は応答で返す
 3. プロバイダーごとのスコープを決める（Drive は「このアプリが作成したファイル」に限るスコープ、Google SSO 済みでも別途要求する）
 4. Google Drive の場合、`IdentityRepository.listByUserId` から `provider: "google"` の `OAuthIdentity` を探し、あればその `providerEmail` を `loginHint` に渡してアカウント選択を省略する（IN-04: SSO 済みアカウントの引き継ぎ）。なければ `loginHint: null`
 5. `IntegrationOAuthClient.buildAuthorizationUrl` を返す。Drive は `loginHint` の有無にかかわらず毎回 `prompt=consent` を伴い、リフレッシュトークンを確実に得る
@@ -45,7 +47,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 入力DTO
 
-`userId`, `state`, `code`
+`userId`, `state`, `stateBinding`, `code`
 
 ### 出力DTO
 
@@ -53,7 +55,7 @@ OpenRouter または Google Drive の認可 URL を作る（IN-01 / IN-04）。
 
 ### 処理フロー
 
-1. `OAuthStateStore.take(state)` で取り出す。`null` なら `ValidationError("OAUTH_STATE_INVALID")`
+1. `OAuthStateStore.take(state, hashOf(stateBinding))` で、束縛が一致したときだけ取り出して削除する。`null` なら `ValidationError("OAUTH_STATE_INVALID")`。不一致・不在では行を消費しない
 2. `IntegrationOAuthClient.exchangeCode` で資格情報を得る
 3. 必要なスコープが揃っていなければ `ValidationError("OAUTH_SCOPE_INSUFFICIENT")`
 4. Drive で `refreshToken` が得られなければ `ValidationError("OAUTH_REFRESH_TOKEN_MISSING")`

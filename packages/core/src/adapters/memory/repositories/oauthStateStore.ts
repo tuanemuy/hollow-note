@@ -3,6 +3,7 @@ import type {
   OAuthStateStore,
 } from "../../../application/ports/oauthStateStore";
 import type { PrunePage } from "../../../domain/common/pagination";
+import type { TokenHash } from "../../../domain/identity/valueObject";
 import type { MemoryBackend } from "../store";
 import { clone, deleteExpiredPage } from "../support";
 
@@ -23,11 +24,21 @@ export function createMemoryOAuthStateStore(
       });
     },
 
-    // Synchronous get + delete: atomic on this backend, the memory
-    // equivalent of `DELETE … RETURNING`.
-    async take(state: string): Promise<OAuthFlowState | null> {
+    // Synchronous get + compare + delete: atomic on this backend, the
+    // memory equivalent of `DELETE … WHERE state = ? AND binding_hash = ?
+    // RETURNING *`.
+    async take(
+      state: string,
+      stateBindingHash: TokenHash,
+    ): Promise<OAuthFlowState | null> {
       const row = table.get(state);
       if (row === undefined) {
+        return null;
+      }
+      // A mismatched binding leaves the row alone: deleting it would let
+      // anyone who merely knows `state` burn down someone else's
+      // in-flight authorization round trip.
+      if (row.value.stateBindingHash !== stateBindingHash) {
         return null;
       }
       table.delete(state);

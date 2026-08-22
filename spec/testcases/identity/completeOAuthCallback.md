@@ -4,6 +4,7 @@
 |---|---|---|---|
 | `intent: "signIn"` の state が保存されている | コールバックを処理する | `intent: "signIn"` arm が返り、`sessionToken` を運ぶ | |
 | `intent: "linkIdentity"` の state が保存されている | コールバックを処理する | `intent: "linkIdentity"` arm が返り、`identityId` と `redirectTo` を運ぶ | |
+| `intent: "signIn"` の state が保存されている | 束縛の秘密が一致しない `stateBinding` でコールバックを処理する | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で処理すると完了できる | |
 | `intent: "integration"` の state が保存されている | コールバックを処理する | 本スライスに受け皿が無いため state を無効として扱い、`ValidationError("OAUTH_STATE_INVALID")` が投げられる（受け皿は外部連携スライスの `completeIntegrationOAuth`） | |
 | 経路の `:provider` が state に保存されたものと一致しない | コールバックを処理する | state を無効として扱い、`ValidationError("OAUTH_STATE_INVALID")` が投げられる | |
 | state が存在しない・期限切れ | コールバックを処理する | `ValidationError("OAUTH_STATE_INVALID")` が投げられる | |

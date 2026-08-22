@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { serializeError } from "@/presentation/errorResponse";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { loadServerDeps } from "@/presentation/serverAction";
 import { validateInput } from "@/presentation/validator";
@@ -33,7 +34,7 @@ export const startOAuthSignInFn = createServerFn({ method: "POST" })
         redirectTo: data.redirectTo,
       },
     });
-    await stateCookie.setOAuthStateCookie(view.state, container.clock.now());
+    stateCookie.setOAuthStateCookie(view.stateBinding, container.clock.now());
     return { authorizationUrl: view.authorizationUrl };
   });
 
@@ -43,17 +44,33 @@ const abandonSchema = z.object({
 
 /**
  * 消費 POST が起きずに終わった往復（プロバイダーのキャンセル・`code` の
- * 欠落）で束縛 Cookie を捨てる。破棄は照合と対で成立するものなので、
- * ここでも `state` の束縛が一致した Cookie しか捨てない — 無条件に捨てると
- * 単なる GET を踏ませるだけで他人の進行中フローを壊せる。`state` を伴わ
- * ない往復は照合できないので、破棄せず TTL に委ねる（呼ぶ側で落とす）。
+ * 欠落）で束縛 Cookie を捨てる。捨ててよいのはユースケースがフロー行を
+ * 解放できたときだけ — 無条件に捨てると単なる GET を踏ませるだけで他人の
+ * 進行中フローを壊せる。`state` を伴わない往復は照合できないので、破棄
+ * せず TTL に委ねる（呼ぶ側で落とす）。
+ *
+ * 応答は `null` に固定する。結果を返すと「この `state` と自分の Cookie が
+ * 対だったか」を答える口が増えるだけで、呼び出し元は使っていない。
  */
 export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(abandonSchema))
   .handler(async ({ data }) => {
     const stateCookie = await import("@/presentation/oauthStateCookie");
-    await stateCookie.clearBoundOAuthStateCookie(data.state);
+    const stateBinding = stateCookie.readOAuthStateCookie();
+    if (stateBinding === null) {
+      return null;
+    }
+    const { container, module } = await loadServerDeps(
+      () => import("@repo/core/application/identity/abandonOAuthFlow"),
+    );
+    const view = await module.abandonOAuthFlow({
+      container,
+      input: { state: data.state, stateBinding },
+    });
+    if (view.abandoned) {
+      stateCookie.clearOAuthStateCookie();
+    }
     return null;
   });
 
@@ -72,9 +89,8 @@ const callbackSchema = z.object({
  *
  * 画面が分岐できるよう、応答は intent 付きの判別共用体にする。
  *
- * `state` は消費の前にフローを開始したブラウザーへの束縛を照合する
- * （`oauthStateCookie`）。踏ませるだけで認証状態が変わる経路を作らない
- * ため、ユースケースより先に通す。
+ * 束縛の照合は `state` の消費と同じ原子操作の中で起きるので、ここは
+ * Cookie を運ぶだけ。Cookie が無い要求だけはユースケースを呼ぶ前に畳む。
  */
 export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -93,15 +109,35 @@ export const completeOAuthCallbackFn = createServerFn({ method: "POST" })
         import("@/presentation/session"),
         import("@/presentation/oauthStateCookie"),
       ]);
-      await stateCookie.assertOAuthStateCookie(data.state);
-      // 照合を通った時点で束縛の役目は終わる（この先の最初の一手が
-      // `state` の単回消費なので、交換が失敗しても往復はやり直せない）。
-      // 破棄をここに置くと、成功・失敗のどちらでも取り残されない。
+      const stateBinding = stateCookie.requireOAuthStateCookie();
+      let view: Awaited<ReturnType<typeof module.completeOAuthCallback>>;
+      try {
+        view = await module.completeOAuthCallback({
+          container,
+          input: {
+            provider: data.provider,
+            state: data.state,
+            stateBinding,
+            code: data.code,
+          },
+        });
+      } catch (error) {
+        // 照合を通らなかったと言い切れない限り捨てない — 他人のブラウザーの
+        // 進行中フローを落とせる経路を作らないため。判定を `instanceof` で
+        // 書くと、動的 import でモジュールグラフが分かれたときに取りこぼし
+        // が「捨てる」側へ倒れる。
+        const serialized = serializeError(error);
+        if (
+          !(
+            serialized.kind === "validation" &&
+            serialized.code === "OAUTH_STATE_INVALID"
+          )
+        ) {
+          stateCookie.clearOAuthStateCookie();
+        }
+        throw error;
+      }
       stateCookie.clearOAuthStateCookie();
-      const view = await module.completeOAuthCallback({
-        container,
-        input: { provider: data.provider, state: data.state, code: data.code },
-      });
       if (view.intent === "linkIdentity") {
         return { intent: "linkIdentity", redirectTo: view.redirectTo };
       }

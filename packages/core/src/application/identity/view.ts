@@ -55,11 +55,13 @@ export const toAuthenticatedUserView = (
 
 export type StartOAuthFlowView = Readonly<{
   /**
-   * Already carried by `authorizationUrl`; surfaced separately so the
-   * transport boundary can bind the flow to the browser that started it
-   * without re-parsing the provider's URL.
+   * One-shot secret handed only to the browser that started the flow.
+   * The transport boundary carries it in a cookie and the consuming call
+   * matches it against the flow row. `state` stays inside the
+   * application layer: it round-trips through the provider's URLs, so a
+   * binding derived from it would be reproducible by anyone who saw it.
    */
-  state: string;
+  stateBinding: string;
   authorizationUrl: string;
 }>;
 
@@ -90,6 +92,15 @@ export type OAuthCallbackView =
   | (Readonly<{ intent: "signIn" }> & CompleteOAuthSignInView)
   | (Readonly<{ intent: "linkIdentity"; redirectTo: string | null }> &
       LinkOAuthIdentityView);
+
+/**
+ * `abandoned` says the binding matched and the flow row was released, so
+ * the caller may drop the cookie it carried. It is the only evidence the
+ * transport boundary has that the cookie is its own.
+ */
+export type AbandonOAuthFlowView = Readonly<{
+  abandoned: boolean;
+}>;
 
 export type PruneExpiredAuthStateView = Readonly<{
   sessions: number;

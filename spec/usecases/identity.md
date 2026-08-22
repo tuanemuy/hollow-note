@@ -215,18 +215,18 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 
 | フィールド | 型 |
 | --- | --- |
-| `state` | `string` |
+| `stateBinding` | `string` |
 | `authorizationUrl` | `string` |
 
-`state` は `authorizationUrl` が既に運んでいるが、転送境界がプロバイダーの URL を再パースせずに**フローを開始したブラウザーへ束縛**できるよう別に露出する（[ADR 034](../adr/034-oauth-callback-browser-binding.md)）。
+露出するのは束縛の秘密だけで、`state` は出さない。転送境界が受け取るのは「Cookie に載せるべき値」の 1 つに絞られ、単回消費の資格情報である `state` はアプリケーション層の内側に留まる（[ADR 034](../adr/034-oauth-callback-browser-binding.md)）。
 
 ### 処理フロー
 
 1. `OAuthProvider.create(input.provider)` を構築する
 2. `intent === "linkIdentity"` で `userId` が `null` なら `ValidationError("USER_REQUIRED")`。指定時はUserId shardで`ActiveUser`を確認し、current `authEpoch`を読む。`active`でなければ（削除を開始した利用者を含む）`UnauthorizedError("UNAUTHENTICATED")`。削除を開始した利用者はもはや認証済み主体ではないので、state 行そのものを作らない
-3. `state` と `codeVerifier` を `SecureTokenGenerator.issue` で作り、`codeChallenge` を算出する
-4. `OAuthStateStore.put(state, flowState, 10 分)` で保存する。`linkIdentity`は認証済み`userId`と取得した`userAuthEpoch`を必ず保存し、`signIn`は両方`null`にする
-5. `SignInOAuthClient.buildAuthorizationUrl` の結果を返す
+3. `state` と `codeVerifier`、および束縛の秘密を `SecureTokenGenerator.issue` で作り（3 本）、`codeChallenge` を算出する
+4. `OAuthStateStore.put(state, flowState, 10 分)` で保存する。束縛の秘密の `hash` を `stateBindingHash` として intent を問わず必ず保存する。`linkIdentity`は認証済み`userId`と取得した`userAuthEpoch`を必ず保存し、`signIn`は両方`null`にする
+5. `SignInOAuthClient.buildAuthorizationUrl` の結果と、束縛の秘密の平文を返す
 
 ### エラーケース
 
@@ -247,6 +247,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 | フィールド | 型 | 必須 | バリデーション |
 | --- | --- | --- | --- |
 | `state` | `string` | ○ | 空文字列でないこと |
+| `stateBinding` | `string` | ○ | 空文字列でないこと。転送境界が Cookie から読む束縛の秘密の平文 |
 | `code` | `string` | ○ | 空文字列でないこと |
 
 ### 出力DTO
@@ -260,7 +261,7 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 
 ### 処理フロー
 
-1. `OAuthStateStore.take(state)` で取り出す。`null` なら `ValidationError("OAUTH_STATE_INVALID")`
+1. `OAuthStateStore.take(state, hashOf(stateBinding))` で、束縛が一致したときだけ取り出して削除する。`null` なら `ValidationError("OAUTH_STATE_INVALID")`。不一致・不在では行を消費しない
 2. `SignInOAuthClient.exchangeCode` でプロフィールを得る
 3. providerAccount directoryを解決し、返ったUserId shardで既存IdentityとUserを確認する。既存Userが`ActiveUser`ならその利用者でセッションを発行して終了し、`DeletingUser` / `DeletedUser`なら`ValidationError("ACCOUNT_UNAVAILABLE")`として発行しない
 4. email directoryを解決し、返ったUserId shardのUserを引いて `AccountLinkingPolicy.decide` で判定する
@@ -293,6 +294,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 | --- | --- | --- | --- |
 | `provider` | `string` | ○ | 経路のパスパラメーター。state に保存された provider との照合に使う（手順 2） |
 | `state` | `string` | ○ | 空文字列でないこと |
+| `stateBinding` | `string` | ○ | 空文字列でないこと。転送境界が Cookie から読む束縛の秘密の平文 |
 | `code` | `string` | ○ | 空文字列でないこと |
 
 ### 出力DTO
@@ -308,7 +310,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 
 ### 処理フロー
 
-1. `OAuthStateStore.take(input.state)` で取り出す。`null` なら `ValidationError("OAUTH_STATE_INVALID")`
+1. `OAuthStateStore.take(input.state, hashOf(input.stateBinding))` で、束縛が一致したときだけ取り出して削除する。`null` なら `ValidationError("OAUTH_STATE_INVALID")`。不一致・不在では行を消費しないので、フローを開始したブラウザーは後から完了できる
 2. 経路の `:provider` が state に保存されたものと一致しなければ、state を無効として扱う（`ValidationError("OAUTH_STATE_INVALID")`）
 3. `intent` で振り分ける。`signIn` は `completeOAuthSignIn`、`linkIdentity` は `linkOAuthIdentity` の処理を、取り出し済みの flow state に対して実行する。`integration` は本スライスに受け皿が無いため state を無効として扱う（`ValidationError("OAUTH_STATE_INVALID")`。受け皿は外部連携スライスの `completeIntegrationOAuth` — [usecases/integration.md](./integration.md)）。分岐根拠はサーバーが決めた `intent` だけに限り、クエリ文字列や現在のセッションを根拠にしない（[ADR 035](../adr/035-oauth-callback-single-route.md)）
 4. 実行した側の出力へ `intent` を付けて返す。`linkIdentity` では flow state の `redirectTo` を添える
@@ -329,7 +331,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 
 ### 入力DTO
 
-`state` / `code`。`OAuthFlowState.intent` が `linkIdentity` であること。
+`state` / `stateBinding` / `code`。`OAuthFlowState.intent` が `linkIdentity` であること。
 
 ### 出力DTO
 
@@ -339,7 +341,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 
 ### 処理フロー
 
-1. `OAuthStateStore.take` で取り出し、`intent` が `linkIdentity` でなければ `ValidationError("OAUTH_STATE_INVALID")`
+1. `OAuthStateStore.take(state, hashOf(stateBinding))` で、束縛が一致したときだけ取り出して削除する。`null`（不一致・不在。行は消費しない）または `intent` が `linkIdentity` でなければ `ValidationError("OAUTH_STATE_INVALID")`
 2. `SignInOAuthClient.exchangeCode` でプロフィールを得る
 3. providerAccount directoryを解決する（`resolve` が返すのは恒久 claim の持ち主だけ — [domains/identity.md](../domains/identity.md)）。別userIdが持っていれば `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`。持ち主が居なければreservationを確保する。進行中の `reserved` や解除待ちの `releasing` との競合は、後続の `reserve` が同じコードで返す
 4. UserId shard UoWでUserとcurrent Identity集合を読み直し、`ActiveUser`かつcurrent epochがflow stateの`userAuthEpoch`と一致し、`IdentityPolicy.ensureAddable`を満たすことを確認してから `Identity.createOAuth` を保存する。削除開始済み・世代不一致・上限8件なら保存せずreservationをreleaseする。成功後にreservationをactivateする
@@ -347,6 +349,36 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 ### エラーケース
 
 `completeOAuthSignIn` と同じ分類に加え、`NotFoundError("USER_NOT_FOUND")`。認証手段が8件なら`BusinessRuleError(IdentityLimitExceeded)`。directory の claim は残っているが対応する identity が居ない場合は`ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")`で、他人が持っている`PROVIDER_ACCOUNT_ALREADY_LINKED`とは別のコードである（解除済み claim の収束待ち — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)）。
+
+## abandonOAuthFlow
+
+### 概要
+
+消費要求が起きずに終わった認可の往復（プロバイダーが拒否を返した / `code` が欠けた）の後始末で、束縛が一致したときだけフロー行を解放する（AC-03 / AC-06）。転送境界に「この束縛 Cookie は自分が焼いたものだ」と答える唯一の経路で、これが無いと Cookie の破棄が無条件になり、コールバック URL を踏ませるだけで他人の進行中フローを壊せる（[ADR 034](../adr/034-oauth-callback-browser-binding.md)）。
+
+### 入力DTO
+
+| フィールド | 型 | 必須 | バリデーション |
+| --- | --- | --- | --- |
+| `state` | `string` | ○ | 空文字列でないこと |
+| `stateBinding` | `string` | ○ | 空文字列でないこと。転送境界が Cookie から読む束縛の秘密の平文 |
+
+### 出力DTO
+
+| フィールド | 型 |
+| --- | --- |
+| `abandoned` | `boolean` |
+
+`abandoned` はサーバー内で完結させる。転送境界はこれを見て Cookie を捨てるかだけを決め、応答としては外へ返さない。
+
+### 処理フロー
+
+1. `OAuthStateStore.take(state, hashOf(stateBinding))` を呼ぶ
+2. 結果が非 `null` なら `{ abandoned: true }`。`null`（束縛不一致・行が無い・期限切れ）なら `{ abandoned: false }` で、行は残したままにする
+
+### エラーケース
+
+なし（束縛が一致しないことは失敗ではなく `abandoned: false` として答える）。
 
 ## authenticateSession
 

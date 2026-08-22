@@ -28,6 +28,8 @@ import type { LinkOAuthIdentityView } from "./view";
 
 export type LinkOAuthIdentityInput = Readonly<{
   state: string;
+  /** Plaintext of the secret the flow handed to the starting browser. */
+  stateBinding: string;
   code: string;
 }>;
 
@@ -51,7 +53,10 @@ export async function linkOAuthIdentity({
   container,
   input,
 }: ServiceArgs<LinkOAuthIdentityInput>): Promise<LinkOAuthIdentityView> {
-  const flow = await container.oauthStateStore.take(input.state);
+  const flow = await container.oauthStateStore.take(
+    input.state,
+    container.secureTokenGenerator.hashOf(input.stateBinding),
+  );
   if (flow === null || flow.intent !== "linkIdentity") {
     throw oauthStateInvalid();
   }

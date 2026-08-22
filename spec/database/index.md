@@ -598,11 +598,14 @@ global D1 に置く。サインイン用と連携用の両方の認可フロー�
 | `user_id` | text | NULL 可 |
 | `user_auth_epoch` | integer | authenticated intentではNOT NULL、signInではNULL |
 | `redirect_to` | text | NULL 可 |
+| `state_binding_hash` | text | NOT NULL |
 | `created_at` | integer | NOT NULL |
 | `expires_at` | integer | NOT NULL |
 
 - **CHECK**: `intent IN ('linkIdentity','integration')` なら `user_id IS NOT NULL AND user_auth_epoch IS NOT NULL`。`signIn`なら両方NULL
 - **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 同一expiryを安定keysetで回収する
+
+`take` は束縛が一致したときだけ削除する条件付きの `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` になる。
 
 ---
 

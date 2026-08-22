@@ -39,7 +39,11 @@ async function link(
   const flow = await beginOAuthFlow(h, { intent: "linkIdentity", userId });
   return linkOAuthIdentity({
     container: h.container,
-    input: { state: flow.state, code: devAuthorizationCode(flow, grant) },
+    input: {
+      state: flow.state,
+      stateBinding: flow.stateBinding,
+      code: devAuthorizationCode(flow, grant),
+    },
   });
 }
 
@@ -119,7 +123,11 @@ describe("linkOAuthIdentity", () => {
     await expect(
       linkOAuthIdentity({
         container: h.container,
-        input: { state: flow.state, code: devAuthorizationCode(flow) },
+        input: {
+          state: flow.state,
+          stateBinding: flow.stateBinding,
+          code: devAuthorizationCode(flow),
+        },
       }),
     ).rejects.toSatisfy(
       (error) =>
@@ -139,6 +147,7 @@ describe("linkOAuthIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-link-1",
           }),
@@ -161,6 +170,7 @@ describe("linkOAuthIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-link-1",
           }),
@@ -187,6 +197,7 @@ describe("linkOAuthIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-link-1",
           }),
@@ -210,6 +221,7 @@ describe("linkOAuthIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-link-1",
           }),

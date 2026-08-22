@@ -30,9 +30,6 @@ describe("startOAuthFlow", () => {
     const url = new URL(view.authorizationUrl);
     const state = url.searchParams.get("state");
     expect(state).not.toBeNull();
-    // The transport boundary binds this to the browser that started the
-    // flow, so it must be the same value the provider is handed.
-    expect(view.state).toBe(state);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("redirect_uri")).toBe(
       `${h.config.appUrl}/auth/callback/google`,
@@ -45,6 +42,27 @@ describe("startOAuthFlow", () => {
     expect(rows[0]?.value.intent).toBe("signIn");
     expect(rows[0]?.expiresAt.getTime()).toBe(
       before.getTime() + TEN_MINUTES_MS,
+    );
+  });
+
+  it("TC-identity-336: the binding secret is stored as its digest and cannot be derived from the state", async () => {
+    const h = createTestHarness();
+
+    const view = await start(h);
+
+    const state = new URL(view.authorizationUrl).searchParams.get("state");
+    if (state === null) {
+      throw new Error("authorization URL is missing state");
+    }
+    const saved = storedStates(h)[0]?.value;
+    expect(saved?.stateBindingHash).toBe(
+      h.container.secureTokenGenerator.hashOf(view.stateBinding),
+    );
+    // `state` round-trips through the provider's URLs, so anyone who sees
+    // it must still be unable to reproduce the binding.
+    expect(view.stateBinding).not.toBe(state);
+    expect(saved?.stateBindingHash).not.toBe(
+      h.container.secureTokenGenerator.hashOf(state),
     );
   });
 

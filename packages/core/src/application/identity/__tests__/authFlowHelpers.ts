@@ -115,6 +115,7 @@ export type OAuthGrant = Readonly<{
 
 export type StartedOAuthFlow = Readonly<{
   state: string;
+  stateBinding: string;
   codeChallenge: string;
 }>;
 
@@ -128,7 +129,7 @@ export async function beginOAuthFlow(
     provider?: string;
   }>,
 ): Promise<StartedOAuthFlow> {
-  const { authorizationUrl } = await startOAuthFlow({
+  const { authorizationUrl, stateBinding } = await startOAuthFlow({
     container: h.container,
     input: {
       provider: input.provider ?? "google",
@@ -143,7 +144,7 @@ export async function beginOAuthFlow(
   if (state === null || codeChallenge === null) {
     throw new Error("authorization URL is missing state / code_challenge");
   }
-  return { state, codeChallenge };
+  return { state, stateBinding, codeChallenge };
 }
 
 /** Authorization code the dev IdP consent screen would have produced. */
@@ -167,7 +168,11 @@ export async function signUpWithGoogle(
   const flow = await beginOAuthFlow(h, { intent: "signIn" });
   const view = await completeOAuthSignIn({
     container: h.container,
-    input: { state: flow.state, code: devAuthorizationCode(flow, grant) },
+    input: {
+      state: flow.state,
+      stateBinding: flow.stateBinding,
+      code: devAuthorizationCode(flow, grant),
+    },
   });
   return { userId: view.userId, sessionToken: view.sessionToken };
 }
