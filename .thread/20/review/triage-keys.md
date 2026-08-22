@@ -8,3 +8,5 @@
 
 | `spec/testcases/identity/startOAuthFlow.md:TC-264/要素列の重複` | wont-fix | 台帳の「要素」列が既存行と重複するのは既存に2組あり容認済みの形。ADR 052/058 が TC の ID を識別子と定めており、期待結果列で対応は付く。実害のない整形要求 |
 | `startOAuthFlow.test.ts:48/払い出し記録ラッパーによる独立性の証明` | wont-fix | plan.md AC-8 が担保範囲を「2本の否定アサーション」と定義済み。黒箱で「`state` から導けない」ことを一般に証明しにいくのは PR の膨張。表題を射程に寄せる対応で決着済み |
+| `application/ports/oauthStateStore.ts:take/原子性の但し書き` | wont-fix | JSDoc の同じ段落の冒頭が `take` … must be atomic と既に規範的に言い切っている。第2の実装形は「判定の順序は規範ではない」の下に置かれたもの。原子性は `spec/domains/index.md` にも同文で載っており、ポート JSDoc へ重ねると二重管理になる |
+| `application/ports/oauthStateStore.ts:take/原子性の但し書き` | wont-fix | JSDoc の同じ段落の冒頭が `take` … must be atomic と既に規範的に言い切っている。第2の実装形は「判定の順序は規範ではない」の下に置かれたもの。原子性は `spec/domains/index.md` にも同文で載っており、ポート JSDoc へ重ねると二重管理になる |

@@ -378,6 +378,28 @@ describe("completeOAuthSignIn", () => {
     expect(h.backend.users.values()).toHaveLength(1);
   });
 
+  it("TC-identity-341: a mismatched binding is refused and leaves the state for the browser that started the flow", async () => {
+    const h = createTestHarness();
+    const { state, stateBinding, codeChallenge } = await beginFlow(h);
+    const code = codeFor(codeChallenge, {});
+
+    const error = await completeOAuthSignIn({
+      container: h.container,
+      input: { state, stateBinding: "not-the-binding", code },
+    }).catch((thrown: unknown) => thrown);
+
+    expect(isValidationError(error) && error.code).toBe("OAUTH_STATE_INVALID");
+    expect(h.backend.oauthStates.get(state)).toBeDefined();
+    expect(h.backend.users.values()).toHaveLength(0);
+
+    const view = await completeOAuthSignIn({
+      container: h.container,
+      input: { state, stateBinding, code },
+    });
+
+    expect(view.created).toBe(true);
+  });
+
   it("TC-identity-036: a code the provider rejects is OAUTH_CODE_INVALID", async () => {
     const h = createTestHarness();
 

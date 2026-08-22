@@ -27,8 +27,12 @@
 | `.thread/20/steps.md:40,57/計画と実装の齟齬` | R2 | fix-editorial | ADR-009 が取り消した主張が計画側に残り、実際にこのラウンドの誤読源になった | 0 |
 | `startOAuthFlow.test.ts:48/表題の過剰宣言` | R2 | fix-editorial | 表題と射程のずれは事実。ただし払い出し記録ラッパーによる「独立性の証明」は却下（plan AC-8 が担保範囲を2本の否定と定義済み、PR の膨張）。表題とコメントを射程に寄せるだけ | 0 |
 | `spec/testcases/identity/startOAuthFlow.md:TC-264/要素列の重複` | R2 | wont-fix | 台帳の「要素」列の重複は既存に2組あり容認済みの形。ADR 052/058 が ID を識別子と定め、期待結果列で対応は付く。実害なしの整形要求 | 0 |
+| `application/ports/oauthStateStore.ts:take/原子性の但し書き` | R3 | wont-fix | 同じ段落の冒頭が `take` … must be atomic と規範的に言い切っており、第2の形は「判定の順序は規範ではない」の下にある。原子性は `spec/domains/index.md` にも同文で載る。ポートへ複写すると二重管理 | 0 |
+| `spec/testcases/identity/completeOAuthSignIn.md/束縛不一致 TC 欠落` | R3 | fix | `completeOAuthSignIn` は自分で `take` を呼び不一致で `OAUTH_STATE_INVALID` を投げるので spec の行は真。裏打ちの TC とテストだけが無く、指す先の無い約束になっている | 0 |
 
 R1: 新規 11（生の指摘17件を重複統合）/ fix 4 / fix-editorial 6 / wont-fix 1 / defer 0 / 継承 0（方針フェーズ: 実施。要確認1件はメインが裁定 — `abandonOAuthFlow` の障害耐性は server function 境界で catch + logger の best-effort に倒す）
 fix内訳: application 0→休止（全指摘が他観点と重複統合され、単独 fix ゼロ）/ adapter 2 / presentation 2 / spec 6
 R2: 新規 12（生の指摘13件を重複統合）/ fix 5 / fix-editorial 6 / wont-fix 1 / defer 0 / 継承 0（`routes/auth/-action.tsx:abandonOAuthFlowFn/障害耐性` は R1 と同キーだが、適用済み fix の残件として再度 fix。再指摘 +1）（方針フェーズ: 実施。要確認2件はメインが裁定 — (i) `loadServerDeps` を try 内へ移す / (ii) `spec/manual-tests/account.md` は W-003 と連動して3行追加）
 fix内訳: adapter 2 / presentation 3 / spec 5 / general 1 / application 0→休止（R1 から継続）
+R3: 新規 2 / fix 1 / fix-editorial 0 / wont-fix 1 / defer 0 / 継承 0（方針フェーズ: 実施 — 2件だが spec 側が前ラウンドの修正との整合判断を含むため省略しなかった。要確認1件はメインが裁定 — 案A（TC とテストを足す）を採る）
+fix内訳: adapter 0→休止 / presentation 0→休止 / application 0→休止 / spec 1

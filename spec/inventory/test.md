@@ -479,6 +479,7 @@
 | TC-identity-338 | abandonOAuthFlow: フローの `state` が保存されている — 一致する `stateBinding` で放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: true` が返り、state 行が解放される（TTL を待たない） |
 | TC-identity-339 | abandonOAuthFlow: フローの `state` が保存されている — 一致しない `stateBinding` で放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返り、state 行は残る（他人の進行中フローを壊せない） |
 | TC-identity-340 | abandonOAuthFlow: `state` が保存されていない — 放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返る（エラーにはしない） |
+| TC-identity-341 | completeOAuthSignIn: 有効な `state` がある — 束縛の秘密が一致しない `stateBinding` で交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で交換すると完了できる |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |

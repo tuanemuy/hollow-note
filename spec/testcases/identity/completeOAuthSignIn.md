@@ -18,3 +18,4 @@
 | プロバイダーとの通信が失敗する | 認可コードを交換する | `SystemError(ExternalApiError)` が投げられる | |
 | `redirectTo` が保存されている | 認可コードを交換する | 応答に `redirectTo` が含まれる | |
 | directory の claim は残っているが対応する identity が居ない | 同じプロバイダーアカウントで認可コードを交換する | `ConflictError("PROVIDER_ACCOUNT_RELEASE_PENDING")` が投げられ、セッションは発行されない（他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` とは別のコード — [ADR 038](../../adr/038-provider-account-claim-and-identity-row.md)） | |
+| 有効な `state` がある | 束縛の秘密が一致しない `stateBinding` で交換する | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で交換すると完了できる | |
