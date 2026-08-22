@@ -30,7 +30,7 @@ const integrationState: OAuthFlowState = {
 };
 
 /**
- * Shared conformance suite for `OAuthStateStore` (ADP-common-036..038).
+ * Shared conformance suite for `OAuthStateStore`.
  * `take` must be an atomic get + delete that removes the row only when
  * the binding matches — even if the row has expired; expired rows for
  * every intent are swept by the same `deleteExpired`.

@@ -12,7 +12,7 @@ export type StartOAuthFlowInput = Readonly<{
   userId?: string | null;
 }>;
 
-/** Lifetime of one authorization round-trip (spec/usecases/identity.md 手順4). */
+/** Lifetime of one authorization round-trip. */
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Callback route the authorization request is answered on. */
@@ -21,8 +21,7 @@ export const oauthRedirectUri = (appUrl: string, provider: string): string =>
 
 /**
  * Builds the authorization URL for a sign-in or identity-link flow and
- * parks the `state` / `codeVerifier` for the callback
- * (UC-identity-005, spec/usecases/identity.md#startoauthflow).
+ * parks the `state` / `codeVerifier` for the callback.
  *
  * The `state` row is the only carrier of the flow's intent: the callback
  * decides which usecase to run from it alone, so a

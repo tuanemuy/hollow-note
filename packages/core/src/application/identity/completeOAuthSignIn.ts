@@ -75,8 +75,7 @@ function displayNameFor(profile: OAuthProfile, email: Email): DisplayName {
 
 /**
  * Exchanges an authorization code and signs the visitor in, creating the
- * account or attaching the provider to an existing one
- * (UC-identity-006, spec/usecases/identity.md#completeoauthsignin).
+ * account or attaching the provider to an existing one.
  *
  * Three outcomes, decided in this order: an existing provider link signs
  * that user in; otherwise `AccountLinkingPolicy` judges the address, and
@@ -85,7 +84,7 @@ function displayNameFor(profile: OAuthProfile, email: Email): DisplayName {
  * existing user (one key). Every branch re-reads status and epoch inside
  * the final unit of work and inserts the identity and the session there
  * together, so credential issuance stays serialized against deletion
- * start (spec/usecases/identity.md 認証資格発行と削除開始の直列化).
+ * start.
  */
 export async function completeOAuthSignIn({
   container,
@@ -176,9 +175,9 @@ export async function completeOAuthSignInForFlow(
 
 /**
  * Signs in the user an existing provider link already points at. The
- * claim alone does not authorize the session (spec/usecases/identity.md
- * 手順 3): the identities of the shard it names must still include this
- * provider account, or the key outlived the identity it stood for.
+ * claim alone does not authorize the session: the identities of the shard
+ * it names must still include this provider account, or the key outlived
+ * the identity it stood for.
  */
 async function signInLinkedUser(
   container: RequestContainer,

@@ -10,7 +10,7 @@ export type AbandonOAuthFlowInput = Readonly<{
 /**
  * Cleans up after a round trip that ends without a consuming call — the
  * provider answered with a refusal, or the callback arrived without a
- * `code` (UC-identity-025, spec/usecases/identity.md#abandonoauthflow).
+ * `code`.
  *
  * The row is released only when the binding matches, and the transport
  * boundary may drop its cookie only on that answer: dropping it

@@ -10,10 +10,10 @@ import {
 } from "./authFlowHelpers";
 
 /**
- * The `/auth/callback/:provider` dispatcher (AC-9). What is pinned here
- * is the branching evidence itself: the stored intent
- * chooses the usecase, the path's provider has to agree with the stored
- * one, and a state answers exactly once.
+ * The `/auth/callback/:provider` dispatcher. What is pinned here is the
+ * branching evidence itself: the stored intent chooses the usecase, the
+ * path's provider has to agree with the stored one, and a state answers
+ * exactly once.
  */
 
 const EMAIL = "user@example.com";
