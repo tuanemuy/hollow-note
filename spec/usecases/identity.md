@@ -374,11 +374,15 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 ### 処理フロー
 
 1. `OAuthStateStore.take(state, hashOf(stateBinding))` を呼ぶ
-2. 結果が非 `null` なら `{ abandoned: true }`。`null`（束縛不一致・行が無い・期限切れ）なら `{ abandoned: false }` で、行は残したままにする
+2. 結果が非 `null` なら `{ abandoned: true }`。`null`（束縛不一致・行が無い・束縛は一致したが期限切れ）なら `{ abandoned: false }`。行を解放するのは束縛が一致したときだけで、一致すれば期限切れでも解放される。不一致・不在では行に触れない
 
 ### エラーケース
 
-なし（束縛が一致しないことは失敗ではなく `abandoned: false` として答える）。
+| 条件 | 種類 |
+| --- | --- |
+| ストアの読み書きの失敗 | `SystemError(DatabaseError)`（ストアの契約をそのまま伝える） |
+
+束縛が一致しないことは失敗ではなく `abandoned: false` として答える。後始末の失敗で P-05 の「キャンセル」表示まで落とさないよう、転送境界がこのエラーを best-effort に畳む（Cookie は寿命まで残り、行は `pruneExpiredAuthState` が掃く）。
 
 ## authenticateSession
 

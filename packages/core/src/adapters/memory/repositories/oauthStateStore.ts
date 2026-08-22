@@ -25,8 +25,8 @@ export function createMemoryOAuthStateStore(
     },
 
     // Synchronous get + compare + delete: atomic on this backend, the
-    // memory equivalent of `DELETE … WHERE state = ? AND binding_hash = ?
-    // RETURNING *`.
+    // memory equivalent of
+    // `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`.
     async take(
       state: string,
       stateBindingHash: TokenHash,

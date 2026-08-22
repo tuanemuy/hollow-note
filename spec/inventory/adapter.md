@@ -42,7 +42,7 @@
 | ADP-common-034 | `TimeZoneResolver.monthOf` | `spec/domains/index.md#TimeZoneResolverapplicationportstimeZoneResolverts` | instant が属する time zone 上の暦月を返す |
 | ADP-common-035 | `TimeZoneResolver.dayKey` | `spec/domains/index.md#TimeZoneResolverapplicationportstimeZoneResolverts` | instant の現地日を YYYY-MM-DD で返す |
 | ADP-common-036 | `OAuthStateStore.put` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | OAuth state を TTL 付きで保存する |
-| ADP-common-037 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 束縛が一致したときだけ state を原子的に取得・削除する（不一致は行を残して `null`） |
+| ADP-common-037 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 束縛が一致したときだけ state を原子的に取得・削除する（一致すれば期限切れでも削除して `null`、不一致は常に行を残して `null`） |
 | ADP-common-038 | `OAuthStateStore.deleteExpired` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 期限切れ state を cursor と limit で回収する |
 | ADP-common-039 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
 | ADP-common-040 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |

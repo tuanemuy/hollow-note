@@ -51,6 +51,10 @@ const abandonSchema = z.object({
  *
  * 応答は `null` に固定する。結果を返すと「この `state` と自分の Cookie が
  * 対だったか」を答える口が増えるだけで、呼び出し元は使っていない。
+ *
+ * 後始末の失敗はここで畳んで記録する。呼び出し元はコールバック画面の
+ * loader で、投げ返すと「失敗した往復の理由」を描く画面そのものが落ちる —
+ * 掃除できなかった Cookie と `state` 行は TTL が引き取る。
  */
 export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -64,12 +68,16 @@ export const abandonOAuthFlowFn = createServerFn({ method: "POST" })
     const { container, module } = await loadServerDeps(
       () => import("@repo/core/application/identity/abandonOAuthFlow"),
     );
-    const view = await module.abandonOAuthFlow({
-      container,
-      input: { state: data.state, stateBinding },
-    });
-    if (view.abandoned) {
-      stateCookie.clearOAuthStateCookie();
+    try {
+      const view = await module.abandonOAuthFlow({
+        container,
+        input: { state: data.state, stateBinding },
+      });
+      if (view.abandoned) {
+        stateCookie.clearOAuthStateCookie();
+      }
+    } catch (cause) {
+      container.logger.error("Abandoning the OAuth flow failed", { cause });
     }
     return null;
   });

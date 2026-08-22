@@ -22,8 +22,8 @@ const signInState: OAuthFlowState = {
 /**
  * Shared conformance suite for `OAuthStateStore` (ADP-common-036..038).
  * `take` must be an atomic get + delete that removes the row only when
- * the binding matches; expired rows for every intent are swept by the
- * same `deleteExpired`.
+ * the binding matches — even if the row has expired; expired rows for
+ * every intent are swept by the same `deleteExpired`.
  */
 export function describeOAuthStateStoreContract(
   backendName: string,
@@ -65,12 +65,34 @@ export function describeOAuthStateStoreContract(
       expect(results.filter((result) => result !== null)).toHaveLength(1);
     });
 
-    it("ADP-common-037: an expired state is not returned", async () => {
+    it("ADP-common-037/038: an expired take with the matching binding returns null and removes the row", async () => {
       await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
       backend.clock.advance(TTL_MS);
       expect(
         await backend.oauthStateStore.take("state-1", BINDING_HASH),
       ).toBeNull();
+
+      const swept = await backend.oauthStateStore.deleteExpired(
+        new Date(backend.clock.now().getTime() + TTL_MS),
+        null,
+        10,
+      );
+      expect(swept.deleted).toBe(0);
+    });
+
+    it("ADP-common-037/038: an expired take whose binding does not match returns null and leaves the row", async () => {
+      await backend.oauthStateStore.put("state-1", signInState, TTL_MS);
+      backend.clock.advance(TTL_MS);
+      expect(
+        await backend.oauthStateStore.take("state-1", OTHER_BINDING_HASH),
+      ).toBeNull();
+
+      const swept = await backend.oauthStateStore.deleteExpired(
+        new Date(backend.clock.now().getTime() + TTL_MS),
+        null,
+        10,
+      );
+      expect(swept.deleted).toBe(1);
     });
 
     it("ADP-common-038: deleteExpired sweeps both sign-in and integration intents in pages", async () => {

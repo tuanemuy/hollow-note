@@ -214,6 +214,7 @@ ADR-005 で消費経路の Cookie 破棄が「`OAUTH_STATE_INVALID` 以外なら
 - 良い点: どのバックエンドも自然に満たす。memory は「引く → 束縛比較 → 削除 → 期限判定」、D1 は `DELETE … WHERE state = ? AND binding_hash = ? RETURNING *` の 1 文（`WHERE` に期限を混ぜない、という 1 行の実装制約になるだけ）
 - 良い点: バックエンド間で「一致 × 期限切れ」の行の残り方がぶれる余地が消える。期限切れ行の掃除は引き続き `deleteExpired` が担うが、その入力集合が実装ごとに変わらない
 - トレードオフ: 契約が 1 象限ぶん強くなる。ただし適合スイートの追加ケースは要らない — 4 象限のうち観測差として現れるのは「不一致では消費されない」だけで、それはステップ 4 で足すケースが既に覆う
+- 訂正（レビュー 001 B-001 / W-001）: この「観測差が出ない」という前提は誤りだった。memory の `take` を「期限切れなら削除しない」に書き換えても適合スイートは全緑のままで、`deleteExpired` の件数として実際に観測差が出る。適合スイートに期限切れ側の 2 象限を足し、4 象限とケースを 1 対 1 に対応させる
 
 ---
 
@@ -234,3 +235,34 @@ ADR-007 で配線テストの `oauthStateStore` は memory の参照アダプタ
 - 良い点: ADR-007 の趣旨（AC-1 を満たすのは実装であってモックではない）を保ったまま、「呼ぶ前に畳む」を直接観測できる
 - 良い点: 転送境界のガードを消すと `take` が呼ばれてテストが落ちる。間接的な 3 点観測では気づけない退行を捕まえる
 - トレードオフ: `abandonOAuthFlowFn` の応答 `null` は harness では常に `TypeError` として観測されるため、この 3 ケースは「例外が出ないこと」を主張しない
+
+---
+
+## ADR-011: `abandonOAuthFlow` の後始末の失敗は転送境界で best-effort に畳む
+
+### Context
+
+ADR-004 で破棄が「Cookie を捨てる」からユースケース呼び出し（`OAuthStateStore.take`）に変わった。変更前の実体は Cookie 値の比較だけで、I/O が無く原理的に throw しなかった。いまはポート契約どおり `SystemError(DatabaseError)` を投げうる。
+
+唯一の呼び出し元は `callback.$provider.tsx` の loader で、`await abandonOAuthFlowFn(...)` を裸で呼んでいる。ここを例外が抜けると、P-05 は状態表が挙げる「キャンセル」を描く代わりにルートのエラー境界（SSR では 500）へ落ちる。取り残した Cookie の掃除に失敗しただけで、往復が失敗した理由の画面すら出せなくなる。参照ランタイム（memory）では顕在化しないが、D1 バックエンドでは普通に起きる。
+
+畳む場所は 3 つある。
+
+1. `abandonOAuthFlowFn` のハンドラーで catch し、`container.logger` に記録して `null` を返す
+2. loader 側で `.catch(() => null)` する
+3. 伝播させたままにする（現状維持）
+
+2 は route ファイルに logger が無く、原因不明の無音失敗になる。転送境界の catch がルートファイルへ散る点でも、消費経路の catch（`OAUTH_STATE_INVALID` 判定）と非対称になる。3 は上記の回帰をそのまま残す。
+
+### Decision
+
+案 1 を採る。ユースケース呼び出しを server function のハンドラー内で `try / catch` し、失敗は `container.logger.error(message, { cause })` に落として応答は `null` のままにする。loader 側の呼び出しは裸の `await` のまま変えない。
+
+CLAUDE.md の cross-layer catch policy が認める server-function 境界の catch であり、同じファイルの消費経路が既に持つ境界 catch と対称になる。掃除できなかった Cookie と `state` 行は TTL が引き取るので、失敗しても不変条件は壊れない（無条件破棄と違い、他人のフローを落とす向きへは倒れない）。
+
+### Consequences
+
+- 良い点: 後始末の失敗がコールバック画面の描画失敗に化けなくなる。破棄は best-effort な掃除という位置づけがコードにも現れる
+- 良い点: 失敗の事実と原因が logger に残る。載せるのは例外だけで、Cookie の値や `state` は載せない
+- トレードオフ: 破棄が黙って失敗するので、Cookie は TTL（最大 10 分）まで残りうる。取り残された Cookie は行が残っていても次のフロー開始が上書きする
+- トレードオフ: harness の制約（応答 `null` が常に `TypeError` になる）から、配線テストの主張は「例外が出ない」ではなく「境界がエラー応答へ変えていない」＋「logger に記録された」の 2 点になる

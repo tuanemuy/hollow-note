@@ -38,12 +38,14 @@ let backend: MemoryBackend;
 let oauthStateStore: ReturnType<typeof createMemoryOAuthStateStore>;
 // 実装そのものに委譲したまま「呼ばれたか」だけを数える。
 let take: ReturnType<typeof vi.fn>;
+let logger: Record<"info" | "warn" | "error", ReturnType<typeof vi.fn>>;
 
 vi.mock("@repo/core/application/di/containerStore", () => ({
   getContainer: async () => ({
     oauthStateStore,
     secureTokenGenerator,
     clock,
+    logger,
     config: { appUrl: "https://app.example.test" },
     signInOAuthClient: {
       exchangeCode: async () => {
@@ -147,6 +149,7 @@ beforeEach(() => {
   const store = createMemoryOAuthStateStore(backend);
   take = vi.fn(store.take);
   oauthStateStore = { ...store, take: take as typeof store.take };
+  logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 });
 
 describe("startOAuthSignInFn", () => {
@@ -248,6 +251,9 @@ describe("abandonOAuthFlowFn", () => {
       cookieOf("another-browsers-binding"),
     );
 
+    // 不一致を弾いているのは転送境界ではなく条件付き `take` なので、
+    // 呼ばれたうえで行が残っていることまで見る。
+    expect(take).toHaveBeenCalledTimes(1);
     expect(bindingHeader(outcome)).toBeUndefined();
     expect(storedState()).toBeDefined();
   });
@@ -263,5 +269,26 @@ describe("abandonOAuthFlowFn", () => {
     expect(take).not.toHaveBeenCalled();
     expect(outcome.setCookie).toHaveLength(0);
     expect(storedState()).toBeDefined();
+  });
+
+  it("records a failed cleanup instead of failing the callback screen", async () => {
+    const { abandonOAuthFlowFn } = await loadActions();
+    await parkFlow();
+    const failure = new Error("the state store is unavailable");
+    take.mockRejectedValueOnce(failure);
+
+    const outcome = await callServerFn(
+      () => abandonOAuthFlowFn({ data: { state: STATE } }),
+      cookieOf(BINDING),
+    );
+
+    // 応答 `null` はこの harness では常に `TypeError` になるので、主張は
+    // 「例外が無い」ではなく「ストアの失敗が呼び出し側へ漏れない」に置く。
+    expect(outcome.error).not.toBe(failure);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Abandoning the OAuth flow failed",
+      { cause: failure },
+    );
+    expect(bindingHeader(outcome)).toBeUndefined();
   });
 });

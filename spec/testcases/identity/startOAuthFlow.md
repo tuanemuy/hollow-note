@@ -2,8 +2,8 @@
 
 | 前提条件 | 操作 | 期待結果 | 実装ステータス |
 |---|---|---|---|
-| — | `provider: "google"`, `intent: "signIn"` で開始する | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される。応答は `authorizationUrl` と束縛の秘密（`stateBinding`）を返し、`state` は返さない | |
-| — | `provider: "google"`, `intent: "signIn"` で開始する | 保存された `stateBindingHash` が返った `stateBinding` の `hashOf` と一致する。かつ `stateBinding` は認可 URL の `state` と異なり、`stateBindingHash` は `state` の `hashOf` とも一致しない（束縛は `state` から導けない — [ADR 034](../../adr/034-oauth-callback-browser-binding.md)） | |
+| — | `provider: "google"`, `intent: "signIn"` で開始する | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される | |
+| — | `provider: "google"`, `intent: "signIn"` で開始する | 保存された `stateBindingHash` が、応答が返す `stateBinding` の `hashOf` と一致する。かつ `stateBinding` は認可 URL から読んだ `state`（応答には含まれない）と異なり、`stateBindingHash` は `state` の `hashOf` とも一致しない（束縛は `state` から導けない — [ADR 034](../../adr/034-oauth-callback-browser-binding.md)） | |
 | Activeでサインイン済み | `intent: "linkIdentity"` と `userId` を指定して開始する | 認可 URL が返り、保存された状態に `userId` とcurrent `userAuthEpoch`が含まれる | |
 | 削除開始済みまたは削除済み | `intent: "linkIdentity"` で開始する | OAuth stateを作らず、`UnauthorizedError("UNAUTHENTICATED")` が投げられる（認証済み利用者として扱わない） | |
 | — | `intent: "linkIdentity"` で `userId` を省略する | `ValidationError("USER_REQUIRED")` が投げられる | |
