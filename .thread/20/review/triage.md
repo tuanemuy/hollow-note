@@ -36,3 +36,5 @@ R2: 新規 12（生の指摘13件を重複統合）/ fix 5 / fix-editorial 6 / w
 fix内訳: adapter 2 / presentation 3 / spec 5 / general 1 / application 0→休止（R1 から継続）
 R3: 新規 2 / fix 1 / fix-editorial 0 / wont-fix 1 / defer 0 / 継承 0（方針フェーズ: 実施 — 2件だが spec 側が前ラウンドの修正との整合判断を含むため省略しなかった。要確認1件はメインが裁定 — 案A（TC とテストを足す）を採る）
 fix内訳: adapter 0→休止 / presentation 0→休止 / application 0→休止 / spec 1
+R4: 新規 0 / fix 0 / fix-editorial 0 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規指摘ゼロ。**fix ゼロのラウンドを観測したためレビュー完了・APPROVED**）
+fix内訳: spec 0 / general 0（休止中の adapter・presentation・application を引き継ぐ確認ラウンドとして実施）
