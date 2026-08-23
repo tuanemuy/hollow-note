@@ -79,13 +79,16 @@ export const Route = createFileRoute("/notes/")({
   // fires a request on every hover; note that `cause !== "preload"` only filters
   // preloads of *cached* matches — a layout match that stays active across its
   // children (`/settings`) is preloaded with `cause: "stay"` and is not filtered.
-  // The re-fetch runs in the background, so the resolved list stays on screen
-  // instead of flashing back to the skeleton.
+  // The re-fetch runs in the background, so the navigation itself settles at
+  // once; what keeps the resolved list from flashing back to the skeleton is
+  // `Deferred` deferring the swap (see below), not the re-run being a
+  // background one.
   shouldReload: ({ cause }) => cause !== "preload",
   // NoteList is still a Promise<ReactNode> — forwarded, never awaited.
-  // `boundedRedirectSource` clamps `location.href` to the same ceiling the
-  // bridge's validator enforces, so a long query string cannot turn the page
-  // into a 422.
+  // `boundedRedirectSource` drops `location.href` for the default `/notes`
+  // when it exceeds the ceiling the bridge's validator enforces — the return
+  // path is discarded whole, never truncated — so a long query string cannot
+  // turn the page into a 422.
   loader: ({ location }) =>
     renderNoteList({ data: { redirect: boundedRedirectSource(location.href) } }),
   component: NotesPage,
@@ -108,9 +111,11 @@ function NotesPage() {
 // apps/web/app/components/ui/Deferred — generic, reusable client resolver
 ("use client");
 export function Deferred<T extends ReactNode>({ promise }: { promise: Usable<T> }) {
-  return use(promise);
+  return use(useDeferredValue(promise));
 }
 ```
+
+`useDeferredValue` is what keeps a *successful* background re-run from tearing the list down. When the background loader completes, the router swaps `loaderData` wholesale for a fresh, still-unresolved fragment promise, and that store write reaches React through `useSyncExternalStore` — i.e. on SyncLane, regardless of the transition the router wrapped it in. A bare `use(promise)` would re-suspend on that urgent render and the already-mounted `<Suspense>` would drop back to its skeleton. Deferring holds the previous payload on screen and re-renders the swap on a transition lane, where suspending does not tear down visible content. On the first mount there is no previous value, so the skeleton still shows.
 
 Note the wrapper the bridge calls: **`renderServerFragment`** (`apps/web/app/presentation/serverFragment.tsx`), not `renderServerComponent` directly. `errorResponseMiddleware` only covers throws that happen *before* the handler returns; a deferred fragment that rejects mid-stream has already left the middleware behind, so its raw error would be serialized straight onto the Flight wire and never reach the server log. `renderServerFragment` restores both halves: `system` / `unknown` errors are logged server-side with their raw payload, and only the `redactForClient(...)` form crosses to the client (`spec/adr/031-error-transport-across-rsc-boundary.md`). The fragment root is invoked as a plain async function rather than as a child element, because a parent server component can only catch errors from work it awaits itself.
 
@@ -339,7 +344,7 @@ A helper that **just hits a specific port** and needs no usecase module may reac
 What keeps the server graph out of the client bundle here is the **dynamic import**: every one of those call sites reaches the store through `await import("@repo/core/application/di/containerStore")` inside the function that needs it, never a static top-level import. Two of them are shaped differently:
 
 - `serverErrorLog.ts` is the one static import, and it is deliberate — `containerStore` itself pulls in no node-only module, and that file is only ever reached from server-side error paths.
-- `appConfig.ts` is not a handler at all: the dynamic import sits inside `createIsomorphicFn().server(...)`, whose body is dropped from the client build. It also calls `getInstalledStore()?.getStore()?.config` rather than `getContainer()`, because `getRouter()` runs for requests that have no request scope (`/storage/$` and the other server routes) and a throw there would turn an unrelated file response into a 500.
+- `appConfig.ts` is not a handler at all: the dynamic import sits inside `createIsomorphicFn().server(...)`, whose body is dropped from the client build. It also calls `getInstalledStore()?.getStore()?.config` rather than `getContainer()`, which throws when there is no request scope. No request reaches `getRouter()` outside one today — `apps/web/app/server.node.ts` wraps every request in `storage.run(container, ...)`, which is exactly why `storage.$.tsx` above can call `getContainer()` from inside a server route. The tolerant read is insurance for the day a prerender or SPA-shell pass builds the router with no request behind it, so that a config lookup cannot turn an unrelated file response into a 500. Note how many call sites that covers: the framework builds the router for every document request, for every server route (`handleServerRoutes`), **and** in `handleRedirectResponse` — so every `redirect` thrown by the folded `/notes` bridge builds a router tree and resolves the config too.
 
 Where usecase invocation enters, switch over to going through `serverData` / `loadServerDeps` and graduate from this.
 
@@ -418,13 +423,15 @@ The route's only responsibility is "pass URL parameters to the server component 
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
+import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
 import { renderServerFragment } from "@/presentation/serverFragment";
 import { validateInput } from "@/presentation/validator";
 
 const noteDetailInputSchema = z.object({
   noteId: z.string().min(1).max(128),
   // The path to return to after signing in. A transport-boundary input, so it
-  // is bounded here (the same ceiling the loader clamps to) and passed through
+  // is bounded here — the same `REDIRECT_MAX_LENGTH` the loader's
+  // `boundedRedirectSource` measures against — and passed through
   // `safeRedirectPath` on the server side.
   redirect: z.string().min(1).max(REDIRECT_MAX_LENGTH),
 });
@@ -544,7 +551,7 @@ Guards need the *other* shape — a redirect, not a 401 — and that is a routin
 | `presentation/session.ts` | Cookie transport: read / write the session cookie and resolve the user behind it | `requireSession` (throws → 401), `sessionUserOrNull` (`null` when unauthenticated) |
 | `presentation/auth.ts` | Session **probe** that a route may call — the only one that enters a client graph, hence a server function | `sessionUserFn` |
 | `presentation/sessionGuard.ts` | The **redirect decision**: no session → `/signin`, carrying the path to return to | `requireSessionOrRedirect` |
-| `presentation/redirect.ts` | Pure functions the decision is made of — no framework import, so unit tests reach them without the server-function runtime | `safeRedirectPath`, `signInRedirectOptions`, `boundedRedirectSource` |
+| `presentation/redirect.ts` | Pure functions the decision is made of — no framework import, so unit tests reach them without the server-function runtime | `REDIRECT_MAX_LENGTH` (the transport ceiling both the bridge's validator and `/signin`'s `validateSearch` import), `safeRedirectPath`, `signInRedirectOptions`, `boundedRedirectSource` |
 
 ```typescript
 // apps/web/app/presentation/sessionGuard.ts
@@ -942,7 +949,7 @@ export async function getRouter() {
 }
 ```
 
-`getRouter` is `async` because of that first line: `resolveAppConfig` (`apps/web/app/presentation/appConfig.ts`) is an isomorphic function whose server half reads the container and whose client half returns `undefined`, leaving the client to take the value out of the dehydrated payload. Two consequences follow. Every `head` must stay written as `if (!config) return {}`, because the server half yields `undefined` outside a request scope. And nothing secret may ever be added to `AppConfig`: `dehydrate` puts the whole object into the SSR payload of every document, public pages viewed while signed out included.
+`getRouter` is `async` because of that first line: `resolveAppConfig` (`apps/web/app/presentation/appConfig.ts`) is an isomorphic function whose server half reads the container and whose client half returns `undefined`, leaving the client to take the value out of the dehydrated payload. Two consequences follow. Every `head` must keep an `if (!config)` early return, because the server half yields `undefined` outside a request scope — the invariant is *never read `config` when it is `undefined`*, not *return `{}`*. What that branch returns is the route's own call: the sixteen leaf routes return `{}`, while `__root.tsx` returns `{ links: baseLinks }` so the stylesheet and the favicons survive a config-less render. And nothing secret may ever be added to `AppConfig`: `dehydrate` puts the whole object into the SSR payload of every document, public pages viewed while signed out included.
 
 The defaults are not optional decoration. **SSR renders `route.errorComponent ?? defaultErrorComponent` at the matched route and does not bubble to the root boundary** (only client-side rendering bubbles). Without a router default, a route that omits `errorComponent` falls back to TanStack's built-in English error screen — with the raw `message` in it — on the server-rendered pass. The same reasoning applies to `defaultNotFoundComponent`.
 

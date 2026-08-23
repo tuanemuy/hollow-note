@@ -5,7 +5,7 @@ import { SettingsTabs } from "@/components/layout/SettingsTabs";
 import { ServerErrorState } from "@/components/ui/ErrorState";
 import { sessionUserFn } from "@/presentation/auth";
 import { buildHead } from "@/presentation/head";
-import { safeRedirectPath } from "@/presentation/redirect";
+import { signInRedirectOptions } from "@/presentation/redirect";
 
 /**
  * 設定のレイアウトルート（L-01 + P-20 タブ列）。個々の設定画面は子
@@ -27,8 +27,10 @@ export const Route = createFileRoute("/settings")({
   // このレイアウト match は子ルート間の遷移では `cause: "stay"` のまま
   // 生き残り、`staleMatchShouldReload` が偽になるので、毎ナビゲーションの
   // 再判定（＝下の `location.pathname` の分岐）はこの `shouldReload` が担う。
-  // `cause !== "preload"` が preload を弾けるのは cached match だけなので、
-  // このレイアウト match に対しては実質いつも真になる。
+  // `cause !== "preload"` が preload を弾けるのは cached match だけ。この
+  // レイアウト match がアクティブなまま残るあいだは常に真で、`/settings` の
+  // 外から入る preload では偽になるが、その match は未ロードなので
+  // `shouldReload` を参照せずに loader が走る。
   shouldReload: ({ cause }) => cause !== "preload",
   loader: {
     // `staleReloadMode` はオブジェクト形の loader でしか読まれない（関数形は
@@ -45,10 +47,7 @@ export const Route = createFileRoute("/settings")({
       if (location.pathname === SIGNED_OUT_PATH) {
         return { user: null };
       }
-      throw redirect({
-        to: "/signin",
-        search: { redirect: safeRedirectPath(location.href) },
-      });
+      throw redirect(signInRedirectOptions(location.href));
     },
   },
   head: ({ match }) => {

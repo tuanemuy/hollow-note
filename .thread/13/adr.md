@@ -192,3 +192,39 @@ ADR-002 で、オープンリダイレクト判定（`presentation/redirect.ts` 
 - 良い点: presentation → domain の依存方向なので、`CLAUDE.md` の内向き依存に沿う（`redirect.ts` は既に `@repo/core` を import できる層にいる）。
 - トレードオフ: `redirect.ts` の「`createServerFn` も他のフレームワーク import も無い純関数モジュール」という性質は保たれるが、`@repo/core` への import が 1 本増える。ユニットテストはこれまでどおり `redirect.ts` を単体で import できる（`sameOriginPolicy.ts` は依存を持たない純関数）。
 - トレードオフ: 値オブジェクト化は残る。`spec/adr/051` の理想形に対して「述語は 1 本、型はまだ」という中間状態が続く。
+
+---
+
+## ADR-005: 断片 promise の差し替えは消費側（`Deferred`）で deferred lane に載せる
+
+### Context
+
+ADR-003 で `/notes` `/notes/$noteId` の loader を毎ナビゲーション再実行させた結果、既訪 match へ戻る遷移は背景枝に落ちる。遷移自体は即座に settle するが、**背景の再取得が成功したときに何が起きるか**が AC-8 後半（「前回の一覧が表示されたまま置き換わる＝スケルトンに戻らない」）と噛み合っていなかった。実物を読んで確定した因果は 3 段:
+
+1. 背景の `runLoader` は完走時に `inner.updateMatch(matchId, prev => ({ ...prev, loaderData }))`（`router-core/src/load-matches.ts:699-704`）で **`loaderData` オブジェクトごと**差し替える。新しい `loaderData.NoteList` は `renderServerFragment` の**未解決**の promise である。
+2. その store 更新は urgent update として届く。`updateMatch` は `router.startTransition` の**内側**で `set` している（`router-core/src/router.ts:2714-2716`）が、`useLoaderData` → `useMatch` → `@tanstack/react-store` の `useStore` は `useSyncExternalStore` であり、購読側の再レンダリングは `forceStoreRerender` → `scheduleUpdateOnFiber(root, fiber, 2)`（`react-dom-client.development.js:8260-8262`、lane 2 = SyncLane）でトランジション文脈と無関係に SyncLane へ載る。
+3. したがって `<Deferred promise={NoteList}>` の `use(promise)` が SyncLane 上で再サスペンドし、マウント済みの `<Suspense>` が `NoteListSkeleton` を出す。
+
+ADR-003 の Consequences（L.158）が「`updateMatch` → `router.startTransition` の中で起きるのでスケルトンには戻らない」と書いていたのは、この 2 段目を取り違えている。**因果が「トランジションかどうか」ではなく「購読の再レンダリングが SyncLane 固定であること」にある**という差が、そのまま対処法を分ける — ルーター側の更新経路をトランジションで包み直しても直らず、直せるのは消費側だけである。
+
+### Decision
+
+**`apps/web/app/components/ui/Deferred` の消費を `use(useDeferredValue(promise))` にする。**
+
+`updateDeferredValueImpl`（`react-dom-client.development.js:8844-8861`）は、`renderLanes & 42`（SyncLane 2 | InputContinuousLane 8 | DefaultLane 32）が非 0 のとき `requestDeferredLane()` を要求して **`prevValue` を返す**。つまり SyncLane で届いた新しい断片 promise はその場では採用されず、前回の（解決済みの）promise が描画に使われ、差し替えは `requestDeferredLane()`（`react-dom-client.development.js:16347-16359`、TransitionLanes 帯）での再レンダリングに回る。トランジションレーンのレンダリングがサスペンドしても、既にマウント済みの `<Suspense>` はフォールバックへ戻らない。結果として背景再取得は「前の一覧が出たまま、新しい断片が解決したら入れ替わる」になる。
+
+初回マウントでは `mountDeferredValueImpl` が `initialValue` 無しで値をそのまま返すので、従来どおりサスペンド → スケルトンになる（AC-9a は不変）。
+
+**却下した案:**
+
+- **`/notes` 系にも `staleReloadMode: "blocking"` を入れる。** blocking が await するのは loader = ガード 1 往復だけで、返る `loaderData.NoteList` は commit 時点でも**未解決の断片 promise のまま**である。`use()` は必ずサスペンドするので**スケルトンは出る** — URL 確定が遅れるという損だけが残る。ADR-003（`/notes` 系をブロッキングにしない）を覆すべき新事実ではない。
+- **ルーター側の更新経路をトランジションで包み直す。** 上記 2 段目のとおり `useSyncExternalStore` の購読再レンダリングが SyncLane 固定なので効かない。
+- **「戻る操作ではスケルトンが出る」を受け入れて AC-8 を緩める。** 消費側 1 行で満たせる以上、基準を緩める理由が無い。
+
+### Consequences
+
+- 良い点: AC-8 後半が文字どおり成立する。差分は `Deferred` の 1 行と JSDoc。
+- 良い点: **ADR-003 は据え置き。** `/notes` 系の非ブロッキング（＝体感の改善という本 Issue の目的）と「スケルトンに戻らない」が両立する。
+- 良い点: `/settings` の 3 断片も同じ `Deferred` を通るが退行しない。そちらは初回マウント（従来どおりスケルトン）か、ミューテーション後の `router.invalidate()` による差し替え（前の内容が残る＝フロントエンド規約が望む側）のどちらかである。
+- トレードオフ: React ランタイムの内部挙動（レーン割り当て）に依存する。**本番実測を合格条件にする** — `testing.md` 手順 9 で「戻る操作の直後に `NoteListSkeleton` が再表示されないこと」を観測項目として明示する。
+- トレードオフ: 差し替えが 1 フレーム遅れる方向に倒れるので、断片が解決するまでのあいだ「前の一覧」が表示され続ける。失効時に前回の `loaderData` が 1 往復ぶん残る（ADR-003 / `spec/adr/030`）性質は変わらず、この決定はそれを縮めも広げもしない。

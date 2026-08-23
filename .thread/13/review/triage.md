@@ -124,3 +124,116 @@
 - fix 16 件をすべて反映（計画A〜F）。品質ゲート: `pnpm typecheck` PASS / `pnpm lint:fix` 修正なし / `pnpm format` 修正なし / `pnpm test` 935 passed・3 skipped
 - defer 2 件を起票: #37（canonical 重複）/ #38（`spec/presentation/index.md` の `AppConfig` 節の矛盾）
 - wont-fix 3 件は `triage-keys.md` に記録。note-docs W-008（CLAUDE.md 未掲載）は Phase 7 の昇格ゲートで提案に回す
+
+---
+
+## Round 002
+
+3 本のレビュー（auth B:0/W:4、routing B:1/W:5、note-docs B:0/W:6 — 計 16 件）を統合して **11 件**。
+
+`triage-keys.md`（Round 001 の wont-fix / defer 5 件）と照合した結果、**既出 Key の再指摘は 0 件**。3 本とも「蒸し返さない」節を持ち、既出項目を明示的に除外している。したがって再指摘回数はすべて 0 のまま。
+
+| Key | 元ID | 判定 | 理由 | 再指摘回数 |
+| --- | --- | --- | --- | --- |
+| `routes/notes/{index,$noteId}.tsx` + `components/ui/Deferred` / 背景再取得が断片 promise ごと差し替わりスケルトンへ巻き戻る | routing B-001 | fix | **実物で裏を取った。真。** 3 段で確定する: (1) 背景枝の `runLoader` は完走時に `inner.updateMatch(matchId, prev => ({ ...prev, loaderData }))`（`src/load-matches.ts:699-704`）で **`loaderData` オブジェクトごと**差し替え、新しい `NoteList` は `renderServerFragment` の未解決 promise なので `Deferred` の `use()` が再サスペンドする。(2) その更新が urgent update になる。`updateMatch` は `router.startTransition` の内側で store を `set` する（`src/router.ts:2714-2716`）が、`useLoaderData` → `useMatch` → `@tanstack/react-store` の `useStore` は `useSyncExternalStore` であり、購読側の再レンダリングは `forceStoreRerender` → `scheduleUpdateOnFiber(root, fiber, 2)`（`react-dom-client.development.js:8260-8262`、lane 2 = SyncLane）で**トランジション文脈と無関係に SyncLane へ載る**。したがってマウント済みの `<Suspense>` はフォールバック（`NoteListSkeleton`）を出す。(3) **本 PR 以前の自分自身の記述が同じことを言っている** — 削除された `docs` の旧文「under `staleTime: 0` a revisit re-runs the loader, produces a fresh promise, and the Suspense boundary re-suspends — so the cached list flashes back to the skeleton on every back-navigation」。`main` の DEV（`staleTime: 0`）は本 PR の本番とまったく同じ枝を通るので、本 PR はこの失効モードを本番へ持ち込んでいる。**基準は緩めず実装で満たす**（計画G） | 0 |
+| `routes/signin.tsx:11` / 転送境界の上限 `2048` が即値のまま | auth W-002, routing W-003, note-docs W-003 | fix | 真。3 観点が独立に同じ 1 行を指した。`signin.tsx` は既に `@/presentation/redirect` から import しており、定数を引かない理由が無い。今は 3 箇所とも 2048 なので実害は無いが、`REDIRECT_MAX_LENGTH` を動かすと `/signin` の `.max(2048).catch(undefined)` が**エラーも出さず握り潰して** `/notes` に倒れる。`.catch(undefined)` があるぶん検知が効かない。1 行で鎖が閉じる | 0 |
+| `routes/settings/route.tsx:48-51` / `signInRedirectOptions` を経由せず options を自前で組む | auth W-001, note-docs W-002 | fix | 真。Round 001 の fix #25 は「`/signin` への行き先の組み立てを 1 本にしてユニットテストで固定する」ことが目的だったのに、リポジトリ内に組み立てが 2 通り残り、テストの網の外にあるのは `SIGNED_OUT_PATH` 分岐を抱えた条件付きの側。`docs:547` が `redirect.ts` を "Pure functions the decision is made of" と説明している分担とも食い違う。倒し先の既定はどちらも `/notes` なので、寄せても挙動は変わらない | 0 |
+| `routes/settings/route.tsx:30-31` / `shouldReload` コメントが「実質いつも真」と断定している | auth W-003, routing W-005 | fix | 真。`/settings` の**外**から（`/notes` の `AccountMenu` などから）ホバーした時点ではこのレイアウト match はアクティブでも cached でもないので `resolvePreload`（`src/load-matches.ts:53-55`）が真 → `cause: "preload"` → `shouldReload` は**偽**。挙動は無害（未ロードなので `status !== 'success'` 枝で loader は走り、クリック時は `cause: "enter"` で必ず走り直す）だが、ADR-003 Consequences が 3 ルートのコメントに要求した精度がここだけ逆向きに落ちており、`/notes` 系 2 ファイルは正しく書けている。**1 文足して閉じる**（言い回しの磨き上げには広げない） | 0 |
+| `spec/adr/030:33` / 残存窓の記述が既訪 match に限定されておらず、別利用者の再サインイン経路も覆えていない | auth W-004, note-docs W-005 | fix | **2 件は統合する** — 指している抜けは別（W-005 =「広すぎる」／W-004 =「狭すぎる」）だが、**直す対象は同じ 1 文**であり、片方だけ直すと他方が残る。両方とも真: 背景枝に落ちるのは `status === "success"` の**既訪** match だけなので初回遷移では窓が開かない（W-005）。一方、同一タブで**別の利用者**がサインインし直す経路（`SignInForm/index.tsx:141-146` の `await router.invalidate()` → `router.history.push`）では cached match が `invalid: true` で残るため同じ背景枝を通り、redirect が無いので現行の文の説明が当たらない（W-004）。ADR 030 の課題欄が名指ししているのは「前の利用者のデータが画面に出る」であり、この経路こそその本体。**挙動は変えない**（`/notes` 系のブロッキング化は ADR-003 の既決事項）。canon の 1 文を「既訪 match に限る」＋「別利用者の再サインインも同じ窓を通る」で書き直す | 0 |
+| `docs:342` + `presentation/appConfig.ts:22-26` / `/storage/$` が要求スコープを持たないという理由づけ | routing W-001 | fix | 真。`server.node.ts:129` は `storage.run(container, () => entry.fetch(request))` で**すべての**要求を包んでおり、`handleServerRoutes` の `getRouter()` もその内側。`routes/storage.$.tsx:38` が同じ要求内で `getContainer()` を呼んで成功している以上、「要求スコープを持たない」なら `/storage/$` は今日すでに全滅している。同じ段落の直前で `storage.$.tsx` を `getContainer()` 呼び出し側に挙げているので文書内でも自己矛盾。**寛容な契約（Round 001 routing W-003 の fix）自体は正しく、間違っているのは理由づけだけ** — 正しい理由は plan.md / ADR-001 が書いている「将来 prerender / SPA shell を入れると要求スコープ外で走りうる」。あわせて本 PR で新しく発火するようになった `handleRedirectResponse` 経由の呼び出しが未記載 | 0 |
+| `docs:86-88,426-428` / `boundedRedirectSource` を「clamp」と説明している | note-docs W-001 | fix | 真。実装は `href.length <= REDIRECT_MAX_LENGTH ? href : "/notes"`（`redirect.ts:31-33`）で、切り詰めではなく**遷移元を丸ごと捨てる**。doc の語に従って truncate 実装に書き換えると、途中で切れたパスは同一オリジンなので `safeRedirectPath` を素通りする — 誤読が実害に直結する。コード側 JSDoc は正しく書けており、ずれているのは doc だけ | 0 |
+| `docs:415-430,547` / `REDIRECT_MAX_LENGTH` の出所が doc のどこにも無い | note-docs W-004 | fix | 真。doc は L.3 で「Every path and identifier below points at real code」と宣言し、import ブロックを省略記号なしで全量掲載しているので、そこに無い識別子は読者から見て出所不明になる。import 1 行と Exports 欄 1 項目の追加で閉じる（doc 側を `redirectField` 共有の形に組み替えるところまでは広げない） | 0 |
+| `docs:945` / 「Every `head` must stay written as `if (!config) return {}`」が root と一致しない | note-docs W-006 | fix | 真。`__root.tsx:40-43` は `if (!config) return { links: baseLinks };` で、config が引けなくても stylesheet と favicon は出す（出さないと未スコープ要求の SSR がスタイル無しになる）。doc の言い方をそのまま守ると root の分岐を `return {}` へ「直す」改変を誘発する。守らせたい不変条件は「`config` が `undefined` のとき `config` を触らない」こと | 0 |
+| `routes/settings/route.tsx:32-53` / 失効後のホバーでも子断片の 401 が飛ぶことが手順書に無い | routing W-004 | fix | 真。`/settings/profile` に居て隣のタブを preload すると、レイアウト match はアクティブなので `cause: "stay"` → `shouldReload` 真 → blocking で `runLoader` → redirect。同じ tick で着火済みの子断片 loader（`renderIdentityList` → `requireSession()`）は 401 を返し切り、非アクティブ match なので `preloadRoute` の `updateMatch`（`src/router.ts:2924-2931`）がストアへ `status: 'error'` を書く。**挙動は退行ではない**（クリック時は `status !== 'success'` で再実行され、レイアウトの redirect が遷移を奪う）が、`testing.md` 手順 12(a) は「`/signin` へナビゲートしない」しか見ていないので、Phase 4 の実測で 401 を退行として誤記録する。手順書に 1 行足して閉じる | 0 |
+| `presentation/appConfig.ts:32-39` / `undefined` を返しても痕跡が残らない | routing W-002 | **wont-fix** | 過度に防御的。(1) 契約は Round 001 の routing W-003 で「寛容側に倒し、JSDoc で明示する」と決着済みで、覆すべき新事実は出ていない。(2) 今日この `undefined` に到達する経路は無い（全要求が `storage.run` の内側）。配線が壊れれば `routes/storage.$.tsx` と `routes/settings/-action.tsx` の `getContainer()` が**先に throw して**大きな音を立てるので、「誰も気づけない」は成り立たない。(3) 実際に `undefined` が正常値になる将来の経路（prerender / shell 生成）では、この warn は全ページぶんのノイズになる。(4) 素の `console` はロギングをポートの背後に置く CLAUDE.md の方針から外れる | 0 |
+
+### fix の観点別内訳
+
+- 認証・セッション: 3（`signInRedirectOptions` への集約、上限定数の共有、`/settings` の `shouldReload` コメント精度）
+- ルーティング基盤: 2（断片差し替えの deferred 化 = routing B-001、`/storage/$` の要求スコープ記述）
+- ノート/ドキュメント: 3（clamp の語義、`REDIRECT_MAX_LENGTH` の出所、root の `head` の言い方）
+- canon・手順書: 2（`spec/adr/030` の 1 文、ホバー時 401 の手順注記）
+
+（合計 10 件。1 件が複数観点に跨る場合は主たる観点に 1 回だけ数えた）
+
+### routing B-001 の事実確認と、AC-8 をどう満たすか
+
+**結論: 指摘は真。ただし提案 (a) は解決にならない。基準は緩めず実装で満たす。**
+
+- **提案 (a)（`/notes` 系にも `staleReloadMode: "blocking"`）は誤り。** blocking が await するのは loader = ブリッジ 1 往復だけで、返ってくる `loaderData.NoteList` は**未解決の断片 promise のまま**である。commit 時点で `use()` は必ずサスペンドするので、**blocking にしてもスケルトンは出る** — 出ないのは URL 確定だけが遅れるという損だけ。したがって ADR-003（`.thread/13/adr.md:159`）が `/notes` 系のブロッキング化を退けた判断を**覆すべき新事実は無い**。ADR-003 は据え置く。
+- **レビューの因果の説明は途中で 1 段ずれている。** 「`router.startTransition` が async スコープに入らないから非トランジション更新になる」は結論としては合っているが、決め手はそこではない。`updateMatch` は `router.startTransition` の**内側**で store を `set` している（`src/router.ts:2714`）。それでもフォールバックが出るのは、`useSyncExternalStore` の購読再レンダリングが `scheduleUpdateOnFiber(root, fiber, 2)` = SyncLane 固定だからである。**この差は対処法を分ける** — ルーター側をトランジションで包み直しても直らず、直せるのは**消費側**だけ。
+- **消費側で満たす道がある。** `useDeferredValue` は urgent なレンダリング（SyncLane / DefaultLane）で新しい値を**遅らせて前の値を返し**、deferred lane で再レンダリングする（`react-dom-client.development.js:8844-8861`: `renderLanes & 42` が非 0 = urgent のとき `requestDeferredLane()` して `prevValue` を返す）。deferred lane のレンダリングがサスペンドしても、既に表示済みの内容はフォールバックに置き換わらない。したがって `Deferred` を `use(useDeferredValue(promise))` にすれば、背景再取得の差し替えは「前の一覧が出たまま、新しい断片が解決したら入れ替わる」になり **AC-8 後半が文字どおり成立する**。初回マウントでは前の値が無いので従来どおりサスペンド → スケルトン（AC-9a は不変）。
+- **ただし React ランタイムの挙動なので、本番実測を合格条件にする。** 計画K が `testing.md` 手順 9 に「`NoteListSkeleton` が再表示されないこと」を観測項目として明記する。**実測でなお巻き戻るなら**、そのときこそ AC-8 後半は達成不能と確定するので、AC-8 の文面・`docs:82-83`・`/notes` 系 2 ファイルのコメントを**同時に**書き換え、達成不能の理由（ADR-002 の畳み込み ＋ ADR-003 の毎ナビゲーション再判定 ＝ 毎回新しい未解決 promise が生まれる、かつ `loaderData` は SyncLane で届く）を ADR-005 に記録する。どちらへ転んでも ADR-005 は書く。
+
+---
+
+### 実行計画
+
+担当ファイルが重ならない 5 単位に分けた。**順序依存は 計画G → 計画I / 計画K の一部だけ**（`docs:82-83` と AC-8 の文面が G の実測結果に依存する）。計画H / 計画J は完全に独立。
+
+#### 計画G: 断片の差し替えを deferred lane に載せる（routing B-001）
+
+- 対象指摘: routing B-001
+- 対象ファイル:
+  - `apps/web/app/components/ui/Deferred/index.tsx`
+  - `apps/web/app/routes/notes/index.tsx`
+  - `apps/web/app/routes/notes/$noteId.tsx`
+  - `.thread/13/adr.md`（ADR-005 の追記）
+- 方針:
+  1. `Deferred` を `use(useDeferredValue(promise))` にする。JSDoc に WHY を 2 文で残す:「`loaderData` は `useSyncExternalStore` 経由で SyncLane に届くので、背景再取得での差し替えは urgent update になり、マウント済みの `<Suspense>` がフォールバックへ戻る」「deferred lane に載せると、新しい断片が解決するまで前の内容が残る」。**`Deferred` は `/settings` の断片でも使われる**が、そちらは初回マウント（従来どおりスケルトン）か、ミューテーション後の `router.invalidate()` による差し替え（前の内容が残る = フロントエンド規約の望ましい側）なので退行しない。
+  2. `/notes` 系 2 ルートのコメントは、既存の「既訪 match の再実行は背景枝に落ちるので失効後は前回の `loaderData` が 1 往復ぶん出る」を**残したうえで**、「スケルトンに戻らない」の根拠が *背景だから* ではなく *`Deferred` が差し替えを deferred lane に載せているから* だと分かる 1 句だけ足す。コメントを増やさない（既存文の書き換えで収める）。
+  3. **ADR-005 を `.thread/13/adr.md` に足す。** Context = 背景枝は `loaderData` ごと未解決 promise に差し替え、その更新は SyncLane（証拠は上の 3 段）。Decision = 消費側（`Deferred`）で deferred lane に載せる。却下案 = `/notes` 系の `staleReloadMode: "blocking"`（**ガード 1 往復しか await しないので commit 時点の断片 promise は未解決のまま = スケルトンは出る。遅くなるだけで解決にならない**）／ルーター側の更新経路に手を入れる（`useSyncExternalStore` が SyncLane 固定なので効かない）。Consequences に「ADR-003 は据え置き」「本番実測が合格条件」を書く。
+  4. 実測（計画K の手順）で**なお巻き戻る場合**: 実装は revert せず（害は無い）、ADR-005 の Decision を「達成不能」に書き換え、AC-8 後半 ＋ `docs:82-83` ＋ 本ルートのコメントを同時に訂正する。**この分岐に入ったら計画I / 計画K に折り返して伝えること。**
+
+#### 計画H: `/signin` へ戻す導線を 1 本にし、上限を定数へ寄せる
+
+- 対象指摘: auth W-001/note-docs W-002、auth W-002/routing W-003/note-docs W-003、auth W-003/routing W-005
+- 対象ファイル:
+  - `apps/web/app/routes/settings/route.tsx`
+  - `apps/web/app/routes/signin.tsx`
+- 方針:
+  1. `settings/route.tsx` の `throw redirect({ to: "/signin", search: { redirect: safeRedirectPath(location.href) } })` を `throw redirect(signInRedirectOptions(location.href))` に寄せる。`safeRedirectPath` の直 import は落ちる（`signInRedirectOptions` を import）。`SIGNED_OUT_PATH` の分岐は `handler` 側にそのまま残す — `signInRedirectOptions` は「行き先の組み立て」しか持たない。
+  2. `signin.tsx` を `import { REDIRECT_MAX_LENGTH, safeRedirectPath } from "@/presentation/redirect";` にして `z.string().max(REDIRECT_MAX_LENGTH)` にする。**テスト追加は不要** — `redirect.test.ts` が 2048 / 2049 の境界を既に固定しており、定数を共有すればブリッジ側と `/signin` 側が同時に動く。
+  3. `settings/route.tsx:30-31` のコメントを 2 段で言い切る:「アクティブなまま残るあいだは常に真。`/settings` の外から入る preload では `cause: "preload"` で偽になるが、その match は未ロードなので `shouldReload` を参照せずに loader が走る」。**この 1 文の差し替えで閉じる**（コメント全体の推敲には広げない）。
+
+#### 計画I: `docs` の整合と `appConfig.ts` の理由づけ
+
+- 対象指摘: note-docs W-001、note-docs W-004、note-docs W-006、routing W-001、（routing B-001 の doc 側 = `docs:82-83`）
+- 対象ファイル:
+  - `docs/frontend_implementation_example.md`
+  - `apps/web/app/presentation/appConfig.ts`
+- 依存: **`docs:82-83` の 2 行だけは計画G の実測結果を待つ。** それ以外は先行してよい。
+- 方針:
+  1. `docs:86-88` と `docs:426-428` の「clamp（to the same ceiling）」をやめ、「上限を超えたら遷移元を切り詰めずに既定の `/notes` へ倒す」の意に直す。
+  2. `docs:415-430` の import ブロックに `REDIRECT_MAX_LENGTH` を足し、`docs:547` の `presentation/redirect.ts` の Exports 欄に定数を加える。
+  3. `docs:945` を「Every `head` must keep its `if (!config)` early return（root だけは `baseLinks` を返す）」の意に直す。
+  4. `docs:342`: 「`getRouter()` runs for requests that have no request scope (`/storage/$` …)」を落とし、「今日この経路は無い（全要求が `storage.run` の内側で、`storage.$.tsx` は同じ要求内で `getContainer()` を呼んでいる）。prerender / SPA shell 生成を入れた日に要求スコープ外で走りうるので、その日に無関係なファイル配信まで 500 にしないための保険」と書き直す。あわせて `handleRedirectResponse` 経由の呼び出しが本 PR で発火するようになったことを 1 行足す。
+  5. `appConfig.ts` の `resolveAppConfig` JSDoc も同じ理由づけに揃える（現行の「`/storage/$` を含む全要求から呼ばれるので要求スコープ外の throw が…」は、読者に「これらの要求はスコープ外」と読ませる）。**契約（`undefined` を返す）は変えない。**
+  6. `docs:82-83`（"The re-fetch runs in the background, so the resolved list stays on screen…"）を、計画G の結果に合わせて「背景で走り、かつ差し替えが deferred lane に載るので前の一覧が出たまま置き換わる」か、（実測で巻き戻った場合は）「戻る操作ではスケルトンが 1 往復ぶん出る」に直す。**"background だから" を単独の根拠として残さない。**
+
+#### 計画J: canon（`spec/adr/030`）の残存窓の記述
+
+- 対象指摘: auth W-004 + note-docs W-005（統合）
+- 対象ファイル: `spec/adr/030-auth-state-transition-transport.md`（このファイルのみ）
+- 方針:
+  - 「影響」欄 3 つ目の箇条書き（L.33）を 1 文で書き直す。含める要素は 3 つ: (a) 対象は `/notes` `/notes/:noteId` の**既訪（cached）match** に限る（初回遷移はブロッキングで窓が開かない）、(b) 同一タブで**別の利用者がサインインし直した**場合も同じ背景枝を通る（`router.invalidate()` は cached match を invalid にするだけでブロッキングにはしない）ので、前の利用者の一覧と上部バーの本人表示が 1 往復ぶん残る、(c) `/settings` のガードはブロッキングなのでこの窓は開かない（既存の記述を維持）。
+  - **挙動は変えない。** `/notes` 系のブロッキング化は ADR-003 の既決事項であり、今ラウンドの事実確認でも「blocking にしてもスケルトンは出る = 得るものが無い」ことが分かっている（計画G / ADR-005）。
+  - 「決定」欄・代替案欄には触らない。
+
+#### 計画K: 受け入れ基準と手順書
+
+- 対象指摘: routing W-004、routing B-001（観測項目）
+- 対象ファイル:
+  - `.thread/13/plan.md`
+  - `.thread/13/testing.md`
+- 依存: AC-8 の**文面**を触るのは計画G の実測が失敗した場合だけ。観測項目の追記は先行してよい。
+- 方針:
+  1. `testing.md` 手順 9（AC-8 / 本番ビルド）の確認項目に「**戻る操作の直後に `NoteListSkeleton` が再表示されないこと**」を明示的に足す（要求本数だけを数えて合格にしない）。plan.md の AC-8 にも「観測点はスケルトンの再表示」と 1 句添える。
+  2. `testing.md` 手順 12(a)（失効後にタブ列へホバー）に「Network に子断片の 401 が 1 本残るのは想定どおり（レイアウトのガードと並列に走る子の断片 loader が返す）。退行として記録しない」を足す。plan.md「リスクと注意点」の該当行（未サインイン時の 401 が 1 本）は**ナビゲーション限定の書き方をやめ、preload でも出ると 1 句広げる**。
+  3. 計画G の実測が失敗した場合のみ、AC-8 後半（「スケルトンに戻らない」）を実態に合わせて書き換える。**その場合は計画G（ADR-005）・計画I（`docs:82-83`）と同時に入れること** — 3 箇所のうち 1 つでも古い断定が残ると、次の読み手が `shouldReload` を他ルートへ広げる導線になる。
+
+### Round 002 の結末
+
+- fix 10 件をすべて反映（計画G〜K）。品質ゲート: `pnpm typecheck` PASS / `pnpm lint:fix` 修正なし / `pnpm format` 修正なし / `pnpm test` 935 passed・3 skipped
+- routing B-001（AC-8 不成立）は `Deferred` を `use(useDeferredValue(promise))` にして解決。本番ビルド + agent-browser で実測確認済み（戻る操作 4 回とも `NoteListSkeleton` 出現 0 件。修正前は 21ms 後に 1 件）。判断は ADR-005 に記録
+- wont-fix 1 件（routing W-002）は `triage-keys.md` に記録。defer 起票は 0 件

@@ -131,7 +131,7 @@ console.table(
 
 ## 確認項目
 
-項目 1〜15 は DEV（`pnpm dev`）で上から順に通す。ただし項目 9 の後半と項目 11 は本番ビルドで測る（各項目に明記）。項目 14（アカウント削除）はアカウントを消すので **DEV の最後**に回す。
+項目 1〜15 と項目 19 は DEV（`pnpm dev`）で上から順に通す。ただし項目 9 の後半と項目 11 は本番ビルドで測る（各項目に明記）。項目 19 は末尾に足した回帰項目だが **DEV で項目 14 より前**に通す（項目 14 でアカウントが消えるため）。項目 14（アカウント削除）はアカウントを消すので **DEV の最後**に回す。
 
 ### 1. `/notes` へのクライアント遷移が 1 本 / 1 段になる
 
@@ -304,20 +304,33 @@ console.table(
 
 - **対応する受け入れ基準:** AC-8
 - **検証手段:** browser
-- **目的:** `shouldReload` による再実行が**背景で**走り、既存の一覧を保ったまま置き換わることを本番ビルドで確かめる
+- **目的:** `shouldReload` による再実行が**背景で**走って遷移が即座に settle すること、および**その差し替えでスケルトンに巻き戻らない**ことを本番ビルドで確かめる。後者の根拠は背景枝ではなく `Deferred` の `use(useDeferredValue(promise))`（ADR-005）— 背景枝の `updateMatch` は `loaderData` を未解決の断片 promise ごと差し替え、その更新は SyncLane で届くので、消費側が deferred lane に載せていなければマウント済みの `<Suspense>` はフォールバックへ戻る。**React ランタイムの挙動に依存する判断なので、本番実測が合格条件**
 - **手順:**
   1. `.env` を本番ビルド用に直し、`pnpm build` → `pnpm start`。起動ログの URL を開く。
   2. メール + パスワードでサインインし、ノートを 1 件作る。
   3. `/notes` → 一覧のノートをクリック → `/notes/{noteId}`。
   4. DevTools の Network で throttling を「Slow 4G」程度にする。
   5. 計測手順の 5〜8（`performance.clearResourceTimings()` → **ブラウザー戻る** → スニペット → HAR）を実行し、戻る操作中の画面を観察する。
+  6. **スケルトンの再表示を目視だけで判定しない。** 戻る操作の**前**に Console で次を仕込み、戻ったあと `window.__skel` の要素数と時刻を読む（0 件が合格）。戻る操作は 4 回繰り返し、毎回 0 件であることを見る。
+     ```js
+     window.__skel = [];
+     const t0 = performance.now();
+     new MutationObserver(() => {
+       if (document.querySelector('main[aria-busy="true"]')) {
+         window.__skel.push(Math.round(performance.now() - t0));
+       }
+     }).observe(document.body, { childList: true, subtree: true });
+     ```
+     セレクターの根拠: `NoteListSkeleton` は `<main aria-busy="true">` を出す（`apps/web/app/components/note/NoteListSkeleton/index.tsx:18-19`）。本体の `NoteList` は `aria-busy` を持たない。
 - **期待結果:**
   - 戻る以降の `_serverFn` が **1 本**（`renderNoteList`）。
-  - 遷移は**即座に settle** し、**前回の一覧が表示されたまま**新しい内容に置き換わる（`NoteListSkeleton` に戻らない）。
+  - 遷移は**即座に settle** し、**前回の一覧が表示されたまま**新しい内容に置き換わる。
+  - **戻る操作の直後に `NoteListSkeleton` が再表示されない**（手順 6 の観測で 4 回とも 0 件）。**これが本項目の主眼**で、要求本数だけを数えて合格にしない。
 - **確認ポイント:**
   - **0 本なら `shouldReload` が入っていない**（`staleTime: Infinity` のキャッシュに埋もれている）。
   - **2 本なら root 側（ステップ 1）が入っていない**（`loadAppContext` が毎ロード飛んでいる）。
-  - スケルトンに戻るなら背景再取得になっていない（同期ロードに落ちている）。
+  - **スケルトンが 1 件でも出たら不合格。** 原因は「背景再取得が同期ロードに落ちている」か「`Deferred` が `useDeferredValue` を通していない」のどちらかで、後者なら戻る操作の数十 ms 後（`Deferred` 修正前の実測では 21ms 後）に 1 件出る。要求が 1 本で `Start Time` も即時なのにスケルトンが出るなら後者。
+  - **`/notes` 系に `staleReloadMode: "blocking"` を足して直そうとしないこと。** blocking が await するのは loader（ガード 1 往復）だけで、commit 時点の断片 promise は未解決のままなのでスケルトンは出たまま、URL 確定が遅れるだけになる（ADR-005 の却下案）。
 
 ### 12. `/notes` 系はブリッジ応答の完了前にスケルトンが出る
 
@@ -427,6 +440,26 @@ console.table(
   - `.thread/` を除外するのは計画・ADR に語として出てくるため。実装と docs だけを見る。
   - コード側（ステップ 5）だけを消しても `docs/frontend_implementation_example.md` の 4 箇所が残っていれば通らない。ステップ 6 とセットで初めて閉じる。
 
+### 19. `Deferred` の deferred lane 化が他の断片ルートを壊していない
+
+- **対応する受け入れ基準:** AC-9a の不変性を守る回帰項目（ADR-005 / 新しい AC は立てない）
+- **検証手段:** browser
+- **目的:** `Deferred`（`use(useDeferredValue(promise))`）は `/notes` 系だけでなく `/settings/{profile,auth,usage}` の 3 断片からも使われる。deferred lane 化で **(a) 初回マウントのスケルトンが出なくなる**、**(b) ミューテーション後の `router.invalidate()` で内容が更新されない**、のどちらも起きていないことを確かめる
+- **手順:** DEV で、Network throttling を「Slow 4G」にしてから通す。
+  1. サインイン済みで `/notes` を開き、アカウントメニューの「設定」をクリックする（**初回**遷移）。設定カラムの表示を観察する。
+  2. `/settings/auth`、`/settings/usage` へも**初回**遷移し、同じく設定カラムを観察する。
+  3. `/notes` へ**初回**遷移し、一覧が出るまでの表示を観察する（項目 12 と同じ観測。ここでは再確認）。
+  4. `/settings/profile` で表示名を変更して保存し、保存後の表示を観察する。
+  5. `/settings/auth` でログイン方法を 1 つ追加（または解除）し、一覧の変化を観察する。
+  6. `/notes` で「新規作成」→ 詳細 → 上部バーの「ノート一覧」で戻り、一覧に 1 件増えていることを見る。
+- **期待結果:**
+  - 手順 1〜3（**初回マウント**）: `ProfileFormSkeleton` / `IdentityListSkeleton` / `UsagePanelSkeleton` / `NoteListSkeleton` が**出る**。**これが正**（`useDeferredValue` は初回に前の値を持たないのでそのままサスペンドする。**AC-9a は不変**）。
+  - 手順 4〜6（**ミューテーション後の `router.invalidate()`**）: 前の内容が表示されたまま、新しい断片が解決した時点で置き換わる。数秒以内に必ず新しい値（表示名 / ログイン方法 / ノート 1 件）に**更新される**。
+- **確認ポイント:**
+  - **初回でスケルトンが出なくなっていたら不合格。** `useDeferredValue` に `initialValue` を渡している疑い（渡すと初回も前の値扱いになる）。ストリーミングの初回フォールバックは `CLAUDE.md` のフロントエンド規約が要求している側なので、消してはいけない。
+  - **手順 4〜6 で内容が古いまま戻らないなら不合格。** deferred lane の再レンダリングが走っていない（差し替え後の promise が同一参照になっている疑い）。`router.invalidate()` から数秒待っても変わらなければここを疑う。
+  - ミューテーション後にスケルトンへ**巻き戻る**のは deferred lane 化の目的（前の内容を残す）に反するので、これも不合格として記録する。
+
 ## エッジケース・異常系
 
 ### 1. 未サインインで `/settings/profile` を SSR 直開きしたときの HTML 応答が 307 である
@@ -486,6 +519,7 @@ console.table(
   4. アドレスバーの URL と画面表示を記録する。
   5. `main` でも 1〜4 を実行する。
 - **期待結果:** URL は **`/settings/profile` のまま**で `/signin` へナビゲートしない。ホバーぶんのガード要求は飛び、その応答は redirect だが、preload の解決として握り潰される。**`main` と同じ挙動**になる。
+- **想定内（退行として記録しない）:** ホバーだけで**子断片の 401 が 1 本飛び**（レイアウト match はアクティブなので `cause: "stay"` → `shouldReload` 真 → ガードが redirect する一方、同じ tick で着火済みの子断片 loader は `requireSession()` で 401 を返し切る）、その cached match が `status: "error"` のまま残る。**クリックすれば `status !== "success"` で再実行され、レイアウトの redirect が遷移を奪うので `/signin?redirect=/settings/...` に着く**（エッジケース 6）。画面には `ServerErrorState` は出ない。
 - **確認ポイント:**
   - **`/signin?redirect=/settings/profile` へ飛んだら不合格。** レイアウトの loader が非ブロッキングのままである（背景枝の `router.navigate` は preload かどうかを見ない）。`loader: { handler, staleReloadMode: "blocking" }` の**オブジェクト形**になっているかを見る — **関数形の loader に `staleReloadMode` を書いても参照されない**。
   - `/settings/danger` で削除を受理した直後（セッションが消えたままその場に留まる画面）でも同じ操作を 1 回試す。ここで飛ばされると AC-11 の「その場に留まる」が失われる。

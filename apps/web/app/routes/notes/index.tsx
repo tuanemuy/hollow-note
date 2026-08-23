@@ -15,7 +15,9 @@ export const Route = createFileRoute("/notes/")({
   // match だけで、アクティブなまま残る `/settings` レイアウトのような match
   // には効かない。また既訪 match の再実行は背景枝に落ちるので、失効後は前回の
   // `loaderData` が 1 往復ぶん表示されてから redirect する
-  // （`beforeLoad` のブロッキング性は戻らない）。
+  // （`beforeLoad` のブロッキング性は戻らない）。成功する再取得でスケルトンに
+  // 戻らないのは背景枝だからではなく、`Deferred` が断片 promise の差し替えを
+  // deferred lane に載せているため（ADR-005）。
   shouldReload: ({ cause }) => cause !== "preload",
   loader: ({ location }) =>
     renderNoteList({
