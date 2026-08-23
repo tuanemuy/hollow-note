@@ -105,3 +105,25 @@ Round 5 は fix ゼロだった **Port Contract & Application** と **Runtime Wi
 | `conformance/scopeTaskScheduler.ts / listDue の負の limit が未拘束` | Adapter W-001 | fix | ミューテーションで実証（`limit < 0` を無制限に変えても全緑）。SQLite / D1 の `LIMIT -1` = 無制限を #11 が踏みうる |
 
 Round 4 追加ケース「re-arms a pending row on schedule…」は実効的であることを再確認（247 ケース中この1件だけが赤になる）。
+
+## Round 6（Adapter 観点のみ）
+
+- 指摘: Blocker 0 / Warning 0
+- 内訳: fix 0 / wont-fix 0 / defer 0
+- **Verdict: APPROVED**（fix ゼロで完了）
+
+全観点が fix ゼロに到達。Round 4 で Port Contract & Application / Runtime Wiring & Spec 整合性が、Round 6 で Adapter が fix ゼロ。
+
+## 通算
+
+- ラウンド数: 6
+- 指摘総数: Blocker 8 / Warning 46
+- fix: 46 / wont-fix 2 / defer 0
+- 起票した Issue: なし（defer ゼロ）
+
+### wont-fix 一覧（Phase 7 で why not コメントへの転記要否を確認する）
+
+| Key | 判定理由 |
+| --- | --- |
+| `conformance/scopeTaskScheduler.ts / running 行への backoffOrSchedule が未拘束` | 事実誤認（既に拘束されていた）。コードへの転記は不要 |
+| `memory/repositories/scopeTaskScheduler.ts / Date インスタンスの防御コピー` | 読む本番経路が無く、memory アダプター全体が「payload は clone / Date は素通し」で一貫。今回の変更を越えて効く逸脱ではない |
