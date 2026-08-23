@@ -93,3 +93,15 @@ Round 3 が弱点として申告した `backoffOrSchedule` × `pending` は、Ro
 ### 観点の休止
 
 Round 5 は fix ゼロだった **Port Contract & Application** と **Runtime Wiring & Spec 整合性** を休止し、**Adapter 観点のみ**を起動する。
+
+## Round 5（Adapter 観点のみ）
+
+- 指摘: Blocker 0 / Warning 1
+- 内訳: fix 1 / wont-fix 0 / defer 0
+- fix の観点別内訳: Adapter 1
+
+| Key | ID | 判定 | 理由 |
+| --- | --- | --- | --- |
+| `conformance/scopeTaskScheduler.ts / listDue の負の limit が未拘束` | Adapter W-001 | fix | ミューテーションで実証（`limit < 0` を無制限に変えても全緑）。SQLite / D1 の `LIMIT -1` = 無制限を #11 が踏みうる |
+
+Round 4 追加ケース「re-arms a pending row on schedule…」は実効的であることを再確認（247 ケース中この1件だけが赤になる）。

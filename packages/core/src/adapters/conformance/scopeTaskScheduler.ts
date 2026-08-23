@@ -97,6 +97,12 @@ export function describeScopeTaskSchedulerContract(
       expect(
         await backend.scopeTaskQueue.listDue(backend.clock.now(), 0),
       ).toEqual([]);
+      // A negative limit is its own case on the read side: `LIMIT -1`
+      // means unbounded in SQLite / D1, so passing it straight through
+      // hands back the whole backlog while the zero case still passes.
+      expect(
+        await backend.scopeTaskQueue.listDue(backend.clock.now(), -1),
+      ).toEqual([]);
     });
 
     it("orders by priority before dueAt, and returns in that order", async () => {
