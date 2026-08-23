@@ -1041,7 +1041,7 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 
 `kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
 
-鍵と秘密はテーブルに置かない。供給元（`AppConfig`）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
+鍵と秘密はテーブルに置かない。供給元（composition root が渡す鍵束）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
 
 ---
 
