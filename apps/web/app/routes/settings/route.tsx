@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { SettingsTabs } from "@/components/layout/SettingsTabs";
 import { ServerErrorState } from "@/components/ui/ErrorState";
-import { safeRedirectPath, sessionUserFn } from "@/presentation/auth";
+import { sessionUserFn } from "@/presentation/auth";
 import { buildHead } from "@/presentation/head";
+import { safeRedirectPath } from "@/presentation/redirect";
 
 /**
  * 設定のレイアウトルート（L-01 + P-20 タブ列）。個々の設定画面は子
@@ -21,12 +22,26 @@ import { buildHead } from "@/presentation/head";
 const SIGNED_OUT_PATH = "/settings/danger";
 
 export const Route = createFileRoute("/settings")({
+  // この `staleTime` は下の `shouldReload` があるかぎり参照されない
+  // （`shouldReload ?? staleMatchShouldReload` の左辺が常に非 undefined）。
   staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
+  // ガードを `beforeLoad` ではなく `loader` に置くのは、子ルートの断片
+  // loader と並列に走らせるため（`beforeLoad` は match 順に逐次）。
+  // 関数形なのは `shouldReload: true` だと `preloadStaleTime` まで死んで
+  // ホバーのたび要求が飛ぶため。ただし `cause !== "preload"` が preload を
+  // 弾けるのは cached match だけで、このレイアウト match は子ルート間の
+  // preload ではアクティブなまま（`cause: "stay"`）なので効かない。
+  shouldReload: ({ cause }) => cause !== "preload",
+  loader: async ({ location }) => {
     const user = await sessionUserFn();
     if (user !== null) {
       return { user };
     }
+    // このレイアウト match は子ルート間の遷移でも生き残るので、`loader` は
+    // ナビゲーションごとには走らない（`cause: "stay"` かつ
+    // `previousRouteMatchId === match.id` で `staleMatchShouldReload` が偽）。
+    // 上の `shouldReload` があって初めて再実行される。`location.pathname`
+    // の分岐は「パスが変われば自動で再判定される」ものではない。
     if (location.pathname === SIGNED_OUT_PATH) {
       return { user: null };
     }
@@ -49,7 +64,7 @@ export const Route = createFileRoute("/settings")({
 });
 
 function SettingsLayout() {
-  const { user } = Route.useRouteContext();
+  const { user } = Route.useLoaderData();
   if (user === null) {
     return <SettingsColumn />;
   }

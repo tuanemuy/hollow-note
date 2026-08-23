@@ -3,23 +3,25 @@ import { type ReactNode, Suspense } from "react";
 import { NoteDetailSkeleton } from "@/components/note/NoteDetailSkeleton";
 import { Deferred } from "@/components/ui/Deferred";
 import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
-import { requireAuthenticated } from "@/presentation/auth";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
 import { renderNoteDetail } from "./-action";
 
 export const Route = createFileRoute("/notes/$noteId")({
+  // この `staleTime` は下の `shouldReload` があるかぎり参照されない
+  // （`shouldReload ?? staleMatchShouldReload` の左辺が常に非 undefined）。
   staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
-    const user = await requireAuthenticated(location.href);
-    return { user };
-  },
-  loader: async ({ params }) => {
-    const { NoteDetail } = await renderNoteDetail({
-      data: { noteId: params.noteId },
-    });
-    return { NoteDetail };
-  },
+  // loader がガードを兼ねるので、`staleTime` のキャッシュにガードが埋もれ
+  // ないよう毎ナビゲーション再実行させる（`beforeLoad` が持っていた性質）。
+  // 関数形なのは `shouldReload: true` だと `preloadStaleTime` まで死んで
+  // ホバーのたび要求が飛ぶため。ただし `cause !== "preload"` が preload を
+  // 弾けるのは cached match だけで、アクティブなまま残る `/settings`
+  // レイアウトのような match には効かない。
+  shouldReload: ({ cause }) => cause !== "preload",
+  loader: ({ params, location }) =>
+    renderNoteDetail({
+      data: { noteId: params.noteId, redirect: location.href },
+    }),
   head: ({ match }) => {
     const config = match.context?.config;
     if (!config) return {};

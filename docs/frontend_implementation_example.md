@@ -49,16 +49,19 @@ The awaited form above blocks navigation until the data is fully resolved (no fa
 
 ```tsx
 // apps/web/app/routes/notes/-action.tsx
-// bridge — return the UNRESOLVED promise (do not await renderServerFragment)
+// bridge — resolve the session AND return the UNRESOLVED fragment promise
 export const renderNoteList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
-  .handler(async () => {
-    const [{ NoteList }, { requireSession }] = await Promise.all([
+  .validator(validateInput(z.object({ redirect: z.string().min(1).max(2048) })))
+  .handler(async ({ data }) => {
+    const [{ NoteList }, { requireSessionOrRedirect }] = await Promise.all([
       import("@/components/note/NoteList"),
-      import("@/presentation/session"),
+      import("@/presentation/sessionGuard"),
     ]);
-    const user = await requireSession();
+    // No session → throws `redirect({ to: "/signin", search: { redirect } })`.
+    const user = await requireSessionOrRedirect(data.redirect);
     return {
+      user,
       NoteList: renderServerFragment(() => NoteList({ userId: user.userId })),
     };
   });
@@ -68,28 +71,28 @@ export const renderNoteList = createServerFn({ method: "GET" })
 // apps/web/app/routes/notes/index.tsx
 // route — forward the inner promise, resolve it under <Suspense>
 export const Route = createFileRoute("/notes/")({
-  // MANDATORY for the streaming variant. The loaderData holds an unresolved
-  // promise; under `staleTime: 0` a revisit re-runs the loader, produces a fresh
-  // promise, and the Suspense boundary re-suspends — so the cached list flashes
-  // back to the skeleton on every back-navigation / in-app link. Caching the
-  // settled promise (Infinity in prod) keeps the resolved list on screen; mutation
-  // freshness comes from the explicit `router.invalidate()`, not from re-fetching.
+  // Declared intent only — this route never consults it, because
+  // `shouldReload ?? staleMatchShouldReload` never falls through to the
+  // right-hand side once `shouldReload` is present (`preloadStaleTime` dies
+  // with it). Do not leave it here silently; drop it or say so, as here.
   staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
-    const user = await requireAuthenticated(location.href);
-    return { user };
-  },
-  loader: async () => {
-    const { NoteList } = await renderNoteList();
-    return { NoteList }; // NoteList is still a Promise<ReactNode>
-  },
+  // MANDATORY once the loader carries the guard: `loader` (unlike `beforeLoad`)
+  // is cache-gated, so without this the guard stops being re-evaluated per
+  // navigation on any cached match. Function form, because `shouldReload: true`
+  // fires a request on every hover; note that `cause !== "preload"` only filters
+  // preloads of *cached* matches — a layout match that stays active across its
+  // children (`/settings`) is preloaded with `cause: "stay"` and is not filtered.
+  // The re-fetch runs in the background, so the resolved list stays on screen
+  // instead of flashing back to the skeleton.
+  shouldReload: ({ cause }) => cause !== "preload",
+  // NoteList is still a Promise<ReactNode> — forwarded, never awaited.
+  loader: ({ location }) => renderNoteList({ data: { redirect: location.href } }),
   component: NotesPage,
   errorComponent: () => <ServerErrorState />,
 });
 
 function NotesPage() {
-  const { NoteList } = Route.useLoaderData();
-  const { user } = Route.useRouteContext();
+  const { user, NoteList } = Route.useLoaderData();
   return (
     <AppShell displayName={user.displayName} avatarUrl={user.avatarUrl}>
       <Suspense fallback={<NoteListSkeleton />}>
@@ -110,7 +113,14 @@ export function Deferred<T extends ReactNode>({ promise }: { promise: Usable<T> 
 
 Note the wrapper the bridge calls: **`renderServerFragment`** (`apps/web/app/presentation/serverFragment.tsx`), not `renderServerComponent` directly. `errorResponseMiddleware` only covers throws that happen *before* the handler returns; a deferred fragment that rejects mid-stream has already left the middleware behind, so its raw error would be serialized straight onto the Flight wire and never reach the server log. `renderServerFragment` restores both halves: `system` / `unknown` errors are logged server-side with their raw payload, and only the `redactForClient(...)` form crosses to the client (`spec/adr/031-error-transport-across-rsc-boundary.md`). The fragment root is invoked as a plain async function rather than as a child element, because a parent server component can only catch errors from work it awaits itself.
 
-Because the route guard (`beforeLoad`) redirects but a bare server-function call cannot, each bridge also calls `requireSession()` inside its handler — defense in depth: the guard redirects, the handler returns 401.
+**The authority on authorization is the handler side, never the route's `beforeLoad`** — a `beforeLoad` guard is reachable only through the router, while the bridge is callable directly, so a route guard can add a round trip but can never add a decision. Two shapes follow from that, chosen by where the guard and the fragment sit:
+
+- **Guard and fragment in the same match** (`/notes`, `/notes/$noteId`): fold them together. The bridge resolves the session itself and throws `redirect({ to: "/signin", search: { redirect } })` when there is none, so the route drops its `beforeLoad` entirely — **one request, one leg**. The transition path arrives from the client, so it goes through `.validator(validateInput(...))` for shape/DoS and `safeRedirectPath` for value safety (open redirect).
+- **Guard on a layout, fragment on its children** (`/settings`): these are separate matches and cannot be folded, so **parallelize** instead. Move the layout's guard from `beforeLoad` (run sequentially, match by match) to `loader` (run through `Promise.all`) and it fires alongside the children's fragment loaders — **two requests, one leg**.
+
+Whenever a guard moves into a `loader`, pair it with `shouldReload` (see the comment in the snippet above). `beforeLoad` runs on every navigation unconditionally; `loader` is gated by `staleTime` and by the match surviving the navigation, so without `shouldReload` the guard silently stops being re-evaluated — invisibly in DEV for `/notes` (`staleTime: 0`), and in *both* environments for a layout match that stays alive across its children.
+
+A folded bridge answers in two shapes, and they are not interchangeable: **no session at all → `redirect`**, **a session whose subject is invalid (being deleted / deleted) → 401**. `sessionUserOrNull` swallows only `UNAUTHENTICATED`, so everything else still surfaces as an error at the boundary.
 
 The skeleton (`apps/web/app/components/ui/Skeleton` for the generic bar, `apps/web/app/components/note/NoteListSkeleton` shaped to `NoteList`'s DOM, plus `NoteDetailSkeleton` / `IdentityListSkeleton` / `ProfileFormSkeleton` / `UsagePanelSkeleton`) carries one `role="status"` announcement; the individual bars are `aria-hidden` and respect `prefers-reduced-motion` via `motion-reduce:animate-none`.
 
@@ -405,17 +415,20 @@ import { validateInput } from "@/presentation/validator";
 
 const noteDetailInputSchema = z.object({
   noteId: z.string().min(1).max(128),
+  // The path to return to after signing in. A transport-boundary input, so it
+  // is bounded here and passed through `safeRedirectPath` on the server side.
+  redirect: z.string().min(1).max(2048),
 });
 
 export const renderNoteDetail = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(noteDetailInputSchema))
   .handler(async ({ data }) => {
-    const [{ NoteDetail }, { requireSession }] = await Promise.all([
+    const [{ NoteDetail }, { requireSessionOrRedirect }] = await Promise.all([
       import("@/components/note/NoteDetail"),
-      import("@/presentation/session"),
+      import("@/presentation/sessionGuard"),
     ]);
-    const user = await requireSession();
+    const user = await requireSessionOrRedirect(data.redirect);
     return {
       NoteDetail: renderServerFragment(() =>
         NoteDetail({ noteId: data.noteId, userId: user.userId }),
@@ -428,17 +441,14 @@ export const renderNoteDetail = createServerFn({ method: "GET" })
 // apps/web/app/routes/notes/$noteId.tsx
 
 export const Route = createFileRoute("/notes/$noteId")({
+  // Not consulted while `shouldReload` is present — see the note above.
   staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
-    const user = await requireAuthenticated(location.href);
-    return { user };
-  },
-  loader: async ({ params }) => {
-    const { NoteDetail } = await renderNoteDetail({
-      data: { noteId: params.noteId },
-    });
-    return { NoteDetail };
-  },
+  // The loader carries the guard, so keep it running per navigation.
+  shouldReload: ({ cause }) => cause !== "preload",
+  loader: ({ params, location }) =>
+    renderNoteDetail({
+      data: { noteId: params.noteId, redirect: location.href },
+    }),
   head: ({ match }) => {
     const config = match.context?.config;
     if (!config) return {};
@@ -475,7 +485,7 @@ function NoteDetailPage() {
 
 - The loader merely calls the server function bridge. Confine `renderServerFragment(...)` and server-only imports to the bridge's handler side.
 - **Place the shared shell (Header / tab strip / Dialog mount, etc.) in the route `component` — for a group of screens, in the parent route's `component`. Do not include the shell in the fragment the bridge renders.** If you do, the shell gets swapped out along with the entire RSC tree and remounted on every transition, and client state such as menu open/close is lost and flickers. Pass only leaf-specific content into the RSC payload. Reference implementations: `apps/web/app/routes/settings/route.tsx` holds `AppShell` + `SettingsTabs` for all of `/settings/*` while `auth.tsx` / `profile.tsx` / `usage.tsx` contribute only their fragment; `apps/web/app/routes/notes/index.tsx` wraps its own `AppShell`; `apps/web/app/routes/notes/$noteId.tsx` defines a local `ReaderShell` and — this is the part that matters — reuses it in `errorComponent` too, so a failure keeps the shell instead of dropping the reader onto a bare page.
-- Since `staleTime` remains in effect even after navigation, the cache can be reused when you return to the same URL.
+- Since `staleTime` remains in effect even after navigation, the cache can be reused when you return to the same URL — **unless the route declares `shouldReload`**, which takes precedence over `staleTime` / `preloadStaleTime` entirely. Routes whose loader carries an auth guard are in the second group.
 - When you want to force a refetch, use `useRouter().invalidate()` on the client.
 - Input validation uses **`.validator(...)`**. The `input`-prefixed alias from older TanStack Start releases is deprecated and is not used anywhere in this repository.
 
@@ -516,33 +526,34 @@ export async function requireSession() {
 export async function sessionUserOrNull() { /* ... */ }
 ```
 
-Route guards need the *other* shape — a redirect, not a 401 — so `apps/web/app/presentation/auth.ts` wraps the same probe in a server function and a `beforeLoad` helper:
+Guards need the *other* shape — a redirect, not a 401 — and that is a routing decision, not cookie transport. The three modules split along exactly that line, so reach for the one that matches what you need:
+
+| Module | Role | Exports |
+|---|---|---|
+| `presentation/session.ts` | Cookie transport: read / write the session cookie and resolve the user behind it | `requireSession` (throws → 401), `sessionUserOrNull` (`null` when unauthenticated) |
+| `presentation/auth.ts` | Session **probe** that a route may call — the only one of the three that enters a client graph, hence a server function | `sessionUserFn` |
+| `presentation/sessionGuard.ts` | The **redirect decision**: no session → `/signin`, carrying the path to return to | `requireSessionOrRedirect` |
 
 ```typescript
-// apps/web/app/presentation/auth.ts
+// apps/web/app/presentation/sessionGuard.ts
 
-export const sessionUserFn = createServerFn({ method: "GET" })
-  .middleware([errorResponseMiddleware])
-  .handler(async (): Promise<AuthenticatedUserView | null> => {
-    const { sessionUserOrNull } = await import("@/presentation/session");
-    return sessionUserOrNull();
-  });
-
-export async function requireAuthenticated(
-  locationHref: string,
-): Promise<AuthenticatedUserView> {
-  const user = await sessionUserFn();
+export async function requireSessionOrRedirect(redirectTo: string) {
+  const { sessionUserOrNull } = await import("./session");
+  const user = await sessionUserOrNull();
   if (user === null) {
     throw redirect({
       to: "/signin",
-      search: { redirect: safeRedirectPath(locationHref) },
+      // Value safety for an input that came off the wire. The predicate itself
+      // lives in the domain (`SameOriginPolicy.isSameOriginPath`); this only
+      // decides where a rejected value falls back to.
+      search: { redirect: safeRedirectPath(redirectTo) },
     });
   }
   return user;
 }
 ```
 
-Calling `await requireAuthenticated(location.href)` from a route's `beforeLoad` and `await requireSession()` from a server-function handler completes the authentication check on both halves. Instead of using `createMiddleware`, aligning on simple helpers pairs better with RSC — and the pair is intentional, not redundant: the guard makes navigation land on `/signin`, the in-handler check makes a direct POST return 401.
+Instead of using `createMiddleware`, aligning on simple helpers pairs better with RSC. Which helper a screen uses follows the two shapes described under the streaming variant: a bridge that owns both the guard and the fragment calls `requireSessionOrRedirect` and needs no route guard at all, while a layout that guards children owning their own fragments calls `sessionUserFn` from its `loader` (plus `shouldReload`) so the guard runs in parallel with them. `requireSession` stays the in-handler check for mutations, where there is no navigation to redirect.
 
 ## Server Function (mutation)
 

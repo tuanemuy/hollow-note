@@ -1,12 +1,22 @@
 import { createRouter } from "@tanstack/react-router";
 import { NotFoundState, ServerErrorState } from "./components/ui/ErrorState";
 import { RoutePendingFallback } from "./components/ui/RoutePendingFallback";
+import { type RouterContext, resolveAppConfig } from "./presentation/appConfig";
 import { sanitizeRouteError } from "./presentation/errorDisplay";
 import { routeTree } from "./routeTree.gen";
 
-export function getRouter() {
-  return createRouter({
+export async function getRouter() {
+  const config = await resolveAppConfig();
+  const router = createRouter({
     routeTree,
+    context: { config } satisfies RouterContext,
+    // 配備ごとにしか変わらない値なので、SSR ペイロードに 1 回だけ載せる。
+    // クライアントは以降これを要求しない。
+    dehydrate: () => ({ config }),
+    // `matchRoutes` より前に走るので、最初のクライアント遷移から効く。
+    hydrate: (dehydrated) => {
+      router.update({ context: { config: dehydrated.config } });
+    },
     scrollRestoration: true,
     defaultPreload: "intent",
     defaultPendingComponent: RoutePendingFallback,
@@ -28,10 +38,11 @@ export function getRouter() {
     // 既定が無いと組み込みの `Not Found` だけが出る。
     defaultNotFoundComponent: () => <NotFoundState />,
   });
+  return router;
 }
 
 declare module "@tanstack/react-router" {
   interface Register {
-    router: ReturnType<typeof getRouter>;
+    router: Awaited<ReturnType<typeof getRouter>>;
   }
 }
