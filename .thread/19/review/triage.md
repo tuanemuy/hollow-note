@@ -55,3 +55,24 @@
 | Runtime W-002 | `PORT` / `HOSTNAME` の読みの是正 | 本 PR が持ち込んでいない既存の非対称でスコープ外 |
 | Spec W-003 | `spec/platform:177` / `:184` の統合 | ADR-008 が2つの入口を意図的に揃えた正本側 |
 | Port W-002 | 既定リース値の引き下げ | ADR-005 の決着を覆す新事実なし。spec 側の帯の条件付けで解消 |
+
+## Round 3
+
+- 指摘: Blocker 2 / Warning 11（統合1組を経て 12 件）
+- 内訳: fix 12 / wont-fix 0 / defer 0
+- fix の観点別内訳: Port Contract & Application 4 / Adapter 4 / Runtime Wiring 2 / Spec 2
+- 既出台帳と Key 一致の指摘: なし
+
+判定の詳細と実行計画は `triage-plan-003.md`。
+
+### 統合
+
+| 統合後 | 統合元 | 内容 |
+| --- | --- | --- |
+| `SCOPE_TASK_LEASE_MS` の説明の根拠 | Runtime W-002 + Spec W-003 | 参照ランタイムで起こりえない危険を根拠に据えている |
+
+### 主要な判定
+
+- Port W-002 は**実装のバグではなくコメントの問題**。`claimed.length <= limit` により内側の `break` は到達不能で、no-handler の `continue` は `spec/platform:186` の規定どおり。"processed" → 訪問へ是正し、到達不能な `break` は分岐ごと削除
+- Adapter B-001 / B-002 / W-001 は個別ケースの追加ではなく、**遷移表の 5 操作 × from 状態 × 観測属性の全セルを機械的に照合**して空欄を埋める方針に切り替え（Round 2 でも同種の穴を塞いだのに新しい穴が出続けたため）
+- 3観点から挙がった「文章の肥大・重複」は、足すのではなく**整理・削除する方向**の独立した計画に束ねた（ポート JSDoc は「表が規範・散文が理由」へ再構成、spec は2正本を分節、docs は参照ランタイムの実態を根拠に）

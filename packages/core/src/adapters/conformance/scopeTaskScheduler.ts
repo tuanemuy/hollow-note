@@ -54,6 +54,18 @@ export function describeScopeTaskSchedulerContract(
     const claim = (limit: number, leaseMs = SCOPE_TASK_LEASE_MS) =>
       scheduler.claimDue({ now: backend.clock.now(), limit, leaseMs });
 
+    const parkAsFailed = async (operationId: string): Promise<void> => {
+      await schedule(operationId, -MINUTE_MS);
+      for (let attempt = 0; attempt < SCOPE_TASK_MAX_ATTEMPTS; attempt += 1) {
+        await scheduler.backoff(
+          "usage.userCleanupContinued",
+          operationId,
+          backend.clock.now(),
+        );
+        backend.clock.advance(24 * 60 * MINUTE_MS);
+      }
+    };
+
     it("claims only tasks whose dueAt has passed", async () => {
       await schedule("op-1", -MINUTE_MS);
       await schedule("op-2", MINUTE_MS);
@@ -352,23 +364,29 @@ export function describeScopeTaskSchedulerContract(
       ).toEqual({ cursor: "b" });
     });
 
-    it("re-arms a running row on schedule, releasing its lease and taking the new priority", async () => {
+    it("re-arms a running row on schedule, releasing its lease and taking the new dueAt, priority and payload", async () => {
       await schedule("op-1", -MINUTE_MS);
       await claim(10);
 
+      // Re-armed for later than it was: an upsert that keeps the row's
+      // own `dueAt` runs the continuation at the moment the caller
+      // deliberately moved away from.
       await schedule(
         "op-1",
-        -MINUTE_MS,
+        MINUTE_MS,
         "usage.userCleanupContinued",
         { cursor: "next" },
         ScopeTaskPriority.expiryCollection,
       );
+      expect(await claim(10)).toEqual([]);
 
+      // Still inside the lease the first claim took, so what makes the
+      // row claimable here is `schedule` having released it.
+      backend.clock.advance(MINUTE_MS);
       const claimed = await claim(10);
       expect(claimed).toHaveLength(1);
       expect(claimed[0]?.priority).toBe(ScopeTaskPriority.expiryCollection);
       expect(claimed[0]?.payload).toEqual({ cursor: "next" });
-      expect(claimed[0]?.attempt).toBe(0);
     });
 
     it("completes and backs off a running row by key alone", async () => {
@@ -468,11 +486,14 @@ export function describeScopeTaskSchedulerContract(
       expect(await claim(10)).toHaveLength(1);
     });
 
-    it("backs off a row that does not exist yet by minting it", async () => {
+    it("backs off a row that does not exist yet by minting it from the input", async () => {
+      // Minted away from the helper default, so a backend that pins a
+      // priority instead of reading `input.priority` is visible here
+      // rather than landing back on the same value.
       await scheduler.backoffOrSchedule({
         kind: "storage.ownerDeleteContinued",
         operationId: "op-1",
-        priority: ScopeTaskPriority.securityCleanup,
+        priority: ScopeTaskPriority.expiryCollection,
         payload: { deletionOperationId: "d1" },
         now: backend.clock.now(),
       });
@@ -483,12 +504,13 @@ export function describeScopeTaskSchedulerContract(
       expect(claimed).toHaveLength(1);
       expect(claimed[0]?.attempt).toBe(1);
       expect(claimed[0]?.payload).toEqual({ deletionOperationId: "d1" });
+      expect(claimed[0]?.priority).toBe(ScopeTaskPriority.expiryCollection);
 
       // An existing row is backed off, not restarted.
       await scheduler.backoffOrSchedule({
         kind: "storage.ownerDeleteContinued",
         operationId: "op-1",
-        priority: ScopeTaskPriority.securityCleanup,
+        priority: ScopeTaskPriority.expiryCollection,
         payload: { deletionOperationId: "d1" },
         now: backend.clock.now(),
       });
@@ -496,34 +518,73 @@ export function describeScopeTaskSchedulerContract(
       expect((await claim(10))[0]?.attempt).toBe(2);
     });
 
-    it("parks a task as failed once the attempt cap is reached", async () => {
-      await schedule("op-1", -MINUTE_MS);
-
-      for (let attempt = 0; attempt < SCOPE_TASK_MAX_ATTEMPTS; attempt += 1) {
-        await scheduler.backoff(
-          "usage.userCleanupContinued",
-          "op-1",
-          backend.clock.now(),
-        );
-        backend.clock.advance(24 * 60 * MINUTE_MS);
-      }
+    it("parks a task as failed once the attempt cap is reached, hiding it from both reads", async () => {
+      await parkAsFailed("op-1");
 
       expect(await claim(10)).toEqual([]);
+      // A parked row is no reason to wake its scope either: the runner
+      // would find nothing to claim there, every tick, forever.
+      expect(
+        await backend.scopeTaskQueue.listDue(backend.clock.now(), 10),
+      ).toEqual([]);
+    });
 
-      // Backing off a failed row leaves it failed, however far the clock
-      // moves: were it to fall back to pending, a poison turn would
-      // retry forever with `schedule` no longer the only way back.
+    it("keeps a failed task failed through either retry variant", async () => {
+      await parkAsFailed("op-1");
+
+      // Neither variant is a way back, however far the clock moves: were
+      // one to fall to pending, a poison turn would retry forever and
+      // `SCOPE_TASK_MAX_ATTEMPTS` would buy nothing. `backoffOrSchedule`
+      // is the trap of the two — reading a failed row as absent mints it
+      // afresh, and an operation re-entered by event takes that path.
       await scheduler.backoff(
         "usage.userCleanupContinued",
         "op-1",
         backend.clock.now(),
       );
+      await scheduler.backoffOrSchedule({
+        kind: "usage.userCleanupContinued",
+        operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        payload: {},
+        now: backend.clock.now(),
+      });
       backend.clock.advance(365 * 24 * 60 * MINUTE_MS);
       expect(await claim(10)).toEqual([]);
+    });
 
-      // Rescheduling revives a failed row as a fresh attempt.
+    it("revives a failed task on schedule, as a fresh attempt", async () => {
+      await parkAsFailed("op-1");
+
       await schedule("op-1", -MINUTE_MS);
-      expect(await claim(10)).toHaveLength(1);
+
+      // `schedule` is the only way back, so an upsert that carries the
+      // exhausted `attempt` over disarms the sole recovery there is: the
+      // revived row falls straight back to failed on its next backoff.
+      const revived = await claim(10);
+      expect(revived).toHaveLength(1);
+      expect(revived[0]?.attempt).toBe(0);
+    });
+
+    it("removes a failed task on complete, freeing its key", async () => {
+      await parkAsFailed("op-1");
+
+      await scheduler.complete("usage.userCleanupContinued", "op-1");
+
+      // Settling reaches a row in any state, so the key is absent again
+      // and mints rather than staying parked — otherwise one exhausted
+      // row would block that continuation for the process's lifetime.
+      await scheduler.backoffOrSchedule({
+        kind: "usage.userCleanupContinued",
+        operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        payload: {},
+        now: backend.clock.now(),
+      });
+      backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS);
+      const minted = await claim(10);
+      expect(minted).toHaveLength(1);
+      expect(minted[0]?.attempt).toBe(1);
     });
 
     it("lists due tasks across scopes for the runner, in dueAt order", async () => {
@@ -586,21 +647,24 @@ export function describeScopeTaskSchedulerContract(
       );
       expect(afterClaim.map((task) => task.operationId)).toEqual(["op-expiry"]);
       expect(afterClaim[0]?.scope).toEqual(scopeOf(2));
+    });
 
-      // And they only hide them: once the lease lapses the rows are
-      // listed again, which is how the runner rediscovers a scope whose
-      // writer stopped mid-turn — there is no other path back.
+    it("lists a scope again once the lease on its rows lapses", async () => {
+      await schedule("op-1", -MINUTE_MS);
+      expect(await claim(10)).toHaveLength(1);
+      expect(
+        await backend.scopeTaskQueue.listDue(backend.clock.now(), 10),
+      ).toEqual([]);
+
+      // Leases only hide rows. Their lapsing is how the central runner
+      // rediscovers a scope whose writer stopped mid-turn: nothing else
+      // puts that scope back in front of it.
       backend.clock.advance(SCOPE_TASK_LEASE_MS);
       const afterLapse = await backend.scopeTaskQueue.listDue(
         backend.clock.now(),
         10,
       );
-      expect(afterLapse.map((task) => task.operationId)).toEqual([
-        "op-cleanup-0",
-        "op-cleanup-1",
-        "op-cleanup-2",
-        "op-expiry",
-      ]);
+      expect(afterLapse.map((task) => task.operationId)).toEqual(["op-1"]);
       expect(afterLapse[0]?.scope).toEqual(scopeOf(1));
     });
   });

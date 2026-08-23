@@ -973,7 +973,7 @@ priorityは security cleanup / lease reaping = 0、outbox relay = 1、projection
 
 `workspace.deletionLocalContinued`はworkspace deletion operation IDをpayload/PKへ使い、beginDeletionと同じtransactionで初回を保存する。各manifest/local-delete pageもheader cursor/ackと同じtransactionで同じtaskを次時刻へupsertする。
 
-indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`) WHERE `status = 'pending'`、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`) WHERE `status = 'pending'`、リース失効走査用 `scheduled_tasks_lease_idx` (`lease_expires_at`) WHERE `status = 'running'` — 3本とも部分索引で、dequeueされない `failed` 行はどれにも積み上がらない。起床時刻の2つの候補はAlarm時刻用とリース失効走査用の先頭行から取る。claimの候補も2分岐に対応して2本に分かれ、`pending` 側をdequeue用から、リース失効行をリース失効走査用から取って併合する。
+indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`) WHERE `status = 'pending'`、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`) WHERE `status <> 'failed'`、リース失効走査用 `scheduled_tasks_lease_idx` (`lease_expires_at`) WHERE `status = 'running'` — 3本とも部分索引で、dequeueされない `failed` 行はどれにも積み上がらない。起床時刻の2つの候補はAlarm時刻用とリース失効走査用の先頭行から取る。claimは候補の2分岐（`pending` かつ due / `running` かつリース失効）をdequeue用1本の走査に述語として掛け、`pending` 行と失効 `running` 行を選択順のまま併合してpriorityごとの枠取りを適用する。走査はリース有効な `running` 行を読み飛ばすが、その件数は同じscopeでin-flightなclaimに限られる。
 
 #### membership_removal_locks
 

@@ -183,7 +183,13 @@ Alarm handler は次を守る。
 3. 失敗 task は backoff して再予定し、上限超過を `global-events` へ通知する
 4. 最後に次の起床時刻 — pending の最小 `due_at` と running の最小 `lease_expires_at` の小さい方 — を Alarm へ設定する。task がなければ Alarm を消す
 
-1 turnは合計100行またはCPU 2秒でyieldする。1 turnがclaimするのはそのturnのbudget内で必ず訪問する件数までとし、budgetを超えてclaimしない — 訪問しないまま残した行は `lease_expires_at` まで再開できず、次の起床までの遅延がリース期間へ跳ね上がる。CPU予算で切り上げるturnは残budgetを一度にclaimせず小分けにclaimする。ハンドラを持たないkindの行だけは訪問してもsettleせず、リース満了まで `running` のまま待つ。priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。リース期間はwriterが落ちたtaskの回復遅延の下限でもあるため、下限は最悪ケースのturn所要時間で決める（これを下回るとturn中に別writerが同じ行を掴む）。上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
+1 turnは合計100行またはCPU 2秒でyieldする。1 turnがclaimするのはそのturnのbudget内で必ず訪問する件数までとし、budgetを超えてclaimしない — 訪問しないまま残した行は `lease_expires_at` まで再開できず、次の起床までの遅延がリース期間へ跳ね上がる。CPU予算で切り上げるturnは残budgetを一度にclaimせず小分けにclaimする。ハンドラを持たないkindの行だけは訪問してもsettleせず、リース満了まで `running` のまま待つ。
+
+priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。
+
+リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
+
+低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
 ### Global Cron
 

@@ -64,35 +64,30 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * continuations. Storing the next task shares the unit of work of the
  * turn it follows.
  *
- * Claiming takes a lease rather than trusting a scope to have a single
- * writer: `claimDue` marks each row it hands out `running` with
- * `leaseExpiresAt = now + leaseMs`, and no reader sees that row again
- * until the deadline is reached. A writer that disappears mid-turn is
- * therefore recovered — the next claim past the lease reclaims the row.
+ * `claimDue` hands a row out under a lease rather than trusting a scope
+ * to have a single writer, so a writer that disappears mid-turn strands
+ * nothing: the next claim past the lease takes the row back.
  *
  * Claiming is exclusive per row: choosing a candidate and moving it to
  * `running` is one atomic step, so two `claimDue` calls running at once
  * never hand out the same row. The reference runtime gets this from the
  * scope's unit of work; a backend without interactive transactions
- * builds it from conditional updates
- * (`WHERE status = 'pending' AND due_at <= ?` /
- * `WHERE status = 'running' AND lease_expires_at <= ?`) so that only the
- * writer whose predicate still matches takes the row. Exclusivity stops
- * at the claim — settling carries no fencing token (see `leaseMs`
- * below), so a lease that outlasts the turn is the only thing keeping a
- * second writer off a row the first is still working.
+ * builds it from a conditional update whose predicate repeats the
+ * candidate test — still `pending` and due, or still `running` with a
+ * lapsed lease — so that only the writer whose predicate still matches
+ * takes the row. Exclusivity stops at the claim.
  *
  * Selection is the same rule for `claimDue` and
- * `ScopeTaskQueue.listDue`. Candidates are the rows that are `pending`
- * with `dueAt <= now` or `running` with `leaseExpiresAt <= now`. From
- * those:
+ * `ScopeTaskQueue.listDue`; neither returns more than `limit` rows.
+ * Candidates are the rows that are `pending` with `dueAt <= now` or
+ * `running` with `leaseExpiresAt <= now`. From those:
  *
  * 1. Reservation — walking `priority` ascending, take the one candidate
  *    of each priority whose `(dueAt, kind, operationId)` is smallest,
- *    until the budget runs out.
+ *    until `limit` is reached.
  * 2. Fill — take the remaining candidates in
- *    `(priority, dueAt, kind, operationId)` order until the budget runs
- *    out.
+ *    `(priority, dueAt, kind, operationId)` order until `limit` is
+ *    reached.
  *
  * The result is returned in `(priority, dueAt, kind, operationId)`
  * order. Reserving one slot per priority is a floor, not a ceiling: a
@@ -100,34 +95,31 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * and a `limit` below the number of candidate priorities cuts step 1
  * short, degrading to strict priority order.
  *
- * `dueAt` means "when this is meant to run" whatever the state, so the
- * transitions are:
+ * `dueAt` means "when this is meant to run" whatever the state. These
+ * transitions are the contract; the notes after them carry only what
+ * the table cannot show — why it reads that way.
  *
  * | operation | from | to |
  * | --- | --- | --- |
  * | `schedule` | absent / pending / running / failed | pending, `dueAt = input.dueAt`, `attempt = 0`, `priority = input.priority`, lease released |
  * | `claimDue` | pending (due) / running (lapsed lease) | running, `leaseExpiresAt = now + leaseMs`; `dueAt`, `attempt`, `priority` and `payload` unchanged |
  * | `complete` | any, including absent | row removed |
- * | `backoff` | pending / running / failed | pending, `attempt + 1`, `dueAt = now + delay`, lease released, `priority` unchanged — `failed` once `attempt` reaches `SCOPE_TASK_MAX_ATTEMPTS`, and a row already `failed` stays `failed` with its `attempt` still climbing past the ceiling. No-op on an absent row |
+ * | `backoff` | pending / running / failed | pending, `attempt + 1`, `dueAt = now + SCOPE_TASK_BACKOFF_BASE_MS × 2^(attempt - 1)` capped at `SCOPE_TASK_MAX_BACKOFF_MS` (so the first retry waits `SCOPE_TASK_BACKOFF_BASE_MS`), lease released, `priority` unchanged — `failed` once `attempt` reaches `SCOPE_TASK_MAX_ATTEMPTS`, and a row already `failed` stays `failed` with its `attempt` still climbing past the ceiling. No-op on an absent row |
  * | `backoffOrSchedule` | absent / pending / running / failed | mints the row with `input.priority`, `input.payload` and `dueAt = input.now` when absent, then backs off as above. An **existing** row keeps its own `priority` and `payload` — `input.priority` and `input.payload` are read only when minting |
  *
- * Only `schedule` brings a `failed` row back, and it resets `attempt` to
- * `0`; nothing else claims a `failed` row, so the climbing `attempt` is
- * never observable. Reclaiming a lapsed lease spends no attempt and
- * leaves `dueAt` where it was, so a reclaimed row keeps its place within
- * its priority and a row nothing settles keeps ageing — which is what an
- * oldest-task-age alert has to measure.
- *
- * `backoff` bumps `attempt` and pushes `dueAt` out exponentially
- * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^(attempt - 1) — so the first retry
- * waits `SCOPE_TASK_BACKOFF_BASE_MS` — capped by
- * `SCOPE_TASK_MAX_BACKOFF_MS`) until `SCOPE_TASK_MAX_ATTEMPTS`, at which
- * point the row becomes `failed` and stops being claimed — one
+ * Parking a row as `failed` is the point of the attempt ceiling: one
  * permanently failing target must not breed continuations forever.
- * "Zero targets left" is a normal ending: it calls `complete`, not
- * `backoff`.
+ * "Zero targets left" is not that case — it is a normal ending, and it
+ * calls `complete`, not `backoff`. Since nothing claims a `failed` row,
+ * the `attempt` climbing past the ceiling is never observable, and
+ * `schedule` is the only way back.
  *
- * `backoff` is a no-op on a row that is gone: a turn which already
+ * Reclaiming a lapsed lease spends no attempt and leaves `dueAt` where
+ * it was, so a reclaimed row keeps its place within its priority and a
+ * row nothing settles keeps ageing instead of quietly reaching the
+ * ceiling — which is what an oldest-task-age alert has to measure.
+ *
+ * `backoff` no-ops on an absent row because a turn which already
  * completed its row has nothing left to retry. `backoffOrSchedule` is
  * the variant for a turn that stalls before any row exists — an
  * operation's first command arrives as an event, not as a task — where

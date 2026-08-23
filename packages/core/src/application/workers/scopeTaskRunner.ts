@@ -85,9 +85,9 @@ const handOverPersonalCleanup: ScopeTaskHandler = async (container, task) => {
  * still took a lease, so it comes back a lease apart (five minutes by
  * default) rather than on every tick: the report repeats for as long as
  * the deployment lacks the handler, but its frequency is no measure of
- * the stall. What measures it is the age of the oldest task, which the
- * row keeps accumulating because reclaiming a lapsed lease leaves
- * `dueAt` where it was.
+ * the stall. The line carries the row's `dueAt` instead, which
+ * reclaiming a lapsed lease leaves where it was, so how far past its
+ * time the row has drifted reads off the report itself.
  */
 export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   [STORAGE_OWNER_DELETE_TASK_KIND]: async (container, task) => {
@@ -156,20 +156,23 @@ export async function runDueScopeTasks(
     claimedScopes.add(scopeKey);
 
     // Claiming at most the remaining budget is what keeps every claimed
-    // row processed in this round: a row claimed and left over is locked
+    // row visited in this round: a row claimed and left over is locked
     // for the whole lease, not until the next tick.
     const claimed = await container.scopeUnitOfWorkProvider.run(
       row.scope,
       (ctx) => ctx.scopeTaskScheduler.claimDue({ now, limit: budget, leaseMs }),
     );
     for (const task of claimed) {
-      if (budget <= 0) break;
       budget -= 1;
       const handle = handlers[task.kind];
       if (handle === undefined) {
         container.logger.warn(
           `[scope-tasks] no handler for ${task.kind}; leaving it due`,
-          { kind: task.kind, operationId: task.operationId },
+          {
+            kind: task.kind,
+            operationId: task.operationId,
+            dueAt: task.dueAt,
+          },
         );
         continue;
       }
