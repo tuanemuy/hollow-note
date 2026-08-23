@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { SettingsTabs } from "@/components/layout/SettingsTabs";
 import { ServerErrorState } from "@/components/ui/ErrorState";
-import { safeRedirectPath, sessionUserFn } from "@/presentation/auth";
+import { sessionUserFn } from "@/presentation/auth";
 import { buildHead } from "@/presentation/head";
+import { signInRedirectOptions } from "@/presentation/redirect";
 
 /**
  * 設定のレイアウトルート（L-01 + P-20 タブ列）。個々の設定画面は子
@@ -21,19 +22,33 @@ import { buildHead } from "@/presentation/head";
 const SIGNED_OUT_PATH = "/settings/danger";
 
 export const Route = createFileRoute("/settings")({
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
-    const user = await sessionUserFn();
-    if (user !== null) {
-      return { user };
-    }
-    if (location.pathname === SIGNED_OUT_PATH) {
-      return { user: null };
-    }
-    throw redirect({
-      to: "/signin",
-      search: { redirect: safeRedirectPath(location.href) },
-    });
+  // ガードを `beforeLoad` ではなく `loader` に置くのは、子ルートの断片
+  // loader と並列に走らせるため（`beforeLoad` は match 順に逐次）。
+  // このレイアウト match は子ルート間の遷移では `cause: "stay"` のまま
+  // 生き残り、`staleMatchShouldReload` が偽になるので、毎ナビゲーションの
+  // 再判定（＝下の `location.pathname` の分岐）はこの `shouldReload` が担う。
+  // `cause !== "preload"` が preload を弾けるのは cached match だけ。この
+  // レイアウト match がアクティブなまま残るあいだは常に真で、`/settings` の
+  // 外から入る preload では偽になるが、その match は未ロードなので
+  // `shouldReload` を参照せずに loader が走る。
+  shouldReload: ({ cause }) => cause !== "preload",
+  loader: {
+    // `staleReloadMode` はオブジェクト形の loader でしか読まれない（関数形は
+    // `undefined` 扱い）。`"blocking"` でないと再実行がデタッチされた背景枝へ
+    // 落ち、その catch は preload かどうかを見ずに `router.navigate` するので、
+    // タブ列にホバーしただけで `/signin` へ実ナビゲートしてしまう。
+    // ブロッキングなら失効時も子を描画する前に `/signin` へ抜ける。
+    staleReloadMode: "blocking",
+    handler: async ({ location }) => {
+      const user = await sessionUserFn();
+      if (user !== null) {
+        return { user };
+      }
+      if (location.pathname === SIGNED_OUT_PATH) {
+        return { user: null };
+      }
+      throw redirect(signInRedirectOptions(location.href));
+    },
   },
   head: ({ match }) => {
     const config = match.context?.config;
@@ -49,7 +64,7 @@ export const Route = createFileRoute("/settings")({
 });
 
 function SettingsLayout() {
-  const { user } = Route.useRouteContext();
+  const { user } = Route.useLoaderData();
   if (user === null) {
     return <SettingsColumn />;
   }

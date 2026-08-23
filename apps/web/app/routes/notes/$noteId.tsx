@@ -3,23 +3,29 @@ import { type ReactNode, Suspense } from "react";
 import { NoteDetailSkeleton } from "@/components/note/NoteDetailSkeleton";
 import { Deferred } from "@/components/ui/Deferred";
 import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
-import { requireAuthenticated } from "@/presentation/auth";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
+import { boundedRedirectSource } from "@/presentation/redirect";
 import { renderNoteDetail } from "./-action";
 
 export const Route = createFileRoute("/notes/$noteId")({
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: async ({ location }) => {
-    const user = await requireAuthenticated(location.href);
-    return { user };
-  },
-  loader: async ({ params }) => {
-    const { NoteDetail } = await renderNoteDetail({
-      data: { noteId: params.noteId },
-    });
-    return { NoteDetail };
-  },
+  // loader がガードを兼ねるので毎ナビゲーション再実行させる。関数形なのは
+  // `shouldReload: true` だと `preloadStaleTime` まで死んでホバーのたび要求が
+  // 飛ぶため。ただし `cause !== "preload"` が preload を弾けるのは cached
+  // match だけで、アクティブなまま残る `/settings` レイアウトのような match
+  // には効かない。また既訪 match の再実行は背景枝に落ちるので、失効後は前回の
+  // `loaderData` が 1 往復ぶん表示されてから redirect する
+  // （`beforeLoad` のブロッキング性は戻らない）。成功する再取得でスケルトンに
+  // 戻らないのは背景枝だからではなく、`Deferred` が断片 promise の差し替えを
+  // deferred lane に載せているため。
+  shouldReload: ({ cause }) => cause !== "preload",
+  loader: ({ params, location }) =>
+    renderNoteDetail({
+      data: {
+        noteId: params.noteId,
+        redirect: boundedRedirectSource(location.href),
+      },
+    }),
   head: ({ match }) => {
     const config = match.context?.config;
     if (!config) return {};

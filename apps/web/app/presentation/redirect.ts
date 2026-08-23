@@ -1,17 +1,4 @@
-/**
- * URL parsers strip C0 controls and DEL before interpreting a URL, so
- * `"/\n/evil.example"` would pass a naive prefix check and only then
- * resolve as `//evil.example`.
- */
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
+import { SameOriginPolicy } from "@repo/core/domain/identity/services/sameOriginPolicy";
 
 /**
  * Open-redirect guard: only same-origin absolute paths survive
@@ -23,14 +10,30 @@ function hasControlCharacter(value: string): boolean {
  * import without pulling the server-function runtime in.
  */
 export function safeRedirectPath(value: string | undefined | null): string {
-  if (
-    typeof value === "string" &&
-    value.startsWith("/") &&
-    !value.startsWith("//") &&
-    !value.includes("\\") &&
-    !hasControlCharacter(value)
-  ) {
-    return value;
-  }
-  return "/notes";
+  return typeof value === "string" && SameOriginPolicy.isSameOriginPath(value)
+    ? value
+    : "/notes";
+}
+
+/** 転送境界が `redirect` に課す DoS 上限。 */
+export const REDIRECT_MAX_LENGTH = 2048;
+
+/**
+ * loader が遷移元として渡す `location.href` の clamp。`/notes` 系は
+ * `validateSearch` を持たず任意長のクエリが href に載るので、上限超えを
+ * そのまま送ると転送境界の拒否で画面ごと errorComponent に落ちる。
+ */
+export function boundedRedirectSource(href: string): string {
+  return href.length <= REDIRECT_MAX_LENGTH ? href : "/notes";
+}
+
+/**
+ * `/signin` へ戻す redirect の options。フレームワークの `redirect()` は
+ * 呼ばず options だけを返すので、このモジュールは純関数のまま保たれる。
+ */
+export function signInRedirectOptions(redirectTo: string | undefined | null): {
+  to: "/signin";
+  search: { redirect: string };
+} {
+  return { to: "/signin", search: { redirect: safeRedirectPath(redirectTo) } };
 }

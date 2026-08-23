@@ -1,15 +1,14 @@
 import {
-  createRootRoute,
+  createRootRouteWithContext,
   HeadContent,
   Outlet,
   Scripts,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import { createServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
 import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
+import type { RouterContext } from "@/presentation/appConfig";
 import { sanitizeRouteError } from "@/presentation/errorDisplay";
-import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { buildHead } from "@/presentation/head";
 import appCss from "../styles/index.css?url";
 
@@ -27,16 +26,6 @@ import "@/routes/auth/-action";
 import "@/routes/dev/-action";
 import "@/routes/settings/-action";
 
-export const loadAppContext = createServerFn({ method: "GET" })
-  .middleware([errorResponseMiddleware])
-  .handler(async () => {
-    const { getContainer } = await import(
-      "@repo/core/application/di/containerStore"
-    );
-    const container = await getContainer();
-    return { config: container.config };
-  });
-
 const SITE_ASSET_LINKS = [
   { rel: "icon", href: "/favicon.ico", sizes: "any" },
   { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
@@ -44,9 +33,7 @@ const SITE_ASSET_LINKS = [
   { rel: "manifest", href: "/site.webmanifest" },
 ];
 
-export const Route = createRootRoute({
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  beforeLoad: () => loadAppContext(),
+export const Route = createRootRouteWithContext<RouterContext>()({
   head: ({ match }) => {
     const stylesheet = { rel: "stylesheet", href: appCss };
     const baseLinks = [...SITE_ASSET_LINKS, stylesheet];

@@ -36,8 +36,6 @@ export function CreateNoteButton({
       // Reconcile and leave OUTSIDE the try: the note already exists, so a
       // failure here must not read as "creation failed" — that invites a
       // retry that creates a second note.
-      // `/notes` keeps `staleTime: Infinity` in production, so without the
-      // invalidate the list cached before the mutation would never show it.
       await router.invalidate().catch(() => {
         console.error("Note list reconcile failed");
       });

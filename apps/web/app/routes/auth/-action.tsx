@@ -3,12 +3,13 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { serializeError } from "@/presentation/errorResponse";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
+import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
 import { loadServerDeps } from "@/presentation/serverAction";
 import { validateInput } from "@/presentation/validator";
 
 const startSchema = z.object({
   provider: z.string().min(1).max(32),
-  redirectTo: z.string().max(2048).nullable(),
+  redirectTo: z.string().max(REDIRECT_MAX_LENGTH).nullable(),
 });
 
 /**

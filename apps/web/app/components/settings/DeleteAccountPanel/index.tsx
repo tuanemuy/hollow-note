@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouteContext } from "@tanstack/react-router";
+import { useLoaderData } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import {
@@ -108,7 +108,7 @@ export function DeleteAccountPanel() {
   const requestDeletion = useServerFn(deleteAccountFn);
   const readStatus = useServerFn(getDeletionStatusFn);
   // 未サインインでも開ける画面なので `user` は null になりうる。
-  const { user } = useRouteContext({ from: "/settings" });
+  const { user } = useLoaderData({ from: "/settings" });
   const currentUserId = user?.userId ?? null;
 
   const confirmId = useId();
