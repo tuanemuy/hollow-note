@@ -16,7 +16,11 @@ import { type ReactNode, type Usable, use, useDeferredValue } from "react";
  * SyncLane — so a mounted `<Suspense>` would drop back to its skeleton.
  * Deferring keeps the previous payload on screen and re-renders the swap on a
  * transition lane, where suspending does not tear down visible content. On the
- * first mount there is no previous value, so the fallback still shows.
+ * first mount there is no previous value, so the fallback still shows. Holding
+ * the previous value assumes the swap is a same-URL re-fetch: a params-only
+ * navigation reuses the mounted component, so the old payload would stay on
+ * screen until the new one arrives unless that route sets `remountDeps` (no
+ * note-to-note link exists today).
  *
  * This is the per-fragment streaming mechanism. For whole-route navigation
  * pending UI, use the router's `defaultPendingComponent` instead.

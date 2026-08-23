@@ -132,7 +132,7 @@ A folded bridge has exactly one answer for a session it cannot resolve: `redirec
 
 The skeleton (`apps/web/app/components/ui/Skeleton` for the generic bar, `apps/web/app/components/note/NoteListSkeleton` shaped to `NoteList`'s DOM, plus `NoteDetailSkeleton` / `IdentityListSkeleton` / `ProfileFormSkeleton` / `UsagePanelSkeleton`) carries one `role="status"` announcement; the individual bars are `aria-hidden` and respect `prefers-reduced-motion` via `motion-reduce:animate-none`.
 
-This is the **per-fragment** loading mechanism, and it does not replace the router's navigation pending UI (`defaultPendingComponent` = `RoutePendingFallback`, with `defaultPendingMs` / `defaultPendingMinMs`, in `apps/web/app/router.tsx`). The two cover different legs of the same navigation and run in series: the loader still blocks for the one round trip that resolves the guard and returns the shell, and `defaultPendingComponent` is what covers that leg once it passes `defaultPendingMs`; the skeleton then covers the fragment streaming in afterwards. `/notes` and `/settings/*` are the same shape here — neither settles its loader without that round trip.
+This is the **per-fragment** loading mechanism, and it does not replace the router's navigation pending UI (`defaultPendingComponent` = `RoutePendingFallback`, with `defaultPendingMs` / `defaultPendingMinMs`, in `apps/web/app/router.tsx`). The two cover different legs of the same navigation and run in series: the loader still blocks for the one round trip that resolves the guard and returns the shell, and `defaultPendingComponent` is what covers that leg once it passes `defaultPendingMs`; the skeleton then covers the fragment streaming in afterwards. `/notes` and `/settings/*` are the same shape here — on a match with no cached loader data, neither settles its loader without that round trip.
 
 ### 2. Held by TanStack Query
 
@@ -551,7 +551,7 @@ Guards need the *other* shape — a redirect, not a 401 — and that is a routin
 | `presentation/session.ts` | Cookie transport: read / write the session cookie and resolve the user behind it | `requireSession` (throws → 401), `sessionUserOrNull` (`null` when unauthenticated) |
 | `presentation/auth.ts` | Session **probe** that a route may call — the only one that enters a client graph, hence a server function | `sessionUserFn` |
 | `presentation/sessionGuard.ts` | The **redirect decision**: no session → `/signin`, carrying the path to return to | `requireSessionOrRedirect` |
-| `presentation/redirect.ts` | Pure functions the decision is made of — no framework import, so unit tests reach them without the server-function runtime | `REDIRECT_MAX_LENGTH` (the transport ceiling both the bridge's validator and `/signin`'s `validateSearch` import), `safeRedirectPath`, `signInRedirectOptions`, `boundedRedirectSource` |
+| `presentation/redirect.ts` | Pure functions the decision is made of — no framework import, so unit tests reach them without the server-function runtime | `REDIRECT_MAX_LENGTH` (the transport ceiling the bridge's validator, `/signin`'s `validateSearch`, and the OAuth start function in `apps/web/app/routes/auth/-action.tsx` all import), `safeRedirectPath`, `signInRedirectOptions`, `boundedRedirectSource` |
 
 ```typescript
 // apps/web/app/presentation/sessionGuard.ts

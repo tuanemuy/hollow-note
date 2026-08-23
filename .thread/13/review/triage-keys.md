@@ -22,6 +22,17 @@
 
 - `/notes` 系への `staleReloadMode: "blocking"`（routing B-001 の提案 (a)）— ADR-003 の既決事項であることに加え、**そもそも解決にならない**（blocking が await するのはガード 1 往復だけで、commit 時点の断片 promise は未解決のままなのでスケルトンは出る）。ADR-003 は据え置き
 
+## Round 003
+
+いずれも「Warning 全体」ではなく、**fix と判定した指摘に含まれていた提案のうち採らなかったもの**である（元指摘の主部は反映する）。
+
+| Key | 元ID | 判定 | 理由（一行） | Issue |
+| --- | --- | --- | --- | --- |
+| `spec/adr/030` / 混在窓の記述に「変更前（`beforeLoad` 時代・`Deferred` 修正前）との差」を書く | routing W-003, auth W-001 (b) | wont-fix | `spec/` は現在形の canon で経緯・superseded judgement を持たない方針（CLAUDE.md）。加えて routing W-003 が「書けていない」とした表示名・アバターへの波及は Round 002 の fix で L.34 に既に入っており、指摘のこの部分は事実として外れている。混在窓の**現在の**記述は計画L で真にする | — |
+| `routes/notes/index.tsx` / `<Deferred key={user.userId}>`（主体交代で再マウントしスケルトンへ落とす） | auth W-001 提案 (b) | wont-fix | 挙動変更。窓は Blocker ではなく canon で受容済みで、収束フェーズに AC-8（戻る操作でスケルトンを出さない）の観測点へ新しいリスクを持ち込む。`$noteId` 側は `renderNoteDetail` が `user` を返さないので同じ手が取れず、対策としても片肺 | — |
+| `components/auth/SignInForm/index.tsx:141` / `router.invalidate()` に `router.clearCache()` を併用して既訪 match ごと捨てる | routing W-003 提案 | wont-fix | 同じく挙動変更で、ADR-003 が受容した「既訪 match は背景再取得」という設計を再サインイン経路だけ剥がす。Blocker が無い収束フェーズで採る性質のものではない | — |
+| `routes/notes/$noteId.tsx` / `remountDeps: ({ params }) => params` を足す | routing W-001 提案 (a) | wont-fix | 今日 note→note の導線が存在しない（`to="/notes/$noteId"` は `NoteList` と `CreateNoteButton` の 2 箇所のみで、どちらも `/notes` 配下）ため観測できる挙動が 1 つも変わらない設定になる。Round 001 で死んだ `staleTime` を「次の読み手が生きた設定と誤読する」として落とした判断と衝突する。前提は `Deferred` の JSDoc に書く（計画O） | — |
+
 ## 起票済み Issue
 
 1. #37 — `<link rel="canonical">` が 1 ドキュメントに 2〜3 本出力される

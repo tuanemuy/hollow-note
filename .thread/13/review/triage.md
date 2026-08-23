@@ -237,3 +237,95 @@
 - fix 10 件をすべて反映（計画G〜K）。品質ゲート: `pnpm typecheck` PASS / `pnpm lint:fix` 修正なし / `pnpm format` 修正なし / `pnpm test` 935 passed・3 skipped
 - routing B-001（AC-8 不成立）は `Deferred` を `use(useDeferredValue(promise))` にして解決。本番ビルド + agent-browser で実測確認済み（戻る操作 4 回とも `NoteListSkeleton` 出現 0 件。修正前は 21ms 後に 1 件）。判断は ADR-005 に記録
 - wont-fix 1 件（routing W-002）は `triage-keys.md` に記録。defer 起票は 0 件
+
+---
+
+## Round 003
+
+3 本のレビュー（auth B:0/W:2、routing B:0/W:3、note-docs B:0/W:3 — 計 8 件）を統合して **6 件**。**Blocker はゼロ**で、6 件すべてが「読み手を誤らせる記述」に収束している（挙動を変える指摘は 1 件も無い）。
+
+`triage-keys.md`（Round 001 の 5 件 + Round 002 の 1 件）と照合した結果、**既出 Key の再指摘は 0 件**。3 本とも「蒸し返さない」節を持ち、既出項目を明示的に除外している。再指摘回数はすべて 0 のまま。
+
+統合したペアは 2 組:
+
+- `spec/adr/030` の混在窓 — auth W-001 = routing W-003（同じ L.33-34 を指す。直す対象が同一の 1 文なので分けられない）
+- `docs:135` の「neither settles its loader without that round trip」— routing W-002 = note-docs W-003（同一行・同一の誤り）
+
+| Key | 元ID | 判定 | 理由 | 再指摘回数 |
+| --- | --- | --- | --- | --- |
+| `spec/adr/030:34` / 混在窓（新しい主体の表示名 + 前の主体の一覧）が「1 往復ぶん残る」に畳まれている | auth W-001, routing W-003 | fix（**提案の一部は wont-fix**） | **実物で裏を取った。混在窓の存在は真。** `notes/index.tsx:40-42` は同じ `loaderData` から `user` を直に読み、`NoteList` だけを `Deferred` に通す。背景枝の `updateMatch` は `loaderData` をまるごと差し替えるので、SyncLane のレンダーでは **`user` は新しい主体・`NoteList` は `useDeferredValue` が押さえた前の promise** になり、断片のストリームが終わるまで「B の名前 + A の一覧」が成立する。現行の L.34 は「ノート一覧と表示名・アバターが 1 往復ぶん残る」＝両者が同時に切り替わると読めるので、この窓が canon から抜ける。**ただし提案のうち 2 つは採らない**: (1) routing W-003 の「**変更前との差**を明示する」は誤り — `spec/` は現在形の canon で経緯・superseded judgement を持たない方針（CLAUDE.md「it holds no progress logs or superseded judgements」）。そもそも routing W-003 が「書けていない」とする表示名・アバターへの波及は **Round 002 の fix で L.34 に既に入っている**（現物確認済み）ので、指摘のこの部分は事実として外れている。(2) `key={user.userId}` / `router.clearCache()` による窓の封鎖は挙動変更で、Blocker が無い収束フェーズに AC-8 の観測点へ新しいリスクを持ち込む。**直すのは canon の 1 文だけ** | 0 |
+| `routes/auth/-action.tsx:11` / OAuth 開始の `redirectTo` だけ即値 `2048` が残っている（+ `docs:554` の「both」） | auth W-002 | fix | **実在と同義性の両方を確認した。真。** `z.string().max(2048).nullable()` が現物（`-action.tsx:11`）。値の出所も 1 本道で確認 — `/signin` の `searchSchema`（`REDIRECT_MAX_LENGTH`）→ `safeRedirectPath` → `SignInForm({ redirectTo })`（`index.tsx:113`）→ `<OAuthButton redirectTo={redirectTo}>`（同 252）→ `data: { provider, redirectTo }`（`OAuthButton/index.tsx:34`）→ この validator。**同じ「サインイン後の戻り先パスに課す転送境界の DoS 上限」であり、統一は正しい。** `REDIRECT_MAX_LENGTH` を上げると 2049〜新上限の `redirect` は `/signin` を通過してフォームまで届くのに Google ボタンだけ 422 で落ちる、という沈黙した結合が残る。**同名で意味の違う 2048 が近くに 3 つあるので巻き込まないこと**（`dev/oauth/authorize.tsx:12` の `redirect_uri` と `dev/-action.tsx:22` の `redirectUri` は**プロバイダーのコールバック絶対 URL**、`settings/-action.tsx:75` / `domain/identity/valueObject.ts:153` の `AVATAR_URL_MAX_LENGTH` はアバター URL — いずれも別の意味なので統一対象外）。`docs:554` の「both the bridge's validator and `/signin`'s `validateSearch`」も 3 箇所へ直す | 0 |
+| `docs/frontend_implementation_example.md:135` / 「neither settles its loader without that round trip」が既訪 match で偽 | routing W-002, note-docs W-003 | fix | 真。`load-matches.ts:823-848` のとおり `status === "success"` の既訪 match は背景枝へ落ち、loader を await せずに commit する。同じ節の**スニペット内コメント L.82-85**（「The re-fetch runs in the background, so the navigation itself settles at once」）が正しく述べており、AC-8 はそれを合格条件にしている。無条件の断定が 50 行下に並んでいると、次の読み手は「`/notes` は常にブロックする」と受け取り `shouldReload` + 背景枝 + `Deferred` の 3 点セットを取り違える。**旧文（`/notes` は即 settle し pending を出さない）を Round 001 で直したときに逆方向へ振り切った形**なので、限定句 1 つで両立させる。（routing W-002 は根拠行を「L.119」と書いているが、L.118-119 は `useDeferredValue` の段落。実際の対の記述は L.82-85 = note-docs W-003 が挙げた L.84 側が正しい） | 0 |
+| `components/note/CreateNoteButton/index.tsx:39-40` / `router.invalidate()` の理由コメントが偽になった | note-docs W-001 | fix | **現物で確認した。真。** コメントは「`/notes` keeps `staleTime: Infinity` in production, so without the invalidate the list cached before the mutation would never show it」だが、`routes/notes/index.tsx` に `staleTime` はもう無く（Round 001 の fix で除去）、`shouldReload: ({ cause }) => cause !== "preload"` に置き換わっている。`grep` でも `staleTime` が残るのは `/settings/{auth,profile,usage,danger}` だけ。**前提も帰結も成立していない断定が、変更されたルートの外に残っている**形で、docs L.127 の「`shouldReload` があるなら `staleTime` を書くな」と読み合わせた人がここで矛盾する。`AccountMenu/index.tsx:57` の `staleTime: Infinity` 言及は `/settings/*` が今も該当するので触らない | 0 |
+| `routes/notes/{index,$noteId}.tsx:20` / 無印 `ADR-005` が canon の `spec/adr/005-async-processing.md` と番号衝突 | note-docs W-002 | fix | **現物で確認した。真。** `spec/adr/005-async-processing.md` は実在し、`spec/domains/{conversion,job}.md` / `spec/scenario/jobs.md` / `spec/adr/{010,012}` から `[ADR 005](../adr/005-async-processing.md)` の形で参照されている無関係の ADR。一方このコメントが指しているのは `.thread/13/adr.md:198`（断片 promise の deferred lane 化）で、リポジトリ内の他の参照はすべてパス付き（`presentation/session.ts` の `spec/adr/037`、docs L.120 の `spec/adr/031-...`）。**`Deferred` の `useDeferredValue` 化は本 PR で最も非自明な判断**で、根拠に到達できないと次の人が「素の `use` に戻す」変更を安全だと誤判断する。plan.md:62 が `spec/` 昇格を片付けフェーズに置いている以上、いま正しい表記は `.thread/13/adr.md の ADR-005`。2 箇所とも同一文なので置換 1 回 | 0 |
+| `components/ui/Deferred/index.tsx:13-19` / 「前の値を保つ」の前提（コンポーネントが remount されないこと）が JSDoc から読み取れない | routing W-001 | fix（**`remountDeps` の追加は wont-fix**） | **到達可能性を確認した。今日は到達不能。** `to="/notes/$noteId"` を持つのは `components/note/NoteList/index.tsx:67` と `CreateNoteButton/index.tsx:45` の 2 箇所だけで、どちらも `/notes` 配下からしか押せない（`$noteId.tsx` の `ReaderShell` が持つリンクは `/notes` のみ）。したがって note→note 遷移は UI 上存在せず、**退行でも今日の欠陥でもない**。よって提案 (a) の `remountDeps: ({ params }) => params` は **wont-fix** — 観測できる挙動が 1 つも変わらない設定を足すことになり、**Round 001 で死んだ `staleTime` を「次の読み手が生きた設定と誤読する」として落とした判断と正面から衝突する**。一方で `Deferred` は 5 箇所から使われる共有コンポーネントで、JSDoc が「On the first mount there is no previous value」とだけ言い、**何が first mount を決めるのか**（= route component が remount されるか）を書いていないのは**今日の非自明な機構についての説明の穴**であり、将来の懸念ではない。CLAUDE.md も「Library-level JSDoc on exported APIs is welcome」。**1 文だけ足して閉じる** | 0 |
+
+### fix の観点別内訳
+
+- 認証・セッション: 2（`spec/adr/030` の混在窓、OAuth 開始への `REDIRECT_MAX_LENGTH` 適用）
+- ルーティング基盤: 1（`Deferred` JSDoc の前提）
+- ノート/ドキュメント: 3（`docs:135` の限定、`docs:554` の「both」、`CreateNoteButton` のコメント、ADR-005 の表記）
+
+（合計 6 件。`docs:554` は auth W-002 に含めて 1 件と数えた）
+
+### 収束の確認
+
+- **挙動を変える指摘はゼロ。** 6 件すべてがコメント / JSDoc / docs / canon の記述で、`pnpm test` の期待値も AC も 1 つも動かない。唯一のコード変更は `routes/auth/-action.tsx` の import 1 行 + `max()` の引数 1 つで、現在値が同じ 2048 なので観測される挙動は不変。
+- **却下した提案 4 件はすべて「挙動変更」か「観測不能な設定の追加」**（`key={user.userId}` / `router.clearCache()` / `remountDeps` / canon への経緯記述）。収束フェーズの判定基準どおり退けた。
+- **次ラウンドは不要と判断してよい状態。** 残る 6 件はいずれも 1〜2 行の置き換えで、相互に依存しない。
+
+---
+
+### 実行計画
+
+担当ファイルが重ならない 4 単位に分けた。**順序依存は 計画M → 計画N の docs L.554 だけ**（定数を適用してから「3 箇所」と書く）。計画L / 計画O は完全に独立。
+
+#### 計画L: canon（`spec/adr/030`）に混在窓を書く
+
+- 対象指摘: auth W-001 / routing W-003（統合）
+- 対象ファイル: `spec/adr/030-auth-state-transition-transport.md`（このファイルのみ）
+- 方針:
+  1. L.34（別の利用者がサインインし直す経路の箇条書き）を**現在形のまま**書き直し、切り替わりが 2 段であることを明示する。含める要素は 2 つ: (a) 上部バーの表示名・アバターは `loaderData` の差し替えが届いた時点で新しい主体へ切り替わる、(b) ノート一覧は `Deferred` が差し替えを deferred lane に載せているため、断片のストリームが完了するまで前の主体のものが残る — **その間は主体が混在した画面になる**。
+  2. **窓の長さの帰属を直す。** 現行の文は窓を背景枝と `router.invalidate()` にだけ帰しているが、実際に一覧側の窓を支配しているのは `Deferred`（ADR-005 の帰結）。「1 往復ぶん」という言い方を一覧側に使わない。
+  3. **書かないもの**: 「変更前（`beforeLoad` 時代 / `Deferred` 修正前）はこうだった」という比較。`spec/` は現在形の canon で経緯を持たない（CLAUDE.md）。差分の記録が要るなら `.thread/13/adr.md` の ADR-005 側。
+  4. **挙動は変えない。** `key={user.userId}` / `router.clearCache()` は採らない（`triage-keys.md` Round 003 に記録済み）。「決定」欄・代替案欄・L.33 には触らない。
+
+#### 計画M: OAuth 開始の転送境界を `REDIRECT_MAX_LENGTH` へ寄せる
+
+- 対象指摘: auth W-002（コード側）
+- 対象ファイル: `apps/web/app/routes/auth/-action.tsx`（このファイルのみ）
+- 方針:
+  1. `import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";` を足し、`startSchema` の `redirectTo` を `z.string().max(REDIRECT_MAX_LENGTH).nullable()` にする。**`.nullable()` は維持**（`OAuthButton` は `string | null` を送る）。
+  2. **同ファイル内の他の `max()` には触らない** — `provider`（32）/ `state`（512）/ `code`（4096）は別の意味の上限。
+  3. **他ファイルの 2048 にも触らない**: `routes/dev/oauth/authorize.tsx:12` の `redirect_uri` と `routes/dev/-action.tsx:22` の `redirectUri` は**プロバイダーのコールバック絶対 URL**で、同一オリジンパスの上限とは別物。`settings/-action.tsx:75` / `packages/core/.../valueObject.ts:153` の `AVATAR_URL_MAX_LENGTH` も別物。**統一の射程は「`/signin` の `redirect` を出所とする戻り先パス」だけ**。
+  4. テスト追加は不要 — `redirect.test.ts` が `REDIRECT_MAX_LENGTH` の境界（ちょうど / +1）を既に固定しており、定数を共有すれば 3 箇所が同時に動く。
+
+#### 計画N: `docs/frontend_implementation_example.md` の 2 行
+
+- 対象指摘: routing W-002 / note-docs W-003（統合）、auth W-002（doc 側）
+- 対象ファイル: `docs/frontend_implementation_example.md`（このファイルのみ）
+- 依存: **L.554 の書き換えは 計画M のあと**（先に書くと doc が実装より先走る）。L.135 は先行してよい。
+- 方針:
+  1. **L.135**: 「`/notes` and `/settings/*` are the same shape here — neither settles its loader without that round trip.」に「**初めて入る（未ロードの）match では**」に相当する限定を付ける。既訪 match が背景枝で即 settle する説明は **L.82-85 のスニペット注記が既に持っている**ので、そちらへ委ねて追記しない（同じ説明を 2 箇所に置かない）。
+  2. **L.554**: `REDIRECT_MAX_LENGTH` の説明「the transport ceiling **both** the bridge's validator and `/signin`'s `validateSearch` import」を 3 箇所（+ OAuth 開始 `routes/auth/-action.tsx`）に直す。表のセル 1 つで閉じる。
+  3. **広げない。** この節の他の断定は Round 001〜002 で照合済みで、note-docs レビューの突き合わせ表が 11 項目すべて「一致」を確認している。
+
+#### 計画O: コード内のコメント / JSDoc 3 点
+
+- 対象指摘: note-docs W-001、note-docs W-002、routing W-001
+- 対象ファイル:
+  - `apps/web/app/components/note/CreateNoteButton/index.tsx`
+  - `apps/web/app/routes/notes/index.tsx`
+  - `apps/web/app/routes/notes/$noteId.tsx`
+  - `apps/web/app/components/ui/Deferred/index.tsx`
+- 方針:
+  1. **`CreateNoteButton/index.tsx:39-40`**: 「`/notes` keeps `staleTime: Infinity` in production, so without the invalidate …」の 2 行を落とす。`/notes` は `shouldReload` で必ず再実行されるので、`invalidate()` に残る WHY は「一覧へ戻ったときの背景再取得を前倒しして、遷移先から戻る前に差し替えを済ませる」。**理由が自明だと判断したら行ごと落としてよい**（CLAUDE.md「Default to no comments」）。直上の「Reconcile and leave OUTSIDE the try」のコメントは非自明な WHY なので**残す**。
+  2. **`routes/notes/{index,$noteId}.tsx:20`**: 無印の `（ADR-005）` を `（.thread/13/adr.md の ADR-005）` にする。2 ファイルで逐語同一の 1 語なので置換 1 回。**コメント本体の他の文には触らない**（ADR-003 が要求した但し書きを含むため）。片付けフェーズで `spec/adr/` へ昇格するなら、そのとき採番後の番号へ差し替える。
+  3. **`components/ui/Deferred/index.tsx` の JSDoc**: 「On the first mount there is no previous value, so the fallback still shows.」の直後に **1 文だけ**足す — 前の値が保たれるのは promise の差し替えが**同じ URL の再取得**（＝ route component が remount されない差し替え）である場合で、params だけが変わる遷移を足すなら route 側に `remountDeps` が要る、の意。**`remountDeps` 自体は入れない**（今日 note→note の導線が無く、観測できない設定になる）。
+  4. 4 ファイルとも挙動不変。`pnpm typecheck && pnpm lint:fix && pnpm format` で閉じる。
+
+### Round 003 の結末
+
+- fix 6 件をすべて反映（計画L〜O）。品質ゲート: `pnpm typecheck` PASS / `pnpm lint:fix` 修正なし / `pnpm format` 修正なし / `pnpm test` 935 passed・3 skipped
+- Blocker ゼロ。挙動を変える修正はゼロ（`auth/-action.tsx` の定数化は現在値が同じ 2048 なので観測挙動不変）
+- defer 起票は 0 件
