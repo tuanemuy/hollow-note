@@ -17,7 +17,7 @@ export const Route = createFileRoute("/notes/$noteId")({
   // `loaderData` が 1 往復ぶん表示されてから redirect する
   // （`beforeLoad` のブロッキング性は戻らない）。成功する再取得でスケルトンに
   // 戻らないのは背景枝だからではなく、`Deferred` が断片 promise の差し替えを
-  // deferred lane に載せているため（`.thread/13/adr.md` の ADR-005）。
+  // deferred lane に載せているため。
   shouldReload: ({ cause }) => cause !== "preload",
   loader: ({ params, location }) =>
     renderNoteDetail({

@@ -19,14 +19,12 @@ export type RouterContext = { config: AppConfig | undefined };
  * ペイロード（router の `dehydrate` / `hydrate`）から受け取るのでここでは
  * 何も返さない。
  *
- * **引けなければ `undefined` を返す（throw しない）。** 今日この `undefined`
- * に到達する経路は無い — `server.node.ts` が全要求を `storage.run(container,
- * ...)` で包むので、`getRouter()` はドキュメント要求からも
- * `handleServerRoutes`（`/storage/$` など）からも `handleRedirectResponse`
- * からも要求スコープの内側で走る。寛容にしてあるのは、prerender / SPA shell
- * 生成のように要求の無いところでルーターを組む日に、無関係なファイル配信
- * まで 500 に落とさないための保険。`head` 側はすべて `config` が `undefined`
- * なら触らずに早期 return するため、失敗は「メタタグが出ない」に留まる。
+ * **引けなければ `undefined` を返す（throw しない）。** `server.node.ts` が
+ * 全要求を要求スコープで包むので `getRouter()` は必ずその内側で走り、今日
+ * この `undefined` に到達する経路は無い。寛容にしてあるのは、prerender /
+ * SPA shell 生成のように要求の無いところでルーターを組む日に、無関係な
+ * ファイル配信まで 500 に落とさないための保険。`head` は `config` が
+ * `undefined` なら早期 return するので、失敗は「メタタグが出ない」に留まる。
  *
  * `createIsomorphicFn` なのは `router.tsx` がクライアントバンドルにも入る
  * ため — `.server(...)` の本体はクライアントビルドから落ちるので、

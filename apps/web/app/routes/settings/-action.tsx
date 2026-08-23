@@ -16,7 +16,7 @@ import { validateInput } from "@/presentation/validator";
  * なので畳めず、並列に走らせている。
  */
 
-/** P-22 の一覧フラグメント。未解決の promise を返してストリームさせる。 */
+/** P-22 の一覧フラグメント。 */
 export const renderIdentityList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .handler(async () => {
@@ -32,7 +32,7 @@ export const renderIdentityList = createServerFn({ method: "GET" })
     };
   });
 
-/** P-21 のフォームフラグメント。未解決の promise を返してストリームさせる。 */
+/** P-21 のフォームフラグメント。 */
 export const renderProfileForm = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .handler(async () => {
@@ -53,7 +53,7 @@ export const renderProfileForm = createServerFn({ method: "GET" })
     };
   });
 
-/** P-24 の使用量フラグメント。未解決の promise を返してストリームさせる。 */
+/** P-24 の使用量フラグメント。 */
 export const renderUsagePanel = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .handler(async () => {
@@ -163,7 +163,6 @@ const avatarUploadSchema = z.object({
 /**
  * PAGE-p21-001。`storeAvatar` はバイト列を置くだけで `User` を書かない
  * ので、返った `url` を `updateProfileFn` へ渡す 2 段目が要る。
- * 主体は Cookie のセッションで、`subjectId` を要求本文から取らない。
  *
  * `FormData` を受ける経路の同一オリジン照合は、`start.ts` が
  * `requestMiddleware` に置く `createCsrfMiddleware` がハンドラー到達前に

@@ -9,10 +9,7 @@ import { validateInput } from "@/presentation/validator";
 // は置かない。セッションが解決できない理由（無い／期限切れ／epoch 失効／
 // 削除中・削除済み）は区別されず、すべて遷移元付きの `/signin` redirect に
 // なる。401 が残るのは `requireSession()` を直に呼ぶミューテーションと
-// `/settings` の子断片だけ。断片の promise は UNRESOLVED のまま返し、loader
-// がそれを転送して Suspense の下で解決される。`renderServerFragment` は、
-// `errorResponseMiddleware` が既に応答を返したあとにストリーム途中で reject
-// した誤りの redaction 境界。
+// `/settings` の子断片だけ。
 
 const redirectField = z.string().min(1).max(REDIRECT_MAX_LENGTH);
 
