@@ -66,6 +66,7 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
 | `OUTBOX_BATCH_SIZE`   | no       | `100`                   | Max outbox rows claimed per relay tick.                                             |
 | `OUTBOX_LEASE_MS`     | no       | `300000`                | Lease window (ms) before a stuck claim becomes reclaimable.                         |
+| `SCOPE_TASK_LEASE_MS` | no       | `300000`                | Lease window (ms) a scope-task claim holds its whole batch for; it must outlast the worst-case turn, since a turn that overruns can settle a row another worker has since re-armed. |
 | `OUTBOX_MAX_ATTEMPTS` | no       | `2`                     | Per-event max attempts before quarantine (`failed_at` stamp).                       |
 | `OUTBOX_RETENTION_MS` | no       | `604800000` (7 days)    | Retention window before processed outbox rows are pruned.                           |
 | `MEMORY_MAIL_LOG_ACTION_URL` | no | `false`              | `true` logs the action URL (verification link, raw token) on `mail.sent`. Manual testing only. |

@@ -16,9 +16,19 @@ export type TuningEnv = Readonly<{
   SCOPE_TASK_LEASE_MS?: string | undefined;
 }>;
 
+/**
+ * Both tuning schemas name their lease field `leaseMs`, so zod's issue
+ * path alone cannot tell an operator which environment variable a boot
+ * refusal came from. The message carries the variable name instead.
+ */
+const leaseMsField = (variable: string, fallback: number) => {
+  const error = `${variable} must be a positive integer (ms)`;
+  return z.coerce.number(error).int(error).positive(error).default(fallback);
+};
+
 const relayTuningSchema = z.object({
   batchSize: z.coerce.number().int().positive().default(DEFAULT_BATCH_SIZE),
-  leaseMs: z.coerce.number().int().positive().default(DEFAULT_LEASE_MS),
+  leaseMs: leaseMsField("OUTBOX_LEASE_MS", DEFAULT_LEASE_MS),
   maxAttempts: z.coerce.number().int().min(1).default(DEFAULT_MAX_ATTEMPTS),
 });
 
@@ -31,7 +41,7 @@ const pruneTuningSchema = z.object({
 });
 
 const scopeTaskTuningSchema = z.object({
-  leaseMs: z.coerce.number().int().positive().default(SCOPE_TASK_LEASE_MS),
+  leaseMs: leaseMsField("SCOPE_TASK_LEASE_MS", SCOPE_TASK_LEASE_MS),
 });
 
 export type RelayTuning = z.infer<typeof relayTuningSchema>;

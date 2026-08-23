@@ -59,12 +59,13 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * Claiming takes a lease rather than trusting a scope to have a single
  * writer: `claimDue` marks each row it hands out `running` with
  * `leaseExpiresAt = now + leaseMs`, and no reader sees that row again
- * until the deadline passes. A writer that disappears mid-turn is
+ * until the deadline is reached. A writer that disappears mid-turn is
  * therefore recovered — the next claim past the lease reclaims the row.
  *
  * Selection is the same rule for `claimDue` and
  * `ScopeTaskQueue.listDue`. Candidates are the rows that are `pending`
- * with `dueAt <= now` or `running` with a lapsed lease. From those:
+ * with `dueAt <= now` or `running` with `leaseExpiresAt <= now`. From
+ * those:
  *
  * 1. Reservation — walking `priority` ascending, take the one candidate
  *    of each priority whose `(dueAt, kind, operationId)` is smallest,
@@ -87,13 +88,15 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * | `schedule` | absent / pending / running / failed | pending, `dueAt = input.dueAt`, `attempt = 0`, `priority = input.priority`, lease released |
  * | `claimDue` | pending (due) / running (lapsed lease) | running, `leaseExpiresAt = now + leaseMs`; `dueAt`, `attempt` and `priority` unchanged |
  * | `complete` | any, including absent | row removed |
- * | `backoff` | pending / running | pending, `attempt + 1`, `dueAt = now + delay`, lease released, `priority` unchanged — `failed` once `attempt` reaches `SCOPE_TASK_MAX_ATTEMPTS`. No-op on an absent row |
- * | `backoffOrSchedule` | absent / pending / running | mints the row with `input.priority` and `dueAt = input.now` when absent, then backs off as above. An **existing** row keeps its `priority` |
+ * | `backoff` | pending / running / failed | pending, `attempt + 1`, `dueAt = now + delay`, lease released, `priority` unchanged — `failed` once `attempt` reaches `SCOPE_TASK_MAX_ATTEMPTS`, and a row already `failed` stays `failed` with its `attempt` still climbing past the ceiling. No-op on an absent row |
+ * | `backoffOrSchedule` | absent / pending / running / failed | mints the row with `input.priority` and `dueAt = input.now` when absent, then backs off as above. An **existing** row keeps its `priority` |
  *
- * Only `schedule` brings a `failed` row back. Reclaiming a lapsed lease
- * spends no attempt and leaves `dueAt` where it was, so a reclaimed row
- * keeps its place within its priority and a row nothing settles keeps
- * ageing — which is what an oldest-task-age alert has to measure.
+ * Only `schedule` brings a `failed` row back, and it resets `attempt` to
+ * `0`; nothing else claims a `failed` row, so the climbing `attempt` is
+ * never observable. Reclaiming a lapsed lease spends no attempt and
+ * leaves `dueAt` where it was, so a reclaimed row keeps its place within
+ * its priority and a row nothing settles keeps ageing — which is what an
+ * oldest-task-age alert has to measure.
  *
  * `backoff` bumps `attempt` and pushes `dueAt` out exponentially
  * (`SCOPE_TASK_BACKOFF_BASE_MS` × 2^(attempt - 1) — so the first retry

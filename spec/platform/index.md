@@ -174,7 +174,7 @@ private projection と scope cleanup continuation は Queue へ出さず、scope
 
 ### Scope Alarm
 
-各 scope object は `scheduled_tasks(due_at, priority, kind, payload, attempts)` を持つ。outbox relay、job lease reaping、private projection、cleanup continuation、expired metadata collection について、pending の最小 `due_at` と running の最小 `lease_expires_at` のうち小さい方を `setAlarm()` する。
+各 scope object は `scheduled_tasks`（列は [database](../database/index.md) を正本とする）を持つ。outbox relay、job lease reaping、private projection、cleanup continuation、expired metadata collection について、pending の最小 `due_at` と running の最小 `lease_expires_at` のうち小さい方を `setAlarm()` する。
 
 Alarm handler は次を守る。
 
@@ -183,7 +183,7 @@ Alarm handler は次を守る。
 3. 失敗 task は backoff して再予定し、上限超過を `global-events` へ通知する
 4. 最後に次の起床時刻 — pending の最小 `due_at` と running の最小 `lease_expires_at` の小さい方 — を Alarm へ設定する。task がなければ Alarm を消す
 
-1 turnは合計100行またはCPU 2秒でyieldする。priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
+1 turnは合計100行またはCPU 2秒でyieldする。1 turnがclaimするのはそのturnでsettleしきる件数までとし、yield時に未処理のclaimを残さない — 残した行は `lease_expires_at` まで再開できず、次の起床までの遅延がリース期間へ跳ね上がる。priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。リース期間はwriterが落ちたtaskの回復遅延の下限でもあるため、最悪ケースのturn所要時間（これを下回るとturn中に別writerが同じ行を掴む）とpriority 0のage SLO（これを上回るとクラッシュ1回の回収がSLO違反を含む）の両方を見て選ぶ。低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
 ### Global Cron
 

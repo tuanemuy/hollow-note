@@ -246,11 +246,34 @@ export function describeScopeTaskSchedulerContract(
       expect(await claim(10)).toEqual([]);
     });
 
-    it("reclaims a row whose lease lapsed, with its dueAt and attempt intact", async () => {
-      await schedule("op-early", -10 * MINUTE_MS);
-      await schedule("op-late", -MINUTE_MS);
+    it("reclaims a row whose lease lapsed, with its dueAt, attempt and priority intact", async () => {
+      // A row that has already burned an attempt and carries a priority
+      // other than the helper default, so a reclaim that resets either
+      // one is visible instead of landing back on the same value.
+      await schedule(
+        "op-early",
+        0,
+        "usage.userCleanupContinued",
+        { deletionOperationId: "d1" },
+        ScopeTaskPriority.expiryCollection,
+      );
+      await scheduler.backoff(
+        "usage.userCleanupContinued",
+        "op-early",
+        backend.clock.now(),
+      );
+      backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS + MINUTE_MS);
+      await schedule(
+        "op-late",
+        -MINUTE_MS / 2,
+        "usage.userCleanupContinued",
+        {},
+        ScopeTaskPriority.expiryCollection,
+      );
+
       const [first] = await claim(1);
       expect(first?.operationId).toBe("op-early");
+      expect(first?.attempt).toBe(1);
 
       backend.clock.advance(SCOPE_TASK_LEASE_MS);
       const reclaimed = await claim(10);
@@ -262,9 +285,39 @@ export function describeScopeTaskSchedulerContract(
         "op-late",
       ]);
       expect(reclaimed[0]?.dueAt).toEqual(first?.dueAt);
-      expect(reclaimed[0]?.attempt).toBe(0);
-      expect(reclaimed[0]?.priority).toBe(first?.priority);
+      expect(reclaimed[0]?.attempt).toBe(1);
+      expect(reclaimed[0]?.priority).toBe(ScopeTaskPriority.expiryCollection);
       expect(reclaimed[0]?.payload).toEqual({ deletionOperationId: "d1" });
+
+      // Reclaiming takes a fresh lease rather than handing the row out
+      // bare: without it the next claim of the same round redistributes
+      // a row whose turn is still running.
+      expect(reclaimed[0]?.leaseExpiresAt).toEqual(
+        new Date(backend.clock.now().getTime() + SCOPE_TASK_LEASE_MS),
+      );
+      expect(await claim(10)).toEqual([]);
+    });
+
+    it("breaks ties within a priority and dueAt on (kind, operationId)", async () => {
+      const dueOffset = -MINUTE_MS;
+      await schedule("op-2", dueOffset, "usage.userCleanupContinued");
+      await schedule("op-1", dueOffset, "usage.userCleanupContinued");
+      await schedule("op-2", dueOffset, "storage.ownerDeleteContinued");
+      await schedule("op-1", dueOffset, "storage.ownerDeleteContinued");
+
+      const keyOf = (task: { kind: string; operationId: string }) =>
+        `${task.kind}/${task.operationId}`;
+
+      // The limit cuts one determined order, so the tie decides which
+      // rows are claimed and not only how they are arranged.
+      expect((await claim(2)).map(keyOf)).toEqual([
+        "storage.ownerDeleteContinued/op-1",
+        "storage.ownerDeleteContinued/op-2",
+      ]);
+      expect((await claim(2)).map(keyOf)).toEqual([
+        "usage.userCleanupContinued/op-1",
+        "usage.userCleanupContinued/op-2",
+      ]);
     });
 
     it("upserts on (kind, operationId) so a replayed turn does not multiply tasks", async () => {
@@ -493,6 +546,16 @@ export function describeScopeTaskSchedulerContract(
         "op-expiry",
       ]);
       expect(due[1]?.scope).toEqual(scopeOf(2));
+
+      // Leases hide rows from the cross-scope read too: with every row
+      // of scope 1 claimed, only the other scope is left to list.
+      expect(await claim(10)).toHaveLength(3);
+      const afterClaim = await backend.scopeTaskQueue.listDue(
+        backend.clock.now(),
+        10,
+      );
+      expect(afterClaim.map((task) => task.operationId)).toEqual(["op-expiry"]);
+      expect(afterClaim[0]?.scope).toEqual(scopeOf(2));
     });
   });
 }

@@ -86,6 +86,13 @@ describe("memory scope unit of work commit kick (spec/adr/023)", () => {
 
   const scheduledTasks = () => backend.scope(scope).scheduledTasks.values();
 
+  const claimTasks = (ctx: ScopeUnitOfWorkContext) =>
+    ctx.scopeTaskScheduler.claimDue({
+      now: backend.clock.now(),
+      limit: 10,
+      leaseMs: SCOPE_TASK_LEASE_MS,
+    });
+
   it("kicks the scope-task runner once when a commit stored a continuation", async () => {
     await provider.run(scope, scheduleTask);
 
@@ -93,16 +100,37 @@ describe("memory scope unit of work commit kick (spec/adr/023)", () => {
     expect(kicks).toBe(1);
   });
 
-  it("leaves the runner alone when the unit of work stored no continuation", async () => {
+  it("leaves the runner alone when the unit of work only claimed a task", async () => {
+    await provider.run(scope, scheduleTask);
+    expect(kicks).toBe(1);
+
     await provider.run(scope, async (ctx) => {
-      await ctx.scopeTaskScheduler.claimDue({
-        now: backend.clock.now(),
-        limit: 10,
-        leaseMs: SCOPE_TASK_LEASE_MS,
-      });
+      expect(await claimTasks(ctx)).toHaveLength(1);
     });
 
-    expect(kicks).toBe(0);
+    // A claim writes the row, so the commit is not empty — but taking
+    // work off the queue is not storing a continuation, and kicking on
+    // it would have the runner wake itself every tick.
+    expect(kicks).toBe(1);
+    expect(scheduledTasks().map((row) => row.state)).toEqual(["running"]);
+  });
+
+  it("rolls a claim back to pending when the unit of work throws", async () => {
+    await provider.run(scope, scheduleTask);
+
+    await expect(
+      provider.run(scope, async (ctx) => {
+        expect(await claimTasks(ctx)).toHaveLength(1);
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    expect(scheduledTasks().map((row) => row.state)).toEqual(["pending"]);
+    expect(kicks).toBe(1);
+
+    await provider.run(scope, async (ctx) => {
+      expect(await claimTasks(ctx)).toHaveLength(1);
+    });
   });
 
   it("leaves the runner alone when the unit of work rolled back", async () => {
