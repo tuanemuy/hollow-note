@@ -5,6 +5,7 @@ import {
   type ScopeCleanupTurn,
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
+import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 import { deleteStoredFiles } from "./deleteFiles";
 
@@ -94,6 +95,7 @@ export async function deleteFilesByOwner({
       await ctx.scopeTaskScheduler.backoffOrSchedule({
         kind: STORAGE_OWNER_DELETE_TASK_KIND,
         operationId: input.deletionOperationId,
+        priority: ScopeTaskPriority.securityCleanup,
         payload: { deletionOperationId: input.deletionOperationId },
         now,
       });
@@ -108,6 +110,7 @@ export async function deleteFilesByOwner({
       await ctx.scopeTaskScheduler.schedule({
         kind: STORAGE_OWNER_DELETE_TASK_KIND,
         operationId: input.deletionOperationId,
+        priority: ScopeTaskPriority.securityCleanup,
         dueAt: now,
         payload: { deletionOperationId: input.deletionOperationId },
       });

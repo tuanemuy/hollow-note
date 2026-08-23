@@ -18,10 +18,22 @@ export type DueScopeTask = Readonly<{
  * serialization rule (claim inside the scope transaction) is unchanged.
  *
  * `listDue` is required of every backend, not an optional index: it
- * returns the tasks already due at `now` across all scopes, ordered by
- * `dueAt` ascending, and never more than `limit`. A restarted process
- * has no other way to find the continuations it left behind, so a
- * backend that answers with an empty array has not implemented the port.
+ * returns the tasks already due at `now` across all scopes and never
+ * more than `limit`. A restarted process has no other way to find the
+ * continuations it left behind, so a backend that answers with an empty
+ * array has not implemented the port.
+ *
+ * Candidate rows and their order are the selection rule of
+ * `ScopeTaskScheduler` — reservation of one slot per priority, then fill
+ * in `(priority, dueAt, kind, operationId)` order, returned in that same
+ * order — applied across scopes instead of within one. What the
+ * reservation guarantees is that a priority **class** reaches the
+ * result, not that any particular scope does: which scope carries the
+ * reserved row follows from `(dueAt, kind, operationId)`. Rows under a
+ * live lease are not candidates and stay invisible here until it lapses,
+ * so a scope whose only work is claimed is not offered to the runner.
+ *
+ * Input bounds: `limit <= 0` returns an empty array.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */

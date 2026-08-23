@@ -3,6 +3,10 @@ import type {
   ScopeUnitOfWorkContext,
   ScopeUnitOfWorkProvider,
 } from "../../../application/execution/unitOfWork";
+import {
+  SCOPE_TASK_LEASE_MS,
+  ScopeTaskPriority,
+} from "../../../application/ports/scopeTaskScheduler";
 import type { ConformanceBackend } from "../../conformance/backend";
 import { makePendingUser, scopeOf, userId } from "../../conformance/fixtures";
 import { createTestClock } from "../../conformance/testClock";
@@ -75,6 +79,7 @@ describe("memory scope unit of work commit kick (spec/adr/023)", () => {
     ctx.scopeTaskScheduler.schedule({
       kind: "cleanup.turn",
       operationId: "op-1",
+      priority: ScopeTaskPriority.securityCleanup,
       dueAt: backend.clock.now(),
       payload: {},
     });
@@ -90,7 +95,11 @@ describe("memory scope unit of work commit kick (spec/adr/023)", () => {
 
   it("leaves the runner alone when the unit of work stored no continuation", async () => {
     await provider.run(scope, async (ctx) => {
-      await ctx.scopeTaskScheduler.claimDue(backend.clock.now(), 10);
+      await ctx.scopeTaskScheduler.claimDue({
+        now: backend.clock.now(),
+        limit: 10,
+        leaseMs: SCOPE_TASK_LEASE_MS,
+      });
     });
 
     expect(kicks).toBe(0);

@@ -2,8 +2,10 @@ import { createMemoryGlobalUnitOfWorkProvider } from "@repo/core/adapters/memory
 import { createMemoryScopeTaskQueue } from "@repo/core/adapters/memory/scopeTaskQueue";
 import { createMemoryScopeUnitOfWorkProvider } from "@repo/core/adapters/memory/scopeUnitOfWork";
 import {
+  SCOPE_TASK_LEASE_MS,
   SCOPE_TASK_MAX_ATTEMPTS,
   SCOPE_TASK_MAX_BACKOFF_MS,
+  ScopeTaskPriority,
 } from "@repo/core/application/ports/scopeTaskScheduler";
 import { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -68,6 +70,9 @@ const seedFiles = (h: TestHarness, userId: string, count: number) => {
 
 const storedFileCount = (h: TestHarness, userId: string): number =>
   h.backend.scope(scopeOf(userId)).storedFiles.values().length;
+
+const scheduledTasks = (h: TestHarness, userId: string) =>
+  h.backend.scope(scopeOf(userId)).scheduledTasks.values();
 
 const receipts = (h: TestHarness, operationId: string) =>
   h.backend.manifestHeaders.get(operationId)?.receipts ?? [];
@@ -201,13 +206,14 @@ describe("runDueScopeTasks", () => {
     expect(storedFileCount(h, userId)).toBe(0);
   });
 
-  it("leaves a task whose kind has no handler due, and reports it", async () => {
+  it("leaves a task whose kind has no handler under its lease, and has it back once the lease lapses", async () => {
     const h = createTestHarness();
     const scope = scopeOf("user-1");
     await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
       ctx.scopeTaskScheduler.schedule({
         kind: "unknown.kind",
         operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
         dueAt: h.clock.now(),
         payload: {},
       }),
@@ -219,9 +225,60 @@ describe("runDueScopeTasks", () => {
         entry.message.includes("no handler for unknown.kind"),
       ),
     ).toBe(true);
+    // The claim leased the row, so it is out of sight until the lease
+    // lapses — and comes back neither backed off nor failed.
+    expect(
+      await h.workerContainer.scopeTaskQueue.listDue(h.clock.now(), 10),
+    ).toEqual([]);
+
+    h.clock.advance(SCOPE_TASK_LEASE_MS);
     expect(
       await h.workerContainer.scopeTaskQueue.listDue(h.clock.now(), 10),
     ).toHaveLength(1);
+    expect(scheduledTasks(h, "user-1")[0]).toMatchObject({
+      state: "running",
+      attempt: 0,
+    });
+  });
+
+  it("hands a claimed row to one round only, and burns neither an attempt nor its dueAt while the lease holds", async () => {
+    const h = createTestHarness();
+    const scope = scopeOf("user-1");
+    await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: "slow",
+        operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAt: h.clock.now(),
+        payload: {},
+      }),
+    );
+    // A handler that never settles its row is what a writer losing its
+    // turn looks like from the table's side; the implemented kinds all
+    // re-arm their own row and would release the lease themselves.
+    let runs = 0;
+    const handlers = {
+      slow: async () => {
+        runs += 1;
+      },
+    };
+
+    expect(await runDueScopeTasks(h.workerContainer, { handlers })).toEqual({
+      processed: 1,
+    });
+    const claimed = scheduledTasks(h, "user-1")[0];
+
+    expect(await runDueScopeTasks(h.workerContainer, { handlers })).toEqual({
+      processed: 0,
+    });
+    expect(runs).toBe(1);
+    expect(scheduledTasks(h, "user-1")[0]).toEqual(claimed);
+
+    h.clock.advance(SCOPE_TASK_LEASE_MS);
+    expect(await runDueScopeTasks(h.workerContainer, { handlers })).toEqual({
+      processed: 1,
+    });
+    expect(runs).toBe(2);
   });
 
   it("isolates a failing task from the rest of the round", async () => {
@@ -232,6 +289,7 @@ describe("runDueScopeTasks", () => {
         ctx.scopeTaskScheduler.schedule({
           kind,
           operationId: `op-${kind}`,
+          priority: ScopeTaskPriority.securityCleanup,
           dueAt: h.clock.now(),
           payload: {},
         }),
@@ -266,6 +324,7 @@ describe("runDueScopeTasks", () => {
       ctx.scopeTaskScheduler.schedule({
         kind: "failing",
         operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
         dueAt: h.clock.now(),
         payload: {},
       }),

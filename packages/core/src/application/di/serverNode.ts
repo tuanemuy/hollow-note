@@ -24,6 +24,7 @@ export type NodeServerEnv = Readonly<{
   OUTBOX_LEASE_MS?: string | undefined;
   OUTBOX_MAX_ATTEMPTS?: string | undefined;
   OUTBOX_RETENTION_MS?: string | undefined;
+  SCOPE_TASK_LEASE_MS?: string | undefined;
 }>;
 
 const isTrue = (value: string | undefined): boolean => value === "true";
@@ -80,6 +81,7 @@ const nodeServerEnvSchema = z
     OUTBOX_LEASE_MS: z.string().optional(),
     OUTBOX_MAX_ATTEMPTS: z.string().optional(),
     OUTBOX_RETENTION_MS: z.string().optional(),
+    SCOPE_TASK_LEASE_MS: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (isTrue(env.OAUTH_DEV_MODE)) {
@@ -127,6 +129,9 @@ export function nodeServerEnvToTuningEnv(env: NodeServerEnv): TuningEnv {
       : {}),
     ...(env.OUTBOX_RETENTION_MS !== undefined
       ? { OUTBOX_RETENTION_MS: env.OUTBOX_RETENTION_MS }
+      : {}),
+    ...(env.SCOPE_TASK_LEASE_MS !== undefined
+      ? { SCOPE_TASK_LEASE_MS: env.SCOPE_TASK_LEASE_MS }
       : {}),
   };
 }

@@ -965,12 +965,15 @@ projection consumerはcurrent routeを解決し、scopeのatomic snapshotとvers
 | `last_error` | text | NULL 可 |
 | `priority` | integer | NOT NULL |
 | `status` | text | NOT NULL, CHECK IN ('pending','running','failed') |
+| `lease_expires_at` | integer | `status = 'running'` のとき NOT NULL |
 
 priorityは security cleanup / lease reaping = 0、outbox relay = 1、projection = 2、期限回収 = 3 とする。同じpriority内は `due_at`, `kind`, `operation_id` 順。Alarm turnはpriorityごとの最低枠を確保するweighted round-robinで処理し、低priorityの大量taskがsecurity cleanupを飢餓させない。
 
+`status = 'running'` の行は `lease_expires_at` までクレーム中で、`lease_expires_at <= now` になった行は別のwriterが再claimできる。再claimは `due_at` / `attempts` / `priority` / `payload` を claim 前のまま保つ。claimの候補は `status = 'pending' AND due_at <= now` または `status = 'running' AND lease_expires_at <= now` の行である。`due_at` は状態によらず「実行予定時刻」を意味し、claimは書き換えない（[platform](../platform/index.md) の「priority 0 の最古 task age」SLOがこの列から測れることに依存する）。Alarm起床時刻は pending の最小 `due_at` と running の最小 `lease_expires_at` の小さい方になる（規則の正本は [platform](../platform/index.md) の Scope Alarm 節）。
+
 `workspace.deletionLocalContinued`はworkspace deletion operation IDをpayload/PKへ使い、beginDeletionと同じtransactionで初回を保存する。各manifest/local-delete pageもheader cursor/ackと同じtransactionで同じtaskを次時刻へupsertする。
 
-indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`)、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`)。
+indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`)、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`)、`scheduled_tasks_lease_idx` (`lease_expires_at`) WHERE `status = 'running'` — リース失効行の回収とAlarm起床時刻の導出用。
 
 #### membership_removal_locks
 

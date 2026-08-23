@@ -1,3 +1,4 @@
+import { ScopeTaskPriority } from "@repo/core/application/ports/scopeTaskScheduler";
 import { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
@@ -289,6 +290,7 @@ describe("personal barrier prune", () => {
         await ctx.scopeTaskScheduler.schedule({
           kind: PERSONAL_BARRIER_PRUNE_TASK_KIND,
           operationId,
+          priority: ScopeTaskPriority.expiryCollection,
           dueAt: retainUntil,
           payload: { deletionOperationId: operationId },
         });
@@ -340,7 +342,8 @@ describe("personal barrier prune", () => {
     const scheduled = h.backend
       .scope(scopeOf("user-done"))
       .scheduledTasks.values()
-      .filter((task) => task.kind === PERSONAL_BARRIER_PRUNE_TASK_KIND);
+      .filter((task) => task.kind === PERSONAL_BARRIER_PRUNE_TASK_KIND)
+      .filter((task) => task.state === "pending");
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0]?.dueAt).toEqual(retainUntil);
 

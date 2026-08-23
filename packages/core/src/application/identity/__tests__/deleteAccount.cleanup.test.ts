@@ -71,7 +71,8 @@ const pruneTasks = (h: TestHarness, userId: string) =>
   h.backend
     .scope(scopeOf(userId))
     .scheduledTasks.values()
-    .filter((task) => task.kind === PERSONAL_BARRIER_PRUNE_TASK_KIND);
+    .filter((task) => task.kind === PERSONAL_BARRIER_PRUNE_TASK_KIND)
+    .filter((task) => task.state === "pending");
 
 /**
  * Files inserted straight into the scope: `storeAvatar` replaces the

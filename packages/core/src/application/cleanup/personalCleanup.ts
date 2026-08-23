@@ -1,5 +1,6 @@
 import type { WorkerContainer } from "../di/types";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "./participants";
 
@@ -61,6 +62,7 @@ export async function completePersonalCleanupIfDone(
   await ctx.scopeTaskScheduler.schedule({
     kind: PERSONAL_BARRIER_PRUNE_TASK_KIND,
     operationId: params.operationId,
+    priority: ScopeTaskPriority.expiryCollection,
     dueAt: retainUntil,
     payload: {
       deletionOperationId: params.operationId,
@@ -102,6 +104,7 @@ export async function prunePersonalCleanupBarriers(
       await ctx.scopeTaskScheduler.schedule({
         kind: PERSONAL_BARRIER_PRUNE_TASK_KIND,
         operationId: params.operationId,
+        priority: ScopeTaskPriority.expiryCollection,
         dueAt: params.asOf,
         payload: {
           deletionOperationId: params.operationId,

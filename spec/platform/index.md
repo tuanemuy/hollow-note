@@ -174,14 +174,14 @@ private projection と scope cleanup continuation は Queue へ出さず、scope
 
 ### Scope Alarm
 
-各 scope object は `scheduled_tasks(due_at, priority, kind, payload, attempts)` を持つ。outbox relay、job lease reaping、private projection、cleanup continuation、expired metadata collection の最小 `due_at` を `setAlarm()` する。
+各 scope object は `scheduled_tasks(due_at, priority, kind, payload, attempts)` を持つ。outbox relay、job lease reaping、private projection、cleanup continuation、expired metadata collection について、pending の最小 `due_at` と running の最小 `lease_expires_at` のうち小さい方を `setAlarm()` する。
 
 Alarm handler は次を守る。
 
 1. priority 0（membership/account security cleanup・lease reaping）、1（outbox）、2（projection）、3（期限回収）の順を基本に、1 turnで各priorityへ最低1枠を確保するweighted round-robinで処理する。同priorityはdueAt順とする
 2. 同じ operation ID の再実行を安全にする
 3. 失敗 task は backoff して再予定し、上限超過を `global-events` へ通知する
-4. 最後に次の最小 `due_at` を Alarm へ設定する。task がなければ Alarm を消す
+4. 最後に次の起床時刻 — pending の最小 `due_at` と running の最小 `lease_expires_at` の小さい方 — を Alarm へ設定する。task がなければ Alarm を消す
 
 1 turnは合計100行またはCPU 2秒でyieldする。priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
