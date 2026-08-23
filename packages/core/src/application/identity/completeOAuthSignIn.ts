@@ -27,6 +27,8 @@ import type { CompleteOAuthSignInView } from "./view";
 
 export type CompleteOAuthSignInInput = Readonly<{
   state: string;
+  /** Plaintext of the secret the flow handed to the starting browser. */
+  stateBinding: string;
   code: string;
 }>;
 
@@ -73,8 +75,7 @@ function displayNameFor(profile: OAuthProfile, email: Email): DisplayName {
 
 /**
  * Exchanges an authorization code and signs the visitor in, creating the
- * account or attaching the provider to an existing one
- * (UC-identity-006, spec/usecases/identity.md#completeoauthsignin).
+ * account or attaching the provider to an existing one.
  *
  * Three outcomes, decided in this order: an existing provider link signs
  * that user in; otherwise `AccountLinkingPolicy` judges the address, and
@@ -83,13 +84,16 @@ function displayNameFor(profile: OAuthProfile, email: Email): DisplayName {
  * existing user (one key). Every branch re-reads status and epoch inside
  * the final unit of work and inserts the identity and the session there
  * together, so credential issuance stays serialized against deletion
- * start (spec/usecases/identity.md 認証資格発行と削除開始の直列化).
+ * start.
  */
 export async function completeOAuthSignIn({
   container,
   input,
 }: ServiceArgs<CompleteOAuthSignInInput>): Promise<CompleteOAuthSignInView> {
-  const flow = await container.oauthStateStore.take(input.state);
+  const flow = await container.oauthStateStore.take(
+    input.state,
+    container.secureTokenGenerator.hashOf(input.stateBinding),
+  );
   // `take` is a single atomic get + delete, so a replayed state lands
   // here as "not stored" and can never reach the exchange twice.
   if (flow === null || flow.intent !== "signIn") {
@@ -171,9 +175,9 @@ export async function completeOAuthSignInForFlow(
 
 /**
  * Signs in the user an existing provider link already points at. The
- * claim alone does not authorize the session (spec/usecases/identity.md
- * 手順 3): the identities of the shard it names must still include this
- * provider account, or the key outlived the identity it stood for.
+ * claim alone does not authorize the session: the identities of the shard
+ * it names must still include this provider account, or the key outlived
+ * the identity it stood for.
  */
 async function signInLinkedUser(
   container: RequestContainer,

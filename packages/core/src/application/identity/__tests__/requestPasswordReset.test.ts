@@ -38,7 +38,7 @@ async function signUpWithGoogle(
   h: TestHarness,
   email = "google-user@example.com",
 ): Promise<string> {
-  const { authorizationUrl } = await startOAuthFlow({
+  const { authorizationUrl, stateBinding } = await startOAuthFlow({
     container: h.container,
     input: { provider: "google", intent: "signIn", redirectTo: null },
   });
@@ -53,6 +53,7 @@ async function signUpWithGoogle(
     container: h.container,
     input: {
       state,
+      stateBinding,
       code: encodeDevAuthorizationCode({
         providerAccountId: "google-account-1",
         email,

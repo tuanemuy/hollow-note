@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-16）
+生成元: `spec/testcases/`（最終同期: 2026-08-22）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -173,7 +173,7 @@
 | TC-identity-032 | completeOAuthSignIn: User/Identity保存後に2 reservationの片方だけactivate応答を失う — recoveryする | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | operation payloadと正データversionを照合し、email/providerAccount両方をactiveへ収束させる |
 | TC-identity-033 | completeOAuthSignIn: プロバイダーが返すメールが未確認 — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_EMAIL_UNVERIFIED")` が投げられる |
 | TC-identity-034 | completeOAuthSignIn: `state` が保存されていない — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられる |
-| TC-identity-035 | completeOAuthSignIn: `state` が既に 1 度使われている — 同じ `state` で再度交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられる（取り出しと同時に削除される） |
+| TC-identity-035 | completeOAuthSignIn: `state` が既に 1 度使われている — 同じ `state` で再度交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられる（束縛が一致したときに取り出しと同時に削除される） |
 | TC-identity-036 | completeOAuthSignIn: コード交換がプロバイダー側で拒否される — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_CODE_INVALID")` が投げられる |
 | TC-identity-037 | completeOAuthSignIn: プロバイダーとの通信が失敗する — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `SystemError(ExternalApiError)` が投げられる |
 | TC-identity-038 | completeOAuthSignIn: `redirectTo` が保存されている — 認可コードを交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | 応答に `redirectTo` が含まれる |
@@ -402,7 +402,7 @@
 | TC-identity-261 | signUpWithPassword: 同じメールアドレスで 2 つの要求が同時に走る — 同時に 2 つの登録要求を出す | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | 両方の応答 shape が同一（`emailVerificationRequired: true` / セッションなし）で、返る decoy id は別値。利用者はちょうど 1 人。一意性違反は `IdentityUniqueDirectory` のポート契約として送出されるが、ユースケースが畳む |
 | TC-identity-262 | signUpWithPassword: email reservation確保後にUser保存が失敗する — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | reservationをreleaseし、同じemailが恒久的に塞がらない |
 | TC-identity-263 | signUpWithPassword: User/Identity保存後にreservation activate応答を失う — recoveryする | spec/testcases/identity/signUpWithPassword.md#テストケース-signupwithpassword | User email/version一致を確認し、同じsub-operation IDでactiveへ収束する |
-| TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される。応答は `authorizationUrl` と併せて保存した `state` も返す（転送境界がフローを開始したブラウザーへ束縛するため — [ADR 034](../adr/034-oauth-callback-browser-binding.md)） |
+| TC-identity-264 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、`state` と `codeVerifier` が 10 分の期限で保存される |
 | TC-identity-265 | startOAuthFlow: Activeでサインイン済み — `intent: "linkIdentity"` と `userId` を指定して開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 認可 URL が返り、保存された状態に `userId` とcurrent `userAuthEpoch`が含まれる |
 | TC-identity-266 | startOAuthFlow: 削除開始済みまたは削除済み — `intent: "linkIdentity"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | OAuth stateを作らず、`UnauthorizedError("UNAUTHENTICATED")` が投げられる（認証済み利用者として扱わない） |
 | TC-identity-267 | startOAuthFlow: — — `intent: "linkIdentity"` で `userId` を省略する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | `ValidationError("USER_REQUIRED")` が投げられる |
@@ -474,6 +474,12 @@
 | TC-identity-333 | updateProfile: — — 別オリジンの絶対 URL をアイコンに設定する | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | `BusinessRuleError(InvalidAvatarUrl)` が投げられる |
 | TC-identity-334 | updateProfile: — — プロトコル相対の値（`//` で始まる）をアイコンに設定する | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | `BusinessRuleError(InvalidAvatarUrl)` が投げられる（`//` はアプリ相対パスとして扱わない） |
 | TC-identity-335 | updateProfile: アイコンを設定済みの `ActiveUser` — `avatarUrl` に `null` を渡す | spec/testcases/identity/updateProfile.md#テストケース-updateprofile | アイコンが解除され、射影の `avatarUrl` が `null` になる |
+| TC-identity-336 | startOAuthFlow: — — `provider: "google"`, `intent: "signIn"` で開始する | spec/testcases/identity/startOAuthFlow.md#テストケース-startoauthflow | 保存された `stateBindingHash` が、応答が返す `stateBinding` の `hashOf` と一致する。かつ `stateBinding` は認可 URL から読んだ `state`（応答には含まれない）と異なり、`stateBindingHash` は `state` の `hashOf` とも一致しない（束縛は `state` から導けない — [ADR 034](../adr/034-oauth-callback-browser-binding.md)） |
+| TC-identity-337 | completeOAuthCallback: `intent: "signIn"` の state が保存されている — 束縛の秘密が一致しない `stateBinding` でコールバックを処理する | spec/testcases/identity/completeOAuthCallback.md#テストケース-completeoauthcallback | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で処理すると完了できる |
+| TC-identity-338 | abandonOAuthFlow: フローの `state` が保存されている — 一致する `stateBinding` で放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: true` が返り、state 行が解放される（TTL を待たない） |
+| TC-identity-339 | abandonOAuthFlow: フローの `state` が保存されている — 一致しない `stateBinding` で放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返り、state 行は残る（他人の進行中フローを壊せない） |
+| TC-identity-340 | abandonOAuthFlow: `state` が保存されていない — 放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返る（エラーにはしない） |
+| TC-identity-341 | completeOAuthSignIn: 有効な `state` がある — 束縛の秘密が一致しない `stateBinding` で交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で交換すると完了できる |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |

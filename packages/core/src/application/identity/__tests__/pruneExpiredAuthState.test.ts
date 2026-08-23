@@ -102,6 +102,9 @@ function seedOAuthState(
       intent,
       userId: intent === "signIn" ? null : UserId.create("user-1"),
       userAuthEpoch: intent === "signIn" ? null : 0,
+      stateBindingHash: h.container.secureTokenGenerator.hashOf(
+        `${state}-binding`,
+      ),
     },
     expiresAt,
   });
@@ -278,7 +281,12 @@ describe("pruneExpiredAuthState", () => {
     const view = await cron(h);
     expect(view.oauthFlowStates).toBe(0);
     const store = createMemoryOAuthStateStore(h.backend);
-    expect(await store.take(state)).not.toBeNull();
+    expect(
+      await store.take(
+        state,
+        h.container.secureTokenGenerator.hashOf(`${state}-binding`),
+      ),
+    ).not.toBeNull();
   });
 
   it("an identity removal receipt past its retention is deleted while one inside it survives", async () => {

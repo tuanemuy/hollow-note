@@ -1,18 +1,20 @@
+import { ValidationError } from "@repo/core/application/errors";
 import { OAUTH_STATE_TTL_MS } from "@repo/core/application/identity/startOAuthFlow";
 import {
   deleteCookie,
   getCookie,
   setCookie,
 } from "@tanstack/react-start/server";
-import {
-  assertOAuthStateBinding,
-  deriveOAuthStateBinding,
-} from "./oauthStateBinding";
 
 /**
- * 認可往復の束縛 Cookie（{@link assertOAuthStateBinding} の運搬）。
+ * 認可往復の束縛 Cookie の運搬。
  *
  * Server-only module: server function のハンドラーから動的 import する。
+ *
+ * 載るのは `state` と独立した一回限りの秘密で、`state` を知るだけでは
+ * 再現できない（`state` は認可 URL とコールバック URL に載って往復する）。
+ * 値の照合は `state` の消費と同じ原子操作の中で行われるため、ここが持つ
+ * のは運搬と不在判定だけになる。
  *
  * 属性は session cookie に揃える（`HttpOnly` / `SameSite=Lax` / `Path=/`、
  * dev の平文 http を除いて `Secure`）。寿命は state 行と同じなので、
@@ -20,15 +22,12 @@ import {
  */
 const OAUTH_STATE_COOKIE_NAME = "hollow_oauth_state";
 
-// 免除は allowlist で判定する（spec/adr/037）。Vite が `process.env.NODE_ENV` を
+// 免除は allowlist で判定する。Vite が `process.env.NODE_ENV` を
 // ビルド時に畳み込むため、本番ビルドの成果物では定数 false になる。
 const isDevelopment = (): boolean => process.env.NODE_ENV === "development";
 
-export async function setOAuthStateCookie(
-  state: string,
-  now: Date,
-): Promise<void> {
-  setCookie(OAUTH_STATE_COOKIE_NAME, await deriveOAuthStateBinding(state), {
+export function setOAuthStateCookie(stateBinding: string, now: Date): void {
+  setCookie(OAUTH_STATE_COOKIE_NAME, stateBinding, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
@@ -37,17 +36,25 @@ export async function setOAuthStateCookie(
   });
 }
 
-/**
- * 束縛が成立しなければ `OAUTH_STATE_INVALID` を投げる。**ユースケースを
- * 呼ぶ前に通すこと** — 通していない `state` を消費すると、攻撃者の
- * コールバック URL を踏んだだけで code の交換まで進んでしまう。
- */
-export async function assertOAuthStateCookie(state: string): Promise<void> {
+export function readOAuthStateCookie(): string | null {
   const value = getCookie(OAUTH_STATE_COOKIE_NAME);
-  await assertOAuthStateBinding(
-    value !== undefined && value !== "" ? value : null,
-    state,
-  );
+  return value !== undefined && value !== "" ? value : null;
+}
+
+/**
+ * Cookie が無い消費要求はユースケースを呼ぶ前に畳む。原因を区別しても
+ * 利用者の取れる行動は「もう一度やり直す」の 1 つしかないので、束縛の
+ * 不一致と同じ `OAUTH_STATE_INVALID` にする。
+ */
+export function requireOAuthStateCookie(): string {
+  const value = readOAuthStateCookie();
+  if (value === null) {
+    throw new ValidationError(
+      "OAUTH_STATE_INVALID",
+      "Authorization state is not bound to this browser",
+    );
+  }
+  return value;
 }
 
 export function clearOAuthStateCookie(): void {
@@ -57,21 +64,4 @@ export function clearOAuthStateCookie(): void {
     path: "/",
     secure: !isDevelopment(),
   });
-}
-
-/**
- * 照合を通さずに終わる往復（キャンセル・引数欠落）のための破棄。
- * **束縛が一致した Cookie だけ**を捨てる — 一致しない Cookie は別の
- * ブラウザーが進行中のフローのものなので、コールバック URL を踏ませる
- * だけで他人のフローを壊せる経路になる（spec/adr/034）。
- */
-export async function clearBoundOAuthStateCookie(state: string): Promise<void> {
-  const value = getCookie(OAUTH_STATE_COOKIE_NAME);
-  if (value === undefined || value === "") {
-    return;
-  }
-  if (value !== (await deriveOAuthStateBinding(state))) {
-    return;
-  }
-  clearOAuthStateCookie();
 }

@@ -75,7 +75,7 @@ const AVATAR_URL_MAX_LENGTH = 2048;
 
 // 転送境界の役目は形と DoS 上限だけ。表示名 50 / 自己紹介 500 /
 // ハンドル 3〜30・予約語といった業務不変条件は値オブジェクトが持つ
-// ので、ここで二重に書かない（CLAUDE.md「Input validation」）。
+// ので、ここで二重に書かない。
 const updateProfileSchema = z.object({
   displayName: z
     .string()
@@ -312,7 +312,7 @@ export const startOAuthLinkFn = createServerFn({ method: "POST" })
         redirectTo: "/settings/auth",
       },
     });
-    await stateCookie.setOAuthStateCookie(view.state, container.clock.now());
+    stateCookie.setOAuthStateCookie(view.stateBinding, container.clock.now());
     return { authorizationUrl: view.authorizationUrl };
   });
 

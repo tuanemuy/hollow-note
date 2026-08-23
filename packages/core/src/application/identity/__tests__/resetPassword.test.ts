@@ -244,7 +244,7 @@ describe("resetPassword", () => {
 
   it("TC-identity-207: creates a password identity when the account has none", async () => {
     const h = createTestHarness();
-    const { authorizationUrl } = await startOAuthFlow({
+    const { authorizationUrl, stateBinding } = await startOAuthFlow({
       container: h.container,
       input: { provider: "google", intent: "signIn", redirectTo: null },
     });
@@ -254,6 +254,7 @@ describe("resetPassword", () => {
       container: h.container,
       input: {
         state,
+        stateBinding,
         code: encodeDevAuthorizationCode({
           providerAccountId: "google-account-1",
           email: "google-user@example.com",

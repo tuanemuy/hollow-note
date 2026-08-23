@@ -595,6 +595,6 @@ IdentityErrorCode =
 
 ## ユースケース（概要）
 
-`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `completeOAuthCallback`, `linkOAuthIdentity`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getProfile`, `checkHandleAvailability`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
+`signUpWithPassword`, `verifyEmail`, `resendVerificationEmail`, `signInWithPassword`, `startOAuthFlow`, `completeOAuthSignIn`, `completeOAuthCallback`, `linkOAuthIdentity`, `abandonOAuthFlow`, `authenticateSession`, `signOut`, `signOutOtherSessions`, `requestPasswordReset`, `resetPassword`, `addPasswordIdentity`, `changePassword`, `removeIdentity`, `listIdentities`, `updateProfile`, `getProfile`, `checkHandleAvailability`, `getPublicProfile`, `listPublicProfiles`, `deleteAccount`, `pruneExpiredAuthState`
 
 詳細は [usecases/identity.md](../usecases/identity.md)。

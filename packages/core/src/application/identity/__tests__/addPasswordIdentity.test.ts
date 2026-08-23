@@ -166,6 +166,7 @@ describe("addPasswordIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-account-2",
             email: "oauth-user@example.com",

@@ -12,7 +12,7 @@ export type StartOAuthFlowInput = Readonly<{
   userId?: string | null;
 }>;
 
-/** Lifetime of one authorization round-trip (spec/usecases/identity.md 手順4). */
+/** Lifetime of one authorization round-trip. */
 export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Callback route the authorization request is answered on. */
@@ -21,13 +21,17 @@ export const oauthRedirectUri = (appUrl: string, provider: string): string =>
 
 /**
  * Builds the authorization URL for a sign-in or identity-link flow and
- * parks the `state` / `codeVerifier` for the callback
- * (UC-identity-005, spec/usecases/identity.md#startoauthflow).
+ * parks the `state` / `codeVerifier` for the callback.
  *
  * The `state` row is the only carrier of the flow's intent: the callback
  * decides which usecase to run from it alone, so a
  * `linkIdentity` flow records the authenticated user and the epoch it
  * started under, and a `signIn` flow records neither.
+ *
+ * A third secret is minted alongside `state` / `codeVerifier`: its digest
+ * goes on the flow row and its plaintext is handed to the browser that
+ * started the flow, so completing the round trip needs both halves and
+ * neither can be derived from the other.
  */
 export async function startOAuthFlow({
   container,
@@ -73,6 +77,7 @@ export async function startOAuthFlow({
 
   const state = secureTokenGenerator.issue();
   const codeVerifier = secureTokenGenerator.issue();
+  const binding = secureTokenGenerator.issue();
   const flowState: OAuthFlowState = {
     provider,
     codeVerifier: codeVerifier.token,
@@ -80,11 +85,12 @@ export async function startOAuthFlow({
     intent: input.intent,
     userId,
     userAuthEpoch,
+    stateBindingHash: binding.hash,
   };
   await oauthStateStore.put(state.token, flowState, OAUTH_STATE_TTL_MS);
 
   return {
-    state: state.token,
+    stateBinding: binding.token,
     authorizationUrl: signInOAuthClient.buildAuthorizationUrl({
       provider,
       state: state.token,

@@ -1,5 +1,5 @@
 import type { PrunePage } from "@repo/core/domain/common/pagination";
-import type { UserId } from "@repo/core/domain/identity/valueObject";
+import type { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 
 /**
  * `provider` stays a raw string because Identity and Integration hold
@@ -14,6 +14,13 @@ export type OAuthFlowState = Readonly<{
   userId: UserId | null;
   /** Auth epoch at issue time for authenticated intents; `null` for signIn. */
   userAuthEpoch: number | null;
+  /**
+   * Digest of the one-shot secret handed to the browser that started the
+   * flow (`SecureTokenGenerator.issue()`'s `hash`), required for every
+   * intent. Opaque to the store, which knows neither where it came from
+   * nor how the plaintext travels back.
+   */
+  stateBindingHash: TokenHash;
 }>;
 
 /**
@@ -24,13 +31,30 @@ export type OAuthFlowState = Readonly<{
  * `pruneExpiredAuthState`.
  *
  * Contract: `take` (get + delete) **must be atomic** — e.g. a single
- * `DELETE … RETURNING`.
+ * `DELETE … RETURNING`. Deletion is conditional, decided by one rule that
+ * settles all four quadrants of (binding matches / does not) × (live /
+ * expired):
+ *
+ * > The row is deleted **only** when the binding matches. On a match it is
+ * > deleted even if expired, answering `null`. A mismatch always leaves the
+ * > row in place and answers `null`.
+ *
+ * So a request that merely knows `state` cannot consume the row — that is a
+ * property of the single atomic operation, not of the caller's ordering.
+ * Judgement order is not normative; a backend may implement it as
+ * `DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *`,
+ * answering `null` when the returned row's `expires_at` has passed, or as
+ * read → compare → delete → expiry check. Expiry must stay out of the
+ * `WHERE`: mixing it in would leave a matched-but-expired row behind.
  *
  * Error contract: `SystemError(DatabaseError)`.
  */
 export interface OAuthStateStore {
   put(state: string, value: OAuthFlowState, ttlMs: number): Promise<void>;
-  take(state: string): Promise<OAuthFlowState | null>;
+  take(
+    state: string,
+    stateBindingHash: TokenHash,
+  ): Promise<OAuthFlowState | null>;
   /** Bounded keyset sweep of expired rows. */
   deleteExpired(
     now: Date,

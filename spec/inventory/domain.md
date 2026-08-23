@@ -1,6 +1,6 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-16）
+生成元: `spec/domains/`（最終同期: 2026-08-22）
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -43,7 +43,7 @@
 | DOM-common-035 | `TimeZoneResolver.monthOf` | `spec/domains/index.md#TimeZoneResolverapplicationportstimeZoneResolverts` | instant が属する time zone 上の暦月を返す |
 | DOM-common-036 | `TimeZoneResolver.dayKey` | `spec/domains/index.md#TimeZoneResolverapplicationportstimeZoneResolverts` | instant の現地日を YYYY-MM-DD で返す |
 | DOM-common-037 | `OAuthStateStore.put` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | OAuth state を TTL 付きで保存する |
-| DOM-common-038 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | state を原子的に取得・削除する |
+| DOM-common-038 | `OAuthStateStore.take` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 束縛が一致したときだけ state を原子的に取得・削除する（一致すれば期限切れでも削除して `null`、不一致は常に行を残して `null`） |
 | DOM-common-039 | `OAuthStateStore.deleteExpired` | `spec/domains/index.md#OAuthStateStoreapplicationportsoauthStateStorets` | 期限切れ state を cursor と limit で回収する |
 | DOM-common-040 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
 | DOM-common-041 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |

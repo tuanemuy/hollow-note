@@ -15,8 +15,7 @@ export type SignUpView = Readonly<{
 
 /**
  * `sessionToken` is `null` on the `alreadyVerified` replay path — a
- * consumed token never issues a second session (spec/usecases/identity.md
- * verifyEmail 手順3).
+ * consumed token never issues a second session.
  */
 export type VerifyEmailView = Readonly<{
   userId: string;
@@ -26,9 +25,9 @@ export type VerifyEmailView = Readonly<{
 
 /**
  * Deliberately empty. `resendVerificationEmail` answers identically for
- * every state of the address (spec/adr/028-account-enumeration-resistance.md),
- * so there is no field it could carry that would not also be the oracle
- * the uniform response exists to remove — not even "a mail went out".
+ * every state of the address, so there is no field it could carry that
+ * would not also be the account-existence oracle the uniform response
+ * exists to remove — not even "a mail went out".
  */
 export type ResendVerificationEmailView = Readonly<Record<string, never>>;
 
@@ -55,11 +54,13 @@ export const toAuthenticatedUserView = (
 
 export type StartOAuthFlowView = Readonly<{
   /**
-   * Already carried by `authorizationUrl`; surfaced separately so the
-   * transport boundary can bind the flow to the browser that started it
-   * without re-parsing the provider's URL.
+   * One-shot secret handed only to the browser that started the flow.
+   * The transport boundary carries it in a cookie and the consuming call
+   * matches it against the flow row. `state` stays inside the
+   * application layer: it round-trips through the provider's URLs, so a
+   * binding derived from it would be reproducible by anyone who saw it.
    */
-  state: string;
+  stateBinding: string;
   authorizationUrl: string;
 }>;
 
@@ -91,6 +92,17 @@ export type OAuthCallbackView =
   | (Readonly<{ intent: "linkIdentity"; redirectTo: string | null }> &
       LinkOAuthIdentityView);
 
+/**
+ * `abandoned` says a live flow row was taken with the matching binding, so
+ * the caller may drop the cookie it carried. It is the only evidence the
+ * transport boundary has that the cookie is its own. A matching binding on
+ * an already-expired row also releases the row but answers `false`, since
+ * the store folds "expired" into "nothing to hand back".
+ */
+export type AbandonOAuthFlowView = Readonly<{
+  abandoned: boolean;
+}>;
+
 export type PruneExpiredAuthStateView = Readonly<{
   sessions: number;
   authTokens: number;
@@ -103,9 +115,8 @@ export type PruneExpiredAuthStateView = Readonly<{
 /**
  * Deliberately empty, for the same reason as
  * `ResendVerificationEmailView`: every state of the address — unknown,
- * deleting, password-less, throttled, mailed — answers identically
- * (spec/adr/028-account-enumeration-resistance.md), so there is no field
- * it could carry that would not reintroduce the oracle.
+ * deleting, password-less, throttled, mailed — answers identically, so
+ * there is no field it could carry that would not reintroduce the oracle.
  */
 export type RequestPasswordResetView = Readonly<Record<string, never>>;
 
@@ -117,7 +128,7 @@ export type ResetPasswordView = Readonly<{
  * One authentication method as the settings screen shows it. Nothing
  * secret is projected: a password identity carries neither its hash nor
  * a label, and an OAuth one is labelled by the address the provider
- * reported (spec/usecases/identity.md#listidentities).
+ * reported.
  */
 export type IdentityListItemView = Readonly<{
   id: string;
@@ -172,18 +183,16 @@ export type SignOutView = Readonly<Record<string, never>>;
 /**
  * `revocationAccepted` rather than a deleted count: revocation is the
  * epoch bump, and the physical rows are reclaimed out of band, so a count
- * would describe the cleanup rather than the outcome
- * (spec/usecases/identity.md#signoutothersessions 手順 3).
+ * would describe the cleanup rather than the outcome.
  */
 export type SignOutOtherSessionsView = Readonly<{
   revocationAccepted: true;
 }>;
 
 /**
- * The editable profile as P-21 shows it and as `updateProfile` answers
- * (spec/usecases/identity.md#updateprofile 出力DTO). Distinct from
- * `AuthenticatedUserView`, which is the session probe's projection and
- * deliberately omits `bio`.
+ * The editable profile as the profile settings page shows it and as
+ * `updateProfile` answers. Distinct from `AuthenticatedUserView`, which
+ * is the session probe's projection and deliberately omits `bio`.
  */
 export type ProfileView = Readonly<{
   userId: string;

@@ -10,23 +10,29 @@ import {
 } from "./authFlowHelpers";
 
 /**
- * The `/auth/callback/:provider` dispatcher (AC-9). What is pinned here
- * is the branching evidence itself: the stored intent
- * chooses the usecase, the path's provider has to agree with the stored
- * one, and a state answers exactly once.
+ * The `/auth/callback/:provider` dispatcher. What is pinned here is the
+ * branching evidence itself: the stored intent chooses the usecase, the
+ * path's provider has to agree with the stored one, and a state answers
+ * exactly once.
  */
 
 const EMAIL = "user@example.com";
 
 const callback = (
   h: TestHarness,
-  input: Readonly<{ provider?: string; state: string; code: string }>,
+  input: Readonly<{
+    provider?: string;
+    state: string;
+    stateBinding: string;
+    code: string;
+  }>,
 ) =>
   completeOAuthCallback({
     container: h.container,
     input: {
       provider: input.provider ?? "google",
       state: input.state,
+      stateBinding: input.stateBinding,
       code: input.code,
     },
   });
@@ -50,6 +56,7 @@ describe("completeOAuthCallback", () => {
 
     const view = await callback(h, {
       state: flow.state,
+      stateBinding: flow.stateBinding,
       code: devAuthorizationCode(flow, { email: EMAIL }),
     });
 
@@ -78,6 +85,7 @@ describe("completeOAuthCallback", () => {
 
     const view = await callback(h, {
       state: flow.state,
+      stateBinding: flow.stateBinding,
       code: devAuthorizationCode(flow, {
         email: "linked@example.com",
         providerAccountId: "google-account-link",
@@ -109,6 +117,7 @@ describe("completeOAuthCallback", () => {
       callback(h, {
         provider: "github",
         state: flow.state,
+        stateBinding: flow.stateBinding,
         code: devAuthorizationCode(flow, {
           providerAccountId: "google-account-link",
         }),
@@ -122,6 +131,7 @@ describe("completeOAuthCallback", () => {
     await expectStateInvalid(
       callback(h, {
         state: flow.state,
+        stateBinding: flow.stateBinding,
         code: devAuthorizationCode(flow, {
           providerAccountId: "google-account-link",
         }),
@@ -129,10 +139,33 @@ describe("completeOAuthCallback", () => {
     );
   });
 
+  it("TC-identity-337: refuses a callback whose binding does not match, leaving the state for the browser that started the flow", async () => {
+    const h = createTestHarness();
+    const flow = await beginOAuthFlow(h, { intent: "signIn" });
+    const code = devAuthorizationCode(flow, { email: EMAIL });
+
+    await expectStateInvalid(
+      callback(h, {
+        state: flow.state,
+        stateBinding: "not-the-binding",
+        code,
+      }),
+    );
+
+    expect(h.backend.oauthStates.get(flow.state)).toBeDefined();
+    const view = await callback(h, {
+      state: flow.state,
+      stateBinding: flow.stateBinding,
+      code,
+    });
+    expect(view.intent).toBe("signIn");
+  });
+
   it("refuses an integration state, which no usecase of this slice may run", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h, EMAIL);
     const state = "integration-state";
+    const stateBinding = "integration-binding";
     await h.container.oauthStateStore.put(
       state,
       {
@@ -142,11 +175,14 @@ describe("completeOAuthCallback", () => {
         intent: "integration",
         userId: UserId.create(userId),
         userAuthEpoch: 0,
+        stateBindingHash: h.container.secureTokenGenerator.hashOf(stateBinding),
       },
       10 * 60 * 1000,
     );
 
-    await expectStateInvalid(callback(h, { state, code: "unused" }));
+    await expectStateInvalid(
+      callback(h, { state, stateBinding, code: "unused" }),
+    );
 
     expect(identitiesOf(h, userId)).toHaveLength(1);
     expect(h.backend.oauthStates.get(state)).toBeUndefined();
@@ -156,12 +192,22 @@ describe("completeOAuthCallback", () => {
     const h = createTestHarness();
     const flow = await beginOAuthFlow(h, { intent: "signIn" });
     const code = devAuthorizationCode(flow, { email: EMAIL });
-    const first = await callback(h, { state: flow.state, code });
+    const first = await callback(h, {
+      state: flow.state,
+      stateBinding: flow.stateBinding,
+      code,
+    });
     if (first.intent !== "signIn") {
       throw new Error("expected the sign-in arm");
     }
 
-    await expectStateInvalid(callback(h, { state: flow.state, code }));
+    await expectStateInvalid(
+      callback(h, {
+        state: flow.state,
+        stateBinding: flow.stateBinding,
+        code,
+      }),
+    );
 
     expect(h.backend.users.values()).toHaveLength(1);
     expect(identitiesOf(h, first.userId)).toHaveLength(1);

@@ -557,15 +557,18 @@
 | signInWithPassword | 失敗回数の記録単位と消去 | TC-23 | 手順 4〜7。「メールアドレス × 発信元」ごとの記録で、未確認は記録せず、成功で消える |
 | startOAuthFlow | `linkIdentity` intent で主体が active でない | 対象外 | 削除は受理と同時にサインアウトされる（TC-14 手順 3）ため、削除開始済みの利用者で `/settings/auth` の追加操作に到達できない |
 | completeOAuthSignIn | `state` の不一致・期限切れ | 対象外 | URL の直接改ざんが必要。自動テストで担保する |
+| completeOAuthSignIn | 束縛（`stateBinding`）の不一致 | 対象外 | 束縛 Cookie は `HttpOnly` なので、直接改ざんするには開発者ツールが要る。自動テストで担保する |
 | completeOAuthSignIn | 同意のキャンセル | TC-40 | |
 | completeOAuthSignIn | プロバイダー側のメール未確認 | 対象外 | Google 側の状態を作れない |
 | completeOAuthSignIn | 既存利用者がメール未確認 | 対象外 | 同上 |
 | completeOAuthSignIn | claim は残っているが identity が居ない | 対象外 | 解除済み claim の収束待ちという一時状態を UI から作れない。自動テストで担保する |
 | completeOAuthCallback | `state` の不一致・期限切れ・`:provider` 不一致 | 対象外 | URL の直接改ざんが必要。自動テストで担保する |
+| completeOAuthCallback | 束縛（`stateBinding`）の不一致 | 対象外 | 束縛 Cookie は `HttpOnly` なので、直接改ざんするには開発者ツールが要る。自動テストで担保する |
 | completeOAuthCallback | flow state の `intent` が `integration` | 対象外 | `integration` の認可を開始する導線が本スライスに無い |
 | completeOAuthCallback | 振り分け先のユースケースが返すもの | 対象外 | 固有の分岐を持たずそのまま伝えるだけ。確認は `completeOAuthSignIn` / `linkOAuthIdentity` の各行で行う |
 | linkOAuthIdentity | 別の利用者に紐づき済み | TC-29 | |
 | linkOAuthIdentity | claim は残っているが identity が居ない | 対象外 | 解除済み claim の収束待ちという一時状態を UI から作れない。自動テストで担保する |
+| abandonOAuthFlow | ストアの読み書きの失敗 | 対象外 | ストアの障害は UI から再現できない。転送境界が best-effort に畳むため表示も変わらない |
 | requestPasswordReset | 未登録のメールアドレス | TC-24 | |
 | requestPasswordReset | パスワード手段なし | TC-25 | |
 | resetPassword | 期限切れ・使用済み | TC-26 | |

@@ -161,6 +161,7 @@ describe("removeIdentity", () => {
       container: h.container,
       input: {
         state: flow.state,
+        stateBinding: flow.stateBinding,
         code: devAuthorizationCode(flow, {
           providerAccountId: "google-account-1",
           email: "someone-else@example.com",
@@ -189,6 +190,7 @@ describe("removeIdentity", () => {
         container: h.container,
         input: {
           state: flow.state,
+          stateBinding: flow.stateBinding,
           code: devAuthorizationCode(flow, {
             providerAccountId: "google-account-1",
           }),
@@ -213,6 +215,7 @@ describe("removeIdentity", () => {
         container: h.container,
         input: {
           state: relink.state,
+          stateBinding: relink.stateBinding,
           code: devAuthorizationCode(relink, {
             providerAccountId: "google-account-1",
           }),
@@ -274,6 +277,7 @@ describe("removeIdentity", () => {
       container: h.container,
       input: {
         state: relink.state,
+        stateBinding: relink.stateBinding,
         code: devAuthorizationCode(relink, {
           providerAccountId: "google-account-1",
         }),
@@ -298,6 +302,7 @@ describe("removeIdentity", () => {
         container: h.container,
         input: {
           state: steal.state,
+          stateBinding: steal.stateBinding,
           code: devAuthorizationCode(steal, {
             providerAccountId: "google-account-1",
           }),
@@ -314,6 +319,7 @@ describe("removeIdentity", () => {
       container: h.container,
       input: {
         state: flow.state,
+        stateBinding: flow.stateBinding,
         code: devAuthorizationCode(flow, {
           providerAccountId: "google-account-1",
         }),

@@ -28,6 +28,8 @@ import type { LinkOAuthIdentityView } from "./view";
 
 export type LinkOAuthIdentityInput = Readonly<{
   state: string;
+  /** Plaintext of the secret the flow handed to the starting browser. */
+  stateBinding: string;
   code: string;
 }>;
 
@@ -35,8 +37,7 @@ const userNotFound = (): NotFoundError =>
   new NotFoundError("USER_NOT_FOUND", "User not found");
 
 /**
- * Attaches an OAuth provider to the signed-in account (UC-identity-007,
- * spec/usecases/identity.md#linkoauthidentity).
+ * Attaches an OAuth provider to the signed-in account.
  *
  * The `state` row is the only evidence of who started the flow and under
  * which auth generation, so a `signIn` state can never reach here and a
@@ -51,7 +52,10 @@ export async function linkOAuthIdentity({
   container,
   input,
 }: ServiceArgs<LinkOAuthIdentityInput>): Promise<LinkOAuthIdentityView> {
-  const flow = await container.oauthStateStore.take(input.state);
+  const flow = await container.oauthStateStore.take(
+    input.state,
+    container.secureTokenGenerator.hashOf(input.stateBinding),
+  );
   if (flow === null || flow.intent !== "linkIdentity") {
     throw oauthStateInvalid();
   }
