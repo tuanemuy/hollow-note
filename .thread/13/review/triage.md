@@ -329,3 +329,9 @@
 - fix 6 件をすべて反映（計画L〜O）。品質ゲート: `pnpm typecheck` PASS / `pnpm lint:fix` 修正なし / `pnpm format` 修正なし / `pnpm test` 935 passed・3 skipped
 - Blocker ゼロ。挙動を変える修正はゼロ（`auth/-action.tsx` の定数化は現在値が同じ 2048 なので観測挙動不変）
 - defer 起票は 0 件
+
+## Round 004
+
+指摘ゼロ。3観点（認証・セッション / ルーティング基盤 / ノート・ドキュメント）とも「問題点ゼロ」を報告し、**fix ゼロで APPROVED**。
+
+通算: fix 32 件 / wont-fix 8 件 / defer 2 件（#37 / #38）。
