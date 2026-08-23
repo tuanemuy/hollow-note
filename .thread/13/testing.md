@@ -286,14 +286,17 @@ console.table(
      console.log(decodeURIComponent(u.searchParams.get("payload")));
      ```
   3. アカウントメニューからサインアウトする（Cookie が落ちる）。
-  4. `redirect` の値を次の 4 つに差し替えて、それぞれ再送する（`payload` を編集して `fetch` を実行し、`res.status` と `await res.json()` を出す）:
-     `//evil.example` / `https://evil.example` / `/%0Aevil` / `/\evil.example`
-  5. 同じ手順で `redirect` に **2049 文字**の文字列（例 `"/" + "a".repeat(2048)`）を入れて再送する。
+  4. `redirect` の値を次の 4 つに差し替えて、それぞれ再送する。**JSON の値として何が入るか**で判定が分かれるので、`payload` は文字列置換ではなく `JSON.parse` → 値を書き換え → `JSON.stringify` → `encodeURIComponent` の順で組み立てる:
+     `//evil.example` / `https://evil.example` / `/\evil.example` / **生の LF を含む** `"/\n/evil.example"`
+  5. 同じ手順で `redirect` を **文字列 `"/%0Aevil"`**（パーセントエンコードのまま。生の LF に戻さないこと）にして再送する。
+  6. 同じ手順で `redirect` に **2049 文字**の文字列（例 `"/" + "a".repeat(2048)`）を入れて再送する。
 - **期待結果:**
-  - 手順 4 の 4 検体はいずれも応答 JSON に `"isSerializedRedirect": true` を含み、遷移先が **`/signin`**、その `redirect` が **`/notes`** になる（`evil.example` も `%0A` も応答のどこにも現れない）。
-  - 手順 5 は **HTTP 422**（`.validator` の上限超過。`kind: "validation"` / `code: "INVALID_INPUT"`）。**400 ではない。**
+  - 手順 4 の 4 検体はいずれも応答 JSON に `"isSerializedRedirect": true` を含み、遷移先が **`/signin`**、その `redirect` が **`/notes`** になる（`evil.example` も生の LF も応答のどこにも現れない）。
+  - 手順 5 は **`/signin?redirect=/%0Aevil`（`"/%0Aevil"` がそのまま載るのが正）**。同一オリジンパスとして受理される検体であり、`/notes` に倒れたら述語が変わっている。
+  - 手順 6 は **HTTP 422**（`.validator` の上限超過。`kind: "validation"` / `code: "INVALID_INPUT"`）。**400 ではない。**
 - **確認ポイント:**
   - 応答に外部オリジンがそのまま載ったら `safeRedirectPath` を通していない。
+  - **述語（`SameOriginPolicy.isSameOriginPath`）はパーセントエンコードを復号しない。** だから `"/%0Aevil"` は制御文字を含まない同一オリジンパスとして通る（手順 5）。復号が不要な根拠は、この値の最終消費点が `SignInForm`（`apps/web/app/components/auth/SignInForm/index.tsx`）の `router.history.push(redirectTo)` に渡る生文字列で、別オリジンへ解決しないこと。次に同じ疑いを持つ人が調査をやり直さないための注記。
   - 422 が 400 になったら、`validateInput` 以外の経路でエラーが作られている。
   - Copy as fetch は Cookie を同送するので、手順 3 のサインアウトを飛ばすと普通に断片が返ってしまう。
 
@@ -326,23 +329,23 @@ console.table(
   2. Network throttling を「Slow 4G」にする。
   3. `/notes` へ**初回**のクライアント遷移を行う（計測手順の 1〜3 でホバー preload を済ませてから測ると preload 結果が再利用されて観測できないため、**この項目だけはホバーせずに直接クリック**し、Network で `renderNoteList` が in-flight の間の画面を見る）。
   4. `/notes` から `/notes/{別のノート}` へも同様に行う（ノートが 1 件しか無ければ 1 件追加する）。
-- **期待結果:** クリック直後に **URL が確定**し、`NoteListSkeleton` / `NoteDetailSkeleton` が表示される。`_serverFn` の応答が返るのはそのあとで、返った時点で本体に差し替わる。
+- **期待結果:** **ガードの 1 往復（ブリッジのハンドラー本体が返るまで）ぶんは遷移がブロックされる**。そのあと URL が確定して `NoteListSkeleton` / `NoteDetailSkeleton` が表示され、**断片が届いた時点で**本体に差し替わる。
 - **確認ポイント:**
-  - 応答が返るまで URL が変わらない・前の画面が残るなら、loader が断片を await している。
-  - `RoutePendingFallback`（`defaultPendingMs: 200` のルート全体のフォールバック）が挟まるのは**この経路では正しくない**。ここで見たいのは断片スケルトンのほう。
+  - **断片の中身が届くまで URL が変わらない・スケルトンが出ないなら、loader が断片を await している**（落としたい実装ミス）。見分けは「`renderNoteList` の応答受信が始まってからスケルトンが出るまでの間に、断片の内容が届いているか」。
+  - **`RoutePendingFallback`（`defaultPendingMs: 200`）が挟まっても不合格ではない。** ガードの 1 往復ぶんはブロックするので、Slow 4G ではむしろ挟まるのが普通。`/settings/profile`（項目 13）と構造は同型で、違うのは往復の内訳だけ。「`/notes` は 0 往復で settle する」という読み方をしない。
 
 ### 13. `/settings/profile` はガード応答のあとに URL が確定する
 
 - **対応する受け入れ基準:** AC-9b
 - **検証手段:** browser
-- **目的:** `/settings` レイアウトの loader が**本物のブロッキング loader**であり、`/notes` 系と期待値が違うことを込みで記録する
+- **目的:** `/settings` レイアウトの loader が**本物のブロッキング loader**（`sessionUserFn()` を await し、`staleReloadMode: "blocking"` で既訪 match の再実行も背景枝へ落とさない）であることを確かめる
 - **手順:**
   1. DEV でサインインし、`/notes` を開く。
   2. Network throttling を「Slow 4G」にする。
   3. アカウントメニューの「設定」を（ホバー preload を待たずに）クリックし、URL が変わるタイミングと画面を観察する。
 - **期待結果:** **レイアウトのガード応答が返ってから** URL が `/settings/profile` に確定し、子の断片スケルトンが表示される。ガード応答が 200ms を超えると `RoutePendingFallback` が挟まる。
 - **確認ポイント:**
-  - **AC-9a と期待値が違うのが正。** `/settings/*` に AC-9a を当てはめない。
+  - **AC-9a と構造は同型**（どちらもガード 1 往復ぶんブロックしてから settle し、断片はスケルトンでストリームする）。違うのは往復の内訳だけで、`/notes` 系はガードと断片が 1 要求に畳まれ、`/settings/*` はガードと断片が別 match の 2 要求として並列に走る。
   - **`main` と比べて「`defaultPendingComponent` の有無が変わった」と記録しないこと。** 変更前の `beforeLoad` も `sessionUserFn()` を await しており、同じフォールバックが掛かっていた。本 Issue で変わるのは待ち時間の長さ（3 段 → 1 段）だけで、短くなる方向。
 
 ### 14. 未サインインで `/settings/danger` が開け、受理直後のリロードで進捗が復帰する
@@ -458,7 +461,9 @@ console.table(
   3. 飛んだ要求の本数と種類を記録する。
   4. `main` でも同じ操作を行う。
 - **期待結果:** ホバーごとにレイアウトのガード要求 + 子の断片 preload が飛ぶ。**`main` と本数が変わらない**（`main` の `beforeLoad` ガードも `executeBeforeLoad` にキャッシュ判定が無いため今すでにホバーのたび飛んでいる）。
-- **確認ポイント:** `main` より増えていたら `shouldReload` を真偽値の `true` で書いている疑い（`preloadStaleTime` まで無効化され、読み込み済みの `/notes/` `/notes/$noteId` にホバーするたびにも要求が飛ぶ）。**`/notes` 側でホバーを繰り返して要求が飛ばないこと**もあわせて見る。
+- **確認ポイント:**
+  - `main` より増えていたら `shouldReload` を真偽値の `true` で書いている疑い（`preloadStaleTime` まで無効化され、読み込み済みの `/notes/` `/notes/$noteId` にホバーするたびにも要求が飛ぶ）。**`/notes` 側でホバーを繰り返して要求が飛ばないこと**もあわせて見る。
+  - ここで見るのは**サインイン済み**でのホバー。**セッションが失効している状態でのホバー**は別の危険（クリックしていないのに `/signin` へ飛ばされる）なのでエッジケース 5 で測る。
 
 ### 4. `/` へのクライアント遷移が 1 本になる（スコープ外の記録項目）
 
@@ -469,6 +474,35 @@ console.table(
   2. 画面上部のロゴ（`AuthLayout` の「Hollow のトップへ」）を対象に、計測手順 1〜8 を実行する。
 - **期待結果:** クリック以降の `_serverFn` が **1 本**（`sessionUserFn`）で、1 段。`main` では 2 本。
 - **確認ポイント:** **サインイン済みの `/notes` → `/` では測らない。** `AppShell` に `/` へのリンクは無く、仮に起こしても `routes/index.tsx` の `beforeLoad` がサインイン済みを `/notes` へ redirect し返すので、`/notes` の loader がもう 1 本走って 1 本にならない。これは AC ではなく記録項目。
+
+### 5. セッション失効後に `/settings` のタブへホバーしても `/signin` へナビゲートしない
+
+- **検証手段:** browser
+- **目的:** `/settings` レイアウトの loader が**非ブロッキング**だと、ホバー（preload）で走った loader の redirect を `load-matches` の背景枝（デタッチされた promise の catch）が `router.navigate` で拾い、**クリックしていないのに**画面が `/signin` へ奪われる。`main` の `beforeLoad` ガードでは起きない後退なので、`main` と同じ挙動に揃っていることを確認する
+- **手順:**
+  1. タブ A でサインインし、`/settings/profile` を開く。Network を `_serverFn` で絞り "Preserve log" を有効にする。
+  2. タブ B（同じブラウザーの別タブ）で同じアカウントをサインアウトする。
+  3. タブ A に戻り、タブ列の「ログイン方法」「使用量」の上に**マウスを乗せるだけ**（クリックしない）。数秒待つ。
+  4. アドレスバーの URL と画面表示を記録する。
+  5. `main` でも 1〜4 を実行する。
+- **期待結果:** URL は **`/settings/profile` のまま**で `/signin` へナビゲートしない。ホバーぶんのガード要求は飛び、その応答は redirect だが、preload の解決として握り潰される。**`main` と同じ挙動**になる。
+- **確認ポイント:**
+  - **`/signin?redirect=/settings/profile` へ飛んだら不合格。** レイアウトの loader が非ブロッキングのままである（背景枝の `router.navigate` は preload かどうかを見ない）。`loader: { handler, staleReloadMode: "blocking" }` の**オブジェクト形**になっているかを見る — **関数形の loader に `staleReloadMode` を書いても参照されない**。
+  - `/settings/danger` で削除を受理した直後（セッションが消えたままその場に留まる画面）でも同じ操作を 1 回試す。ここで飛ばされると AC-11 の「その場に留まる」が失われる。
+
+### 6. セッション失効後に `/settings` のタブをクリックすると `/signin?redirect=<タブのパス>` に着く
+
+- **検証手段:** browser
+- **目的:** 未サインインで `/settings/*` へ**クライアント遷移**する経路（エッジケース 1 の SSR 直開きと対になる経路）で、親のガードと並列に走る子の断片 401 が画面に出ないことを確かめる。AC-6a は SSR 直開き、AC-6b は `/notes` 系なので、この組み合わせを見るのはここだけ
+- **手順:**
+  1. タブ A でサインインし、`/settings/profile` を開く。Network を `_serverFn` で絞り "Preserve log" を有効にする。
+  2. タブ B でサインアウトする。
+  3. タブ A に戻り、タブ列の「ログイン方法」を**クリック**する。
+  4. 着地 URL と、遷移中の設定カラムの表示を記録する。Network に残る `_serverFn` のステータスも見る。
+- **期待結果:** **`/signin?redirect=/settings/auth`** に着く。遷移の間、設定カラムに `ServerErrorState` が閃かない。`renderIdentityList` の 401 が 1 本残るのは想定内で、画面には出ない。
+- **確認ポイント:**
+  - URL がいったん `/settings/auth` に確定してから `/signin` へ飛ぶ、または `ServerErrorState` が一瞬でも出るなら、レイアウトのガードが遷移をブロックしていない（エッジケース 5 と同じ原因）。
+  - 着地が `/signin?redirect=/settings/profile`（遷移元のパス）になっていたら、ガードが読む遷移先が確定前の `location` になっている。
 
 ## 既存機能への影響確認
 

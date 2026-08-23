@@ -52,7 +52,9 @@ The awaited form above blocks navigation until the data is fully resolved (no fa
 // bridge — resolve the session AND return the UNRESOLVED fragment promise
 export const renderNoteList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
-  .validator(validateInput(z.object({ redirect: z.string().min(1).max(2048) })))
+  .validator(
+    validateInput(z.object({ redirect: z.string().min(1).max(REDIRECT_MAX_LENGTH) })),
+  )
   .handler(async ({ data }) => {
     const [{ NoteList }, { requireSessionOrRedirect }] = await Promise.all([
       import("@/components/note/NoteList"),
@@ -71,11 +73,6 @@ export const renderNoteList = createServerFn({ method: "GET" })
 // apps/web/app/routes/notes/index.tsx
 // route — forward the inner promise, resolve it under <Suspense>
 export const Route = createFileRoute("/notes/")({
-  // Declared intent only — this route never consults it, because
-  // `shouldReload ?? staleMatchShouldReload` never falls through to the
-  // right-hand side once `shouldReload` is present (`preloadStaleTime` dies
-  // with it). Do not leave it here silently; drop it or say so, as here.
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
   // MANDATORY once the loader carries the guard: `loader` (unlike `beforeLoad`)
   // is cache-gated, so without this the guard stops being re-evaluated per
   // navigation on any cached match. Function form, because `shouldReload: true`
@@ -86,7 +83,11 @@ export const Route = createFileRoute("/notes/")({
   // instead of flashing back to the skeleton.
   shouldReload: ({ cause }) => cause !== "preload",
   // NoteList is still a Promise<ReactNode> — forwarded, never awaited.
-  loader: ({ location }) => renderNoteList({ data: { redirect: location.href } }),
+  // `boundedRedirectSource` clamps `location.href` to the same ceiling the
+  // bridge's validator enforces, so a long query string cannot turn the page
+  // into a 422.
+  loader: ({ location }) =>
+    renderNoteList({ data: { redirect: boundedRedirectSource(location.href) } }),
   component: NotesPage,
   errorComponent: () => <ServerErrorState />,
 });
@@ -118,13 +119,15 @@ Note the wrapper the bridge calls: **`renderServerFragment`** (`apps/web/app/pre
 - **Guard and fragment in the same match** (`/notes`, `/notes/$noteId`): fold them together. The bridge resolves the session itself and throws `redirect({ to: "/signin", search: { redirect } })` when there is none, so the route drops its `beforeLoad` entirely — **one request, one leg**. The transition path arrives from the client, so it goes through `.validator(validateInput(...))` for shape/DoS and `safeRedirectPath` for value safety (open redirect).
 - **Guard on a layout, fragment on its children** (`/settings`): these are separate matches and cannot be folded, so **parallelize** instead. Move the layout's guard from `beforeLoad` (run sequentially, match by match) to `loader` (run through `Promise.all`) and it fires alongside the children's fragment loaders — **two requests, one leg**.
 
-Whenever a guard moves into a `loader`, pair it with `shouldReload` (see the comment in the snippet above). `beforeLoad` runs on every navigation unconditionally; `loader` is gated by `staleTime` and by the match surviving the navigation, so without `shouldReload` the guard silently stops being re-evaluated — invisibly in DEV for `/notes` (`staleTime: 0`), and in *both* environments for a layout match that stays alive across its children.
+Whenever a guard moves into a `loader`, pair it with `shouldReload` (see the comment in the snippet above). `beforeLoad` runs on every navigation unconditionally; `loader` is gated by `staleTime` and by the match surviving the navigation, so without `shouldReload` the guard silently stops being re-evaluated — on any match served from the cache, and in every environment for a layout match that stays alive across its children. Once `shouldReload` is present, do **not** also declare `staleTime` / `preloadStaleTime`: `shouldReload ?? staleMatchShouldReload` never falls through to the right-hand side, so both become dead configuration that the next reader will take for a live setting. That is why neither appears on the routes above.
 
-A folded bridge answers in two shapes, and they are not interchangeable: **no session at all → `redirect`**, **a session whose subject is invalid (being deleted / deleted) → 401**. `sessionUserOrNull` swallows only `UNAUTHENTICATED`, so everything else still surfaces as an error at the boundary.
+A layout guard needs one more thing that a folded route does not: the **object form** of `loader`, with `staleReloadMode: "blocking"` (`apps/web/app/routes/settings/route.tsx`). A re-run that the router treats as non-blocking is detached into a background branch whose `catch` navigates on a redirect without checking whether the load was a preload — so with the function form, merely hovering a `/settings` tab while signed out navigates the user away. `staleReloadMode` is read only off the object form; the function form is treated as `undefined`.
+
+A folded bridge has exactly one answer for a session it cannot resolve: `redirect`. `authenticateSession` collapses every reason — no cookie, expired session, superseded `authEpoch`, a subject being deleted or already deleted — into a single `ValidationError("UNAUTHENTICATED")`, and `sessionUserOrNull` turns exactly that code into `null` (anything else — a genuine infrastructure failure — still throws). 401 survives only where the caller is not a navigation and so has nowhere to redirect to: mutations that call `requireSession()` directly, and the `/settings` child fragments (`apps/web/app/routes/settings/-action.tsx`).
 
 The skeleton (`apps/web/app/components/ui/Skeleton` for the generic bar, `apps/web/app/components/note/NoteListSkeleton` shaped to `NoteList`'s DOM, plus `NoteDetailSkeleton` / `IdentityListSkeleton` / `ProfileFormSkeleton` / `UsagePanelSkeleton`) carries one `role="status"` announcement; the individual bars are `aria-hidden` and respect `prefers-reduced-motion` via `motion-reduce:animate-none`.
 
-This is the **per-fragment** loading mechanism. For navigation pending UI on routes whose loader genuinely *blocks*, use the router's `defaultPendingComponent` (`RoutePendingFallback`) + `defaultPendingMs` / `defaultPendingMinMs` in `apps/web/app/router.tsx` instead — a streaming route like `/notes` settles its loader immediately and never triggers it.
+This is the **per-fragment** loading mechanism, and it does not replace the router's navigation pending UI (`defaultPendingComponent` = `RoutePendingFallback`, with `defaultPendingMs` / `defaultPendingMinMs`, in `apps/web/app/router.tsx`). The two cover different legs of the same navigation and run in series: the loader still blocks for the one round trip that resolves the guard and returns the shell, and `defaultPendingComponent` is what covers that leg once it passes `defaultPendingMs`; the skeleton then covers the fragment streaming in afterwards. `/notes` and `/settings/*` are the same shape here — neither settles its loader without that round trip.
 
 ### 2. Held by TanStack Query
 
@@ -329,11 +332,16 @@ Example: `apps/web/app/routes/notes/$noteId.tsx` takes `noteId` from the path, `
 
 The URL-search row of the table has its base ready but no consumer yet: `apps/web/app/presentation/pagination.ts` exports `paginationSearchSchema` (for a route's `validateSearch`, with `z.coerce` + `.catch(default)` so a hand-typed `?page=abc` never errors the route) and `paginationSchema` (strict numeric, for a server function's `.validator`), both `.pipe(...)`-derived from the same field-level validators so the ceilings cannot drift between a route and a server function. The first paginated screen wires it as `validateSearch: paginationSearchSchema.parse` → `.validator(validateInput(paginationSchema))` → `serverData`.
 
-### Exception where calling `getContainer()` directly is allowed
+### Exception where reaching the container directly is allowed
 
-A helper that **just hits a specific port** and needs no usecase module may call `getContainer()` directly without going through a wrapper. The real cases are `apps/web/app/presentation/serverErrorLog.ts` (reads `container.logger`), `apps/web/app/routes/storage.$.tsx` (reads `container.objectStorage`), and `apps/web/app/routes/__root.tsx` (reads `container.config`).
+A helper that **just hits a specific port** and needs no usecase module may reach `application/di/containerStore` directly without going through a wrapper. The real cases are `apps/web/app/presentation/serverErrorLog.ts` (reads `container.logger`), `apps/web/app/routes/storage.$.tsx` (`container.objectStorage`), `apps/web/app/routes/settings/-action.tsx` and `apps/web/app/routes/dev/-action.tsx` (`container.config.appUrl` / `container.oauthDevMode`, alongside their own usecase work), and `apps/web/app/presentation/appConfig.ts` (`container.config`, for the router context).
 
-What keeps the server graph out of the client bundle here is the **dynamic import**: every one of those call sites reaches `getContainer` through `await import("@repo/core/application/di/containerStore")` inside the handler, never a static top-level import. (`serverErrorLog.ts` is the one static import, and it is deliberate — `containerStore` itself pulls in no node-only module, and that file is only ever reached from server-side error paths.) Where usecase invocation enters, switch over to going through `serverData` / `loadServerDeps` and graduate from this.
+What keeps the server graph out of the client bundle here is the **dynamic import**: every one of those call sites reaches the store through `await import("@repo/core/application/di/containerStore")` inside the function that needs it, never a static top-level import. Two of them are shaped differently:
+
+- `serverErrorLog.ts` is the one static import, and it is deliberate — `containerStore` itself pulls in no node-only module, and that file is only ever reached from server-side error paths.
+- `appConfig.ts` is not a handler at all: the dynamic import sits inside `createIsomorphicFn().server(...)`, whose body is dropped from the client build. It also calls `getInstalledStore()?.getStore()?.config` rather than `getContainer()`, because `getRouter()` runs for requests that have no request scope (`/storage/$` and the other server routes) and a throw there would turn an unrelated file response into a 500.
+
+Where usecase invocation enters, switch over to going through `serverData` / `loadServerDeps` and graduate from this.
 
 ## Server component (with data fetching)
 
@@ -416,8 +424,9 @@ import { validateInput } from "@/presentation/validator";
 const noteDetailInputSchema = z.object({
   noteId: z.string().min(1).max(128),
   // The path to return to after signing in. A transport-boundary input, so it
-  // is bounded here and passed through `safeRedirectPath` on the server side.
-  redirect: z.string().min(1).max(2048),
+  // is bounded here (the same ceiling the loader clamps to) and passed through
+  // `safeRedirectPath` on the server side.
+  redirect: z.string().min(1).max(REDIRECT_MAX_LENGTH),
 });
 
 export const renderNoteDetail = createServerFn({ method: "GET" })
@@ -441,13 +450,15 @@ export const renderNoteDetail = createServerFn({ method: "GET" })
 // apps/web/app/routes/notes/$noteId.tsx
 
 export const Route = createFileRoute("/notes/$noteId")({
-  // Not consulted while `shouldReload` is present — see the note above.
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
   // The loader carries the guard, so keep it running per navigation.
+  // No `staleTime` alongside it — it would never be consulted.
   shouldReload: ({ cause }) => cause !== "preload",
   loader: ({ params, location }) =>
     renderNoteDetail({
-      data: { noteId: params.noteId, redirect: location.href },
+      data: {
+        noteId: params.noteId,
+        redirect: boundedRedirectSource(location.href),
+      },
     }),
   head: ({ match }) => {
     const config = match.context?.config;
@@ -526,13 +537,14 @@ export async function requireSession() {
 export async function sessionUserOrNull() { /* ... */ }
 ```
 
-Guards need the *other* shape — a redirect, not a 401 — and that is a routing decision, not cookie transport. The three modules split along exactly that line, so reach for the one that matches what you need:
+Guards need the *other* shape — a redirect, not a 401 — and that is a routing decision, not cookie transport. The modules split along exactly that line, so reach for the one that matches what you need:
 
 | Module | Role | Exports |
 |---|---|---|
 | `presentation/session.ts` | Cookie transport: read / write the session cookie and resolve the user behind it | `requireSession` (throws → 401), `sessionUserOrNull` (`null` when unauthenticated) |
-| `presentation/auth.ts` | Session **probe** that a route may call — the only one of the three that enters a client graph, hence a server function | `sessionUserFn` |
+| `presentation/auth.ts` | Session **probe** that a route may call — the only one that enters a client graph, hence a server function | `sessionUserFn` |
 | `presentation/sessionGuard.ts` | The **redirect decision**: no session → `/signin`, carrying the path to return to | `requireSessionOrRedirect` |
+| `presentation/redirect.ts` | Pure functions the decision is made of — no framework import, so unit tests reach them without the server-function runtime | `safeRedirectPath`, `signInRedirectOptions`, `boundedRedirectSource` |
 
 ```typescript
 // apps/web/app/presentation/sessionGuard.ts
@@ -541,13 +553,12 @@ export async function requireSessionOrRedirect(redirectTo: string) {
   const { sessionUserOrNull } = await import("./session");
   const user = await sessionUserOrNull();
   if (user === null) {
-    throw redirect({
-      to: "/signin",
-      // Value safety for an input that came off the wire. The predicate itself
-      // lives in the domain (`SameOriginPolicy.isSameOriginPath`); this only
-      // decides where a rejected value falls back to.
-      search: { redirect: safeRedirectPath(redirectTo) },
-    });
+    // The options are assembled by a pure function that always runs
+    // `safeRedirectPath` over a value that came off the wire — the predicate
+    // itself lives in the domain (`SameOriginPolicy.isSameOriginPath`) and
+    // only the fallback destination is decided here. Assembling them there
+    // rather than inline is what lets a unit test pin the guard's behaviour.
+    throw redirect(signInRedirectOptions(redirectTo));
   }
   return user;
 }
@@ -836,7 +847,7 @@ try {
 
 ### Points
 
-- `useServerFn(fn)` auto-detects `isRedirect` and converts it into a router navigation. This avoids falling through the client's try/catch when a handler does `throw redirect({ to: "/signin" })`. In this repository the redirects live in route guards (`presentation/auth.ts`, `routes/index.tsx`, `routes/settings/route.tsx`) and mutations navigate explicitly afterwards (`CreateNoteButton`, `VerifyEmailPanel`), so the automatic path is a safety net rather than the main road.
+- `useServerFn(fn)` auto-detects `isRedirect` and converts it into a router navigation. This avoids falling through the client's try/catch when a handler does `throw redirect({ to: "/signin" })`. In this repository the redirects are decided in `presentation/sessionGuard.ts` and in the route guards of `routes/index.tsx` / `routes/settings/route.tsx`, and mutations navigate explicitly afterwards (`CreateNoteButton`, `VerifyEmailPanel`), so the automatic path is a safety net rather than the main road. The folded bridges (`routes/notes/-action.tsx`) also throw redirects, but those never touch this path either: a loader calls them, and the router unwraps the redirect there.
 - A `useActionState` action may be async. State updates both before and after `await` enter the same transition. Passing it to `<form action={formAction}>` lets it progressively enhance even on a client where JS has not yet arrived.
 - When you want to update a loader-owned RSC on success, explicitly do `await router.invalidate()` inside the action / transition. Since the generic hook was abandoned, "when to invalidate" is the caller's responsibility. Do it **outside** the `try` that reports failure: in `CreateNoteButton` the note already exists by then, so a reconcile failure must not read as "creation failed" and invite a retry that creates a second note.
 - An item-local `useOptimistic` only works on **state that the item owns** — `ProfileEditor`'s avatar is item-owned, so it is complete within the leaf with `useOptimistic` + a server function (the new image shows immediately and reverts automatically if the upload throws). On the other hand, operations that **change the list's membership**, such as add/remove, are parent state changes, so item-local cannot reach them. Carve the list out into a client island, hold the entire list array with `useOptimistic` seeded by the server value, and **have the owner call the server function** (the "Held by the client" section above / `apps/web/app/components/settings/IdentityList/board.tsx`). Add optimistically appends, remove filters, and `router.invalidate()` re-bases onto the settled value. Delete cannot be placed in the leaf because optimistic deletion unmounts the leaf before settlement, erasing the error UI along with it.
@@ -905,9 +916,19 @@ Exceptions thrown inside a loader or a server component bubble to an error bound
 
 ```tsx
 // apps/web/app/router.tsx (excerpt)
-export function getRouter() {
-  return createRouter({
+export async function getRouter() {
+  const config = await resolveAppConfig();
+  const router = createRouter({
     routeTree,
+    // Every route's `head` reads this as `match.context?.config`.
+    context: { config } satisfies RouterContext,
+    // Deployment-scoped, so ship it once in the SSR payload...
+    dehydrate: () => ({ config }),
+    // ...and restore it before `matchRoutes`, so the first client-side
+    // navigation already has it.
+    hydrate: (dehydrated) => {
+      router.update({ context: { config: dehydrated.config } });
+    },
     defaultPendingComponent: RoutePendingFallback,
     defaultPendingMs: 200,
     defaultPendingMinMs: 300,
@@ -917,8 +938,11 @@ export function getRouter() {
     },
     defaultNotFoundComponent: () => <NotFoundState />,
   });
+  return router;
 }
 ```
+
+`getRouter` is `async` because of that first line: `resolveAppConfig` (`apps/web/app/presentation/appConfig.ts`) is an isomorphic function whose server half reads the container and whose client half returns `undefined`, leaving the client to take the value out of the dehydrated payload. Two consequences follow. Every `head` must stay written as `if (!config) return {}`, because the server half yields `undefined` outside a request scope. And nothing secret may ever be added to `AppConfig`: `dehydrate` puts the whole object into the SSR payload of every document, public pages viewed while signed out included.
 
 The defaults are not optional decoration. **SSR renders `route.errorComponent ?? defaultErrorComponent` at the matched route and does not bubble to the root boundary** (only client-side rendering bubbles). Without a router default, a route that omits `errorComponent` falls back to TanStack's built-in English error screen — with the raw `message` in it — on the server-rendered pass. The same reasoning applies to `defaultNotFoundComponent`.
 

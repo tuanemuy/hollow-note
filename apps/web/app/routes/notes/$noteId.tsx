@@ -5,22 +5,24 @@ import { Deferred } from "@/components/ui/Deferred";
 import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
+import { boundedRedirectSource } from "@/presentation/redirect";
 import { renderNoteDetail } from "./-action";
 
 export const Route = createFileRoute("/notes/$noteId")({
-  // この `staleTime` は下の `shouldReload` があるかぎり参照されない
-  // （`shouldReload ?? staleMatchShouldReload` の左辺が常に非 undefined）。
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
-  // loader がガードを兼ねるので、`staleTime` のキャッシュにガードが埋もれ
-  // ないよう毎ナビゲーション再実行させる（`beforeLoad` が持っていた性質）。
-  // 関数形なのは `shouldReload: true` だと `preloadStaleTime` まで死んで
-  // ホバーのたび要求が飛ぶため。ただし `cause !== "preload"` が preload を
-  // 弾けるのは cached match だけで、アクティブなまま残る `/settings`
-  // レイアウトのような match には効かない。
+  // loader がガードを兼ねるので毎ナビゲーション再実行させる。関数形なのは
+  // `shouldReload: true` だと `preloadStaleTime` まで死んでホバーのたび要求が
+  // 飛ぶため。ただし `cause !== "preload"` が preload を弾けるのは cached
+  // match だけで、アクティブなまま残る `/settings` レイアウトのような match
+  // には効かない。また既訪 match の再実行は背景枝に落ちるので、失効後は前回の
+  // `loaderData` が 1 往復ぶん表示されてから redirect する
+  // （`beforeLoad` のブロッキング性は戻らない）。
   shouldReload: ({ cause }) => cause !== "preload",
   loader: ({ params, location }) =>
     renderNoteDetail({
-      data: { noteId: params.noteId, redirect: location.href },
+      data: {
+        noteId: params.noteId,
+        redirect: boundedRedirectSource(location.href),
+      },
     }),
   head: ({ match }) => {
     const config = match.context?.config;

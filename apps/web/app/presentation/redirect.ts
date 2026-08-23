@@ -18,3 +18,27 @@ export function safeRedirectPath(value: string | undefined | null): string {
     ? value
     : "/notes";
 }
+
+/** 転送境界が `redirect` に課す DoS 上限。 */
+export const REDIRECT_MAX_LENGTH = 2048;
+
+/**
+ * loader が遷移元として渡す `location.href` の clamp。`/notes` 系は
+ * `validateSearch` を持たず任意長のクエリが href に載るので、上限超えを
+ * そのまま送ると転送境界の拒否で画面ごと errorComponent に落ちる。倒し先は
+ * `safeRedirectPath` が弾いたときと同じ `/notes`。
+ */
+export function boundedRedirectSource(href: string): string {
+  return href.length <= REDIRECT_MAX_LENGTH ? href : "/notes";
+}
+
+/**
+ * `/signin` へ戻す redirect の options。フレームワークの `redirect()` は
+ * 呼ばず options だけを返すので、このモジュールは純関数のまま保たれる。
+ */
+export function signInRedirectOptions(redirectTo: string | undefined | null): {
+  to: "/signin";
+  search: { redirect: string };
+} {
+  return { to: "/signin", search: { redirect: safeRedirectPath(redirectTo) } };
+}

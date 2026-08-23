@@ -22,33 +22,34 @@ import { safeRedirectPath } from "@/presentation/redirect";
 const SIGNED_OUT_PATH = "/settings/danger";
 
 export const Route = createFileRoute("/settings")({
-  // この `staleTime` は下の `shouldReload` があるかぎり参照されない
-  // （`shouldReload ?? staleMatchShouldReload` の左辺が常に非 undefined）。
-  staleTime: import.meta.env.DEV ? 0 : Number.POSITIVE_INFINITY,
   // ガードを `beforeLoad` ではなく `loader` に置くのは、子ルートの断片
   // loader と並列に走らせるため（`beforeLoad` は match 順に逐次）。
-  // 関数形なのは `shouldReload: true` だと `preloadStaleTime` まで死んで
-  // ホバーのたび要求が飛ぶため。ただし `cause !== "preload"` が preload を
-  // 弾けるのは cached match だけで、このレイアウト match は子ルート間の
-  // preload ではアクティブなまま（`cause: "stay"`）なので効かない。
+  // このレイアウト match は子ルート間の遷移では `cause: "stay"` のまま
+  // 生き残り、`staleMatchShouldReload` が偽になるので、毎ナビゲーションの
+  // 再判定（＝下の `location.pathname` の分岐）はこの `shouldReload` が担う。
+  // `cause !== "preload"` が preload を弾けるのは cached match だけなので、
+  // このレイアウト match に対しては実質いつも真になる。
   shouldReload: ({ cause }) => cause !== "preload",
-  loader: async ({ location }) => {
-    const user = await sessionUserFn();
-    if (user !== null) {
-      return { user };
-    }
-    // このレイアウト match は子ルート間の遷移でも生き残るので、`loader` は
-    // ナビゲーションごとには走らない（`cause: "stay"` かつ
-    // `previousRouteMatchId === match.id` で `staleMatchShouldReload` が偽）。
-    // 上の `shouldReload` があって初めて再実行される。`location.pathname`
-    // の分岐は「パスが変われば自動で再判定される」ものではない。
-    if (location.pathname === SIGNED_OUT_PATH) {
-      return { user: null };
-    }
-    throw redirect({
-      to: "/signin",
-      search: { redirect: safeRedirectPath(location.href) },
-    });
+  loader: {
+    // `staleReloadMode` はオブジェクト形の loader でしか読まれない（関数形は
+    // `undefined` 扱い）。`"blocking"` でないと再実行がデタッチされた背景枝へ
+    // 落ち、その catch は preload かどうかを見ずに `router.navigate` するので、
+    // タブ列にホバーしただけで `/signin` へ実ナビゲートしてしまう。
+    // ブロッキングなら失効時も子を描画する前に `/signin` へ抜ける。
+    staleReloadMode: "blocking",
+    handler: async ({ location }) => {
+      const user = await sessionUserFn();
+      if (user !== null) {
+        return { user };
+      }
+      if (location.pathname === SIGNED_OUT_PATH) {
+        return { user: null };
+      }
+      throw redirect({
+        to: "/signin",
+        search: { redirect: safeRedirectPath(location.href) },
+      });
+    },
   },
   head: ({ match }) => {
     const config = match.context?.config;

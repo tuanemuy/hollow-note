@@ -35,6 +35,16 @@ import type { ScopeTaskQueue } from "../ports/scopeTaskQueue";
 import type { ShareTokenProtector } from "../ports/shareTokenProtector";
 import type { ScopeKey } from "../scope";
 
+/**
+ * SSR metadata for the document head, plus the deployment's public base
+ * URL.
+ *
+ * The web app dehydrates this value into the SSR payload of *every*
+ * page, including signed-out public ones, so the whole object reaches
+ * any visitor's browser. Never add a signing key, cipher key, or any
+ * other secret here — deployment secrets enter through the composition
+ * root as their own key rings (see `DeletionTicketKeyRing`).
+ */
 export type AppConfig = Readonly<{
   appUrl: string;
   siteName: string;
