@@ -143,7 +143,7 @@ export function describeScopeTaskSchedulerContract(
       ]);
     });
 
-    it("reserves a slot for a high priority a backlog of low ones would delay", async () => {
+    it("puts a high priority ahead of an older low-priority backlog", async () => {
       for (let i = 0; i < 5; i += 1) {
         await schedule(
           `op-expiry-${i}`,
@@ -233,17 +233,30 @@ export function describeScopeTaskSchedulerContract(
       ]);
     });
 
-    it("holds a claimed row under its lease, hiding it from a second claim and from listDue", async () => {
+    it("holds a claimed row for the leaseMs it was given, hiding it from a second claim and from listDue", async () => {
+      // The deadline is the caller's `leaseMs`, not a constant the
+      // backend picks: away from the default, a backend that ignores the
+      // argument gets both the deadline and its boundary wrong.
+      const leaseMs = 2 * MINUTE_MS;
       await schedule("op-1", -MINUTE_MS);
 
-      expect(await claim(10)).toHaveLength(1);
-      expect(await claim(10)).toEqual([]);
+      const claimed = await claim(10, leaseMs);
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.leaseExpiresAt).toEqual(
+        new Date(backend.clock.now().getTime() + leaseMs),
+      );
+      expect(await claim(10, leaseMs)).toEqual([]);
       expect(
         await backend.scopeTaskQueue.listDue(backend.clock.now(), 10),
       ).toEqual([]);
 
-      backend.clock.advance(SCOPE_TASK_LEASE_MS - 1);
-      expect(await claim(10)).toEqual([]);
+      backend.clock.advance(leaseMs - 1);
+      expect(await claim(10, leaseMs)).toEqual([]);
+
+      backend.clock.advance(1);
+      expect(
+        (await claim(10, leaseMs)).map((task) => task.operationId),
+      ).toEqual(["op-1"]);
     });
 
     it("reclaims a row whose lease lapsed, with its dueAt, attempt and priority intact", async () => {
@@ -370,18 +383,21 @@ export function describeScopeTaskSchedulerContract(
         backend.clock.now(),
       );
 
-      backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS);
+      // Crossing the lease is what makes `complete` observable: while it
+      // holds, a row that was merely left running is just as invisible as
+      // one that was removed.
+      backend.clock.advance(SCOPE_TASK_LEASE_MS);
       const claimed = await claim(10);
       expect(claimed.map((task) => task.operationId)).toEqual(["op-backoff"]);
       expect(claimed[0]?.attempt).toBe(1);
     });
 
-    it("keeps the priority of an existing row when backoffOrSchedule stalls it", async () => {
+    it("keeps the priority and payload of an existing row when backoffOrSchedule stalls it", async () => {
       await schedule(
         "op-cleanup",
         -MINUTE_MS,
         "usage.userCleanupContinued",
-        {},
+        { cursor: "kept" },
         ScopeTaskPriority.securityCleanup,
       );
       await schedule(
@@ -396,15 +412,17 @@ export function describeScopeTaskSchedulerContract(
         kind: "usage.userCleanupContinued",
         operationId: "op-cleanup",
         priority: ScopeTaskPriority.expiryCollection,
-        payload: {},
+        payload: { cursor: "ignored" },
         now: backend.clock.now(),
       });
 
       backend.clock.advance(SCOPE_TASK_BACKOFF_BASE_MS);
-      expect((await claim(10)).map((task) => task.operationId)).toEqual([
+      const claimed = await claim(10);
+      expect(claimed.map((task) => task.operationId)).toEqual([
         "op-cleanup",
         "op-expiry",
       ]);
+      expect(claimed[0]?.payload).toEqual({ cursor: "kept" });
     });
 
     it("completes a task so it is never claimed again", async () => {
@@ -491,6 +509,18 @@ export function describeScopeTaskSchedulerContract(
       }
 
       expect(await claim(10)).toEqual([]);
+
+      // Backing off a failed row leaves it failed, however far the clock
+      // moves: were it to fall back to pending, a poison turn would
+      // retry forever with `schedule` no longer the only way back.
+      await scheduler.backoff(
+        "usage.userCleanupContinued",
+        "op-1",
+        backend.clock.now(),
+      );
+      backend.clock.advance(365 * 24 * 60 * MINUTE_MS);
+      expect(await claim(10)).toEqual([]);
+
       // Rescheduling revives a failed row as a fresh attempt.
       await schedule("op-1", -MINUTE_MS);
       expect(await claim(10)).toHaveLength(1);
@@ -556,6 +586,22 @@ export function describeScopeTaskSchedulerContract(
       );
       expect(afterClaim.map((task) => task.operationId)).toEqual(["op-expiry"]);
       expect(afterClaim[0]?.scope).toEqual(scopeOf(2));
+
+      // And they only hide them: once the lease lapses the rows are
+      // listed again, which is how the runner rediscovers a scope whose
+      // writer stopped mid-turn — there is no other path back.
+      backend.clock.advance(SCOPE_TASK_LEASE_MS);
+      const afterLapse = await backend.scopeTaskQueue.listDue(
+        backend.clock.now(),
+        10,
+      );
+      expect(afterLapse.map((task) => task.operationId)).toEqual([
+        "op-cleanup-0",
+        "op-cleanup-1",
+        "op-cleanup-2",
+        "op-expiry",
+      ]);
+      expect(afterLapse[0]?.scope).toEqual(scopeOf(1));
     });
   });
 }

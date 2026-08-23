@@ -40,7 +40,15 @@ export const SCOPE_TASK_BACKOFF_BASE_MS = 1_000;
 export const SCOPE_TASK_MAX_BACKOFF_MS = 60 * 60 * 1000;
 /** Attempts after which a task is parked as `failed` instead of retried. */
 export const SCOPE_TASK_MAX_ATTEMPTS = 8;
-/** Default claim lease, matching the outbox relay's own default. */
+/**
+ * Default claim lease, matching the outbox relay's own default. That
+ * symmetry is enough for the reference runtime, where the store shares
+ * the writer's fate: a crashed writer leaves no rows to recover, so the
+ * upper bound below has nothing to bite on, and there is neither
+ * oldest-task-age monitoring nor an automatic recovery path. A
+ * deployment that does hold an age SLO picks its own value from the band
+ * in `spec/platform/index.md`.
+ */
 export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
 
 /**
@@ -61,6 +69,18 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * `leaseExpiresAt = now + leaseMs`, and no reader sees that row again
  * until the deadline is reached. A writer that disappears mid-turn is
  * therefore recovered — the next claim past the lease reclaims the row.
+ *
+ * Claiming is exclusive per row: choosing a candidate and moving it to
+ * `running` is one atomic step, so two `claimDue` calls running at once
+ * never hand out the same row. The reference runtime gets this from the
+ * scope's unit of work; a backend without interactive transactions
+ * builds it from conditional updates
+ * (`WHERE status = 'pending' AND due_at <= ?` /
+ * `WHERE status = 'running' AND lease_expires_at <= ?`) so that only the
+ * writer whose predicate still matches takes the row. Exclusivity stops
+ * at the claim — settling carries no fencing token (see `leaseMs`
+ * below), so a lease that outlasts the turn is the only thing keeping a
+ * second writer off a row the first is still working.
  *
  * Selection is the same rule for `claimDue` and
  * `ScopeTaskQueue.listDue`. Candidates are the rows that are `pending`
@@ -86,10 +106,10 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * | operation | from | to |
  * | --- | --- | --- |
  * | `schedule` | absent / pending / running / failed | pending, `dueAt = input.dueAt`, `attempt = 0`, `priority = input.priority`, lease released |
- * | `claimDue` | pending (due) / running (lapsed lease) | running, `leaseExpiresAt = now + leaseMs`; `dueAt`, `attempt` and `priority` unchanged |
+ * | `claimDue` | pending (due) / running (lapsed lease) | running, `leaseExpiresAt = now + leaseMs`; `dueAt`, `attempt`, `priority` and `payload` unchanged |
  * | `complete` | any, including absent | row removed |
  * | `backoff` | pending / running / failed | pending, `attempt + 1`, `dueAt = now + delay`, lease released, `priority` unchanged — `failed` once `attempt` reaches `SCOPE_TASK_MAX_ATTEMPTS`, and a row already `failed` stays `failed` with its `attempt` still climbing past the ceiling. No-op on an absent row |
- * | `backoffOrSchedule` | absent / pending / running / failed | mints the row with `input.priority` and `dueAt = input.now` when absent, then backs off as above. An **existing** row keeps its `priority` |
+ * | `backoffOrSchedule` | absent / pending / running / failed | mints the row with `input.priority`, `input.payload` and `dueAt = input.now` when absent, then backs off as above. An **existing** row keeps its own `priority` and `payload` — `input.priority` and `input.payload` are read only when minting |
  *
  * Only `schedule` brings a `failed` row back, and it resets `attempt` to
  * `0`; nothing else claims a `failed` row, so the climbing `attempt` is
@@ -127,9 +147,14 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * too small breaks the continuation chain: the overrunning writer
  * completes what its successor armed, and a personal cleanup that loses
  * its chain leaves the account `deleting` for good, the reference
- * runtime having no recovery cron. That runtime chooses the value with
- * the `SCOPE_TASK_LEASE_MS` environment variable, defaulting to the
- * constant of the same name.
+ * runtime having no recovery cron. Choosing it too large works the other
+ * way: the longer the lease, the longer a crashed writer's rows stay
+ * invisible, and on a deployment where those rows outlive the writer
+ * that delay lands on the oldest-task age its SLO measures — a lease
+ * above the SLO makes recovering one crash a violation on its own.
+ * `spec/platform/index.md` states the band both bounds define. The
+ * reference runtime chooses the value with the `SCOPE_TASK_LEASE_MS`
+ * environment variable, defaulting to the constant of the same name.
  *
  * Input bounds: `limit <= 0` returns an empty array, and `leaseMs` must
  * be positive — zero or less hands out a lease that has already lapsed,

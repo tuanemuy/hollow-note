@@ -969,11 +969,11 @@ projection consumerはcurrent routeを解決し、scopeのatomic snapshotとvers
 
 priorityは security cleanup / lease reaping = 0、outbox relay = 1、projection = 2、期限回収 = 3 とする。同じpriority内は `due_at`, `kind`, `operation_id` 順。Alarm turnはpriorityごとの最低枠を確保するweighted round-robinで処理し、低priorityの大量taskがsecurity cleanupを飢餓させない。
 
-`status = 'running'` の行は `lease_expires_at` までクレーム中で、`lease_expires_at <= now` になった行は別のwriterが再claimできる。再claimは `due_at` / `attempts` / `priority` / `payload` を claim 前のまま保つ。claimの候補は `status = 'pending' AND due_at <= now` または `status = 'running' AND lease_expires_at <= now` の行である。`due_at` は `pending` / `running` のどちらでも「実行予定時刻」を意味し、claimは書き換えない（[platform](../platform/index.md) の「priority 0 の最古 task age」SLOがこの列から測れることに依存する）。Alarm起床時刻は pending の最小 `due_at` と running の最小 `lease_expires_at` の小さい方になる（規則の正本は [platform](../platform/index.md) の Scope Alarm 節）。
+`status = 'running'` の行は `lease_expires_at` までクレーム中で、`lease_expires_at <= now` になった行は別のwriterが再claimできる。再claimは `due_at` / `attempts` / `priority` / `payload` を claim 前のまま保つ。claimの候補は `status = 'pending' AND due_at <= now` または `status = 'running' AND lease_expires_at <= now` の行である。`due_at` は `pending` / `running` のどちらでも「実行予定時刻」を意味し、claimは書き換えない（[platform](../platform/index.md) の「priority 0 の最古 task age」SLOがこの列から測れることに依存する）。Alarm起床時刻の導出は [platform](../platform/index.md) の Scope Alarm 節を正本とし、本表の `due_at` / `lease_expires_at` がその材料になる。
 
 `workspace.deletionLocalContinued`はworkspace deletion operation IDをpayload/PKへ使い、beginDeletionと同じtransactionで初回を保存する。各manifest/local-delete pageもheader cursor/ackと同じtransactionで同じtaskを次時刻へupsertする。
 
-indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`) WHERE `status = 'pending'`、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`)、リース失効走査用 `scheduled_tasks_lease_idx` (`lease_expires_at`) WHERE `status = 'running'` — 起床時刻の2つの候補はAlarm時刻用とリース失効走査用の先頭行から取り、リース失効行の回収も後者を使う。
+indexes: Alarm時刻用 (`due_at`, `priority`, `kind`, `operation_id`) WHERE `status = 'pending'`、dequeue用 (`priority`, `due_at`, `kind`, `operation_id`) WHERE `status = 'pending'`、リース失効走査用 `scheduled_tasks_lease_idx` (`lease_expires_at`) WHERE `status = 'running'` — 3本とも部分索引で、dequeueされない `failed` 行はどれにも積み上がらない。起床時刻の2つの候補はAlarm時刻用とリース失効走査用の先頭行から取る。claimの候補も2分岐に対応して2本に分かれ、`pending` 側をdequeue用から、リース失効行をリース失効走査用から取って併合する。
 
 #### membership_removal_locks
 

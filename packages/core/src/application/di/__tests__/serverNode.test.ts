@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { SCOPE_TASK_LEASE_MS } from "../../ports/scopeTaskScheduler";
+import { DEFAULT_LEASE_MS } from "../../workers/eventRelayWorker";
+import { readRelayTuning, readScopeTaskTuning } from "../env";
 import { createMemoryRuntime } from "../memoryRuntime";
 import {
   createNodeRequestContainer,
   initNodeRuntime,
   nodeServerEnvToRuntimeOptions,
+  nodeServerEnvToTuningEnv,
   readNodeRequestServerConfig,
   readNodeServerEnv,
 } from "../serverNode";
@@ -140,5 +144,40 @@ describe("initNodeRuntime", () => {
     expect(() =>
       createNodeRequestContainer(readNodeRequestServerConfig(devEnv())),
     ).toThrow(/not initialized/);
+  });
+});
+
+/**
+ * 空値を「未設定」と読む規約は、素の射影ではなく tuning スキーマまで
+ * 通して押さえる。空文字を転送すると `z.coerce` が `0` にして boot が
+ * 落ちるので、既定値が返ることが「落とした」ことの証拠になる。
+ */
+describe("nodeServerEnvToTuningEnv", () => {
+  const tuningFor = (source: Readonly<Record<string, string | undefined>>) =>
+    nodeServerEnvToTuningEnv(
+      readNodeServerEnv({ ...BASE, ...GOOGLE, ...source }),
+    );
+
+  it("boots on defaults when a container manifest expands the tuning variables to empty", () => {
+    const tuning = tuningFor({
+      OUTBOX_BATCH_SIZE: "",
+      OUTBOX_LEASE_MS: "",
+      OUTBOX_MAX_ATTEMPTS: "",
+      OUTBOX_RETENTION_MS: "",
+      SCOPE_TASK_LEASE_MS: "",
+    });
+    expect(tuning).toEqual({});
+    expect(readScopeTaskTuning(tuning).leaseMs).toBe(SCOPE_TASK_LEASE_MS);
+    expect(readRelayTuning(tuning).leaseMs).toBe(DEFAULT_LEASE_MS);
+  });
+
+  // AC-17: env から runner tuning までの 1 本道のうち、射影から先の一区間。
+  it("forwards a set lease to the tuning both workers read", () => {
+    const tuning = tuningFor({
+      OUTBOX_LEASE_MS: "1000",
+      SCOPE_TASK_LEASE_MS: "60000",
+    });
+    expect(readScopeTaskTuning(tuning).leaseMs).toBe(60_000);
+    expect(readRelayTuning(tuning).leaseMs).toBe(1000);
   });
 });

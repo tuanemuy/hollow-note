@@ -14,8 +14,10 @@ export type DueScopeTask = Readonly<{
  * front, and nothing else enumerates scopes.
  *
  * Read-only on purpose: it neither claims nor processes. The runner
- * opens a scope unit of work per row and claims there, so the
- * serialization rule (claim inside the scope transaction) is unchanged.
+ * opens a scope unit of work per row and claims there, so every row is
+ * handed out under the per-row exclusivity `ScopeTaskScheduler` requires
+ * of `claimDue`; offering one row to two runners here costs no more than
+ * a claim one of them loses.
  *
  * `listDue` is required of every backend, not an optional index: it
  * returns the tasks already due at `now` across all scopes and never
