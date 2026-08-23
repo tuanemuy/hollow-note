@@ -364,6 +364,29 @@ export function describeScopeTaskSchedulerContract(
       ).toEqual({ cursor: "b" });
     });
 
+    it("re-arms a pending row on schedule, taking the new dueAt, priority and payload", async () => {
+      await schedule("op-1", -MINUTE_MS);
+
+      // An upsert that only touches the payload of a row still `pending`
+      // leaves it due in the past, so the moved-away-from `dueAt` and the
+      // stale priority both survive. Nothing else distinguishes that from
+      // a correct re-arm, since the row is claimable either way.
+      await schedule(
+        "op-1",
+        MINUTE_MS,
+        "usage.userCleanupContinued",
+        { cursor: "next" },
+        ScopeTaskPriority.expiryCollection,
+      );
+      expect(await claim(10)).toEqual([]);
+
+      backend.clock.advance(MINUTE_MS);
+      const claimed = await claim(10);
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.priority).toBe(ScopeTaskPriority.expiryCollection);
+      expect(claimed[0]?.payload).toEqual({ cursor: "next" });
+    });
+
     it("re-arms a running row on schedule, releasing its lease and taking the new dueAt, priority and payload", async () => {
       await schedule("op-1", -MINUTE_MS);
       await claim(10);

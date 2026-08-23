@@ -76,3 +76,20 @@
 - Port W-002 は**実装のバグではなくコメントの問題**。`claimed.length <= limit` により内側の `break` は到達不能で、no-handler の `continue` は `spec/platform:186` の規定どおり。"processed" → 訪問へ是正し、到達不能な `break` は分岐ごと削除
 - Adapter B-001 / B-002 / W-001 は個別ケースの追加ではなく、**遷移表の 5 操作 × from 状態 × 観測属性の全セルを機械的に照合**して空欄を埋める方針に切り替え（Round 2 でも同種の穴を塞いだのに新しい穴が出続けたため）
 - 3観点から挙がった「文章の肥大・重複」は、足すのではなく**整理・削除する方向**の独立した計画に束ねた（ポート JSDoc は「表が規範・散文が理由」へ再構成、spec は2正本を分節、docs は参照ランタイムの実態を根拠に）
+
+## Round 4
+
+- 指摘: Blocker 0 / Warning 1
+- 内訳: fix 1 / wont-fix 0 / defer 0
+- fix の観点別内訳: Adapter 1（Port Contract & Application 0 / Runtime Wiring & Spec 0）
+- Verdict: APPROVED（Blocker ゼロ）だが fix 1 件のため Round 5 へ
+
+| Key | ID | 判定 | 理由 |
+| --- | --- | --- | --- |
+| `conformance/scopeTaskScheduler.ts / schedule が既存 pending 行の dueAt・priority を上書き` | Adapter W-001 | fix | ミューテーションで実証（memory を「pending なら温存」に変えても全緑）。#11 が `ON CONFLICT` に状態条件を付けると半分だけ正しい実装が通る |
+
+Round 3 が弱点として申告した `backoffOrSchedule` × `pending` は、Round 4 の Adapter レビューが許容と判定（既存ケースが状態依存分岐を弾く／`deleteFilesByOwner.test.ts:324` が実行形を持つ／runner が次 tick で自己修復する）。
+
+### 観点の休止
+
+Round 5 は fix ゼロだった **Port Contract & Application** と **Runtime Wiring & Spec 整合性** を休止し、**Adapter 観点のみ**を起動する。
