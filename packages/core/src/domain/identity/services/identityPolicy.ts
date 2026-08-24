@@ -1,13 +1,13 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "../errorCode";
-import type { Identity, PasswordIdentity } from "../identity";
-import type { IdentityId } from "../valueObject";
+import type { Identity, OAuthIdentity, PasswordIdentity } from "../identity";
+import type { IdentityId, OAuthProvider } from "../valueObject";
 
 /**
  * Rules over the set of authentication methods a single user holds.
- * `maxIdentitiesPerUser = 8` is the canonical value: password and OAuth
- * identities count together, and every identity-adding usecase re-reads
- * the current set inside the final UoW before inserting.
+ * Password and OAuth identities count together toward
+ * `maxIdentitiesPerUser`, and every identity-adding usecase re-reads the
+ * current set inside the final UoW before inserting.
  */
 export const IdentityPolicy = {
   maxIdentitiesPerUser: 8,
@@ -56,5 +56,23 @@ export const IdentityPolicy = {
   findPassword: (identities: readonly Identity[]): PasswordIdentity | null =>
     identities.find(
       (identity): identity is PasswordIdentity => identity.kind === "password",
+    ) ?? null,
+
+  /**
+   * The set's own row for one provider account, if it holds one. A user
+   * names an external account at most once, so an adding usecase asks
+   * this before `ensureAddable` and reuses what it finds instead of
+   * growing a second row for the same account.
+   */
+  findOAuth: (
+    identities: readonly Identity[],
+    provider: OAuthProvider,
+    providerAccountId: string,
+  ): OAuthIdentity | null =>
+    identities.find(
+      (identity): identity is OAuthIdentity =>
+        identity.kind === "oauth" &&
+        identity.provider === provider &&
+        identity.providerAccountId === providerAccountId,
     ) ?? null,
 };

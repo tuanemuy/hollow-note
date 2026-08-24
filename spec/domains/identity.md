@@ -277,10 +277,13 @@ AuthToken = PendingAuthToken | ConsumedAuthToken
 | `ensureAddable` | `identities: readonly Identity[]` | `void` | 既に`maxIdentitiesPerUser`件なら`BusinessRuleError(IdentityLimitExceeded)` |
 | `ensurePasswordAddable` | `identities: readonly Identity[]` | `void` | 既に `PasswordIdentity` があれば `BusinessRuleError(PasswordIdentityAlreadyExists)` |
 | `findPassword` | `identities: readonly Identity[]` | `PasswordIdentity \| null` | パスワード認証手段を取り出す |
+| `findOAuth` | `identities: readonly Identity[], provider: OAuthProvider, providerAccountId: string` | `OAuthIdentity \| null` | その外部アカウントを名乗る認証手段を取り出す |
 
 **依存するポート**: なし
 
 `maxIdentitiesPerUser = 8`を正典とする。Password/OAuthの合計で数え、Identity追加を伴う`completeOAuthSignIn`、`linkOAuthIdentity`、`addPasswordIdentity`はUserId shardの最終UoW内でcurrent集合を読み直して`ensureAddable`してからinsertする。これにより`listByUserId`、一覧応答、account deletionで解放するprovider reservation集合は常に8件以下になる。
+
+OAuth の 2 経路（`completeOAuthSignIn` の既存利用者への追加と `linkOAuthIdentity`）は、`ensureAddable` の**前**に `findOAuth` を引く。同じ `(provider, providerAccountId)` の既存行があれば追加せず、今回の予約を activate して claim を復旧させる（予約サガが commit 済み・`activate` 喪失で終わり、`reserved` が TTL 失効した残骸の治癒。[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。順序は load-bearing である — 逆にすると 8 件を持つ利用者が自分の既存 identity を治癒できない。
 
 ### AccountLinkingPolicy
 
@@ -398,11 +401,14 @@ interface UserBatchReader {
   resolveMany(ids: readonly UserId[]): Promise<ReadonlyMap<UserId, Versioned<User>>>;
 }
 
+type ActiveUniqueClaim = { userId: UserId; claimToken: string };
+
 interface IdentityUniqueDirectory {
   resolve(kind: "email" | "handle" | "providerAccount", normalizedKey: string): Promise<UserId | null>;
+  resolveClaim(kind: "email" | "handle" | "providerAccount", normalizedKey: string): Promise<ActiveUniqueClaim | null>;
   reserve(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; userId: UserId; operationId: string; expiresAt: Date }): Promise<void>;
   activate(operationId: string, expectedUserVersion: number): Promise<void>;
-  beginRelease(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; expectedUserId: UserId; operationId: string }): Promise<void>;
+  beginRelease(input: { kind: "email" | "handle" | "providerAccount"; normalizedKey: string; expectedUserId: UserId; expectedClaimToken: string; operationId: string }): Promise<void>;
   release(operationId: string): Promise<void>;
 }
 ```
@@ -413,14 +419,16 @@ interface IdentityUniqueDirectory {
 
 `IdentityUniqueDirectory` の行は `reserved` / `active` / `releasing` の 3 状態を取る。確保は 2 相で、`reserve` が正規化鍵を期限付きで operation に割り当て、所有 UoW の commit 後に `activate`（期待 User version を条件とする）が恒久 claim へ昇格させ、失敗時は `release` が解放する。**取り壊しも同じ 2 相の鏡像**であり、`beginRelease` が `active` の行を `releasing` にして解放側の operation へ付け替え、続く `release(operationId)` がその行を落とす。`beginRelease` を operation ID ではなく `normalizedKey` で引くのは、claim を作った operation はとうに終わっており、解放する側がその ID を再導出できないためである。取り壊しを 2 相にするのは、claim が索引であって資格ではなく（[ADR 038](../adr/038-provider-account-claim-and-identity-row.md)）、解放を促すイベントの配送が at-least-once だからである。下の「ドメインイベント」の `identity.identity.removed` が「global consumer が releasing→release する」と書いているのは、この 2 相のことを指す。
 
+**取り壊しは観測した claim に対する条件付きである**（[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。呼び出し側は先に `resolveClaim` で claim を観測し、そこで得た `claimToken` を `beginRelease` に渡す。`claimToken` は観測した `(kind, normalizedKey)` の文脈で **1 つの claim を同定する値**であり、契約が要求する性質は 2 つだけである。claim が生きているあいだ不変であること（冪等な `activate` の再実行でも変わらない）と、取り壊して張り直した claim のトークンとは必ず異なること — **張り直しが同じ operation ID で行われた場合でも**異なる（予約の operation ID は決定的なので、同じ ID の claim が同じ鍵に 2 回生まれうる）。この 2 つ以外は契約に含まない。別の鍵の claim のトークンと一致してもよく、値の推測困難性も要求しない。この 2 性質が要求するのは claim ごとに一度だけ採番され、その claim が生きているあいだ引き継がれる値であることだけで、claim ごとに 1 つ進む単調カウンタや、claim の行を書くときに採番して以後の状態遷移では引き継ぐ UUID は適合し、行の内容や `operationId` から導いた値・行の削除で振り出しに戻る版番号は適合しない。値は不透明で、比較にだけ使い、解析・ログ・永続化はしない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。どの書き込みでトークンを採番するかはバックエンドの機構であって契約は問わない。`expectedClaimToken` を必須にすることで、観測なしに取り壊しを成功させることはできない。
+
 **非対称が 4 つある。取り違えない。**
 
-- `resolve` は恒久 claim（`active`）の持ち主だけを返す。まだ `reserved` の鍵と、既に `releasing` の鍵は、どちらも `null` に見える
+- `resolve` は恒久 claim（`active`）の持ち主だけを返す。まだ `reserved` の鍵と、既に `releasing` の鍵は、どちらも `null` に見える。`resolveClaim` の可視条件も同一で、`resolve` はその射影である（`resolve(k,n)` は常に `resolveClaim(k,n)?.userId ?? null` と一致する — 2 つの読みは同じ 1 つの事実の射影であり、`active` の行は必ずトークンを持つ）
 - `reserve` は `releasing` の行を**奪えない**。奪えるのは「`reserved` かつ期限切れ」の行だけで、`releasing` の鍵に対しては `ConflictError`（`EMAIL_ALREADY_USED` / `HANDLE_ALREADY_USED` / `PROVIDER_ACCOUNT_ALREADY_LINKED`）を返す。同じ operation ID からの再要求は冪等に期限を延ばすだけである
-- `beginRelease` は `reserved` の行に対して **no-op**。取り壊す対象は恒久 claim だけである。予約を解放側へ付け替えると、続く `release` が `reserved` の行も落とすため、その予約を握って進行中の operation がサガの途中で鍵を失う。行が無い場合と別の利用者が持っている場合も同じく no-op で、解放要求が持ち主から鍵を奪うことはない
+- `beginRelease` が取り壊せるのは「`active` かつ所有者が `expectedUserId` かつトークンが `expectedClaimToken` と一致する行」**だけ**である。行が無い / `reserved` / `releasing` / 別の利用者 / トークン不一致はすべて **no-op** で、解放要求が持ち主から鍵を奪うことも、ある claim について下した判断が後から張られた別の claim を壊すこともない。`reserved` を外すのは、取り壊す対象が恒久 claim だけだからである（予約を解放側へ付け替えると、続く `release` が `reserved` の行も落とすため、その予約を握って進行中の operation がサガの途中で鍵を失う）。`releasing` を外すのは、その行が既に付け替えた operation のものだからである。`releasing` 行の `claimToken` は未規定であり（`resolveClaim` から観測できない）、その行を落とせるのは付け替えた operation の `release(operationId)` だけなので、解放の呼び出し元は応答喪失後に再導出できる決定的な operation ID を使わなければならない
 - `release` は当該 operation の `reserved` と `releasing` の行を落とす。`active` の行には触れない（恒久 claim の解放は必ず `beginRelease` を通る）
 
-provider account の一意性は `IdentityUniqueDirectory` が**唯一の担保**であり、`IdentityRepository` は検査しない（claim は索引であって資格ではない — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。
+provider account の一意性は `IdentityUniqueDirectory` が**唯一の担保**であり、`IdentityRepository` は検査しない（claim は索引であって資格ではない — [ADR 038](../adr/038-provider-account-claim-and-identity-row.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。ディレクトリが担保するのは**全利用者にまたがる**一意性である。1 利用者の identity 集合の中に同じ `(provider, providerAccountId)` が 2 件並ぶかどうかは別の問いで、そちらは `IdentityPolicy.findOAuth` が見る（[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。担保元は動かない。
 
 **エラーケース**（`UserRepository`）: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（版の不一致）、`ConflictError("EMAIL_ALREADY_USED")` / `ConflictError("HANDLE_ALREADY_USED")`（一意制約違反）、`SystemError(DatabaseError)`
 
@@ -436,7 +444,7 @@ interface IdentityRepository extends TransactionalRepository<Identity, IdentityI
 }
 ```
 
-`(provider, providerAccountId)` の一意性はここでは検査しない。担保は `IdentityUniqueDirectory` の claim 索引だけが持ち、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を投げるのもそちらである（[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。バックエンドが DB 側に一意制約を置くのは自由だが、契約としては要求しない。
+`(provider, providerAccountId)` の一意性はここでは検査しない。担保は `IdentityUniqueDirectory` の claim 索引だけが持ち、`ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")` を投げるのもそちらである（[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）。1 利用者の集合内の重複を避けるのは `IdentityPolicy.findOAuth` の役目であって、このポートに検査を足すわけではない（[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。バックエンドが DB 側に一意制約を置くのは自由だが、契約としては要求しない。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 

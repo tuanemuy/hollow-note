@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-22）
+生成元: `spec/testcases/`（最終同期: 2026-08-24）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -480,6 +480,11 @@
 | TC-identity-339 | abandonOAuthFlow: フローの `state` が保存されている — 一致しない `stateBinding` で放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返り、state 行は残る（他人の進行中フローを壊せない） |
 | TC-identity-340 | abandonOAuthFlow: `state` が保存されていない — 放棄する | spec/testcases/identity/abandonOAuthFlow.md#テストケース-abandonoauthflow | `abandoned: false` が返る（エラーにはしない） |
 | TC-identity-341 | completeOAuthSignIn: 有効な `state` がある — 束縛の秘密が一致しない `stateBinding` で交換する | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `ValidationError("OAUTH_STATE_INVALID")` が投げられ、state 行は消費されない。続けて正しい `stateBinding` で交換すると完了できる |
+| TC-identity-342 | removeIdentity: 解放判定 UoW が commit した直後に、先行配送の解放と本人の再連携が割り込む | spec/testcases/identity/removeIdentity.md#テストケース-removeidentity | 判定より前に観測した claim は既に張り替わっているので取り壊しは no-op になり、`resolve("providerAccount", key)` は本人を返し続け、再連携された identity 行も残る |
+| TC-identity-343 | linkOAuthIdentity: 予約サガが commit 後・`activate` 前で止まり、`reserved` が TTL 失効したあと、残骸を含めて上限 8 件の利用者が再連携する | spec/testcases/identity/linkOAuthIdentity.md#テストケース-linkoauthidentity | `IdentityLimitExceeded` にならず、identity は 8 件のままで、返る `identityId` は既存行の ID、claim が `active` に復旧する |
+| TC-identity-344 | completeOAuthSignIn: 既存利用者への追加が commit 後・`activate` 前で止まり、`reserved` が TTL 失効したあと、残骸を含めて上限 8 件の利用者が再サインインする | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `IdentityLimitExceeded` にならず、identity は 8 件のままで、claim が `active` に復旧し、セッションが発行される |
+| TC-identity-345 | removeIdentity: `beginRelease` 済み・`release` 前で中断した解放の removal event を再配送する | spec/testcases/identity/removeIdentity.md#テストケース-removeidentity | 観測が null でも `release(operationId)` が走って `releasing` 行が回収され、別の利用者がその鍵を `reserve` できる |
+| TC-identity-346 | removeIdentity: 解放が完了したあと別の利用者が同じ provider account を連携した状態で、同じ removal event を再配送する | spec/testcases/identity/removeIdentity.md#テストケース-removeidentity | 所有者が一致しない claim は観測が null になるため取り壊しは走らず、claim は `active` のままその利用者が持ち続け、連携した identity 行も残る |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |

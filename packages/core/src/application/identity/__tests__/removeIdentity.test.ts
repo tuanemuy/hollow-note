@@ -1,6 +1,10 @@
+import type { WorkerContainer } from "@repo/core/application/di/types";
 import {
   isConflictError,
   isNotFoundError,
+  isSystemError,
+  SystemError,
+  SystemErrorCode,
 } from "@repo/core/application/errors";
 import { EventId } from "@repo/core/domain/common/event";
 import { isBusinessRuleError } from "@repo/core/domain/error";
@@ -45,7 +49,10 @@ const directoryRow = (h: TestHarness, normalizedKey: string) =>
     );
 
 /** Runs every registered subscriber for the removals already emitted. */
-async function drainRemovalEvents(h: TestHarness): Promise<void> {
+async function drainRemovalEvents(
+  h: TestHarness,
+  container: WorkerContainer = h.workerContainer,
+): Promise<void> {
   for (const row of removedEvents(h)) {
     await dispatchDomainEvent(
       {
@@ -55,9 +62,27 @@ async function drainRemovalEvents(h: TestHarness): Promise<void> {
         occurredAt: row.occurredAt,
         aggregateId: row.aggregateId,
       },
-      h.workerContainer,
+      container,
     );
   }
+}
+
+async function relinkGoogleAccount(
+  h: TestHarness,
+  userId: string,
+): Promise<string> {
+  const relink = await beginOAuthFlow(h, { intent: "linkIdentity", userId });
+  const { identityId } = await linkOAuthIdentity({
+    container: h.container,
+    input: {
+      state: relink.state,
+      stateBinding: relink.stateBinding,
+      code: devAuthorizationCode(relink, {
+        providerAccountId: "google-account-1",
+      }),
+    },
+  });
+  return identityId;
 }
 
 /** A user holding both a password and a Google identity. */
@@ -326,6 +351,130 @@ describe("removeIdentity", () => {
       },
     });
     expect(view.userId).toBe(userId);
+  });
+
+  it("TC-identity-342: a re-link landing right after the decision keeps its claim", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+
+    const realProvider = h.workerContainer.globalUnitOfWorkProvider;
+    let interfered = false;
+    const interleaved: WorkerContainer = {
+      ...h.workerContainer,
+      globalUnitOfWorkProvider: {
+        run: async (fn) => {
+          const result = await realProvider.run(fn);
+          if (!interfered) {
+            interfered = true;
+            // The decision has committed and its transaction is closed:
+            // an earlier delivery completes the release, and the owner
+            // then takes the same account again.
+            await drainRemovalEvents(h);
+            await relinkGoogleAccount(h, userId);
+          }
+          return result;
+        },
+      },
+    };
+
+    await drainRemovalEvents(h, interleaved);
+
+    expect(interfered).toBe(true);
+    expect(directoryRow(h, "google:google-account-1")).toMatchObject({
+      state: "active",
+      userId,
+    });
+    expect(
+      identitiesOf(h, userId).filter((row) => row.kind === "oauth"),
+    ).toHaveLength(1);
+  });
+
+  it("TC-identity-345: a redelivery collects the releasing row an interrupted teardown left", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+
+    const realDirectory = h.workerContainer.identityUniqueDirectory;
+    let lossesLeft = 1;
+    const interrupted: WorkerContainer = {
+      ...h.workerContainer,
+      identityUniqueDirectory: {
+        ...realDirectory,
+        release: async (operationId) => {
+          if (lossesLeft > 0) {
+            lossesLeft -= 1;
+            throw new SystemError(
+              SystemErrorCode.DatabaseError,
+              "release response lost",
+            );
+          }
+          await realDirectory.release(operationId);
+        },
+      },
+    };
+
+    await expect(drainRemovalEvents(h, interrupted)).rejects.toSatisfy(
+      isSystemError,
+    );
+    expect(directoryRow(h, "google:google-account-1")?.state).toBe("releasing");
+
+    await drainRemovalEvents(h);
+
+    expect(directoryRow(h, "google:google-account-1")).toBeUndefined();
+    const stranger = await signUpVerified(h, "stranger@example.com");
+    const claim = await beginOAuthFlow(h, {
+      intent: "linkIdentity",
+      userId: stranger.userId,
+    });
+    await linkOAuthIdentity({
+      container: h.container,
+      input: {
+        state: claim.state,
+        stateBinding: claim.stateBinding,
+        code: devAuthorizationCode(claim, {
+          providerAccountId: "google-account-1",
+        }),
+      },
+    });
+    expect(directoryRow(h, "google:google-account-1")).toMatchObject({
+      state: "active",
+      userId: stranger.userId,
+    });
+  });
+
+  it("TC-identity-346: a redelivery leaves a stranger's claim on the released account alone", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+    await drainRemovalEvents(h);
+    expect(directoryRow(h, "google:google-account-1")).toBeUndefined();
+
+    const stranger = await signUpVerified(h, "stranger@example.com");
+    const claim = await beginOAuthFlow(h, {
+      intent: "linkIdentity",
+      userId: stranger.userId,
+    });
+    const { identityId: strangerIdentityId } = await linkOAuthIdentity({
+      container: h.container,
+      input: {
+        state: claim.state,
+        stateBinding: claim.stateBinding,
+        code: devAuthorizationCode(claim, {
+          providerAccountId: "google-account-1",
+        }),
+      },
+    });
+
+    await drainRemovalEvents(h);
+
+    expect(directoryRow(h, "google:google-account-1")).toMatchObject({
+      state: "active",
+      userId: stranger.userId,
+    });
+    expect(identitiesOf(h, stranger.userId).map((row) => row.id)).toContain(
+      strangerIdentityId,
+    );
   });
 
   it("keeps the claim when no receipt backs the removal event", async () => {

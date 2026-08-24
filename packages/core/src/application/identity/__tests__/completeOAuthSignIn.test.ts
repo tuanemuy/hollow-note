@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { completeOAuthSignIn } from "../completeOAuthSignIn";
 import { startOAuthFlow } from "../startOAuthFlow";
+import { UNIQUE_RESERVATION_TTL_MS } from "../uniqueness";
 import { signUpPending, signUpVerified } from "./authFlowHelpers";
 
 type Grant = Readonly<{
@@ -88,6 +89,28 @@ const withDirectory = (
 
 const directoryRows = (h: TestHarness, kind: string) =>
   h.backend.uniqueDirectory.values().filter((row) => row.kind === kind);
+
+/** Plants OAuth identities so the 8-method ceiling can be reached. */
+function plantOAuthIdentities(
+  h: TestHarness,
+  userId: string,
+  count: number,
+): void {
+  const now = h.clock.now();
+  for (let index = 0; index < count; index += 1) {
+    const filler = Identity.createOAuth(
+      {
+        id: `filler-${index}`,
+        userId: UserId.create(userId),
+        provider: "google",
+        providerAccountId: `filler-account-${index}`,
+        providerEmail: "user@example.com",
+      },
+      now,
+    ).entity;
+    h.backend.identities.set(filler.id, filler);
+  }
+}
 
 const failing = (): SignInOAuthClient => ({
   deriveCodeChallenge: () => "challenge",
@@ -177,20 +200,7 @@ describe("completeOAuthSignIn", () => {
   it("TC-identity-027: the 8-identity limit refuses the link and frees the reservation", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h, "user@example.com");
-    const now = h.clock.now();
-    for (let index = 0; index < 7; index += 1) {
-      const filler = Identity.createOAuth(
-        {
-          id: `filler-${index}`,
-          userId: UserId.create(userId),
-          provider: "google",
-          providerAccountId: `filler-account-${index}`,
-          providerEmail: "user@example.com",
-        },
-        now,
-      ).entity;
-      h.backend.identities.set(filler.id, filler);
-    }
+    plantOAuthIdentities(h, userId, 7);
 
     const error = await signInWithOAuth(h, { email: "user@example.com" }).catch(
       (thrown: unknown) => thrown,
@@ -303,7 +313,6 @@ describe("completeOAuthSignIn", () => {
     expect(isSystemError(error)).toBe(true);
     expect(reserveCalls).toHaveLength(2);
     expect(reserveCalls[0]).not.toBe(reserveCalls[1]);
-    // The email key taken first is handed back under its own id.
     expect(h.backend.uniqueDirectory.values()).toHaveLength(0);
     expect(h.backend.users.values()).toHaveLength(0);
   });
@@ -333,6 +342,67 @@ describe("completeOAuthSignIn", () => {
       "active",
       "active",
     ]);
+  });
+
+  it("TC-identity-344: re-signing in heals an identity whose claim was lost mid-saga", async () => {
+    const base = createTestHarness();
+    // The provider address matches the existing account, so the flow
+    // lands on the `linkToExisting` branch rather than creating a user.
+    const { userId } = await signUpVerified(base, "user@example.com");
+    // The stranded row is the 8th, so healing it is only reachable while
+    // the duplicate is looked up before the ceiling is enforced.
+    plantOAuthIdentities(base, userId, 6);
+    const real = base.container.identityUniqueDirectory;
+    const h = withDirectory(base, {
+      ...real,
+      activate: () => {
+        throw new SystemError(
+          SystemErrorCode.DatabaseError,
+          "activate response lost",
+        );
+      },
+    });
+
+    const error = await signInWithOAuth(h, { email: "user@example.com" }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(isSystemError(error)).toBe(true);
+    expect(
+      base.backend.identities.values().filter((row) => row.userId === userId),
+    ).toHaveLength(8);
+    expect(
+      directoryRows(base, "providerAccount").map((row) => row.state),
+    ).toEqual(["reserved"]);
+
+    base.clock.advance(UNIQUE_RESERVATION_TTL_MS + 1);
+    const sessionsBefore = base.backend.sessions.values().length;
+    const view = await signInWithOAuth(base, { email: "user@example.com" });
+
+    expect(view.userId).toBe(userId);
+    expect(view.sessionToken.length).toBeGreaterThan(0);
+    const sessions = base.backend.sessions.values();
+    expect(sessions).toHaveLength(sessionsBefore + 1);
+    expect(sessions.map((session) => session.tokenHash)).toContain(
+      base.container.secureTokenGenerator.hashOf(view.sessionToken),
+    );
+    expect(
+      base.backend.identities.values().filter((row) => row.userId === userId),
+    ).toHaveLength(8);
+    expect(
+      base.backend.identities
+        .values()
+        .filter(
+          (row) =>
+            row.kind === "oauth" &&
+            row.providerAccountId === "google-account-1",
+        ),
+    ).toHaveLength(1);
+    expect(
+      await base.container.identityUniqueDirectory.resolve(
+        "providerAccount",
+        "google:google-account-1",
+      ),
+    ).toBe(userId);
   });
 
   it("TC-identity-033: an unverified provider address is refused", async () => {

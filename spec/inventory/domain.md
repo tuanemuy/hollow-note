@@ -1,6 +1,6 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-22）
+生成元: `spec/domains/`（最終同期: 2026-08-24）
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -66,7 +66,7 @@
 | DOM-identity-016 | `Identity` エンティティ | `spec/domains/identity.md#エンティティ` | password・OAuth 認証手段の生成と password 変更 event を担う |
 | DOM-identity-017 | `Session` エンティティ | `spec/domains/identity.md#エンティティ` | authEpoch と発行から 30 日の絶対期限を保持する |
 | DOM-identity-018 | `AuthToken` エンティティ | `spec/domains/identity.md#エンティティ` | purpose TTL・authEpoch・pending から consumed の単回遷移を保つ |
-| DOM-identity-019 | `IdentityPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 最終認証手段・password 重複を検査し、8 件の上限超過を `BusinessRuleError(IdentityLimitExceeded)` にする |
+| DOM-identity-019 | `IdentityPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 最終認証手段・password 重複を検査し、8 件の上限超過を `BusinessRuleError(IdentityLimitExceeded)` にする。`findOAuth` で 1 利用者の集合内の同一 `(provider, providerAccountId)` を引く |
 | DOM-identity-020 | `AccountLinkingPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | provider email 確認と既存 User 状態から linking 判定を返す |
 | DOM-identity-021 | `LoginThrottlePolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 失敗数から delay・15 分 lock を純粋に導出する |
 | DOM-identity-022 | `UserRepository.insert` | `spec/domains/identity.md#ポート` | 新規 User を保存する |
@@ -74,7 +74,7 @@
 | DOM-identity-024 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |
 | DOM-identity-025 | `UserRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を削除する |
 | DOM-identity-026 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決し、上限超過は `SystemError(DatabaseError)` にする |
-| DOM-identity-027 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える） |
+| DOM-identity-027 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える）。`resolveClaim` の射影であり、常に `resolveClaim(k,n)?.userId ?? null` と一致する |
 | DOM-identity-028 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約する。provider account の一意性を担保する唯一の場所で、`releasing` の鍵は奪えず conflict を返す（奪えるのは失効した `reserved` だけ） |
 | DOM-identity-029 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を恒久 claim へ昇格させる |
 | DOM-identity-030 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の `reserved` と `releasing` の行を落とす（`active` には触れない） |
@@ -109,10 +109,11 @@
 | DOM-identity-059 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
 | DOM-identity-060 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を読み、再送間隔の判定に使う |
 | DOM-identity-061 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
-| DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
+| DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた行が `active`・所有者一致・`expectedClaimToken` 一致のときだけ `releasing` にして解放側 operation へ付け替える。行なし・`reserved`・`releasing`・別利用者・トークン不一致はすべて no-op |
 | DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
 | DOM-identity-064 | `AvatarUrl` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | trim 後 1〜2048 文字で、アプリ相対パスか `appUrl` と同一オリジンの絶対 URL だけを許し、違反を `BusinessRuleError(InvalidAvatarUrl)` にする。自オリジンの情報は引数で受け取る |
 | DOM-identity-065 | `SameOriginPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | `//` 始まり・バックスラッシュ・C0 制御文字を拒む自オリジン述語を 1 本だけ持ち、真偽値だけを返す |
+| DOM-identity-066 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、観測した `(kind, normalizedKey)` の文脈で 1 つの claim を同定する `claimToken` を返す。トークンは claim が生きているあいだ不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる。契約はこの 2 性質だけで、他の鍵のトークンとの不一致も推測困難性も含まない |
 | DOM-workspace-001 | `WorkspaceId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-002 | `MembershipId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-003 | `InvitationId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |

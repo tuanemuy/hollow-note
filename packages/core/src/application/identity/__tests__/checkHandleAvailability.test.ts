@@ -64,10 +64,18 @@ describe("checkHandleAvailability", () => {
     const owner = await signUpVerified(h, "owner@example.com");
     const asker = await signUpVerified(h, "asker@example.com");
     await claim(h, owner.userId, "ichiro");
+    const observed = await h.container.identityUniqueDirectory.resolveClaim(
+      "handle",
+      "ichiro",
+    );
+    if (observed === null) {
+      throw new Error("the claim to tear down was not observed");
+    }
     await h.container.identityUniqueDirectory.beginRelease({
       kind: "handle",
       normalizedKey: "ichiro",
       expectedUserId: UserId.create(owner.userId),
+      expectedClaimToken: observed.claimToken,
       operationId: "release-1",
     });
 

@@ -1,6 +1,6 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-22）
+生成元: `spec/usecases/`（最終同期: 2026-08-24）
 
 **1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -15,8 +15,8 @@
 | UC-identity-003 | `resendVerificationEmail` | `spec/usecases/identity.md#resendVerificationEmail` | 未確認利用者に限り発行間隔を守って既存確認トークンを置換し、commit 後に確認メールを送る。利用者不在、確認済み、制限中は存在を漏らさず成功として返す |
 | UC-identity-004 | `signInWithPassword` | `spec/usecases/identity.md#signInWithPassword` | 発信元とメールの鍵で待機・施錠を判定し、資格情報を照合して有効利用者に current epoch のセッションを発行する。認証失敗、未確認、削除中、待機、ロックを区別し、失敗加算を原子的に行う |
 | UC-identity-005 | `startOAuthFlow` | `spec/usecases/identity.md#startOAuthFlow` | sign-in または identity link の意図、同一オリジン遷移先、利用者状態を検証し、state・PKCE verifier・認証世代・束縛の秘密の digest を 10 分保存して認可 URL と束縛の秘密（`stateBinding`）を返す（`state` は転送境界へ出さない）。`linkIdentity` intent で主体が active でなければ（削除開始済みを含む）state 行を作らず `UnauthorizedError("UNAUTHENTICATED")` にする |
-| UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を束縛が一致したときだけ単回消費し（不一致・不在では消費しない）、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。未確認、別利用者への紐づき、上限、削除中を拒否し、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
-| UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | 束縛が一致したときだけ単回消費する link intent の OAuth state と認証世代を検査し（不一致・不在では消費しない）、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する。出力は `identityId` だけで、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
+| UC-identity-006 | `completeOAuthSignIn` | `spec/usecases/identity.md#completeOAuthSignIn` | OAuth state を束縛が一致したときだけ単回消費し（不一致・不在では消費しない）、provider account と email の一意予約を用いて既存利用者へのサインイン・自動リンク・新規利用者作成を決定し、認証手段とセッションを原子的に保存する。同一 `(provider, providerAccountId)` の既存行があれば追加せず、今回の予約を activate して claim を復旧させる。未確認、別利用者への紐づき、上限、削除中を拒否し、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
+| UC-identity-007 | `linkOAuthIdentity` | `spec/usecases/identity.md#linkOAuthIdentity` | 束縛が一致したときだけ単回消費する link intent の OAuth state と認証世代を検査し（不一致・不在では消費しない）、provider account を一意予約して、有効利用者の現在の認証手段集合へ上限内で OAuth identity を追加する。同一 `(provider, providerAccountId)` の既存行があれば追加せず、今回の予約を activate して claim を復旧させる。出力は `identityId` だけで、他人が持っている `PROVIDER_ACCOUNT_ALREADY_LINKED` と claim だけが残って identity が居ない `PROVIDER_ACCOUNT_RELEASE_PENDING` を別のコードで区別する |
 | UC-identity-008 | `authenticateSession` | `spec/usecases/identity.md#authenticateSession` | locator とハッシュからセッションと利用者を読み、期限、有効状態、認証世代を検査して利用者射影を返す。すべての無効要因を `UNAUTHENTICATED` に畳み、認証時にセッションを書き換えない |
 | UC-identity-009 | `signOut` | `spec/usecases/identity.md#signOut` | セッショントークンから対象行を解決して存在すれば削除し、形式不正・不在を含め常に成功として返す |
 | UC-identity-010 | `signOutOtherSessions` | `spec/usecases/identity.md#signOutOtherSessions` | 現在のセッションを検証し、利用者の認証世代を進めつつ現在のセッションだけ新世代へ追随させ、他セッションを即時失効させて旧世代行の有界回収を開始する |
@@ -24,7 +24,7 @@
 | UC-identity-012 | `resetPassword` | `spec/usecases/identity.md#resetPassword` | 有効な未消費 reset token を検査・消費して password identity を作成または更新し、認証世代を進めて全セッションを即時失効させる。並行消費は token not found に収束させる |
 | UC-identity-013 | `addPasswordIdentity` | `spec/usecases/identity.md#addPasswordIdentity` | 現在のセッションの再認証（Google 再認可）が済んでいることを確認したうえで有効利用者の現在の認証手段集合を再検査し、password identity がなく総数上限内の場合だけ強度検証済みパスワード手段を追加する。再認証が未了なら `REAUTHENTICATION_REQUIRED`、利用者が不在なら `USER_NOT_FOUND`、`active` でなければ `ACCOUNT_UNAVAILABLE` を返す |
 | UC-identity-014 | `changePassword` | `spec/usecases/identity.md#changePassword` | 現在のセッションとパスワードを再認証して password identity を更新し、認証世代を進めながら現在のセッションだけ残し、他のセッション・旧世代トークンを失効・回収する |
-| UC-identity-015 | `removeIdentity` | `spec/usecases/identity.md#removeIdentity` | 本人の認証手段で最後の 1 件でないことを確認して削除し、OAuth provider account の一意予約を正データ削除後に冪等解放する。再要求は receipt から成功へ収束させる |
+| UC-identity-015 | `removeIdentity` | `spec/usecases/identity.md#removeIdentity` | 本人の認証手段で最後の 1 件でないことを確認して削除し、OAuth provider account の一意予約を正データ削除後に冪等解放する。解放は判定より前に観測した claim に対する条件付きで行う。再要求は receipt から成功へ収束させる |
 | UC-identity-016 | `listIdentities` | `spec/usecases/identity.md#listIdentities` | 利用者の最大 8 件の認証手段を秘密情報なしで射影し、2 件以上なら削除可能として返す |
 | UC-identity-017 | `updateProfile` | `spec/usecases/identity.md#updateProfile` | 表示名、自己紹介、アイコン URL、公開ハンドルを検証し、ハンドルの一意予約・切替・旧値解放とプロフィール更新イベントを整合して保存する。未確認、重複、予約語、版競合を拒否する |
 | UC-identity-018 | `getPublicProfile` | `spec/usecases/identity.md#getPublicProfile` | 公開ハンドルを正規化して directory と UserId shard から確認済み利用者の公開情報を返し、形式違反・不在・未確認を同じ not found に畳む |
