@@ -50,3 +50,6 @@ fix内訳: usecase 3 / adapter 2 / spec 1
 
 R4: 新規 1 / fix 1 / fix-editorial 0 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規指摘1件で独立、fix 系のため）
 fix内訳: usecase 0→休止 / adapter 1 / spec 0→休止
+
+R5: 新規 0 / fix 0 / fix-editorial 0 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 指摘ゼロ）
+fix内訳: usecase 0→休止 / adapter 0 / spec 0→休止 / general 0（確認ラウンド）
