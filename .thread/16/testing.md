@@ -64,7 +64,7 @@
 | `packages/core/src/application/identity/__tests__/deleteAccount.terminalPrune.test.ts` | 7 |
 | `packages/core/src/application/workers/__tests__/outboxPrune.test.ts` | 4 |
 
-完了後の期待値は「**テストファイル数は 76 のまま**（ステップ 5・7 はいずれも既存ファイルへの追加で、新規テストファイルを作らない）／**テスト件数は 970 より増える**（TC-identity-347/348/349 の 3 件 + 適合スイートの追加ケース）／skipped は 3 のまま」。
+完了後の期待値は「**テストファイル数は 76 のまま**（ステップ 5・7 はいずれも既存ファイルへの追加で、新規テストファイルを作らない）／**テスト件数は 978**（970 + TC-identity-348 / 349 の 2 件（347 は既存 1 件の作り替えなので ±0）+ 適合スイートの 6 件）／skipped は 3 のまま」。
 
 ### 実機で観測しない受け入れ基準
 
@@ -104,16 +104,16 @@
   2. 出力を `GlobalMaintenanceRunStore conformance [memory]` で絞って読む
 - **期待結果:**
   - `Test Files 1 passed` / 失敗 0 で終了する
-  - `ADP-common-029` を含む ✓ 行が存在し、そのケースが次を主張していることをテストコードで確認できる:
+  - `ADP-common-029: advanceOrAck walks tables, then shards, then completes the run` の ✓ 行が存在し、そのケースが次を主張していることをテストコードで確認できる:
     - 表を進めた `next` が `{ table: "t2", cursor: null, asOf: run の asOf }` を持つ
     - その `commandKey` がファイル冒頭の `commandKeyOf(runId, next)`（`${runId}:${generation}:${shardId}:${table}:${cursor ?? ""}`）と一致する（AC-3）
     - 別 shard を自動 claim して返した `next` が、**事前に checkpoint しておいた cursor と表**をそのまま保ち、`commandKey` が checkpoint 時に渡した文字列（規則から外れた `"command-2"` のような値）と**一致する**（AC-4）
     - 返った `next` が claimed である（直後の `claimLanes` がその shard を返さない）
-  - `GlobalMaintenanceRunStore conformance [memory]` の ✓ 行は **11 行以上**（実行前が 11 行。ケースを既存行に相乗りさせるだけなら 11 行のまま、独立ケースを足したなら増える）
+  - `GlobalMaintenanceRunStore conformance [memory]` の ✓ 行は **17 行**（実行前が 11 行。ADP-common-029 が 1 → 7 ケースに分かれた分だけ増える）
 - **確認ポイント:**
   - **AC-4 の主張は「規則外の `commandKey` を渡した lane」で書かれていること。** 規則どおりのキーを渡す形だと、store が再 mint しても一致してしまい「再 mint していない」が観測できない。
   - `asOf` が `run の asOf`（resume 元の固定値）であり、`clock.now()` ではないこと。ここが `now` に倒れると、スイープ境界が invocation ごとに動く。
-  - 既存 11 ケースが 1 つも消えていないこと（特に ADP-common-030 の 3 件 — lapsed lease からの lane 回収は、本 Issue が塞ぐ「誰も駆動しない claimed lane」の最後の受け皿）。
+  - 実行前の 11 ケースが 1 つも消えていないこと（特に ADP-common-030 の 3 件 — lapsed lease からの lane 回収は、本 Issue が塞ぐ「誰も駆動しない claimed lane」の最後の受け皿）。
 
 ### 3. 解放（`completed: false`）は lane を返さない
 
@@ -127,14 +127,14 @@
      pnpm exec vitest run packages/core/src/adapters/memory/__tests__/conformance.test.ts --reporter=verbose
      ```
 
-  2. `ADP-common-028` の行と、そのケースの本体（`packages/core/src/adapters/conformance/globalMaintenanceRunStore.ts`）を読む
+  2. `ADP-common-029: a release hands back no position even while another lane is pending` の行と、そのケースの本体（`packages/core/src/adapters/conformance/globalMaintenanceRunStore.ts`）を読む
 - **期待結果:**
-  - `ADP-common-028` を含む ✓ 行が存在し、そのケースが `advanceOrAck({ completed: false })` の戻り値について `{ next: null, runCompleted: false }` を主張している
+  - `ADP-common-029: a release hands back no position even while another lane is pending` の ✓ 行が存在し、そのケースが `advanceOrAck({ completed: false })` の戻り値について `{ next: null, runCompleted: false }` を主張している
   - その主張が、**他方の shard が pending のまま残っている状態**で行われている（既存 fixture は 2 shard のうち 1 本だけを claim して解放する形なので、fixture の追加なしにこの状態になる）
 - **確認ポイント:**
   - **`runCompleted` だけでなく `next` を assert していること。** `next` を見ない assert では契約 2 の主張が落ちる。
   - fixture が 1 shard 構成に書き換わっていないこと。1 shard だと「他に pending が無いから null」と読めてしまい、主張が弱まる。
-  - スイート冒頭 JSDoc（「suite pins the lane topology」の段落）に、解放が position を返さないことが書かれていること。
+  - スイート冒頭 JSDoc（「It also pins where an ack's position comes from」の段落）に、解放が position を返さないことが書かれていること。
 
 ### 4. 表構成が違う配備でも 1 回の cron で run が完走する
 
@@ -190,7 +190,7 @@
   4. `pnpm test:unit`
 - **期待結果:**
   - 4 つすべてが成功で終了する
-  - `pnpm test:unit` は **Test Files 76 passed**（実行前と同じ）、**Tests は 970 より多い passed / 3 skipped**
+  - `pnpm test:unit` は **Test Files 76 passed**（実行前と同じ）、**Tests 978 passed / 3 skipped**（実行前 970 passed / 3 skipped）
   - `pnpm lint:fix` / `pnpm format` が差分を書き戻していないこと（書き戻したなら、その差分を commit に含める）
 - **確認ポイント:**
   - テストファイル数が 76 から増えていたらスコープ逸脱（ステップ 5・7 はいずれも既存ファイルへの追加）。
@@ -254,6 +254,6 @@
 - **実機のアカウント削除フロー（唯一ブラウザーで踏める `advanceOrAck` 経路）** — `pnpm dev` を起動し（`http://localhost:3100`）、`/signup` で新規登録 → ターミナルの `mail.sent` の `actionUrl` でメール確認 → サインイン → `/settings/danger` でメールアドレスを入力して削除を実行し、進捗表示が終端（削除完了）に達すること、起動ターミナルに `[runner.node] manifest prune threw` が出ていないことを確認する。ポート応答形状の変更が実機のワーカー経路を壊していないことの、テスト以外の唯一の担保。
 - **`outboxPrune` のスタブ実装** — `advanceOrAck` を実装している場所は「memory アダプター + `workers/__tests__/outboxPrune.test.ts:59` の `vi.fn(async () => ({ next: null, runCompleted: false }))`」の 2 つだけ。`next: null` なので新しい型でもコンパイルは通るが、`pnpm exec vitest run packages/core/src/application/workers/__tests__/outboxPrune.test.ts` が **4 件緑のまま**であることを見る。
 - **`pruneExpiredAuthState` の既存挙動（TC-identity-150..178）** — 挙動不変が要件。確認項目 4・5 と同じ実行で、特に TC-identity-171（reshard・active lane ≤ 6）、TC-identity-174（lapsed lease からの回復）、TC-identity-165（全 sweep 失敗で `SystemError(DatabaseError)`）、および `"a budget-exhausted cron releases every claimed lane before returning"` が ✓ のままであることを見る。budget 枯渇時の全 lane 解放は、`advanceOrAck` の直接呼び出しへ組み替わる経路なので特に見る。
-- **適合スイート全体** — `advanceOrAck` の応答形状変更は全バックエンドへの要件になる（Issue #11 の D1 実装者が同じ契約を実装する）。確認項目 2・3 の実行で `conformance.test.ts` が **232 件以上**緑であること、`GlobalMaintenanceRunStore conformance [memory]` の 11 ケースが 1 つも消えていないことを見る。
+- **適合スイート全体** — `advanceOrAck` の応答形状変更は全バックエンドへの要件になる（Issue #11 の D1 実装者が同じ契約を実装する）。確認項目 2・3 の実行で `conformance.test.ts` が **238 件**（実行前 232 + 適合ケース 6 件）緑であること、`GlobalMaintenanceRunStore conformance [memory]` の **17 ケース**（実行前 11）が 1 つも消えていないことを見る。
 - **本番ビルド** — CI の `build` ジョブと同じ検査として `pnpm build`（→ `build:node`）が通ること。本 Issue はアプリのエントリーを触らないが、`@repo/core` は `.ts` を直接 export しているので型エラーがビルドに出る経路がある。
 - **プロセス再起動でデータが消える** — 永続化は in-memory なので、既存機能の browser 確認を途中で中断するとアカウントも削除マニフェストも消える（仕様どおり）。上記のアカウント削除フローは 1 つの `pnpm dev` プロセス内で通す。

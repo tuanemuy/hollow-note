@@ -39,8 +39,9 @@ const LEASE_MS = 10 * MINUTE_MS;
  *
  * Contract 1 — the run's snapshot, not the deployment's configuration,
  * is the walk-order authority — needs the table set to change under a
- * live run, so its case runs only on backends providing the optional
- * `setMaintenanceTables` hook and is reported as skipped elsewhere.
+ * live run, which is why `setMaintenanceTables` is a required member of
+ * `ConformanceBackend` and not a hook a backend may leave out: without
+ * it a backend would report "conformant" with contract 1 unverified.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -228,7 +229,13 @@ export function describeGlobalMaintenanceRunStoreContract(
     });
 
     it("ADP-common-029: advanceOrAck walks tables, then shards, then completes the run", async () => {
-      await begin("run-1", "owner-a");
+      const started = await begin("run-1", "owner-a");
+      // Move the wall clock off the run's asOf, well inside the lease, so
+      // the asOf assertions below have something to fail against: without
+      // this every clock read equals the run's boundary and a store that
+      // stamps `now()` onto a lane is indistinguishable from one that
+      // reads the run row back.
+      backend.clock.advance(MINUTE_MS);
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
         throw new Error("expected a claimed lane");
@@ -259,6 +266,21 @@ export function describeGlobalMaintenanceRunStoreContract(
         completed: false,
       });
 
+      // Leave t1 mid-keyset before acking it, so "a new table starts at
+      // the head" is asserted against a lane that actually carries a
+      // cursor — a store that dragged the old one along would otherwise
+      // look identical.
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        table: "t1",
+        cursor: "cursor-9",
+        asOf: started.asOf,
+        nextCommandKey: "command-t1-page-2",
+      });
+
       const afterTable = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -277,7 +299,7 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(nextTable.shardId).toBe(lane.shardId);
       expect(nextTable.table).toBe("t2");
       expect(nextTable.cursor).toBeNull();
-      expect(nextTable.asOf).toEqual(lane.asOf);
+      expect(nextTable.asOf).toEqual(started.asOf);
       expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
 
       // Shard done → the other shard is claimed atomically, at the
@@ -301,9 +323,10 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(secondShard.cursor).toBe("cursor-77");
       expect(secondShard.commandKey).toBe("command-off-rule");
       // The run's asOf, read back from the run row — not the wall clock
-      // at auto-claim time. A lane carrying a different boundary would
-      // sweep a different keyset than the run it belongs to.
-      expect(secondShard.asOf).toEqual(lane.asOf);
+      // at auto-claim time, which has moved on. A lane carrying a
+      // different boundary would sweep a different keyset than the run it
+      // belongs to.
+      expect(secondShard.asOf).toEqual(started.asOf);
       // It came back claimed, so nothing is left to hand out.
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
 
@@ -343,7 +366,8 @@ export function describeGlobalMaintenanceRunStoreContract(
     });
 
     it("ADP-common-029: acking a lane's last table auto-claims a lane never claimed before, at the head of its first table", async () => {
-      await begin("run-1", "owner-a");
+      const started = await begin("run-1", "owner-a");
+      backend.clock.advance(MINUTE_MS);
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
         throw new Error("expected a claimed lane");
@@ -367,8 +391,67 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(virgin.shardId).not.toBe(lane.shardId);
       expect(virgin.table).toBe("t1");
       expect(virgin.cursor).toBeNull();
-      expect(virgin.asOf).toEqual(lane.asOf);
+      expect(virgin.asOf).toEqual(started.asOf);
       expect(virgin.commandKey).toBe(commandKeyOf("run-1", virgin));
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+    });
+
+    it("ADP-common-029: acking a lane's last table auto-claims a released lane at the table it reached, not the run's first", async () => {
+      const started = await begin("run-1", "owner-a");
+      backend.clock.advance(MINUTE_MS);
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      const [staged] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined || staged === undefined) {
+        throw new Error("expected both shards");
+      }
+
+      // Walk the other shard off the run's first table before releasing
+      // it: stepped to t2, checkpointed there under a command key the
+      // caller's rule would never mint, then handed back. A store that
+      // carried only the cursor across a release — restarting the lane at
+      // the run's first table with t2's cursor — would sweep t1 from the
+      // middle of a keyset that is not t1's and silently skip its head.
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: true,
+      });
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        table: "t2",
+        cursor: "cursor-77",
+        asOf: started.asOf,
+        nextCommandKey: "command-off-rule",
+      });
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: false,
+      });
+
+      const advanced = await completeLane(
+        "run-1",
+        "owner-a",
+        lane.generation,
+        lane.shardId,
+      );
+      expect(advanced.runCompleted).toBe(false);
+      const resumed = advanced.next;
+      if (resumed === null) {
+        throw new Error("expected the released shard");
+      }
+      expect(resumed.shardId).toBe(staged.shardId);
+      expect(resumed.table).toBe("t2");
+      expect(resumed.cursor).toBe("cursor-77");
+      expect(resumed.commandKey).toBe("command-off-rule");
+      expect(resumed.asOf).toEqual(started.asOf);
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
     });
 
@@ -417,14 +500,7 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(2);
     });
 
-    it("ADP-common-029: an ack walks the table set the run was created with, not the deployment's current one", async (ctx) => {
-      const setTables = backend.setMaintenanceTables;
-      if (setTables === undefined) {
-        // Report as skipped, not passed: a backend that cannot change its
-        // table configuration has not verified contract 1.
-        ctx.skip();
-        return;
-      }
+    it("ADP-common-029: an ack walks the table set the run was created with, not the deployment's current one", async () => {
       await begin("run-1", "owner-a");
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
@@ -433,7 +509,7 @@ export function describeGlobalMaintenanceRunStoreContract(
 
       // A deploy re-orders and renames the sweep tables mid-run. The run
       // snapshotted its set at creation, so the walk must ignore this.
-      await setTables.call(backend, "authStatePrune", ["t9", "t8", "t7"]);
+      await backend.setMaintenanceTables("authStatePrune", ["t9", "t8", "t7"]);
 
       const afterTable = await store.advanceOrAck({
         runId: "run-1",

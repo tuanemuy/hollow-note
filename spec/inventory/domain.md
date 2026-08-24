@@ -1,6 +1,6 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-24）
+生成元: `spec/domains/`（最終同期: 2026-08-25）
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 

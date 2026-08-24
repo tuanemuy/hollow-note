@@ -1,6 +1,6 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-24）
+生成元: `spec/usecases/`（最終同期: 2026-08-25）
 
 **1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 

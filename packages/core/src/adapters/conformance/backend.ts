@@ -137,14 +137,15 @@ export type ConformanceBackend = Readonly<{
   /**
    * Replaces the deployment's sweep-table set for one kind after the
    * backend was built, standing in for a deploy that changes the table
-   * configuration while a run is in flight. Optional — suites skip the
-   * cases that pin the run snapshot as the walk-order authority when a
-   * backend cannot re-configure it.
+   * configuration while a run is in flight. Required: it is the only way
+   * the suite can pin the run's snapshot — rather than the deployment's
+   * configuration — as the walk-order authority, so a backend without it
+   * would report "conformant" having never verified contract 1.
    */
-  setMaintenanceTables?(
+  setMaintenanceTables(
     kind: MaintenanceKind,
     tables: readonly string[],
-  ): Promise<void> | void;
+  ): Promise<void>;
 }>;
 
 export type MakeConformanceBackend = (

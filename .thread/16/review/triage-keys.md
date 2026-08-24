@@ -7,3 +7,5 @@
 | `spec/usecases/identity.md:860,864/「4種」表記の混在と残債の追跡先` | wont-fix | —（`.thread/16/plan.md:44` が spec-sync 管轄として既に追跡先を明示） |
 
 defer: なし
+
+R2 で新たに `wont-fix` / `defer` と判定した指摘は無い（新規 15 件はすべて `fix` / `fix-editorial`）。R2 の指摘に、上の `wont-fix` を蒸し返したものは無い。

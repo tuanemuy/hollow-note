@@ -543,8 +543,9 @@ describe("pruneExpiredAuthState", () => {
     // 32 lanes x 4 tables = 128 commands exceed the 100-command budget,
     // so the first cron must break mid-run. Its claimed lanes have to be
     // released on the way out: `claimLanes` never returns claimed lanes
-    // and the same-owner cron renews the lease each run, so a lane left
-    // claimed would be stuck forever.
+    // and a cron arriving within the lease renews this process's own, so
+    // a lane left claimed stays stuck until a gap long enough to lapse
+    // the lease lets a cron reclaim it.
     const h = createTestHarness({
       maintenanceShardIds: Array.from({ length: 16 }, (_, i) => `shard-${i}`),
       routingGenerations: ["gen-old", "gen-new"],
@@ -730,9 +731,10 @@ describe("pruneExpiredAuthState", () => {
     // cause makes the release fail too, so it must not rethrow — the
     // original failure is what has to reach the caller. What it must not
     // do is hide the consequence: the lanes stay `claimed`, and
-    // `PRUNE_LEASE_OWNER` being a process constant means this process's
-    // next cron renews its own lease, so the lapsed-lease reclaim never
-    // fires for them. `releaseLane`'s `workRemains = true` cannot be
+    // `PRUNE_LEASE_OWNER` being a process constant means that for as long
+    // as crons arrive within the lease this process keeps renewing its
+    // own, so the lapsed-lease reclaim never fires for them.
+    // `releaseLane`'s `workRemains = true` cannot be
     // observed here because the usecase throws instead of returning a
     // view; it is kept for a future call site that returns one.
     const h = createTestHarness({

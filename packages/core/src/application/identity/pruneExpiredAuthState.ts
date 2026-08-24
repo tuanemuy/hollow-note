@@ -107,19 +107,24 @@ const hourBucketOf = (instant: Date): string => {
  *   from the run store. A table the run names but this deployment has no
  *   sweep for is acked past — logged, not counted as a failure — so a
  *   run snapshotted by an older table set still completes. That skip is
- *   a behaviour of the `cron` (driving) path; a continuation turn never
- *   receives an unknown table, because `AuthStateTable` closes what it
- *   accepts (spec/adr/062).
+ *   a behaviour of the `cron` (driving) path. `AuthStateTable` makes an
+ *   unknown table a compile error at this deployment's call sites, but
+ *   it does not stop one that reaches a continuation turn from the run's
+ *   table set across a process or deploy boundary: that turn makes no
+ *   progress, and a later cron reclaims the lane through this same skip
+ *   (spec/adr/062).
  *
  * Runtime wiring note: no scheduler invokes this yet — the Node runner's
  * pruner role remains `pruneOutbox`, and the cron / queue wiring lands
  * with the Cloudflare slice. A crashed invocation's claimed lane is
  * recovered by the next `cron`: re-leasing the lapsed run returns its
  * abandoned lanes to the claimable pool, cursor intact. A continuation
- * turn is a single turn, not a driver: the lane its final ack hands back
- * is passed on to the next continuation still claimed. Until a producer
- * enqueues those continuations, such a lane sits until its lease lapses
- * and the next cron reclaims it.
+ * turn is a single turn, not a driver: handing its final ack's lane on
+ * to the next turn is not possible today, because the position stays
+ * inside this usecase — `PruneExpiredAuthStateView` carries only
+ * `continued` — and putting it on the output is part of wiring the queue
+ * producer. Such a lane sits claimed until its lease lapses and a cron
+ * reclaims it.
  */
 export async function pruneExpiredAuthState({
   container,
@@ -263,8 +268,9 @@ async function runCron(
       // own cause (a lapsed or stolen lease) makes the release fail too,
       // so the failure is not rethrown. It still has to be reported as
       // unfinished work: `PRUNE_LEASE_OWNER` is a process constant, so
-      // this process's next cron renews its own lease and the lapsed-lease
-      // reclaim never fires for a lane it failed to hand back. Defensive
+      // for as long as crons arrive within `LEASE_MS` this process keeps
+      // renewing its own lease and the lapsed-lease reclaim never fires
+      // for a lane it failed to hand back. Defensive
       // today — every current call site already marks work remaining, so
       // only a future one could observe this.
       workRemains = true;
@@ -402,8 +408,9 @@ async function runCron(
         // Budget exhausted mid-lane; the checkpointed cursor lets the next
         // invocation (or a continuation task) resume — but only after the
         // claim is released, since `claimLanes` never returns claimed
-        // lanes and the same-owner cron renews the lease every run, so an
-        // unreleased lane would stay stuck forever.
+        // lanes and a cron arriving within `LEASE_MS` renews this
+        // process's own lease, so an unreleased lane stays stuck until a
+        // gap long enough to lapse the lease lets a cron reclaim it.
         workRemains = true;
         await maintenanceRunStore.advanceOrAck({
           runId,

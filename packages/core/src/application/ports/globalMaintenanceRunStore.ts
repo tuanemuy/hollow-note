@@ -54,7 +54,14 @@ export type MaintenanceLane = Readonly<{
  *
  * Advancing returns the position it advanced to (contract 2):
  * `advanceOrAck` hands back the lane with its `table` / `cursor` /
- * `asOf` / `commandKey`. Stepping the same lane to its next table yields
+ * `asOf` / `commandKey`. `asOf` is the **run's own boundary, fixed on the
+ * run row when the run was created**: every lane of a run carries that
+ * one value, and neither the wall clock at claim / ack time nor
+ * `checkpointLane`'s `asOf` input overwrites it. A lane carrying a
+ * different boundary would sweep a different keyset than the run it
+ * belongs to, breaking "a resumed run keeps its original (oldest)
+ * `asOf`" from the lane side.
+ * Stepping the same lane to its next table yields
  * `cursor: null` — a new table starts at the head of the keyset. Acking
  * a lane's last table auto-claims another pending lane and returns *that
  * lane's persisted position*, wherever that lane stands: the head of the
@@ -75,8 +82,9 @@ export type MaintenanceLane = Readonly<{
  * derives from that position
  * (`${runId}:${generation}:${shardId}:${table}:${cursor ?? ""}`), so a
  * Queue outbox folds the store's mint and the caller's re-derivation
- * into one key. (b) When the store hands back an **existing** position —
- * the auto-claimed lane above — it returns that lane's persisted
+ * into one key. (b) On every path that hands back an **existing**
+ * position — the auto-claimed lane above, and every lane `claimLanes`
+ * hands out — the store returns that lane's persisted
  * `commandKey` unchanged and does **not** re-mint it. For a lane already
  * worked that value came from the caller's `checkpointLane`
  * `nextCommandKey`, whose rule only the caller knows, and re-minting it
@@ -84,9 +92,12 @@ export type MaintenanceLane = Readonly<{
  *
  * A non-null `next` is claimed (contract 4). The caller that **drives**
  * lanes — the cron path — owes it either processing or a release. A
- * single continuation turn instead hands the lane on to the next turn
- * still claimed; each usecase's Runtime wiring note says what that means
- * until the queue producer exists.
+ * single continuation turn is not a driver, and handing its final ack's
+ * lane on to the next turn is not possible today: the position never
+ * leaves the usecase, whose view carries only `continued`, so putting it
+ * on the output is part of wiring the queue producer. Such a lane sits
+ * claimed until its lease lapses and a cron reclaims it, which is what
+ * each usecase's Runtime wiring note records.
  *
  * Error contract: `ConflictError` (foreign lease), `SystemError(DatabaseError)`.
  */
