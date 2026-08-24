@@ -26,6 +26,10 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
  * restarts once the row is deleted, do not.
  *
  * Opaque to callers — compare it, never parse, log, or persist it.
+ *
+ * A plain `string` rather than a brand: the adapter mints and interprets
+ * the value, and a brand with a public `create` cannot keep an unobserved
+ * token out — the conformance suite is what enforces that.
  */
 export type ActiveUniqueClaim = Readonly<{
   userId: UserId;

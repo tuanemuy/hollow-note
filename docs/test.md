@@ -32,6 +32,12 @@ Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 - Concurrency tests fire the usecase twice with `Promise.all` and assert one winner (the UoW mutex + conditional updates make the outcome deterministic in-process).
 - Seed unusual persisted states (deleted users, stale epochs, expired rows) by writing rows directly to `harness.backend` tables via the domain `reconstruct` factories.
 
+## Injecting into a concurrency window
+
+- Verifying what happens when another actor lands at a particular moment does not warrant a repository / UoW / store fake. Spread the container `createTestHarness()` returned and replace one port with a thin wrapper that delegates to the real adapter (or the real provider) and interferes once at a fixed position — before or after the wrapped call.
+- Where the interference sits is the value of the test. Interfering right after the deciding UoW's `run` resolves fails an implementation that observes state in the wrong order; wrapping the write call that implementation eventually makes puts the interference after the observation, where the wrong order passes too.
+- To reproduce an interrupted saga, fail exactly one wrapped call and let everything else run against the real adapter, instead of adding a branch to the implementation. Say in the test name which window is being opened.
+
 ## Determinism
 
 - `vitest.config.ts` pins `TZ=Asia/Tokyo` for the whole run. A UTC runner (which CI is) would make UTC-only assertions — `BillingPeriod`'s UTC calendar month — pass against a local-time implementation too, so the suite runs in a non-UTC zone to keep them discriminating. Everything else must stay TZ-independent.
