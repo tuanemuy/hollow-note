@@ -5,6 +5,7 @@ import {
   type ScopeCleanupTurn,
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
+import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 
 /** LLM usage months one turn removes (spec/usecases/usage.md#deletequota). */
@@ -74,6 +75,7 @@ export async function deleteQuota({
         await ctx.scopeTaskScheduler.schedule({
           kind: USAGE_USER_CLEANUP_TASK_KIND,
           operationId: input.deletionOperationId,
+          priority: ScopeTaskPriority.securityCleanup,
           dueAt: now,
           payload: { deletionOperationId: input.deletionOperationId },
         });

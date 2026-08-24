@@ -4,6 +4,7 @@ import { installContainerStore } from "@repo/core/application/di/containerStore"
 import {
   readPruneTuning,
   readRelayTuning,
+  readScopeTaskTuning,
 } from "@repo/core/application/di/env";
 import {
   bindNodeRelayTrigger,
@@ -105,6 +106,7 @@ export async function boot(): Promise<NodeServerBoot> {
     tuning: {
       relayOptions: readRelayTuning(tuningEnv),
       outboxRetentionMs: readPruneTuning(tuningEnv).retentionMs,
+      scopeTaskLeaseMs: readScopeTaskTuning(tuningEnv).leaseMs,
     },
   });
   // Commits kick the relay immediately instead of waiting for the tick.

@@ -66,6 +66,7 @@ Verification-mail links can be printed to the server log by the memory `MailSend
 | `HOSTNAME`            | no       | `0.0.0.0`               | HTTP listener bind address.                                                         |
 | `OUTBOX_BATCH_SIZE`   | no       | `100`                   | Max outbox rows claimed per relay tick.                                             |
 | `OUTBOX_LEASE_MS`     | no       | `300000`                | Lease window (ms) before a stuck claim becomes reclaimable.                         |
+| `SCOPE_TASK_LEASE_MS` | no       | `300000`                | Lease window (ms) a scope-task claim holds its whole batch for. In this runtime it sets exactly one thing: how long a row the turn did not settle stays invisible to the ticks (see *Worker runner*). The default needs no adjustment here, because neither bound of the band bites — a second writer settling a row the first still holds takes a second writer, and a crashed writer leaves no rows behind at all. Pick a value from that band (lower = worst-case turn, upper = the oldest-task age SLO, one minute at priority 0) on a deployment where tasks outlive the writer that claimed them; `spec/platform` states it. |
 | `OUTBOX_MAX_ATTEMPTS` | no       | `2`                     | Per-event max attempts before quarantine (`failed_at` stamp).                       |
 | `OUTBOX_RETENTION_MS` | no       | `604800000` (7 days)    | Retention window before processed outbox rows are pruned.                           |
 | `MEMORY_MAIL_LOG_ACTION_URL` | no | `false`              | `true` logs the action URL (verification link, raw token) on `mail.sent`. Manual testing only. |
@@ -98,6 +99,8 @@ The share-token encryption key ring is minted fresh at process start (ephemeral 
 | Pruner      | crons (outbox + auth state) | 24-hour `setInterval` — plus one round at `start()` — running three mutually isolated sweeps: `pruneOutbox`, `pruneAccountDeletionManifests` (terminal deletion headers and their control-plane rows), and the 30-day `identity_removal_receipts` sweep. `pruneExpiredAuthState` is implemented and tested but **not scheduled** here — its cron / queue wiring is Issue #15 |
 | DLQ         | Dedicated Worker            | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
 
+A scope-task claim takes a lease, so a row the turn did not settle — a kind this deployment has no handler for, a row whose own `backoff` then failed — is invisible to the ticks until `SCOPE_TASK_LEASE_MS` lapses (five minutes by default), not until the next second. Both cases log as they happen, and `[scope-tasks] no handler for …` carries the row's `dueAt`: reclaiming a lapsed lease leaves `dueAt` where it was, so how far past its time that row has drifted reads off the line, while how often the line repeats only tracks the lease period. There is no surface here for the age of the oldest task across all rows — the SLO that would measure it belongs to the runtime where a crashed writer's rows outlive the writer (`spec/platform`, Issue #11).
+
 `runner.start()` drives one round of the relay, the scope tasks and the pruner immediately (crash-leftover backlog, due continuations left by a previous process, and retention that must not wait a whole interval), registers the three intervals plus SIGTERM / SIGINT handlers, and returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally. Commits kick the relay and the scope-task runner out-of-band via `bindNodeRelayTrigger` / `bindNodeScopeTaskTrigger`, and concurrent kicks collapse into one in-flight tick.
 
 There is exactly one runner per process. `apps/web/app/server.node.ts` pins the booted server on `globalThis` / `import.meta.hot.data`, so a `vite dev` reload — which re-evaluates the module and boots again — retires the previous boot (`[server.node] retiring the previous boot`) before starting the replacement (`[server.node] worker runner started`). Two "started" lines without a "retiring" line between them would mean two runners ticking the same store.
@@ -125,6 +128,7 @@ The application uses the `ConsoleLogger` port (`packages/core/src/application/po
 - `mail.sent` — memory mail deliveries. Carries `actionUrl` (the verification link, raw token included) only when `MEMORY_MAIL_LOG_ACTION_URL=true`.
 - `[outbox] quarantining event …` — the DLQ surface.
 - `[outbox] pruned N processed event(s)` — one line per prune tick (boot, then daily).
+- `[scope-tasks] no handler for …` — a continuation kind this deployment cannot resume. It repeats on the lease period (`SCOPE_TASK_LEASE_MS`), not every tick, so its frequency is no measure of the backlog; the `dueAt` it carries is, since that is when the row was meant to run.
 - `[server.node] worker runner started` / `[server.node] retiring the previous boot` — the boot lifecycle described under *Worker runner*.
 
 ## Deployment conditions

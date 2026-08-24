@@ -27,7 +27,10 @@ import {
 import type { OAuthFlowState } from "../../application/ports/oauthStateStore";
 import type { ObjectMeta } from "../../application/ports/objectStorage";
 import type { PersonalCleanupComponent } from "../../application/ports/scopeCleanupAdmissionStore";
-import type { ScopeTaskPayload } from "../../application/ports/scopeTaskScheduler";
+import type {
+  ScopeTaskPayload,
+  ScopeTaskPriority,
+} from "../../application/ports/scopeTaskScheduler";
 import {
   type ScopeKey,
   ScopeKey as ScopeKeyOps,
@@ -318,14 +321,25 @@ export type LocalProjectionRow = Readonly<{
   workspaceVersion: number;
 }>;
 
-export type ScheduledTaskRow = Readonly<{
+type ScheduledTaskBase = Readonly<{
   kind: string;
   operationId: string;
   payload: ScopeTaskPayload;
-  dueAt: Date;
+  priority: ScopeTaskPriority;
   attempt: number;
-  state: "pending" | "failed";
 }>;
+
+/**
+ * A scheduled task carries only the times its state gives a meaning to:
+ * a lease belongs to a claim, and a `failed` row has no run to be due
+ * for. `dueAt` means "when this is meant to run" in both states that
+ * have one, which is what keeps a reclaimed row in its original place.
+ */
+export type ScheduledTaskRow =
+  | (ScheduledTaskBase & Readonly<{ state: "pending"; dueAt: Date }>)
+  | (ScheduledTaskBase &
+      Readonly<{ state: "running"; dueAt: Date; leaseExpiresAt: Date }>)
+  | (ScheduledTaskBase & Readonly<{ state: "failed" }>);
 
 export type ScopeStore = Readonly<{
   key: string;

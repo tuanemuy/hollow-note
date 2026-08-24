@@ -33,6 +33,8 @@ export type NodeWorkerRunnerTuning = Readonly<{
    * is lost.
    */
   scopeTaskIntervalMs?: number;
+  /** Lease each scope-task claim takes; see `ScopeTaskScheduler`. */
+  scopeTaskLeaseMs?: number;
   outboxRetentionMs?: number;
   relayOptions?: ProcessOutboxEventsOptions;
   consumerConcurrency?: number;
@@ -130,7 +132,12 @@ export function createNodeWorkerRunner(
 
   const runScopeTaskTick = async (): Promise<void> => {
     try {
-      await runDueScopeTasks(container);
+      await runDueScopeTasks(
+        container,
+        tuning.scopeTaskLeaseMs !== undefined
+          ? { leaseMs: tuning.scopeTaskLeaseMs }
+          : {},
+      );
     } catch (cause) {
       logger.error("[runner.node] scope task tick threw", { cause });
     }

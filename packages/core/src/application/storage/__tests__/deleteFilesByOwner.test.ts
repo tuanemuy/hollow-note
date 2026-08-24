@@ -3,6 +3,7 @@ import {
   SystemError,
   SystemErrorCode,
 } from "@repo/core/application/errors";
+import { ScopeTaskPriority } from "@repo/core/application/ports/scopeTaskScheduler";
 import { ScopeKey } from "@repo/core/application/scope";
 import { Version } from "@repo/core/domain/common/version";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -203,6 +204,9 @@ const tasks = (h: TestHarness) =>
     .scheduledTasks.values()
     .filter((task) => task.kind === STORAGE_OWNER_DELETE_TASK_KIND);
 
+const pendingTasks = (h: TestHarness) =>
+  tasks(h).filter((task) => task.state === "pending");
+
 const acknowledged = (h: TestHarness, target: ScopeKey = scope) =>
   h.backend.scope(target).cleanupReceipts.values()[0]?.acknowledged ?? [];
 
@@ -306,6 +310,7 @@ describe("deleteFilesByOwner", () => {
       ctx.scopeTaskScheduler.schedule({
         kind: STORAGE_OWNER_DELETE_TASK_KIND,
         operationId: OPERATION_ID,
+        priority: ScopeTaskPriority.securityCleanup,
         dueAt: h.clock.now(),
         payload: { deletionOperationId: OPERATION_ID },
       }),
@@ -350,7 +355,7 @@ describe("deleteFilesByOwner", () => {
     expect(turn).toMatchObject({ status: "stalled", deletedCount: 0 });
     expect(tasks(h)).toHaveLength(1);
     expect(tasks(h)[0]?.attempt).toBe(1);
-    expect(tasks(h)[0]?.dueAt.getTime()).toBeGreaterThan(
+    expect(pendingTasks(h)[0]?.dueAt.getTime()).toBeGreaterThan(
       h.clock.now().getTime(),
     );
   });

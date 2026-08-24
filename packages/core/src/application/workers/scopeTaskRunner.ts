@@ -8,7 +8,11 @@ import {
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
 import { acknowledgePersonalCleanup } from "../identity/deleteAccount/cleanupDispatch";
-import type { ScopeTask } from "../ports/scopeTaskScheduler";
+import {
+  SCOPE_TASK_LEASE_MS,
+  type ScopeTask,
+  ScopeTaskPriority,
+} from "../ports/scopeTaskScheduler";
 import { ScopeKey } from "../scope";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
 import { deleteQuota } from "../usage/deleteQuota";
@@ -56,6 +60,7 @@ const settleCleanupTurn = async (
     ctx.scopeTaskScheduler.schedule({
       kind: PERSONAL_CLEANUP_HANDOVER_TASK_KIND,
       operationId: task.operationId,
+      priority: ScopeTaskPriority.securityCleanup,
       dueAt: container.clock.now(),
       payload: { deletionOperationId: task.operationId },
     }),
@@ -76,11 +81,11 @@ const handOverPersonalCleanup: ScopeTaskHandler = async (container, task) => {
 /**
  * Continuation kinds this deployment knows how to resume. A task whose
  * kind is absent is left due and reported — better a visible stall than
- * a silently completed row nothing processed. Left due means it comes
- * back on every tick (a second apart by default), so the report is a
- * standing log line for as long as the deployment lacks the handler,
- * not a one-off; the row also keeps its place at the head of the
- * `dueAt` order and spends one unit of each round's budget.
+ * a silently completed row nothing processed. The claim that read it
+ * still took a lease, so the report repeats a lease apart and its
+ * frequency is no measure of the stall; the line carries the row's
+ * `dueAt` instead, which reclaiming a lapsed lease leaves where it was,
+ * so how far past its time the row has drifted reads off the report.
  */
 export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   [STORAGE_OWNER_DELETE_TASK_KIND]: async (container, task) => {
@@ -110,6 +115,11 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
 export type RunDueScopeTasksOptions = Readonly<{
   limit?: number;
   handlers?: Readonly<Record<string, ScopeTaskHandler>>;
+  /**
+   * Claim lease for this round. Must outlast the whole claimed batch —
+   * see `ScopeTaskScheduler` for what happens when it does not.
+   */
+  leaseMs?: number;
 }>;
 
 /**
@@ -130,6 +140,7 @@ export async function runDueScopeTasks(
   options: RunDueScopeTasksOptions = {},
 ): Promise<Readonly<{ processed: number }>> {
   const handlers = options.handlers ?? scopeTaskHandlers;
+  const leaseMs = options.leaseMs ?? SCOPE_TASK_LEASE_MS;
   const now = container.clock.now();
   let budget = options.limit ?? SCOPE_TASK_TICK_LIMIT;
   const due = await container.scopeTaskQueue.listDue(now, budget);
@@ -142,18 +153,24 @@ export async function runDueScopeTasks(
     if (claimedScopes.has(scopeKey)) continue;
     claimedScopes.add(scopeKey);
 
+    // Claiming at most the remaining budget is what keeps every claimed
+    // row visited in this round: a row claimed and left over is locked
+    // for the whole lease, not until the next tick.
     const claimed = await container.scopeUnitOfWorkProvider.run(
       row.scope,
-      (ctx) => ctx.scopeTaskScheduler.claimDue(now, budget),
+      (ctx) => ctx.scopeTaskScheduler.claimDue({ now, limit: budget, leaseMs }),
     );
     for (const task of claimed) {
-      if (budget <= 0) break;
       budget -= 1;
       const handle = handlers[task.kind];
       if (handle === undefined) {
         container.logger.warn(
           `[scope-tasks] no handler for ${task.kind}; leaving it due`,
-          { kind: task.kind, operationId: task.operationId },
+          {
+            kind: task.kind,
+            operationId: task.operationId,
+            dueAt: task.dueAt,
+          },
         );
         continue;
       }

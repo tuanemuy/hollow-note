@@ -24,6 +24,7 @@ export type NodeServerEnv = Readonly<{
   OUTBOX_LEASE_MS?: string | undefined;
   OUTBOX_MAX_ATTEMPTS?: string | undefined;
   OUTBOX_RETENTION_MS?: string | undefined;
+  SCOPE_TASK_LEASE_MS?: string | undefined;
 }>;
 
 const isTrue = (value: string | undefined): boolean => value === "true";
@@ -80,6 +81,7 @@ const nodeServerEnvSchema = z
     OUTBOX_LEASE_MS: z.string().optional(),
     OUTBOX_MAX_ATTEMPTS: z.string().optional(),
     OUTBOX_RETENTION_MS: z.string().optional(),
+    SCOPE_TASK_LEASE_MS: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (isTrue(env.OAUTH_DEV_MODE)) {
@@ -113,20 +115,30 @@ export function readNodeServerEnv(
   return nodeServerEnvSchema.parse(source);
 }
 
-/** Projection of {@link NodeServerEnv} to the runtime-agnostic tuning shape. */
+/**
+ * Projection of {@link NodeServerEnv} to the runtime-agnostic tuning shape.
+ *
+ * An empty value is dropped rather than forwarded: empty values are
+ * ordinary in container manifests (`OUTBOX_LEASE_MS=$UNSET_VAR`) and mean
+ * "unset" here, while forwarding `""` would coerce to `0` and refuse the
+ * boot.
+ */
 export function nodeServerEnvToTuningEnv(env: NodeServerEnv): TuningEnv {
   return {
-    ...(env.OUTBOX_BATCH_SIZE !== undefined
+    ...(nonEmpty(env.OUTBOX_BATCH_SIZE)
       ? { OUTBOX_BATCH_SIZE: env.OUTBOX_BATCH_SIZE }
       : {}),
-    ...(env.OUTBOX_LEASE_MS !== undefined
+    ...(nonEmpty(env.OUTBOX_LEASE_MS)
       ? { OUTBOX_LEASE_MS: env.OUTBOX_LEASE_MS }
       : {}),
-    ...(env.OUTBOX_MAX_ATTEMPTS !== undefined
+    ...(nonEmpty(env.OUTBOX_MAX_ATTEMPTS)
       ? { OUTBOX_MAX_ATTEMPTS: env.OUTBOX_MAX_ATTEMPTS }
       : {}),
-    ...(env.OUTBOX_RETENTION_MS !== undefined
+    ...(nonEmpty(env.OUTBOX_RETENTION_MS)
       ? { OUTBOX_RETENTION_MS: env.OUTBOX_RETENTION_MS }
+      : {}),
+    ...(nonEmpty(env.SCOPE_TASK_LEASE_MS)
+      ? { SCOPE_TASK_LEASE_MS: env.SCOPE_TASK_LEASE_MS }
       : {}),
   };
 }
