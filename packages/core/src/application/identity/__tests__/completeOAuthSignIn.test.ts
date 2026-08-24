@@ -90,6 +90,28 @@ const withDirectory = (
 const directoryRows = (h: TestHarness, kind: string) =>
   h.backend.uniqueDirectory.values().filter((row) => row.kind === kind);
 
+/** Plants OAuth identities so the 8-method ceiling can be reached. */
+function plantOAuthIdentities(
+  h: TestHarness,
+  userId: string,
+  count: number,
+): void {
+  const now = h.clock.now();
+  for (let index = 0; index < count; index += 1) {
+    const filler = Identity.createOAuth(
+      {
+        id: `filler-${index}`,
+        userId: UserId.create(userId),
+        provider: "google",
+        providerAccountId: `filler-account-${index}`,
+        providerEmail: "user@example.com",
+      },
+      now,
+    ).entity;
+    h.backend.identities.set(filler.id, filler);
+  }
+}
+
 const failing = (): SignInOAuthClient => ({
   deriveCodeChallenge: () => "challenge",
   buildAuthorizationUrl: () => "https://idp.example.test/authorize",
@@ -178,20 +200,7 @@ describe("completeOAuthSignIn", () => {
   it("TC-identity-027: the 8-identity limit refuses the link and frees the reservation", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h, "user@example.com");
-    const now = h.clock.now();
-    for (let index = 0; index < 7; index += 1) {
-      const filler = Identity.createOAuth(
-        {
-          id: `filler-${index}`,
-          userId: UserId.create(userId),
-          provider: "google",
-          providerAccountId: `filler-account-${index}`,
-          providerEmail: "user@example.com",
-        },
-        now,
-      ).entity;
-      h.backend.identities.set(filler.id, filler);
-    }
+    plantOAuthIdentities(h, userId, 7);
 
     const error = await signInWithOAuth(h, { email: "user@example.com" }).catch(
       (thrown: unknown) => thrown,
@@ -341,6 +350,9 @@ describe("completeOAuthSignIn", () => {
     // The provider address matches the existing account, so the flow
     // lands on the `linkToExisting` branch rather than creating a user.
     const { userId } = await signUpVerified(base, "user@example.com");
+    // The stranded row is the 8th, so healing it is only reachable while
+    // the duplicate is looked up before the ceiling is enforced.
+    plantOAuthIdentities(base, userId, 6);
     const real = base.container.identityUniqueDirectory;
     const h = withDirectory(base, {
       ...real,
@@ -357,6 +369,9 @@ describe("completeOAuthSignIn", () => {
     );
     expect(isSystemError(error)).toBe(true);
     expect(
+      base.backend.identities.values().filter((row) => row.userId === userId),
+    ).toHaveLength(8);
+    expect(
       directoryRows(base, "providerAccount").map((row) => row.state),
     ).toEqual(["reserved"]);
 
@@ -366,9 +381,16 @@ describe("completeOAuthSignIn", () => {
     expect(view.userId).toBe(userId);
     expect(view.sessionToken.length).toBeGreaterThan(0);
     expect(
+      base.backend.identities.values().filter((row) => row.userId === userId),
+    ).toHaveLength(8);
+    expect(
       base.backend.identities
         .values()
-        .filter((row) => row.userId === userId && row.kind === "oauth"),
+        .filter(
+          (row) =>
+            row.kind === "oauth" &&
+            row.providerAccountId === "google-account-1",
+        ),
     ).toHaveLength(1);
     expect(
       await base.container.identityUniqueDirectory.resolve(

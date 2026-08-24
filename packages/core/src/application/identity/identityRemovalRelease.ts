@@ -45,6 +45,9 @@ export async function identityRemovalRelease(
   }
   const { operationId } = event.payload;
 
+  // The key and user to tear down come from the event payload, the
+  // release-or-keep decision from the receipt: `removeIdentity` writes both
+  // from the same locals in one transaction, so they cannot disagree.
   const observed = await observeActiveUniqueKey(deps, {
     kind: "providerAccount",
     normalizedKey: event.payload.providerAccountKey,

@@ -282,6 +282,9 @@ describe("linkOAuthIdentity", () => {
   it("TC-identity-343: re-linking heals an identity whose claim was lost mid-saga", async () => {
     const h = createTestHarness();
     const { userId } = await signUpVerified(h);
+    // The stranded row is the 8th, so healing it is only reachable while
+    // the duplicate is looked up before the ceiling is enforced.
+    plantOAuthIdentities(h, userId, 6);
     const real = h.container.identityUniqueDirectory;
     const stalled: TestHarness = {
       ...h,
@@ -301,17 +304,23 @@ describe("linkOAuthIdentity", () => {
 
     await expect(link(stalled, userId)).rejects.toSatisfy(isSystemError);
     const stranded = identitiesOf(h, userId).find(
-      (row) => row.kind === "oauth",
+      (row) =>
+        row.kind === "oauth" && row.providerAccountId === "google-link-1",
     );
     expect(stranded).toBeDefined();
+    expect(identitiesOf(h, userId)).toHaveLength(8);
     expect(directoryRows(h).map((row) => row.state)).toEqual(["reserved"]);
 
     h.clock.advance(UNIQUE_RESERVATION_TTL_MS + 1);
     const view = await link(h, userId);
 
     expect(view.identityId).toBe(stranded?.id);
+    expect(identitiesOf(h, userId)).toHaveLength(8);
     expect(
-      identitiesOf(h, userId).filter((row) => row.kind === "oauth"),
+      identitiesOf(h, userId).filter(
+        (row) =>
+          row.kind === "oauth" && row.providerAccountId === "google-link-1",
+      ),
     ).toHaveLength(1);
     expect(
       await h.container.identityUniqueDirectory.resolve(

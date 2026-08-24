@@ -215,7 +215,7 @@ export function describeIdentityUniqueDirectoryContract(
         "a@example.com",
       );
       expect(claim?.userId).toBe(userId(1));
-      expect(claim?.claimToken).toEqual(expect.any(String));
+      expect(claim?.claimToken).not.toBe("");
       if (claim === null) {
         throw new Error("an active claim answers");
       }
@@ -412,9 +412,12 @@ export function describeIdentityUniqueDirectoryContract(
         userId(1),
         "absent@example.com",
       );
-      await backend.identityUniqueDirectory.release("release-1");
 
+      // Taking the key *before* the paired `release` is the load-bearing
+      // part: a backend that leaves a `releasing` tombstone behind would
+      // block this reservation, and the `release` would then hide it.
       await reserveEmail("op-1", userId(2), "absent@example.com");
+      await backend.identityUniqueDirectory.release("release-1");
       await backend.identityUniqueDirectory.activate("op-1", 0);
       expect(
         await backend.identityUniqueDirectory.resolve(

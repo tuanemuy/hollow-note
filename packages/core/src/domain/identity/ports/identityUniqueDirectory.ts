@@ -5,15 +5,20 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
 /**
  * A durable claim as observed at a point in time.
  *
- * `claimToken` identifies that one claim, not the key: it stays the same
- * for as long as the claim lives (a repeated, idempotent `activate`
- * included), and a claim taken after this one was torn down carries a
- * different token even for the same normalized key — **even when the same
- * operation id takes it again**. Reservation operation ids are
- * deterministic (`updateProfile` derives one from the user and the
- * handle), so the same id can claim the same key twice; a backend
- * deriving the token from the operation id does not satisfy this
+ * `claimToken` tells one claim from another within the observed
+ * `(kind, normalizedKey)`, and the contract asks exactly two things of
+ * it: it stays the same for as long as the claim lives (a repeated,
+ * idempotent `activate` included), and a claim taken after this one was
+ * torn down carries a different token for the same normalized key —
+ * **even when the same operation id takes it again**. Reservation
+ * operation ids are deterministic (`updateProfile` derives one from the
+ * user and the handle), so the same id can claim the same key twice; a
+ * backend deriving the token from the operation id does not satisfy this
  * contract.
+ *
+ * Nothing beyond those two is contracted: tokens held under different
+ * keys may coincide, and the value need not be hard to guess. A row
+ * version, an ETag, or a monotonic counter all qualify.
  *
  * Opaque to callers — compare it, never parse, log, or persist it.
  */
@@ -99,8 +104,8 @@ export interface IdentityUniqueDirectory {
    * `releasing` is excluded because such a row already belongs to the
    * operation that re-keyed it.
    *
-   * `expectedClaimToken` is mandatory so that an unconditional teardown
-   * cannot be expressed at all — the caller must have observed the claim
+   * `expectedClaimToken` is mandatory so that no teardown can succeed
+   * without an observation — the caller must have observed the claim
    * through `resolveClaim` first. A `releasing` row's token is
    * unspecified (it is invisible to `resolveClaim`), and only the
    * `release` of the operation that re-keyed the row can drop it, so a

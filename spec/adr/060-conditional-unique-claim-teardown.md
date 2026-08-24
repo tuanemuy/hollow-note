@@ -1,4 +1,4 @@
-# 060. 恒久 claim の取り壊しは、観測した claim に対する条件付きにする
+# 060. 恒久 claim の取り壊しは観測した claim に対する条件付きにし、失われた claim は再連携で治癒する
 
 ## ステータス
 
@@ -16,7 +16,7 @@
 
 ## 前提
 
-ディレクトリの書き込みが UoW の外にあること（[ADR 023](./023-two-plane-unit-of-work.md)）。ポート契約の正本がポート定義で、その実行形が共有の適合スイートであること（[ADR 026](./026-port-contract-and-conformance.md)）。鍵の値をディレクトリの外のシンクへ出さないこと（[ADR 048](./048-uniqueness-reservation-operation-id.md)）。claim と identity 行を対で読むこと（[ADR 038](./038-provider-account-claim-and-identity-row.md)）。配送が at-least-once で、複数ワーカー配備では判定と解放の窓が広がること。
+ディレクトリの書き込みが UoW の外にあること（[ADR 023](./023-two-plane-unit-of-work.md)）。ポート契約の正本がポート定義で、その実行形が共有の適合スイートであること（[ADR 026](./026-port-contract-and-conformance.md)）。鍵の値をディレクトリの外のシンクへ出さないこと（[ADR 048](./048-uniqueness-reservation-operation-id.md)）。claim と identity 行を対で読むこと（[ADR 038](./038-provider-account-claim-and-identity-row.md)）。外部アカウントの一意性の担保が予約ディレクトリ 1 か所にあること（[ADR 054](./054-provider-account-uniqueness-owner.md)）。配送が at-least-once で、複数ワーカー配備では判定と解放の窓が広がること。
 
 ## 決定
 
@@ -36,7 +36,7 @@
 
 ### 受領に予約行の operation ID を凍結し、解放時に照合する
 
-[ADR 038](./038-provider-account-claim-and-identity-row.md) が却下した案で、**却下のままとする**。平面をまたぐ読みを 1 トランザクションに持ち込み、かつバックエンド固有の不透明値を 30 日保持の受領へ永続化することになる。ただし当時の却下理由のうち「効果は変わらない」は古びた — 複数ワーカー配備では application 側の判定だけでは同じ効果が得られない。効果の差ではなく、平面の境界と受領の内容が却下の理由である。
+[ADR 038](./038-provider-account-claim-and-identity-row.md) が却下した案で、**却下のままとする**。平面をまたぐ読みを 1 トランザクションに持ち込み、かつバックエンド固有の不透明値を 30 日保持の受領へ永続化することになる。却下の理由は効果の差ではなく、平面の境界と受領の内容である。
 
 ### `beginRelease` の直前で判定し直す
 
@@ -49,7 +49,8 @@ CLAUDE.md が「意図的に置かない」としている。CAS が外れた場
 ## 影響
 
 - `identityRemovalRelease` の判定と取り壊しのあいだに入った再連携が、claim を奪われなくなる
-- `releasing` 行を落とせるのは、その行を再キー付けした operation の `release(operationId)` だけになった。ワーカー経路は event 再配送が同じ operation ID を再導出するので自力で収束するが、同期経路の `updateProfile` は再実行の主体が居ないため、`beginRelease` 済み・`release` 前で落ちると旧 handle が固まりうる
+- `releasing` 行を落とせるのは、その行を再キー付けした operation の `release(operationId)` だけである。ワーカー経路は event 再配送が同じ operation ID を再導出するので、その行が隔離されず受領が保持期限内にあるあいだは自力で収束する（隔離または受領の保持期限切れの後は固まる — [ADR 038](./038-provider-account-claim-and-identity-row.md) の範囲）。同期経路の `updateProfile` は再実行の主体が居ないため、`beginRelease` 済み・`release` 前で落ちると旧 handle が固まりうる
+- 他 operation が残した孤児の `releasing` 行は、所有者が一致していても別の operation からは落とせない。`deleteAccount` の `globalCleanup` もその鍵を回収できず、利用者が退会してもその鍵は parked のまま残る
 - `beginRelease` の no-op のうち「行なし」と「`reserved`」は、観測が取れない以上トークン条件にも吸収される。適合スイートからは独立に識別できなくなる
 - `beginRelease` は `Promise<void>` を返す契約のままなので、呼び出し側からは「トークン不一致で no-op になった」と「取り壊した」が区別できない。ログに残せるのは「観測が `null` だった」分岐だけで、CAS が外れた回数は数えられない。観測性の課題として複数ワーカー化（#11 / #19）に持ち越す
 - 解放判定のたびにディレクトリの読みが 1 回増える（`keep` に倒れる再配送でも発生）。件数に上限のある単一行読みなので許容する

@@ -50,11 +50,12 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `normalized_key` | text | PK part |
 | `user_id` | text | NOT NULL |
 | `operation_id` | text | NOT NULL, UNIQUE |
+| `claim_token` | text | NOT NULL, 行を新規に書くたびに採番 |
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','releasing') |
 | `expires_at` | integer | reserved時NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `` `${parentOperationId}:${kind}:${normalizedKey}` `` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。
+同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `` `${parentOperationId}:${kind}:${normalizedKey}` `` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。恒久 claim の取り壊しは `claim_token` 一致を条件とする compare-and-set で行うので、`claim_token` は行を新規に書くたびに採番する — `operation_id` や `updated_at` からの導出は契約を満たさない（[domains/identity.md](../domains/identity.md)、[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。
 
 ### membership_directory
 

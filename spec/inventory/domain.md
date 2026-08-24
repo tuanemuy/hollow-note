@@ -113,7 +113,7 @@
 | DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
 | DOM-identity-064 | `AvatarUrl` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | trim 後 1〜2048 文字で、アプリ相対パスか `appUrl` と同一オリジンの絶対 URL だけを許し、違反を `BusinessRuleError(InvalidAvatarUrl)` にする。自オリジンの情報は引数で受け取る |
 | DOM-identity-065 | `SameOriginPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | `//` 始まり・バックスラッシュ・C0 制御文字を拒む自オリジン述語を 1 本だけ持ち、真偽値だけを返す |
-| DOM-identity-066 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、その claim を同定する不透明な `claimToken` を返す。claim が生きているあいだトークンは不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる |
+| DOM-identity-066 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、観測した `(kind, normalizedKey)` の文脈で 1 つの claim を同定する `claimToken` を返す。トークンは claim が生きているあいだ不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる。契約はこの 2 性質だけで、他の鍵のトークンとの不一致も推測困難性も含まない |
 | DOM-workspace-001 | `WorkspaceId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-002 | `MembershipId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-workspace-003 | `InvitationId` 値オブジェクト | `spec/domains/workspace.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |

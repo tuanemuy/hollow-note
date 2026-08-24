@@ -88,7 +88,7 @@
 | ADP-identity-039 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を返し、無ければ null を返す |
 | ADP-identity-040 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
 | ADP-identity-041 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた行が `active`・所有者一致・`expectedClaimToken` 一致のときだけ `releasing` にして解放側 operation へ付け替える。行なし・`reserved`・`releasing`・別利用者・トークン不一致はすべて no-op |
-| ADP-identity-042 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、その claim を同定する不透明な `claimToken` を返す。claim が生きているあいだトークンは不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる |
+| ADP-identity-042 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、観測した `(kind, normalizedKey)` の文脈で 1 つの claim を同定する `claimToken` を返す。トークンは claim が生きているあいだ不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる。契約はこの 2 性質だけで、他の鍵のトークンとの不一致も推測困難性も含まない |
 | ADP-workspace-001 | `WorkspaceRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Workspace を保存する |
 | ADP-workspace-002 | `WorkspaceRepository.findById` | `spec/domains/workspace.md#ポート` | WorkspaceId で OCC token 付き集約を取得する |
 | ADP-workspace-003 | `WorkspaceRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Workspace を更新する |
