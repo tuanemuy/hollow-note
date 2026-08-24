@@ -42,9 +42,8 @@ const LEASE_MS = 10 * MINUTE_MS;
  * under a live run through `setMaintenanceTables` and then resuming that
  * run, so both halves of the contract (the walk and the resume) have an
  * executable form. The same case then completes that run and starts the
- * next one on the replaced set: without that half, a backend whose
- * `setMaintenanceTables` does nothing would pass having never put a
- * deploy in front of the run it claims to ignore.
+ * next one on the replaced set, which is where the replacement itself is
+ * observed.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -110,13 +109,10 @@ export function describeGlobalMaintenanceRunStoreContract(
         result: "started",
       });
 
-      // A live foreign lease blocks a second worker.
       const blocked = await begin("run-2", "owner-b");
       expect(blocked.result).toBe("leased");
       expect(blocked.runId).toBe("run-1");
 
-      // After the lease lapses the next cron resumes the same run —
-      // original (oldest) asOf, not the new candidate's.
       backend.clock.advance(LEASE_MS + 1);
       const resumed = await begin("run-3", "owner-b", backend.clock.now());
       expect(resumed).toEqual({
@@ -158,7 +154,6 @@ export function describeGlobalMaintenanceRunStoreContract(
       if (first === undefined) {
         throw new Error("expected a claimed lane");
       }
-      // Advancing to the next table re-mints the key at the new position.
       await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -239,10 +234,9 @@ export function describeGlobalMaintenanceRunStoreContract(
     it("ADP-common-029: advanceOrAck walks tables, then shards, then completes the run", async () => {
       const started = await begin("run-1", "owner-a");
       // Move the wall clock off the run's asOf, well inside the lease, so
-      // the asOf assertions below have something to fail against: without
-      // this every clock read equals the run's boundary and a store that
-      // stamps `now()` onto a lane is indistinguishable from one that
-      // reads the run row back.
+      // the asOf assertions below have something to fail against: at the
+      // run's boundary a store that stamps `now()` onto a lane is
+      // indistinguishable from one that reads the run row back.
       backend.clock.advance(MINUTE_MS);
       // Every checkpoint below passes an `asOf` off the run's boundary:
       // it is an input the store records a page under, never a way to
@@ -306,8 +300,6 @@ export function describeGlobalMaintenanceRunStoreContract(
       if (nextTable === null) {
         throw new Error("expected the lane's next table");
       }
-      // A position the store just created: same lane, next table, head of
-      // the keyset, under the key the caller re-derives for it.
       expect(nextTable.generation).toBe(lane.generation);
       expect(nextTable.shardId).toBe(lane.shardId);
       expect(nextTable.table).toBe("t2");
@@ -315,9 +307,6 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(nextTable.asOf).toEqual(started.asOf);
       expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
 
-      // Shard done → the other shard is claimed atomically, at the
-      // position it was released with and under the key it was stored
-      // with.
       const afterShard = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -547,8 +536,8 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(nextTable.table).toBe("t2");
       expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
 
-      // The old set also decides where the lane ends: two tables, then
-      // the shard is done and the untouched shard comes back at "t1".
+      // The old set also decides where the lane ends: after its two
+      // tables the shard is done.
       const afterShard = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -563,11 +552,9 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(secondShard.table).toBe("t1");
 
       // Everything above is also true of a backend whose
-      // `setMaintenanceTables` did nothing, so the case has to observe
-      // that the replacement landed: finish the in-flight run and start
-      // the next one, which snapshots the set the deploy installed. Both
-      // halves matter — the old run ignored the new set, the new run
-      // takes it.
+      // `setMaintenanceTables` did nothing, so the replacement has to be
+      // observed too: finish the in-flight run and start the next one,
+      // which snapshots the set the deploy installed.
       const finished = await completeLane(
         "run-1",
         "owner-a",
@@ -600,7 +587,6 @@ export function describeGlobalMaintenanceRunStoreContract(
           new Date(backend.clock.now().getTime() + LEASE_MS),
         ),
       ).toBe(true);
-      // The previous owner lost the lease.
       await expectConflict(store.claimLanes("run-1", "owner-a", 6));
       expect(await store.claimLanes("run-1", "owner-b", 6)).toHaveLength(2);
     });
@@ -637,7 +623,6 @@ export function describeGlobalMaintenanceRunStoreContract(
         "s1",
         "s2",
       ]);
-      // The reclaimed lane resumes from the checkpointed keyset.
       const resumedLane = reclaimed.find(
         (lane) => lane.shardId === first.shardId,
       );

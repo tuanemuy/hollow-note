@@ -734,9 +734,9 @@ describe("pruneExpiredAuthState", () => {
     // `PRUNE_LEASE_OWNER` being a process constant means that for as long
     // as crons arrive within the lease this process keeps renewing its
     // own, so the lapsed-lease reclaim never fires for them.
-    // `releaseLane`'s `workRemains = true` cannot be
-    // observed here because the usecase throws instead of returning a
-    // view; it is kept for a future call site that returns one.
+    // `releaseLane`'s `workRemains = true` cannot be observed here because
+    // the usecase throws instead of returning a view; it is kept for a
+    // future call site that returns one.
     const h = createTestHarness({
       maintenanceShardIds: ["shard-0", "shard-1", "shard-2", "shard-3"],
     });
@@ -774,7 +774,6 @@ describe("pruneExpiredAuthState", () => {
           entry.message.includes("[pruneExpiredAuthState] lane release failed"),
         ),
     ).toBe(true);
-    // The lanes really are stuck — the report is what has to stay honest.
     expect(
       h.backend.maintenanceRuns
         .values()

@@ -240,7 +240,6 @@ async function runCron(
     leaseUntil: new Date(now.getTime() + LEASE_MS),
   });
   if (begin.result === "leased") {
-    // Another live owner is driving this run — no-op.
     return toView(counts, true);
   }
   const runId = begin.runId;
@@ -270,9 +269,7 @@ async function runCron(
       // unfinished work: `PRUNE_LEASE_OWNER` is a process constant, so
       // for as long as crons arrive within `LEASE_MS` this process keeps
       // renewing its own lease and the lapsed-lease reclaim never fires
-      // for a lane it failed to hand back. Defensive
-      // today — every current call site already marks work remaining, so
-      // only a future one could observe this.
+      // for a lane it failed to hand back.
       workRemains = true;
       logger.error("[pruneExpiredAuthState] lane release failed", {
         cause,

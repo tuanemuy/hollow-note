@@ -334,7 +334,6 @@ export function createMemoryGlobalMaintenanceRunStore(
       limit: number,
     ) {
       const effectiveLimit = Math.min(Math.max(0, limit), PRUNE_PAGE_LIMIT);
-      // `(expiresAt, runId)` keyset, encoded `${expiresAtISO} ${runId}`.
       const keysetOf = (run: MaintenanceRunRow): string =>
         `${(run.expiresAt ?? new Date(0)).toISOString()} ${run.runId}`;
       const reclaimable = table
