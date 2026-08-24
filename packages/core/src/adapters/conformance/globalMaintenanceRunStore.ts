@@ -41,7 +41,10 @@ const LEASE_MS = 10 * MINUTE_MS;
  * is the walk-order authority — is pinned by replacing the table set
  * under a live run through `setMaintenanceTables` and then resuming that
  * run, so both halves of the contract (the walk and the resume) have an
- * executable form.
+ * executable form. The same case then completes that run and starts the
+ * next one on the replaced set: without that half, a backend whose
+ * `setMaintenanceTables` does nothing would pass having never put a
+ * deploy in front of the run it claims to ignore.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -553,7 +556,30 @@ export function describeGlobalMaintenanceRunStoreContract(
         shardId: lane.shardId,
         completed: true,
       });
-      expect(afterShard.next?.table).toBe("t1");
+      const secondShard = afterShard.next;
+      if (secondShard === null) {
+        throw new Error("expected the untouched shard");
+      }
+      expect(secondShard.table).toBe("t1");
+
+      // Everything above is also true of a backend whose
+      // `setMaintenanceTables` did nothing, so the case has to observe
+      // that the replacement landed: finish the in-flight run and start
+      // the next one, which snapshots the set the deploy installed. Both
+      // halves matter — the old run ignored the new set, the new run
+      // takes it.
+      const finished = await completeLane(
+        "run-1",
+        "owner-a",
+        secondShard.generation,
+        secondShard.shardId,
+      );
+      expect(finished).toEqual({ next: null, runCompleted: true });
+
+      const afterDeploy = await begin("run-3", "owner-a");
+      expect(afterDeploy.result).toBe("started");
+      const fresh = await store.claimLanes(afterDeploy.runId, "owner-a", 6);
+      expect(fresh.map((claimed) => claimed.table)).toEqual(["t9", "t9"]);
     });
 
     it("ADP-common-030: recoverLease reclaims only a lapsed foreign lease", async () => {

@@ -141,6 +141,11 @@ export type ConformanceBackend = Readonly<{
    * the suite can pin the run's snapshot — rather than the deployment's
    * configuration — as the walk-order authority, so a backend without it
    * would report "conformant" having never verified contract 1.
+   *
+   * It must really take effect: the suite observes the replacement by
+   * starting a run *after* the call and asserting it walks the new set,
+   * so a stub that swallows its arguments fails the suite instead of
+   * quietly leaving contract 1 unverified.
    */
   setMaintenanceTables(
     kind: MaintenanceKind,

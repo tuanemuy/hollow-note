@@ -37,6 +37,7 @@
 | `adapters/conformance/globalMaintenanceRunStore.ts:40-44/必須化のWHYが宣言側と重複` | R3 | fix-editorial | usecase [W-001]。実物確認: `adapters/conformance/backend.ts:137-144` の宣言側 JSDoc と同趣旨の理由がスイート冒頭にも置かれている。スイート側は「契約 1 を何で拘束するか」だけで足り、必須メンバーにした理由の置き場は宣言側（CLAUDE.md のコメント方針: 同じ WHY を 2 か所に置かない） | 0
 | `application/identity/__tests__/pruneExpiredAuthState.test.ts:543/コメントの表数が既定表集合と不一致` | R3 | fix-editorial | usecase [W-002]。実物確認: fixture は 16 shard × 2 generation = 32 lane、`DEFAULT_MAINTENANCE_TABLES.authStatePrune` は 5 表（`adapters/memory/store.ts:376-386`）なので 160 コマンド。結論（100 コマンドの予算超過で途中で切れる）は変わらず、数値のみの訂正 | 0
 | `spec/adr/062-unknown-sweep-table-skip.md:16/前提節と依存マップの不一致` | R3 | fix-editorial | spec [W-002]。実物確認: `spec/adr/index.md:129` は前提に 061 と 025 を挙げるが本文の「前提」節は 061 のみ。既存 ADR（060 / 046 / 061）は本文とマップが 1 対 1。025 は本文「影響」末尾（起動時ガードが到達不能な失敗モードへの防具である根拠）が実際に依拠しているので、直す向きは本文側 | 0
+| `conformance/globalMaintenanceRunStore.ts:513-557/適合スイートの実効性` | R4 | fix | adapter [B-001]。実物確認（変異）: 契約 1 のケースは差し替えが効いたことを観測する assertion を持たないため、`setMaintenanceTables` を no-op にした実装でも 17 件全緑。`backend.ts` が「Required（契約 1 に実行形を与えるため）」と書く根拠と食い違い、空実装のスタブが契約 1 を一度も検証せず conformant を名乗れる | 0
 
 R1: 新規 14 / fix 9 / fix-editorial 4 / wont-fix 1 / defer 0 / 継承 0（方針フェーズ: 実施）
 fix内訳: usecase 3 / adapter 6 / spec 4
@@ -46,3 +47,6 @@ fix内訳: usecase 3 / adapter 6 / spec 6
 
 R3: 新規 6 / fix 3 / fix-editorial 3 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規指摘がすべて fix 系で、判断の割れる仕分けが無いため）
 fix内訳: usecase 3 / adapter 2 / spec 1
+
+R4: 新規 1 / fix 1 / fix-editorial 0 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規指摘1件で独立、fix 系のため）
+fix内訳: usecase 0→休止 / adapter 1 / spec 0→休止
