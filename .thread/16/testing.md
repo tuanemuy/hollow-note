@@ -216,13 +216,13 @@
   - `TC-identity-349` を含む ✓ 行が存在し、そのケースが次を主張している:
     - `h.backend.maintenanceRuns` に、この配備が sweep を持たない表を含む表集合（例 `["job_tombstones", "sessions"]`）の running run 行を**直接置き**（lease は失効させて resume させる）、cron を 1 回回す
     - `SystemError` が投げられず、run が `completed` になり、期限切れセッションが消える
-    - 未知表が `failures` に数えられない
     - error ログに `[pruneExpiredAuthState] unknown sweep table` 相当の記録が残り、payload に `runId` / `generation` / `shardId` / `table`（飛ばした表名）が載っている
+    - 続けて、表集合が**全部未知**の run 行（`tables: ["job_tombstones"]`、lane 1 本）を同じ形で置いて cron をもう 1 回回し、throw せずに `continued: false` を返してその run も `completed` になる（未知表が `failures` に数えられていないことの唯一の観測手段）
   - 出力に `[pruneExpiredAuthState] lane release failed` / `MAINTENANCE_LANE_NOT_CLAIMED` が**現れない**
 - **確認ポイント:**
   - **置く run 行の `asOf` が、撒く期限切れ行の `expiresAt` 以降であること。** `beginOrResumeKind` は resume 時に置いた行の `asOf` をそのまま返し、それが sweep の境界（`expiresAt <= asOf`）になるので、`asOf` を先に置くと対象が 0 件になり「セッションが消える」の主張が黙って落ちる（`clock.now()` と同値で足りる）。
   - **fixture が `maintenanceTablesByKind` で未知表を混ぜる形になっていないこと。** その形が再現するのは「同一配備内のドリフト」（本 Issue が解決しない残存条件）であって、AC-6 が拘束したい「旧い表集合の run を新しい配備が resume する」ではない。テストが名乗るシナリオと実際に置く状況がずれる。
-  - `failures` に数えていないことを、view の `failures` が 0 であることで主張していること。数えていると、全表未知の run が `SystemError(DatabaseError)` になって DB 障害と区別できなくなる。
+  - **`failures` に数えていないことを、「表集合が全部未知の run が `SystemError` を投げずに `completed` になること」で主張していること。** `PruneExpiredAuthStateView` に `failures` フィールドは無く（`view.ts` は各表の件数と `continued` だけ）、外から観測できるのは throw の有無しかない。しかも throw の条件は `failures > 0 && successes === 0` なので、掃ける表が 1 つでも混ざった run（`["job_tombstones", "sessions"]`）は `failures` に数えても throw せず、そこだけでは観測にならない。`tables: ["job_tombstones"]`（lane 1 本）の run も同じケース内で resume させる形になっていること。
 
 ### 2. 解放そのものが失敗したとき（throw が勝ち、lane は claimed のまま）
 

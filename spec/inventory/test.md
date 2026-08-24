@@ -303,7 +303,7 @@
 | TC-identity-162 | pruneExpiredAuthState: 4 種とも対象が 0 件 — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | すべて 0 件で成功する |
 | TC-identity-163 | pruneExpiredAuthState: 直前に実行済み — 続けてもう一度実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 2 回目は対象が残っていないため 4 種とも 0 件で終わる（冪等） |
 | TC-identity-164 | pruneExpiredAuthState: `AuthTokenRepository.deleteExpired` が失敗する — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 当該shard/tableの継続だけをbackoffし、他shard/tableの最低枠は進む |
-| TC-identity-165 | pruneExpiredAuthState: あるshardで、この配備が掃ける表の削除がすべて失敗する（掃けない表のskipは分子にも分母にも入らない） — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る |
+| TC-identity-165 | pruneExpiredAuthState: そのinvocationで試みた削除がすべて失敗する（掃けない表のskipは分子にも分母にも入らない） — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る |
 | TC-identity-166 | pruneExpiredAuthState: 実行時 — Unit of Work の利用を確認する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | table削除を横断UoWへ入れず、routing catalog上のcontinuation cursor更新だけを原子的に保存する |
 | TC-identity-167 | pruneExpiredAuthState: 実行時 — 基準時刻の取得元を確認する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 基準時刻は外部入力で受けず `clock` から得る |
 | TC-identity-168 | pruneExpiredAuthState: 1 shardの各表に期限切れ行が250件ある — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 1 commandは1表100件以下でyieldし、generation/table/shard cursorから継続して全件を回収する |

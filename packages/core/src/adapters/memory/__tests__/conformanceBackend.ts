@@ -1,3 +1,4 @@
+import type { MaintenanceKind } from "../../../application/ports/globalMaintenanceRunStore";
 import type { ScopeKey } from "../../../application/scope";
 import type { UserId } from "../../../domain/identity/valueObject";
 import type {
@@ -153,6 +154,12 @@ export function makeMemoryConformanceBackend(
           membershipId: edge.membershipId,
         });
       }
+    },
+    setMaintenanceTables(
+      kind: MaintenanceKind,
+      tables: readonly string[],
+    ): void {
+      backend.maintenanceTablesByKind[kind] = tables;
     },
   };
 }

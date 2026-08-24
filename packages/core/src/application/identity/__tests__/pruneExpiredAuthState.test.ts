@@ -680,8 +680,8 @@ describe("pruneExpiredAuthState", () => {
     expect(h.backend.maintenanceRuns.get("stale-run")?.status).toBe(
       "completed",
     );
-    // Skipping is not a delete failure: an entirely unknown table set
-    // must not read as a database outage.
+    // The skip left nothing behind: the single cron drove the resumed run
+    // to the end rather than deferring the table it could not sweep.
     expect(view.continued).toBe(false);
     const skipped = h.logger
       .byLevel("error")
@@ -692,6 +692,37 @@ describe("pruneExpiredAuthState", () => {
       generation: "gen-1",
       shardId: "shard-0",
     });
+
+    // Skipping is not a delete failure. The run above still swept
+    // `sessions`, so only a run whose tables are *all* unknown can
+    // observe that: with no successful delete to offset a counted skip,
+    // the invocation would throw `SystemError(DatabaseError)` and an
+    // older table set would be indistinguishable from a database outage.
+    h.backend.maintenanceRuns.set("all-unknown-run", {
+      runId: "all-unknown-run",
+      kind: "authStatePrune",
+      status: "running",
+      asOf: now,
+      leaseOwner: "gone",
+      leaseUntil: new Date(now.getTime() - 1),
+      tables: ["job_tombstones"],
+      lanes: [
+        {
+          generation: "gen-1",
+          shardId: "shard-0",
+          status: "pending",
+          tableIndex: 0,
+          cursor: null,
+          commandKey: "all-unknown-run:gen-1:shard-0:job_tombstones:",
+        },
+      ],
+      expiresAt: null,
+    });
+
+    await expect(cron(h)).resolves.toMatchObject({ continued: false });
+    expect(h.backend.maintenanceRuns.get("all-unknown-run")?.status).toBe(
+      "completed",
+    );
   });
 
   it("a failing lane release is logged rather than thrown, and leaves the lanes claimed with the run still unfinished", async () => {

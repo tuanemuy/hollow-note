@@ -106,7 +106,10 @@ const hourBucketOf = (instant: Date): string => {
  *   usecase: every position, including the one an ack advances to, comes
  *   from the run store. A table the run names but this deployment has no
  *   sweep for is acked past — logged, not counted as a failure — so a
- *   run snapshotted by an older table set still completes.
+ *   run snapshotted by an older table set still completes. That skip is
+ *   a behaviour of the `cron` (driving) path; a continuation turn never
+ *   receives an unknown table, because `AuthStateTable` closes what it
+ *   accepts (spec/adr/062).
  *
  * Runtime wiring note: no scheduler invokes this yet — the Node runner's
  * pruner role remains `pruneOutbox`, and the cron / queue wiring lands
@@ -302,7 +305,8 @@ async function runCron(
         // names, so stalling the run would not collect those rows
         // either: ack past it and let the run finish. It is not a delete
         // failure, so it stays out of `failures`; this log is the only
-        // trace that the table went uncollected in this run.
+        // trace that the table went uncollected in this run
+        // (spec/adr/062).
         logger.error("[pruneExpiredAuthState] unknown sweep table", {
           table: lane.table,
           runId,

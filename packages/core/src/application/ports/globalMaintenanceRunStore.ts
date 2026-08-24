@@ -50,27 +50,36 @@ export type MaintenanceLane = Readonly<{
  * set, a lane's position is an index into it, and the set does not move
  * while the run is resumed even if the deployment's configuration
  * changed in between. Callers hold no table order of their own.
+ * (Contracts 1–4: spec/adr/061.)
  *
  * Advancing returns the position it advanced to (contract 2):
  * `advanceOrAck` hands back the lane with its `table` / `cursor` /
  * `asOf` / `commandKey`. Stepping the same lane to its next table yields
  * `cursor: null` — a new table starts at the head of the keyset. Acking
  * a lane's last table auto-claims another pending lane and returns *that
- * lane's persisted position*, the table and cursor it was released with.
- * A release (`completed: false`) and a completed run both return
- * `next: null`: a release only puts the lane back to `pending` and never
- * claims a new one, even while other lanes are pending.
+ * lane's persisted position*, wherever that lane stands: the head of the
+ * run's first table for one never claimed, the checkpointed table and
+ * cursor for one already worked and released. `next` is `null` in two
+ * situations. A release (`completed: false`) only puts the lane back to
+ * `pending` and never claims a new one, even while other lanes are
+ * pending. An ack that finds no pending lane to hand over returns none
+ * either — which covers both the ack that finishes the run and an ack
+ * with lanes still `claimed` by their owners, so `next === null` never
+ * by itself means the run is over. `runCompleted` answers that
+ * separately and is true only once every lane is done.
  *
  * `commandKey` is minted by whichever side created the position
- * (contract 3). (a) When the store creates a **new** position — stepping
- * a lane to its next table — the key it returns equals the one the
- * caller derives from that position
+ * (contract 3). (a) Every position the **store** creates — the head
+ * position each lane starts at when the run is created, and the position
+ * a lane is stepped to at its next table — carries the key the caller
+ * derives from that position
  * (`${runId}:${generation}:${shardId}:${table}:${cursor ?? ""}`), so a
  * Queue outbox folds the store's mint and the caller's re-derivation
  * into one key. (b) When the store hands back an **existing** position —
  * the auto-claimed lane above — it returns that lane's persisted
- * `commandKey` unchanged and does **not** re-mint it: the value came
- * from the caller's `checkpointLane` `nextCommandKey`, and re-minting it
+ * `commandKey` unchanged and does **not** re-mint it. For a lane already
+ * worked that value came from the caller's `checkpointLane`
+ * `nextCommandKey`, whose rule only the caller knows, and re-minting it
  * would part it from the continuation request already queued under it.
  *
  * A non-null `next` is claimed (contract 4). The caller that **drives**
