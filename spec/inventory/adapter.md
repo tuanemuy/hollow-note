@@ -34,7 +34,7 @@
 | ADP-common-026 | `GlobalMaintenanceRunStore.beginOrResumeKind` | `spec/domains/index.md#ScopeKey-と永続化境界` | kind ごとの最古 run を開始または再開し lease 状態を返す |
 | ADP-common-027 | `GlobalMaintenanceRunStore.claimLanes` | `spec/domains/index.md#ScopeKey-と永続化境界` | maintenance lane を有界に claim する |
 | ADP-common-028 | `GlobalMaintenanceRunStore.checkpointLane` | `spec/domains/index.md#ScopeKey-と永続化境界` | cursor と次 command key を原子的に checkpoint する |
-| ADP-common-029 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、shard または run 完了を返す |
+| ADP-common-029 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、進めた先の position と shard / run 完了を返す |
 | ADP-common-030 | `GlobalMaintenanceRunStore.recoverLease` | `spec/domains/index.md#ScopeKey-と永続化境界` | 失効した run lease を owner が回収する |
 | ADP-common-031 | `GlobalMaintenanceRunStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ completed run を keyset で回収する |
 | ADP-common-032 | `MailSender.send` | `spec/domains/index.md#MailSenderapplicationportsmailsenderts` | locale と template を指定してメールを送る |

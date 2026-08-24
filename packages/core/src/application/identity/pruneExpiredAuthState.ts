@@ -102,12 +102,21 @@ const hourBucketOf = (instant: Date): string => {
  *   with its cursor intact and the other lanes keep progressing; an
  *   invocation whose delete operations all failed throws
  *   `SystemError(DatabaseError)`.
+ * - The table walk order belongs to the run's own snapshot, not to this
+ *   usecase: every position, including the one an ack advances to, comes
+ *   from the run store. A table the run names but this deployment has no
+ *   sweep for is acked past — logged, not counted as a failure — so a
+ *   run snapshotted by an older table set still completes.
  *
  * Runtime wiring note: no scheduler invokes this yet — the Node runner's
  * pruner role remains `pruneOutbox`, and the cron / queue wiring lands
  * with the Cloudflare slice. A crashed invocation's claimed lane is
  * recovered by the next `cron`: re-leasing the lapsed run returns its
- * abandoned lanes to the claimable pool, cursor intact.
+ * abandoned lanes to the claimable pool, cursor intact. A continuation
+ * turn is a single turn, not a driver: the lane its final ack hands back
+ * is passed on to the next continuation still claimed. Until a producer
+ * enqueues those continuations, such a lane sits until its lease lapses
+ * and the next cron reclaims it.
  */
 export async function pruneExpiredAuthState({
   container,
@@ -289,19 +298,29 @@ async function runCron(
       }
       inFlight = lane;
       if (!isAuthStateTable(lane.table)) {
+        // This deployment has no sweep for the table the run's snapshot
+        // names, so stalling the run would not collect those rows
+        // either: ack past it and let the run finish. It is not a delete
+        // failure, so it stays out of `failures`; this log is the only
+        // trace that the table went uncollected in this run.
         logger.error("[pruneExpiredAuthState] unknown sweep table", {
           table: lane.table,
+          runId,
+          generation: lane.generation,
+          shardId: lane.shardId,
         });
-        failures += 1;
-        await maintenanceRunStore.advanceOrAck({
+        commands += 1;
+        const advanced = await maintenanceRunStore.advanceOrAck({
           runId,
           leaseOwner: PRUNE_WORKER_ID,
           generation: lane.generation,
           shardId: lane.shardId,
-          completed: false,
+          completed: true,
         });
         inFlight = null;
-        workRemains = true;
+        if (advanced.next !== null) {
+          laneQueue.push(advanced.next);
+        }
         continue;
       }
 
@@ -368,60 +387,11 @@ async function runCron(
           laneDone = true;
           continue;
         }
-        const next = advanced.next;
-        if (
-          next.generation === lane.generation &&
-          next.shardId === lane.shardId
-        ) {
-          // Same shard, next table: the queue re-enters through claimLanes
-          // only for released lanes, so re-derive the position by
-          // releasing and re-claiming — except the store contract says the
-          // next table of the same lane starts at a null cursor.
-          const currentIndex = SWEEP_ORDER_HINT.indexOf(table);
-          const nextTable = SWEEP_ORDER_HINT[currentIndex + 1];
-          if (nextTable === undefined) {
-            // The hint could not name the lane's new table (a run
-            // snapshotted under a different table set). The lane stays
-            // claimed unless it is released here, so hand it back and let
-            // a later invocation re-derive its position from `claimLanes`.
-            await releaseLane(lane);
-            workRemains = true;
-            laneDone = true;
-            continue;
-          }
-          laneQueue.push({
-            generation: lane.generation,
-            shardId: lane.shardId,
-            table: nextTable,
-            cursor: null,
-            asOf,
-            commandKey: commandKeyOf(
-              runId,
-              {
-                generation: lane.generation,
-                shardId: lane.shardId,
-                table: nextTable,
-              },
-              null,
-            ),
-          });
-          laneDone = true;
-          continue;
-        }
-        // A different shard was auto-claimed by the ack. Its persisted
-        // position (a previously released lane keeps its table/cursor) is
-        // not observable through `advanceOrAck`, so release it and
-        // re-claim through `claimLanes`, which returns full positions.
-        await maintenanceRunStore.advanceOrAck({
-          runId,
-          leaseOwner: PRUNE_WORKER_ID,
-          generation: next.generation,
-          shardId: next.shardId,
-          completed: false,
-        });
-        laneQueue.push(
-          ...(await maintenanceRunStore.claimLanes(runId, PRUNE_WORKER_ID, 1)),
-        );
+        // The ack hands back the position it advanced to — this lane's
+        // next table, or the shard it auto-claimed at that shard's
+        // persisted position. Either way it is claimed and this
+        // invocation drives it.
+        laneQueue.push(advanced.next);
         laneDone = true;
       }
       if (!laneDone) {
@@ -468,14 +438,3 @@ async function runCron(
 
   return toView(counts, workRemains || pruneContinued);
 }
-
-// The kind's table walk order (mirrors the run store's authStatePrune
-// configuration). Only used to name the next table of the *same* lane
-// after an ack — positions of other lanes always come from `claimLanes`.
-const SWEEP_ORDER_HINT: readonly AuthStateTable[] = [
-  "auth_tokens",
-  "sessions",
-  "login_attempts",
-  "oauth_flow_states",
-  "identity_removal_receipts",
-];

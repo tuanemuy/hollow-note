@@ -27,6 +27,14 @@ const LEASE_MS = 10 * MINUTE_MS;
  *
  * The suite pins the lane topology: one generation ("g1"), two shards
  * ("s1", "s2"), two sweep tables ("t1", "t2") for `authStatePrune`.
+ *
+ * It also pins where an ack's position comes from: `advanceOrAck` hands
+ * back the position it advanced to, and the side that *created* that
+ * position is the side that minted its command key — the store when it
+ * steps a lane to the next table (a key the caller re-derives
+ * byte-identically), the caller when it checkpointed the lane an ack
+ * later auto-claims (returned as stored, never re-minted). A release
+ * returns no position at all.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -196,14 +204,19 @@ export function describeGlobalMaintenanceRunStoreContract(
         }),
       );
 
-      // A released lane resumes from the checkpointed cursor.
-      await store.advanceOrAck({
+      // A released lane resumes from the checkpointed cursor. The
+      // release itself hands back no position: the other shard is still
+      // pending, and a release must not claim it — every call site drops
+      // this return value, so a lane handed back here would stay claimed
+      // with nobody driving it.
+      const released = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
         generation: lane.generation,
         shardId: lane.shardId,
         completed: false,
       });
+      expect(released).toEqual({ next: null, runCompleted: false });
       const reclaimed = await store.claimLanes("run-1", "owner-a", 6);
       const resumedLane = reclaimed.find(
         (candidate) => candidate.shardId === lane.shardId,
@@ -219,6 +232,31 @@ export function describeGlobalMaintenanceRunStoreContract(
         throw new Error("expected a claimed lane");
       }
 
+      // Stage the other shard at a persisted position — checkpointed
+      // under a command key the caller's rule would never mint, then
+      // released — so the auto-claim below has something to hand back.
+      const [staged] = await store.claimLanes("run-1", "owner-a", 1);
+      if (staged === undefined) {
+        throw new Error("expected the second shard");
+      }
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        table: "t1",
+        cursor: "cursor-77",
+        asOf: staged.asOf,
+        nextCommandKey: "command-off-rule",
+      });
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: false,
+      });
+
       const afterTable = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -226,12 +264,23 @@ export function describeGlobalMaintenanceRunStoreContract(
         shardId: lane.shardId,
         completed: true,
       });
-      expect(afterTable).toEqual({
-        next: { generation: lane.generation, shardId: lane.shardId },
-        runCompleted: false,
-      });
+      expect(afterTable.runCompleted).toBe(false);
+      const nextTable = afterTable.next;
+      if (nextTable === null) {
+        throw new Error("expected the lane's next table");
+      }
+      // A position the store just created: same lane, next table, head of
+      // the keyset, under the key the caller re-derives for it.
+      expect(nextTable.generation).toBe(lane.generation);
+      expect(nextTable.shardId).toBe(lane.shardId);
+      expect(nextTable.table).toBe("t2");
+      expect(nextTable.cursor).toBeNull();
+      expect(nextTable.asOf).toEqual(lane.asOf);
+      expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
 
-      // Shard done → the other shard is claimed atomically.
+      // Shard done → the other shard is claimed atomically, at the
+      // position it was released with and under the key it was stored
+      // with.
       const afterShard = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -240,13 +289,17 @@ export function describeGlobalMaintenanceRunStoreContract(
         completed: true,
       });
       expect(afterShard.runCompleted).toBe(false);
-      expect(afterShard.next).not.toBeNull();
-      expect(afterShard.next?.shardId).not.toBe(lane.shardId);
-
       const secondShard = afterShard.next;
       if (secondShard === null) {
         throw new Error("expected a next shard");
       }
+      expect(secondShard.shardId).not.toBe(lane.shardId);
+      expect(secondShard.table).toBe("t1");
+      expect(secondShard.cursor).toBe("cursor-77");
+      expect(secondShard.commandKey).toBe("command-off-rule");
+      // It came back claimed, so nothing is left to hand out.
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+
       const finished = await completeLane(
         "run-1",
         "owner-a",
@@ -259,6 +312,27 @@ export function describeGlobalMaintenanceRunStoreContract(
       const fresh = await begin("run-2", "owner-a");
       expect(fresh.result).toBe("started");
       expect(fresh.runId).toBe("run-2");
+    });
+
+    it("ADP-common-029: the position an ack returns is still claimed", async () => {
+      await begin("run-1", "owner-a");
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: true,
+      });
+      // The advanced lane stays with the caller that was handed it: a
+      // claim can only pick up the shard nobody is driving.
+      const claimable = await store.claimLanes("run-1", "owner-a", 6);
+      expect(claimable.map((candidate) => candidate.shardId)).not.toContain(
+        lane.shardId,
+      );
     });
 
     it("ADP-common-030: recoverLease reclaims only a lapsed foreign lease", async () => {

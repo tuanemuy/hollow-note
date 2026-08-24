@@ -64,7 +64,11 @@ const commandKeyOf = (
  * tick, because the retained payload holds the deleted user's email,
  * handle and provider-account keys — leaving it undriven would keep
  * them past the 120 days the manifest promises. Other runtimes pick it
- * up with their own cron / queue role.
+ * up with their own cron / queue role. A continuation turn is a single
+ * turn, not a driver: the lane its final ack hands back is passed on to
+ * the next continuation still claimed. Until a producer enqueues those
+ * continuations, such a lane sits until its lease lapses and the next
+ * cron reclaims it.
  */
 export async function pruneAccountDeletionManifests({
   container,
