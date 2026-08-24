@@ -1,4 +1,5 @@
 import type {
+  ActiveUniqueClaim,
   IdentityUniqueDirectory,
   IdentityUniqueKind,
 } from "@repo/core/domain/identity/ports/identityUniqueDirectory";
@@ -157,6 +158,68 @@ export async function holdsActiveUniqueKey(
   return owner === params.expectedUserId;
 }
 
+/** One durable claim as observed, ready to be quoted to a teardown. */
+export type ObservedUniqueClaim = UniqueKey & ActiveUniqueClaim;
+
+/**
+ * Observes the durable claim `expectedUserId` holds on `key` right now,
+ * for a caller that will decide *afterwards* whether to tear it down.
+ *
+ * A key that is merely `reserved`, already `releasing`, absent, or held
+ * by someone else all answer `null`. The observation is what makes the
+ * later teardown conditional, so a caller whose decision takes time must
+ * take it **before** deciding, not just before releasing.
+ */
+export async function observeActiveUniqueKey(
+  deps: Pick<UniquenessDeps, "identityUniqueDirectory">,
+  params: UniqueKey & Readonly<{ expectedUserId: UserId }>,
+): Promise<ObservedUniqueClaim | null> {
+  const claim = await deps.identityUniqueDirectory.resolveClaim(
+    params.kind,
+    params.normalizedKey,
+  );
+  if (claim === null || claim.userId !== params.expectedUserId) {
+    return null;
+  }
+  return {
+    kind: params.kind,
+    normalizedKey: params.normalizedKey,
+    userId: claim.userId,
+    claimToken: claim.claimToken,
+  };
+}
+
+/**
+ * Tears down exactly the claim that was observed, and nothing else: a
+ * claim taken on the same key after the observation survives, because
+ * `beginRelease` is conditional on the token.
+ *
+ * `release(operationId)` runs whether or not there was anything to begin
+ * releasing. A `releasing` row can only be dropped by the `release` of
+ * the operation that re-keyed it, so re-running this after a delivery
+ * that died between the two calls — where the observation now answers
+ * `null` — is the sole way that orphan is ever collected. Returning
+ * early on `observed === null` would strand the key forever.
+ */
+export async function releaseObservedUniqueKey(
+  deps: Pick<UniquenessDeps, "identityUniqueDirectory">,
+  params: Readonly<{
+    observed: ObservedUniqueClaim | null;
+    operationId: string;
+  }>,
+): Promise<void> {
+  if (params.observed !== null) {
+    await deps.identityUniqueDirectory.beginRelease({
+      kind: params.observed.kind,
+      normalizedKey: params.observed.normalizedKey,
+      expectedUserId: params.observed.userId,
+      expectedClaimToken: params.observed.claimToken,
+      operationId: params.operationId,
+    });
+  }
+  await deps.identityUniqueDirectory.release(params.operationId);
+}
+
 /**
  * Tears a **durable** (`active`) claim down, the mirror of the reserve →
  * activate half: `beginRelease` marks the row `releasing` and re-keys it
@@ -164,11 +227,16 @@ export async function holdsActiveUniqueKey(
  *
  * Keyed by `normalizedKey` and the owner rather than by the reservation
  * that created the claim: that operation is long past and its id cannot
- * be re-derived by the one freeing the key. A row that is
- * missing or held by someone else makes `beginRelease` a no-op, so this
- * can never take a key away from its owner, and re-running the same
- * `operationId` converges — which is what lets an at-least-once consumer
- * call it.
+ * be re-derived by the one freeing the key. A row that is missing or held
+ * by someone else observes as `null`, so this can never take a key away
+ * from its owner, and re-running the same `operationId` converges — which
+ * is what lets an at-least-once consumer call it.
+ *
+ * Observation and teardown are back to back here, so this does **not**
+ * close the window of a caller that decides something in between: such a
+ * caller would observe the claim that replaced the one it judged. Use
+ * `observeActiveUniqueKey` + `releaseObservedUniqueKey` where the order
+ * matters.
  */
 export async function releaseActiveUniqueKey(
   deps: Pick<UniquenessDeps, "identityUniqueDirectory">,
@@ -178,13 +246,11 @@ export async function releaseActiveUniqueKey(
       operationId: string;
     }>,
 ): Promise<void> {
-  await deps.identityUniqueDirectory.beginRelease({
-    kind: params.kind,
-    normalizedKey: params.normalizedKey,
-    expectedUserId: params.expectedUserId,
+  const observed = await observeActiveUniqueKey(deps, params);
+  await releaseObservedUniqueKey(deps, {
+    observed,
     operationId: params.operationId,
   });
-  await deps.identityUniqueDirectory.release(params.operationId);
 }
 
 /**

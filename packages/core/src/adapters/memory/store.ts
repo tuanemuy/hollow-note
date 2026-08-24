@@ -163,6 +163,13 @@ export type DirectoryRow = Readonly<{
   operationId: string;
   expiresAt: Date | null;
   userVersion: number | null;
+  /**
+   * Identity of this one claim, minted when the row is first written.
+   * Minting at `reserve` rather than at `activate` is what makes "an
+   * `active` row always carries a token" a property of the type instead
+   * of a runtime branch.
+   */
+  claimToken: string;
 }>;
 
 export type StoredObjectRow = Readonly<{
@@ -415,6 +422,7 @@ export class MemoryBackend {
   readonly publicPurgeAcks = this.table<true>();
 
   private readonly scopes = new Map<string, ScopeStore>();
+  private claimTokenSeq = 0;
 
   constructor(options: MemoryBackendOptions = {}) {
     this.clock = options.clock ?? SystemClock;
@@ -457,6 +465,18 @@ export class MemoryBackend {
 
   mintEventId(): EventId {
     return EventId.create(this.idGenerator.next());
+  }
+
+  /**
+   * Distinct opaque token per directory row write. It lives on the
+   * backend rather than in the directory factory because that factory is
+   * called once per container (global UoW / request / worker) over the
+   * same tables, and it is deliberately not the `idGenerator` — the
+   * deterministic id stream tests assert on must not shift.
+   */
+  nextClaimToken(): string {
+    this.claimTokenSeq += 1;
+    return `claim-${this.claimTokenSeq}`;
   }
 
   private table<V>(): MemTable<V> {

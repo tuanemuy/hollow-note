@@ -145,6 +145,23 @@ export async function linkOAuthIdentityForFlow(
       }
 
       const identities = await ctx.identityRepository.listByUserId(userId);
+      const existing = IdentityPolicy.findOAuth(
+        identities,
+        provider,
+        profile.providerAccountId,
+      );
+      if (existing !== null) {
+        // Wreckage of a reservation saga that committed and then lost its
+        // `activate`: the identity row is there but its claim lapsed. A
+        // second row would leave the first backed by nothing, so this
+        // reuses it and lets the activation below restore the claim.
+        return {
+          identityId: existing.id,
+          committedVersion: fresh.entity.version,
+        };
+      }
+      // Checked after the duplicate, or a user at the ceiling could never
+      // heal an identity it already holds.
       IdentityPolicy.ensureAddable(identities);
 
       const identity = Identity.createOAuth(
@@ -194,13 +211,12 @@ async function existingLinkId(
   provider: OAuthProvider,
 ): Promise<string> {
   const identities = await container.identityReader.listByUserId(userId);
-  const linked = identities.find(
-    (identity) =>
-      identity.kind === "oauth" &&
-      identity.provider === provider &&
-      identity.providerAccountId === providerAccountId,
+  const linked = IdentityPolicy.findOAuth(
+    identities,
+    provider,
+    providerAccountId,
   );
-  if (linked === undefined) {
+  if (linked === null) {
     // The claim resolves to this user but the row is gone: `removeIdentity`
     // deleted the identity and its `identity.identity.removed` has not
     // freed the key yet, so the link has to wait for that release.

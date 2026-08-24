@@ -266,9 +266,9 @@ Session/AuthToken/Identityを新たに発行する全経路は、事前readの�
 3. providerAccount directoryを解決し、返ったUserId shardで既存IdentityとUserを確認する。既存Userが`ActiveUser`ならその利用者でセッションを発行して終了し、`DeletingUser` / `DeletedUser`なら`ValidationError("ACCOUNT_UNAVAILABLE")`として発行しない
 4. email directoryを解決し、返ったUserId shardのUserを引いて `AccountLinkingPolicy.decide` で判定する
 5. `createNew` → 親operationからemail/providerAccount別のsub-operation IDを導出して両reservationを確保し、UserId shardで `User.createVerified` と `Identity.createOAuth` を保存後に両方activateする。2つ目のreserveまたはUser保存が失敗したら確保済みreservationをすべてreleaseする。応答喪失時は両reservationとUser/Identity versionを照合し、正データcommit済みなら不足分をreserveして両方activate、未commitなら両方releaseする
-6. `linkToExisting` → providerAccount reservationを確保し、既存UserId shardで `Identity.createOAuth` を保存後にactivateする
+6. `linkToExisting` → providerAccount reservationを確保し、既存UserId shardで `Identity.createOAuth` を保存後にactivateする。ただし保存は条件付きで、同一 `(provider, providerAccountId)` の既存行があれば保存せず今回の予約を activate するだけにする（手順 8）
 7. `refuse` → 理由に応じた `ValidationError` を返す
-8. 既存Userの各分岐はUser/IdentityをUserId shard UoWで読み直し、`ActiveUser`とcurrent epoch（および既存Identity version）を確認し、current Identity集合へ`IdentityPolicy.ensureAddable`を適用してからIdentity追加とSession insertを同じtransactionで行う。上限8件ならreservationをreleaseして`BusinessRuleError(IdentityLimitExceeded)`を返す。新規分岐もUser/Identity/Sessionを同じUoWでinsertする。作成済み平文トークンと `redirectTo` を返す（有効期間は `Session.ttlMs`）。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
+8. 既存Userの各分岐はUser/IdentityをUserId shard UoWで読み直し、`ActiveUser`とcurrent epoch（および既存Identity version）を確認する。current Identity集合に対しては、`IdentityPolicy.ensureAddable` の**前**に `IdentityPolicy.findOAuth` を引き、同一 `(provider, providerAccountId)` の既存行があればIdentity追加を飛ばす（Session insertは行う。今回の予約を activate して claim を復旧させる — [ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。既存行が無ければ`ensureAddable`を適用してからIdentity追加とSession insertを同じtransactionで行う。上限8件ならreservationをreleaseして`BusinessRuleError(IdentityLimitExceeded)`を返す。新規分岐もUser/Identity/Sessionを同じUoWでinsertする。作成済み平文トークンと `redirectTo` を返す（有効期間は `Session.ttlMs`）。Viewは`expiresAt`を返さず、転送境界が同じドメイン定数から Cookie の期限を再導出する（値の正典はドメイン側 — [presentation/index.md](../presentation/index.md)、[ADR 055](../adr/055-session-expiry-derivation.md)）
 
 ### エラーケース
 
@@ -346,7 +346,7 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 1. `OAuthStateStore.take(state, hashOf(stateBinding))` で、束縛が一致したときだけ取り出して削除する。`null`（不一致・不在。行は消費しない）または `intent` が `linkIdentity` でなければ `ValidationError("OAUTH_STATE_INVALID")`
 2. `SignInOAuthClient.exchangeCode` でプロフィールを得る
 3. providerAccount directoryを解決する（`resolve` が返すのは恒久 claim の持ち主だけ — [domains/identity.md](../domains/identity.md)）。別userIdが持っていれば `ConflictError("PROVIDER_ACCOUNT_ALREADY_LINKED")`。持ち主が居なければreservationを確保する。進行中の `reserved` や解除待ちの `releasing` との競合は、後続の `reserve` が同じコードで返す
-4. UserId shard UoWでUserとcurrent Identity集合を読み直し、`ActiveUser`かつcurrent epochがflow stateの`userAuthEpoch`と一致し、`IdentityPolicy.ensureAddable`を満たすことを確認してから `Identity.createOAuth` を保存する。削除開始済み・世代不一致・上限8件なら保存せずreservationをreleaseする。成功後にreservationをactivateする
+4. UserId shard UoWでUserとcurrent Identity集合を読み直し、`ActiveUser`かつcurrent epochがflow stateの`userAuthEpoch`と一致することを確認する。`IdentityPolicy.ensureAddable` の**前**に `IdentityPolicy.findOAuth` を引き、同一 `(provider, providerAccountId)` の既存行があれば保存せずその ID を返す（今回の予約を activate して claim を復旧させる。予約サガが commit 済み・`activate` 喪失で終わった残骸の治癒 — [ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。既存行が無ければ `ensureAddable` を満たすことを確認してから `Identity.createOAuth` を保存する。削除開始済み・世代不一致・上限8件なら保存せずreservationをreleaseする。成功後にreservationをactivateする
 
 ### エラーケース
 
@@ -612,7 +612,7 @@ cleanup consumerはUserを読み直してpayloadの`authEpoch`以下へ戻って
 1. `IdentityRepository.listByUserId` を引き、対象が利用者のものであることを確認する
 2. `IdentityPolicy.ensureRemovable(identities, identityId)` を呼ぶ
 3. `` operationId = `removeIdentity:${identityId}` ``を導出する。固定prefixと`:`を含まないIDの合成なので、これで決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。UserId shardの同じUoWで `identityRepository.delete`、30日保持の`identity_removal_receipt`、`identity.identity.removed { identityId, userId, kind, providerAccountKey, operationId }` outboxを保存する。passwordではproviderAccountKeyをnullにする
-4. global consumerはOAuth eventのproviderAccountKeyを使ってreservationをreleasing→releaseする。event再配送はoperation IDで冪等にし、正データ削除後にだけ解放する。手順3の応答を失って同じ要求が来た場合はreceiptを読み、削除済み成功を返す。したがってIdentity不在後にkeyを復元する必要がなく、consumer停止は一時的な過剰予約にだけなる
+4. global consumerはOAuth eventのproviderAccountKeyを使ってreservationをreleasing→releaseする。event再配送はoperation IDで冪等にし、正データ削除後にだけ解放する。**解放は判定より前に `resolveClaim` で観測した claim に対する条件付きで行う** — 判定と `beginRelease` のあいだに本人が同じ外部アカウントを再連携した場合、観測した claim は既に張り替わっているので取り壊しは no-op になる。観測を判定より後に取ると、割り込んだ再連携の claim を観測してしまい条件が素通りするので、順序が正しさの本体である（[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。観測が `null` でも `release(operationId)` は必ず呼ぶ — `beginRelease` 済み・`release` 前で落ちた配送が残す `releasing` 行を回収できるのは、同じ operation の `release` 再実行だけである。手順3の応答を失って同じ要求が来た場合はreceiptを読み、削除済み成功を返す。したがってIdentity不在後にkeyを復元する必要がなく、consumer停止は一時的な過剰予約にだけなる
 
 ### エラーケース
 

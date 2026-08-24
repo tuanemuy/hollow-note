@@ -39,3 +39,4 @@
 - JSDoc だけを読んだ実装者が到達する振る舞いと、適合スイートが通す振る舞いが一致する
 - identity 行のバックエンド実装者は、provider account の一意性制約を DB 側に置いてもよいが、契約としては要求されない。逆に、置かなくても適合する
 - 一意性の強制がポート契約として残ること（[ADR 028](./028-account-enumeration-resistance.md) の前提）は、ディレクトリ側の契約で満たされる
+- ディレクトリが担保するのは**全利用者にまたがる**一意性である。1 利用者の identity 集合の中に同じ `(provider, providerAccountId)` が 2 件並ぶかどうかは別の問いで、そちらは `IdentityPolicy.findOAuth` が見る（[ADR 060](./060-conditional-unique-claim-teardown.md)）。担保元はこの決定から動かない

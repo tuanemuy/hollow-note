@@ -52,7 +52,7 @@
 | ADP-identity-003 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |
 | ADP-identity-004 | `UserRepository.delete` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を削除する |
 | ADP-identity-005 | `UserBatchReader.resolveMany` | `spec/domains/identity.md#ポート` | 最大 100 UserId を shard 横断で version 付き解決し、上限超過は `SystemError(DatabaseError)` にする |
-| ADP-identity-006 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える） |
+| ADP-identity-006 | `IdentityUniqueDirectory.resolve` | `spec/domains/identity.md#ポート` | 一意キーの恒久 claim を持つ UserId を解決する（`reserved` と `releasing` はどちらも null に見える）。`resolveClaim` の射影であり、常に `resolveClaim(k,n)?.userId ?? null` と一致する |
 | ADP-identity-007 | `IdentityUniqueDirectory.reserve` | `spec/domains/identity.md#ポート` | email・handle・provider account を operation 単位で予約し、鍵の種類に対応する conflict で他者を弾く。奪えるのは失効した `reserved` だけで、`releasing` の鍵は奪えない |
 | ADP-identity-008 | `IdentityUniqueDirectory.activate` | `spec/domains/identity.md#ポート` | 期待 User version で予約を恒久 claim へ昇格させる |
 | ADP-identity-009 | `IdentityUniqueDirectory.release` | `spec/domains/identity.md#ポート` | operation の `reserved` と `releasing` の行を落とす（`active` には触れない） |
@@ -87,7 +87,8 @@
 | ADP-identity-038 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
 | ADP-identity-039 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を返し、無ければ null を返す |
 | ADP-identity-040 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
-| ADP-identity-041 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた `active` の行を `releasing` にして解放側 operation へ付け替える。`reserved`・行なし・別利用者はすべて no-op |
+| ADP-identity-041 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた行が `active`・所有者一致・`expectedClaimToken` 一致のときだけ `releasing` にして解放側 operation へ付け替える。行なし・`reserved`・`releasing`・別利用者・トークン不一致はすべて no-op |
+| ADP-identity-042 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、その claim を同定する不透明な `claimToken` を返す。claim が生きているあいだトークンは不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる |
 | ADP-workspace-001 | `WorkspaceRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Workspace を保存する |
 | ADP-workspace-002 | `WorkspaceRepository.findById` | `spec/domains/workspace.md#ポート` | WorkspaceId で OCC token 付き集約を取得する |
 | ADP-workspace-003 | `WorkspaceRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Workspace を更新する |

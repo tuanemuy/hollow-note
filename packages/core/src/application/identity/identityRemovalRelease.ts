@@ -1,7 +1,10 @@
 import type { IdentityRemovedEvent } from "@repo/core/domain/identity/events";
-import type { UserId } from "@repo/core/domain/identity/valueObject";
 import type { WorkerContainer } from "../di/types";
-import { providerAccountKey, releaseActiveUniqueKey } from "./uniqueness";
+import {
+  observeActiveUniqueKey,
+  providerAccountKey,
+  releaseObservedUniqueKey,
+} from "./uniqueness";
 
 /**
  * Frees the provider-account claim of a removed OAuth identity
@@ -25,9 +28,13 @@ import { providerAccountKey, releaseActiveUniqueKey } from "./uniqueness";
  * one absent forever — is ruled out here instead, by refusing to release
  * a key some current identity of that user still names.
  *
- * That check commits before `beginRelease` runs, so a re-link landing in
- * the gap still loses its claim; closing it needs a compare-and-set on the
- * directory row — #21.
+ * That check commits before the teardown runs, so a re-link landing in
+ * the gap would still lose its claim if the teardown were unconditional.
+ * It is not: the claim is observed **before** the decision and the
+ * teardown is conditional on that observation, so a re-link that lands in
+ * the gap replaces the claim and the stale decision becomes a no-op.
+ * Observing after the decision instead would defeat this — the fresh
+ * claim would be the one observed, and the compare-and-set would pass.
  */
 export async function identityRemovalRelease(
   event: IdentityRemovedEvent,
@@ -37,6 +44,12 @@ export async function identityRemovalRelease(
     return;
   }
   const { operationId } = event.payload;
+
+  const observed = await observeActiveUniqueKey(deps, {
+    kind: "providerAccount",
+    normalizedKey: event.payload.providerAccountKey,
+    expectedUserId: event.payload.userId,
+  });
 
   const decision = await deps.globalUnitOfWorkProvider.run(
     async (ctx): Promise<ReleaseDecision> => {
@@ -60,11 +73,7 @@ export async function identityRemovalRelease(
       );
       return stillClaimed
         ? { outcome: "keep", reason: "providerAccountRelinked" }
-        : {
-            outcome: "release",
-            userId: receipt.userId,
-            normalizedKey: receipt.providerAccountKey,
-          };
+        : { outcome: "release" };
     },
   );
 
@@ -76,12 +85,7 @@ export async function identityRemovalRelease(
     return;
   }
 
-  await releaseActiveUniqueKey(deps, {
-    kind: "providerAccount",
-    normalizedKey: decision.normalizedKey,
-    expectedUserId: decision.userId,
-    operationId,
-  });
+  await releaseObservedUniqueKey(deps, { observed, operationId });
 }
 
 type ReleaseDecision =
@@ -89,4 +93,4 @@ type ReleaseDecision =
       outcome: "keep";
       reason: "noReceipt" | "identityStillPresent" | "providerAccountRelinked";
     }>
-  | Readonly<{ outcome: "release"; userId: UserId; normalizedKey: string }>;
+  | Readonly<{ outcome: "release" }>;

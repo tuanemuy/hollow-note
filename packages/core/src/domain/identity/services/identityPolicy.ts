@@ -1,7 +1,7 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { IdentityErrorCode } from "../errorCode";
-import type { Identity, PasswordIdentity } from "../identity";
-import type { IdentityId } from "../valueObject";
+import type { Identity, OAuthIdentity, PasswordIdentity } from "../identity";
+import type { IdentityId, OAuthProvider } from "../valueObject";
 
 /**
  * Rules over the set of authentication methods a single user holds.
@@ -56,5 +56,23 @@ export const IdentityPolicy = {
   findPassword: (identities: readonly Identity[]): PasswordIdentity | null =>
     identities.find(
       (identity): identity is PasswordIdentity => identity.kind === "password",
+    ) ?? null,
+
+  /**
+   * The set's own row for one provider account, if it holds one. A user
+   * names an external account at most once, so an adding usecase asks
+   * this before `ensureAddable` and reuses what it finds instead of
+   * growing a second row for the same account.
+   */
+  findOAuth: (
+    identities: readonly Identity[],
+    provider: OAuthProvider,
+    providerAccountId: string,
+  ): OAuthIdentity | null =>
+    identities.find(
+      (identity): identity is OAuthIdentity =>
+        identity.kind === "oauth" &&
+        identity.provider === provider &&
+        identity.providerAccountId === providerAccountId,
     ) ?? null,
 };

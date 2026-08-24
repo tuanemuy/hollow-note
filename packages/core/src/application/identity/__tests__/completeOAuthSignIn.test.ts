@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { completeOAuthSignIn } from "../completeOAuthSignIn";
 import { startOAuthFlow } from "../startOAuthFlow";
+import { UNIQUE_RESERVATION_TTL_MS } from "../uniqueness";
 import { signUpPending, signUpVerified } from "./authFlowHelpers";
 
 type Grant = Readonly<{
@@ -333,6 +334,48 @@ describe("completeOAuthSignIn", () => {
       "active",
       "active",
     ]);
+  });
+
+  it("TC-identity-344: re-signing in heals an identity whose claim was lost mid-saga", async () => {
+    const base = createTestHarness();
+    // The provider address matches the existing account, so the flow
+    // lands on the `linkToExisting` branch rather than creating a user.
+    const { userId } = await signUpVerified(base, "user@example.com");
+    const real = base.container.identityUniqueDirectory;
+    const h = withDirectory(base, {
+      ...real,
+      activate: () => {
+        throw new SystemError(
+          SystemErrorCode.DatabaseError,
+          "activate response lost",
+        );
+      },
+    });
+
+    const error = await signInWithOAuth(h, { email: "user@example.com" }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect(isSystemError(error)).toBe(true);
+    expect(
+      directoryRows(base, "providerAccount").map((row) => row.state),
+    ).toEqual(["reserved"]);
+
+    base.clock.advance(UNIQUE_RESERVATION_TTL_MS + 1);
+    const view = await signInWithOAuth(base, { email: "user@example.com" });
+
+    expect(view.userId).toBe(userId);
+    expect(view.sessionToken.length).toBeGreaterThan(0);
+    expect(
+      base.backend.identities
+        .values()
+        .filter((row) => row.userId === userId && row.kind === "oauth"),
+    ).toHaveLength(1);
+    expect(
+      await base.container.identityUniqueDirectory.resolve(
+        "providerAccount",
+        "google:google-account-1",
+      ),
+    ).toBe(userId);
   });
 
   it("TC-identity-033: an unverified provider address is refused", async () => {

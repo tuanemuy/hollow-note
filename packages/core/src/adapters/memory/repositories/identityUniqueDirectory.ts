@@ -1,5 +1,6 @@
 import { ConflictError } from "../../../application/errors";
 import type {
+  ActiveUniqueClaim,
   IdentityUniqueDirectory,
   IdentityUniqueKind,
 } from "../../../domain/identity/ports/identityUniqueDirectory";
@@ -36,15 +37,31 @@ export function createMemoryIdentityUniqueDirectory(
   ): readonly (readonly [string, DirectoryRow])[] =>
     table.entries().filter(([, row]) => row.operationId === operationId);
 
+  // Reserved rows are not durable claims yet, and releasing rows are
+  // claims already being torn down — neither resolves.
+  const activeClaim = (
+    kind: IdentityUniqueKind,
+    normalizedKey: string,
+  ): ActiveUniqueClaim | null => {
+    const row = table.get(rowKey(kind, normalizedKey));
+    return row !== undefined && row.state === "active"
+      ? { userId: row.userId, claimToken: row.claimToken }
+      : null;
+  };
+
   return {
+    async resolveClaim(
+      kind: IdentityUniqueKind,
+      normalizedKey: string,
+    ): Promise<ActiveUniqueClaim | null> {
+      return activeClaim(kind, normalizedKey);
+    },
+
     async resolve(
       kind: IdentityUniqueKind,
       normalizedKey: string,
     ): Promise<UserId | null> {
-      const row = table.get(rowKey(kind, normalizedKey));
-      // Reserved rows are not durable claims yet, and releasing rows are
-      // claims already being torn down — neither resolves.
-      return row !== undefined && row.state === "active" ? row.userId : null;
+      return activeClaim(kind, normalizedKey)?.userId ?? null;
     },
 
     async reserve(input): Promise<void> {
@@ -66,6 +83,9 @@ export function createMemoryIdentityUniqueDirectory(
           throw heldByAnother(input.kind, input.normalizedKey);
         }
       }
+      // A fresh row, so a fresh claim token — including when the same
+      // operation id takes the key again after its previous claim was
+      // released, since `release` removed the row entirely.
       table.set(key, {
         kind: input.kind,
         normalizedKey: input.normalizedKey,
@@ -74,6 +94,7 @@ export function createMemoryIdentityUniqueDirectory(
         operationId: input.operationId,
         expiresAt: input.expiresAt,
         userVersion: null,
+        claimToken: backend.nextClaimToken(),
       });
     },
 
@@ -121,8 +142,9 @@ export function createMemoryIdentityUniqueDirectory(
       const row = table.get(key);
       if (
         row === undefined ||
+        row.state !== "active" ||
         row.userId !== input.expectedUserId ||
-        row.state === "reserved"
+        row.claimToken !== input.expectedClaimToken
       ) {
         return;
       }

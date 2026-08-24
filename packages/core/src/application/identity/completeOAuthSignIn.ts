@@ -354,22 +354,34 @@ async function attachToExistingUser(
       const identities = await ctx.identityRepository.listByUserId(
         params.userId,
       );
-      // Throws BusinessRuleError(IdentityLimitExceeded) at 8 — the
-      // reservation is released by the catch below.
-      IdentityPolicy.ensureAddable(identities);
-
-      const identity = Identity.createOAuth(
-        {
-          id: idGenerator.next(),
-          userId: params.userId,
-          provider: params.profile.provider,
-          providerAccountId: params.profile.providerAccountId,
-          providerEmail: params.profile.email,
-        },
-        now,
+      // Wreckage of a reservation saga that committed and then lost its
+      // `activate`: the identity row is there but its claim lapsed. Only
+      // the identity insert is skipped — the sign-in itself still stands
+      // — and the activation below restores the claim. Asked before the
+      // ceiling, or a user at 8 could never heal a row it already holds.
+      const existing = IdentityPolicy.findOAuth(
+        identities,
+        params.profile.provider,
+        params.profile.providerAccountId,
       );
-      await ctx.identityRepository.insert(identity.entity);
-      ctx.collectEvents(identity.eventDrafts);
+      if (existing === null) {
+        // Throws BusinessRuleError(IdentityLimitExceeded) at 8 — the
+        // reservation is released by the catch below.
+        IdentityPolicy.ensureAddable(identities);
+
+        const identity = Identity.createOAuth(
+          {
+            id: idGenerator.next(),
+            userId: params.userId,
+            provider: params.profile.provider,
+            providerAccountId: params.profile.providerAccountId,
+            providerEmail: params.profile.email,
+          },
+          now,
+        );
+        await ctx.identityRepository.insert(identity.entity);
+        ctx.collectEvents(identity.eventDrafts);
+      }
 
       await ctx.sessionRepository.insert(
         Session.create(
