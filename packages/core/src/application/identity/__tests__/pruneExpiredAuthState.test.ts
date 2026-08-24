@@ -540,7 +540,7 @@ describe("pruneExpiredAuthState", () => {
   });
 
   it("a budget-exhausted cron releases every claimed lane before returning", async () => {
-    // 32 lanes x 4 tables = 128 commands exceed the 100-command budget,
+    // 32 lanes x 5 tables = 160 commands exceed the 100-command budget,
     // so the first cron must break mid-run. Its claimed lanes have to be
     // released on the way out: `claimLanes` never returns claimed lanes
     // and a cron arriving within the lease renews this process's own, so

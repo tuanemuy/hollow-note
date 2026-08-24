@@ -31,9 +31,18 @@
 | `spec/inventory/{test,adapter,domain,usecase}.md:3/最終同期の日付が据え置き` | R2 | fix-editorial | 実物確認: 4 本とも `（最終同期: 2026-08-24）` のままだが、本 PR（860490a / 0d37e2d）は TC-identity-165 の書き換え・347..349 の追加・DOM-common-030 / ADP-common-029 / UC-identity-021 の更新を行っている。直前の c410926 が同種の同期でヘッダー日付を上げた前例どおり `2026-08-25` へ | 0 |
 | `spec/testcases/identity/pruneExpiredAuthState.md:34/テスト条件が「現行コードの既定順」基準` | R2 | fix-editorial | 実物確認: 条件をコードの現在値に相対で定義しており、既定の表集合が変わるたび条件の意味が動く。canon はコードについて真であることを書く場所。同じ PR の 348 / 349 行は「同時claim上限（6）を超える」「この配備がsweepを持たない表」と配備・設計の語で書けており、347 行だけが揺れている。`spec/inventory/test.md:488` の写しも同時に | 0 |
 | `.thread/16/testing.md:131,257/適合スイート再編に手順書が未追随` | R2 | fix-editorial | 実物確認: 確認項目 3 は解放の戻り値拘束を `ADP-common-028` に期待するが、R1 の是正でその拘束は `ADP-common-029: a release hands back no position...` へ移った。257 行の「11 ケース」も現在 16 ケース。手順どおり検証すると正しい状態が「期待と違う」と読まれる。上の適合スイート追加でケース数が再び変わるので、確定後の実数へ更新する | 0 |
+| `spec/adr/061-maintenance-sweep-order-authority.md:24/契約4・記述と実装の乖離` | R3 | fix | 統合元: usecase [B-001] + spec [B-001]。実物確認: ポート JSDoc（92-100 行）は「引き渡しは今日は不可能、その lane はリース失効まで claimed」と書き、両 usecase の `runContinuation` は `advanced.next` を真偽にしか使わず position を捨てる。JSDoc が `(Contracts 1–4: spec/adr/061.)` と ADR を出典に名指すため、参照元と参照先が契約 4 で割れる。ADR 046 を前提に置いた ADR 自身が乖離を新設している | 0
+| `adapters/conformance/globalMaintenanceRunStore.ts:ADP-common-029/契約1のresume半分が未拘束` | R3 | fix | adapter [B-001]。実物確認（変異）: 唯一 `setMaintenanceTables` を使うケースが同一 lease 内で ack するだけで `beginOrResumeKind` の resume 経路を通らない。resume 分岐で表集合を再スナップショットする変異でも適合スイートは 17 passed で、契約 1 の「resume 中も動かない」半分を守らせているのは memory 限定の usecase テストだけ | 0
+| `application/ports/globalMaintenanceRunStore.ts:53-58/契約2のasOfがclaimLanes・checkpointLane経路で未拘束` | R3 | fix | 統合元: adapter [W-001] + spec [W-001]。実物確認（変異）: `claimLanes` の戻り値の `asOf` を差し替えても適合スイート 17 passed、`checkpointLane` が run の `asOf` を入力で上書きしても core 全体 909 passed。JSDoc と `spec/domains/index.md:152` は主語を run の全 lane に取っており、拘束は `advanceOrAck` 経路にしかない | 0
+| `adapters/conformance/globalMaintenanceRunStore.ts:40-44/必須化のWHYが宣言側と重複` | R3 | fix-editorial | usecase [W-001]。実物確認: `adapters/conformance/backend.ts:137-144` の宣言側 JSDoc と同趣旨の理由がスイート冒頭にも置かれている。スイート側は「契約 1 を何で拘束するか」だけで足り、必須メンバーにした理由の置き場は宣言側（CLAUDE.md のコメント方針: 同じ WHY を 2 か所に置かない） | 0
+| `application/identity/__tests__/pruneExpiredAuthState.test.ts:543/コメントの表数が既定表集合と不一致` | R3 | fix-editorial | usecase [W-002]。実物確認: fixture は 16 shard × 2 generation = 32 lane、`DEFAULT_MAINTENANCE_TABLES.authStatePrune` は 5 表（`adapters/memory/store.ts:376-386`）なので 160 コマンド。結論（100 コマンドの予算超過で途中で切れる）は変わらず、数値のみの訂正 | 0
+| `spec/adr/062-unknown-sweep-table-skip.md:16/前提節と依存マップの不一致` | R3 | fix-editorial | spec [W-002]。実物確認: `spec/adr/index.md:129` は前提に 061 と 025 を挙げるが本文の「前提」節は 061 のみ。既存 ADR（060 / 046 / 061）は本文とマップが 1 対 1。025 は本文「影響」末尾（起動時ガードが到達不能な失敗モードへの防具である根拠）が実際に依拠しているので、直す向きは本文側 | 0
 
 R1: 新規 14 / fix 9 / fix-editorial 4 / wont-fix 1 / defer 0 / 継承 0（方針フェーズ: 実施）
 fix内訳: usecase 3 / adapter 6 / spec 4
 
 R2: 新規 15 / fix 6 / fix-editorial 9 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 実施）
 fix内訳: usecase 3 / adapter 6 / spec 6
+
+R3: 新規 6 / fix 3 / fix-editorial 3 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規指摘がすべて fix 系で、判断の割れる仕分けが無いため）
+fix内訳: usecase 3 / adapter 2 / spec 1

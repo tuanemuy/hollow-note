@@ -38,10 +38,10 @@ const LEASE_MS = 10 * MINUTE_MS;
  * left returns a position at all.
  *
  * Contract 1 — the run's snapshot, not the deployment's configuration,
- * is the walk-order authority — needs the table set to change under a
- * live run, which is why `setMaintenanceTables` is a required member of
- * `ConformanceBackend` and not a hook a backend may leave out: without
- * it a backend would report "conformant" with contract 1 unverified.
+ * is the walk-order authority — is pinned by replacing the table set
+ * under a live run through `setMaintenanceTables` and then resuming that
+ * run, so both halves of the contract (the walk and the resume) have an
+ * executable form.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -123,8 +123,12 @@ export function describeGlobalMaintenanceRunStoreContract(
       });
     });
 
-    it("ADP-common-027: claimLanes hands out pending lanes with their sweep table and command key", async () => {
-      await begin("run-1", "owner-a");
+    it("ADP-common-027: claimLanes hands out pending lanes with their sweep table, command key and the run's asOf", async () => {
+      const started = await begin("run-1", "owner-a");
+      // Move the wall clock off the run's boundary, well inside the
+      // lease, so a store that stamps `now()` onto a claimed lane is
+      // distinguishable from one that reads the run row back.
+      backend.clock.advance(MINUTE_MS);
       const lanes = await store.claimLanes("run-1", "owner-a", 6);
       expect(lanes).toHaveLength(2);
       expect(lanes.map((lane) => lane.shardId).sort()).toEqual(["s1", "s2"]);
@@ -133,6 +137,7 @@ export function describeGlobalMaintenanceRunStoreContract(
         expect(lane.table).toBe("t1");
         expect(lane.cursor).toBeNull();
         expect(lane.commandKey.length).toBeGreaterThan(0);
+        expect(lane.asOf).toEqual(started.asOf);
       }
       // Already-claimed lanes are not handed out twice.
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
@@ -236,6 +241,11 @@ export function describeGlobalMaintenanceRunStoreContract(
       // stamps `now()` onto a lane is indistinguishable from one that
       // reads the run row back.
       backend.clock.advance(MINUTE_MS);
+      // Every checkpoint below passes an `asOf` off the run's boundary:
+      // it is an input the store records a page under, never a way to
+      // move the run's own boundary, so the lanes handed back further
+      // down must still carry `started.asOf`.
+      const offBoundary = new Date(started.asOf.getTime() + MINUTE_MS);
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
         throw new Error("expected a claimed lane");
@@ -255,7 +265,7 @@ export function describeGlobalMaintenanceRunStoreContract(
         shardId: staged.shardId,
         table: "t1",
         cursor: "cursor-77",
-        asOf: staged.asOf,
+        asOf: offBoundary,
         nextCommandKey: "command-off-rule",
       });
       await store.advanceOrAck({
@@ -277,7 +287,7 @@ export function describeGlobalMaintenanceRunStoreContract(
         shardId: lane.shardId,
         table: "t1",
         cursor: "cursor-9",
-        asOf: started.asOf,
+        asOf: offBoundary,
         nextCommandKey: "command-t1-page-2",
       });
 
@@ -500,7 +510,7 @@ export function describeGlobalMaintenanceRunStoreContract(
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(2);
     });
 
-    it("ADP-common-029: an ack walks the table set the run was created with, not the deployment's current one", async () => {
+    it("ADP-common-029: an ack walks the table set the run was created with, not the deployment's current one, across a resume", async () => {
       await begin("run-1", "owner-a");
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
@@ -510,6 +520,15 @@ export function describeGlobalMaintenanceRunStoreContract(
       // A deploy re-orders and renames the sweep tables mid-run. The run
       // snapshotted its set at creation, so the walk must ignore this.
       await backend.setMaintenanceTables("authStatePrune", ["t9", "t8", "t7"]);
+
+      // The next cron picks the run up again under the new configuration.
+      // Resuming must not re-take the snapshot: a store that re-reads the
+      // deployment's set here walks the lane onto a table the run never
+      // started on, and its cursor points into another table's keyset.
+      // The lease is still this owner's, so the claim above survives.
+      const resumed = await begin("run-2", "owner-a");
+      expect(resumed.runId).toBe("run-1");
+      expect(resumed.result).toBe("resumed");
 
       const afterTable = await store.advanceOrAck({
         runId: "run-1",

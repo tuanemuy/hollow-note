@@ -15,7 +15,7 @@
 
 ## 前提
 
-表集合のスナップショットが run 単位で、resume 中も動かないこと（[ADR 061](./061-maintenance-sweep-order-authority.md)）。
+表集合のスナップショットが run 単位で、resume 中も動かないこと（[ADR 061](./061-maintenance-sweep-order-authority.md)）。参照ランタイムが Node + in-memory の 1 つであること（[ADR 025](./025-single-reference-runtime.md)）。
 
 ## 決定
 

@@ -56,7 +56,8 @@ export type MaintenanceLane = Readonly<{
  * `advanceOrAck` hands back the lane with its `table` / `cursor` /
  * `asOf` / `commandKey`. `asOf` is the **run's own boundary, fixed on the
  * run row when the run was created**: every lane of a run carries that
- * one value, and neither the wall clock at claim / ack time nor
+ * one value — the ones `claimLanes` hands out no less than the ones an
+ * ack does — and neither the wall clock at claim / ack time nor
  * `checkpointLane`'s `asOf` input overwrites it. A lane carrying a
  * different boundary would sweep a different keyset than the run it
  * belongs to, breaking "a resumed run keeps its original (oldest)
