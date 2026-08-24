@@ -18,8 +18,10 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
  *
  * Nothing beyond those two is contracted: tokens held under different
  * keys may coincide, and the value need not be hard to guess. What the
- * two do require is a value minted afresh for every claim — a monotonic
- * counter or a per-write UUID qualifies; a value derived from the row's
+ * two do require is a value minted once per claim and carried for as
+ * long as that claim lives — a counter that advances once per claim, or
+ * a UUID minted when the claim's row is written and carried through the
+ * later state transitions, qualifies; a value derived from the row's
  * contents or from the `operationId`, and a per-row version that
  * restarts once the row is deleted, do not.
  *

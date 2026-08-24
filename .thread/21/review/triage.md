@@ -43,3 +43,14 @@ R2: 新規 14 / fix 4 / fix-editorial 10 / wont-fix 0 / defer 0 / 継承 0（方
 fix内訳（指摘の出所ごと）: domain 4 / usecase 2 / adapter 4 / spec 6 — 全観点で fix が出たため R3 は 4 観点すべてを起動する
 
 要確認の裁定（メイン）: B-001 は単位1 のテスト追加のみで閉じ `releaseObservedUniqueKey` の構造変更は採らない / W-006 はコメント 1 行にとどめ `release` を判定の外へ出す振る舞い変更は採らない / W-011 は spec を直したうえで `.thread/21/adr.md` ADR-001 の限定文言も実態に合わせる
+
+## R3
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `spec/domains/identity.md,ports/identityUniqueDirectory.ts:claimToken/「書き込みごとの UUID」の例示` | R3 | fix-editorial | 適合機構の例示が直前の「claim 生存中は不変」と字義どおり両立しない。例示の表現だけを正す（契約の 2 性質は不変） | 0 |
+
+R3: 新規 1 / fix 0 / fix-editorial 1 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 省略 — 新規 1 件・独立・fix-editorial のみ）
+fix内訳（指摘の出所ごと）: domain 0 / usecase 0 / adapter 0 / spec 0 — **全観点で fix ゼロ。fix-editorial 1 件は適用済みで品質ゲート緑のため完了条件を満たす（APPROVED）**
+
+品質ゲート（R3 完了時点）: typecheck 緑 / lint 緑（infos 2・既存）/ format:check 緑（446 files）/ test 76 files・970 passed・3 skipped
