@@ -67,7 +67,6 @@ async function drainRemovalEvents(
   }
 }
 
-/** Re-links the removed Google account to its original owner. */
 async function relinkGoogleAccount(
   h: TestHarness,
   userId: string,

@@ -365,8 +365,6 @@ async function attachToExistingUser(
         params.profile.providerAccountId,
       );
       if (existing === null) {
-        // Throws BusinessRuleError(IdentityLimitExceeded) at 8 — the
-        // reservation is released by the catch below.
         IdentityPolicy.ensureAddable(identities);
 
         const identity = Identity.createOAuth(

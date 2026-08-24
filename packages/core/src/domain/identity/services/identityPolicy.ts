@@ -5,9 +5,9 @@ import type { IdentityId, OAuthProvider } from "../valueObject";
 
 /**
  * Rules over the set of authentication methods a single user holds.
- * `maxIdentitiesPerUser = 8` is the canonical value: password and OAuth
- * identities count together, and every identity-adding usecase re-reads
- * the current set inside the final UoW before inserting.
+ * Password and OAuth identities count together toward
+ * `maxIdentitiesPerUser`, and every identity-adding usecase re-reads the
+ * current set inside the final UoW before inserting.
  */
 export const IdentityPolicy = {
   maxIdentitiesPerUser: 8,

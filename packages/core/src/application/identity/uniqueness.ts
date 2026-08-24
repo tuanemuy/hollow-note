@@ -12,8 +12,7 @@ import type { Logger } from "../ports/logger";
 
 /**
  * The uniqueness reservation saga shared by every usecase that claims an
- * email / handle / provider-account key
- * (spec/usecases/identity.md#identity-uniqueness-の物理shard境界).
+ * email / handle / provider-account key.
  *
  * Shape of the saga, identical for all three kinds:
  * `reserve` on the key shard → the UserId-shard unit of work →
@@ -61,11 +60,10 @@ export const providerAccountKey = (
 /**
  * Sub-operation id for one key of a parent operation.
  *
- * Composed rather than hashed (spec/adr/048): the components are
- * unambiguous in this order — `kind` is a closed enum without `:` and the
- * free-form key comes last — so composition already gives distinctness and
- * determinism, and it keeps a hash implementation out of the application
- * layer.
+ * Composed rather than hashed: the components are unambiguous in this
+ * order — `kind` is a closed enum without `:` and the free-form key comes
+ * last — so composition already gives distinctness and determinism, and
+ * it keeps a hash implementation out of the application layer.
  *
  * The result therefore embeds the raw key (an email address, a handle, a
  * provider account id) and must never reach a log or any other sink
@@ -256,10 +254,10 @@ export async function releaseActiveUniqueKey(
 /**
  * Publishes the durable claims after the authoritative write committed.
  *
- * A lost `activate` response is reconciled per the spec's convergence
- * rule: re-read the authoritative row through `confirm`, and either
- * activate at its current version (the write is durable) or release (it
- * is not). `confirm` runs at most once per call — every reservation of
+ * A lost `activate` response is reconciled by re-reading the
+ * authoritative row through `confirm`, and either activating at its
+ * current version (the write is durable) or releasing (it is not).
+ * `confirm` runs at most once per call — every reservation of
  * one operation observes the same verdict, so the group cannot end up
  * half activated and half released.
  */

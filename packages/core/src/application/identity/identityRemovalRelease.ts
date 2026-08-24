@@ -7,17 +7,16 @@ import {
 } from "./uniqueness";
 
 /**
- * Frees the provider-account claim of a removed OAuth identity
- * (spec/usecases/identity.md#removeidentity 手順 4).
+ * Frees the provider-account claim of a removed OAuth identity.
  *
  * The key lives on the normalized-key shard and the identity on the
  * UserId shard, so the claim cannot be dropped in the transaction that
  * deleted the row. The receipt written by that transaction is what
  * bridges the two: its presence *is* the proof the authoritative row is
  * gone, and it carries the `providerAccountKey` that a deleted identity
- * can no longer supply. Confirming the row's absence as well keeps the
- * spec's "release only after the authoritative delete" honest on a
- * backend whose receipt and row could ever diverge.
+ * can no longer supply. Confirming the row's absence as well keeps
+ * "release only after the authoritative delete" honest on a backend
+ * whose receipt and row could ever diverge.
  *
  * Idempotence basis (no `IdempotencyStore`, because the processing is
  * itself idempotent): the effect is `beginRelease` + `release` on one

@@ -313,7 +313,6 @@ describe("completeOAuthSignIn", () => {
     expect(isSystemError(error)).toBe(true);
     expect(reserveCalls).toHaveLength(2);
     expect(reserveCalls[0]).not.toBe(reserveCalls[1]);
-    // The email key taken first is handed back under its own id.
     expect(h.backend.uniqueDirectory.values()).toHaveLength(0);
     expect(h.backend.users.values()).toHaveLength(0);
   });

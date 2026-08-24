@@ -7,8 +7,7 @@ import { makePendingUser, userId } from "./fixtures";
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * Shared conformance suite for `IdentityUniqueDirectory`
- * (ADP-identity-006..009, ADP-identity-041, ADP-identity-042): two-phase
+ * Shared conformance suite for `IdentityUniqueDirectory`: two-phase
  * reservation, per-kind conflict codes, lost-response idempotency, and
  * the conditional teardown of an observed durable claim.
  */
@@ -432,8 +431,6 @@ export function describeIdentityUniqueDirectoryContract(
       await beginRelease("release-1", "no-such-token");
       await backend.identityUniqueDirectory.release("release-1");
 
-      // The reservation survived, so its own operation can still publish
-      // it and another user is still blocked.
       await expectConflict(
         reserveEmail("op-2", userId(2)),
         "EMAIL_ALREADY_USED",
