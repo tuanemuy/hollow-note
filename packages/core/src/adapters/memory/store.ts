@@ -469,10 +469,12 @@ export class MemoryBackend {
 
   /**
    * Distinct opaque token per directory row write. It lives on the
-   * backend rather than in the directory factory because that factory is
-   * called once per container (global UoW / request / worker) over the
-   * same tables, and it is deliberately not the `idGenerator` — the
-   * deterministic id stream tests assert on must not shift.
+   * backend rather than in the directory factory because that factory
+   * runs once per request / worker container and again on every global
+   * UoW `run`, all over the same tables, so a factory-local counter
+   * would hand the same token out twice. It is deliberately not the
+   * `idGenerator` — the deterministic id stream tests assert on must not
+   * shift.
    */
   nextClaimToken(): string {
     this.claimTokenSeq += 1;

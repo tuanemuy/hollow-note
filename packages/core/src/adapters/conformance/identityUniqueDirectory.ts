@@ -214,11 +214,10 @@ export function describeIdentityUniqueDirectoryContract(
         "email",
         "a@example.com",
       );
-      expect(claim?.userId).toBe(userId(1));
-      expect(claim?.claimToken).not.toBe("");
       if (claim === null) {
         throw new Error("an active claim answers");
       }
+      expect(claim.userId).toBe(userId(1));
 
       await beginRelease("release-1", claim.claimToken);
       expect(
@@ -227,6 +226,48 @@ export function describeIdentityUniqueDirectoryContract(
           "a@example.com",
         ),
       ).toBeNull();
+    });
+
+    it("ADP-identity-042: the same normalized key is a separate claim per kind", async () => {
+      await reserveEmail("op-email");
+      await backend.identityUniqueDirectory.reserve({
+        kind: "handle",
+        normalizedKey: "a@example.com",
+        userId: userId(2),
+        operationId: "op-handle",
+        expiresAt: new Date(backend.clock.now().getTime() + HOUR_MS),
+      });
+      await backend.identityUniqueDirectory.activate("op-email", 0);
+      await backend.identityUniqueDirectory.activate("op-handle", 0);
+
+      const email = await backend.identityUniqueDirectory.resolveClaim(
+        "email",
+        "a@example.com",
+      );
+      const handle = await backend.identityUniqueDirectory.resolveClaim(
+        "handle",
+        "a@example.com",
+      );
+      if (email === null || handle === null) {
+        throw new Error("both kinds answer");
+      }
+      expect(email.userId).toBe(userId(1));
+      expect(handle.userId).toBe(userId(2));
+
+      // Tearing down the email claim quotes an observation that also
+      // matches the handle row on the normalized key alone.
+      await beginRelease("release-1", email.claimToken);
+      await backend.identityUniqueDirectory.release("release-1");
+
+      expect(
+        await backend.identityUniqueDirectory.resolve("email", "a@example.com"),
+      ).toBeNull();
+      expect(
+        await backend.identityUniqueDirectory.resolve(
+          "handle",
+          "a@example.com",
+        ),
+      ).toBe(userId(2));
     });
 
     it("ADP-identity-042: the token stays the same for as long as the claim lives", async () => {

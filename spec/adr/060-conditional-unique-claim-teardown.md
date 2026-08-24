@@ -10,9 +10,9 @@
 
 その窓に本人の再連携が入ると、取り壊しは「判断の対象になった claim」ではなく「そのあとに張られた別の claim」を壊す。結果は「identity 行はあるが claim が無い」状態で、別の利用者がその外部アカウントを奪える。[ADR 038](./038-provider-account-claim-and-identity-row.md) が置いた「その鍵を今名乗る identity が居ないこと」という述語は、判定時点では正しいが、`beginRelease` の時点まで正しさを運べない — 必要条件ではあっても十分条件ではない。判定を `beginRelease` の直前に移しても窓が縮むだけで閉じない。
 
-同型の穴が逆向きにもある。予約サガが commit したあと `activate` を失い、`reserved` 行が TTL で失効すると、identity 行だけが後ろ盾を失う。この状態で本人が再連携すると、現行の実装は 2 件目の identity 行を生やし、1 件目は永久に claim を持てない。
+同型の穴が逆向きにもある。予約サガが commit したあと `activate` を失い、`reserved` 行が TTL で失効すると、identity 行だけが後ろ盾を失う。治癒の経路が無ければ、この状態での再連携は 2 件目の identity 行を生やし、1 件目は永久に claim を持てない。
 
-配送は複数ワーカーへ広がる予定であり（#11 / #19）、そのとき窓は単一プロセスの実行順という偶然に守られなくなる。
+配送が複数ワーカーへ広がると、窓は単一プロセスの実行順という偶然に守られなくなる。
 
 ## 前提
 
@@ -52,6 +52,6 @@ CLAUDE.md が「意図的に置かない」としている。CAS が外れた場
 - `releasing` 行を落とせるのは、その行を再キー付けした operation の `release(operationId)` だけである。ワーカー経路は event 再配送が同じ operation ID を再導出するので、その行が隔離されず受領が保持期限内にあるあいだは自力で収束する（隔離または受領の保持期限切れの後は固まる — [ADR 038](./038-provider-account-claim-and-identity-row.md) の範囲）。同期経路の `updateProfile` は再実行の主体が居ないため、`beginRelease` 済み・`release` 前で落ちると旧 handle が固まりうる
 - 他 operation が残した孤児の `releasing` 行は、所有者が一致していても別の operation からは落とせない。`deleteAccount` の `globalCleanup` もその鍵を回収できず、利用者が退会してもその鍵は parked のまま残る
 - `beginRelease` の no-op のうち「行なし」と「`reserved`」は、観測が取れない以上トークン条件にも吸収される。適合スイートからは独立に識別できなくなる
-- `beginRelease` は `Promise<void>` を返す契約のままなので、呼び出し側からは「トークン不一致で no-op になった」と「取り壊した」が区別できない。ログに残せるのは「観測が `null` だった」分岐だけで、CAS が外れた回数は数えられない。観測性の課題として複数ワーカー化（#11 / #19）に持ち越す
+- `beginRelease` は `Promise<void>` を返す契約のままなので、呼び出し側からは「トークン不一致で no-op になった」と「取り壊した」が区別できない。ログに残せるのは「観測が `null` だった」分岐だけで、CAS が外れた回数は数えられない。観測性は複数ワーカー配備の際に見直す
 - 解放判定のたびにディレクトリの読みが 1 回増える（`keep` に倒れる再配送でも発生）。件数に上限のある単一行読みなので許容する
 - `updateProfile` / `deleteAccount` の解放は観測と `beginRelease` が連続するため、契約変更には追随するが窓は縮むだけで閉じない

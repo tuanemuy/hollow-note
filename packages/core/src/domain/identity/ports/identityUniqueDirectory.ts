@@ -17,8 +17,11 @@ export type IdentityUniqueKind = "email" | "handle" | "providerAccount";
  * contract.
  *
  * Nothing beyond those two is contracted: tokens held under different
- * keys may coincide, and the value need not be hard to guess. A row
- * version, an ETag, or a monotonic counter all qualify.
+ * keys may coincide, and the value need not be hard to guess. What the
+ * two do require is a value minted afresh for every claim — a monotonic
+ * counter or a per-write UUID qualifies; a value derived from the row's
+ * contents or from the `operationId`, and a per-row version that
+ * restarts once the row is deleted, do not.
  *
  * Opaque to callers — compare it, never parse, log, or persist it.
  */

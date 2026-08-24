@@ -22,11 +22,13 @@ import {
  * Idempotence basis (no `IdempotencyStore`, because the processing is
  * itself idempotent): the effect is `beginRelease` + `release` on one
  * key for one operation id, and a redelivery finds nothing left to
- * release. `beginRelease` alone only rules out a claim held by *another*
- * user, so the claim the receipt's own user may have taken again on the
- * same key — a re-link mints a new `IdentityId`, which leaves the deleted
- * one absent forever — is ruled out here instead, by refusing to release
- * a key some current identity of that user still names.
+ * release. `beginRelease` is a compare-and-set against an observation
+ * taken afresh on every delivery, so a claim the receipt's own user has
+ * taken again on the same key matches it — a re-link mints a new
+ * `IdentityId`, which leaves the deleted one absent forever, so the
+ * directory holds nothing that tells the two apart. That claim is ruled
+ * out here instead, by refusing to release a key some current identity
+ * of that user still names.
  *
  * That check commits before the teardown runs, so a re-link landing in
  * the gap would still lose its claim if the teardown were unconditional.
@@ -81,6 +83,10 @@ export async function identityRemovalRelease(
   );
 
   if (decision.outcome === "keep") {
+    // Returning without `release` strands no `releasing` row: none of the
+    // keep reasons can hold on one — a deleted identity never comes back,
+    // that row makes `reserve` refuse the re-link that would recreate it,
+    // and the receipt outlives redelivery-or-quarantine of the event.
     deps.logger.warn("[identityRemovalRelease] keeping the claim", {
       operationId,
       reason: decision.reason,

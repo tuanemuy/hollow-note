@@ -376,10 +376,16 @@ describe("completeOAuthSignIn", () => {
     ).toEqual(["reserved"]);
 
     base.clock.advance(UNIQUE_RESERVATION_TTL_MS + 1);
+    const sessionsBefore = base.backend.sessions.values().length;
     const view = await signInWithOAuth(base, { email: "user@example.com" });
 
     expect(view.userId).toBe(userId);
     expect(view.sessionToken.length).toBeGreaterThan(0);
+    const sessions = base.backend.sessions.values();
+    expect(sessions).toHaveLength(sessionsBefore + 1);
+    expect(sessions.map((session) => session.tokenHash)).toContain(
+      base.container.secureTokenGenerator.hashOf(view.sessionToken),
+    );
     expect(
       base.backend.identities.values().filter((row) => row.userId === userId),
     ).toHaveLength(8);

@@ -19,3 +19,27 @@
 
 R1: 新規 14 / fix 4 / fix-editorial 10 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 実施）
 fix内訳（指摘の出所ごと）: domain 4 / usecase 3 / adapter 4 / spec 6 — 全観点で fix が出たため R2 は 4 観点すべてを起動する
+
+## R2
+
+| Key | 初出 | 判定 | 理由（一行） | 再指摘 |
+|---|---|---|---|---|
+| `uniqueness.ts:observeActiveUniqueKey/所有者ガードのテスト` | R2 | fix | 所有者比較を削っても全 green（変異注入で別利用者の claim を実際に奪えることを実測）。canon が主張する「解放要求が持ち主から鍵を奪わない」が無拘束 | 0 |
+| `conformance:not.toBe("")/契約超過` | R2 | fix | R1 の置換先が契約に無い値域制約になった。契約側に「非空」を足す案は ADR-002 が 2 性質で閉じた契約を広げるので採らず、行を落とす | 0 |
+| `conformance:kind/区別の欠落` | R2 | fix | 契約の穴ではなくスイートの穴。`kind` を落とす変異が 21 ケース全通過 | 0 |
+| `completeOAuthSignIn.test.ts:TC-344/セッション発行の主張` | R2 | fix | `sessionToken.length > 0` は UoW 前に作る値で空振り。AC-5 の 1 点が無拘束 | 0 |
+| `spec/database/index.md:claim_token/状態遷移での引き継ぎ` | R2 | fix-editorial | 「行を新規に書くたび採番」が `activate` の UPDATE での再採番を許す読みを残す | 0 |
+| `ports/identityUniqueDirectory.ts:claimToken/実装例` | R2 | fix-editorial | row version / ETag の例示が「張り直しで必ず変わる」と両立しない | 0 |
+| `identityRemovalRelease.ts:JSDoc/beginRelease の説明` | R2 | fix-editorial | 「別利用者だけを弾く」は CAS 化で偽 | 0 |
+| `identityRemovalRelease.ts:keep分岐/release を呼ばない根拠` | R2 | fix-editorial | 安全性が「keep 理由は `releasing` 上で到達不能」に依存しているのに根拠が無い。構造変更は振る舞い変更でスコープ外 | 0 |
+| `memory/store.ts:nextClaimToken/JSDoc の射程` | R2 | fix-editorial | global UoW は `run` ごとにファクトリを呼ぶため「once per container」は実態より緩い | 0 |
+| `spec/adr/060:Issue番号・進捗記述/canon-purity` | R2 | fix-editorial | `spec/` で唯一のトラッカー番号参照＋「持ち越す」は進捗ログ | 0 |
+| `spec/inventory/*.md:最終同期/ledger-header` | R2 | fix-editorial | 生成元と台帳を同時更新しているのにヘッダーが 08-22 のまま | 0 |
+| `spec/adr/038:却下理由/adr-consistency` | R2 | fix-editorial | 「ポート・適合スイートの変更に波及し」が ADR 060 で実際に払ったコストと食い違う。`.thread/21/adr.md` ADR-001 の限定文言も実態に合わせる | 0 |
+| `spec/usecases/identity.md:deleteAccount/globalCleanup` | R2 | fix-editorial | 「全 reservation を release」が無条件のままで ADR 060 影響節と canon 同士が矛盾 | 0 |
+| `spec/adr/060:現行実装の記述/canon-present-tense` | R2 | fix-editorial | 「現行の実装は 2 件目の identity 行を生やし」が本 PR 後は偽 | 0 |
+
+R2: 新規 14 / fix 4 / fix-editorial 10 / wont-fix 0 / defer 0 / 継承 0（方針フェーズ: 実施）
+fix内訳（指摘の出所ごと）: domain 4 / usecase 2 / adapter 4 / spec 6 — 全観点で fix が出たため R3 は 4 観点すべてを起動する
+
+要確認の裁定（メイン）: B-001 は単位1 のテスト追加のみで閉じ `releaseObservedUniqueKey` の構造変更は採らない / W-006 はコメント 1 行にとどめ `release` を判定の外へ出す振る舞い変更は採らない / W-011 は spec を直したうえで `.thread/21/adr.md` ADR-001 の限定文言も実態に合わせる

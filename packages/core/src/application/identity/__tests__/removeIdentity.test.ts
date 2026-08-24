@@ -444,6 +444,40 @@ describe("removeIdentity", () => {
     });
   });
 
+  it("TC-identity-346: a redelivery leaves a stranger's claim on the released account alone", async () => {
+    const h = createTestHarness();
+    const { userId, oauthIdentityId } = await withTwoIdentities(h);
+    await remove(h, userId, oauthIdentityId);
+    await drainRemovalEvents(h);
+    expect(directoryRow(h, "google:google-account-1")).toBeUndefined();
+
+    const stranger = await signUpVerified(h, "stranger@example.com");
+    const claim = await beginOAuthFlow(h, {
+      intent: "linkIdentity",
+      userId: stranger.userId,
+    });
+    const { identityId: strangerIdentityId } = await linkOAuthIdentity({
+      container: h.container,
+      input: {
+        state: claim.state,
+        stateBinding: claim.stateBinding,
+        code: devAuthorizationCode(claim, {
+          providerAccountId: "google-account-1",
+        }),
+      },
+    });
+
+    await drainRemovalEvents(h);
+
+    expect(directoryRow(h, "google:google-account-1")).toMatchObject({
+      state: "active",
+      userId: stranger.userId,
+    });
+    expect(identitiesOf(h, stranger.userId).map((row) => row.id)).toContain(
+      strangerIdentityId,
+    );
+  });
+
   it("keeps the claim when no receipt backs the removal event", async () => {
     const h = createTestHarness();
     const { userId, oauthIdentityId } = await withTwoIdentities(h);
