@@ -82,12 +82,10 @@ const handOverPersonalCleanup: ScopeTaskHandler = async (container, task) => {
  * Continuation kinds this deployment knows how to resume. A task whose
  * kind is absent is left due and reported — better a visible stall than
  * a silently completed row nothing processed. The claim that read it
- * still took a lease, so it comes back a lease apart (five minutes by
- * default) rather than on every tick: the report repeats for as long as
- * the deployment lacks the handler, but its frequency is no measure of
- * the stall. The line carries the row's `dueAt` instead, which
- * reclaiming a lapsed lease leaves where it was, so how far past its
- * time the row has drifted reads off the report itself.
+ * still took a lease, so the report repeats a lease apart and its
+ * frequency is no measure of the stall; the line carries the row's
+ * `dueAt` instead, which reclaiming a lapsed lease leaves where it was,
+ * so how far past its time the row has drifted reads off the report.
  */
 export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   [STORAGE_OWNER_DELETE_TASK_KIND]: async (container, task) => {

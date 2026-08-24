@@ -55,8 +55,6 @@ export function createMemoryScopeTaskScheduler(
   return {
     async schedule(input): Promise<void> {
       const key = scopeTaskKey(input.kind, input.operationId);
-      // Upsert: a replayed turn re-writes its own row, and rescheduling
-      // an exhausted task revives it as a fresh attempt.
       table.set(key, {
         kind: input.kind,
         operationId: input.operationId,

@@ -118,12 +118,10 @@ export function readNodeServerEnv(
 /**
  * Projection of {@link NodeServerEnv} to the runtime-agnostic tuning shape.
  *
- * An empty value among these five is dropped rather than forwarded — a
- * reading this projection takes, not one the whole env surface shares.
- * Empty values are ordinary in container manifests
- * (`OUTBOX_LEASE_MS=$UNSET_VAR`), so they mean "unset" here, the same
- * reading `DELETION_TICKET_KEY` takes. Forwarding `""` would instead
- * coerce to `0` and refuse the boot.
+ * An empty value is dropped rather than forwarded: empty values are
+ * ordinary in container manifests (`OUTBOX_LEASE_MS=$UNSET_VAR`) and mean
+ * "unset" here, while forwarding `""` would coerce to `0` and refuse the
+ * boot.
  */
 export function nodeServerEnvToTuningEnv(env: NodeServerEnv): TuningEnv {
   return {

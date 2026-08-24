@@ -80,7 +80,7 @@ describe("nodeServerEnvSchema OAuth provider selection", () => {
 });
 
 /**
- * AC-6: `/dev/oauth/authorize` の 404 ガードは env を直読みせず
+ * `/dev/oauth/authorize` の 404 ガードは env を直読みせず
  * `RequestContainer.oauthDevMode` だけを見る。ここで押さえるのは env から
  * そのフラグまでの経路で、フラグを読む側は
  * `apps/web/app/presentation/__tests__/devOAuth.test.ts`（承認コードを
@@ -171,7 +171,6 @@ describe("nodeServerEnvToTuningEnv", () => {
     expect(readRelayTuning(tuning).leaseMs).toBe(DEFAULT_LEASE_MS);
   });
 
-  // AC-17: env から runner tuning までの 1 本道のうち、射影から先の一区間。
   it("forwards a set lease to the tuning both workers read", () => {
     const tuning = tuningFor({
       OUTBOX_LEASE_MS: "1000",

@@ -95,9 +95,7 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * and a `limit` below the number of candidate priorities cuts step 1
  * short, degrading to strict priority order.
  *
- * `dueAt` means "when this is meant to run" whatever the state. These
- * transitions are the contract; the notes after them carry only what
- * the table cannot show — why it reads that way.
+ * `dueAt` means "when this is meant to run" whatever the state.
  *
  * | operation | from | to |
  * | --- | --- | --- |
