@@ -876,7 +876,7 @@ active noteMoveが同userをactor/source/targetに持つ場合、scope cleanup�
 ### 処理フロー
 
 1. `type: "global.maintenanceRunPruneContinued"`なら`GlobalMaintenanceRunStore.pruneCompleted(asOf, cursor, 100)`だけを呼ぶ。100件なら同じ固定`asOf`とnext cursorを持つ次taskをcatalog transactionで保存し、100件未満なら終了する。`expiresAt <= asOf`を対象とし、running runは除外する。応答喪失時は同じcursorから冪等に再実行する。`type: "cron"`ならこの共通prunerの初回taskを発行し、続いてhour bucket・kind・current routing generationsから決定的`candidateRunId`を作り、`beginOrResumeKind`する。同kindのrunning runがあればhourをまたいでも新runを作らず、その最古runの固定`runId` / `asOf` / generation positionを再開する。新規または期限切れleaseの回復時だけ未claim shardから最大6件のcontinuationを起動し、lease中再入はno-op。auth continuation入力ならpayloadの固定値から再開する。最大32 shardをkind全体のactive lane 6本で処理し、reshard中は旧新を別positionとして対象にする
-2. 1 commandは1 shard・1表だけを選び、各portの`deleteExpired(asOf, cursor, 100)`を1回だけ呼ぶ。Session/AuthTokenは`(expiresAt, id)`、LoginAttemptは`(expiresAt, key)`、OAuthStateは`(expiresAt, state)` keysetの`nextCursor`を返す。target shardのDELETEとは別に、run storeの`checkpointLane`が次table/cursor/決定的command keyと次Queue outboxをrouting catalog transactionで保存する。DELETE後・checkpoint前の応答喪失は同じ入力cursorのDELETEを再実行する。100件なら同じlaneの次cursor、100件未満なら次表、全4表完了ならrun storeへshard ackして未claim shardを1件取得する。全shard ackでrunをcompletedにする
+2. 1 commandは1 shard・1表だけを選び、各portの`deleteExpired(asOf, cursor, 100)`を1回だけ呼ぶ。Session/AuthTokenは`(expiresAt, id)`、LoginAttemptは`(expiresAt, key)`、OAuthStateは`(expiresAt, state)` keysetの`nextCursor`を返す。target shardのDELETEとは別に、run storeの`checkpointLane`が現在positionのcursorと決定的な次command key、および次Queue outboxをrouting catalog transactionで保存する（表は進めない — 表を進めるのは`advanceOrAck`側）。DELETE後・checkpoint前の応答喪失は同じ入力cursorのDELETEを再実行する。100件なら同じlaneの次cursor、100件未満なら`advanceOrAck`で前進する。表の走査順の正本はrun生成時に固定した表集合だけで、usecaseは表順を持たない。ackは進めた先のpositionを`table` / `cursor` / `commandKey`ごと返すので、同じlaneの次表も、laneの最終表ackで自動claimされた別shardのpositionも、そのまま次の処理対象にする（解放して取り直さない）。全shard ackでrunをcompletedにする。run の表集合にこの配備がsweepを持たない表が含まれる場合は、その表をackで飛ばして前進させ、飛ばした事実を`runId` / generation / shardId / 表名とともにerror logに残すが、削除の失敗ではないので失敗には数えない
 3. `authenticateSession` は期限または世代不一致を常に `UNAUTHENTICATED` として扱う。AuthTokenの単回性も消費時の条件付き更新と世代検査が担保するため、物理回収の進み具合は認証結果を変えない
 4. LoginAttemptの保持24時間は15分のロックより長く、期限切れ回収がロックを早めない。OAuth stateはIdentity/Integration両intentを同じ有界処理で覆う
 5. 表ごとの失敗はその継続をbackoffして他shard/tableの最低枠を妨げない。1 invocationは全体100 operationsまたは400 queriesでyieldし、cursorをD1へ保存してQueue continuationへ渡す。出力countは当該invocationで消した件数（未処理tableは0）、次taskがあれば`continued: true`
@@ -890,4 +890,4 @@ active noteMoveが同userをactor/source/targetに持つ場合、scope cleanup�
 | 条件 | 種類 |
 | --- | --- |
 | 個々の削除の失敗 | 記録して継続 |
-| 4 つすべての削除が失敗 | `SystemError(DatabaseError)` |
+| その invocation で試みた削除がすべて失敗（run の表集合のうち、この配備が掃ける表の削除。掃けない表の skip は分子にも分母にも入らない） | `SystemError(DatabaseError)` |

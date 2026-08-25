@@ -1,6 +1,6 @@
 # Inventory — adapter
 
-生成元: `spec/domains/`（最終同期: 2026-08-24）
+生成元: `spec/domains/`（最終同期: 2026-08-25）
 
 **1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、ケース名（`it` の第 1 引数）の先頭に ADP ID を置く命名規約で追う（複数メソッドを拘束するケースは ID を短縮せず並べる）。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの ADP 行と `domain.md` の DOM 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -34,7 +34,7 @@
 | ADP-common-026 | `GlobalMaintenanceRunStore.beginOrResumeKind` | `spec/domains/index.md#ScopeKey-と永続化境界` | kind ごとの最古 run を開始または再開し lease 状態を返す |
 | ADP-common-027 | `GlobalMaintenanceRunStore.claimLanes` | `spec/domains/index.md#ScopeKey-と永続化境界` | maintenance lane を有界に claim する |
 | ADP-common-028 | `GlobalMaintenanceRunStore.checkpointLane` | `spec/domains/index.md#ScopeKey-と永続化境界` | cursor と次 command key を原子的に checkpoint する |
-| ADP-common-029 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、shard または run 完了を返す |
+| ADP-common-029 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、進めた先の position と shard / run 完了を返す |
 | ADP-common-030 | `GlobalMaintenanceRunStore.recoverLease` | `spec/domains/index.md#ScopeKey-と永続化境界` | 失効した run lease を owner が回収する |
 | ADP-common-031 | `GlobalMaintenanceRunStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ completed run を keyset で回収する |
 | ADP-common-032 | `MailSender.send` | `spec/domains/index.md#MailSenderapplicationportsmailsenderts` | locale と template を指定してメールを送る |

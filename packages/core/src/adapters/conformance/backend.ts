@@ -134,6 +134,21 @@ export type ConformanceBackend = Readonly<{
     userId: UserId,
     edges: readonly MembershipEdgeSeedInput[],
   ): Promise<void>;
+  /**
+   * Replaces the deployment's sweep-table set for one kind after the
+   * backend was built, standing in for a deploy that changes the table
+   * configuration while a run is in flight. It is how the suite pins the
+   * run's snapshot — rather than the deployment's configuration — as the
+   * walk-order authority.
+   *
+   * It must really take effect: the suite starts a run *after* the call
+   * and asserts that run walks the new set, so a stub that swallows its
+   * arguments fails the suite.
+   */
+  setMaintenanceTables(
+    kind: MaintenanceKind,
+    tables: readonly string[],
+  ): Promise<void>;
 }>;
 
 export type MakeConformanceBackend = (

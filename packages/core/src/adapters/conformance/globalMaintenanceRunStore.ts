@@ -27,6 +27,23 @@ const LEASE_MS = 10 * MINUTE_MS;
  *
  * The suite pins the lane topology: one generation ("g1"), two shards
  * ("s1", "s2"), two sweep tables ("t1", "t2") for `authStatePrune`.
+ *
+ * It also pins where an ack's position comes from: `advanceOrAck` hands
+ * back the position it advanced to, and the side that *created* that
+ * position is the side that minted its command key — the store when it
+ * creates a position (the run's starting one, or a lane's next table;
+ * keys the caller re-derives byte-identically), the caller when it
+ * checkpointed the lane an ack later auto-claims (returned as stored,
+ * never re-minted). Neither a release nor an ack with no pending lane
+ * left returns a position at all.
+ *
+ * Contract 1 — the run's snapshot, not the deployment's configuration,
+ * is the walk-order authority — is pinned by replacing the table set
+ * under a live run through `setMaintenanceTables` and then resuming that
+ * run, so both halves of the contract (the walk and the resume) have an
+ * executable form. The same case then completes that run and starts the
+ * next one on the replaced set, which is where the replacement itself is
+ * observed.
  */
 export function describeGlobalMaintenanceRunStoreContract(
   backendName: string,
@@ -92,13 +109,10 @@ export function describeGlobalMaintenanceRunStoreContract(
         result: "started",
       });
 
-      // A live foreign lease blocks a second worker.
       const blocked = await begin("run-2", "owner-b");
       expect(blocked.result).toBe("leased");
       expect(blocked.runId).toBe("run-1");
 
-      // After the lease lapses the next cron resumes the same run —
-      // original (oldest) asOf, not the new candidate's.
       backend.clock.advance(LEASE_MS + 1);
       const resumed = await begin("run-3", "owner-b", backend.clock.now());
       expect(resumed).toEqual({
@@ -108,8 +122,12 @@ export function describeGlobalMaintenanceRunStoreContract(
       });
     });
 
-    it("ADP-common-027: claimLanes hands out pending lanes with their sweep table and command key", async () => {
-      await begin("run-1", "owner-a");
+    it("ADP-common-027: claimLanes hands out pending lanes with their sweep table, command key and the run's asOf", async () => {
+      const started = await begin("run-1", "owner-a");
+      // Move the wall clock off the run's boundary, well inside the
+      // lease, so a store that stamps `now()` onto a claimed lane is
+      // distinguishable from one that reads the run row back.
+      backend.clock.advance(MINUTE_MS);
       const lanes = await store.claimLanes("run-1", "owner-a", 6);
       expect(lanes).toHaveLength(2);
       expect(lanes.map((lane) => lane.shardId).sort()).toEqual(["s1", "s2"]);
@@ -118,6 +136,7 @@ export function describeGlobalMaintenanceRunStoreContract(
         expect(lane.table).toBe("t1");
         expect(lane.cursor).toBeNull();
         expect(lane.commandKey.length).toBeGreaterThan(0);
+        expect(lane.asOf).toEqual(started.asOf);
       }
       // Already-claimed lanes are not handed out twice.
       expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
@@ -135,7 +154,6 @@ export function describeGlobalMaintenanceRunStoreContract(
       if (first === undefined) {
         throw new Error("expected a claimed lane");
       }
-      // Advancing to the next table re-mints the key at the new position.
       await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -196,7 +214,8 @@ export function describeGlobalMaintenanceRunStoreContract(
         }),
       );
 
-      // A released lane resumes from the checkpointed cursor.
+      // A released lane resumes from the checkpointed cursor. What a
+      // release hands back is contract 2, pinned under ADP-common-029.
       await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -213,11 +232,61 @@ export function describeGlobalMaintenanceRunStoreContract(
     });
 
     it("ADP-common-029: advanceOrAck walks tables, then shards, then completes the run", async () => {
-      await begin("run-1", "owner-a");
+      const started = await begin("run-1", "owner-a");
+      // Move the wall clock off the run's asOf, well inside the lease, so
+      // the asOf assertions below have something to fail against: at the
+      // run's boundary a store that stamps `now()` onto a lane is
+      // indistinguishable from one that reads the run row back.
+      backend.clock.advance(MINUTE_MS);
+      // Every checkpoint below passes an `asOf` off the run's boundary:
+      // it is an input the store records a page under, never a way to
+      // move the run's own boundary, so the lanes handed back further
+      // down must still carry `started.asOf`.
+      const offBoundary = new Date(started.asOf.getTime() + MINUTE_MS);
       const [lane] = await store.claimLanes("run-1", "owner-a", 1);
       if (lane === undefined) {
         throw new Error("expected a claimed lane");
       }
+
+      // Stage the other shard at a persisted position — checkpointed
+      // under a command key the caller's rule would never mint, then
+      // released — so the auto-claim below has something to hand back.
+      const [staged] = await store.claimLanes("run-1", "owner-a", 1);
+      if (staged === undefined) {
+        throw new Error("expected the second shard");
+      }
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        table: "t1",
+        cursor: "cursor-77",
+        asOf: offBoundary,
+        nextCommandKey: "command-off-rule",
+      });
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: false,
+      });
+
+      // Leave t1 mid-keyset before acking it, so "a new table starts at
+      // the head" is asserted against a lane that actually carries a
+      // cursor — a store that dragged the old one along would otherwise
+      // look identical.
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        table: "t1",
+        cursor: "cursor-9",
+        asOf: offBoundary,
+        nextCommandKey: "command-t1-page-2",
+      });
 
       const afterTable = await store.advanceOrAck({
         runId: "run-1",
@@ -226,12 +295,18 @@ export function describeGlobalMaintenanceRunStoreContract(
         shardId: lane.shardId,
         completed: true,
       });
-      expect(afterTable).toEqual({
-        next: { generation: lane.generation, shardId: lane.shardId },
-        runCompleted: false,
-      });
+      expect(afterTable.runCompleted).toBe(false);
+      const nextTable = afterTable.next;
+      if (nextTable === null) {
+        throw new Error("expected the lane's next table");
+      }
+      expect(nextTable.generation).toBe(lane.generation);
+      expect(nextTable.shardId).toBe(lane.shardId);
+      expect(nextTable.table).toBe("t2");
+      expect(nextTable.cursor).toBeNull();
+      expect(nextTable.asOf).toEqual(started.asOf);
+      expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
 
-      // Shard done → the other shard is claimed atomically.
       const afterShard = await store.advanceOrAck({
         runId: "run-1",
         leaseOwner: "owner-a",
@@ -240,13 +315,23 @@ export function describeGlobalMaintenanceRunStoreContract(
         completed: true,
       });
       expect(afterShard.runCompleted).toBe(false);
-      expect(afterShard.next).not.toBeNull();
-      expect(afterShard.next?.shardId).not.toBe(lane.shardId);
-
       const secondShard = afterShard.next;
       if (secondShard === null) {
         throw new Error("expected a next shard");
       }
+      expect(secondShard.generation).toBe(lane.generation);
+      expect(secondShard.shardId).not.toBe(lane.shardId);
+      expect(secondShard.table).toBe("t1");
+      expect(secondShard.cursor).toBe("cursor-77");
+      expect(secondShard.commandKey).toBe("command-off-rule");
+      // The run's asOf, read back from the run row — not the wall clock
+      // at auto-claim time, which has moved on. A lane carrying a
+      // different boundary would sweep a different keyset than the run it
+      // belongs to.
+      expect(secondShard.asOf).toEqual(started.asOf);
+      // It came back claimed, so nothing is left to hand out.
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+
       const finished = await completeLane(
         "run-1",
         "owner-a",
@@ -259,6 +344,229 @@ export function describeGlobalMaintenanceRunStoreContract(
       const fresh = await begin("run-2", "owner-a");
       expect(fresh.result).toBe("started");
       expect(fresh.runId).toBe("run-2");
+    });
+
+    it("ADP-common-029: the position an ack returns is still claimed", async () => {
+      await begin("run-1", "owner-a");
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: true,
+      });
+      // The advanced lane stays with the caller that was handed it: a
+      // claim can only pick up the shard nobody is driving.
+      const claimable = await store.claimLanes("run-1", "owner-a", 6);
+      expect(claimable.map((candidate) => candidate.shardId)).not.toContain(
+        lane.shardId,
+      );
+    });
+
+    it("ADP-common-029: acking a lane's last table auto-claims a lane never claimed before, at the head of its first table", async () => {
+      const started = await begin("run-1", "owner-a");
+      backend.clock.advance(MINUTE_MS);
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+
+      // The other shard is still exactly as the run created it — no
+      // checkpoint, no release. This is what an auto-claim hands back in
+      // most of a real run, so the position it carries must be the run's
+      // own starting one.
+      const advanced = await completeLane(
+        "run-1",
+        "owner-a",
+        lane.generation,
+        lane.shardId,
+      );
+      expect(advanced.runCompleted).toBe(false);
+      const virgin = advanced.next;
+      if (virgin === null) {
+        throw new Error("expected the untouched shard");
+      }
+      expect(virgin.shardId).not.toBe(lane.shardId);
+      expect(virgin.table).toBe("t1");
+      expect(virgin.cursor).toBeNull();
+      expect(virgin.asOf).toEqual(started.asOf);
+      expect(virgin.commandKey).toBe(commandKeyOf("run-1", virgin));
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+    });
+
+    it("ADP-common-029: acking a lane's last table auto-claims a released lane at the table it reached, not the run's first", async () => {
+      const started = await begin("run-1", "owner-a");
+      backend.clock.advance(MINUTE_MS);
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      const [staged] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined || staged === undefined) {
+        throw new Error("expected both shards");
+      }
+
+      // Walk the other shard off the run's first table before releasing
+      // it: stepped to t2, checkpointed there under a command key the
+      // caller's rule would never mint, then handed back. A store that
+      // carried only the cursor across a release — restarting the lane at
+      // the run's first table with t2's cursor — would sweep t1 from the
+      // middle of a keyset that is not t1's and silently skip its head.
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: true,
+      });
+      await store.checkpointLane({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        table: "t2",
+        cursor: "cursor-77",
+        asOf: started.asOf,
+        nextCommandKey: "command-off-rule",
+      });
+      await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: staged.generation,
+        shardId: staged.shardId,
+        completed: false,
+      });
+
+      const advanced = await completeLane(
+        "run-1",
+        "owner-a",
+        lane.generation,
+        lane.shardId,
+      );
+      expect(advanced.runCompleted).toBe(false);
+      const resumed = advanced.next;
+      if (resumed === null) {
+        throw new Error("expected the released shard");
+      }
+      expect(resumed.shardId).toBe(staged.shardId);
+      expect(resumed.table).toBe("t2");
+      expect(resumed.cursor).toBe("cursor-77");
+      expect(resumed.commandKey).toBe("command-off-rule");
+      expect(resumed.asOf).toEqual(started.asOf);
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(0);
+    });
+
+    it("ADP-common-029: an ack with no pending lane to hand over returns no position and leaves the run running", async () => {
+      await begin("run-1", "owner-a");
+      const lanes = await store.claimLanes("run-1", "owner-a", 6);
+      expect(lanes).toHaveLength(2);
+      const [first] = lanes;
+      if (first === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+
+      // Both shards are claimed, so finishing one has nothing to hand
+      // back — the everyday case in a cron that claims its lanes up
+      // front. `runCompleted` is false because the other lane is still
+      // claimed, not done: a store that reads "no pending lanes" as
+      // "run finished" would strand it.
+      const acked = await completeLane(
+        "run-1",
+        "owner-a",
+        first.generation,
+        first.shardId,
+      );
+      expect(acked).toEqual({ next: null, runCompleted: false });
+    });
+
+    it("ADP-common-029: a release hands back no position even while another lane is pending", async () => {
+      await begin("run-1", "owner-a");
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+
+      // The other shard is pending and the release frees capacity, but a
+      // release must still claim nothing: every call site drops this
+      // return value, so a lane handed back here would stay claimed with
+      // nobody driving it until the lease lapses.
+      const released = await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: false,
+      });
+      expect(released).toEqual({ next: null, runCompleted: false });
+      expect(await store.claimLanes("run-1", "owner-a", 6)).toHaveLength(2);
+    });
+
+    it("ADP-common-029: an ack walks the table set the run was created with, not the deployment's current one, across a resume", async () => {
+      await begin("run-1", "owner-a");
+      const [lane] = await store.claimLanes("run-1", "owner-a", 1);
+      if (lane === undefined) {
+        throw new Error("expected a claimed lane");
+      }
+
+      // A deploy re-orders and renames the sweep tables mid-run. The run
+      // snapshotted its set at creation, so the walk must ignore this.
+      await backend.setMaintenanceTables("authStatePrune", ["t9", "t8", "t7"]);
+
+      // The next cron picks the run up again under the new configuration.
+      // Resuming must not re-take the snapshot: a store that re-reads the
+      // deployment's set here walks the lane onto a table the run never
+      // started on, and its cursor points into another table's keyset.
+      // The lease is still this owner's, so the claim above survives.
+      const resumed = await begin("run-2", "owner-a");
+      expect(resumed.runId).toBe("run-1");
+      expect(resumed.result).toBe("resumed");
+
+      const afterTable = await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: true,
+      });
+      const nextTable = afterTable.next;
+      if (nextTable === null) {
+        throw new Error("expected the lane's next table");
+      }
+      expect(nextTable.table).toBe("t2");
+      expect(nextTable.commandKey).toBe(commandKeyOf("run-1", nextTable));
+
+      // The old set also decides where the lane ends: after its two
+      // tables the shard is done.
+      const afterShard = await store.advanceOrAck({
+        runId: "run-1",
+        leaseOwner: "owner-a",
+        generation: lane.generation,
+        shardId: lane.shardId,
+        completed: true,
+      });
+      const secondShard = afterShard.next;
+      if (secondShard === null) {
+        throw new Error("expected the untouched shard");
+      }
+      expect(secondShard.table).toBe("t1");
+
+      // Everything above is also true of a backend whose
+      // `setMaintenanceTables` did nothing, so the replacement has to be
+      // observed too: finish the in-flight run and start the next one,
+      // which snapshots the set the deploy installed.
+      const finished = await completeLane(
+        "run-1",
+        "owner-a",
+        secondShard.generation,
+        secondShard.shardId,
+      );
+      expect(finished).toEqual({ next: null, runCompleted: true });
+
+      const afterDeploy = await begin("run-3", "owner-a");
+      expect(afterDeploy.result).toBe("started");
+      const fresh = await store.claimLanes(afterDeploy.runId, "owner-a", 6);
+      expect(fresh.map((claimed) => claimed.table)).toEqual(["t9", "t9"]);
     });
 
     it("ADP-common-030: recoverLease reclaims only a lapsed foreign lease", async () => {
@@ -279,7 +587,6 @@ export function describeGlobalMaintenanceRunStoreContract(
           new Date(backend.clock.now().getTime() + LEASE_MS),
         ),
       ).toBe(true);
-      // The previous owner lost the lease.
       await expectConflict(store.claimLanes("run-1", "owner-a", 6));
       expect(await store.claimLanes("run-1", "owner-b", 6)).toHaveLength(2);
     });
@@ -316,7 +623,6 @@ export function describeGlobalMaintenanceRunStoreContract(
         "s1",
         "s2",
       ]);
-      // The reclaimed lane resumes from the checkpointed keyset.
       const resumedLane = reclaimed.find(
         (lane) => lane.shardId === first.shardId,
       );

@@ -540,11 +540,12 @@ describe("pruneExpiredAuthState", () => {
   });
 
   it("a budget-exhausted cron releases every claimed lane before returning", async () => {
-    // 32 lanes x 4 tables = 128 commands exceed the 100-command budget,
+    // 32 lanes x 5 tables = 160 commands exceed the 100-command budget,
     // so the first cron must break mid-run. Its claimed lanes have to be
     // released on the way out: `claimLanes` never returns claimed lanes
-    // and the same-owner cron renews the lease each run, so a lane left
-    // claimed would be stuck forever.
+    // and a cron arriving within the lease renews this process's own, so
+    // a lane left claimed stays stuck until a gap long enough to lapse
+    // the lease lets a cron reclaim it.
     const h = createTestHarness({
       maintenanceShardIds: Array.from({ length: 16 }, (_, i) => `shard-${i}`),
       routingGenerations: ["gen-old", "gen-new"],
@@ -589,10 +590,11 @@ describe("pruneExpiredAuthState", () => {
     }
   });
 
-  it("a lane whose next table the sweep order cannot name is released, not left claimed", async () => {
-    // A run snapshotted under a table set the usecase's order hint does
-    // not continue: acking the first table leaves the lane on a table the
-    // hint cannot name.
+  it("TC-identity-347: a run whose table set differs from this deployment's order still completes in one cron", async () => {
+    // A run snapshotted under a table order this deployment no longer
+    // uses — what a table-set change looks like across a deploy
+    // boundary. Every position comes from the run itself, so the order
+    // difference cannot stall the walk.
     const h = createTestHarness({
       maintenanceTablesByKind: {
         authStatePrune: ["identity_removal_receipts", "sessions"],
@@ -600,42 +602,157 @@ describe("pruneExpiredAuthState", () => {
     });
     seedSession(h, new Date(h.clock.now().getTime() - 1));
 
-    const first = await cron(h);
-    expect(first.continued).toBe(true);
+    const view = await cron(h);
+    expect(view.sessions).toBe(1);
+    expect(view.continued).toBe(false);
+    expect(h.backend.sessions.size).toBe(0);
+    expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
     for (const run of h.backend.maintenanceRuns.values()) {
       expect(
         run.lanes.filter((lane) => lane.status === "claimed"),
       ).toHaveLength(0);
     }
-
-    // The released lane keeps its position, so the next cron finishes it.
-    const second = await cron(h);
-    expect(second.sessions).toBe(1);
-    expect(second.continued).toBe(false);
-    expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
   });
 
-  it("a failing lane release is logged rather than thrown, and leaves the lane claimed with the run still unfinished", async () => {
-    // The release runs on the way out, including out of a throw whose own
-    // cause makes the release fail too, so it must not rethrow — the run
-    // still returns its view. What it must not do is hide the
-    // consequence: the lane stays `claimed`, and `PRUNE_LEASE_OWNER`
-    // being a process constant means this process's next cron renews its
-    // own lease, so the lapsed-lease reclaim never fires for it.
-    // `continued: true` here is produced by the unnamable-next-table path
-    // this fixture reuses, not by the release failure — the assignment in
-    // `releaseLane`'s catch is defensive and has no observable path yet.
+  it("TC-identity-348: more shards than the concurrent-claim cap are drained from the ack's next lane, without a release round-trip", async () => {
     const h = createTestHarness({
-      maintenanceTablesByKind: {
-        authStatePrune: ["identity_removal_receipts", "sessions"],
-      },
+      maintenanceShardIds: Array.from({ length: 8 }, (_, i) => `shard-${i}`),
     });
-    seedSession(h, new Date(h.clock.now().getTime() - 1));
+    const realStore = h.workerContainer.maintenanceRunStore;
+    let releases = 0;
+    const container = {
+      ...h.workerContainer,
+      maintenanceRunStore: {
+        ...realStore,
+        async advanceOrAck(
+          input: Parameters<typeof realStore.advanceOrAck>[0],
+        ) {
+          if (!input.completed) {
+            releases += 1;
+          }
+          return realStore.advanceOrAck(input);
+        },
+      },
+    };
+
+    const view = await pruneExpiredAuthState({
+      container,
+      input: { type: "cron" },
+    });
+    expect(view.continued).toBe(false);
+    expect(h.backend.maintenanceRuns.values()[0]?.status).toBe("completed");
+    // The shards past the cap arrive through the ack itself, so nothing
+    // is ever handed back to be claimed again.
+    expect(releases).toBe(0);
+  });
+
+  it("TC-identity-349: a table this deployment cannot sweep is skipped so the run still completes", async () => {
+    const h = createTestHarness();
+    const now = h.clock.now();
+    seedSession(h, new Date(now.getTime() - 1));
+    // A run created before this deployment dropped the sweep for one of
+    // its tables, its lease already lapsed so this cron resumes it. The
+    // stored `asOf` is what the resumed sweep uses as its boundary, so
+    // it has to sit at or after the rows seeded above.
+    h.backend.maintenanceRuns.set("stale-run", {
+      runId: "stale-run",
+      kind: "authStatePrune",
+      status: "running",
+      asOf: now,
+      leaseOwner: "gone",
+      leaseUntil: new Date(now.getTime() - 1),
+      tables: ["job_tombstones", "sessions"],
+      lanes: [
+        {
+          generation: "gen-1",
+          shardId: "shard-0",
+          status: "pending",
+          tableIndex: 0,
+          cursor: null,
+          commandKey: "stale-run:gen-1:shard-0:job_tombstones:",
+        },
+      ],
+      expiresAt: null,
+    });
+
+    const view = await cron(h);
+    expect(view.sessions).toBe(1);
+    expect(h.backend.sessions.size).toBe(0);
+    expect(h.backend.maintenanceRuns.get("stale-run")?.status).toBe(
+      "completed",
+    );
+    // The skip left nothing behind: the single cron drove the resumed run
+    // to the end rather than deferring the table it could not sweep.
+    expect(view.continued).toBe(false);
+    const skipped = h.logger
+      .byLevel("error")
+      .find((entry) => entry.message.includes("unknown sweep table"));
+    expect(skipped?.meta).toMatchObject({
+      table: "job_tombstones",
+      runId: "stale-run",
+      generation: "gen-1",
+      shardId: "shard-0",
+    });
+
+    // Skipping is not a delete failure. The run above still swept
+    // `sessions`, so only a run whose tables are *all* unknown can
+    // observe that: with no successful delete to offset a counted skip,
+    // the invocation would throw `SystemError(DatabaseError)` and an
+    // older table set would be indistinguishable from a database outage.
+    h.backend.maintenanceRuns.set("all-unknown-run", {
+      runId: "all-unknown-run",
+      kind: "authStatePrune",
+      status: "running",
+      asOf: now,
+      leaseOwner: "gone",
+      leaseUntil: new Date(now.getTime() - 1),
+      tables: ["job_tombstones"],
+      lanes: [
+        {
+          generation: "gen-1",
+          shardId: "shard-0",
+          status: "pending",
+          tableIndex: 0,
+          cursor: null,
+          commandKey: "all-unknown-run:gen-1:shard-0:job_tombstones:",
+        },
+      ],
+      expiresAt: null,
+    });
+
+    await expect(cron(h)).resolves.toMatchObject({ continued: false });
+    expect(h.backend.maintenanceRuns.get("all-unknown-run")?.status).toBe(
+      "completed",
+    );
+  });
+
+  it("a failing lane release is logged rather than thrown, and leaves the lanes claimed with the run still unfinished", async () => {
+    // The release runs on the way out, including out of a throw whose own
+    // cause makes the release fail too, so it must not rethrow — the
+    // original failure is what has to reach the caller. What it must not
+    // do is hide the consequence: the lanes stay `claimed`, and
+    // `PRUNE_LEASE_OWNER` being a process constant means that for as long
+    // as crons arrive within the lease this process keeps renewing its
+    // own, so the lapsed-lease reclaim never fires for them.
+    // `releaseLane`'s `workRemains = true` cannot be observed here because
+    // the usecase throws instead of returning a view; it is kept for a
+    // future call site that returns one.
+    const h = createTestHarness({
+      maintenanceShardIds: ["shard-0", "shard-1", "shard-2", "shard-3"],
+    });
+    const past = new Date(h.clock.now().getTime() - 1);
+    // More than one page, so the first lane reaches `checkpointLane`.
+    for (let i = 0; i < 150; i += 1) {
+      seedAuthToken(h, past);
+    }
     const realStore = h.workerContainer.maintenanceRunStore;
     const container = {
       ...h.workerContainer,
       maintenanceRunStore: {
         ...realStore,
+        async checkpointLane(): Promise<void> {
+          throw new Error("checkpoint down");
+        },
         async advanceOrAck(
           input: Parameters<typeof realStore.advanceOrAck>[0],
         ) {
@@ -647,12 +764,9 @@ describe("pruneExpiredAuthState", () => {
       },
     };
 
-    const view = await pruneExpiredAuthState({
-      container,
-      input: { type: "cron" },
-    });
-
-    expect(view.continued).toBe(true);
+    await expect(
+      pruneExpiredAuthState({ container, input: { type: "cron" } }),
+    ).rejects.toThrow("checkpoint down");
     expect(
       h.logger
         .byLevel("error")
@@ -660,13 +774,12 @@ describe("pruneExpiredAuthState", () => {
           entry.message.includes("[pruneExpiredAuthState] lane release failed"),
         ),
     ).toBe(true);
-    // The lane really is stuck — the report is what has to stay honest.
     expect(
       h.backend.maintenanceRuns
         .values()
         .flatMap((run) => run.lanes)
         .filter((lane) => lane.status === "claimed"),
-    ).toHaveLength(1);
+    ).toHaveLength(4);
   });
 
   it("TC-identity-172: a second cron against a live foreign lease is a no-op", async () => {

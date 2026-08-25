@@ -1,6 +1,6 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-24）
+生成元: `spec/domains/`（最終同期: 2026-08-25）
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -35,7 +35,7 @@
 | DOM-common-027 | `GlobalMaintenanceRunStore.beginOrResumeKind` | `spec/domains/index.md#ScopeKey-と永続化境界` | kind ごとの最古 run を開始または再開し lease 状態を返す |
 | DOM-common-028 | `GlobalMaintenanceRunStore.claimLanes` | `spec/domains/index.md#ScopeKey-と永続化境界` | maintenance lane を有界に claim する |
 | DOM-common-029 | `GlobalMaintenanceRunStore.checkpointLane` | `spec/domains/index.md#ScopeKey-と永続化境界` | cursor と次 command key を原子的に checkpoint する |
-| DOM-common-030 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、shard または run 完了を返す |
+| DOM-common-030 | `GlobalMaintenanceRunStore.advanceOrAck` | `spec/domains/index.md#ScopeKey-と永続化境界` | lane を進め、進めた先の position と shard / run 完了を返す |
 | DOM-common-031 | `GlobalMaintenanceRunStore.recoverLease` | `spec/domains/index.md#ScopeKey-と永続化境界` | 失効した run lease を owner が回収する |
 | DOM-common-032 | `GlobalMaintenanceRunStore.pruneCompleted` | `spec/domains/index.md#ScopeKey-と永続化境界` | 期限切れ completed run を keyset で回収する |
 | DOM-common-033 | `MailSender.send` | `spec/domains/index.md#MailSenderapplicationportsmailsenderts` | locale と template を指定してメールを送る |

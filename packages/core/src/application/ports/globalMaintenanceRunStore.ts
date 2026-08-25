@@ -3,6 +3,13 @@ export type MaintenanceKind =
   | "jobTombstonePrune"
   | "accountManifestPrune";
 
+/**
+ * A lane's current position, shared by `claimLanes` and `advanceOrAck`.
+ *
+ * `generation` is the UserId **routing** reshard generation — old and new
+ * routings are worked as separate lanes — not a version of the sweep
+ * table set. The table set is versioned by the run that snapshotted it.
+ */
 export type MaintenanceLane = Readonly<{
   generation: string;
   shardId: string;
@@ -37,6 +44,61 @@ export type MaintenanceLane = Readonly<{
  * claim in both paths.
  * Completed runs are retained 30 days, then reclaimed via the
  * `(expiresAt, runId)` keyset in pages of at most 100.
+ *
+ * Table walk order (contract 1): the **ordered table set fixed when the
+ * run was created** is the single source of truth. The run row holds that
+ * set, a lane's position is an index into it, and the set does not move
+ * while the run is resumed even if the deployment's configuration
+ * changed in between. Callers hold no table order of their own.
+ * (Contracts 1–4: spec/adr/061.)
+ *
+ * Advancing returns the position it advanced to (contract 2):
+ * `advanceOrAck` hands back the lane with its `table` / `cursor` /
+ * `asOf` / `commandKey`. `asOf` is the **run's own boundary, fixed on the
+ * run row when the run was created**: every lane of a run carries that
+ * one value — the ones `claimLanes` hands out no less than the ones an
+ * ack does — and neither the wall clock at claim / ack time nor
+ * `checkpointLane`'s `asOf` input overwrites it. A lane carrying a
+ * different boundary would sweep a different keyset than the run it
+ * belongs to, breaking "a resumed run keeps its original (oldest)
+ * `asOf`" from the lane side.
+ * Stepping the same lane to its next table yields
+ * `cursor: null` — a new table starts at the head of the keyset. Acking
+ * a lane's last table auto-claims another pending lane and returns *that
+ * lane's persisted position*, wherever that lane stands: the head of the
+ * run's first table for one never claimed, the checkpointed table and
+ * cursor for one already worked and released. `next` is `null` in two
+ * situations. A release (`completed: false`) only puts the lane back to
+ * `pending` and never claims a new one, even while other lanes are
+ * pending. An ack that finds no pending lane to hand over returns none
+ * either — which covers both the ack that finishes the run and an ack
+ * with lanes still `claimed` by their owners, so `next === null` never
+ * by itself means the run is over. `runCompleted` answers that
+ * separately and is true only once every lane is done.
+ *
+ * `commandKey` is minted by whichever side created the position
+ * (contract 3). (a) Every position the **store** creates — the head
+ * position each lane starts at when the run is created, and the position
+ * a lane is stepped to at its next table — carries the key the caller
+ * derives from that position
+ * (`${runId}:${generation}:${shardId}:${table}:${cursor ?? ""}`), so a
+ * Queue outbox folds the store's mint and the caller's re-derivation
+ * into one key. (b) On every path that hands back an **existing**
+ * position — the auto-claimed lane above, and every lane `claimLanes`
+ * hands out — the store returns that lane's persisted
+ * `commandKey` unchanged and does **not** re-mint it. For a lane already
+ * worked that value came from the caller's `checkpointLane`
+ * `nextCommandKey`, whose rule only the caller knows, and re-minting it
+ * would part it from the continuation request already queued under it.
+ *
+ * A non-null `next` is claimed (contract 4). The caller that **drives**
+ * lanes — the cron path — owes it either processing or a release. A
+ * single continuation turn is not a driver, and handing its final ack's
+ * lane on to the next turn is not possible today: the position never
+ * leaves the usecase, whose view carries only `continued`, so putting it
+ * on the output is part of wiring the queue producer. Such a lane sits
+ * claimed until its lease lapses and a cron reclaims it, which is what
+ * each usecase's Runtime wiring note records.
  *
  * Error contract: `ConflictError` (foreign lease), `SystemError(DatabaseError)`.
  */
@@ -82,12 +144,7 @@ export interface GlobalMaintenanceRunStore {
       shardId: string;
       completed: boolean;
     }>,
-  ): Promise<
-    Readonly<{
-      next: Readonly<{ generation: string; shardId: string }> | null;
-      runCompleted: boolean;
-    }>
-  >;
+  ): Promise<Readonly<{ next: MaintenanceLane | null; runCompleted: boolean }>>;
   /** Returns whether the lapsed lease was reclaimed by `leaseOwner`. */
   recoverLease(
     runId: string,

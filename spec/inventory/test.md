@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-24）
+生成元: `spec/testcases/`（最終同期: 2026-08-25）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -303,7 +303,7 @@
 | TC-identity-162 | pruneExpiredAuthState: 4 種とも対象が 0 件 — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | すべて 0 件で成功する |
 | TC-identity-163 | pruneExpiredAuthState: 直前に実行済み — 続けてもう一度実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 2 回目は対象が残っていないため 4 種とも 0 件で終わる（冪等） |
 | TC-identity-164 | pruneExpiredAuthState: `AuthTokenRepository.deleteExpired` が失敗する — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 当該shard/tableの継続だけをbackoffし、他shard/tableの最低枠は進む |
-| TC-identity-165 | pruneExpiredAuthState: あるshardの4表すべてが失敗する — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る |
+| TC-identity-165 | pruneExpiredAuthState: そのinvocationで試みた削除がすべて失敗する（掃けない表のskipは分子にも分母にも入らない） — 実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る |
 | TC-identity-166 | pruneExpiredAuthState: 実行時 — Unit of Work の利用を確認する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | table削除を横断UoWへ入れず、routing catalog上のcontinuation cursor更新だけを原子的に保存する |
 | TC-identity-167 | pruneExpiredAuthState: 実行時 — 基準時刻の取得元を確認する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 基準時刻は外部入力で受けず `clock` から得る |
 | TC-identity-168 | pruneExpiredAuthState: 1 shardの各表に期限切れ行が250件ある — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | 1 commandは1表100件以下でyieldし、generation/table/shard cursorから継続して全件を回収する |
@@ -485,6 +485,9 @@
 | TC-identity-344 | completeOAuthSignIn: 既存利用者への追加が commit 後・`activate` 前で止まり、`reserved` が TTL 失効したあと、残骸を含めて上限 8 件の利用者が再サインインする | spec/testcases/identity/completeOAuthSignIn.md#テストケース-completeoauthsignin | `IdentityLimitExceeded` にならず、identity は 8 件のままで、claim が `active` に復旧し、セッションが発行される |
 | TC-identity-345 | removeIdentity: `beginRelease` 済み・`release` 前で中断した解放の removal event を再配送する | spec/testcases/identity/removeIdentity.md#テストケース-removeidentity | 観測が null でも `release(operationId)` が走って `releasing` 行が回収され、別の利用者がその鍵を `reserve` できる |
 | TC-identity-346 | removeIdentity: 解放が完了したあと別の利用者が同じ provider account を連携した状態で、同じ removal event を再配送する | spec/testcases/identity/removeIdentity.md#テストケース-removeidentity | 所有者が一致しない claim は観測が null になるため取り壊しは走らず、claim は `active` のままその利用者が持ち続け、連携した identity 行も残る |
+| TC-identity-347 | pruneExpiredAuthState: runの表集合がこの配備の既定の表集合と順序も内容も違う（表構成を変えたデプロイをまたいでresumeする） — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | runのスナップショットの順に最後まで進み、順序ずれで停滞しない |
+| TC-identity-348 | pruneExpiredAuthState: shard数が同時claim上限（6）を超える — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | ackが返す次laneをそのまま処理し、解放して取り直す往復をしない |
+| TC-identity-349 | pruneExpiredAuthState: runの表集合にこの配備がsweepを持たない表が含まれる — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | その表を飛ばしてrunを完走させ、飛ばした事実をrun / laneを特定できる形でログに残し、失敗には数えない |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |

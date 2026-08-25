@@ -1,3 +1,4 @@
+import type { MaintenanceKind } from "../../../application/ports/globalMaintenanceRunStore";
 import type { ScopeKey } from "../../../application/scope";
 import type { UserId } from "../../../domain/identity/valueObject";
 import type {
@@ -153,6 +154,18 @@ export function makeMemoryConformanceBackend(
           membershipId: edge.membershipId,
         });
       }
+    },
+    async setMaintenanceTables(
+      kind: MaintenanceKind,
+      tables: readonly string[],
+    ): Promise<void> {
+      // Writing the record value in place is what a mid-run deploy does to
+      // this backend: `beginOrResumeKind` snapshots the set onto the run
+      // row, so only runs created *after* this call see it. Keeping the
+      // value slot writable is therefore load-bearing — declaring the
+      // field `Readonly<Record<...>>` would leave contract 1 with no
+      // executable form.
+      backend.maintenanceTablesByKind[kind] = tables;
     },
   };
 }

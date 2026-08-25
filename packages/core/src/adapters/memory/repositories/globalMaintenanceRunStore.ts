@@ -255,39 +255,38 @@ export function createMemoryGlobalMaintenanceRunStore(
         return { next: null, runCompleted: false };
       }
       if (lane.tableIndex + 1 < run.tables.length) {
-        const advanced: MaintenanceLaneRow = {
+        const stepped: MaintenanceLaneRow = {
           ...lane,
           tableIndex: lane.tableIndex + 1,
           cursor: null,
         };
-        run = replaceLane(run, {
-          ...advanced,
+        const advanced: MaintenanceLaneRow = {
+          ...stepped,
           commandKey: commandKeyOf(
             run.runId,
-            advanced,
-            run.tables[advanced.tableIndex] ?? "",
+            stepped,
+            run.tables[stepped.tableIndex] ?? "",
           ),
-        });
-        table.set(input.runId, run);
-        return {
-          next: { generation: lane.generation, shardId: lane.shardId },
-          runCompleted: false,
         };
+        run = replaceLane(run, advanced);
+        table.set(input.runId, run);
+        return { next: toLane(run, advanced), runCompleted: false };
       }
       run = replaceLane(run, { ...lane, status: "done" });
       const nextPending = run.lanes.find(
         (candidate) => candidate.status === "pending",
       );
       if (nextPending !== undefined) {
-        run = replaceLane(run, { ...nextPending, status: "claimed" });
-        table.set(input.runId, run);
-        return {
-          next: {
-            generation: nextPending.generation,
-            shardId: nextPending.shardId,
-          },
-          runCompleted: false,
+        // An existing position: its stored table, cursor and command key
+        // come back untouched. Re-minting the key here would part it from
+        // the continuation the caller already queued under it.
+        const claimed: MaintenanceLaneRow = {
+          ...nextPending,
+          status: "claimed",
         };
+        run = replaceLane(run, claimed);
+        table.set(input.runId, run);
+        return { next: toLane(run, claimed), runCompleted: false };
       }
       const runCompleted = run.lanes.every(
         (candidate) => candidate.status === "done",
@@ -335,7 +334,6 @@ export function createMemoryGlobalMaintenanceRunStore(
       limit: number,
     ) {
       const effectiveLimit = Math.min(Math.max(0, limit), PRUNE_PAGE_LIMIT);
-      // `(expiresAt, runId)` keyset, encoded `${expiresAtISO} ${runId}`.
       const keysetOf = (run: MaintenanceRunRow): string =>
         `${(run.expiresAt ?? new Date(0)).toISOString()} ${run.runId}`;
       const reclaimable = table

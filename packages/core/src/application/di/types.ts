@@ -200,8 +200,10 @@ export type RequestContainer = SharedDeps &
 /**
  * Sweep tables owned by `pruneExpiredAuthState`
  * (spec/usecases/identity.md). Every table with an `expiresAt` retention
- * window belongs here — this union is what makes a missing registration
- * a type error rather than a table that is never collected.
+ * window belongs here: a missing registration is a type error on every
+ * call routed through this union, but a table that reaches the usecase
+ * through a run's own table set (`readonly string[]`) is skipped at
+ * runtime instead of being collected (spec/adr/062).
  */
 export type AuthStateTable =
   | "sessions"

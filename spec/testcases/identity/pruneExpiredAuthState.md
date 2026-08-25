@@ -17,7 +17,7 @@
 | 4 種とも対象が 0 件 | 実行する | すべて 0 件で成功する | |
 | 直前に実行済み | 続けてもう一度実行する | 2 回目は対象が残っていないため 4 種とも 0 件で終わる（冪等） | |
 | `AuthTokenRepository.deleteExpired` が失敗する | 実行する | 当該shard/tableの継続だけをbackoffし、他shard/tableの最低枠は進む | |
-| あるshardの4表すべてが失敗する | 実行する | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る | |
+| そのinvocationで試みた削除がすべて失敗する（掃けない表のskipは分子にも分母にも入らない） | 実行する | cursorを失わず再試行し、上限超過時はDLQと運用通知へ送る | |
 | 実行時 | Unit of Work の利用を確認する | table削除を横断UoWへ入れず、routing catalog上のcontinuation cursor更新だけを原子的に保存する | |
 | 実行時 | 基準時刻の取得元を確認する | 基準時刻は外部入力で受けず `clock` から得る | |
 | 1 shardの各表に期限切れ行が250件ある | Cronを実行する | 1 commandは1表100件以下でyieldし、generation/table/shard cursorから継続して全件を回収する | |
@@ -31,3 +31,6 @@
 | completed runの`expiresAt`が固定`asOf`と同時刻 | 共通prunerを実行する | `expiresAt <= asOf`として回収し、1ミリ秒後の行は残す | |
 | completed runが101件あり、最初の100件commit後に応答を失う | 共通prunerを再実行する | 同じcursorから冪等に再実行し、100+1件を欠落なく回収する | |
 | LoginAttempt/OAuthStateが同じ`expiresAt`で101件ある | 実行する | それぞれ`key` / `state`をtie-breakにした複合keysetで100+1件を重複・欠落なく回収する | |
+| runの表集合がこの配備の既定の表集合と順序も内容も違う（表構成を変えたデプロイをまたいでresumeする） | Cronを実行する | runのスナップショットの順に最後まで進み、順序ずれで停滞しない | |
+| shard数が同時claim上限（6）を超える | Cronを実行する | ackが返す次laneをそのまま処理し、解放して取り直す往復をしない | |
+| runの表集合にこの配備がsweepを持たない表が含まれる | Cronを実行する | その表を飛ばしてrunを完走させ、飛ばした事実をrun / laneを特定できる形でログに残し、失敗には数えない | |
