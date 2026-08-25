@@ -1,0 +1,32 @@
+{
+  "include": ["src/adapters/cloudflare/**/*"],
+  "compilerOptions": {
+    // Workers, not a browser: the runtime globals come from
+    // `@cloudflare/workers-types`, which collides with `lib.dom`. That
+    // collision is why this tree is excluded from the package's main
+    // tsconfig rather than sharing its `lib` / `types`. `node` is still
+    // listed because `nodejs_compat` really does provide
+    // `node:async_hooks` and `node:crypto` on workerd.
+    "lib": ["ESNext"],
+    "types": [
+      "@cloudflare/workers-types/experimental",
+      "node",
+      "@cloudflare/vitest-plugin/types",
+      "vitest/globals"
+    ],
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true
+  }
+}

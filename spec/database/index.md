@@ -26,11 +26,11 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 | global D1: Identity | `users`, `identities`, `identity_removal_receipts`, `sessions`, `auth_tokens`, `login_attempts`, `external_connections`, `oauth_flow_states` |
 | global D1: directory / operation | `identity_unique_reservations`, `membership_directory`, `workspace_slug_reservations`, `invitation_routes`, `note_routes`, `distributed_operations`, `account_deletion_manifests`, `global_maintenance_runs`, `job_slots` |
 | global D1: projection | `workspace_directory`, `job_history`, `job_history_removal_tombstones`, `job_history_target_routes`, `job_target_tombstones`, `public_note_search`, `public_note_search_tags`, `public_note_search_fts` |
-| global D1: infrastructure | `outbox_events`, `processed_events`, `_occ_guard` |
+| global D1: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scope_task_due_index` |
 | scope DO: Workspace | `workspaces`, `memberships`, `invitations`, `membership_removal_locks`, `workspace_deletion_manifests`（workspace scope のみ） |
 | scope DO: business | `stored_files`, `reference_import_attempts`, `reference_import_summaries`, `notes`, `note_projection_revisions`, `note_revisions`, `tags`, `tag_assignments`, `backup_records`, `jobs`, `storage_quotas`, `llm_usages` |
 | scope DO: local projection | `note_search`, `note_search_tags`, `note_search_fts` |
-| scope DO: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scheduled_tasks`, `tag_operations`, `tag_operation_locks`, `job_removal_manifests`, `scope_job_admission_leases`, `move_authorization_locks`, `applied_operations` |
+| scope DO: infrastructure | `_scope_identity`, `outbox_events`, `processed_events`, `_occ_guard`, `scheduled_tasks`, `tag_operations`, `tag_operation_locks`, `job_removal_manifests`, `scope_job_admission_leases`, `move_authorization_locks`, `applied_operations` |
 
 `processed_events` の主キーは global / scope とも (`consumer`, `event_id`) とする。`scheduled_tasks` は (`kind`, `operation_id`) を一意にし、次の Alarm 時刻は下記 `scheduled_tasks` の規則で決める。`applied_operations` は note move・membership command・account deletion の operation ID を scope ごとに重複排除する（`AppliedOperationStore.markApplied` の `(operationId, commandKey)`。列は 2 つに分けず 1 つへ畳む — 下記 `applied_operations`）。同じ表が account deletion の barrier receipt も持つが、そちらは `ScopeCleanupAdmissionStore` の担当で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。
 
@@ -952,7 +952,61 @@ indexes:
 
 projection consumerはcurrent routeを解決し、scopeのatomic snapshotとversion付きIdentity/Workspace current stateを読む。routeが`purging` / `tombstone`なら削除する。本体・tag表・FTSは1つのD1 batchで置換する。比較は階層化し、routeVersionが大きければowner context切替として残り3成分をリセットして受理、同routeVersion内だけ`(projection_revision, author_version, workspace_version)`を成分比較する。大小が混在するsnapshotは書かず、全sourceを読み直して再試行する。
 
+### 両 plane 共通の infrastructure table
+
+#### _occ_guard
+
+条件付き更新が満たされなかったことを、原子適用の単位ごと中断させるための表。global D1 と scope DO の両方に置く。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `id` | integer | PK, `CONSTRAINT _occ_guard_conflict CHECK (id <> 0)` |
+
+**この表は行を持たない。違反されるために存在する。** 原子適用の単位は D1 の `batch()` と scope DO の `transactionSync` であり、どちらも「条件付き `UPDATE ... WHERE version = :expected` が 0 行に当たった」ことをエラーにしない（SQLite は 0 行更新を成功として返す）。中断させる手段がこの表である。
+
+期待が**成り立たないときにだけ**実行され、かつ実行されれば必ず `CHECK` に反する 1 文を、条件付き更新の**直前に**同じ単位へ積む。
+
+```sql
+INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つときだけ行を返す SELECT>);
+```
+
+- 直前に置くのは、1 つの batch / transaction の中で後続の文が先行文の効果を見るため。更新のあとに置いた guard は、自分が書いた版を読んでしまう
+- 制約名を固定するのは、駆動側のエラーメッセージからこの中断だけを識別し、`ConflictError("OPTIMISTIC_LOCK_FAILURE")` へ翻訳できるようにするため。他の `CHECK` 違反と混同しない
+- 楽観ロック以外の条件付き更新（route の CAS、uniqueness reservation の 3 分岐）も同じ仕掛けを使う。翻訳先の誤りはアダプターが決める
+
+#### scope_task_due_index
+
+`ScopeTaskQueue.listDue` のための派生索引。global D1 に置く。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `scope_type` | text | PK part, CHECK IN ('user','workspace') |
+| `scope_id` | text | PK part |
+| `kind` | text | PK part |
+| `operation_id` | text | PK part |
+| `due_at` | integer | NOT NULL |
+| `priority` | integer | NOT NULL |
+| `lease_expires_at` | integer | `status = 'running'` の行だけ NOT NULL |
+
+- **正データではない。** 正は各 scope DO の `scheduled_tasks` であり、本表は「どの scope に仕事があるか」だけを持つ。`failed` 行は載せない
+- indexes: (`priority`, `due_at`, `kind`, `operation_id`) — `ScopeTaskScheduler` の選択規則を scope をまたいで適用する
+- 更新の主体は scope object 自身である。`scheduled_tasks` に触れた write-set を commit した RPC は、**呼び出し元へ応答を返す前に**自分の担当ぶんを置き換える。したがって `run(scope, fn)` が解決した時点で索引は新しい。D1 と scope DO を 1 transaction に含めない規約（本書「共通の規約」）は保たれる — これは順序の保証であってトランザクションの結合ではない
+- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。余分な行が出ても、読み手は各行に対して改めて scope UoW を開いて `claimDue` で取り直すため、costは claim を 1 つ落とすことに留まる
+- Durable Objects を全列挙する手段が無いこと（`spec/platform/index.md`「Global Cron」: Cron は scope object を全列挙しない）と、ポート契約が `listDue` を必須としていることの両立がこの表の存在理由である
+
 ### Scope infrastructure tables
+
+#### _scope_identity
+
+scope object が自分の ScopeKey を保持する 1 行の表。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `id` | integer | PK, CHECK `id = 0`（1 行に固定） |
+| `scope_type` | text | NOT NULL, CHECK IN ('user','workspace') |
+| `scope_id` | text | NOT NULL |
+
+「scope table の `owner_type / owner_id` または `scope_type / scope_id` は object 自身の ScopeKey と一致しなければならない」（本書「共通の規約」）を検査するには、object が自分の ScopeKey を知っている必要がある。object の名前から逆算はできない — 名前は `idFromName` の入力であって読み出せる値ではなく、テスト時には名前空間の接頭辞も付く。したがって最初に到達した呼び出しが ScopeKey を書き込み、以降の呼び出しはそれとの一致を検査する。不一致は 2 つの scope が 1 つの object へ到達したことを意味し、`SystemError(DataIntegrityError)` として拒否する。
 
 #### scheduled_tasks
 

@@ -155,3 +155,122 @@ Issue #11 のチェックリストは 5 行すべてが「アダプターと物�
 - 良い点: Issue の完了条件が禁じる「スタブ・仮実装・部分実装」を守れる。配備まで含めると、この規模ではどこかを仮で置くことになりかねない。
 - トレードオフ: 本 Issue の完了時点で Cloudflare にデプロイできる状態にはならない。`CLAUDE.md` の「Reference runtime」は Node + in-memory のまま。ADR 025 は引き続き有効で、差し替えは配備スライスの仕事になる。
 - トレードオフ: 外側スライスの Issue が未起票。本 Issue の片付け時に起票する。
+
+## ADR-006: 物理スキーマに FOREIGN KEY を宣言しない
+
+### Context
+
+`spec/database/index.md` の「共通の規約」は「同じ database / domain の親子は原則 `ON DELETE CASCADE`」と定めており、`identities` / `note_revisions` / `note_projection_revisions` などは親への外部キーを持つ設計になっている。D1 は SQLite の外部キー強制を既定で有効にする。
+
+ところが適合スイートは親行を作らずに子を挿入する。`conformance/identityRepository.ts` は `userId(1)` の User 行を一度も書かないまま `identityRepository.insert` を呼び、参照バックエンドはこれを受け入れる。`noteRevisionRepository` / `noteProjection` 系も同じ形である。外部キーを宣言すると、memory が通しているケースを D1 / DO 実装だけが落とす。
+
+[ADR 046](../../spec/adr/046-port-contract-divergence.md) は食い違いを「振る舞いの正本がどちらにあるか」で倒せと言い、[ADR 026](../../spec/adr/026-port-contract-and-conformance.md) はポート定義とその JSDoc をポート契約の正本と定めている。どのポートの JSDoc も参照整合性を要求していない。plane をまたぐ後始末はイベントで行う設計（`spec/database/index.md`「リレーションと plane 境界」）であり、参照先が消えた行は「対象が存在しない」として扱うことが既に不変条件として書かれている。
+
+### Decision
+
+Cloudflare バックエンドの DDL に `FOREIGN KEY` / `REFERENCES` 句を置かない。親子の後始末はドメインイベントの購読者が行い、参照先が消えた行の扱いは spec の既存の規約どおりとする。
+
+`spec/database/index.md` の `ON DELETE CASCADE` の記述は論理的な所有関係の宣言として読み、物理制約の指示としては読まない。移行時に子を先に消す `RESTRICT` の指示（Workspace→Membership、Job parent→children）は、それらの表を持つスライスがアプリケーション側の順序として守る。
+
+### Consequences
+
+- 良い点: memory と Cloudflare が同じ適合スイートを同じ結果で通る。契約を実装都合で狭めていない。
+- 良い点: scope DO と D1 をまたぐ参照に外部キーが張れないこと（そもそも不可能）と、同一 plane 内の参照の扱いが揃う。「参照先が消えた行は対象が存在しないものとして扱う」という 1 つの規則で全体が説明できる。
+- トレードオフ: 孤児行の検出が DB の仕事でなくなる。実際の掃除は既に `note.purged` などの購読者が担っているので追加の実装は要らないが、購読者を書き忘れた場合に DB は教えてくれない。
+- トレードオフ: `spec/database/index.md` の該当記述と物理スキーマが字面では食い違う。本 ADR がその読み方を定める。
+
+## ADR-007: scope 側の schema は DO のバンドルが運び、global 側だけ migration ファイルにする
+
+### Context
+
+`spec/database/index.md` は「両者の SQL schema は同じ migration version を共有する」と定める。global D1 の migration は `.sql` ファイル群で持ちたい — `wrangler d1 migrations apply` も、テストハーネスの `readD1Migrations()` も、ディスク上のファイルを読むためである。
+
+一方 scope DO には migration runner が無い。`ctx.storage.sql` へ DDL を流せるのは object 自身だけで、外部から適用する API は存在しない。object の数に上限が無く、いつ生成されるかも事前に分からないため、「配備時に全 object へ適用する」という形も取れない。
+
+### Decision
+
+version は共有し、運び方を分ける。
+
+- global D1: `adapters/cloudflare/d1/migrations/NNNN_*.sql`。`d1/schema.ts` は表名の目録だけを持つ
+- scope DO: `adapters/cloudflare/do/schema.ts` の文字列配列。object の constructor が `blockConcurrencyWhile` の中で全文を実行する。全文が `IF NOT EXISTS` なので、活性化のたびに走っても no-op である
+
+「触られたことのない object でも表が既にある」ことが配備手順抜きで成り立つのはこの形だけである。
+
+### Consequences
+
+- 良い点: object の生成タイミングを配備が知らなくてよい。scope が増えても運用作業が増えない。
+- 良い点: scope schema の変更が DO のコード変更と同じ単位で配られる。バンドルと schema の版がずれない。
+- トレードオフ: scope 側の schema 変更は「既存 object をどう進めるか」を自前で書く必要がある。今は `IF NOT EXISTS` の追加だけで足りるが、列の変更を伴う版が来たら `_scope_identity` に schema version 列を足して分岐する形へ広げる。
+- トレードオフ: 2 つの plane の schema が別の形で書かれるので、「同じ version を共有する」ことをレビューで確かめるしかない。`GLOBAL_MIGRATION_VERSION` と `SCOPE_MIGRATION_VERSION` を並べて置き、目視で照合できるようにしてある。
+
+## ADR-008: `_occ_guard` は「違反されるための表」として、条件付き更新の直前に積む 1 文で実装する
+
+### Context
+
+[ADR 001](#adr-001-二平面-unit-of-work-を「ステージした-write-set-の原子適用」で実装する) は `_occ_guard` を使って「条件不成立を batch 内で中断させる」と決めたが、列と使い方は実装フェーズに委ねていた。
+
+制約は 3 つある。(a) D1 の `batch()` も DO の `transactionSync` も、0 行更新をエラーにしない。(b) 中断させられるのは「文がエラーを返すこと」だけである。(c) その文は、期待が成り立っているときには何もしてはならない。
+
+### Decision
+
+`_occ_guard (id integer PRIMARY KEY, CONSTRAINT _occ_guard_conflict CHECK (id <> 0))` を両 plane に置き、次の 1 文を条件付き更新の**直前**に積む。
+
+```sql
+INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つときだけ行を返す SELECT>)
+```
+
+期待が成り立てば `SELECT` は 0 行を返し、`INSERT` は何も入れない。成り立たなければ `id = 0` を入れようとして `CHECK` に反し、単位ごと中断する。**この表は 1 行も持たない。** 制約名を固定してあるので、駆動側のエラーメッセージからこの中断だけを識別して `ConflictError("OPTIMISTIC_LOCK_FAILURE")` へ翻訳できる（`sql/errors.ts` の `classifySqlError`）。
+
+直前に積むのは、1 つの単位の中で後続の文が先行文の効果を見るためである。更新のあとに置いた guard は自分が書いた版を読む。
+
+### Consequences
+
+- 良い点: 追加の列も、読み書きする状態も要らない。表の存在そのものが仕掛けである。
+- 良い点: 楽観ロック以外の条件付き更新（route の CAS、uniqueness reservation の 3 分岐、`scheduled_tasks` の claim）にも同じ形が使える。翻訳先の誤りだけをアダプターが決める。
+- トレードオフ: どの guard が発火したかを駆動側のメッセージから区別できない。実装は「ステージ時に読んだ値で先に判定して固有のエラーを投げ、guard は同時実行に対する最後の砦にする」という二段構えを取る。commit 時に発火した guard が返すのは一律 `OPTIMISTIC_LOCK_FAILURE` である。
+- トレードオフ: 1 つの条件付き更新につき SQL 文が 1 つ増える。1 commit あたりの文数が最大 2 倍になるので、`spec/platform/index.md` の D1 query 予算（1 invocation 500）に対する見積もりはこの倍率込みで読む必要がある。
+
+## ADR-009: リポジトリは駆動を直接触らず `SqlSession` を受け取る
+
+### Context
+
+[ADR 001](#adr-001-二平面-unit-of-work-を「ステージした-write-set-の原子適用」で実装する) は「読みは実 SQL + ステージ済み書き込みのオーバーレイ」と決めたが、その層をどこに置くかは決めていなかった。
+
+同じリポジトリが 2 つの文脈で呼ばれる。UoW の中（書きはステージ、読みは read-your-writes）と、UoW の外（`LoginAttemptStore` / `OAuthStateStore` / `NoteRouteStore` など、設計が意図的に UoW の外へ置いた原子的ストアと、読み取り専用サービス）である。`ConformanceBackend` は両方の形を露出しており、スイートは同じポートを `run` の内と外の両方から呼ぶ。
+
+### Decision
+
+リポジトリは `SqlExecutor`（駆動）ではなく `SqlSession` を受け取る。session は 2 種類あり、どちらも同じインターフェイスを満たす。
+
+- **staged**: UoW が開く。`write` は write-set へ積み、`readRow` / `readRows` はオーバーレイを重ねる
+- **autocommit**: UoW の外。`write` は即座に、それ自体を 1 つの原子単位として適用する
+
+読みは 3 つに分かれ、選択に意味を持たせる。`query` は素通し（集計・`RETURNING`・当該単位が触れていないことが確実な読み）、`readRow` は主キー読みで常にオーバーレイ対応、`readRows` は集合読みで**呼び出し側が渡す `matches` / `compare` が SQL の `WHERE` / `ORDER BY` を写している範囲でだけ**オーバーレイ対応する。
+
+`write` は `RowMutation` の配列を取る。`upsert` / `remove` は行像をオーバーレイへ残し、`opaque` は SQL だけを積んでオーバーレイに寄与しない（guard、カウンタ加算、多行 DELETE）。
+
+### Consequences
+
+- 良い点: リポジトリのコードが 1 つで両方の文脈に効く。テスト専用の経路が生まれない。
+- 良い点: 「この読みは自分の書き込みを見る必要があるか」がコード上の選択として現れる。`query` を選んだ箇所は意図的に素通しだと読める。
+- トレードオフ: 集合読みのオーバーレイのために、`WHERE` と `ORDER BY` を SQL と述語の 2 か所に書くことになる。冗長であり、ずれれば read-your-writes が静かに壊れる。`readRows` の JSDoc がこの義務を明示し、ずれても素の SQL 結果は正しいまま（見落とすのは未 commit の自分の書き込みだけ）である点が緩和になっている。
+- トレードオフ: `opaque` を選べば read-your-writes は効かない。多行 DELETE のように行像を列挙できない書き込みでは避けられないが、選択を型で強制はできない。
+
+## ADR-010: ステップ 2 の出口条件は適合スイートではなくバックエンド固有テストで満たす
+
+### Context
+
+steps.md はステップ 2 の出口条件を「`conformance/unitOfWork.ts` だけを先に緑にすること」と書いていた。ところがそのスイートは `backend.userRepository` / `backend.forScope(s).noteRepository` / `backend.outboxRepository` を通じて観測するので、通すにはステップ 5・7・8 のリポジトリ実装が要る。ステップ 2 と 5–10 の並列委譲を両立させるには、この依存を切る必要がある。
+
+### Decision
+
+ステップ 2 の出口条件を、`adapters/cloudflare/__tests__/unitOfWork.test.ts` のバックエンド固有テストへ置き換える。観測するのは適合スイートと同じ性質 — 全部か無かの適用、失敗時の巻き戻し、並行 run が半端な状態を見ないこと、commit 後だけの kick、平面をまたぐ入れ子の禁止 — に加えて、スイートがバックエンド非依存でないために観測しないもの（`_occ_guard` の発火、DO への 1 往復 commit、due index の即時可視性）である。ポートの stand-in はテストファイル内に閉じる。
+
+`conformance/unitOfWork.ts` 自体はステップ 11 で、他の 29 スイートと同時に通す。
+
+### Consequences
+
+- 良い点: ステップ 2 が単独で完了判定でき、5–10 の並列委譲がその上で始められる。
+- 良い点: バックエンド固有の性質にテストが付く。これは適合スイートには入れられない（plan.md「テスト方針」）ので、いずれ書く必要があったものである。
+- トレードオフ: ステップ 2 の時点では「契約を満たしている」とは言えず、「機構が動く」までしか言えない。契約の判定はステップ 11 に残る。
+- トレードオフ: テストファイル内のポート stand-in が `as unknown as` を通る。UoW が触れないポートを埋めるためだけの型合わせであり、production コードには漏れていない。

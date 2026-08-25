@@ -1,5 +1,8 @@
 {
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "vitest.workers.config.ts"],
+  // Checked by `tsconfig.cloudflare.json` instead — that tree targets the
+  // Workers runtime and cannot share this one's `lib` / `types`.
+  "exclude": ["src/adapters/cloudflare/**/*"],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "types": ["node"],
