@@ -41,10 +41,11 @@ export const GLOBAL_TABLES = {
 } as const;
 
 /**
- * Every table a test fixture may have written, in an order safe to
- * delete in. `_occ_guard` is included even though it never holds a row —
+ * Every ordinary table a fixture may have written, in an order safe to
+ * delete in. `_occ_guard` is included even though it never holds a row:
  * leaving it out would make "wipe everything" a claim the list cannot
- * back.
+ * back. The FTS5 virtual table is absent on purpose — see
+ * `GLOBAL_WIPE_STATEMENTS`.
  */
 export const GLOBAL_TABLES_IN_WIPE_ORDER: readonly string[] = [
   GLOBAL_TABLES.accountDeletionManifestItems,
@@ -61,11 +62,22 @@ export const GLOBAL_TABLES_IN_WIPE_ORDER: readonly string[] = [
   GLOBAL_TABLES.noteRoutes,
   GLOBAL_TABLES.distributedOperations,
   GLOBAL_TABLES.publicNoteSearchTags,
-  GLOBAL_TABLES.publicNoteSearchFts,
   GLOBAL_TABLES.publicNoteSearch,
   GLOBAL_TABLES.outboxEvents,
   GLOBAL_TABLES.processedEvents,
   GLOBAL_TABLES.scopeTaskDueIndex,
   GLOBAL_TABLES.users,
   GLOBAL_TABLES.occGuard,
+];
+
+/**
+ * Statements that empty the whole plane, in an order safe to run in.
+ *
+ * A contentless FTS5 table cannot be emptied with `DELETE FROM` — there
+ * is no content table to read the rows back out of — so it takes the
+ * `delete-all` command instead.
+ */
+export const GLOBAL_WIPE_STATEMENTS: readonly string[] = [
+  `INSERT INTO ${GLOBAL_TABLES.publicNoteSearchFts}(${GLOBAL_TABLES.publicNoteSearchFts}) VALUES('delete-all')`,
+  ...GLOBAL_TABLES_IN_WIPE_ORDER.map((table) => `DELETE FROM ${table}`),
 ];
