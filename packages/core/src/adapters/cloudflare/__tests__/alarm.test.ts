@@ -17,7 +17,7 @@ import { scheduleStatement } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { scopeObjectName } from "../do/scopeName";
 import { createScopeStubExecutor } from "../do/scopeStub";
-import { text } from "../sql/row";
+import { int, text } from "../sql/row";
 import { statement } from "../sql/statement";
 
 /**
@@ -261,5 +261,86 @@ describe("scope alarm", () => {
     // The turn claimed the row, so the index now shows it leased rather
     // than pending — which is what makes `listDue` stop offering it.
     expect(indexed.results[0]?.lease_expires_at).not.toBeNull();
+  });
+
+  /**
+   * AC-4: the turn re-arms the object and the next delivery re-enters it.
+   * A row left running is work nobody settled, so the object has to come
+   * back for it — but only once the lease it granted has lapsed, and
+   * without the second visit costing the row anything.
+   */
+  it("re-arms at the lease it granted and re-enters cleanly on the next delivery", async () => {
+    const scope = scopeOf("user-reentry");
+    const executor = createScopeStubExecutor(
+      env.SCOPE_OBJECT,
+      scope,
+      NAMESPACE,
+    );
+    const taskRow = async () => {
+      const rows = await executor.query(
+        statement(
+          `SELECT status, attempts, due_at, lease_expires_at FROM ${SCHEDULED_TASKS_TABLE}`,
+        ),
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw new Error("scheduled task missing");
+      }
+      return row;
+    };
+    const alarmAt = () =>
+      runInDurableObject(stubFor(scope), (_i, state) =>
+        state.storage.getAlarm(),
+      );
+
+    await seed(
+      scope,
+      [
+        {
+          kind: "nobody.handles.this",
+          operationId: "op-reentry",
+          priority: ScopeTaskPriority.outboxRelay,
+          dueAtMs: Date.now() + 3_600_000,
+        },
+      ],
+      true,
+    );
+    await runInDurableObject(stubFor(scope), (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE ${SCHEDULED_TASKS_TABLE} SET due_at = ?`,
+        Date.now() - 1_000,
+      );
+    });
+
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    const claimed = await taskRow();
+    expect(text(claimed, "status")).toBe("running");
+    // Nothing settled the row, so the next wake is the moment its lease
+    // lapses — the object holds on to the work rather than dropping it.
+    expect(await alarmAt()).toBe(int(claimed, "lease_expires_at"));
+
+    // Re-entry while the lease is still live: the candidate predicate
+    // excludes the row, so the turn claims nothing and changes nothing.
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    expect(await taskRow()).toEqual(claimed);
+    expect(await alarmAt()).toBe(int(claimed, "lease_expires_at"));
+
+    // Once the lease has lapsed the same delivery path reclaims it, and a
+    // reclaim spends no attempt.
+    await runInDurableObject(stubFor(scope), (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE ${SCHEDULED_TASKS_TABLE} SET lease_expires_at = ?`,
+        Date.now() - 1_000,
+      );
+    });
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    const reclaimed = await taskRow();
+    expect(text(reclaimed, "status")).toBe("running");
+    expect(int(reclaimed, "attempts")).toBe(0);
+    expect(int(reclaimed, "due_at")).toBe(int(claimed, "due_at"));
+    expect(int(reclaimed, "lease_expires_at")).toBeGreaterThan(
+      int(claimed, "lease_expires_at"),
+    );
+    expect(await alarmAt()).toBe(int(reclaimed, "lease_expires_at"));
   });
 });

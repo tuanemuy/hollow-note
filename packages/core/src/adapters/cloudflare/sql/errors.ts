@@ -52,10 +52,16 @@ export function classifySqlError(error: unknown): SqlFailureKind {
   return "unknown";
 }
 
+/**
+ * A database fault. `cause` is optional because some faults are the
+ * adapter's own (a statement it should never have built, a write that
+ * returned no row) rather than a driver's, and those carry no cause to
+ * append.
+ */
 export const databaseError = (context: string, cause?: unknown): SystemError =>
   new SystemError(
     SystemErrorCode.DatabaseError,
-    `${context}: ${messageOf(cause)}`,
+    cause === undefined ? context : `${context}: ${messageOf(cause)}`,
     cause,
   );
 

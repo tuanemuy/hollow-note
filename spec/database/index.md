@@ -64,7 +64,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `operation_id` | text | PK |
 | `user_id` | text | NOT NULL |
 | `workspace_id` | text | NOT NULL |
-| `membership_id` | text | NOT NULL |
+| `membership_id` | text | `active` / `removing` ではNOT NULL。`pending` / `activating` ではNULL可 |
 | `role` | text | NOT NULL |
 | `state` | text | NOT NULL, CHECK IN ('pending','activating','active','removing') |
 | `deletion_prepare_operation_id` | text | NULL可。pending edgeのaccount deletion lock owner |
@@ -73,8 +73,9 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
+- `membership_id` を settled state にだけ要求するのは、`pending` edge が workspace-local Membership の**存在に先立つ**予約だからである。運ぶべき ID がまだ無い時点で行が要るので、制約は `CHECK (state NOT IN ('active','removing') OR membership_id IS NOT NULL)` として置く
 - UNIQUE (`user_id`, `workspace_id`)。`pending` / `activating` は所有 / 参加workspace数とaccount deletionに、`removing`は後始末完了待ちのaccount deletion / integration cleanup列挙に含める。`reserveAndClaimActivation`はpending INSERT、同じUserId shardのActive User検査、`activating`化を1 transactionで行い、DeletingならINSERTごとrollbackする。account deletionは先行`activating`を最大100件ずつ解決待ちし、0件確認後にpending edgeへdeletion prepare ownerを設定する。owner設定後のactivationは拒否し、rollback releaseはpendingを保ち、commitだけがedgeを取消す
-- indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用。UserId物理shard後のworkspace削除は後者をscatterせずmanifest route keyを使う
+- indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用、(`user_id`, `operation_id`) は account deletion manifest の edge key 昇順ページング用。edge key は `operation_id` であり、前 2 本はどちらもその順序を走れないので専用の索引を持つ。UserId物理shard後のworkspace削除は 2 本目をscatterせずmanifest route keyを使う
 - pending/activating recoveryは`(reservation_expires_at, operation_id) WHERE state IN ('pending','activating')`を最大100件ずつ読む。期限切れactivatingはworkspace scopeのInvitation/Membershipをoperation IDで照合し、local commit済みならactive、未commitならabandonedへ収束させる。account deletionはこのrecoveryを起動し、先行activatingが0件になるまでscanを待つ
 
 ### workspace_slug_reservations
@@ -146,7 +147,7 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 
 `next_attempt_at` の partial index（非 NULL）を recovery Cron が使う。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
 
-accountDeletionは`UNIQUE(partition_key, request_key)`で同じ送信を再生し、`UNIQUE(partition_key) WHERE kind = 'accountDeletion' AND state NOT IN ('completed','rejected')`でrunning operationを1件にする。rejected後は別request keyで新operationを許す。manifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合（`preparing` / `committing` など）はこの3値ではなく`account_deletion_manifests.state`が持つ。
+一意性はいずれも **kind ごとに閉じる**。`UNIQUE(kind, partition_key, request_key)` が同じ送信の再生を、`UNIQUE(kind, partition_key) WHERE state NOT IN ('completed','rejected')` が「partition ごとに running は 1 件」を担保する。`kind` を鍵に含めるのは、同じ partition key を共有する別種の operation が共存しうるためである — 実行中の `accountDeletion` を持つ partition で `noteMove` を始めることは正当であり、kind を含めない索引ではこれが制約違反になる。`countTerminalSince` が使う terminal 索引と partition 走査用の索引も同じく kind から始める。rejected後は別request keyで新operationを許す。accountDeletionではmanifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合（`preparing` / `committing` など）はこの3値ではなく`account_deletion_manifests.state`が持つ。
 
 物理分割時、noteMove/notePurgeの`partition_key = noteId`で、対応する`note_routes`とpublic projectionと同じnote coordination shardへ置く。workspaceDeletionはworkspaceIdをpartition keyとしてglobal tombstone/ackを持ち、route key正本はworkspace scopeのmanifestに残す。accountDeletion/nameChangeはUserId shard、membershipChangeはそのdirectoryの調停key、integrationDisconnectはUserId shardへ置く。1つのoperationが別shardの正データを直接transaction更新せず、既存のreserve/command/ack Sagaを使う。
 
@@ -274,11 +275,16 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 INSERT INTO login_attempts (key, failure_count, last_failed_at, expires_at)
 VALUES (?1, 1, ?2, ?3)
 ON CONFLICT(key) DO UPDATE SET
-  failure_count = failure_count + 1,
+  failure_count = CASE
+    WHEN login_attempts.expires_at <= ?2 THEN 1
+    ELSE login_attempts.failure_count + 1
+  END,
   last_failed_at = excluded.last_failed_at,
   expires_at     = excluded.expires_at
 RETURNING failure_count, last_failed_at;
 ```
+
+- 加算が条件式なのは、**期限切れの記録が不在として読めるだけでなく不在として振る舞う**ためである。行の物理削除は `deleteExpired` の掃引に委ねられているので「期限切れの行が残っている」状態は正常であり、`get` が `null` を返した直後の `recordFailure` は 1 から数え直さなければならない。`?2` は `last_failed_at` に書くのと同じ `now` であって、しきい値ではない — 書き込む値が読んだ値に依存しない性質も、`LoginThrottlePolicy` の規則を SQL に持ち込まない方針も保たれる
 - `key` は用途ごとに名前空間を分けた 2 系統を持つ（[domains/identity.md](../domains/identity.md) の `LoginAttemptKey`）。パスワードサインインは `signIn:{正規化済みメールアドレス}:{clientKey}`（`forSignIn`）、共有リンクのパスワード照合は `share:{共有トークンのハッシュ}:{clientKey}`（`forSharePassword`）。名前空間を先頭に置くのは、別種の照合の失敗が同じ行に集まって互いのロックを誘発するのを防ぐため。共有側の材料が素の共有トークンではなく `TokenHash` なのは、この列に共有の秘密を平文で残さないためである
 
 ---
@@ -1093,9 +1099,11 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 | `kind` | text | NOT NULL |
 | `result` | text | NOT NULL（同じ command の再試行へ返す JSON。**値を返すコマンドを足すスライスが使う**列） |
 | `applied_at` | integer | NOT NULL |
-| `expires_at` | integer | NULL可。進行中account deletion barrierはNULL |
+| `expires_at` | integer | NULL可。進行中account deletion barrierと`kind = 'command'`はNULL |
 
-この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`(operationId, commandKey)`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
+この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`kind = 'command'`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
+
+`kind = 'command'` の行は `expires_at IS NULL` で、Alarm pruner（`expires_at <= asOf`）の対象外である。**再配送されうる限り残さなければならない**のが理由で、コマンドの再配送は outbox の attempt 上限で有界になるが壁時計では有界でない — quarantine された行の手動再駆動と、継続要求が同じ key で再駆動される回復経路（[ADR 040](../adr/040-continuation-transport.md)）のどちらも期限を持たない。期限を切れば「期限後の再配送が二重適用になる」ので、切らないほうが安全側である。したがってこの行は当該 scope の寿命ぶん積み上がる。値を返すコマンドを足すスライスが `result` を使い始める時点で、そのコマンドの再駆動窓を根拠にした保持期間をここに定めること。
 
 `kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
 

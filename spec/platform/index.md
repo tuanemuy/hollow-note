@@ -193,6 +193,8 @@ priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOと
 
 リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
 
+**1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[domains/index.md](../domains/index.md) の `ScopeTaskScheduler`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。引き金は「1 scope に複数 writer」であって「複数 worker プロセス」ではない — scope が分かれていれば writer も分かれる。
+
 低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
 ### Global Cron

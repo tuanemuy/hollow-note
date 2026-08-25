@@ -2,10 +2,23 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ScopeKey } from "../../../application/scope";
 import type { UserId } from "../../../domain/identity/valueObject";
+import {
+  ByteSize,
+  MimeType,
+  ObjectKey,
+} from "../../../domain/storage/valueObject";
+import {
+  makeBlankNote,
+  makePendingUser,
+  noteId,
+  scopeOf,
+  userId,
+} from "../../conformance/fixtures";
 import { GLOBAL_TABLES } from "../d1/schema";
 import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import { statement } from "../sql/statement";
+import { makeCloudflareConformanceBackend } from "./conformanceBackend";
 
 /**
  * Backend-local: proves the harness itself, not a port contract.
@@ -93,5 +106,45 @@ describe("cloudflare test harness", () => {
     const storage = new AsyncLocalStorage<string>();
     expect(storage.run("open", () => storage.getStore())).toBe("open");
     expect(crypto.subtle).toBeDefined();
+  });
+
+  /**
+   * The suites contract for a fresh backend per test while this pool
+   * isolates storage per *file*, so two backends built here — as two
+   * suites in one bundle would be — must not see each other on any of the
+   * three planes (ADR 004). Nothing about it is per-suite: if it holds
+   * for two factory calls it holds for thirty.
+   */
+  it("hands out backends that cannot see one another on any plane", async () => {
+    const first = await makeCloudflareConformanceBackend();
+    const now = first.clock.now();
+    const scope = scopeOf(1);
+    const key = ObjectKey.create("users/user-1/avatar/file-1.png");
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await first.userRepository.insert(makePendingUser(1, now));
+    await first
+      .forScope(scope)
+      .noteRepository.insert(makeBlankNote(1, userId(1), now));
+    await first.objectStorage.put(key, bytes, {
+      mimeType: MimeType.create("image/png"),
+      size: ByteSize.create(bytes.byteLength),
+      checksum: null,
+    });
+
+    const second = await makeCloudflareConformanceBackend();
+    expect(await second.userRepository.findById(userId(1))).toBeNull();
+    expect(
+      await second.forScope(scope).noteRepository.findById(noteId(1)),
+    ).toBeNull();
+    expect(await second.objectStorage.get(key)).toBeNull();
+
+    // The scope object and the bucket are namespaced rather than wiped,
+    // so the first backend still holds what it wrote; only D1 is shared
+    // and emptied.
+    expect(
+      await first.forScope(scope).noteRepository.findById(noteId(1)),
+    ).not.toBeNull();
+    expect(await first.objectStorage.get(key)).not.toBeNull();
   });
 });

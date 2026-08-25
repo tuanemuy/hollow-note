@@ -718,3 +718,90 @@ item 側の書き込みはすべて `json_each` の 1 文（`opaque`）にする
 - 良い点: 1 ページ = 1 文。`spec/platform/index.md` の実行予算にそのまま収まり、バインド変数上限に触れない。
 - トレードオフ: 同一 UoW 内で append 直後の item を読み返せない。現在のユースケースは page を積む transaction と読む transaction が別なので契約上は問題にならないが、将来「積んで数えて分岐する」UoW を書くときはここが効く。
 - トレードオフ: header と item でオーバーレイの扱いが非対称になる。リポジトリ内で読み分けが要る。
+
+## ADR-030: ランタイム合成の 4 メソッドを `AppRuntime` として抽出し、CF 版はその実装として置く
+
+### Context
+
+`memoryRuntime.ts` の `MemoryRuntime` は `bindRelayTrigger` / `bindScopeTaskTrigger` / `createRequestContainer` / `createWorkerContainer` の 4 メソッドに加えて `backend` / `mailSender` というランタイム固有の値を持つ。Cloudflare 版を足すにあたり、この 4 メソッドを共通インターフェイスとして抽出するか、CF 版を独立した型として定義するかを決める必要がある（steps.md ステップ 13）。
+
+制約として **`memoryRuntime.ts` と `serverNode.ts` には触れない**（AC-7）。したがって「抽出して両者に `implements` を書く」ことはできない。
+
+### Decision
+
+`application/di/runtime.ts` に `AppRuntime`（4 メソッドのみ）を置き、`CloudflareRuntime = AppRuntime` とする。`MemoryRuntime` には注釈を足さない — TypeScript は構造的なので、`MemoryRuntime` は既に `AppRuntime` を満たしている。その事実は `adapters/cloudflare/__tests__/runtimeComposition.test.ts` の 1 ケース（`asAppRuntime(memoryRuntime)`）で型として固定した。注釈は memoryRuntime.ts に触れてよいスライスが足す。
+
+`backend` / `mailSender` は `AppRuntime` に入れない。エントリポイントがバックエンドを名指しせずに依存してよい部分だけを型にする。
+
+CF 版が memory 版と形を変えた点は 3 つ。
+
+1. **保持する状態が無い。** memory 版は `MemoryBackend` を 1 つ抱えるが、CF ではバインディング自体が状態なので、`createCloudflareRuntime(options)` は `env` の薄い包みでよい。`serverNode.ts` の `globalThis` シングルトンに相当する仕掛けは要らない。
+2. **`mailSender` を必須オプションにした。** Cloudflare 版の `MailSender` アダプターは本 Issue のスコープ外で存在しない。既定でログ出力の stand-in へ落とすと、検証メールが黙って無効になる配備を型が許してしまう。合成根で必ず渡させることで穴を可視にした。
+3. **暗号 / トークン系は `adapters/memory/` のものをそのまま使う。** `createScryptPasswordHasher`（`node:crypto`、`nodejs_compat` 下で動作）/ `createNodeSecureTokenGenerator` / `createWebCryptoShareTokenProtector`。これらが `memory/` に同居しているのは [ADR 024](../../spec/adr/024-in-memory-adapter-as-first-class-backend.md) が「2 つ目のバックエンドが実在する時点で再検討する」と書いた対象そのもので、本 Issue では移さず別 Issue の起票候補とする。鍵束の既定生成だけは `node:crypto` の `randomBytes` ではなく `crypto.getRandomValues` を使う。
+
+### 検討した代替案
+
+**CF 版を独立した型として定義する。** 抽出しないぶん変更が最小になる。採らなかったのは、4 メソッドが「合成根とは何か」の定義そのものであり、2 つ目が現れた時点で名前を与えないと、3 つ目（MCP server / CLI）が微妙に違う形を持ち込むのを型で止められないため。抽出のコストは新規ファイル 1 つで、memory 側に一切触れない。
+
+**`packages/core/src/adapters/cloudflare/runtime.ts` へ置く。** ファイルが CF プログラム（`tsconfig.cloudflare.json`）に自然に入る。採らなかったのは、合成根は adapters 層ではなく application 層の持ち分であり、`memoryRuntime.ts` と並べて読めることに価値があるため。代わりに `tsconfig.json` の `exclude` と `tsconfig.cloudflare.json` の `include` に当該 1 ファイルを明記して、プログラムの割り当てだけを移した。
+
+### Consequences
+
+- 良い点: `serverNode.ts` / `memoryRuntime.ts` に一切触れずに済み、AC-7 が保たれる。
+- 良い点: エントリポイントが `AppRuntime` だけに依存できるので、配備スライスの Worker entry がバックエンドを名指ししない。
+- トレードオフ: `MemoryRuntime` が `AppRuntime` を満たすことはテスト 1 ケースでしか固定されていない。`memoryRuntime.ts` に注釈を足すまでは、そのケースを消すと乖離が静かに通る。
+- トレードオフ: `application/di/cloudflareRuntime.ts` が 2 つの tsconfig にまたがる例外になる。ファイルを増やすときは両方を更新する必要がある。
+
+---
+
+## ADR-031: 適合スイートの入口は束ごとの 7 ファイルのままにし、呼び出し集合の一致は node 側のテストで固定する
+
+### Context
+
+steps.md ステップ 11 は Cloudflare 側の入口を `adapters/cloudflare/__tests__/conformance.test.ts` という単一ファイルに置く想定だった。実際には ADR-011（束ごとに独立して回せること）を満たすため、`__tests__/conformance/{identity,directory,route,scopeBusiness,scopeInfra,projection,unitOfWork}.test.ts` の 7 ファイルに分かれている。
+
+分割そのものは問題ないが、単一ファイルなら memory 側の `conformance.test.ts` と目視で並べられた「30 スイートを両バックエンドが同じだけ呼んでいる」という性質が、7 ファイルに散ると見えなくなる。適合スイートの間引きは緑のまま起きるので、これは AC-2 の中身が静かに空になる経路になる。
+
+### Decision
+
+7 ファイルの分割は残す。そのうえで `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts`（node プロジェクト）を置き、次の 2 つをテストとして固定する。
+
+1. memory 側 `memory/__tests__/` の呼び出し集合と Cloudflare 側 `cloudflare/__tests__/conformance/` の呼び出し集合が**完全に一致する**
+2. `adapters/conformance/` が export している `describe…Contract` のうち、`adapters/**/__tests__/**/*.test.ts` のどこからも呼ばれていないものが**無い**
+
+判定はソースの走査であってスイートの import ではない（import すればスイートが走ってしまう）。行頭の呼び出しだけを数えるので、コメントアウトは削除と同じだけ目に見える。
+
+実測（本ステップ完了時点）: 両バックエンドとも 30 スイート・**適合スイート由来 238 ケース**で一致。`describeSignInOAuthClientContract` だけがどちらの永続バックエンドからも呼ばれていないが、これは `adapters/oauth/__tests__/conformance.test.ts` が 2 実装に対して呼んでおり、そもそも永続バックエンドのポートではないので正当。2 の検査が `adapters/` 全体を走査するのはこのため。
+
+### 検討した代替案
+
+**7 ファイルを 1 つに統合する。** steps.md の当初案どおりになる。採らなかったのは ADR-011 の分離要件（束ごとに独立して回せること）が実装中の生産性そのものであり、統合すると 1 束の修正のたびに 238 ケースを回すことになるため。
+
+**報告に件数を書くだけにする。** 実装時点の一致は示せるが、次に誰かがスイートを 1 本外したときに何も鳴らない。適合スイートは契約の正本（ADR 026）なので、その呼び出し集合は人間の注意力ではなくテストで守る。
+
+### Consequences
+
+- 良い点: 束の分割を保ったまま、AC-2 の「間引きで達成していない」がテストとして残る。
+- 良い点: 新しい適合スイートを書いて配線し忘れると 2 の検査が落ちる。
+- トレードオフ: 判定がテキスト走査なので、呼び出しを行頭以外（関数で包む、ループで回す）に書くと検知できない。両バックエンドの入口ファイルが平坦な呼び出しの並びである限り成立する。
+- トレードオフ: この検査は node プロジェクトにある。Cloudflare 側のファイルを読むが実行はしないので、workers プールに置く理由が無い。
+
+---
+
+## ADR-032: `databaseError` は cause が無いときメッセージに `: undefined` を継ぎ足さない
+
+### Context
+
+`sql/errors.ts` の `databaseError(context, cause?)` は `cause` を任意にしながら、メッセージを常に `` `${context}: ${messageOf(cause)}` `` で組んでいた。cause を渡さない呼び出しは 2 箇所ある — `sql/json.ts` の `assertBindable`（bound parameter 上限超過）と `d1/repositories/loginAttemptStore.ts` の「`RETURNING` が行を返さなかった」— いずれもドライバの失敗ではなくアダプター自身の異常で、cause が存在しない。結果、上限超過は `"Statement binds 101 parameters…: undefined"` で落ちていた（plan.md エッジケース 1 の当該メッセージ）。
+
+### Decision
+
+`databaseError` を `cause === undefined` のとき `context` のみをメッセージにするよう直す。呼び出し側（`assertBindable` / `loginAttemptStore`）は変えない — 署名が `cause?` を許している以上、破綻していたのは組み立て側である。
+
+固定は `__tests__/support.test.ts` の「refuses a statement that would exceed the driver's binding limit」で、アンカー付き正規表現によりメッセージ全体を突き合わせる（部分一致だと末尾の `: undefined` が復活しても通ってしまう）。
+
+### Consequences
+
+- 良い点: cause の無い DatabaseError が、失われた原因を持っているかのように読めなくなる。
+- 良い点: 上限超過のメッセージが件数と対処（`json_each`）だけを述べる形に戻り、呼び出し元の特定に使える。
+- トレードオフ: `databaseError` に分岐が 1 つ増える。cause を必須にして専用のコンストラクタを分ける手もあるが、呼び出し 18 箇所のうち 2 箇所のために型を割る価値は無いと判断した。

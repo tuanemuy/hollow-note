@@ -1,5 +1,8 @@
 {
-  "include": ["src/adapters/cloudflare/**/*"],
+  "include": [
+    "src/adapters/cloudflare/**/*",
+    "src/application/di/cloudflareRuntime.ts"
+  ],
   "compilerOptions": {
     // Workers, not a browser: the runtime globals come from
     // `@cloudflare/workers-types`, which collides with `lib.dom`. That

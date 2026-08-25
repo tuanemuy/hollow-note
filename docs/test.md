@@ -1,10 +1,17 @@
 # Testing
 
-Tests are classified along two axes: **layer × purpose**. The whole suite currently runs at unit speed against the in-memory reference adapters (`packages/core/src/adapters/memory/`) — a regular adapter backend, not a test fake. The shared port-conformance suites double as the "integration" layer until a real backend (D1 / Durable Objects, Issue #11) arrives and imports the same suites under its own integration config.
+Tests are classified along two axes: **layer × purpose**. One vitest run spans two projects, and which project a file belongs to is decided by its path:
+
+| Project | Files | Runs in | Backend |
+| --- | --- | --- | --- |
+| `node` | everything outside `packages/core/src/adapters/cloudflare/` | Node, `TZ=Asia/Tokyo` | the in-memory reference adapters |
+| `workers` | `packages/core/src/adapters/cloudflare/**/__tests__/**` | workerd (`@cloudflare/vitest-plugin`) | real D1 / Durable Object / R2 bindings |
+
+The two include sets are disjoint, so `pnpm test` is the union and neither project can silently swallow the other's files. The `workers` project cannot set `TZ` at all — zone-sensitive tests stay in `node` (see Determinism).
 
 ## Test layer classification
 
-### Unit (`pnpm test:unit` — currently the whole suite; `pnpm test` aliases it)
+### Unit (`pnpm test:unit`; `pnpm test` aliases it)
 
 - **Targets**: domain-layer logic, application usecases wired through the in-memory adapters, and the port-conformance suites.
 - **Dependencies**: the memory backend (`createMemoryRuntime` / `createTestHarness`) plus the two fakes under `packages/core/src/application/__tests__/fakes/`: `FakeIdGenerator` (a deterministic UUIDv7 stream) and `FakeLogger` (a recording Logger). Time is controlled through the shared `TestClock` (`adapters/conformance/testClock.ts`).
@@ -15,15 +22,22 @@ Tests are classified along two axes: **layer × purpose**. The whole suite curre
 ### Port conformance (`packages/core/src/adapters/conformance/`)
 
 - **Targets**: every persistence-port contract — OCC, atomic counters (`recordFailure`), atomic take, reservation sagas, route sagas, lane/lease bookkeeping, keyset expiry sweeps.
-- **Shape**: `describeXxxContract(name, makeBackend)` parameterized suites. The memory backend runs them from `adapters/memory/__tests__/`; a future D1/DO backend imports the same suites and must pass identically.
+- **Shape**: `describeXxxContract(name, makeBackend)` parameterized suites. The memory backend runs them from `adapters/memory/__tests__/` in the `node` project; the Cloudflare backend runs the *same* suites from `adapters/cloudflare/__tests__/conformance/` in the `workers` project, against real bindings. Neither backend gets its own copy — a case exists once, and both must pass it identically.
 - **Aim**: the contract text of `spec/domains/*.md` as an executable form. This is what lets usecase tests trust the memory adapters.
+- **Freshness**: the suites contract for a fresh backend per test, while the workers pool isolates storage per *file*. The Cloudflare factory closes that gap itself by namespacing each backend it hands out (`__tests__/conformanceBackend.ts`), so nothing in the suites depends on which pool they run in.
+
+### Backend-local (`adapters/{backend}/__tests__/`, outside the shared suites)
+
+- **Targets**: what a shared suite must not assert because it is not backend-agnostic — the memory backend's run serialization, and on the Cloudflare side the write-set apply order, D1 batch atomicity, `transactionSync` rollback, Durable Object alarm re-entry, the due-index publish, and the DI composition root.
+- **Rule**: a contract gap found here belongs in the shared suite instead. Only properties that are genuinely one backend's own stay local.
 
 ## Fake policy
 
 Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 
 - Repository / UoW / store fakes are intentionally absent. What replaced them is **not** ad-hoc in-memory mocks but the `adapters/memory/` reference adapters: they are wired by production DI (`pnpm dev` runs on them) and are held to the same conformance suites any real backend must pass. The original prohibition — "an in-memory imitation of transactions / OCC is no substitute for verification" — still stands; the conformance suites are that verification.
-- What the memory backend cannot prove (driver-specific behavior: SQL constraints, parameter limits, transaction isolation of D1/DO) is deferred to the real-backend integration run of Issue #11, using the same suites. Do not read a green memory run as a production guarantee of those properties.
+- The same policy governs the `workers` project, and there it is stricter still: nothing is stubbed. The Cloudflare suites run against the D1, Durable Object and R2 bindings of `packages/core/wrangler.test.jsonc`, which is the reason for paying the pool's startup cost rather than reading the adapters against a mock.
+- What the memory backend cannot prove (driver-specific behavior: SQL constraints, parameter limits, D1 batch atomicity, Durable Object transaction isolation) is proven by the `workers` project, using the same suites plus the backend-local tests above. Do not read a green memory run as a production guarantee of those properties — run `pnpm test`, which covers both.
 - `Clock` is passed as the `TestClock` port through the harness; freestanding `new Date(0)` constants remain fine for pure domain tests.
 
 ## Writing usecase tests
@@ -40,19 +54,25 @@ Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 
 ## Determinism
 
-- `vitest.config.ts` pins `TZ=Asia/Tokyo` for the whole run. A UTC runner (which CI is) would make UTC-only assertions — `BillingPeriod`'s UTC calendar month — pass against a local-time implementation too, so the suite runs in a non-UTC zone to keep them discriminating. Everything else must stay TZ-independent.
+- `vitest.config.ts` pins `TZ=Asia/Tokyo` for the **`node` project**. A UTC runner (which CI is) would make UTC-only assertions — `BillingPeriod`'s UTC calendar month — pass against a local-time implementation too, so those tests run in a non-UTC zone to keep them discriminating. Everything else must stay TZ-independent.
+- The `workers` project cannot set `TZ`: workerd reports no `process.env.TZ` and a zero UTC offset. Do not move a zone-sensitive test (`domain/usage/__tests__/`) there — it would stop discriminating without failing.
+- The Cloudflare conformance factory drives the same `TestClock` the memory backend uses, so a suite's time is controlled in both projects. Alarm-driven paths are the exception: workerd delivers an alarm on the real clock, which is why the backend-local alarm tests arm it explicitly instead of relying on a scheduled row.
 
 ## Timeout / flakiness
 
-- `testTimeout` is raised to 10s for the scrypt(N=16384) password cases — the slowest tests in the suite (~300ms against single-digit ms elsewhere), which have overrun the 5s default under parallel load. Everything else uses Vitest's defaults and runs in-process with a controlled clock, so flakiness should be treated as a bug, not retried around.
+- `testTimeout` is raised to 10s in the `node` project for the scrypt(N=16384) password cases — the slowest tests in the suite (~300ms against single-digit ms elsewhere), which have overrun the 5s default under parallel load. The `workers` project uses 30s across the board — every read is an RPC into workerd and the pool starts an isolate per file. Everything else uses Vitest's defaults and runs with a controlled clock, so flakiness should be treated as a bug, not retried around.
 
 ## Commands
 
 | Purpose | Command |
 | --- | --- |
-| All | `pnpm test` (alias of `test:unit`) |
-| Unit only | `pnpm test:unit` |
+| All (both projects) | `pnpm test` (alias of `test:unit`) |
+| Node project only | `pnpm test:node` (= `vitest run --project node`) |
+| Cloudflare project only | `pnpm test:workers` (= `vitest run --project workers`) |
 | One area | `pnpm exec vitest run packages/core/src/application/identity` |
+| One Cloudflare file | `pnpm exec vitest run --project workers packages/core/src/adapters/cloudflare/__tests__/conformance/identity.test.ts` |
+
+`--project` is what a path alone cannot decide: a bare `vitest run <path>` filters files inside *both* projects, so naming the project is how a Cloudflare file gets the workerd pool and its bindings. Use `--project node` to check that a change left the reference runtime alone.
 
 ## Coverage
 
@@ -60,5 +80,5 @@ Coverage numbers are not enforced. Rules of thumb:
 
 - **Domain**: aim for ~100%. Logic is local and easy to fully cover, and a missing test translates directly into a broken invariant.
 - **Application**: per spec TC row — the implemented rows of `spec/testcases/` are the checklist, named in the tests.
-- **Adapters**: per conformance-suite case; add a case to the shared suite (not a backend-local test) when a contract gap is found.
+- **Adapters**: per conformance-suite case; add a case to the shared suite (not a backend-local test) when a contract gap is found. The rule binds every backend — a case added for the Cloudflare adapters must also pass on the memory backend, and if it cannot, the divergence is resolved by deciding where the behaviour's canon lives ([ADR 046](../spec/adr/046-port-contract-divergence.md)) before either side is changed.
 - **Frontend**: the bare minimum. The server function's wire-type boundary and UI logic are broadly covered by the framework primitives. The exception is the pure functions of `apps/web/app/presentation/` (status mapping, redaction, the open-redirect guard, and the error-message dictionary of `errorDisplay` together with the `extractSerializedError` paths that feed it): no framework is involved and they encode closed spec lists, so they carry unit tests under `apps/web/app/presentation/__tests__/`.
