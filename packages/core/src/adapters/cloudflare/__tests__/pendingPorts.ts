@@ -31,49 +31,10 @@ const PORT_NOT_WIRED = (name: string): string =>
  */
 export const PENDING_PORTS: readonly string[] = [
   // Step 5 — D1 Identity
-  "UserRepository",
-  "IdentityRepository",
-  "SessionRepository",
-  "AuthTokenRepository",
-  "IdentityRemovalReceiptStore",
-  "UserBatchReader",
-  "LoginAttemptStore",
-  "OAuthStateStore",
-
   // Step 6 — D1 directory / operation
-  "IdentityUniqueDirectory",
-  "DistributedOperationStore",
-  "AccountDeletionManifestStore",
-  "GlobalMaintenanceRunStore",
-
   // Step 7 — D1 route / infrastructure / cross-plane
-  "NoteRouteStore",
-  "NoteRouteFanOutReader",
-  "OutboxRepository",
-  "IdempotencyStore",
-  "ScopeRouter",
-  "ScopeTaskQueue",
-
   // Step 8 — scope DO business
-  "NoteRepository",
-  "NoteRevisionRepository",
-  "StoredFileRepository",
-  "StorageQuotaRepository",
-  "LlmUsageRepository",
-  "AppliedOperationStore",
-
   // Step 9 — scope DO infrastructure
-  "ScopeTaskScheduler",
-  "ScopeCleanupAdmissionStore",
-
-  // Step 10 — projection / search / R2
-  "LocalNoteProjectionWriter",
-  "NoteProjectionSnapshotReader",
-  "NoteProjectionRevisionStore",
-  "LocalNoteQueryService",
-  "PublicNoteProjectionWriter",
-  "PublicNoteQueryService",
-  "ObjectStorage",
 ];
 
 export const isPendingPort = (name: string): boolean =>

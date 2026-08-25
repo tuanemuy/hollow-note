@@ -2,6 +2,10 @@ import type { AccountDeletionManifestStore } from "../../../../application/ports
 import type { DistributedOperationStore } from "../../../../application/ports/distributedOperationStore";
 import type { GlobalMaintenanceRunStore } from "../../../../application/ports/globalMaintenanceRunStore";
 import type { IdentityUniqueDirectory } from "../../../../domain/identity/ports/identityUniqueDirectory";
+import { createD1AccountDeletionManifestStore } from "../../d1/repositories/accountDeletionManifestStore";
+import { createD1DistributedOperationStore } from "../../d1/repositories/distributedOperationStore";
+import { createD1GlobalMaintenanceRunStore } from "../../d1/repositories/globalMaintenanceRunStore";
+import { createD1IdentityUniqueDirectory } from "../../d1/repositories/identityUniqueDirectory";
 import { port } from "../pendingPorts";
 import type { GlobalPortDeps } from "./deps";
 
@@ -24,19 +28,23 @@ export type DirectoryPorts = Readonly<{
   globalMaintenanceRunStore: GlobalMaintenanceRunStore;
 }>;
 
-export function createDirectoryPorts(_deps: GlobalPortDeps): DirectoryPorts {
+export function createDirectoryPorts(deps: GlobalPortDeps): DirectoryPorts {
   return {
     identityUniqueDirectory: port<IdentityUniqueDirectory>(
       "IdentityUniqueDirectory",
+      () => createD1IdentityUniqueDirectory(deps),
     ),
     distributedOperationStore: port<DistributedOperationStore>(
       "DistributedOperationStore",
+      () => createD1DistributedOperationStore(deps),
     ),
     accountDeletionManifestStore: port<AccountDeletionManifestStore>(
       "AccountDeletionManifestStore",
+      () => createD1AccountDeletionManifestStore(deps),
     ),
     globalMaintenanceRunStore: port<GlobalMaintenanceRunStore>(
       "GlobalMaintenanceRunStore",
+      () => createD1GlobalMaintenanceRunStore(deps),
     ),
   };
 }

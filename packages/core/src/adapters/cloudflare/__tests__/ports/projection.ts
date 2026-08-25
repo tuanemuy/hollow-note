@@ -5,8 +5,24 @@ import type { NoteProjectionRevisionStore } from "../../../../domain/note/ports/
 import type { NoteProjectionSnapshotReader } from "../../../../domain/note/ports/noteProjectionSnapshotReader";
 import type { PublicNoteProjectionWriter } from "../../../../domain/note/ports/publicNoteProjectionWriter";
 import type { PublicNoteQueryService } from "../../../../domain/note/ports/publicNoteQueryService";
+import { createD1PublicNoteProjectionWriter } from "../../d1/repositories/publicNoteProjection";
+import { createD1PublicNoteQueryService } from "../../d1/repositories/publicNoteQueryService";
+import { createScopeLocalNoteQueryService } from "../../do/repositories/localNoteQueryService";
+import {
+  createScopeLocalNoteProjectionWriter,
+  createScopeNoteProjectionRevisionStore,
+  createScopeNoteProjectionSnapshotReader,
+} from "../../do/repositories/noteProjection";
+import { createR2ObjectStorage } from "../../r2/objectStorage";
 import { port } from "../pendingPorts";
 import type { GlobalPortDeps, ScopePortDeps } from "./deps";
+
+/**
+ * Stand-in for the bucket's public domain. The contract only asks that
+ * the URL carry the key and stay stable, so the deployment's real domain
+ * (ADR 049) is a configuration value the conformance run does not have.
+ */
+const PUBLIC_OBJECT_BASE_URL = "https://objects.hollow.test";
 
 /**
  * Step 10 — the projection / full-text / R2 bundle, the one that spans
@@ -36,32 +52,46 @@ export type GlobalProjectionPorts = Readonly<{
 }>;
 
 export function createScopeProjectionPorts(
-  _deps: ScopePortDeps,
+  deps: ScopePortDeps,
 ): ScopeProjectionPorts {
   return {
     localNoteProjectionWriter: port<LocalNoteProjectionWriter>(
       "LocalNoteProjectionWriter",
+      () => createScopeLocalNoteProjectionWriter(deps.session),
     ),
     noteProjectionSnapshotReader: port<NoteProjectionSnapshotReader>(
       "NoteProjectionSnapshotReader",
+      () => createScopeNoteProjectionSnapshotReader(deps.session),
     ),
     noteProjectionRevisionStore: port<NoteProjectionRevisionStore>(
       "NoteProjectionRevisionStore",
+      () => createScopeNoteProjectionRevisionStore(deps.session),
     ),
-    localNoteQueryService: port<LocalNoteQueryService>("LocalNoteQueryService"),
+    localNoteQueryService: port<LocalNoteQueryService>(
+      "LocalNoteQueryService",
+      () => createScopeLocalNoteQueryService(deps.session),
+    ),
   };
 }
 
 export function createGlobalProjectionPorts(
-  _deps: GlobalPortDeps,
+  deps: GlobalPortDeps,
 ): GlobalProjectionPorts {
   return {
     publicNoteProjectionWriter: port<PublicNoteProjectionWriter>(
       "PublicNoteProjectionWriter",
+      () => createD1PublicNoteProjectionWriter(deps.session),
     ),
     publicNoteQueryService: port<PublicNoteQueryService>(
       "PublicNoteQueryService",
+      () => createD1PublicNoteQueryService(deps.session),
     ),
-    objectStorage: port<ObjectStorage>("ObjectStorage"),
+    objectStorage: port<ObjectStorage>("ObjectStorage", () =>
+      createR2ObjectStorage({
+        bucket: deps.bucket,
+        publicBaseUrl: PUBLIC_OBJECT_BASE_URL,
+        keyPrefix: deps.objectKeyPrefix,
+      }),
+    ),
   };
 }

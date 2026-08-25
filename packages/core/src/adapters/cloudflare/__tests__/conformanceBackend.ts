@@ -8,13 +8,15 @@ import { UuidV7Generator } from "../../../application/ports/idGenerator";
 import type { RelayTrigger } from "../../../application/ports/relayTrigger";
 import type { ScopeKey } from "../../../application/scope";
 import { type DomainEvent, EventId } from "../../../domain/common/event";
+import type { UserId } from "../../../domain/identity/valueObject";
 import type {
   ConformanceBackend,
   ConformanceBackendOptions,
+  MembershipEdgeSeedInput,
   ScopedConformancePorts,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
-import { GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import {
   createGlobalUnitOfWorkProvider,
@@ -25,6 +27,7 @@ import {
   type ScopePlaneRepositories,
 } from "../execution/scopeUnitOfWork";
 import { createD1Executor } from "../sql/executor";
+import { insertRowsFromJson, jsonRows } from "../sql/json";
 import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
 import type { CloudflareBackendDeps } from "./ports/deps";
@@ -223,10 +226,57 @@ export async function makeCloudflareConformanceBackend(
         scope,
       );
     },
-    // `seedMembershipEdges` is deliberately absent: `membership_directory`
-    // belongs to the Workspace domain, which has no ports yet, so the
-    // migration does not create it. The suites treat the seeder as
-    // optional and skip the page-content cases without it.
+    /**
+     * Writes `membership_directory` rows directly: the Workspace domain
+     * has no ports yet, so there is no repository to go through, but the
+     * table is real (`d1/migrations/0003_membership_directory.sql`) and
+     * `AccountDeletionManifestStore.appendMembershipPage` reads it exactly
+     * as it will in production. The seed's `edgeKey` is the row's
+     * `operation_id`, which is the key that page walks.
+     */
+    async seedMembershipEdges(
+      userId: UserId,
+      edges: readonly MembershipEdgeSeedInput[],
+    ): Promise<void> {
+      if (edges.length === 0) {
+        return;
+      }
+      const now = clock.now().getTime();
+      await globalExecutor.apply([
+        statement(
+          insertRowsFromJson({
+            table: GLOBAL_TABLES.membershipDirectory,
+            columns: [
+              "operation_id",
+              "user_id",
+              "workspace_id",
+              "membership_id",
+              "role",
+              "state",
+              "reservation_expires_at",
+              "created_at",
+              "updated_at",
+            ],
+            conflictKey: ["operation_id"],
+            conflict: "ignore",
+          }),
+          jsonRows(
+            edges.map((edge) => ({
+              operation_id: edge.edgeKey,
+              user_id: userId,
+              workspace_id: edge.workspaceId,
+              membership_id: edge.membershipId,
+              role: "member",
+              state: edge.edgeState,
+              reservation_expires_at:
+                edge.edgeState === "pending" ? now + HOUR_MS : null,
+              created_at: now,
+              updated_at: now,
+            })),
+          ),
+        ),
+      ]);
+    },
     async setMaintenanceTables(
       kind: MaintenanceKind,
       tables: readonly string[],
@@ -238,6 +288,8 @@ export async function makeCloudflareConformanceBackend(
     },
   };
 }
+
+const HOUR_MS = 60 * 60 * 1000;
 
 const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
   authStatePrune: [

@@ -149,7 +149,11 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
 | local projection rebuild | **100 notes** | 1 scheduled task の CPU と再開粒度 |
 
-scope-local の一括削除は、1 turn の SQL 文数がバッチ件数に比例しない形で実装する（SQL バックエンドなら列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1 の 3 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。理由は [ADR 056](../adr/056-performance-budget-placement.md)。
+scope-local の一括削除は、**書き込みをバッチ件数によらず 1 回の原子適用にまとめる**形で実装する（scope DO なら `transactionSync` 1 回 = RPC 1 往復、その中の outbox は多行 INSERT 1 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。
+
+一方で **1 turn の SQL 文の総数は件数に比例する**。Cloudflare 実装の実測はバッチ n 件あたり `4n + 3` 文で、内訳は列挙 2（ページ + `COUNT(*)`）、1 件あたり読み 2（`findById` + 削除前の版確認）、1 件あたり commit 内 2（`_occ_guard` + `DELETE`）、outbox 多行 INSERT 1 である。かつて掲げていた「列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1 の 3 文」は、所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約の下では成立しないため、実測値へ改めた。
+
+全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。理由は [ADR 056](../adr/056-performance-budget-placement.md)。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 

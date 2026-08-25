@@ -1,5 +1,7 @@
 import type { ScopeCleanupAdmissionStore } from "../../../../application/ports/scopeCleanupAdmissionStore";
 import type { ScopeTaskScheduler } from "../../../../application/ports/scopeTaskScheduler";
+import { createCloudflareScopeCleanupAdmissionStore } from "../../do/repositories/scopeCleanupAdmissionStore";
+import { createCloudflareScopeTaskScheduler } from "../../do/repositories/scopeTaskScheduler";
 import { port } from "../pendingPorts";
 import type { ScopePortDeps } from "./deps";
 
@@ -22,11 +24,23 @@ export type ScopeInfraPorts = Readonly<{
   scopeCleanupAdmissionStore: ScopeCleanupAdmissionStore;
 }>;
 
-export function createScopeInfraPorts(_deps: ScopePortDeps): ScopeInfraPorts {
+export function createScopeInfraPorts(deps: ScopePortDeps): ScopeInfraPorts {
   return {
-    scopeTaskScheduler: port<ScopeTaskScheduler>("ScopeTaskScheduler"),
+    scopeTaskScheduler: port<ScopeTaskScheduler>("ScopeTaskScheduler", () =>
+      createCloudflareScopeTaskScheduler({
+        session: deps.session,
+        scope: deps.scope,
+        db: deps.db,
+      }),
+    ),
     scopeCleanupAdmissionStore: port<ScopeCleanupAdmissionStore>(
       "ScopeCleanupAdmissionStore",
+      () =>
+        createCloudflareScopeCleanupAdmissionStore({
+          session: deps.session,
+          clock: deps.clock,
+          requiredComponents: deps.requiredCleanupComponents,
+        }),
     ),
   };
 }

@@ -4,6 +4,12 @@ import type { NoteRevisionRepository } from "../../../../domain/note/ports/noteR
 import type { StoredFileRepository } from "../../../../domain/storage/ports/storedFileRepository";
 import type { LlmUsageRepository } from "../../../../domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "../../../../domain/usage/ports/storageQuotaRepository";
+import { createCloudflareAppliedOperationStore } from "../../do/repositories/appliedOperationStore";
+import { createCloudflareLlmUsageRepository } from "../../do/repositories/llmUsageRepository";
+import { createCloudflareNoteRepository } from "../../do/repositories/noteRepository";
+import { createCloudflareNoteRevisionRepository } from "../../do/repositories/noteRevisionRepository";
+import { createCloudflareStorageQuotaRepository } from "../../do/repositories/storageQuotaRepository";
+import { createCloudflareStoredFileRepository } from "../../do/repositories/storedFileRepository";
 import { port } from "../pendingPorts";
 import type { ScopePortDeps } from "./deps";
 
@@ -26,18 +32,37 @@ export type ScopeBusinessPorts = Readonly<{
 }>;
 
 export function createScopeBusinessPorts(
-  _deps: ScopePortDeps,
+  deps: ScopePortDeps,
 ): ScopeBusinessPorts {
   return {
-    noteRepository: port<NoteRepository>("NoteRepository"),
+    noteRepository: port<NoteRepository>("NoteRepository", () =>
+      createCloudflareNoteRepository({
+        session: deps.session,
+        scope: deps.scope,
+      }),
+    ),
     noteRevisionRepository: port<NoteRevisionRepository>(
       "NoteRevisionRepository",
+      () => createCloudflareNoteRevisionRepository({ session: deps.session }),
     ),
-    storedFileRepository: port<StoredFileRepository>("StoredFileRepository"),
+    storedFileRepository: port<StoredFileRepository>(
+      "StoredFileRepository",
+      () => createCloudflareStoredFileRepository({ session: deps.session }),
+    ),
     storageQuotaRepository: port<StorageQuotaRepository>(
       "StorageQuotaRepository",
+      () => createCloudflareStorageQuotaRepository({ session: deps.session }),
     ),
-    llmUsageRepository: port<LlmUsageRepository>("LlmUsageRepository"),
-    appliedOperationStore: port<AppliedOperationStore>("AppliedOperationStore"),
+    llmUsageRepository: port<LlmUsageRepository>("LlmUsageRepository", () =>
+      createCloudflareLlmUsageRepository({ session: deps.session }),
+    ),
+    appliedOperationStore: port<AppliedOperationStore>(
+      "AppliedOperationStore",
+      () =>
+        createCloudflareAppliedOperationStore({
+          session: deps.session,
+          clock: deps.clock,
+        }),
+    ),
   };
 }
