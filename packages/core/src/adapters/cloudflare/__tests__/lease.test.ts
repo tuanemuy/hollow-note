@@ -1,11 +1,13 @@
 import { applyD1Migrations, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { ConflictError } from "../../../application/errors";
+import type { ScopeUnitOfWorkContext } from "../../../application/execution/unitOfWork";
 import {
   ScopeTaskPriority,
   type ScopeTaskScheduler,
 } from "../../../application/ports/scopeTaskScheduler";
 import { ScopeKey } from "../../../application/scope";
+import { EventId } from "../../../domain/common/event";
 import type { UserId } from "../../../domain/identity/valueObject";
 import { createCloudflareScopeTaskScheduler } from "../do/repositories/scopeTaskScheduler";
 import {
@@ -15,6 +17,10 @@ import {
 } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
+import {
+  createScopeUnitOfWorkProvider,
+  type ScopePlaneRepositories,
+} from "../execution/scopeUnitOfWork";
 import type { ScopeSqlExecutor } from "../sql/executor";
 import { createAutocommitSession } from "../sql/session";
 import { statement } from "../sql/statement";
@@ -207,6 +213,76 @@ describe("cloudflare scheduled-task lease reclaim", () => {
     expect(outcomes.some((outcome) => outcome.status === "rejected")).toBe(
       true,
     );
+
+    const row = await readRow(
+      createScopeStubExecutor(env.SCOPE_OBJECT, scope, NAMESPACE),
+    );
+    expect(row.status).toBe("running");
+    expect(row.lease_expires_at).toBe(now.getTime() + LEASE_MS);
+  });
+
+  /**
+   * The same property through the path a deployment actually takes.
+   * Every caller that reaches the scheduler through a unit of work stages
+   * its claim, so the guard fires when the write-set commits rather than
+   * when the statement is written, and the loser's refusal is translated
+   * against the unit of work rather than the table.
+   */
+  it("gives a contested row to exactly one of two concurrent scope units of work", async () => {
+    await applyD1Migrations(env.GLOBAL_DB, env.MIGRATIONS);
+    const scope = ScopeKey.user("user-lease-staged" as UserId);
+    const scopeUnitOfWork = createScopeUnitOfWorkProvider({
+      openScope: (target) =>
+        createScopeStubExecutor(env.SCOPE_OBJECT, target, NAMESPACE),
+      mintEventId: () => EventId.create("unused"),
+      buildRepositories: (session, target): ScopePlaneRepositories =>
+        ({
+          scopeTaskScheduler: createCloudflareScopeTaskScheduler({
+            session,
+            scope: target,
+            db: env.GLOBAL_DB,
+          }),
+        }) as unknown as ScopePlaneRepositories,
+      stageOutbox: async () => {},
+    });
+    const inUnitOfWork = <T>(
+      fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+    ): Promise<T> => scopeUnitOfWork.run(scope, fn);
+
+    await inUnitOfWork((ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: KIND,
+        operationId: OPERATION,
+        priority: ScopeTaskPriority.outboxRelay,
+        dueAt: T0,
+        payload: {},
+      }),
+    );
+
+    const now = at(1_000);
+    const claim = () =>
+      inUnitOfWork((ctx) =>
+        ctx.scopeTaskScheduler.claimDue({ now, limit: 10, leaseMs: LEASE_MS }),
+      );
+    const outcomes = await Promise.allSettled([claim(), claim()]);
+
+    const handedOut = outcomes.flatMap((outcome) =>
+      outcome.status === "fulfilled" ? outcome.value : [],
+    );
+    expect(handedOut).toHaveLength(1);
+    expect(handedOut[0]?.operationId).toBe(OPERATION);
+
+    expect(outcomes.some((outcome) => outcome.status === "rejected")).toBe(
+      true,
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        expect(outcome.reason).toBeInstanceOf(ConflictError);
+        expect((outcome.reason as ConflictError).code).toBe(
+          "OPTIMISTIC_LOCK_FAILURE",
+        );
+      }
+    }
 
     const row = await readRow(
       createScopeStubExecutor(env.SCOPE_OBJECT, scope, NAMESPACE),

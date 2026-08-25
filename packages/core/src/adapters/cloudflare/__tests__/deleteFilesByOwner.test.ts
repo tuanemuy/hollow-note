@@ -49,10 +49,15 @@ function unusedPort<T extends object>(name: string): T {
 /**
  * AC-5: how many SQL statements one `deleteFilesByOwner` turn issues.
  *
- * `spec/platform/index.md` の「実行予算と分割単位」→「Scope DO」 states a
- * design goal of **three** statements for a scope-local bulk delete —
- * "列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1" — and this file is the
- * measurement that goal is held against. What is reproduced here is the
+ * `spec/platform/index.md` の「実行予算と分割単位」→「Scope DO」 sets the
+ * design goal for a scope-local bulk delete: the writes collapse into a
+ * single atomic apply whatever the batch size, carrying the outbox as one
+ * multi-row INSERT, while the statement total and the read-side round
+ * trips stay proportional to the count. The measured figures themselves
+ * belong to the adapter rather than to the budget document (ADR 056
+ * 決定 3), so this file is where they are pinned.
+ *
+ * What is reproduced here is the
  * storage half of `application/storage/deleteFilesByOwner.ts`: the
  * `listByOwner` enumeration, the `deleteStoredFiles` loop it feeds, and
  * the outbox flush their events land in. The turn's surrounding calls
@@ -125,8 +130,7 @@ type Counts = {
  *
  * Without this the measurement is a count of executor calls, which is
  * only the same number while nothing in the object adds statements of
- * its own — the identity pin used to add two per RPC before it was
- * memoised. Wrapping `sql` on the object's own state is what keeps the
+ * its own. Wrapping `sql` on the object's own state is what keeps the
  * two counts honest about each other.
  */
 const countExecuted = async (
@@ -177,7 +181,7 @@ const counting = (
   },
 });
 
-/** The multi-row outbox INSERT the design goal counts as its third statement. */
+/** The one multi-row outbox INSERT the design goal folds the batch into. */
 const stageOutbox = async (
   session: SqlSession,
   events: readonly DomainEvent[],
@@ -291,8 +295,8 @@ describe("deleteFilesByOwner statement budget [cloudflare]", () => {
     const large = await runOneTurn(40);
 
     // Enumeration: the page and its `COUNT(*)`. `listByOwner` returns a
-    // `PaginationResult`, so the total is a second statement — the design
-    // goal's "列挙 1" is already two.
+    // `PaginationResult`, so the total is a second statement — two, not
+    // one, but constant in the batch size either way.
     expect(small.counts.reads - 2 * 10).toBe(2);
     expect(large.counts.reads - 2 * 40).toBe(2);
 
@@ -319,8 +323,7 @@ describe("deleteFilesByOwner statement budget [cloudflare]", () => {
     const measured = await runOneTurn(10);
 
     // 4n + 3 for a batch of n: (2n + 2) reads and (2n + 1) statements in
-    // the single commit. The design goal of three statements is not met;
-    // `spec/platform/index.md` carries the measured figure instead.
+    // the single commit.
     expect(measured.counts.reads).toBe(22);
     expect(measured.counts.commitStatements).toBe(21);
     expect(measured.counts.reads + measured.counts.commitStatements).toBe(43);

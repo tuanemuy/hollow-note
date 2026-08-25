@@ -68,7 +68,7 @@
 | UC-note-004 | `verifySharePassword` | `spec/usecases/note.md#verifySharePassword` | share token hash と発信元の鍵で待機・施錠を検査し、限定公開 password を照合して SharePass を発行する。失敗加算を原子的に行い、待機と lock を共通 `THROTTLED` にする |
 | UC-note-005 | `getPublicNote` | `spec/usecases/note.md#getPublicNote` | public active note を著者・workspace・metadata とともに返す。非公開・限定公開・完全削除は not found、公開のまま trash は gone とし、退会著者は tombstone 表示にする |
 | UC-note-006 | `searchNotes` | `spec/usecases/note.md#searchNotes` | current owner scope と閲覧権限を確認し、keyword、正規化 tags、作成月・timezone、sort、lifecycle、pagination を local query service へ渡して一覧と件数を返す |
-| UC-note-007 | `searchPublicNotes` | `spec/usecases/note.md#searchPublicNotes` | 公開 owner filter、keyword、正規化 tags、UTC 更新日範囲、署名 cursor を検証し、全 public shards を横断して公開ノートを検索する。短すぎる無 owner query、範囲不正、rate limit を拒否する |
+| UC-note-007 | `searchPublicNotes` | `spec/usecases/note.md#searchPublicNotes` | 公開 owner filter、keyword、正規化 tags、UTC 更新日範囲、opaque cursor を検証し、全 public shards を横断して公開ノートを検索する。短すぎる無 owner query、範囲不正、rate limit を拒否する |
 | UC-note-008 | `countNotesByCreationDate` | `spec/usecases/note.md#countNotesByCreationDate` | owner の閲覧権限と timezone 月範囲を解決し、ノートがある月と指定月の日別作成件数を current scope の query service から返す |
 | UC-note-009 | `updateNoteBody` | `spec/usecases/note.md#updateNoteBody` | 編集権限・active lifecycle・変換 lock・版を検査し、HTML を sanitize して現本文の revision と更新本文を保存する。既定で外部参照取り込みを要求し、同一 note の active job へ相乗りまたは新規登録する |
 | UC-note-010 | `applyTextNodeEdits` | `spec/usecases/note.md#applyTextNodeEdits` | ready 本文の指定 text nodes を期待値付きで編集し、結果を再 sanitize・派生情報再計算して revision と本文を保存する。全 edits が skipped なら版を作らず成功する |
@@ -95,7 +95,7 @@
 | UC-note-031 | `runBulkExport` | `spec/usecases/note.md#runBulkExport` | 全 children terminal かつ成功ありの bulkExport 親について assembly lease の実行権を取得し、成功 artifacts と失敗一覧を ZIP 化して 7 日 artifact と親 success を保存する。重複、再開、timeout、強制終端を扱う |
 | UC-note-032 | `requestBulkNoteOperation` | `spec/usecases/note.md#requestBulkNoteOperation` | source scope 内最大 500 notes を操作別権限で選別し、公開 handle・移動先・warnings を事前検査して、tag・visibility・move・trash・内部 purge の親子 jobs を同一 scope に登録する |
 | UC-note-033 | `runBulkNoteOperationItem` | `spec/usecases/note.md#runBulkNoteOperationItem` | child job のリースと requester 権限を再検査し、tag 付脱、visibility、move、trash、purge の各 usecase を適切な version・除外 job ID で呼び、冪等成功または理由付き job failure にする |
-| UC-note-034 | `listSitemapEntries` | `spec/usecases/note.md#listSitemapEntries` | 全 public shards の公開 note IDs と更新日時を署名 cursor で merge・page してサイトマップ用に返す |
+| UC-note-034 | `listSitemapEntries` | `spec/usecases/note.md#listSitemapEntries` | 全 public shards の公開 note IDs と更新日時を opaque cursor で merge・page してサイトマップ用に返す |
 | UC-note-035 | `projectNoteChanges` | `spec/usecases/note.md#projectNoteChanges` | local または public plane で current route と Note・tags・Identity・Workspace の atomic snapshot を読み、世代ベクトル付き projection を更新・削除する。tag、author、workspace の fan-out と redaction を有界・冪等 continuation で処理する |
 | UC-note-036 | `rebuildNoteProjection` | `spec/usecases/note.md#rebuildNoteProjection` | 指定 local scope または global active routes を page し、note ごとの再投影要求を積み、任意で正データと合わない orphan projections を削除する |
 | UC-storage-001 | `startBulkUpload` | `spec/usecases/storage.md#startBulkUpload` | 最大 100 files と合計容量、owner 権限、公開 handle、file acceptance、storage quota を検査し、宣言情報から暫定 LLM 件数を返して conversion batch 親を対象所有 scope に登録する |

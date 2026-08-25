@@ -49,7 +49,10 @@ export function createScopeLocalNoteProjectionWriter(
       return "written";
     },
 
-    remove: (noteId: NoteId) => writer.remove(noteId),
+    async remove(noteId: NoteId): Promise<void> {
+      await writer.remove(noteId, await writer.readStored(noteId));
+    },
+
     redactAuthor: (input: AuthorRedaction) => writer.redactAuthor(input),
   };
 }

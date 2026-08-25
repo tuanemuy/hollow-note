@@ -6,10 +6,11 @@ import type {
 import type { UserBatchReader } from "../../../../domain/identity/ports/userBatchReader";
 import type { User } from "../../../../domain/identity/user";
 import type { UserId } from "../../../../domain/identity/valueObject";
+import { throwTranslated } from "../../sql/errors";
 import { inJsonList, jsonList } from "../../sql/json";
 import { int, text } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
-import { statement } from "../../sql/statement";
+import { type SqlRow, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
 import { userFromRow } from "./userRepository";
 
@@ -41,15 +42,20 @@ export function createD1UserBatchReader(
         return resolved;
       }
       const wanted = new Set<string>(ids);
-      const rows = await session.readRows({
-        table: TABLE,
-        statement: statement(
-          `SELECT * FROM ${TABLE} WHERE ${inJsonList("id")}`,
-          jsonList(ids),
-        ),
-        keyOf: (row) => text(row, "id"),
-        matches: (row) => wanted.has(text(row, "id")),
-      });
+      let rows: readonly SqlRow[];
+      try {
+        rows = await session.readRows({
+          table: TABLE,
+          statement: statement(
+            `SELECT * FROM ${TABLE} WHERE ${inJsonList("id")}`,
+            jsonList(ids),
+          ),
+          keyOf: (row) => text(row, "id"),
+          matches: (row) => wanted.has(text(row, "id")),
+        });
+      } catch (cause) {
+        throwTranslated(`${TABLE} batch read`, cause);
+      }
       for (const row of rows) {
         const user = userFromRow(row);
         resolved.set(user.id, {

@@ -66,11 +66,12 @@ const toEntry = (row: SqlRow): OutboxEntry => ({
  * of a chain that has moved on. `ON CONFLICT DO NOTHING` is exactly that
  * rule, and it keeps the whole batch to one statement.
  *
- * `claimPending` and `pruneProcessed` are single statements with
- * `RETURNING`, which is how a driver with no interactive transaction
- * still hands out rows atomically: the same statement that takes the
- * lease is the one that reports what it took, so two workers cannot both
- * see a row as claimable.
+ * `claimPending` is a single statement with `RETURNING`, which is how a
+ * driver with no interactive transaction still hands out rows atomically:
+ * the same statement that takes the lease is the one that reports what it
+ * took, so two workers cannot both see a row as claimable. `pruneProcessed`
+ * is one statement too, but its caller only wants a count, so it reads the
+ * driver's affected-row count instead of returning the rows.
  */
 export function createD1OutboxRepository(
   deps: Readonly<{ session: SqlSession; clock: Clock }>,
@@ -88,6 +89,14 @@ export function createD1OutboxRepository(
   const write = async (mutations: readonly RowMutation[]): Promise<void> => {
     try {
       await session.write(mutations);
+    } catch (cause) {
+      throwTranslated(TABLE, cause);
+    }
+  };
+
+  const writeCounted = async (input: SqlStatement): Promise<number> => {
+    try {
+      return await session.writeCounted(input);
     } catch (cause) {
       throwTranslated(TABLE, cause);
     }
@@ -240,15 +249,18 @@ export function createD1OutboxRepository(
 
     async pruneProcessed(olderThan: Date): Promise<{ deleted: number }> {
       refuseStaged("pruneProcessed");
-      const rows = await query(
+      // The port has no limit, so the sweep is unbounded; counting with
+      // `RETURNING` would put one row per deletion on the wire and a
+      // backlog would make the response, not the statement count, the
+      // thing that fails.
+      const deleted = await writeCounted(
         statement(
           `DELETE FROM ${TABLE}
-            WHERE processed_at IS NOT NULL AND processed_at < ?
-            RETURNING id`,
+            WHERE processed_at IS NOT NULL AND processed_at < ?`,
           toTimestamp(olderThan),
         ),
       );
-      return { deleted: rows.length };
+      return { deleted };
     },
   };
 }

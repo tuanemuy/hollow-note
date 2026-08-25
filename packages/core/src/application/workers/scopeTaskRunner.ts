@@ -7,6 +7,7 @@ import {
   prunePersonalCleanupBarriers,
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
+import { isConflictError } from "../errors";
 import { acknowledgePersonalCleanup } from "../identity/deleteAccount/cleanupDispatch";
 import {
   SCOPE_TASK_LEASE_MS,
@@ -133,7 +134,11 @@ export type RunDueScopeTasksOptions = Readonly<{
  * only one left to back it off, and without that a permanently failing
  * target would be re-driven every tick with `attempt` frozen at zero.
  *
- * One failing task must not hold up the others, so each is isolated.
+ * One failing task must not hold up the others, so each is isolated. A
+ * scope whose claim lost its race to another writer is isolated the same
+ * way: that loss reaches a staged backend only at commit, so the adapter
+ * cannot answer it as an empty batch, and the rows it names belong to the
+ * writer that won them.
  */
 export async function runDueScopeTasks(
   container: WorkerContainer,
@@ -156,10 +161,21 @@ export async function runDueScopeTasks(
     // Claiming at most the remaining budget is what keeps every claimed
     // row visited in this round: a row claimed and left over is locked
     // for the whole lease, not until the next tick.
-    const claimed = await container.scopeUnitOfWorkProvider.run(
-      row.scope,
-      (ctx) => ctx.scopeTaskScheduler.claimDue({ now, limit: budget, leaseMs }),
-    );
+    let claimed: readonly ScopeTask[];
+    try {
+      claimed = await container.scopeUnitOfWorkProvider.run(row.scope, (ctx) =>
+        ctx.scopeTaskScheduler.claimDue({ now, limit: budget, leaseMs }),
+      );
+    } catch (cause) {
+      if (!isConflictError(cause)) {
+        throw cause;
+      }
+      container.logger.warn(
+        "[scope-tasks] claim lost the race; leaving the scope to its winner",
+        { cause, scope: scopeKey },
+      );
+      continue;
+    }
     for (const task of claimed) {
       budget -= 1;
       const handle = handlers[task.kind];

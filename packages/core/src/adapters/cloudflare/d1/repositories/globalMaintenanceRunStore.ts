@@ -499,7 +499,13 @@ export function createD1GlobalMaintenanceRunStore(
         ]);
       } catch (cause) {
         if (classifySqlError(cause) === "occGuard") {
-          return leased(input.candidateRunId, input.candidateAsOf);
+          // The winner may have started under a different candidate id,
+          // so the run this call names has to come from the row that
+          // actually exists rather than from the id it proposed.
+          const winner = await readRunningRun(input.kind);
+          return winner === null
+            ? leased(input.candidateRunId, input.candidateAsOf)
+            : leased(winner.runId, winner.asOf);
         }
         throw databaseError("the global maintenance run store", cause);
       }
@@ -758,7 +764,10 @@ export function createD1GlobalMaintenanceRunStore(
         rows.length > page.length && last !== undefined
           ? encodeOpaqueCursor({
               fp: PRUNE_CURSOR_FINGERPRINT,
-              after: `${intOrNull(last, "expires_at") ?? 0} ${text(last, "run_id")}`,
+              after: compositeKey(
+                String(intOrNull(last, "expires_at") ?? 0),
+                text(last, "run_id"),
+              ),
             })
           : null;
       try {
@@ -779,7 +788,7 @@ export function createD1GlobalMaintenanceRunStore(
 }
 
 const splitKeyset = (after: string): readonly [number, string] => {
-  const separator = after.indexOf(" ");
+  const separator = after.indexOf("\u0000");
   return [
     Number(after.slice(0, separator)),
     after.slice(separator + 1),

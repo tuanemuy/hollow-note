@@ -413,6 +413,65 @@ describe("cloudflare two-plane unit of work", () => {
     ).rejects.toThrow(/nesting is forbidden/);
   });
 
+  it("kicks the post-commit triggers outside the unit's async context", async () => {
+    // A Cloudflare relay kick starts the dispatch and hands it to
+    // `waitUntil`, which opens a unit of work of its own. That is only
+    // possible if the kick runs after the committing unit's async
+    // context has closed.
+    const dispatched: Promise<string>[] = [];
+    const globalProvider = createGlobalUnitOfWorkProvider({
+      executor: createD1Executor(env.GLOBAL_DB),
+      mintEventId,
+      buildRepositories: globalRepositories,
+      stageOutbox,
+      relayTrigger: {
+        kick: () => {
+          dispatched.push(globalUnitOfWork.run(async () => "relayed"));
+        },
+      },
+    });
+
+    await globalProvider.run(async (ctx) => {
+      await (ctx as TestGlobalContext).userRepository.insert("user-kick");
+      ctx.collectEvents([draft("user-kick")]);
+    });
+
+    expect(dispatched).toHaveLength(1);
+    await expect(dispatched[0]).resolves.toBe("relayed");
+
+    const armed: Promise<string>[] = [];
+    const scopeProvider = createScopeUnitOfWorkProvider({
+      openScope: (scope) =>
+        createScopeStubExecutor(env.SCOPE_OBJECT, scope, NAMESPACE),
+      mintEventId,
+      buildRepositories: scopeRepositories,
+      stageOutbox,
+      scopeTaskTrigger: {
+        kick: () => {
+          armed.push(
+            scopeUnitOfWork.run(
+              ScopeKey.user("user-kick-runner" as UserId),
+              async () => "ran",
+            ),
+          );
+        },
+      },
+    });
+
+    await scopeProvider.run(
+      ScopeKey.user("user-kick-scope" as UserId),
+      async (ctx) => {
+        await (ctx as TestScopeContext).scopeTaskScheduler.schedule(
+          "test.continued",
+          "op-kick",
+        );
+      },
+    );
+
+    expect(armed).toHaveLength(1);
+    await expect(armed[0]).resolves.toBe("ran");
+  });
+
   it("commits the scope plane through one RPC and publishes the due index before resolving", async () => {
     const scope = ScopeKey.user("user-scope" as UserId);
     await runScope(scope, async (ctx) => {

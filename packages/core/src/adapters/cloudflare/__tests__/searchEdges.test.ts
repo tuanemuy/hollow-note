@@ -12,6 +12,7 @@ import {
   scopeOf,
   userId,
 } from "../../conformance/fixtures";
+import { bigramIndexText } from "../search/bigram";
 import { makeCloudflareConformanceBackend } from "./conformanceBackend";
 
 /**
@@ -22,6 +23,9 @@ import { makeCloudflareConformanceBackend } from "./conformanceBackend";
  * this backend's index, of the two-statement read that keeps a page from
  * carrying every body, and of the collation between the two.
  */
+
+/** Both planes cap one bound value at this (`spec/platform/index.md` 実上限). */
+const MAX_BOUND_VALUE_BYTES = 2_000_000;
 
 const VERSION = {
   projectionRevision: 1,
@@ -157,6 +161,55 @@ describe("cloudflare note search edges", () => {
     // falls back to the plain excerpt.
     expect(found.items.map((item) => item.id)).toEqual(["note-001"]);
     expect(found.items[0]?.highlightedExcerpt).toBeNull();
+  });
+
+  it("indexes a body at the content-size budget without exceeding a bound value", async () => {
+    // 800,000 bytes of CJK (ADR 017's ceiling for `PlainTextContent`),
+    // which bigrams to about 2.33x — past the 2,000,000-byte cap on one
+    // bound value unless the index text is held to a budget. Neither
+    // local D1 nor local SQLite enforces that cap, so the bound value is
+    // measured here rather than left to the driver to reject.
+    const body = "記録".repeat(Math.floor(800_000 / (2 * 3)));
+    expect(
+      new TextEncoder().encode(bigramIndexText(body)).length,
+    ).toBeLessThanOrEqual(MAX_BOUND_VALUE_BYTES);
+
+    await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+      makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
+        title: "大きな記録",
+        text: `研究の見立て${body}`,
+        excerpt: "研究の見立て",
+      }),
+      [],
+      VERSION,
+    );
+
+    const found = await scoped.localNoteQueryService.search(
+      criteria({ keyword: "研究" }),
+    );
+    expect(found.items.map((item) => item.id)).toEqual(["note-001"]);
+
+    // The withdrawal re-derives the same truncated token set, so a
+    // replacement leaves the contentless index intact.
+    expect(
+      await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+        makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
+          title: "大きな記録",
+          text: `改訂の見立て${body}`,
+          excerpt: "改訂の見立て",
+        }),
+        [],
+        { ...VERSION, projectionRevision: 2 },
+      ),
+    ).toBe("written");
+    expect(
+      (await scoped.localNoteQueryService.search(criteria({ keyword: "改訂" })))
+        .items.length,
+    ).toBe(1);
+    expect(
+      (await scoped.localNoteQueryService.search(criteria({ keyword: "研究" })))
+        .items.length,
+    ).toBe(0);
   });
 
   it("names both months when one UTC day straddles a local month boundary", async () => {

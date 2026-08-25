@@ -1,6 +1,6 @@
 # 指摘台帳 — 薄いビュー（次ラウンドのレビュアーへ）
 
-Round 001 で **wont-fix / defer / 要確認** と判定した指摘。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
+Round 001 / 002 で **wont-fix / defer / 要確認** と判定した指摘。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
 fix 判定の全件は `triage.md` を参照。
 
 ## wont-fix
@@ -8,6 +8,7 @@ fix 判定の全件は `triage.md` を参照。
 | Key | 判定 | 理由 | Issue |
 |---|---|---|---|
 | `do/repositories/{storedFileRepository,noteRepository}.ts:readForUpdate 事前読み` | wont-fix | adr.md ADR-008 / ADR-013 / ADR-025 で決着済み。二段構え（ステージ時の読みで固有符号、guard は同時実行の砦）はこの PR の中核規律で、省くと版の不一致が呼び出し地点ではなく commit で現れる。最適化は ADR-002 が範囲外に置いた別作業 | — |
+| `authTokenRepository:findPending の「最新の発行を返す」を契約化する` | wont-fix（Round 002） | adr.md ADR-039 が「複数 pending 時の戻り値は契約としては未定義の領域。memory を触らずに済む側（AC-7）を採る」と決着済みで、契約化を別 Issue と明記している。適合スイートへのケース追加と memory の振る舞い変更が同時に要り、AC-7 と「適合スイート本体は変更しない」の双方に抵触する。四者不整合そのものはポート JSDoc を「未定義」へ、spec を「D1 実装の選択」へ倒して閉じる | 未起票 |
 
 ### wont-fix に準じる副論点
 
@@ -24,10 +25,38 @@ fix 判定の全件は `triage.md` を参照。
 | `di/runtime.ts:MemoryRuntime の AppRuntime 適合` | defer | 塞ぐには `memoryRuntime.ts` の型注釈書き換えが要り、Node 参照ランタイムの配線に手を入れる形になる（AC-7 の保守的な線）。次スライスの先頭で片付ける | 未起票 |
 | `adapters/memory:暗号 / Intl アダプターの分離` | defer | plan.md「含まれないもの」が明示的にスコープ外と定め、ADR-030 が理由を述べている | 未起票 |
 | `DEFAULT_MAINTENANCE_TABLES の単一正本化` | 部分 defer | 本 PR ではテストで一致を固定するに留める。正本統合は別ブランチ `issue/16/sweep-table-order-single-source` の持ち分 | #16 |
+| `spec/inventory/adapter.md:5 ポートの ADP 行が 0 件` | defer（Round 002） | `ScopeTaskScheduler` / `ScopeTaskQueue` / `OutboxRepository` / `DistributedOperationStore` / `AppliedOperationStore` は台帳生成時点からの既存の穴で本 PR の作り込みではない。埋めるには 5 ポート ≒ 25 行を全バックエンド共通の採番規則で起こし memory 側の ADP 行とも整合させる必要があり、plan.md のスコープ（今日ポートがある 30 スイートの CF 実装）を越える | 未起票 |
 
 ## 要確認（メイン判断待ち）
 
 | Key | 判定 | 迷った理由 |
 |---|---|---|
-| `adapters/conformance/scopeTaskScheduler.ts:並行claimケース` | 要確認 | 契約の穴を塞ぐ本筋だが適合スイート本体の変更にあたる。AC-8 / ADR 046 の手続き（memory も同じケースを通す）が要り、偽クロック下の並行ケースは不安定化リスクもある。CF アダプター側の occGuard 修正＋バックエンド固有テストだけでも Blocker 自体は閉じる |
-| `d1/repositories/publicNoteProjection.ts:非public行のD1投影` | 要確認 | spec/database と ADR 021 は「public かつ active の行だけ」と明記しており canon 違反だが、memory も同型。CF 側だけ直す（世代ベクトルの比較可能性をどう保つかが自明でない）か、canon を実装に合わせるかは正本レベルの判断 |
+| `spec/adr/021-scope-sharded-data-plane.md:41 の「署名cursor」の扱い`（Round 002） | 要確認 | ADR-048 で cursor の「署名付き」契約を撤回した結果、canon 側 6 か所が旧い約束のまま残っている。そのうち `spec/adr/021` だけは在force の ADR 本文であり、(a) 当該語を直接直すか (b) ADR-048 を `spec/adr/063` へ昇格して 021 から参照を張るかで扱いが変わる。**(b) を推す** — `spec/adr/` は 062 止まりで Round 001 の束 7 が意図した昇格が未実行のままであり、(b) なら「決定がどこにも canon として着地していない」問題ごと閉じられる |
+| `adapters/conformance/scopeTaskScheduler.ts:並行claimケース` | 決着済み（#48 へ起票） | 契約の穴を塞ぐ本筋だが適合スイート本体の変更にあたる。AC-8 / ADR 046 の手続き（memory も同じケースを通す）が要り、偽クロック下の並行ケースは不安定化リスクもある。CF アダプター側の occGuard 修正＋バックエンド固有テストだけでも Blocker 自体は閉じる |
+| `d1/repositories/publicNoteProjection.ts:非public行のD1投影` | 決着済み（#47 へ起票） | spec/database と ADR 021 は「public かつ active の行だけ」と明記しており canon 違反だが、memory も同型。CF 側だけ直す（世代ベクトルの比較可能性をどう保つかが自明でない）か、canon を実装に合わせるかは正本レベルの判断 |
+
+## 起票済み（Round 001）
+
+| Key | 判定 | Issue |
+|---|---|---|
+| `publicNoteProjection:非public行のD1投影` | defer | #47 |
+| `conformance/scopeTaskScheduler.ts:並行claimケース` | wont-fix | #48 |
+| `identityUniqueDirectory:1 operation = 何行か` | defer | #49 |
+| `adapters/memory:暗号 / Intl アダプターの分離` | defer | #50 |
+| `di/memoryRuntime.ts:AppRuntime 適合の型固定` | defer | #51 |
+| `DEFAULT_MAINTENANCE_TABLES:単一正本化` | 部分 defer | 既存 #16 |
+
+## 起票が必要（Round 002・未起票）
+
+| Key | 判定 | タイトル案 |
+|---|---|---|
+| `spec/inventory/adapter.md:5 ポートの ADP 行が 0 件` | defer | spec/inventory/adapter.md に ScopeTaskScheduler / ScopeTaskQueue / OutboxRepository / DistributedOperationStore / AppliedOperationStore の ADP 行を追加する |
+| `authTokenRepository:findPending の順序を契約化する` | wont-fix（この PR では行わない） | AuthTokenRepository.findPendingByUserAndPurpose の「最新の発行を返す」を契約化する（適合スイート + memory） |
+
+## 起票済み（Round 002）
+
+| Key | 判定 | Issue |
+|---|---|---|
+| `spec/inventory/adapter.md:ADP 行欠落 5 ポート` | defer | #52 |
+| `authTokenRepository:findPendingByUserAndPurpose の順序契約` | wont-fix | #53 |
+| `spec/database/index.md:978 公開 workspace 一覧の署名 cursor` | wont-fix | ポート未実装のため範囲外（`spec/adr/063` の影響節に記録） |

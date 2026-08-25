@@ -77,7 +77,12 @@ export type AuthorRedaction = Readonly<{
  * re-reads all sources and retries once before deferring to Queue/Alarm
  * retry.
  *
- * Error contract: `SystemError(DatabaseError)`.
+ * Error contract: `SystemError(DatabaseError)`. Every write may in
+ * addition throw `ConflictError("OPTIMISTIC_LOCK_FAILURE")` when the row
+ * moved between the read that decided the outcome and the write that
+ * applies it (see `PublicNoteProjectionWriter` for why the loss is not
+ * folded into a `stale` result). The redelivered task re-reads and
+ * settles, so the caller lets the failure reach the Queue / Alarm retry.
  */
 export interface LocalNoteProjectionWriter {
   replaceSnapshotIfNewer(

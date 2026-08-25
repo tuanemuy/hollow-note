@@ -15,9 +15,14 @@ import type { ScopePortDeps } from "./deps";
 /**
  * The scope Durable Object business bundle.
  *
- * Every port here gets `deps.scope` and owes the `scope 検証` rule of
- * `spec/database/index.md` の「共通の規約」: `owner_type` / `owner_id`
- * must match the object's own `ScopeKey` on both restore and save.
+ * `notes` is the only table of the bundle carrying a scope key, so
+ * `noteRepository` is the only port handed `deps.scope` and the only one
+ * that checks `owner_type` / `owner_id` against the object's own
+ * `ScopeKey` on restore and save (`spec/database/index.md` の
+ * 「共通の規約」). The owner and subject columns of the others are
+ * accounting attribution, which may legitimately name a different party
+ * from the object holding the row; physical separation is carried by the
+ * `_scope_identity` pin, not by those columns.
  *
  * Suites: `conformance/scopeBusiness.test.ts`.
  */

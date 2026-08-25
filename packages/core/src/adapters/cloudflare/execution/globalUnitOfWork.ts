@@ -6,10 +6,9 @@ import type {
 import type { RelayTrigger } from "../../../application/ports/relayTrigger";
 import type { EventDraft, EventId } from "../../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../../domain/common/event";
-import { databaseError, throwTranslated } from "../sql/errors";
+import { throwTranslated } from "../sql/errors";
 import type { SqlExecutor } from "../sql/executor";
 import { createStagedSession, type SqlSession } from "../sql/session";
-import { MAX_STATEMENTS_PER_COMMIT } from "../sql/statement";
 import { runInUnitOfWork } from "./nesting";
 import { WriteSet } from "./writeSet";
 
@@ -47,12 +46,15 @@ export type GlobalUnitOfWorkOptions = Readonly<{
  * minted as they arrive and are staged into the same write-set as the
  * entity writes, which is what makes the outbox flush transactional. The
  * relay is kicked once, after a commit that carried events — never
- * before, and never for a rolled-back unit.
+ * before, and never for a rolled-back unit. The kick happens after the
+ * unit's async context has closed, so a trigger that opens a unit of
+ * work of its own does not trip the nesting bar.
  *
  * One commit is one batch and one batch is `n` D1 queries, so the size
- * of a write-set is spent directly out of the invocation's query budget
- * — `MAX_STATEMENTS_PER_COMMIT` is where a batch that outgrew it is
- * refused, at the commit rather than as an overage in production.
+ * of a write-set is spent directly out of the invocation's query budget.
+ * `createD1Executor.apply` refuses a batch that outgrew
+ * `MAX_STATEMENTS_PER_COMMIT`, which is why the check does not appear
+ * here.
  *
  * Optimistic-lock conflicts are enforced inside the batch by the
  * `_occ_guard` trip wire (`../sql/occGuard.ts`), because a conditional
@@ -64,8 +66,8 @@ export function createGlobalUnitOfWorkProvider(
   options: GlobalUnitOfWorkOptions,
 ): GlobalUnitOfWorkProvider {
   return {
-    run<T>(fn: (ctx: GlobalUnitOfWorkContext) => Promise<T>): Promise<T> {
-      return runInUnitOfWork("global", async () => {
+    async run<T>(fn: (ctx: GlobalUnitOfWorkContext) => Promise<T>): Promise<T> {
+      const committed = await runInUnitOfWork("global", async () => {
         const writeSet = new WriteSet();
         const session = createStagedSession(options.executor, writeSet);
         const buffered: DomainEvent[] = [];
@@ -83,22 +85,17 @@ export function createGlobalUnitOfWorkProvider(
         if (buffered.length > 0) {
           await options.stageOutbox(session, buffered);
         }
-        const statements = writeSet.statements();
-        if (statements.length > MAX_STATEMENTS_PER_COMMIT) {
-          throw databaseError(
-            `The global unit of work staged ${statements.length} statements, above the ${MAX_STATEMENTS_PER_COMMIT} a single commit may spend from the D1 invocation budget; split the work into bounded batches`,
-          );
-        }
         try {
-          await options.executor.apply(statements);
+          await options.executor.apply(writeSet.statements());
         } catch (cause) {
           throwTranslated("the global unit of work", cause);
         }
-        if (buffered.length > 0) {
-          options.relayTrigger?.kick();
-        }
-        return value;
+        return { value, flushedEvents: buffered.length > 0 };
       });
+      if (committed.flushedEvents) {
+        options.relayTrigger?.kick();
+      }
+      return committed.value;
     },
   };
 }

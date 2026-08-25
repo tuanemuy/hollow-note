@@ -150,7 +150,15 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * be positive — zero or less hands out a lease that has already lapsed,
  * so the same round can claim one row twice.
  *
- * Error contract: `SystemError(DatabaseError)`.
+ * Error contract: `SystemError(DatabaseError)`. `claimDue` may in
+ * addition throw `ConflictError("OPTIMISTIC_LOCK_FAILURE")` when another
+ * writer took one of the candidate rows between reading the candidates
+ * and applying the claim: the whole batch then yields nothing and the
+ * caller re-reads next round. Only a backend that builds exclusivity
+ * from a conditional update can raise it, and a backend that stages its
+ * writes raises it at commit — past the point where the adapter could
+ * fold the loss back into an empty result — so the caller, not the
+ * adapter, is what keeps a lost race from ending a round.
  */
 export interface ScopeTaskScheduler {
   schedule(

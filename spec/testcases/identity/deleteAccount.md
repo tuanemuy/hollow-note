@@ -63,8 +63,8 @@
 | 250 workspaceのprepareが必要 | dispatchする | 1page最大100件、外部scope同時6接続以下のwaveで処理し、全prepare ackまでauthor route scanへ進まない | |
 | actorのworkspace Note createがprepare barrierより先にcommitする | author route manifestを構築する | 全barrier ack後にroute scanするため作成済みrouteを固定し、local/public redaction対象に含める | |
 | actorのworkspace writeがprepare barrier後に到着する | commitする | `assertActorWritable`が拒否し、author route scan後方へ対象が増えない | |
-| author routeが250件ある | manifestを構築する | 署名generation cursorで100+100+50件を固定し、各itemのlocal/public ackを保存する | |
-| author route pageのcommit後に応答を失う | build continuationを再実行する | operation ID+NoteIdで重複せず、headerの署名cursorから次pageへ進む | |
+| author routeが250件ある | manifestを構築する | generationを含むopaque cursorで100+100+50件を固定し、各itemのlocal/public ackを保存する | |
+| author route pageのcommit後に応答を失う | build continuationを再実行する | operation ID+NoteIdで重複せず、headerのopaque cursorから次pageへ進む | |
 | ack済みaccount manifest itemが101件ある | compactする | 100件削除してcontinuationを保存し、次turnの1件後だけheaderをcompletedにする | |
 | ack済みaccount manifest itemが1,000件ある | compactする | 10 turnに分け、各transactionを100件以下に保つ | |
 | completed/rejected account manifest headerが期限到達済みで101件ある | terminal prunerを実行する | `(expiresAt, operationId)` keysetの100+1件で回収し、running/building/compacting headerは残す | |

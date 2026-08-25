@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
-import { CLOUDFLARE_ADAPTER_DIR } from "../../vitest.shared";
+import { CLOUDFLARE_ADAPTER_DIR, testFilesIn } from "../../vitest.shared";
 
 const here = (relative: string): string =>
   fileURLToPath(new URL(relative, import.meta.url));
@@ -23,9 +23,10 @@ const here = (relative: string): string =>
  * the conformance factory namespaces each backend it hands out. See
  * `__tests__/` for the factory.
  *
- * The include covers the whole adapter directory, which is exactly what
- * the `node` project excludes (`vitest.shared.ts`), so no test file can
- * fall between the two projects.
+ * The include covers the whole adapter directory with vitest's default
+ * test-file patterns, which is exactly what the `node` project excludes
+ * (`vitest.shared.ts`), so no test file can fall between the two
+ * projects whatever its extension.
  */
 export default defineConfig(async () => ({
   plugins: [
@@ -43,7 +44,7 @@ export default defineConfig(async () => ({
   test: {
     name: "workers",
     globals: true,
-    include: [`${CLOUDFLARE_ADAPTER_DIR}/**/*.{test,spec}.ts`],
+    include: testFilesIn(CLOUDFLARE_ADAPTER_DIR),
     testTimeout: 30_000,
   },
 }));

@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { ConsoleLogger } from "../../../application/ports/logger";
 import { SCOPE_TASK_LEASE_MS } from "../../../application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "../../../application/scope";
 import { ScopeKey as ScopeKeyOps } from "../../../application/scope";
@@ -23,6 +24,19 @@ import {
   scopeColumnsFromName,
   scopeFromColumns,
 } from "./scopeName";
+
+const REARM_FAILED = "scope alarm rearm failed";
+
+const tolerate = async (
+  message: string,
+  run: () => Promise<void>,
+): Promise<void> => {
+  try {
+    await run();
+  } catch (cause) {
+    ConsoleLogger.warn(message, { cause });
+  }
+};
 
 export type ScopeObjectEnv = Readonly<{
   /**
@@ -70,6 +84,12 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
       const stored = await this.boundScope();
       if (stored !== null) {
         this.pinned = { scope: stored, key: ScopeKeyOps.serialize(stored) };
+        // Arming happens on a committed write-set or at the end of a
+        // turn, and a turn needs an alarm to exist first. Rows left by a
+        // deployment that drove no tasks from the object would otherwise
+        // wait for the next write to this scope; one pass here closes
+        // that circle, and drops the alarm again where nothing drives it.
+        await tolerate(REARM_FAILED, () => rescheduleAlarm(ctx.storage));
       }
     });
   }
@@ -90,11 +110,7 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
     const scope = await this.bind(scopeKey);
     await this.sql.apply(statements);
     if (touchedTables.includes(SCHEDULED_TASKS_TABLE)) {
-      // Arming first keeps the object's self-healing independent of D1:
-      // a failed publish leaves index drift, which the next alarm turn
-      // rewrites, but an unarmed object has no next turn at all.
-      await rescheduleAlarm(this.ctx.storage);
-      await this.publishDueIndex(scope);
+      await this.armAndPublish(scope);
     }
   }
 
@@ -104,14 +120,39 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await runScopeAlarmTurn({
-      storage: this.ctx.storage,
-      scope: bound,
-      now: new Date(),
-      leaseMs: SCOPE_TASK_LEASE_MS,
-    });
-    await rescheduleAlarm(this.ctx.storage);
-    await this.publishDueIndex(bound);
+    try {
+      await runScopeAlarmTurn({
+        storage: this.ctx.storage,
+        scope: bound,
+        now: new Date(),
+        leaseMs: SCOPE_TASK_LEASE_MS,
+      });
+    } finally {
+      // A turn that throws must not take the arming with it: an object
+      // left unarmed has no next turn, so its rows would stop for good
+      // rather than for one lease. The failure itself still propagates,
+      // which is what makes the runtime redeliver the alarm.
+      await this.armAndPublish(bound);
+    }
+  }
+
+  /**
+   * Upkeep that follows a landed change to `scheduled_tasks`: arm the
+   * object, then republish its slice of the due index.
+   *
+   * Both are derived state, so neither failure may reach the caller — the
+   * write they follow has already committed, and reporting a failure
+   * would invite a retry of work that took effect. They are tolerated
+   * independently because each is the other's fallback: an object that
+   * armed rewrites the index on its next turn, and a scope that is only
+   * in the index is still reachable by the central runner.
+   */
+  private async armAndPublish(scope: ScopeKey): Promise<void> {
+    // Arming first keeps the object's self-healing independent of D1.
+    await tolerate(REARM_FAILED, () => rescheduleAlarm(this.ctx.storage));
+    await tolerate("scope task due index publish failed", () =>
+      this.publishDueIndex(scope),
+    );
   }
 
   private async publishDueIndex(scope: ScopeKey): Promise<void> {

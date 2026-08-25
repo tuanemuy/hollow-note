@@ -26,9 +26,10 @@ const UNIFORM_RESPONSE: RequestPasswordResetView = {};
  *
  * Issuing runs in the UserId shard transaction so the status/epoch
  * re-check, the interval read, the removal of the superseded token, and
- * the new one land together: the partial unique index over (`user_id`,
- * `purpose`) permits exactly one live reset token, and splitting these
- * would let a concurrent request leave two.
+ * the new one land together: keeping exactly one live reset token per
+ * (`user_id`, `purpose`) is this path's own duty — `AuthTokenRepository`
+ * permits several pending rows and no storage-level uniqueness catches a
+ * slip — so splitting these would let a concurrent request leave two.
  */
 export async function requestPasswordReset({
   container,

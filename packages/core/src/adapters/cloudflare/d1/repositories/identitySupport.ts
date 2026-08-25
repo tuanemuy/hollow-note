@@ -7,13 +7,7 @@ import type { SqlSession } from "../../sql/session";
 import type { SqlRow, SqlStatement, SqlValue } from "../../sql/statement";
 import { statement } from "../../sql/statement";
 
-/**
- * Statement shapes shared by the D1 Identity repositories.
- *
- * Nothing here is Identity-specific in principle; it is scoped to this
- * bundle only because the bundles were implemented in parallel. Merging
- * it with the equivalents in the other D1 bundles is a later tidy-up.
- */
+/** Statement shapes shared by the D1 Identity repositories. */
 
 /** Builds the row-writing statements of one table from its column list. */
 export function createTableWriter(

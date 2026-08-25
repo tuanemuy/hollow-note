@@ -105,14 +105,18 @@ email / provider identity / handle は `identity_unique_reservations` を使う�
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','moving','purging','tombstone') |
 | `target_scope_type` | text | `state = 'moving'` のとき NOT NULL |
 | `target_scope_id` | text | `state = 'moving'` のとき NOT NULL |
+| `migration_id` | text | `state = 'moving'` のとき NOT NULL（進行中のmoveの識別子） |
+| `last_migration_id` | text | NULL可。直近に完了したswitchの`migration_id` |
 | `operation_id` | text | `state IN ('reserved','moving','purging')` のとき NOT NULL |
 | `updated_at` | integer | NOT NULL |
 | `reservation_expires_at` | integer | `state = 'reserved'` のとき NOT NULL |
 | `tombstone_expires_at` | integer | `state = 'tombstone'` のとき NOT NULL |
 
-create は `reserved` でrouteを確保し、scope-local commit後にoperation ID条件で `active` にする。route switch は `WHERE note_id = ? AND route_version = ? AND scope_type = ? AND scope_id = ?` の compare-and-swap 1文で行う。完全削除は同じ条件で `purging` にして外部到達を閉じ、scope削除とpublic projection removeの完了後に30日保持の`tombstone`へ進める。
+状態と列の対応は相関CHECK 5本で持つ — `target_scope_type` と `target_scope_id` はそれぞれ `state = 'moving'` と同値、`reservation_expires_at` は `state = 'reserved'` と同値、`tombstone_expires_at` は `state = 'tombstone'` と同値、`operation_id` は `state IN ('reserved','moving','purging')` のとき非NULLとする。`migration_id` / `last_migration_id` はCHECKを持たず、対で状態機械だけが動かす。
 
-indexes: (`created_by`, `state`, `note_id`) はmembership離脱後も残る著者表示refresh、(`scope_type`, `scope_id`, `state`, `note_id`) はworkspace表示refreshに使う。物理shard後は各shardの同索引を`NoteRouteFanOutReader`がscatter-gatherし、最大32 shard・同時6接続・全体200件へmergeする。署名cursorはgenerationと各shardのkeysetを保持し、reshard中は旧新をNoteId/routeVersionで重複排除する。`created_by` はroute予約時に固定し、Note moveでは変えない。
+create は `reserved` でrouteを確保し、scope-local commit後にoperation ID条件で `active` にする。route switch は `WHERE note_id = ? AND route_version = ? AND scope_type = ? AND scope_id = ?` の compare-and-swap 1文で行う。switch の応答を失ったあとの再試行は、`state = 'active'` かつ `route_version = expected + 1` かつ `last_migration_id` が当該 `migration_id` と一致することで「自分の switch が着地済み」と冪等に判定する — `route_version` だけでは別のmoveが進めた版と区別できないため、完了したswitchの識別子を1つ残す。完全削除は同じ条件で `purging` にして外部到達を閉じ、scope削除とpublic projection removeの完了後に30日保持の`tombstone`へ進める。
+
+indexes: (`created_by`, `state`, `note_id`) はmembership離脱後も残る著者表示refresh、(`scope_type`, `scope_id`, `state`, `note_id`) はworkspace表示refreshに使う。物理shard後は各shardの同索引を`NoteRouteFanOutReader`がscatter-gatherし、最大32 shard・同時6接続・全体200件へmergeする。opaque cursorはgenerationと各shardのkeysetを保持する（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）。reshard中は旧新をNoteId/routeVersionで重複排除する。`created_by` はroute予約時に固定し、Note moveでは変えない。
 
 ### invitation_routes
 
@@ -137,16 +141,21 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 | `id` | text | PK |
 | `kind` | text | NOT NULL, CHECK IN ('noteMove','notePurge','workspaceDeletion','accountDeletion','membershipChange','nameChange','integrationDisconnect') |
 | `partition_key` | text | NOT NULL |
-| `request_key` | text | accountDeletionのuserRequestではNOT NULL |
+| `request_key` | text | NOT NULL |
 | `state` | text | NOT NULL, CHECK IN ('running','completed','rejected') |
 | `payload` | text | NOT NULL（JSON） |
 | `attempts` | integer | NOT NULL DEFAULT 0 |
 | `next_attempt_at` | integer | NULL 可 |
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
+| `terminal_at` | integer | terminal（`completed` / `rejected`）ではNOT NULL、runningはNULL |
 | `expires_at` | integer | terminal accountDeletionではNOT NULL、runningはNULL |
 
-`next_attempt_at` の partial index（非 NULL）を recovery Cron が使う。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
+`request_key` は全kindでNOT NULLとする。再送の重複排除は `UNIQUE(kind, partition_key, request_key)` が担うが、SQLiteはNULL同士を互いに相異なるものとして扱うため、NULLを許した瞬間にその行は索引の重複排除から外れる。呼び出し側が固有の再送キーを持たないkindは、同じ送信から決定的に導ける値を入れる。
+
+`terminal_at` は terminal へ移した時刻で、`countTerminalSince`（しきい値判定の観測値）と `deleteTerminal`（回収）が鍵にする。`expires_at = terminal_at + 120日` はこの列から導く。
+
+`attempts` / `next_attempt_at` を動かすのは recovery Cron だけで、`next_attempt_at` の partial index（非 NULL）がその claim の走査路である。`expires_at` を書くのは accountDeletion の manifest を terminal へ移す transaction だけである（下記）。この 3 列は `beginOrResume` / `complete` / `reject` の遷移では触らないので、それらの経路を持たない配備では既定値のまま残る。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
 
 一意性はいずれも **kind ごとに閉じる**。`UNIQUE(kind, partition_key, request_key)` が同じ送信の再生を、`UNIQUE(kind, partition_key) WHERE state NOT IN ('completed','rejected')` が「partition ごとに running は 1 件」を担保する。`kind` を鍵に含めるのは、同じ partition key を共有する別種の operation が共存しうるためである — 実行中の `accountDeletion` を持つ partition で `noteMove` を始めることは正当であり、kind を含めない索引ではこれが制約違反になる。`countTerminalSince` が使う terminal 索引と partition 走査用の索引も同じく kind から始める。rejected後は別request keyで新operationを許す。accountDeletionではmanifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合（`preparing` / `committing` など）はこの3値ではなく`account_deletion_manifests.state`が持つ。
 
@@ -162,7 +171,7 @@ UserId shardに置く。header と item は別表とする。itemは1 manifest�
 | `user_id` | text | NOT NULL（非UNIQUE） |
 | `status` | text | NOT NULL, CHECK IN ('building','built','rollingBack','completed','rejected') |
 | `membership_cursor` | text | NULL可。membership edgeのkeyset cursor |
-| `author_route_cursor` | text | NULL可。author route署名generation cursor |
+| `author_route_cursor` | text | NULL可。author routeのgenerationを含むopaque cursor |
 | `receipts` | text | NOT NULL DEFAULT '[]'（JSON配列） |
 | `terminal_at` | integer | terminalのときNOT NULL |
 | `retain_until` | integer | terminalのときNOT NULL |
@@ -296,6 +305,8 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 - **件数上限**: Password/OAuth合計8件。UserId shardの最終UoWでcurrent件数を検査する。並行追加も同shard transactionで直列化され、`IdentityLimitExceeded`へ写像する。**DB側の`BEFORE INSERT` triggerは置かない**: `IdentityRepository`の契約は件数を制約せず、trigger が発火しても駆動エラーからは `SystemError(DatabaseError)` にしか翻訳できないため、多層防御にはならず業務規則を不透明な障害の裏へ隠すだけになる。上限を決める場所はドメインの`IdentityPolicy`ひとつである（[ADR 044](../adr/044-business-thresholds-in-domain.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）
 
 `identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `kind` (`password` / `oauth`), `provider_account_key`（`kind = 'oauth'` のときだけ非NULL）, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
+
+- **インデックス**: `identity_removal_receipts_operation_idx` (`operation_id`) はoperation単位の読み出し、`identity_removal_receipts_expires_idx` (`expires_at`, `identity_id`) は期限切れの100件ずつの回収に使う
 - **CHECK**: `kind` に応じた列の NULL / NOT NULL の対応
 
 ### sessions
@@ -328,7 +339,7 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 | `expires_at` | integer | NOT NULL |
 
 - **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`)
-- pending tokenの「(`user_id`, `purpose`)ごとに最大1件」はusecase側が`deleteByUserAndPurpose`で保ち、**DB制約としては置かない**。`AuthTokenRepository`の契約は同じ組に複数のpendingが在ることを許しており（適合スイート ADP-identity-024）、部分UNIQUEを張るとポート契約に反する。複数pendingが在るときの`findPendingByUserAndPurpose`は`ORDER BY created_at DESC, id DESC`で「いちばん新しい発行」を返す — この値は再送間隔の判定材料なので、走査順まかせにしてはならない
+- pending tokenの「(`user_id`, `purpose`)ごとに最大1件」はusecase側が`deleteByUserAndPurpose`で保ち、**DB制約としては置かない**。`AuthTokenRepository`の契約は同じ組に複数のpendingが在ることを許しており（適合スイート ADP-identity-024）、部分UNIQUEを張るとポート契約に反する。複数pendingが在るときに`findPendingByUserAndPurpose`がどの行を返すかは**契約として未定義**である（正本はポート定義）。D1実装はこの未定義の幅の中で`ORDER BY created_at DESC, id DESC`を選び、走査順まかせを避けている
 - 消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
 
 ### login_attempts
@@ -953,6 +964,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - クエリ内の 1 文字 CJK run は unigram の挙動になる
 - ハイライトの一致位置は生テキストへの部分一致で求めるため、FTS のヒットと必ずしも一致しない。境界をまたぐ偽陽性の行や、タイトル・タグ名だけで一致した行では `highlightedExcerpt` が `null` になる（前節「ハイライトと抜粋の生成」）
 - ハイライトは `excerpt` に一致が無かったとき、本文の**前方 4,000 文字**までしか探さない。窓は 160 文字なので、それより後ろにしか一致が無い行は `null` に落ちる。検索の 1 ページが 800,000 バイトの本文を limit 件ぶん運ばないための上限である
+- bigram索引テキストにはバイト予算（1,800,000）があり、これを越える分のトークンは索引に入らない。本文の前方から入るので頭からは引けるが、末尾しか一致点が無いキーワードは引けない。投影そのものは成功する（索引に入らないことを理由に投影を失敗させると、そのNoteは再試行を経てquarantineへ行き永久に検索へ出ないため）。予算はcontentless索引の取り消しが「入れたときと同じトークン」を再導出できることに依存するので、変えると既存の索引行が綴れなくなる
 - 書記素クラスタを跨ぐ文脈依存の小文字化（合成済みの結合列など）は一致しない。位置の写像を保つため小文字化は書記素クラスタごとに掛けるので、クラスタ境界を越えて 1 文字に畳む変換は再現できない。この場合も `null` に落ちるだけで、誤った位置を返すことはない
 
 ### Global projection tables

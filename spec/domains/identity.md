@@ -479,7 +479,7 @@ interface AuthTokenRepository {
 }
 ```
 
-`findPendingByUserAndPurpose` は、`auth_tokens` の (`user_id`, `purpose`) 部分一意索引（[database/index.md](../database/index.md) の `auth_tokens`）が保証する at-most-one live token を読む唯一の口である。「その利用者へ最後にトークンを発行したのはいつか」を答えるのがこの索引だけなので、再送間隔の判定はここを通す（`resendVerificationEmail` / `requestPasswordReset`。[usecases/identity.md](../usecases/identity.md)）。
+`findPendingByUserAndPurpose` は「その利用者へ最後にトークンを発行したのはいつか」を答える唯一の口で、再送間隔の判定はここを通す（`resendVerificationEmail` / `requestPasswordReset`。[usecases/identity.md](../usecases/identity.md)）。同じ (`user_id`, `purpose`) に pending が複数在ることを契約は許す — 数を 1 に保つのは `deleteByUserAndPurpose` を撃つ呼び出し側の責務であり、永続側の一意性制約は置かない（[database/index.md](../database/index.md) の `auth_tokens`）。複数在るときにどの行が返るかは契約として未定義である。
 
 `save` で `ConsumedAuthToken` を保存するとき、アダプターは `status = 'pending'` の行への条件付き更新（`UPDATE ... SET status = 'consumed' WHERE id = ? AND status = 'pending'`）として実装する。更新行数が 0 なら他の要求が先に消費したものとして `ConflictError("AUTH_TOKEN_ALREADY_CONSUMED")` を返す。これにより並行する消費のうち 1 件だけが成功する。
 

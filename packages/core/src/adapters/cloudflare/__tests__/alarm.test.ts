@@ -352,7 +352,8 @@ describe("scope alarm", () => {
         now,
         leaseMs: 60_000,
         cpuBudgetMs: 2_000,
-        // Enough for the chunk's claim and one handler, then spent.
+        // Enough for the chunk's claim and two handlers, then spent. The
+        // first row is never measured, so a tick stands for a row past it.
         elapsedMs: () => {
           ticks += 1;
           return ticks <= 2 ? 0 : 5_000;
@@ -361,13 +362,14 @@ describe("scope alarm", () => {
       }),
     );
 
-    expect(result).toMatchObject({ claimed: 3, handled: 1, released: 2 });
+    expect(result).toMatchObject({ claimed: 3, handled: 2, released: 1 });
     const rows = await rowsOf(
       scope,
       "operation_id, status, attempts, due_at, lease_expires_at",
     );
     expect(rows[0]).toMatchObject({ operation_id: "op-1", status: "running" });
-    for (const row of rows.slice(1)) {
+    expect(rows[1]).toMatchObject({ operation_id: "op-2", status: "running" });
+    for (const row of rows.slice(2)) {
       expect(row).toMatchObject({
         status: "pending",
         attempts: 0,
@@ -379,6 +381,111 @@ describe("scope alarm", () => {
       now.getTime() - 3_000,
       now.getTime() - 2_000,
       now.getTime() - 1_000,
+    ]);
+  });
+
+  /**
+   * A turn that claimed a chunk and released all of it leaves every row
+   * exactly where it was, and the re-arm that follows points at a
+   * `due_at` already past — which the runtime delivers again at once. So
+   * a claimed chunk is visited at least once whatever the budget says.
+   */
+  it("visits one claimed row even when the claim itself spends the budget", async () => {
+    const scope = scopeOf("user-budget-spent");
+    await seed(scope, [
+      {
+        kind: "slow",
+        operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 3_000,
+      },
+      {
+        kind: "slow",
+        operationId: "op-2",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 2_000,
+      },
+      {
+        kind: "slow",
+        operationId: "op-3",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 1_000,
+      },
+    ]);
+
+    let ticks = 0;
+    const result = await runInDurableObject(stubFor(scope), (_i, state) =>
+      runScopeAlarmTurn({
+        storage: state.storage,
+        scope,
+        now,
+        leaseMs: 60_000,
+        cpuBudgetMs: 2_000,
+        // Spent by the time the chunk has been claimed.
+        elapsedMs: () => {
+          ticks += 1;
+          return ticks <= 1 ? 0 : 5_000;
+        },
+        handlers: handlersOf({ slow: noop }),
+      }),
+    );
+
+    expect(result).toMatchObject({ claimed: 3, handled: 1, released: 2 });
+    const rows = await rowsOf(scope, "operation_id, status, attempts, due_at");
+    expect(rows[0]).toMatchObject({ operation_id: "op-1", status: "running" });
+    expect(rows.slice(1).map((row) => text(row, "status"))).toEqual([
+      "pending",
+      "pending",
+    ]);
+  });
+
+  /**
+   * The write-set has committed by the time the slice is republished, so
+   * a failure there must not be reported as a failed commit — the caller
+   * would retry work that already took effect. Arming and publishing are
+   * tolerated separately, so losing one does not cost the other.
+   */
+  it("keeps a committed write-set when the due index publish fails", async () => {
+    register("due.later", noop);
+    const scope = scopeOf("user-publish-fails");
+    const dueAtMs = Date.now() + 3_600_000;
+    const task = {
+      kind: "due.later",
+      operationId: "op-publish",
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs,
+    };
+
+    // The publish is a write to global D1, and D1 faults are ordinary.
+    await env.GLOBAL_DB.exec(
+      `ALTER TABLE ${GLOBAL_TABLES.scopeTaskDueIndex} RENAME TO due_index_hidden`,
+    );
+    try {
+      await seed(scope, [task], true);
+    } finally {
+      await env.GLOBAL_DB.exec(
+        `ALTER TABLE due_index_hidden RENAME TO ${GLOBAL_TABLES.scopeTaskDueIndex}`,
+      );
+    }
+
+    expect((await rowsOf(scope, "operation_id, status"))[0]).toMatchObject({
+      operation_id: "op-publish",
+      status: "pending",
+    });
+    expect(
+      await runInDurableObject(stubFor(scope), (_i, state) =>
+        state.storage.getAlarm(),
+      ),
+    ).toBe(dueAtMs);
+
+    // Publishing replaces the whole slice, so the drift heals itself.
+    await seed(scope, [task], true);
+    const indexed = await env.GLOBAL_DB.prepare(
+      `SELECT operation_id FROM ${GLOBAL_TABLES.scopeTaskDueIndex}
+        WHERE scope_type = 'user' AND scope_id = 'user-publish-fails'`,
+    ).all<{ operation_id: string }>();
+    expect(indexed.results.map((row) => row.operation_id)).toEqual([
+      "op-publish",
     ]);
   });
 

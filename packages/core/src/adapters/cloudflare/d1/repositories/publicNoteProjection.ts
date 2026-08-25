@@ -70,21 +70,24 @@ export function createD1PublicNoteProjectionWriter(
       if (!newer) {
         return false;
       }
-      await writer.remove(noteId);
+      await writer.remove(noteId, stored);
       return true;
     },
 
     redactAuthor: (input: AuthorRedaction) => writer.redactAuthor(input),
 
     /**
-     * Purge-side removal. Unconditional by design: the operation has
-     * already closed the route, so there is no generation left to
-     * compare against, and deleting a row that is already gone is the
-     * shape idempotency takes here — a redelivery of the same operation
-     * reaches the same end state without a separate acknowledgement row.
+     * Purge-side removal. No generation is compared: the operation has
+     * already closed the route, so there is nothing left to compare
+     * against, and deleting a row that is already gone is the shape
+     * idempotency takes here — a redelivery of the same operation reaches
+     * the same end state without a separate acknowledgement row. The
+     * guard the writer carries is not that comparison; it only holds the
+     * row still between the read and the withdrawal of its tokens, and a
+     * redelivery re-reads and converges.
      */
     async removeForPurge(input): Promise<void> {
-      await writer.remove(input.noteId);
+      await writer.remove(input.noteId, await writer.readStored(input.noteId));
     },
   };
 }

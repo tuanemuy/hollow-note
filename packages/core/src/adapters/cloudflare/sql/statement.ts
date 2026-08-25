@@ -33,15 +33,17 @@ export const statement = (
 export const MAX_BOUND_PARAMETERS = 100;
 
 /**
- * How many statements one global-plane commit may carry.
+ * How many statements one atomic write on the global plane may carry.
  *
- * A commit is exactly one D1 `batch()`, and every statement in it spends
- * one query from the 500 a Worker invocation is allowed
+ * An atomic write is exactly one D1 `batch()`, and every statement in it
+ * spends one query from the 500 a Worker invocation is allowed
  * (`spec/platform/index.md`「実行予算と分割単位」→ Global D1). Half of
- * that budget is reserved here for the commit; the reads that produced
- * the write-set need the other half. The OCC guards that double a
- * commit's statement count are counted inside this number, not on top of
- * it.
+ * that budget is reserved here for the write; the reads that produced it
+ * need the other half. The OCC guards that double a commit's statement
+ * count are counted inside this number, not on top of it.
+ *
+ * `createD1Executor.apply` is the single gate, so a unit-of-work commit
+ * and an autocommit `write` are held to the same budget.
  *
  * The scope plane has no equivalent cap because D1's query count does
  * not apply to a Durable Object's own storage; what bounds a scope

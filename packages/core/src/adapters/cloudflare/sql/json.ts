@@ -15,7 +15,7 @@ import {
  * **ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない** — pass
  * one JSON array as a single binding and expand it with `json_each`.
  * Multi-row INSERT and DELETE follow the same shape, which is also what
- * keeps a bulk delete to the three statements
+ * lets a bulk delete collapse its writes into the single atomic apply
  * `spec/platform/index.md` の「実行予算と分割単位」 asks for.
  *
  * @example Read a list of ids

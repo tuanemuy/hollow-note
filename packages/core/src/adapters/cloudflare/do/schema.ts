@@ -6,10 +6,10 @@ import { OCC_GUARD_DDL } from "../sql/occGuard";
  * The two planes carry the same schema generation but not the same
  * delivery mechanism: nothing outside a Durable Object can run DDL
  * against its storage, so the scope schema is statements in the bundle
- * rather than files a migration runner reads. `applyScopeSchema` is
- * idempotent and runs on every object activation, which is what makes
- * "an object that has never been touched already has its tables" true
- * without a deploy step.
+ * rather than files a migration runner reads. `SCOPE_SCHEMA_STATEMENTS`
+ * is idempotent and `ScopeObject` runs it on every activation, which is
+ * what makes "an object that has never been touched already has its
+ * tables" true without a deploy step.
  */
 export const SCHEDULED_TASKS_TABLE = "scheduled_tasks";
 

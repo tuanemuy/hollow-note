@@ -16,7 +16,16 @@ import type {
  * compared. This keeps workspace→personal moves (workspaceVersion
  * dropping to 0) from becoming permanently incomparable.
  *
- * Error contract: `SystemError(DatabaseError)`.
+ * Error contract: `SystemError(DatabaseError)`. Every write may in
+ * addition throw `ConflictError("OPTIMISTIC_LOCK_FAILURE")` when the row
+ * moved between the read that decided the outcome and the write that
+ * applies it. Only a backend that can interleave the two raises it, and
+ * the redelivered event then re-reads and settles as `stale` or a no-op,
+ * so the caller carries no compensation — it lets the failure reach the
+ * at-least-once retry. The loss cannot be folded into a `stale` result
+ * here: the contentless FTS index is undone by re-deriving the tokens of
+ * the row that was read, so a writer that lost the race would retract
+ * tokens the winner still owns.
  */
 export interface PublicNoteProjectionWriter {
   replaceSnapshotIfNewer(

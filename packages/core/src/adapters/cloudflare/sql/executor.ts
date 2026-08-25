@@ -1,5 +1,10 @@
+import { databaseError } from "./errors";
 import { assertBindable } from "./json";
-import type { SqlRow, SqlStatement } from "./statement";
+import {
+  MAX_STATEMENTS_PER_COMMIT,
+  type SqlRow,
+  type SqlStatement,
+} from "./statement";
 
 /**
  * The single seam every Cloudflare repository reads and writes through.
@@ -17,6 +22,16 @@ import type { SqlRow, SqlStatement } from "./statement";
 export interface SqlExecutor {
   query(input: SqlStatement): Promise<readonly SqlRow[]>;
   apply(statements: readonly SqlStatement[]): Promise<void>;
+  /**
+   * Applies one write and reports how many rows it changed.
+   *
+   * Optional because it is a property of the driver's response, not of
+   * the seam: D1 carries `meta.changes` on every result, while the scope
+   * plane reaches its storage over RPC and gets nothing back. Callers
+   * that need a count reach it through `SqlSession.writeCounted`, which
+   * fails loudly on a backend that cannot answer.
+   */
+  applyCounted?(input: SqlStatement): Promise<number>;
 }
 
 /**
@@ -37,6 +52,11 @@ export interface ScopeSqlExecutor extends SqlExecutor {
 /**
  * D1: `batch()` is the only atomic unit the driver offers — there is no
  * interactive transaction — so a whole write-set is exactly one batch.
+ *
+ * `MAX_STATEMENTS_PER_COMMIT` is enforced here rather than at the unit of
+ * work, because every atomic write on this plane arrives through `apply`
+ * — a commit and an autocommit `write` alike — and each spends its
+ * statement count out of the same invocation query budget.
  */
 export function createD1Executor(db: D1Database): SqlExecutor {
   const prepare = (input: SqlStatement): D1PreparedStatement => {
@@ -55,6 +75,11 @@ export function createD1Executor(db: D1Database): SqlExecutor {
       if (statements.length === 0) {
         return;
       }
+      if (statements.length > MAX_STATEMENTS_PER_COMMIT) {
+        throw databaseError(
+          `A single atomic write staged ${statements.length} statements, above the ${MAX_STATEMENTS_PER_COMMIT} it may spend from the D1 invocation budget; split the work into bounded batches`,
+        );
+      }
       if (statements.length === 1) {
         // `batch` of one still costs a round trip through the batch
         // path; `run` is the same atomic unit for a single statement.
@@ -62,6 +87,10 @@ export function createD1Executor(db: D1Database): SqlExecutor {
         return;
       }
       await db.batch(statements.map(prepare));
+    },
+    async applyCounted(input: SqlStatement): Promise<number> {
+      const result = await prepare(input).run();
+      return result.meta.changes;
     },
   };
 }

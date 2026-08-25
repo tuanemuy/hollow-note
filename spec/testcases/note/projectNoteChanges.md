@@ -53,10 +53,10 @@
 | 利用者がハンドルを変更した | `identity.user.handleChanged` を処理する | `note_routes(created_by)` を200件ずつ読み、各Noteのpublic再投影とscope-local refreshを最大6 RPCで送る | |
 | 利用者が表示名を変更し、作成済みworkspaceから既に離脱している | `identity.user.profileUpdated` を処理する | membership edgeではなく不変のroute `created_by` から旧workspaceを発見し、残るlocal表示も更新する | |
 | 1利用者が数千scopeでNoteを作成している | author refreshする | routeを200件ずつキーセット継続し、1 invocationのRPCは同時6本までに制限する | |
-| author routeが2page以上ある | `projection.authorRouteFanOutContinued`を処理する | 署名opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む | |
+| author routeが2page以上ある | `projection.authorRouteFanOutContinued`を処理する | opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む | |
 | `identity.user.handleChanged` が配送順の入れ替わりで古くなっている | 処理する | payload の値ではなく解決した現在値を書くため、古い値が復活しない | |
 | ワークスペースのイベント（`workspace.slugChanged` / `published` / `unpublished` / `profileUpdated`） | 処理する | scope routeを200件ずつ読み、version付きcurrent Workspaceを含む個別snapshotを再投影する | |
-| workspace routeが2page以上ある | `projection.workspaceRouteFanOutContinued`を処理する | 署名opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む | |
+| workspace routeが2page以上ある | `projection.workspaceRouteFanOutContinued`を処理する | opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む | |
 | ワークスペースが作られた | `workspace.created` を処理する | 購読しない（作成直後は対象routeが0件） | |
 | Note snapshot読込後にIdentity更新snapshotが先に保存される | 古いNote snapshotを書こうとする | authorVersionが小さくベクトルがincomparableとなりno-op。全sourceを再読込して新Note＋新authorを保存する | |
 | `identity.user.deleted` の投影後に削除前のNote eventが遅延到着する | 処理する | tombstoneのauthorVersionより古いため旧表示名・handleを復活させない | |

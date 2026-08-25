@@ -125,8 +125,8 @@ export function isForbiddenError(error: unknown): error is ForbiddenError {
 
 /**
  * Application-level rejection of an input that is well-typed but invalid
- * against a runtime rule the static type cannot carry: tampered / retired
- * pagination cursors (`INVALID_PAGINATION`), unauthenticated session
+ * against a runtime rule the static type cannot carry: unreadable /
+ * retired pagination cursors (`INVALID_PAGINATION`), unauthenticated session
  * material (`UNAUTHENTICATED`), throttled / locked verification attempts.
  * Distinct from transport-shape validation, which lives at the
  * presentation boundary.

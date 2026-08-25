@@ -14,7 +14,7 @@ import { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import { WorkspaceId } from "../../../../domain/workspace/valueObject";
 import { opaque, upsert } from "../../execution/writeSet";
-import { databaseError } from "../../sql/errors";
+import { classifySqlError, databaseError } from "../../sql/errors";
 import {
   deleteRowsFromJson,
   inJsonList,
@@ -22,6 +22,7 @@ import {
   jsonList,
   jsonRows,
 } from "../../sql/json";
+import { occGuard } from "../../sql/occGuard";
 import {
   dateOrNull,
   enumOf,
@@ -231,18 +232,37 @@ export function createD1AccountDeletionManifestStore(
   ): Promise<void> => {
     try {
       await session.write([
+        // Every caller decided its transition from the status it read a
+        // round trip earlier; the guard makes that decision conditional
+        // on the status still being the one it judged.
+        opaque(
+          occGuard(
+            statement(
+              `SELECT 1 FROM ${HEADERS} WHERE operation_id = ? AND status = ?`,
+              current.header.operationId,
+              current.header.status,
+            ),
+          ),
+        ),
         upsert({
           table: HEADERS,
           key: current.header.operationId,
           row: { ...current.raw, ...changes },
           statement: statement(
-            `UPDATE ${HEADERS} SET ${assignments} WHERE operation_id = ?`,
+            `UPDATE ${HEADERS} SET ${assignments} WHERE operation_id = ? AND status = ?`,
             ...params,
             current.header.operationId,
+            current.header.status,
           ),
         }),
       ]);
     } catch (cause) {
+      if (classifySqlError(cause) === "occGuard") {
+        throw stateViolation(
+          current.header.operationId,
+          `status is no longer ${current.header.status}`,
+        );
+      }
       throw databaseError("the account deletion manifest store", cause);
     }
   };
@@ -574,8 +594,37 @@ export function createD1AccountDeletionManifestStore(
       if (current.header.receipts.includes(receipt)) {
         return;
       }
-      const receipts = toJson([...current.header.receipts, receipt]);
-      await writeHeader(current, { receipts }, "receipts = ?", [receipts]);
+      try {
+        await session.write([
+          upsert({
+            table: HEADERS,
+            key: operationId,
+            row: {
+              ...current.raw,
+              receipts: toJson([...current.header.receipts, receipt]),
+            },
+            // Receipts are a set filled by independent continuations, so
+            // the append is done by the statement rather than from the
+            // list read above: a read-modify-write would drop whichever
+            // receipt a concurrent chain added in between, and no chain
+            // acknowledges twice.
+            statement: statement(
+              `UPDATE ${HEADERS}
+                  SET receipts = CASE
+                        WHEN EXISTS (SELECT 1 FROM json_each(receipts) WHERE value = ?)
+                          THEN receipts
+                        ELSE json_insert(receipts, '$[#]', ?)
+                      END
+                WHERE operation_id = ?`,
+              receipt,
+              receipt,
+              operationId,
+            ),
+          }),
+        ]);
+      } catch (cause) {
+        throw databaseError("the account deletion manifest store", cause);
+      }
     },
 
     async allRollbackReleased(operationId: string): Promise<boolean> {

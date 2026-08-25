@@ -45,5 +45,5 @@
 | NoteId hash shardが32個ある | 1page検索する | 同時6接続のwaveで各shard最大`limit`候補だけを読み、深いpageでもworkがpage番号に比例しない | |
 | keyword検索でshardごとのFTS統計が異なる | mergeする | shard内rankのReciprocal Rank Fusionと`updatedAt, noteId` tie-breakを使い、global bm25同値ではなく明示した安定順位を返す | |
 | shard追加のdual-read中に同じNoteが旧新へある | 検索する | NoteIdで重複排除し、cursorのshard generationに従って次pageも同じ集合を読む | |
-| cursorの検索条件・署名・shard generationが一致しない | 検索する | `ValidationError("INVALID_PAGINATION")` を返す | |
+| cursorの検索条件・shard generationが一致しない、または値が読めない | 検索する | `ValidationError("INVALID_PAGINATION")` を返す | |
 | 1page目の後に対象NoteのupdatedAtが変わる | 同じcursorで続ける | cursor時点のsnapshot isolationは保証しない。page内/dual-read重複は除くが、更新結果を確実に見るには先頭から再検索する | |

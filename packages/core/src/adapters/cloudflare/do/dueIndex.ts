@@ -19,10 +19,12 @@ const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
  * returns — so a task scheduled by a unit of work is listed by the time
  * `run` resolves. D1 and the object are **not** in one transaction
  * (`spec/database/index.md`: D1 と scope DO を 1 transaction に含めない);
- * this is an ordering guarantee, not a shared commit. Drift left by a
- * crash between the two is healed by the object's next alarm, and a
- * stale row costs at most one failed claim, which the port's JSDoc
- * already budgets for.
+ * this is an ordering guarantee, not a shared commit. A publish that
+ * fails is tolerated rather than reported, because the write it follows
+ * has already landed. Drift is healed by the object's next alarm — or,
+ * where the deployment drives no tasks from the object and it therefore
+ * arms none, absorbed by the central runner, since a stale row costs at
+ * most one failed claim, which the port's JSDoc already budgets for.
  *
  * Replacing the whole slice — rather than mirroring each mutation — is
  * what makes the two paths that change tasks (a committed write-set and

@@ -28,7 +28,9 @@ import {
  * over-eager claim into a delay of a full lease period. That is also why
  * claims are taken a chunk at a time rather than one batch of the whole
  * remaining budget, and why rows the budget cuts off are released rather
- * than left leased.
+ * than left leased. A chunk it did claim is always visited at least
+ * once, so a turn cannot end having moved nothing and wake straight back
+ * up on the same rows.
  *
  * A row whose `kind` has no handler is visited and deliberately **not**
  * settled: it stays `running` until its lease lapses, which surfaces the
@@ -180,7 +182,11 @@ export async function runScopeAlarmTurn(
     let index = 0;
     for (; index < claimed.length; index += 1) {
       const task = claimed[index] as ScopeTask;
-      if (elapsedMs() >= cpuBudgetMs) {
+      // A chunk whose claim alone spent the budget still visits one row.
+      // Releasing every claimed row moves neither `due_at` nor `attempts`,
+      // so the re-arm that follows would re-deliver the very same turn —
+      // a loop that claims, releases and wakes again without progress.
+      if (index > 0 && elapsedMs() >= cpuBudgetMs) {
         break;
       }
       const handle = registry.get(task.kind);

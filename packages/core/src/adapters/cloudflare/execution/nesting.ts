@@ -12,6 +12,10 @@ export type UnitOfWorkPlane = "global" | "scope";
  * with a module-level flag, so two units of work running concurrently in
  * the same isolate do not see each other. `nodejs_compat` is what makes
  * `AsyncLocalStorage` available on workerd.
+ *
+ * Everything `fn` starts inherits that context, including work handed to
+ * `waitUntil` — so a post-commit hook that opens a unit of work must be
+ * called after `runInUnitOfWork` has resolved, never from inside `fn`.
  */
 const openUnit = new AsyncLocalStorage<UnitOfWorkPlane>();
 

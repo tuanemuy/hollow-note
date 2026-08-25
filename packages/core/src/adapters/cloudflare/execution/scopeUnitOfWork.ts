@@ -57,16 +57,18 @@ export type ScopeUnitOfWorkOptions = Readonly<{
  * `scheduled_tasks`. Reading the second from the write-set's touched
  * tables — rather than by wrapping `schedule` — means every path that
  * arms a continuation kicks, including a `backoff` that re-arms one.
+ * Both fire after the unit's async context has closed, so a trigger that
+ * opens a unit of work of its own does not trip the nesting bar.
  */
 export function createScopeUnitOfWorkProvider(
   options: ScopeUnitOfWorkOptions,
 ): ScopeUnitOfWorkProvider {
   return {
-    run<T>(
+    async run<T>(
       scope: ScopeKey,
       fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
     ): Promise<T> {
-      return runInUnitOfWork("scope", async () => {
+      const committed = await runInUnitOfWork("scope", async () => {
         const executor = options.openScope(scope);
         const writeSet = new WriteSet();
         const session = createStagedSession(executor, writeSet);
@@ -93,14 +95,19 @@ export function createScopeUnitOfWorkProvider(
             throwTranslated("the scope unit of work", cause);
           }
         }
-        if (buffered.length > 0) {
-          options.relayTrigger?.kick();
-        }
-        if (touched.includes(SCHEDULED_TASKS_TABLE)) {
-          options.scopeTaskTrigger?.kick();
-        }
-        return value;
+        return {
+          value,
+          flushedEvents: buffered.length > 0,
+          armedTasks: touched.includes(SCHEDULED_TASKS_TABLE),
+        };
       });
+      if (committed.flushedEvents) {
+        options.relayTrigger?.kick();
+      }
+      if (committed.armedTasks) {
+        options.scopeTaskTrigger?.kick();
+      }
+      return committed.value;
     },
   };
 }

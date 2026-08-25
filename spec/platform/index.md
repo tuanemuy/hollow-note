@@ -83,9 +83,9 @@ D1 read replication は global read の latency / throughput を分散するが�
 
 global容量は表群ごとに週次予測する。publicは `公開Note件数 × p95投影行サイズ × FTS/索引実測係数`、job historyは `90日内のrequested Job数 × (p95履歴行+target reverse route+index係数)`、controlはroute / membership / operation/cleanup manifest ackの平均行サイズと増加率で見積もる。write QPSにはJobのenqueue/start/progress/terminal/removeとreverse route更新をすべて含める。使用率50%、D1 write p95 200ms超、またはoverloaded率1%を5分継続した時点でshard-aware readerを検証する。60%または90日以内に70%到達予測でdual-write/backfillを開始し、70%で新規公開など非critical writeを流量制御する。
 
-物理shardはtransaction groupを分断しない。NoteId hashの同じ `note coordination shard` に `note_routes`、noteMove/notePurge operation、当該Noteのpublic search/tag/FTS行をco-locateする。purgeのpublic delete+ack、moveのroute+operationはこのshard内transactionで保つ。public検索は最大32 shardを同時6接続のwaveで読み、署名opaque cursorがshard generation・各shardのkeyset位置・絶対rankを持つ。各shardから1page最大limit件だけ読み、keywordなしは `(updated_at DESC, note_id)`、keywordありはshard内FTS順位のReciprocal Rank Fusionと`updated_at, note_id` tie-breakでmergeする。単一DB時のglobal bm25同値は保証せず、shard数に依らず再現可能な順位を契約とする。dual-readはNoteIdで重複排除する。
+物理shardはtransaction groupを分断しない。NoteId hashの同じ `note coordination shard` に `note_routes`、noteMove/notePurge operation、当該Noteのpublic search/tag/FTS行をco-locateする。purgeのpublic delete+ack、moveのroute+operationはこのshard内transactionで保つ。public検索は最大32 shardを同時6接続のwaveで読み、opaque cursorがshard generation・各shardのkeyset位置・絶対rankを持つ（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）。各shardから1page最大limit件だけ読み、keywordなしは `(updated_at DESC, note_id)`、keywordありはshard内FTS順位のReciprocal Rank Fusionと`updated_at, note_id` tie-breakでmergeする。単一DB時のglobal bm25同値は保証せず、shard数に依らず再現可能な順位を契約とする。dual-readはNoteIdで重複排除する。
 
-NoteId shard上の二次キー走査は共通shard readerだけが行う。`created_by` / `scope` route fan-out、sitemap、public authorは最大32 shard・全体limit 200（sitemapは呼出しlimit）・同時6接続のwaveとし、署名cursorにgenerationと各shard位置を持つ。`resolveMany`は最大500 NoteIdをshard別batchへgroupingする。reshard中はいずれも旧新を読み、NoteId/UserIdとversionで重複排除する。
+NoteId shard上の二次キー走査は共通shard readerだけが行う。`created_by` / `scope` route fan-out、sitemap、public authorは最大32 shard・全体limit 200（sitemapは呼出しlimit）・同時6接続のwaveとし、opaque cursorにgenerationと各shard位置を持つ。`resolveMany`は最大500 NoteIdをshard別batchへgroupingする。reshard中はいずれも旧新を読み、NoteId/UserIdとversionで重複排除する。
 
 `workspace_directory`はWorkspaceId hashで分ける。利用者のworkspace pageはUserId shardから得た最大20 IDだけを最大6接続で直接解決する。公開workspace/sitemap一覧は最大32 shard・同時6接続・全体200件を`(updatedAt DESC, workspaceId)`でmergeし、署名cursorにgenerationと各shard位置を持つ。総件数を求める全shard countは提供しない。
 
@@ -195,6 +195,10 @@ priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOと
 リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
 
 **1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[domains/index.md](../domains/index.md) の `ScopeTaskScheduler`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。引き金は「1 scope に複数 writer」であって「複数 worker プロセス」ではない — scope が分かれていれば writer も分かれる。
+
+**どちらが writer かは、scope task ハンドラのレジストリが決める。** レジストリが空なら object は継続の driver ではない — turn は 1 行も claim せず、Alarm は武装せずに削除する。1 つでもハンドラが登録されていれば object が driver になる。したがって**配備はハンドラを登録するか、中央 runner（`listDue` → `claimDue`）を回すかのどちらか一方だけを選ぶ**。両方を有効にした配備は 1 scope に 2 writer を並べることになり、上段の単一 writer 前提が崩れる。driver を object 側へ倒す配備は、ハンドラの登録と中央 runner の停止を同じ切り替えとして扱うこと。due indexの publish はレジストリの有無にかかわらず行うので、中央 runner が driver である配備でも scope は可視のままである。
+
+切り替え時に既に積まれている行は、その object が次に起きたときに武装され直す（object は起動時に一度だけ Alarm を張り直す）。レジストリが空のあいだはこの張り直しが Alarm の削除になるので、既定の配備では何も起きない。
 
 低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 

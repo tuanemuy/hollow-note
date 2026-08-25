@@ -6,13 +6,18 @@ import type { NoteRoute } from "./noteRouteStore";
 /**
  * The single secondary-key scan over the NoteId-hash route placement.
  * `limit` is a whole-scan cap (max 200 across all shards); shards are
- * read in bounded waves and merged in NoteId order. Cursors are signed
- * opaque values carrying the query kind / fingerprint, shard generation,
+ * read in bounded waves and merged in NoteId order. Cursors are opaque
+ * values carrying the query kind / fingerprint, shard generation,
  * and per-shard `afterNoteId` keyset positions — every shard's position
  * advances (including empty shards), so author / scope fan-out and
  * account-deletion target fixing resume without gaps. During a reshard
  * both generations are read, deduplicated by NoteId with the higher
  * routeVersion winning.
+ *
+ * Cursors are **not authenticated**: a cursor decides where a page
+ * starts, never what it may contain, so every read applies its own
+ * filters whatever cursor arrives and no caller may treat one as a
+ * capability.
  *
  * Enumerates every route whose creation has committed — `active`,
  * `moving` and `purging` — and skips only `reserved`, whose note may
@@ -27,8 +32,9 @@ import type { NoteRoute } from "./noteRouteStore";
  * `tombstone` rows are unspecified: an adapter may keep them until expiry
  * or reclaim them physically, so callers must tolerate either.
  *
- * Error contract: `ValidationError("INVALID_PAGINATION")` (tampered /
- * retired cursor), `SystemError(DatabaseError)`.
+ * Error contract: `ValidationError("INVALID_PAGINATION")` (unreadable
+ * cursor, changed query, or retired generation),
+ * `SystemError(DatabaseError)`.
  */
 export interface NoteRouteFanOutReader {
   listByCreatedBy(

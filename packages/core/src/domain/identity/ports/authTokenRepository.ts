@@ -20,12 +20,17 @@ export interface AuthTokenRepository {
     tokenHash: TokenHash,
   ): Promise<AuthToken | null>;
   /**
-   * The at-most-one live token of the pair, per the partial unique index
-   * on (`user_id`, `purpose`) over `status = 'pending'`
-   * (spec/database/index.md#auth_tokens). It is the only reading of when
-   * a token was last issued to a user, which is what the resend intervals
-   * of `resendVerificationEmail` and `requestPasswordReset` are measured
+   * A live token of the pair. It is the only reading of when a token was
+   * last issued to a user, which is what the resend intervals of
+   * `resendVerificationEmail` and `requestPasswordReset` are measured
    * from.
+   *
+   * More than one pending token of the same pair may exist. Keeping the
+   * count at one belongs to the caller, which issues a new token only
+   * after `deleteByUserAndPurpose`; no storage-level uniqueness enforces
+   * it, and a backend that adds one breaks this contract. **Which row is
+   * returned while several are pending is undefined** — backends differ,
+   * so a caller must not build a rule on top of the choice.
    */
   findPendingByUserAndPurpose(
     userId: UserId,

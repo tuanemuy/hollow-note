@@ -341,7 +341,7 @@ ReferenceReport = {
 1. `ownerHandle` があれば利用者を、`workspaceSlug` があれば公開ワークスペースを解決して `ownerFilter` を組み立てる
 2. `tagNames` は `searchNotes` と同じく `TagName` の正規化規則で正規化してから渡す
 3. `updatedFrom` / `updatedTo` のどちらかがあれば `updatedWithin: DateRange` に解決する。基準列は読み取りモデルの更新日時（`note_search.updated_at`）で、`from` は `updatedFrom` の 0 時、`toExclusive` は `updatedTo` の翌日 0 時（指定日を含める）。`searchNotes` と違い閲覧者のタイムゾーンを持てない（サインイン不要の経路）ため、境界は UTC で解決する。片方だけの指定は、欠けた側を範囲の端（`from` は epoch、`toExclusive` は十分先の未来）で埋める
-4. global public shard reader の `PublicNoteQueryService.searchPublic` を呼ぶ。cursorにはquery fingerprint、shard generation、各shardのkeyset位置/絶対rankを署名して含め、1pageで各shardから読む候補を`limit`件に固定する。dual-read中はNoteIdで重複排除する
+4. global public shard reader の `PublicNoteQueryService.searchPublic` を呼ぶ。cursorにはquery fingerprint、shard generation、各shardのkeyset位置/絶対rankを含め（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）、1pageで各shardから読む候補を`limit`件に固定する。dual-read中はNoteIdで重複排除する
 
 ### エラーケース
 
@@ -1312,7 +1312,7 @@ BulkOperation =
 
 ### 処理フロー
 
-1. global D1 の `PublicNoteQueryService.listPublicSitemapEntries` を呼ぶ。cursorはpublic shard generationと各shardのkeysetを含む署名opaque値で、最大32 shardを同時6接続のwaveで読み全体limitへmergeする
+1. global D1 の `PublicNoteQueryService.listPublicSitemapEntries` を呼ぶ。cursorはpublic shard generationと各shardのkeysetを含むopaque値で、最大32 shardを同時6接続のwaveで読み全体limitへmergeする
 
 ### エラーケース
 

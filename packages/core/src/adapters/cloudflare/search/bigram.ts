@@ -84,15 +84,53 @@ const bigramsOf = (run: string): readonly string[] => {
 };
 
 /**
+ * Ceiling for the single bound value one FTS column is fed.
+ *
+ * Both planes cap one bound value at 2,000,000 bytes
+ * (`spec/platform/index.md` 実上限), and bigramming inflates CJK text by
+ * about 2.33x: a maximum-size Japanese body (800,000 bytes, ADR 017)
+ * already lands at 93% of that cap, and NFKC expansions — `㍿` becomes
+ * four characters — carry it past. Tokens beyond this budget are left
+ * out of the index rather than failing the projection, because a failed
+ * projection retries into quarantine and leaves the note permanently
+ * unsearchable, while a truncated one is still found by its head.
+ */
+const MAX_INDEX_TEXT_BYTES = 1_800_000;
+
+const utf8Length = (value: string): number => {
+  let bytes = 0;
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+};
+
+/**
  * The text a projection writer feeds one FTS column. CJK runs become
  * space-separated overlapping bigrams so `unicode61` sees each pair as
  * its own token; everything else passes through and is tokenized as
  * written.
+ *
+ * Pure, and it has to stay pure: the contentless index is withdrawn by
+ * re-deriving the tokens that went in, so the same body — truncated or
+ * not — must always produce the same string.
  */
-export const bigramIndexText = (value: string): string =>
-  splitRuns(normalizeForSearch(value))
-    .map((run) => (run.cjk ? bigramsOf(run.text).join(" ") : run.text))
-    .join(" ");
+export const bigramIndexText = (value: string): string => {
+  const tokens: string[] = [];
+  let bytes = 0;
+  for (const run of splitRuns(normalizeForSearch(value))) {
+    for (const token of run.cjk ? bigramsOf(run.text) : [run.text]) {
+      const size = utf8Length(token) + (tokens.length === 0 ? 0 : 1);
+      if (bytes + size > MAX_INDEX_TEXT_BYTES) {
+        return tokens.join(" ");
+      }
+      bytes += size;
+      tokens.push(token);
+    }
+  }
+  return tokens.join(" ");
+};
 
 /**
  * Runs of a keyword, normalized but not yet bigrammed — the units the

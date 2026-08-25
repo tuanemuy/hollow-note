@@ -139,6 +139,25 @@ export function createD1IdentityUniqueDirectory(
     return rows.map(toReservation);
   };
 
+  /**
+   * The answer the read path would have given had the winning writer
+   * landed first, re-derived after a guard tripped: the reservation
+   * moved to another operation, or the user version moved on.
+   */
+  const activateLoss = async (
+    operationId: string,
+    expectedUserVersion: number,
+  ): Promise<ConflictError> =>
+    (await readByOperation(operationId)).length === 0
+      ? new ConflictError(
+          "UNIQUE_RESERVATION_NOT_FOUND",
+          `No reservation for operation ${operationId}`,
+        )
+      : new ConflictError(
+          "OPTIMISTIC_LOCK_FAILURE",
+          `Reservations of operation ${operationId} moved away from version ${expectedUserVersion}`,
+        );
+
   const activeClaim = async (
     kind: IdentityUniqueKind,
     normalizedKey: string,
@@ -303,8 +322,12 @@ export function createD1IdentityUniqueDirectory(
           opaque(
             occGuard(
               statement(
-                `SELECT 1 FROM ${USERS} WHERE id = ? AND version = ?`,
-                reservation.userId,
+                `SELECT 1 FROM ${TABLE} r JOIN ${USERS} u ON u.id = r.user_id
+                  WHERE r.kind = ? AND r.normalized_key = ? AND r.operation_id = ?
+                    AND r.state <> 'active' AND u.version = ?`,
+                reservation.kind,
+                reservation.normalizedKey,
+                reservation.operationId,
                 expectedUserVersion,
               ),
             ),
@@ -320,11 +343,12 @@ export function createD1IdentityUniqueDirectory(
               updated_at: now,
             },
             statement: statement(
-              `UPDATE ${TABLE} SET state = 'active', expires_at = NULL, user_version = ?, updated_at = ? WHERE kind = ? AND normalized_key = ?`,
+              `UPDATE ${TABLE} SET state = 'active', expires_at = NULL, user_version = ?, updated_at = ? WHERE kind = ? AND normalized_key = ? AND operation_id = ?`,
               expectedUserVersion,
               now,
               reservation.kind,
               reservation.normalizedKey,
+              reservation.operationId,
             ),
           }),
         ]);
@@ -334,6 +358,9 @@ export function createD1IdentityUniqueDirectory(
       try {
         await session.write(mutations);
       } catch (cause) {
+        if (classifySqlError(cause) === "occGuard") {
+          throw await activateLoss(operationId, expectedUserVersion);
+        }
         throwTranslated("the identity uniqueness directory", cause);
       }
     },

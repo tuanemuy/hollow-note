@@ -471,7 +471,7 @@ type PublicSearchCriteria = Readonly<{
   tagNames: readonly string[];            // 同じく正規化済みの名前
   ownerFilter: NoteOwner | null;          // 公開ページ内の検索で使う
   updatedWithin: DateRange | null;        // `note_search.updated_at`（結果に表示する日時と同じ軸）に対する範囲。UTC で解決した範囲として渡す
-  cursor: string | null;                  // shard generation・各shard keyset/rankを含む署名opaque cursor
+  cursor: string | null;                  // shard generation・各shard keyset/rankを含むopaque cursor（認証しない）
   limit: number;
 }>;
 
@@ -483,7 +483,7 @@ type PublicSearchPage = Readonly<{
 
 type ShardPage<T> = Readonly<{ items: readonly T[]; nextCursor: string | null }>;
 
-public検索はexact countとpage番号を返さない。物理shard後も1要求のworkを固定するため、最大32 shardから各`limit`件までを同時6接続で読み、opaque cursorのshard別位置から続きをmergeする。keywordなしは`updatedAt DESC, noteId`、keywordありはshard内FTS順位のReciprocal Rank Fusionに`updatedAt, noteId`をtie-breakとして使う。cursorはquery fingerprintとshard generationを含み、条件変更・改ざん・retired generationは`INVALID_PAGINATION`にする。
+public検索はexact countとpage番号を返さない。物理shard後も1要求のworkを固定するため、最大32 shardから各`limit`件までを同時6接続で読み、opaque cursorのshard別位置から続きをmergeする。keywordなしは`updatedAt DESC, noteId`、keywordありはshard内FTS順位のReciprocal Rank Fusionに`updatedAt, noteId`をtie-breakとして使う。cursorはquery fingerprintとshard generationを含み、条件変更・読めない値・retired generationは`INVALID_PAGINATION`にする。**cursorは認証しない**（[ADR 063](../adr/063-public-cursor-not-authenticated.md)）。cursorが決めるのはページの開始位置だけで内容は決めないため、公開可視性の述語は到着したcursorが何であれ毎回掛け、cursorをcapabilityとして扱わない。
 
 type NoteSortKey = "updatedDesc" | "updatedAsc" | "createdDesc" | "createdAsc" | "titleAsc" | "titleDesc" | "relevance";
 
@@ -529,7 +529,7 @@ type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;   // 個
 - エスケープの責任を生成側（クエリポートの実装＝アダプター）に置くのは、標識を入れる側でなければ「どこがエスケープすべき本文で、どこが自分が入れたタグか」を区別できないためである（[database/index.md](../database/index.md) の「ハイライトと抜粋の生成」）。表示側で後からエスケープすると `<mark>` ごと無害化され、生成側でエスケープしないと本文中の `<script>` がそのまま描かれる
 - `null` のときに素の `excerpt` へフォールバックする経路は、**平文としての描画に切り替える**。HTML として描く枝と平文として描く枝を取り違えない
 
-`listPublicAuthors` は**所有者基準**で列挙する — `owner_type = 'user'` の公開かつ有効なノートを 1 件以上持つ利用者について、その利用者の当該ノートの最新更新時刻を添えて `userId` の昇順で返す。著者基準（`created_by`）ではない。母集合は `/@:handle` の一覧（`searchPublic` の `ownerFilter: { type: "user", userId }`）と一致しなければならないためで、ハンドルは読み取りモデルが所有者の列として持たないので呼び出し側が `UserBatchReader.resolveMany` で解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。sitemap/authorsのcursorも署名opaque値で、shard generationと各shardのkeyset位置を持つ。最大32 shardを同時6接続のwaveで読み、全体limit件へmergeする。authorsは各shard headの同じUserIdをすべて消費してupdatedAtの最大を1件だけemitしてから次のUserIdへ進むため、同一利用者のNoteが複数shardに散ってもpage境界で再出現しない。cutover中は旧新generationを読み、NoteIdまたはUserIdで重複排除する。
+`listPublicAuthors` は**所有者基準**で列挙する — `owner_type = 'user'` の公開かつ有効なノートを 1 件以上持つ利用者について、その利用者の当該ノートの最新更新時刻を添えて `userId` の昇順で返す。著者基準（`created_by`）ではない。母集合は `/@:handle` の一覧（`searchPublic` の `ownerFilter: { type: "user", userId }`）と一致しなければならないためで、ハンドルは読み取りモデルが所有者の列として持たないので呼び出し側が `UserBatchReader.resolveMany` で解決する（[usecases/identity.md](../usecases/identity.md) の `listPublicProfiles`）。sitemap/authorsのcursorもopaque値で、shard generationと各shardのkeyset位置を持つ。最大32 shardを同時6接続のwaveで読み、全体limit件へmergeする。authorsは各shard headの同じUserIdをすべて消費してupdatedAtの最大を1件だけemitしてから次のUserIdへ進むため、同一利用者のNoteが複数shardに散ってもpage境界で再出現しない。cutover中は旧新generationを読み、NoteIdまたはUserIdで重複排除する。
 
 **エラーケース**: `SystemError(DatabaseError)`、`SystemError(TimeoutError)`（検索のタイムアウト）
 
@@ -671,7 +671,7 @@ interface NoteMovePort {
 
 **エラーケース**（`NoteRouteStore`）: `ConflictError("STALE_SCOPE_ROUTE")`（routeVersion の CAS 不一致）、`ConflictError`（状態機械の違反・別 operation からの要求）、`NotFoundError("NOTE_NOT_FOUND")`、`SystemError(DatabaseError)`（`resolveMany` の上限超過を含む）
 
-`NoteRouteFanOutReader`はNoteId hash配置に対する二次キー走査の唯一のportである。`limit`は全shard合計で最大200。最大32 shardを同時6接続で読み、NoteId昇順へmergeする。署名opaque cursorはquery kind/fingerprint、shard generation、旧新各shardの`afterNoteId`を持つ。reshard中は旧新を読み、NoteIdで重複排除して大きいrouteVersionを採用する。空shardを含め全shardの位置を進めるため、createdBy/scope fan-out、account deletionの固定、workspace表示refreshはいずれも漏れなく有界に再開できる。
+`NoteRouteFanOutReader`はNoteId hash配置に対する二次キー走査の唯一のportである。`limit`は全shard合計で最大200。最大32 shardを同時6接続で読み、NoteId昇順へmergeする。opaque cursorはquery kind/fingerprint、shard generation、旧新各shardの`afterNoteId`を持つ。reshard中は旧新を読み、NoteIdで重複排除して大きいrouteVersionを採用する。空shardを含め全shardの位置を進めるため、createdBy/scope fan-out、account deletionの固定、workspace表示refreshはいずれも漏れなく有界に再開できる。
 
 列挙対象は**作成が commit 済みの route すべて** — `active` / `moving` / `purging` — であり、除外するのは `reserved`（対応するノートが存在しないまま終わりうる）だけである。これは `NoteRouteStore.resolve`（`reserved` に加えて `purging` も隠す）より**意図的に広い**。`resolve` は「外部の読み取りがこのノートに到達してよいか」を答える口で、fan-out は「scope 全体の修正がどの route に触れなければならないか」を答える口であり、移動中・完全削除中のノートも著者 route の redaction の義務を負ったままだからである。ここを `active` だけに絞ると、それらのノートが account deletion の manifest から落ち、永久に未処理のまま残る。`tombstone` の扱いは unspecified で、アダプターは失効まで残しても物理的に回収してもよく、呼び出し側はどちらも許容しなければならない。
 

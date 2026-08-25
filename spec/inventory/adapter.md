@@ -85,7 +85,7 @@
 | ADP-identity-036 | `LoginAttemptStore.recordFailure` | `spec/domains/identity.md#ポート` | 失敗回数を単一原子操作で加算し加算後状態を返す |
 | ADP-identity-037 | `LoginAttemptStore.clear` | `spec/domains/identity.md#ポート` | 認証成功時に失敗記録を削除する |
 | ADP-identity-038 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
-| ADP-identity-039 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を返し、無ければ null を返す |
+| ADP-identity-039 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) の live token を返し、無ければ null を返す。複数 pending は許され、どれが返るかは未定義 |
 | ADP-identity-040 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
 | ADP-identity-041 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた行が `active`・所有者一致・`expectedClaimToken` 一致のときだけ `releasing` にして解放側 operation へ付け替える。行なし・`reserved`・`releasing`・別利用者・トークン不一致はすべて no-op |
 | ADP-identity-042 | `IdentityUniqueDirectory.resolveClaim` | `spec/domains/identity.md#ポート` | 恒久 claim の持ち主と、観測した `(kind, normalizedKey)` の文脈で 1 つの claim を同定する `claimToken` を返す。トークンは claim が生きているあいだ不変で、張り直した claim とは（同じ operation ID であっても）必ず異なる。契約はこの 2 性質だけで、他の鍵のトークンとの不一致も推測困難性も含まない |
@@ -208,7 +208,7 @@
 | ADP-note-022 | `LocalNoteQueryService.listMonthsWithNotes` | `spec/domains/note.md#ポート` | owner のノートがある現地暦月を列挙する |
 | ADP-note-023 | `LocalNoteQueryService.countByDay` | `spec/domains/note.md#ポート` | 半開期間を time zone の日別に集計する |
 | ADP-note-024 | `LocalNoteQueryService.countByContentStatus` | `spec/domains/note.md#ポート` | owner・本文状態の Note 数を返す |
-| ADP-note-025 | `PublicNoteQueryService.searchPublic` | `spec/domains/note.md#ポート` | public shard を署名 cursor で有界検索・merge する |
+| ADP-note-025 | `PublicNoteQueryService.searchPublic` | `spec/domains/note.md#ポート` | public shard を opaque cursor（認証しない）で有界検索・merge する |
 | ADP-note-026 | `PublicNoteQueryService.listPublicSitemapEntries` | `spec/domains/note.md#ポート` | 公開 Note sitemap entry を shard 横断列挙する |
 | ADP-note-027 | `PublicNoteQueryService.listPublicAuthors` | `spec/domains/note.md#ポート` | 個人所有の公開 Note を持つ owner を重複なく列挙する |
 | ADP-note-028 | `LocalNoteProjectionWriter.replaceSnapshotIfNewer` | `spec/domains/note.md#ポート` | 世代ベクトルが新しい完全 snapshot を原子的に置換する |
@@ -229,8 +229,8 @@
 | ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
 | ADP-note-044 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | ADP-note-045 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
-| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
-| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の commit 済み route（`active` / `moving` / `purging`）を署名 cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
+| ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を opaque cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
+| ADP-note-047 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の commit 済み route（`active` / `moving` / `purging`）を opaque cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
 | ADP-note-048 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する。失敗は `SystemError(DataIntegrityError)` |
 | ADP-note-049 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する。未知の keyVersion・ciphertext の破損は `SystemError(DataIntegrityError)` |
 | ADP-note-050 | `NoteMovePort.freezeSource` | `spec/domains/note.md#ポート` | source を再認可して move snapshot を固定する |

@@ -4,6 +4,7 @@ import { ConflictError } from "../../../application/errors";
 import { UuidV7Generator } from "../../../application/ports/idGenerator";
 import type { UserId } from "../../../domain/identity/valueObject";
 import { createTestClock } from "../../conformance/testClock";
+import { createD1AccountDeletionManifestStore } from "../d1/repositories/accountDeletionManifestStore";
 import { createD1DistributedOperationStore } from "../d1/repositories/distributedOperationStore";
 import { createD1GlobalMaintenanceRunStore } from "../d1/repositories/globalMaintenanceRunStore";
 import { createD1IdentityUniqueDirectory } from "../d1/repositories/identityUniqueDirectory";
@@ -90,6 +91,18 @@ describe("cloudflare global control-plane concurrency", () => {
     await applyD1Migrations(env.GLOBAL_DB, env.MIGRATIONS);
   });
 
+  const seedUser = (id: string): Promise<void> =>
+    executor.apply([
+      statement(
+        `INSERT INTO ${GLOBAL_TABLES.users}
+           (id, status, auth_epoch, version, created_at, updated_at)
+         VALUES (?, 'pending', 0, 0, ?, ?)`,
+        id,
+        T0.getTime(),
+        T0.getTime(),
+      ),
+    ]);
+
   beforeEach(async () => {
     clock.set(T0);
     await env.GLOBAL_DB.batch(
@@ -98,6 +111,8 @@ describe("cloudflare global control-plane concurrency", () => {
         GLOBAL_TABLES.distributedOperations,
         GLOBAL_TABLES.globalMaintenanceRunLanes,
         GLOBAL_TABLES.globalMaintenanceRuns,
+        GLOBAL_TABLES.accountDeletionManifests,
+        GLOBAL_TABLES.users,
       ].map((table) => env.GLOBAL_DB.prepare(`DELETE FROM ${table}`)),
     );
   });
@@ -142,6 +157,70 @@ describe("cloudflare global control-plane concurrency", () => {
       ),
     );
     expect(rows[0]?.operation_id).toBe("op-rival");
+  });
+
+  it("refuses to activate a lapsed reservation another operation took over", async () => {
+    await seedUser("user-a");
+    await seedUser("user-b");
+    await createD1IdentityUniqueDirectory(deps).reserve({
+      kind: "handle",
+      normalizedKey: "alice",
+      userId: "user-a" as UserId,
+      operationId: "op-a",
+      expiresAt: new Date(T0.getTime() + HOUR_MS),
+    });
+
+    clock.advance(HOUR_MS + 1);
+    const now = clock.now();
+    const rival = () =>
+      createD1IdentityUniqueDirectory(deps).reserve({
+        kind: "handle",
+        normalizedKey: "alice",
+        userId: "user-b" as UserId,
+        operationId: "op-b",
+        expiresAt: new Date(now.getTime() + HOUR_MS),
+      });
+    const observed = createD1IdentityUniqueDirectory({
+      ...deps,
+      session: interposeOnce(session, rival),
+    });
+
+    expect(await conflictCode(observed.activate("op-a", 0))).toBe(
+      "UNIQUE_RESERVATION_NOT_FOUND",
+    );
+
+    const rows = await executor.query(
+      statement(
+        `SELECT operation_id, user_id, state FROM ${GLOBAL_TABLES.identityUniqueReservations}`,
+      ),
+    );
+    expect(rows).toEqual([
+      { operation_id: "op-b", user_id: "user-b", state: "reserved" },
+    ]);
+    expect(
+      await createD1IdentityUniqueDirectory(deps).resolveClaim(
+        "handle",
+        "alice",
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps both receipts when two finalize acks cross", async () => {
+    const store = createD1AccountDeletionManifestStore({ session, clock });
+    await store.begin("op-manifest", "user-a" as UserId);
+
+    const observed = createD1AccountDeletionManifestStore({
+      session: interposeOnce(session, () =>
+        store.acknowledgeReceipt("op-manifest", "uniquenessRelease"),
+      ),
+      clock,
+    });
+    await observed.acknowledgeReceipt("op-manifest", "authResidue");
+
+    expect((await store.describe("op-manifest"))?.receipts).toEqual([
+      "uniquenessRelease",
+      "authResidue",
+    ]);
   });
 
   it("leaves a partition with one running operation when two begin at once", async () => {

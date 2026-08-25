@@ -16,7 +16,7 @@ import { bigramIndexText } from "../search/bigram";
 import { throwTranslated } from "../sql/errors";
 import { insertRowsFromJson, jsonRows } from "../sql/json";
 import { occGuard } from "../sql/occGuard";
-import { text } from "../sql/row";
+import { int, text } from "../sql/row";
 import type { SqlSession } from "../sql/session";
 import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
 import {
@@ -25,6 +25,12 @@ import {
   redactedRow,
   snapshotRow,
 } from "./noteSearchRow";
+
+const VECTOR_COLUMNS = [
+  "projection_revision",
+  "author_version",
+  "workspace_version",
+];
 
 /**
  * The one writer of a `note_search*` triple, shared by both planes.
@@ -48,6 +54,17 @@ import {
  * row may not exist yet when the statement is built — it is staged in the
  * same write-set — so the rowid is only knowable at apply time, and this
  * is what lets one unit project the same note twice.
+ *
+ * Deciding the write from a row read in an earlier round trip is only
+ * sound if that row still describes storage when the unit applies, so
+ * every path that writes the body row leads with a guard on the
+ * generation vector it read. The public plane has four consumers running
+ * at once, and a rival that commits in between would otherwise cost both
+ * a lost update and — because the withdrawal names the tokens of the row
+ * that was read — a `'delete'` of tokens no longer in the index. A
+ * contentless index cannot be rebuilt (ADR 017), so that damage is
+ * permanent; losing the guard race instead aborts the unit and the
+ * redelivery re-reads and settles on `stale`.
  */
 export function createNoteSnapshotWriter(
   session: SqlSession,
@@ -90,6 +107,29 @@ export function createNoteSnapshotWriter(
           ),
     );
   };
+
+  const guardColumns = plane.routeVersioned
+    ? [...VECTOR_COLUMNS, "route_version"]
+    : VECTOR_COLUMNS;
+
+  const vectorGuard = (noteId: NoteId, stored: SqlRow | null): RowMutation =>
+    opaque(
+      occGuard(
+        stored === null
+          ? statement(
+              `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${plane.table} WHERE note_id = ?)`,
+              noteId,
+            )
+          : statement(
+              `SELECT 1 FROM ${plane.table}
+               WHERE note_id = ? AND ${guardColumns
+                 .map((column) => `${column} = ?`)
+                 .join(" AND ")}`,
+              noteId,
+              ...guardColumns.map((column) => int(stored, column)),
+            ),
+      ),
+    );
 
   const bodyMutation = (noteId: NoteId, row: SqlRow): RowMutation =>
     upsert({
@@ -160,6 +200,7 @@ export function createNoteSnapshotWriter(
     ): Promise<void> {
       const row = snapshotRow(plane, entry, tags, version);
       await write(`the ${plane.table} snapshot`, [
+        vectorGuard(entry.noteId, stored),
         ...(stored === null
           ? []
           : [ftsMutation("delete", stored, entry.noteId)]),
@@ -169,9 +210,14 @@ export function createNoteSnapshotWriter(
       ]);
     },
 
-    async remove(noteId: NoteId): Promise<void> {
-      const stored = await readStored(noteId);
+    /**
+     * `stored` is the caller's row image, not one read here: the decision
+     * to remove is taken from it, so the guard has to pin that same image
+     * rather than whatever a second read would find.
+     */
+    async remove(noteId: NoteId, stored: SqlRow | null): Promise<void> {
       await write(`the ${plane.table} row`, [
+        vectorGuard(noteId, stored),
         // The withdrawal has to precede the body delete: it reads the
         // rowid back out of the row it is withdrawing.
         ...(stored === null ? [] : [ftsMutation("delete", stored, noteId)]),

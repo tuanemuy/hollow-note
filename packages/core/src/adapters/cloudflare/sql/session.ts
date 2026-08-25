@@ -19,9 +19,11 @@ export type RowRead = Readonly<{
 /**
  * `matches` for a statement that genuinely selects a whole table.
  *
- * Spelling it out is the point: a missing predicate and a deliberately
- * absent one look identical once `matches` is optional, and the first
- * quietly mixes every staged row of the table into a filtered result.
+ * `matches` is mandatory, so a whole-table read has to spell its
+ * predicate out too, and `ALL_ROWS` is that predicate. Naming it is the
+ * point: an omitted predicate and a deliberately universal one would
+ * otherwise look identical, and the first quietly mixes every staged row
+ * of the table into a filtered result.
  */
 export const ALL_ROWS = (): boolean => true;
 
@@ -36,13 +38,13 @@ export const ALL_ROWS = (): boolean => true;
  *   statement has none.
  * - `limit` repeats the statement's `LIMIT`, applied after the merge.
  *
- * `limit` and same-unit deletions do not compose. The overlay can only
- * subtract from what the statement already returned, so a `LIMIT n` that
- * came back full and lost a row to a staged delete would have to reach
- * back into storage for the n+1-th row to stay accurate. A staged
+ * `limit` and same-unit writes that drop a row do not compose. The
+ * overlay can only subtract from what the statement already returned, so
+ * a `LIMIT n` that came back full and lost a row — to a staged delete, or
+ * to a staged update that no longer satisfies `matches` — would have to
+ * reach back into storage for the n+1-th row to stay accurate. A staged
  * session refuses that read rather than returning a short page — page a
- * set you are also deleting from with `query`, or delete after the last
- * page.
+ * set you are also writing to with `query`, or write after the last page.
  */
 export type RowsRead = Readonly<{
   table: string;
@@ -78,6 +80,15 @@ export interface SqlSession {
   readRow(spec: RowRead): Promise<SqlRow | null>;
   readRows(spec: RowsRead): Promise<readonly SqlRow[]>;
   write(mutations: readonly RowMutation[]): Promise<void>;
+  /**
+   * One immediate write that reports how many rows it changed.
+   *
+   * Only an autocommit session can answer: a staged write has not run
+   * yet. It exists so a bulk `DELETE` can report its size without
+   * `RETURNING` a row per deletion — the response of an unbounded sweep
+   * is the part that grows, not the statement count.
+   */
+  writeCounted(input: SqlStatement): Promise<number>;
   /** True inside a unit of work. Repositories that must refuse to run
    * outside one (or vice versa) check this rather than guessing. */
   readonly staged: boolean;
@@ -102,6 +113,14 @@ export function createAutocommitSession(executor: SqlExecutor): SqlSession {
     },
     async write(mutations: readonly RowMutation[]): Promise<void> {
       await executor.apply(mutations.map((mutation) => mutation.statement));
+    },
+    async writeCounted(input: SqlStatement): Promise<number> {
+      if (executor.applyCounted === undefined) {
+        throw databaseError(
+          "This backend applies writes without reporting an affected-row count; use RETURNING or a separate COUNT(*)",
+        );
+      }
+      return executor.applyCounted(input);
     },
   };
 }
@@ -130,13 +149,17 @@ export function createStagedSession(
       const staged = stored.map((row) =>
         writeSet.peek(spec.table, spec.keyOf(row)),
       );
+      const dropsAStoredRow = (): boolean =>
+        staged.some(
+          (row) => row === null || (row !== undefined && !spec.matches(row)),
+        );
       if (
         spec.limit !== undefined &&
         stored.length >= spec.limit &&
-        staged.includes(null)
+        dropsAStoredRow()
       ) {
         throw databaseError(
-          `Set read of ${spec.table} combines LIMIT ${spec.limit} with a row this unit of work deleted; the page cannot be completed from the overlay`,
+          `Set read of ${spec.table} combines LIMIT ${spec.limit} with a row this unit of work dropped from the result — deleted, or updated out of the predicate; the page cannot be completed from the overlay`,
         );
       }
       // A stored row this unit has touched is dropped whichever way it
@@ -156,6 +179,11 @@ export function createStagedSession(
     },
     async write(mutations: readonly RowMutation[]): Promise<void> {
       writeSet.stage(mutations);
+    },
+    async writeCounted(): Promise<number> {
+      throw databaseError(
+        "A staged write has not run yet, so it has no affected-row count; call this outside a unit of work",
+      );
     },
   };
 }

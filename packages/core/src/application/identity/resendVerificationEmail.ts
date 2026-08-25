@@ -23,9 +23,11 @@ const UNIFORM_RESPONSE: ResendVerificationEmailView = {};
  *
  * Issuing runs in the UserId shard transaction so the pending-status
  * re-check, the resend-interval read, the removal of the superseded
- * token, and the new one land together: the partial unique index over
- * (`user_id`, `purpose`) permits exactly one live verification token,
- * and splitting these would let a concurrent resend leave two.
+ * token, and the new one land together: keeping exactly one live
+ * verification token per (`user_id`, `purpose`) is this path's own duty
+ * — `AuthTokenRepository` permits several pending rows and no
+ * storage-level uniqueness catches a slip — so splitting these would let
+ * a concurrent resend leave two.
  */
 export async function resendVerificationEmail({
   container,

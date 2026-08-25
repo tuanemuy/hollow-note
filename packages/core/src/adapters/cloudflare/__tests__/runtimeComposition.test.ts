@@ -30,6 +30,14 @@ import { UserId } from "../../../domain/identity/valueObject";
 
 const asAppRuntime = (runtime: AppRuntime): AppRuntime => runtime;
 
+/**
+ * Type-level half of the two container tests below: a `satisfies` clause
+ * only proves the listed names are keys, so without this a port added to
+ * a container would leave the assertions green while going unchecked.
+ * Instantiating it with a leftover key is a type error, not a runtime one.
+ */
+const assertNoUnlistedPort = <_Unlisted extends never>(): void => {};
+
 const CONFIG: AppConfig = {
   appUrl: "https://hollow.test",
   siteName: "Hollow",
@@ -131,6 +139,9 @@ describe("createCloudflareRuntime", () => {
   });
 
   it("builds a request container carrying every port the type declares", () => {
+    assertNoUnlistedPort<
+      Exclude<keyof RequestContainer, (typeof REQUEST_PORTS)[number]>
+    >();
     const container = makeRuntime().createRequestContainer(CONFIG);
     for (const port of REQUEST_PORTS) {
       expect(container[port], port).toBeDefined();
@@ -140,6 +151,9 @@ describe("createCloudflareRuntime", () => {
   });
 
   it("builds a worker container carrying every port the type declares", () => {
+    assertNoUnlistedPort<
+      Exclude<keyof WorkerContainer, (typeof WORKER_PORTS)[number]>
+    >();
     const container = makeRuntime().createWorkerContainer();
     for (const port of WORKER_PORTS) {
       expect(container[port], port).toBeDefined();

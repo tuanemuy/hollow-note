@@ -93,7 +93,6 @@ CREATE TABLE sessions (
 
 CREATE INDEX sessions_user_epoch_idx ON sessions (user_id, auth_epoch, id);
 CREATE INDEX sessions_expires_idx ON sessions (expires_at, id);
-CREATE INDEX sessions_user_token_idx ON sessions (user_id, token_hash);
 
 CREATE TABLE auth_tokens (
   id text PRIMARY KEY,

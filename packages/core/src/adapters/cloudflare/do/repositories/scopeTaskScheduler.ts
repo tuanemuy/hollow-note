@@ -81,9 +81,11 @@ const CONTEXT = "scheduled_tasks";
  * `ScopeTaskQueue.listDue` reads the global mirror of this table
  * (`../dueIndex.ts`). Inside a unit of work the scope object republishes
  * the slice itself when the committed write-set names this table, so
- * nothing is needed here. Outside one — the runner's claim and settle
- * calls — no commit hook runs, so the slice is republished here, after
- * the write has landed. The alarm is deliberately **not** re-armed on
+ * nothing is needed here — and every caller that reaches this scheduler
+ * through a unit of work, the central runner included, takes that path.
+ * Built straight over a scope's session there is no write-set to commit
+ * and no hook, so the slice is republished here, after the write has
+ * landed. The alarm is deliberately **not** re-armed on
  * that path: arming belongs to the object, which does it for every
  * committed write-set and at the end of every turn, and arming from
  * here would let an alarm turn race the caller for the row it just
