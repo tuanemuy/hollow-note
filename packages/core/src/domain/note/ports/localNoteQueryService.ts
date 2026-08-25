@@ -19,7 +19,10 @@ export type NoteSearchCriteria = Readonly<{
   lifecycle: "active" | "trashed";
   /** Effective at 2+ characters; callers pass `null` for shorter input. */
   keyword: string | null;
-  /** AND match. Normalized (`TagName` rules) names. */
+  /**
+   * AND match. Normalized (`TagName` rules) names; a repeated name
+   * filters no differently from one.
+   */
   tagNames: readonly string[];
   /** Month filters arrive resolved in the viewer's time zone. */
   createdWithin: DateRange | null;

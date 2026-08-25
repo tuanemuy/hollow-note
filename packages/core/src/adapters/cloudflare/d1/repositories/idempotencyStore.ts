@@ -2,6 +2,7 @@ import type { Clock } from "../../../../application/ports/clock";
 import type { IdempotencyStore } from "../../../../application/ports/idempotencyStore";
 import type { EventId } from "../../../../domain/common/event";
 import { opaque, upsert } from "../../execution/writeSet";
+import { throwTranslated } from "../../sql/errors";
 import { occGuard } from "../../sql/occGuard";
 import { compositeKey, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
@@ -30,69 +31,77 @@ export function createD1IdempotencyStore(
 ): IdempotencyStore {
   const { session } = deps;
 
-  return {
-    async markProcessed(consumer: string, eventId: EventId): Promise<boolean> {
-      const processedAt = toTimestamp(deps.clock.now());
-      if (!session.staged) {
-        const rows = await session.query(
-          statement(
-            `INSERT INTO ${TABLE} (consumer, event_id, processed_at)
-             VALUES (?, ?, ?)
-             ON CONFLICT (consumer, event_id) DO NOTHING
-             RETURNING event_id`,
-            consumer,
-            eventId,
-            processedAt,
-          ),
-        );
-        return rows.length > 0;
-      }
-
-      const key = compositeKey(consumer, eventId);
-      const existing = await session.readRow({
-        table: TABLE,
-        key,
-        statement: statement(
-          `SELECT consumer, event_id, processed_at FROM ${TABLE}
-            WHERE consumer = ? AND event_id = ?`,
+  const mark = async (consumer: string, eventId: EventId): Promise<boolean> => {
+    const processedAt = toTimestamp(deps.clock.now());
+    if (!session.staged) {
+      const rows = await session.query(
+        statement(
+          `INSERT INTO ${TABLE} (consumer, event_id, processed_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (consumer, event_id) DO NOTHING
+           RETURNING event_id`,
           consumer,
           eventId,
+          processedAt,
         ),
-      });
-      if (existing !== null) {
-        return false;
-      }
-      await session.write([
-        opaque(
-          occGuard(
-            statement(
-              `SELECT 1 WHERE NOT EXISTS (
-                 SELECT 1 FROM ${TABLE} WHERE consumer = ? AND event_id = ?
-               )`,
-              consumer,
-              eventId,
-            ),
-          ),
-        ),
-        upsert({
-          table: TABLE,
-          key,
-          row: {
-            consumer,
-            event_id: eventId,
-            processed_at: processedAt,
-          },
-          statement: statement(
-            `INSERT INTO ${TABLE} (consumer, event_id, processed_at)
-             VALUES (?, ?, ?)
-             ON CONFLICT (consumer, event_id) DO NOTHING`,
+      );
+      return rows.length > 0;
+    }
+
+    const key = compositeKey(consumer, eventId);
+    const existing = await session.readRow({
+      table: TABLE,
+      key,
+      statement: statement(
+        `SELECT consumer, event_id, processed_at FROM ${TABLE}
+          WHERE consumer = ? AND event_id = ?`,
+        consumer,
+        eventId,
+      ),
+    });
+    if (existing !== null) {
+      return false;
+    }
+    await session.write([
+      opaque(
+        occGuard(
+          statement(
+            `SELECT 1 WHERE NOT EXISTS (
+               SELECT 1 FROM ${TABLE} WHERE consumer = ? AND event_id = ?
+             )`,
             consumer,
             eventId,
-            processedAt,
           ),
-        }),
-      ]);
-      return true;
+        ),
+      ),
+      upsert({
+        table: TABLE,
+        key,
+        row: {
+          consumer,
+          event_id: eventId,
+          processed_at: processedAt,
+        },
+        statement: statement(
+          `INSERT INTO ${TABLE} (consumer, event_id, processed_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT (consumer, event_id) DO NOTHING`,
+          consumer,
+          eventId,
+          processedAt,
+        ),
+      }),
+    ]);
+    return true;
+  };
+
+  return {
+    async markProcessed(consumer: string, eventId: EventId): Promise<boolean> {
+      try {
+        return await mark(consumer, eventId);
+      } catch (cause) {
+        throwTranslated(`${TABLE} row ${consumer}/${eventId}`, cause);
+      }
     },
   };
 }

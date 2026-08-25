@@ -12,7 +12,9 @@ import type {
 import type { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import { scopeColumns, scopeFromColumns } from "../../do/scopeName";
+import type { RowMutation } from "../../execution/writeSet";
 import { opaque, remove, upsert } from "../../execution/writeSet";
+import { throwTranslated } from "../../sql/errors";
 import { inJsonList, jsonList } from "../../sql/json";
 import { occGuard } from "../../sql/occGuard";
 import {
@@ -96,8 +98,9 @@ const writeStatement = (row: SqlRow): SqlStatement =>
  * already read. Every branch below rejects with its own error using the
  * value it read; this guard only catches the case where another writer
  * moved the row in between, and surfaces as
- * `ConflictError("OPTIMISTIC_LOCK_FAILURE")`
- * ([ADR 008](../../../../../../.thread/11/adr.md)).
+ * `ConflictError("OPTIMISTIC_LOCK_FAILURE")` — a guard that fires at
+ * commit cannot say which condition it stood for, so the specific codes
+ * have to be decided from the staged read (`spec/database/index.md#_occ_guard`).
  */
 const unchangedGuard = (row: SqlRow): SqlStatement =>
   occGuard(
@@ -159,12 +162,50 @@ export function createD1NoteRouteStore(
 ): NoteRouteStore {
   const { session } = deps;
 
-  const readRow = (noteId: string): Promise<SqlRow | null> =>
-    session.readRow({
-      table: TABLE,
-      key: noteId,
-      statement: statement(`${SELECT_ALL} WHERE note_id = ?`, noteId),
-    });
+  const contextOf = (noteId: string): string => `${TABLE} row ${noteId}`;
+
+  const write = async (
+    noteId: string,
+    mutations: readonly RowMutation[],
+  ): Promise<void> => {
+    try {
+      await session.write(mutations);
+    } catch (cause) {
+      throwTranslated(contextOf(noteId), cause);
+    }
+  };
+
+  const readRow = async (noteId: string): Promise<SqlRow | null> => {
+    try {
+      return await session.readRow({
+        table: TABLE,
+        key: noteId,
+        statement: statement(`${SELECT_ALL} WHERE note_id = ?`, noteId),
+      });
+    } catch (cause) {
+      throwTranslated(contextOf(noteId), cause);
+    }
+  };
+
+  // 500 ids over a 100-binding cap: one JSON value expanded by
+  // `json_each`, never `?` per id (`../../sql/json.ts`).
+  const readRows = async (
+    wanted: ReadonlySet<string>,
+  ): Promise<readonly SqlRow[]> => {
+    try {
+      return await session.readRows({
+        table: TABLE,
+        statement: statement(
+          `${SELECT_ALL} WHERE ${inJsonList("note_id")}`,
+          jsonList([...wanted]),
+        ),
+        keyOf: (row) => text(row, "note_id"),
+        matches: (row) => wanted.has(text(row, "note_id")),
+      });
+    } catch (cause) {
+      throwTranslated(`${TABLE} batch read`, cause);
+    }
+  };
 
   const requireRow = async (noteId: string): Promise<SqlRow> => {
     const row = await readRow(noteId);
@@ -197,11 +238,12 @@ export function createD1NoteRouteStore(
     guard: SqlStatement,
     row: SqlRow,
   ): Promise<NoteRoute> => {
-    await session.write([
+    const noteId = text(row, "note_id");
+    await write(noteId, [
       opaque(guard),
       upsert({
         table: TABLE,
-        key: text(row, "note_id"),
+        key: noteId,
         row,
         statement: writeStatement(row),
       }),
@@ -233,18 +275,7 @@ export function createD1NoteRouteStore(
       if (noteIds.length === 0) {
         return new Map();
       }
-      const wanted = new Set<string>(noteIds);
-      // 500 ids over a 100-binding cap: one JSON value expanded by
-      // `json_each`, never `?` per id (`../../sql/json.ts`).
-      const rows = await session.readRows({
-        table: TABLE,
-        statement: statement(
-          `${SELECT_ALL} WHERE ${inJsonList("note_id")}`,
-          jsonList([...wanted]),
-        ),
-        keyOf: (row) => text(row, "note_id"),
-        matches: (row) => wanted.has(text(row, "note_id")),
-      });
+      const rows = await readRows(new Set<string>(noteIds));
       const result = new Map<NoteId, NoteRoute>();
       for (const row of rows) {
         if (isReadable(row)) {
@@ -331,7 +362,7 @@ export function createD1NoteRouteStore(
       if (state !== "reserved") {
         throw stateViolation(input.noteId, `cannot abandon ${state}`);
       }
-      await session.write([
+      await write(input.noteId, [
         opaque(unchangedGuard(row)),
         remove({
           table: TABLE,

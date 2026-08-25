@@ -259,25 +259,15 @@ export function createD1AccountDeletionManifestStore(
       if (existing !== null) {
         return;
       }
-      const row: SqlRow = {
-        operation_id: operationId,
-        user_id: userId,
-        status: "building",
-        membership_cursor: null,
-        author_route_cursor: null,
-        receipts: "[]",
-        terminal_at: null,
-        retain_until: null,
-      };
       try {
         await session.write([
-          upsert({
-            table: HEADERS,
-            key: operationId,
-            row,
+          // `opaque`, not `upsert`: the statement is a no-op when a header
+          // is already there, so staging this call's row image would let a
+          // later read in the same unit see a header the write never made.
+          opaque(
             // A replayed begin must preserve everything already recorded,
             // so the insert never overwrites an existing header.
-            statement: statement(
+            statement(
               `INSERT INTO ${HEADERS}
                  (operation_id, user_id, status, membership_cursor, author_route_cursor, receipts, terminal_at, retain_until)
                VALUES (?, ?, 'building', NULL, NULL, '[]', NULL, NULL)
@@ -285,7 +275,7 @@ export function createD1AccountDeletionManifestStore(
               operationId,
               userId,
             ),
-          }),
+          ),
         ]);
       } catch (cause) {
         throw databaseError("the account deletion manifest store", cause);

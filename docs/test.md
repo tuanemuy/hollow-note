@@ -5,9 +5,9 @@ Tests are classified along two axes: **layer × purpose**. One vitest run spans 
 | Project | Files | Runs in | Backend |
 | --- | --- | --- | --- |
 | `node` | everything outside `packages/core/src/adapters/cloudflare/` | Node, `TZ=Asia/Tokyo` | the in-memory reference adapters |
-| `workers` | `packages/core/src/adapters/cloudflare/**/__tests__/**` | workerd (`@cloudflare/vitest-plugin`) | real D1 / Durable Object / R2 bindings |
+| `workers` | everything under `packages/core/src/adapters/cloudflare/` | workerd (`@cloudflare/vitest-plugin`) | real D1 / Durable Object / R2 bindings |
 
-The two include sets are disjoint, so `pnpm test` is the union and neither project can silently swallow the other's files. The `workers` project cannot set `TZ` at all — zone-sensitive tests stay in `node` (see Determinism).
+The boundary is one string in `vitest.shared.ts`, used by both configs: what `node` excludes is exactly what `workers` includes. The two sets are therefore disjoint *and* their union is every test file, so `pnpm test` runs each file exactly once and no path can fall through both. The `workers` project cannot set `TZ` at all — zone-sensitive tests stay in `node` (see Determinism).
 
 ## Test layer classification
 
@@ -36,7 +36,7 @@ The two include sets are disjoint, so `pnpm test` is the union and neither proje
 Kept fakes are limited to `FakeIdGenerator` and `FakeLogger` (see above).
 
 - Repository / UoW / store fakes are intentionally absent. What replaced them is **not** ad-hoc in-memory mocks but the `adapters/memory/` reference adapters: they are wired by production DI (`pnpm dev` runs on them) and are held to the same conformance suites any real backend must pass. The original prohibition — "an in-memory imitation of transactions / OCC is no substitute for verification" — still stands; the conformance suites are that verification.
-- The same policy governs the `workers` project, and there it is stricter still: nothing is stubbed. The Cloudflare suites run against the D1, Durable Object and R2 bindings of `packages/core/wrangler.test.jsonc`, which is the reason for paying the pool's startup cost rather than reading the adapters against a mock.
+- The same policy governs the `workers` project, and there it is stricter still: **no port a conformance suite exercises is stubbed**. The Cloudflare suites run against the D1, Durable Object and R2 bindings of `packages/core/wrangler.test.jsonc`, which is the reason for paying the pool's startup cost rather than reading the adapters against a mock. Backend-local tests may still pass a stand-in for a port that is out of their scope — one that throws when touched, so reaching it fails the test rather than passing silently — and the composition-root test supplies a `MailSender`, since the Cloudflare group has no adapter for that port.
 - What the memory backend cannot prove (driver-specific behavior: SQL constraints, parameter limits, D1 batch atomicity, Durable Object transaction isolation) is proven by the `workers` project, using the same suites plus the backend-local tests above. Do not read a green memory run as a production guarantee of those properties — run `pnpm test`, which covers both.
 - `Clock` is passed as the `TestClock` port through the harness; freestanding `new Date(0)` constants remain fine for pure domain tests.
 

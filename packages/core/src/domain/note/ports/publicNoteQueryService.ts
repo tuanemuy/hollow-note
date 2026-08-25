@@ -5,13 +5,13 @@ import type { NoteSummary } from "./localNoteQueryService";
 
 export type PublicSearchCriteria = Readonly<{
   keyword: string | null;
-  /** Normalized names. */
+  /** Normalized names; a repeated name filters no differently from one. */
   tagNames: readonly string[];
   /** In-page search on a public owner page. */
   ownerFilter: NoteOwner | null;
   /** Against `note_search.updated_at`, resolved in UTC. */
   updatedWithin: DateRange | null;
-  /** Signed opaque cursor (shard generation + per-shard keyset / rank). */
+  /** Opaque cursor (shard generation + per-shard keyset / rank). */
   cursor: string | null;
   limit: number;
 }>;
@@ -40,12 +40,16 @@ export type SitemapEntry = Readonly<{ noteId: string; updatedAt: Date }>;
 export type PublicAuthorEntry = Readonly<{ userId: string; updatedAt: Date }>;
 
 /**
- * Read side over the global public projection only. Cursors are signed
- * opaque values carrying the query fingerprint and shard generation;
- * condition changes, tampering, and retired generations surface as
- * `ValidationError("INVALID_PAGINATION")`. `listPublicAuthors` enumerates
- * by **owner** (not author/created_by) so its population matches the
- * `/@:handle` listing, emitting each user once with their max updatedAt.
+ * Read side over the global public projection only. Cursors are opaque
+ * values carrying the query fingerprint and shard generation; condition
+ * changes, unreadable values, and retired generations surface as
+ * `ValidationError("INVALID_PAGINATION")`. They are **not authenticated**
+ * — a cursor decides where a page starts, never what it may contain, so
+ * the public visibility predicate is applied on every read whatever
+ * cursor arrives, and no caller may treat one as a capability.
+ * `listPublicAuthors` enumerates by **owner** (not author/created_by) so
+ * its population matches the `/@:handle` listing, emitting each user once
+ * with their max updatedAt.
  *
  * Error contract: `SystemError(DatabaseError)`,
  * `SystemError(TimeoutError)`.

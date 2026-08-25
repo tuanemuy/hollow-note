@@ -14,7 +14,7 @@ import {
   scopeOf,
   userId,
 } from "../../conformance/fixtures";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_TABLES_TO_WIPE } from "../d1/schema";
 import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import { statement } from "../sql/statement";
@@ -29,6 +29,13 @@ import { makeCloudflareConformanceBackend } from "./conformanceBackend";
  * `json_each` are available on both planes, and that `nodejs_compat`
  * really provides the two Node modules the adapters import.
  */
+const globalTableNames = async (): Promise<readonly string[]> => {
+  const tables = await env.GLOBAL_DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+  ).all<{ name: string }>();
+  return tables.results.map((row) => row.name);
+};
+
 describe("cloudflare test harness", () => {
   beforeAll(async () => {
     await applyD1Migrations(env.GLOBAL_DB, env.MIGRATIONS);
@@ -41,13 +48,26 @@ describe("cloudflare test harness", () => {
   });
 
   it("applies the global schema, including the contentless FTS5 table", async () => {
-    const tables = await env.GLOBAL_DB.prepare(
-      "SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name",
-    ).all<{ name: string }>();
-    const names = new Set(tables.results.map((row) => row.name));
+    const names = new Set(await globalTableNames());
     for (const table of Object.values(GLOBAL_TABLES)) {
       expect(names).toContain(table);
     }
+  });
+
+  /**
+   * The other direction: a migration that adds a table the adapter never
+   * names would leave rows behind between conformance backends, and the
+   * symptom is an incidental red that depends on test order.
+   */
+  it("leaves no migrated table out of the wipe", async () => {
+    const migrated = (await globalTableNames()).filter(
+      (name) =>
+        name !== "d1_migrations" &&
+        !name.startsWith("sqlite_") &&
+        !name.startsWith("_cf_") &&
+        !name.startsWith(GLOBAL_TABLES.publicNoteSearchFts),
+    );
+    expect(new Set(migrated)).toEqual(new Set(GLOBAL_TABLES_TO_WIPE));
   });
 
   it("expands a list through json_each rather than one binding per id", async () => {
@@ -112,7 +132,7 @@ describe("cloudflare test harness", () => {
    * The suites contract for a fresh backend per test while this pool
    * isolates storage per *file*, so two backends built here — as two
    * suites in one bundle would be — must not see each other on any of the
-   * three planes (ADR 004). Nothing about it is per-suite: if it holds
+   * three planes. Nothing about it is per-suite: if it holds
    * for two factory calls it holds for thirty.
    */
   it("hands out backends that cannot see one another on any plane", async () => {

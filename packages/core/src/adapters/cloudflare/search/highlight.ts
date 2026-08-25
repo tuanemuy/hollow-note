@@ -12,7 +12,10 @@ import { normalizeForSearch, searchRunsOf } from "./bigram";
  *
  * Collation runs on the first two preprocessing steps only — NFKC and
  * case folding, no bigrams — applied to both sides, so full-width, kana
- * width and case fold exactly as they do in search. Because the match is
+ * width and case fold exactly as they do in search. The text side is
+ * normalized one grapheme cluster at a time so a position in the result
+ * can be mapped back, which agrees with the whole-string normalization of
+ * the needle everywhere composition stays inside a cluster. Because the match is
  * a plain substring of the raw text while the index matches bigrams, the
  * two can disagree: a row that only matched on its title, or through a
  * bigram that straddles a punctuation boundary, yields `null` here and
@@ -51,19 +54,27 @@ type PositionMap = Readonly<{
   ends: readonly number[];
 }>;
 
+/**
+ * The unit the map normalizes one piece at a time. It has to be the
+ * grapheme cluster, not the code point: NFKC composes a base character
+ * with the combining marks that follow it (`か` + U+3099 becomes `が`),
+ * so normalizing code point by code point would leave a decomposed body
+ * unmatchable by a needle the whole-string normalization composed —
+ * exactly the rows the index does match.
+ */
+const clusters = new Intl.Segmenter("und", { granularity: "grapheme" });
+
 const mapPositions = (source: string): PositionMap => {
   let normalized = "";
   const starts: number[] = [];
   const ends: number[] = [];
-  let offset = 0;
-  for (const char of source) {
-    const piece = normalizeForSearch(char);
+  for (const { segment, index } of clusters.segment(source)) {
+    const piece = normalizeForSearch(segment);
     for (let i = 0; i < piece.length; i += 1) {
-      starts.push(offset);
-      ends.push(offset + char.length);
+      starts.push(index);
+      ends.push(index + segment.length);
     }
     normalized += piece;
-    offset += char.length;
   }
   return { normalized, starts, ends };
 };
@@ -127,37 +138,43 @@ const render = (
   return to < source.length ? `${rendered}${ELLIPSIS}` : rendered;
 };
 
+const matchesIn = (source: string, keyword: string): readonly Range[] => {
+  const needles = searchRunsOf(keyword);
+  return needles.length === 0 ? [] : rangesIn(mapPositions(source), needles);
+};
+
 /**
  * An HTML fragment whose only markup is `<mark>`, or `null` when the
- * keyword cannot be located in either projected column.
+ * keyword is nowhere in the excerpt.
  *
- * The excerpt is preferred; the body is only consulted when the excerpt
- * holds no match, and then a window is cut around the first one. Escaping
- * happens here rather than in the view because this is the single field
- * of `NoteSummary` rendered as HTML — the producer owes the escaping.
+ * Escaping happens here rather than in the view because this is the
+ * single field of `NoteSummary` rendered as HTML — the producer owes the
+ * escaping.
  */
 export function highlightExcerpt(
   excerpt: string,
-  text: string,
   keyword: string,
 ): string | null {
-  const needles = searchRunsOf(keyword);
-  if (needles.length === 0) {
-    return null;
-  }
+  const ranges = matchesIn(excerpt, keyword);
+  return ranges.length === 0
+    ? null
+    : render(excerpt, ranges, [0, excerpt.length]);
+}
 
-  const inExcerpt = rangesIn(mapPositions(excerpt), needles);
-  if (inExcerpt.length > 0) {
-    return render(excerpt, inExcerpt, [0, excerpt.length]);
-  }
-
-  const inText = rangesIn(mapPositions(text), needles);
-  const first = inText[0];
+/**
+ * The same fragment cut from a body text, as a window around the first
+ * match — the fallback for a row whose excerpt holds no match. The caller
+ * decides how much of the body to offer; a match past what it read simply
+ * yields `null`, which is the fallback the view already handles.
+ */
+export function highlightBody(text: string, keyword: string): string | null {
+  const ranges = matchesIn(text, keyword);
+  const first = ranges[0];
   if (first === undefined) {
     return null;
   }
   const from = Math.max(0, first[0] - WINDOW_LEAD);
-  return render(text, inText, [
+  return render(text, ranges, [
     from,
     Math.min(text.length, from + WINDOW_LENGTH),
   ]);

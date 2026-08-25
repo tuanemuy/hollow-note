@@ -24,14 +24,22 @@ export type R2ObjectStorageOptions = Readonly<{
   publicBaseUrl: string;
   /**
    * Prefix every key is stored under. `""` in production; the conformance
-   * factory sets one so a single bucket can serve many backends
-   * ([ADR 004](../../../../../.thread/11/adr.md)).
+   * factory sets one so a single bucket can serve many backends, which is
+   * what gives each of them the empty storage the suites contract for.
    */
   keyPrefix?: string;
 }>;
 
 /** Checksum of the stored bytes, kept beside the object so `get` can report it. */
 const CHECKSUM_METADATA = "sha256";
+
+/**
+ * R2 takes at most 1,000 keys in one `delete`. The port puts no ceiling
+ * on a batch — the caller's batch is sized by whatever produced it — so
+ * the limit is spent here, one chunk at a time. A partial run is safe to
+ * repeat: absence is not an error.
+ */
+const MAX_KEYS_PER_DELETE = 1000;
 
 const externalError = (context: string, cause: unknown): SystemError =>
   new SystemError(
@@ -114,13 +122,13 @@ export function createR2ObjectStorage(
     },
 
     async deleteMany(keys: readonly ObjectKey[]): Promise<void> {
-      if (keys.length === 0) {
-        return;
-      }
-      try {
-        await options.bucket.delete(keys.map(physical));
-      } catch (cause) {
-        throw externalError("Deleting objects", cause);
+      for (let from = 0; from < keys.length; from += MAX_KEYS_PER_DELETE) {
+        const batch = keys.slice(from, from + MAX_KEYS_PER_DELETE);
+        try {
+          await options.bucket.delete(batch.map(physical));
+        } catch (cause) {
+          throw externalError("Deleting objects", cause);
+        }
       }
     },
 

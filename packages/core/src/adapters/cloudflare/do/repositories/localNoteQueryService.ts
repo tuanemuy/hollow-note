@@ -10,17 +10,19 @@ import type { NoteOwner } from "../../../../domain/note/valueObject";
 import {
   LOCAL_NOTE_SEARCH,
   ownerColumns,
+  summaryColumns,
   toSummary,
 } from "../../projection/noteSearchRow";
 import {
+  bodyHighlights,
   relevanceScore,
   resolveKeyword,
   searchFrom,
   tagFilter,
+  tagFilterBindings,
 } from "../../projection/searchClauses";
 import { dayKeyOf, wallClockOf } from "../../projection/viewerCalendar";
 import { databaseError } from "../../sql/errors";
-import { jsonList } from "../../sql/json";
 import { date, int } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlValue, statement } from "../../sql/statement";
@@ -66,6 +68,17 @@ const orderBy = (sort: NoteSortKey, ranked: boolean): string => {
 export function createScopeLocalNoteQueryService(
   session: SqlSession,
 ): LocalNoteQueryService {
+  const queried = async (
+    context: string,
+    input: Parameters<SqlSession["query"]>[0],
+  ) => {
+    try {
+      return await session.query(input);
+    } catch (cause) {
+      throw databaseError(context, cause);
+    }
+  };
+
   const ownedRows = async (
     owner: NoteOwner,
     extraSql: string,
@@ -73,7 +86,8 @@ export function createScopeLocalNoteQueryService(
     projection: string,
   ) => {
     const columns = ownerColumns(owner);
-    return session.query(
+    return queried(
+      "reading the local note projection",
       statement(
         `SELECT ${projection} FROM ${PLANE.table}
          WHERE owner_type = ? AND owner_id = ? AND lifecycle = 'active' ${extraSql}`,
@@ -113,47 +127,68 @@ export function createScopeLocalNoteQueryService(
       }
       if (criteria.tagNames.length > 0) {
         conditions.push(tagFilter(PLANE, ROW));
-        params.push(jsonList([...criteria.tagNames]), criteria.tagNames.length);
+        params.push(...tagFilterBindings(criteria.tagNames));
       }
 
+      const context = "searching the local note projection";
       const body = `${searchFrom(PLANE, ROW, match)} WHERE ${conditions.join(" AND ")}`;
-      try {
-        const counted = await session.query(
-          statement(`SELECT COUNT(*) AS total ${body}`, ...params),
-        );
-        const total = counted[0] === undefined ? 0 : int(counted[0], "total");
-        if (total === 0) {
-          return { items: [], count: 0 };
-        }
-        const rows = await session.query(
-          statement(
-            `SELECT ${ROW}.* ${body} ORDER BY ${orderBy(criteria.sort, match !== null)} LIMIT ? OFFSET ?`,
-            ...params,
-            criteria.pagination.limit,
-            (criteria.pagination.page - 1) * criteria.pagination.limit,
-          ),
-        );
-        return {
-          items: rows.map((row) => toSummary(row, keyword)),
-          count: total,
-        };
-      } catch (cause) {
-        throw databaseError("searching the local note projection", cause);
+      const counted = await queried(
+        context,
+        statement(`SELECT COUNT(*) AS total ${body}`, ...params),
+      );
+      const total = counted[0] === undefined ? 0 : int(counted[0], "total");
+      if (total === 0) {
+        return { items: [], count: 0 };
       }
+      const rows = await queried(
+        context,
+        statement(
+          `SELECT ${summaryColumns(PLANE, ROW)} ${body} ORDER BY ${orderBy(criteria.sort, match !== null)} LIMIT ? OFFSET ?`,
+          ...params,
+          criteria.pagination.limit,
+          (criteria.pagination.page - 1) * criteria.pagination.limit,
+        ),
+      );
+      const items = rows.map((row) => toSummary(row, keyword));
+      const fromBody = await bodyHighlights(session, PLANE, items, keyword);
+      return {
+        items: items.map((item) => {
+          const highlighted = fromBody.get(item.id);
+          return highlighted === undefined
+            ? item
+            : { ...item, highlightedExcerpt: highlighted };
+        }),
+        count: total,
+      };
     },
 
+    /**
+     * Grouped by UTC day rather than read row by row: a day is shorter
+     * than any month, so every note of one group shares the local month
+     * of the group's earliest instant or of its latest, and those two are
+     * enough to name every month present. That turns a read proportional
+     * to the note count into one proportional to the days the scope has
+     * been written on, without needing a time-zone database in SQL.
+     */
     async listMonthsWithNotes(
       owner: NoteOwner,
       timeZone: string,
     ): Promise<readonly YearMonth[]> {
-      const rows = await ownedRows(owner, "", [], "DISTINCT created_at");
+      const rows = await ownedRows(
+        owner,
+        "GROUP BY CAST(created_at / 86400000 AS INTEGER)",
+        [],
+        "MIN(created_at) AS from_at, MAX(created_at) AS to_at",
+      );
       const months = new Map<string, YearMonth>();
       for (const row of rows) {
-        const wall = wallClockOf(date(row, "created_at"), timeZone);
-        months.set(`${wall.year}-${wall.month}`, {
-          year: wall.year,
-          month: wall.month,
-        });
+        for (const column of ["from_at", "to_at"]) {
+          const wall = wallClockOf(date(row, column), timeZone);
+          months.set(`${wall.year}-${wall.month}`, {
+            year: wall.year,
+            month: wall.month,
+          });
+        }
       }
       return [...months.values()].sort(
         (a, b) => b.year - a.year || b.month - a.month,

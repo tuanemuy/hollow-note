@@ -6,9 +6,10 @@ import type {
 import type { RelayTrigger } from "../../../application/ports/relayTrigger";
 import type { EventDraft, EventId } from "../../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../../domain/common/event";
-import { throwTranslated } from "../sql/errors";
+import { databaseError, throwTranslated } from "../sql/errors";
 import type { SqlExecutor } from "../sql/executor";
 import { createStagedSession, type SqlSession } from "../sql/session";
+import { MAX_STATEMENTS_PER_COMMIT } from "../sql/statement";
 import { runInUnitOfWork } from "./nesting";
 import { WriteSet } from "./writeSet";
 
@@ -48,6 +49,11 @@ export type GlobalUnitOfWorkOptions = Readonly<{
  * relay is kicked once, after a commit that carried events — never
  * before, and never for a rolled-back unit.
  *
+ * One commit is one batch and one batch is `n` D1 queries, so the size
+ * of a write-set is spent directly out of the invocation's query budget
+ * — `MAX_STATEMENTS_PER_COMMIT` is where a batch that outgrew it is
+ * refused, at the commit rather than as an overage in production.
+ *
  * Optimistic-lock conflicts are enforced inside the batch by the
  * `_occ_guard` trip wire (`../sql/occGuard.ts`), because a conditional
  * `UPDATE` that matches nothing is not an error to SQLite. A tripped
@@ -77,8 +83,14 @@ export function createGlobalUnitOfWorkProvider(
         if (buffered.length > 0) {
           await options.stageOutbox(session, buffered);
         }
+        const statements = writeSet.statements();
+        if (statements.length > MAX_STATEMENTS_PER_COMMIT) {
+          throw databaseError(
+            `The global unit of work staged ${statements.length} statements, above the ${MAX_STATEMENTS_PER_COMMIT} a single commit may spend from the D1 invocation budget; split the work into bounded batches`,
+          );
+        }
         try {
-          await options.executor.apply(writeSet.statements());
+          await options.executor.apply(statements);
         } catch (cause) {
           throwTranslated("the global unit of work", cause);
         }

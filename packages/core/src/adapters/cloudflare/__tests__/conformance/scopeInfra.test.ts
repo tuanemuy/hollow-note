@@ -2,9 +2,9 @@ import { describeScopeCleanupAdmissionStoreContract } from "../../../conformance
 import { describeScopeTaskSchedulerContract } from "../../../conformance/scopeTaskScheduler";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 9 — scope DO infrastructure. Ports wired in `../ports/scopeInfra.ts`.
-// The `scopeTaskScheduler` suite also observes `ScopeTaskQueue.listDue`
-// (step 7), so this file goes green only once both are wired.
+// Suites for the scope Durable Object infrastructure ports
+// (`../ports/scopeInfra.ts`). The `scopeTaskScheduler` suite also
+// observes `ScopeTaskQueue.listDue`, which belongs to `../ports/route.ts`.
 const BACKEND = "cloudflare";
 
 describeScopeTaskSchedulerContract(BACKEND, makeCloudflareConformanceBackend);

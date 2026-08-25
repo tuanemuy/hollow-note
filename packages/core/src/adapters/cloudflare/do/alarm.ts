@@ -1,11 +1,16 @@
+import { ConsoleLogger, type Logger } from "../../../application/ports/logger";
 import type { ScopeTask } from "../../../application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "../../../application/scope";
+import { occGuard } from "../sql/occGuard";
 import { intOrNull } from "../sql/row";
 import type { SqlRow, SqlStatement } from "../sql/statement";
 import {
+  backoffStatement,
+  claimGuardStatement,
   claimStatement,
   dueCandidatesStatement,
   nextWakeAtStatement,
+  releaseStatement,
   selectDueRows,
   toScopeTask,
 } from "./scheduledTasks";
@@ -22,37 +27,59 @@ import {
  * left unvisited is invisible for the whole lease, which would turn one
  * over-eager claim into a delay of a full lease period. That is also why
  * claims are taken a chunk at a time rather than one batch of the whole
- * remaining budget.
+ * remaining budget, and why rows the budget cuts off are released rather
+ * than left leased.
  *
  * A row whose `kind` has no handler is visited and deliberately **not**
  * settled: it stays `running` until its lease lapses, which surfaces the
- * gap as a stall instead of silently completing work nothing did.
+ * gap as a stall instead of silently completing work nothing did. A row
+ * whose handler throws is backed off here, because the turn is the only
+ * writer in a position to do it — without that, a permanently failing
+ * target is re-driven forever with its attempt count frozen at zero.
  */
 export type ScopeAlarmHandler = (
   task: ScopeTask,
   scope: ScopeKey,
 ) => Promise<void>;
 
+export type ScopeAlarmHandlers = ReadonlyMap<string, ScopeAlarmHandler>;
+
 const handlers = new Map<string, ScopeAlarmHandler>();
 
 /**
- * Registers the handler for a continuation kind. The deployment's worker
- * entry populates the registry at module scope: the Durable Object
- * shares the worker's bundle, so a registration made when the module
- * loads is in place before any alarm fires. An empty registry is a valid
- * deployment — every row then takes the "no handler" path above.
+ * Registers the handler for a continuation kind and returns the undo.
+ * The deployment's worker entry populates the registry at module scope:
+ * the Durable Object shares the worker's bundle, so a registration made
+ * when the module loads is in place before any alarm fires.
  */
 export function registerScopeTaskHandler(
   kind: string,
   handler: ScopeAlarmHandler,
-): void {
+): () => void {
   handlers.set(kind, handler);
+  return () => {
+    if (handlers.get(kind) === handler) {
+      handlers.delete(kind);
+    }
+  };
 }
 
-export function scopeTaskHandlerFor(
-  kind: string,
-): ScopeAlarmHandler | undefined {
-  return handlers.get(kind);
+/**
+ * Whether this deployment drives continuations from the scope object at
+ * all.
+ *
+ * An empty registry is a deployment where the central runner
+ * (`runDueScopeTasks` over `ScopeTaskQueue`) is the only writer of
+ * `scheduled_tasks`. Such an object must neither claim rows nor arm an
+ * alarm for them: claiming would hide rows behind a lease nothing in the
+ * object is going to settle, and arming for a `due_at` already past
+ * re-delivers the alarm immediately for a turn that does nothing. One
+ * writer per scope is the premise the fencing decision rests on, so the
+ * registry — not the wiring of the queue — is what decides which writer
+ * it is.
+ */
+export function scopeAlarmDrivesTasks(): boolean {
+  return handlers.size > 0;
 }
 
 /** Rows one turn takes on (`spec/platform/index.md` 実行予算と分割単位). */
@@ -70,17 +97,35 @@ export type ScopeAlarmTurnInput = Readonly<{
   rowBudget?: number;
   cpuBudgetMs?: number;
   elapsedMs?: () => number;
+  /** Defaults to the module registry; an argument keeps turns testable. */
+  handlers?: ScopeAlarmHandlers;
+  logger?: Logger;
 }>;
 
 export type ScopeAlarmTurnResult = Readonly<{
   claimed: number;
   handled: number;
   unhandled: number;
+  failed: number;
+  released: number;
 }>;
+
+const EMPTY_TURN: ScopeAlarmTurnResult = {
+  claimed: 0,
+  handled: 0,
+  unhandled: 0,
+  failed: 0,
+  released: 0,
+};
 
 export async function runScopeAlarmTurn(
   input: ScopeAlarmTurnInput,
 ): Promise<ScopeAlarmTurnResult> {
+  const registry = input.handlers ?? handlers;
+  if (registry.size === 0) {
+    return EMPTY_TURN;
+  }
+  const logger = input.logger ?? ConsoleLogger;
   const rowBudget = input.rowBudget ?? SCOPE_ALARM_ROW_BUDGET;
   const cpuBudgetMs = input.cpuBudgetMs ?? SCOPE_ALARM_CPU_BUDGET_MS;
   const started = Date.now();
@@ -91,6 +136,8 @@ export async function runScopeAlarmTurn(
   let claimedCount = 0;
   let handled = 0;
   let unhandled = 0;
+  let failed = 0;
+  let released = 0;
 
   while (remaining > 0 && elapsedMs() < cpuBudgetMs) {
     const chunk = Math.min(remaining, CLAIM_CHUNK);
@@ -107,6 +154,10 @@ export async function runScopeAlarmTurn(
     input.storage.transactionSync(() => {
       for (const row of selected) {
         const task = toScopeTask(row, leaseExpiresAt);
+        exec(
+          input.storage,
+          occGuard(claimGuardStatement(task.kind, task.operationId, input.now)),
+        );
         exec(
           input.storage,
           claimStatement(
@@ -126,18 +177,52 @@ export async function runScopeAlarmTurn(
     claimedCount += claimed.length;
     remaining -= claimed.length;
 
-    for (const task of claimed) {
-      const handle = handlers.get(task.kind);
+    let index = 0;
+    for (; index < claimed.length; index += 1) {
+      const task = claimed[index] as ScopeTask;
+      if (elapsedMs() >= cpuBudgetMs) {
+        break;
+      }
+      const handle = registry.get(task.kind);
       if (handle === undefined) {
         unhandled += 1;
         continue;
       }
-      await handle(task, input.scope);
-      handled += 1;
+      try {
+        await handle(task, input.scope);
+        handled += 1;
+      } catch (cause) {
+        failed += 1;
+        exec(
+          input.storage,
+          backoffStatement(task.kind, task.operationId, input.now),
+        );
+        logger.error("scope alarm handler failed", {
+          kind: task.kind,
+          operationId: task.operationId,
+          attempt: task.attempt,
+          cause,
+        });
+      }
+    }
+    if (index < claimed.length) {
+      const stranded = claimed.slice(index);
+      released += stranded.length;
+      input.storage.transactionSync(() => {
+        for (const task of stranded) {
+          exec(input.storage, releaseStatement(task.kind, task.operationId));
+        }
+      });
+      break;
     }
   }
 
-  return { claimed: claimedCount, handled, unhandled };
+  if (unhandled > 0) {
+    logger.warn("scope alarm turn left rows with no handler running", {
+      unhandled,
+    });
+  }
+  return { claimed: claimedCount, handled, unhandled, failed, released };
 }
 
 /**
@@ -155,10 +240,15 @@ export function nextWakeAt(storage: DurableObjectStorage): Date | null {
   return at === null ? null : new Date(at);
 }
 
+/**
+ * Arms the object for its next turn, or drops the alarm when there is
+ * nothing to wake for — including the case where this deployment has no
+ * handler registry and therefore no turn to run.
+ */
 export async function rescheduleAlarm(
   storage: DurableObjectStorage,
 ): Promise<void> {
-  const at = nextWakeAt(storage);
+  const at = scopeAlarmDrivesTasks() ? nextWakeAt(storage) : null;
   if (at === null) {
     await storage.deleteAlarm();
     return;

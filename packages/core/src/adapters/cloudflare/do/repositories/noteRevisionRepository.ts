@@ -23,6 +23,8 @@ const COLUMNS = [
 ] as const;
 
 const SELECTION = COLUMNS.join(", ");
+/** Enough to order the rows of a note and to name them in a delete. */
+const KEY_SELECTION = "id, created_at";
 const INSERT_SQL = `INSERT INTO ${TABLE} (${SELECTION}) VALUES (${COLUMNS.map(() => "?").join(", ")})`;
 
 const toRow = (revision: NoteRevision): SqlRow => ({
@@ -86,21 +88,37 @@ export function createCloudflareNoteRevisionRepository(
     }
   };
 
-  /** Every row of one note, newest first. The retention invariant keeps
-   * this bounded (newest 20 per note), so it needs no paging. */
-  const rowsOfNote = (noteId: NoteId): Promise<readonly SqlRow[]> =>
-    session.readRows({
+  /**
+   * Rows of one note, newest first, projecting only what the caller
+   * needs. `html` is the whole rendered revision (up to 800,000 bytes,
+   * ADR 017) and the retention paths only ever look at keys and order, so
+   * they ask for `KEY_SELECTION` and never move a body out of the object
+   * to delete it. Staged rows carry every column whatever is projected —
+   * they come from the overlay, not from this statement.
+   */
+  const rowsOfNote = (
+    noteId: NoteId,
+    projection: string,
+    limit?: number,
+  ): Promise<readonly SqlRow[]> => {
+    const spec = {
       table: TABLE,
       statement: statement(
-        `SELECT ${SELECTION} FROM ${TABLE} WHERE note_id = ?
-           ORDER BY created_at DESC, id DESC`,
-        noteId,
+        `SELECT ${projection} FROM ${TABLE} WHERE note_id = ?
+           ORDER BY created_at DESC, id DESC${limit === undefined ? "" : " LIMIT ?"}`,
+        ...(limit === undefined ? [noteId] : [noteId, limit]),
       ),
-      keyOf: (row) => text(row, "id"),
-      matches: (row) => text(row, "note_id") === noteId,
+      keyOf: (row: SqlRow) => text(row, "id"),
+      matches: (row: SqlRow) => text(row, "note_id") === noteId,
       compare: newestFirst,
-    });
+    };
+    return session.readRows(limit === undefined ? spec : { ...spec, limit });
+  };
 
+  // One statement per row rather than a single `IN (json_each(?))`
+  // delete: a `remove` is also the overlay entry that keeps a read later
+  // in the same unit of work from seeing a row this one deleted, and the
+  // retention invariant bounds the count at 20 per note.
   const deleteRows = (
     rows: readonly SqlRow[],
     context: string,
@@ -143,8 +161,8 @@ export function createCloudflareNoteRevisionRepository(
       if (bounded === 0) {
         return [];
       }
-      const rows = await rowsOfNote(noteId);
-      return rows.slice(0, bounded).map(fromRow);
+      const rows = await rowsOfNote(noteId, SELECTION, bounded);
+      return rows.map(fromRow);
     },
 
     async findById(id: RevisionId): Promise<NoteRevision | null> {
@@ -160,7 +178,9 @@ export function createCloudflareNoteRevisionRepository(
     },
 
     async deleteOlderThanNewest(noteId: NoteId, keep: number): Promise<number> {
-      const stale = (await rowsOfNote(noteId)).slice(Math.max(0, keep));
+      const stale = (await rowsOfNote(noteId, KEY_SELECTION)).slice(
+        Math.max(0, keep),
+      );
       if (stale.length === 0) {
         return 0;
       }
@@ -169,7 +189,7 @@ export function createCloudflareNoteRevisionRepository(
     },
 
     async deleteByNote(noteId: NoteId): Promise<number> {
-      const rows = await rowsOfNote(noteId);
+      const rows = await rowsOfNote(noteId, KEY_SELECTION);
       if (rows.length === 0) {
         return 0;
       }

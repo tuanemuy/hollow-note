@@ -112,6 +112,22 @@ const BASE_COLUMNS = [
 export const columnsOf = (plane: NoteSearchPlane): readonly string[] =>
   plane.routeVersioned ? [...BASE_COLUMNS, "route_version"] : BASE_COLUMNS;
 
+/**
+ * What a search page reads: every column but `text`.
+ *
+ * `text` is the projected body — up to 800,000 bytes a row (ADR 017) —
+ * and no field of `NoteSummary` is built from it. Only the highlighter
+ * ever needs it, and only for the rows whose excerpt held no match, so
+ * those rows fetch a bounded prefix of it separately rather than every
+ * row of the page carrying the whole body through a DO RPC or a D1
+ * response.
+ */
+export const summaryColumns = (plane: NoteSearchPlane, alias: string): string =>
+  columnsOf(plane)
+    .filter((column) => column !== "text")
+    .map((column) => `${alias}.${column}`)
+    .join(", ");
+
 export const ownerColumns = (
   owner: NoteOwner,
 ): Readonly<{ type: string; id: string }> =>
@@ -231,9 +247,7 @@ export function toSummary(row: SqlRow, keyword: string | null): NoteSummary {
     title: text(row, "title"),
     excerpt,
     highlightedExcerpt:
-      keyword === null
-        ? null
-        : highlightExcerpt(excerpt, text(row, "text"), keyword),
+      keyword === null ? null : highlightExcerpt(excerpt, keyword),
     visibility: enumOf(row, "visibility", VISIBILITIES),
     contentStatus: enumOf(row, "content_status", CONTENT_STATUSES),
     styleMode: enumOf(row, "style_mode", STYLE_MODES),

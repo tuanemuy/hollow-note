@@ -10,15 +10,17 @@ import { decodeOpaqueCursor, encodeOpaqueCursor } from "../../cursor";
 import {
   ownerColumns,
   PUBLIC_NOTE_SEARCH,
+  summaryColumns,
   toPublicSummary,
 } from "../../projection/noteSearchRow";
 import {
+  bodyHighlights,
   resolveKeyword,
   searchFrom,
   tagFilter,
+  tagFilterBindings,
 } from "../../projection/searchClauses";
 import { databaseError } from "../../sql/errors";
-import { jsonList } from "../../sql/json";
 import { date, text } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
@@ -121,7 +123,7 @@ export function createD1PublicNoteQueryService(
       }
       if (criteria.tagNames.length > 0) {
         conditions.push(tagFilter(PLANE, ROW));
-        params.push(jsonList([...criteria.tagNames]), criteria.tagNames.length);
+        params.push(...tagFilterBindings(criteria.tagNames));
       }
       if (after !== null) {
         conditions.push(`${ROW}.note_id > ?`);
@@ -130,15 +132,22 @@ export function createD1PublicNoteQueryService(
 
       const { rows, hasMore } = await page(
         "searching the public note projection",
-        `SELECT ${ROW}.* ${searchFrom(PLANE, ROW, match)}
+        `SELECT ${summaryColumns(PLANE, ROW)} ${searchFrom(PLANE, ROW, match)}
          WHERE ${conditions.join(" AND ")}
          ORDER BY ${ROW}.note_id ASC`,
         params,
         criteria.limit,
       );
       const last = rows[rows.length - 1];
+      const summaries = rows.map((row) => toPublicSummary(row, keyword));
+      const fromBody = await bodyHighlights(session, PLANE, summaries, keyword);
       return {
-        items: rows.map((row) => toPublicSummary(row, keyword)),
+        items: summaries.map((item) => {
+          const highlighted = fromBody.get(item.id);
+          return highlighted === undefined
+            ? item
+            : { ...item, highlightedExcerpt: highlighted };
+        }),
         nextCursor:
           hasMore && last !== undefined
             ? encodeOpaqueCursor({

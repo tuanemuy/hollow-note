@@ -11,6 +11,12 @@ import type { SqlRow, SqlStatement } from "../sql/statement";
  * It applies like the others but contributes nothing to the overlay, so
  * a read issued later in the same unit will not see it. Use `upsert` /
  * `remove` whenever the affected row can be read back before commit.
+ *
+ * An `opaque` that writes a table carrying commit-time bookkeeping —
+ * `scheduled_tasks`, whose write-set membership drives the due-index
+ * publish and the alarm re-arm — must name that table so it reaches
+ * `touchedTables()`. Statements that write no such table (an OCC guard
+ * writes only `_occ_guard`) leave it unset.
  */
 export type RowMutation =
   | Readonly<{
@@ -26,7 +32,7 @@ export type RowMutation =
       key: string;
       statement: SqlStatement;
     }>
-  | Readonly<{ kind: "opaque"; statement: SqlStatement }>;
+  | Readonly<{ kind: "opaque"; table?: string; statement: SqlStatement }>;
 
 export const upsert = (
   input: Readonly<{
@@ -41,10 +47,12 @@ export const remove = (
   input: Readonly<{ table: string; key: string; statement: SqlStatement }>,
 ): RowMutation => ({ kind: "remove", ...input });
 
-export const opaque = (input: SqlStatement): RowMutation => ({
-  kind: "opaque",
-  statement: input,
-});
+export const opaque = (
+  input: SqlStatement | Readonly<{ table: string; statement: SqlStatement }>,
+): RowMutation =>
+  "sql" in input
+    ? { kind: "opaque", statement: input }
+    : { kind: "opaque", table: input.table, statement: input.statement };
 
 /**
  * Writes staged by one open unit of work.
@@ -52,13 +60,12 @@ export const opaque = (input: SqlStatement): RowMutation => ({
  * Neither execution base can take the callback shape the port defines —
  * D1 has no interactive transaction and a Durable Object's
  * `transactionSync` cannot span an `await` — so a unit of work buffers
- * its writes here and applies the whole set in one atomic step at commit
- * ([ADR 001](../../../../../.thread/11/adr.md)). A callback that throws
- * simply drops the buffer; nothing was ever written.
+ * its writes here and applies the whole set in one atomic step at commit.
+ * A callback that throws simply drops the buffer; nothing was ever
+ * written.
  *
  * The statement list is plain data, which is what lets the scope plane
- * ship a whole write-set to its Durable Object in a single RPC
- * ([ADR 002](../../../../../.thread/11/adr.md)).
+ * ship a whole write-set to its Durable Object in a single RPC.
  */
 export class WriteSet {
   private readonly staged: SqlStatement[] = [];
@@ -69,19 +76,15 @@ export class WriteSet {
     for (const mutation of mutations) {
       this.staged.push(mutation.statement);
       if (mutation.kind === "opaque") {
+        if (mutation.table !== undefined) {
+          this.touched.add(mutation.table);
+        }
         continue;
       }
       this.touched.add(mutation.table);
       const table = this.overlayOf(mutation.table);
       table.set(mutation.key, mutation.kind === "upsert" ? mutation.row : null);
     }
-  }
-
-  /** Marks a table as written without staging a row image, for `opaque`
-   * statements whose target still has to reach the commit-time hooks
-   * (the scope-task due index, say). */
-  markTouched(table: string): void {
-    this.touched.add(table);
   }
 
   /**
@@ -107,21 +110,6 @@ export class WriteSet {
     return staged;
   }
 
-  /** Keys this unit deleted from `table`. */
-  stagedDeletions(table: string): readonly string[] {
-    const rows = this.overlay.get(table);
-    if (rows === undefined) {
-      return [];
-    }
-    const deleted: string[] = [];
-    for (const [key, row] of rows) {
-      if (row === null) {
-        deleted.push(key);
-      }
-    }
-    return deleted;
-  }
-
   statements(): readonly SqlStatement[] {
     return this.staged;
   }
@@ -130,6 +118,9 @@ export class WriteSet {
     return [...this.touched];
   }
 
+  /** True when nothing was staged. A commit with nothing to apply can
+   * skip the executor entirely, which on the scope plane is one RPC
+   * round trip saved. */
   isEmpty(): boolean {
     return this.staged.length === 0;
   }

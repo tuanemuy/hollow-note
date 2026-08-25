@@ -6,7 +6,8 @@ import { describeStorageQuotaRepositoryContract } from "../../../conformance/sto
 import { describeStoredFileRepositoryContract } from "../../../conformance/storedFileRepository";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 8 — scope DO business. Ports wired in `../ports/scopeBusiness.ts`.
+// Suites for the scope Durable Object business ports
+// (`../ports/scopeBusiness.ts`).
 const BACKEND = "cloudflare";
 
 describeStoredFileRepositoryContract(BACKEND, makeCloudflareConformanceBackend);

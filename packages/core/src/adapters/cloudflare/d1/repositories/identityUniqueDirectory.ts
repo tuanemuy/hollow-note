@@ -92,6 +92,10 @@ export type D1IdentityUniqueDirectoryDeps = Readonly<{
  * between aborts the batch instead of overwriting a decision made about a
  * state that no longer holds.
  *
+ * `operation_id` carries a UNIQUE of its own, so one operation holds at
+ * most one reservation row here and the operation-keyed reads yield at
+ * most one.
+ *
  * `claim_token` is minted only where a row is **inserted**, never in the
  * `activate` / `beginRelease` updates — the contract requires a token
  * that outlives its claim's state changes and differs for a claim taken
@@ -275,8 +279,6 @@ export function createD1IdentityUniqueDirectory(
           `No reservation for operation ${operationId}`,
         );
       }
-      // Every row is checked before any is written: the durable claims of
-      // one operation publish together or not at all.
       for (const reservation of reservations) {
         const userRow = await session.readRow({
           table: USERS,
@@ -422,6 +424,12 @@ export function createD1IdentityUniqueDirectory(
 /**
  * A lost race on a uniqueness key is the same answer as losing it by
  * reading first: the key is held by somebody else.
+ *
+ * Not every unique violation says that, though. `operation_id` carries a
+ * UNIQUE of its own, so one operation reserves at most one key, and a
+ * second key reserved under the same operation id trips it while the key
+ * itself is free. Reporting that as "already used" would refuse a key
+ * nobody holds, so it stays a fault.
  */
 function translateReserve(
   cause: unknown,
@@ -429,8 +437,16 @@ function translateReserve(
   normalizedKey: string,
 ): unknown {
   const failure = classifySqlError(cause);
-  if (failure === "occGuard" || failure === "unique") {
+  if (
+    failure === "occGuard" ||
+    (failure === "unique" && !onOperationId(cause))
+  ) {
     return heldByAnother(kind, normalizedKey);
   }
   return databaseError("the identity uniqueness directory", cause);
 }
+
+const onOperationId = (cause: unknown): boolean =>
+  (cause instanceof Error ? cause.message : String(cause)).includes(
+    `${TABLE}.operation_id`,
+  );

@@ -1,7 +1,7 @@
 {
   "include": [
     "src/adapters/cloudflare/**/*",
-    "src/application/di/cloudflareRuntime.ts"
+    "src/application/di/cloudflare*.ts"
   ],
   "compilerOptions": {
     // Workers, not a browser: the runtime globals come from

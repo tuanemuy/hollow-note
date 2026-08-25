@@ -9,8 +9,9 @@ import type { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import { decodeOpaqueCursor, encodeOpaqueCursor } from "../../cursor";
 import { scopeColumns, scopeFromColumns } from "../../do/scopeName";
+import { throwTranslated } from "../../sql/errors";
 import { enumOf, int, text, textOrNull } from "../../sql/row";
-import type { SqlSession } from "../../sql/session";
+import type { RowsRead, SqlSession } from "../../sql/session";
 import type { SqlRow, SqlValue } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
 
@@ -64,6 +65,14 @@ const toRoute = (row: SqlRow): NoteRoute => {
 export function createD1NoteRouteFanOutReader(
   deps: Readonly<{ session: SqlSession }>,
 ): NoteRouteFanOutReader {
+  const readPage = async (spec: RowsRead): Promise<readonly SqlRow[]> => {
+    try {
+      return await deps.session.readRows(spec);
+    } catch (cause) {
+      throwTranslated(`${TABLE} fan-out scan`, cause);
+    }
+  };
+
   const page = async (
     fingerprint: string,
     condition: Readonly<{ sql: string; params: readonly SqlValue[] }>,
@@ -78,7 +87,7 @@ export function createD1NoteRouteFanOutReader(
     // without a second count query.
     const probe = effectiveLimit + 1;
     const keyset = after === null ? "" : " AND note_id > ?";
-    const rows = await deps.session.readRows({
+    const rows = await readPage({
       table: TABLE,
       statement: {
         sql: `SELECT ${COLUMNS} FROM ${TABLE}

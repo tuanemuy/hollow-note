@@ -68,11 +68,39 @@ export const dueCandidatesStatement = (
     limit,
   );
 
-/** Rows of this scope that belong in the global due index (ADR 003). */
-export const dueIndexRowsStatement = (): SqlStatement =>
+/**
+ * Rows per priority a scope contributes to the global due index. Four
+ * priorities exist, so a slice is at most `4 ×` this — which both bounds
+ * the JSON binding the slice is published through and keeps the index
+ * within the same 100-row-per-turn budget as everything else.
+ */
+export const DUE_INDEX_ROWS_PER_PRIORITY = 25;
+
+/**
+ * Rows of this scope that belong in the global due index.
+ *
+ * The slice is **bounded**, and the bound is per priority rather than
+ * over the whole set: `ScopeTaskQueue.listDue` reserves a slot per
+ * priority before any priority takes a second, so a flat `LIMIT` would
+ * let a backlog of one priority push another out of the index entirely.
+ * A scope with more work than fits reports its soonest rows; the rest
+ * surface as those settle and the slice is republished.
+ */
+export const dueIndexRowsStatement = (
+  rowsPerPriority: number = DUE_INDEX_ROWS_PER_PRIORITY,
+): SqlStatement =>
   statement(
-    `SELECT kind, operation_id, due_at, priority, lease_expires_at
-       FROM ${SCHEDULED_TASKS_TABLE} WHERE status <> 'failed'`,
+    `SELECT kind, operation_id, due_at, priority, lease_expires_at FROM (
+       SELECT kind, operation_id, due_at, priority, lease_expires_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY priority
+                ORDER BY COALESCE(lease_expires_at, due_at), kind, operation_id
+              ) AS rn
+         FROM ${SCHEDULED_TASKS_TABLE}
+        WHERE status <> 'failed'
+     )
+     WHERE rn <= ?`,
+    rowsPerPriority,
   );
 
 /**
@@ -151,11 +179,37 @@ export function selectDueRows(
 }
 
 /**
+ * The candidate test as an `occGuard` condition, staged immediately
+ * ahead of the claim it protects.
+ *
+ * The claim's own `WHERE` narrows what it writes, but SQLite does not
+ * report a zero-row `UPDATE` as an error, so on its own it leaves the
+ * loser of a race believing it took the row. The guard is what turns
+ * that into an abort, which is how a backend with no interactive
+ * transaction gets the per-row exclusivity `ScopeTaskScheduler.claimDue`
+ * promises.
+ */
+export const claimGuardStatement = (
+  kind: string,
+  operationId: string,
+  now: Date,
+): SqlStatement =>
+  statement(
+    `SELECT 1 FROM ${SCHEDULED_TASKS_TABLE}
+      WHERE kind = ? AND operation_id = ? AND ${CANDIDATE_PREDICATE}`,
+    kind,
+    operationId,
+    now.getTime(),
+    now.getTime(),
+  );
+
+/**
  * Conditional claim. The predicate repeats the candidate test, so of two
  * writers racing for the same row only the one whose test still holds
- * takes it — which is how a backend without interactive transactions
- * gets the port's per-row exclusivity. `due_at`, `attempts`, `priority`
- * and `payload` are untouched, so a reclaimed row keeps its place.
+ * writes it. Stage `claimGuardStatement` ahead of it: the predicate
+ * alone narrows the write but does not abort the loser.
+ * `due_at`, `attempts`, `priority` and `payload` are untouched, so a
+ * reclaimed row keeps its place.
  */
 export const claimStatement = (
   kind: string,
@@ -200,6 +254,26 @@ export const scheduleStatement = (
     input.dueAt.getTime(),
     JSON.stringify(input.payload),
     input.priority,
+  );
+
+/**
+ * Hands a claimed row back untouched: same `due_at`, same `attempts`.
+ *
+ * A turn cut short by its CPU budget has claimed rows it will not visit,
+ * and a claimed row is invisible for the whole lease. Backing them off
+ * would spend an attempt on work nobody tried, so they are released
+ * instead and are due again immediately.
+ */
+export const releaseStatement = (
+  kind: string,
+  operationId: string,
+): SqlStatement =>
+  statement(
+    `UPDATE ${SCHEDULED_TASKS_TABLE}
+        SET status = 'pending', lease_expires_at = NULL
+      WHERE kind = ? AND operation_id = ? AND status = 'running'`,
+    kind,
+    operationId,
   );
 
 export const completeStatement = (

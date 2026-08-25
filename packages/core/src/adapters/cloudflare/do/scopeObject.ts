@@ -1,8 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { SCOPE_TASK_LEASE_MS } from "../../../application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "../../../application/scope";
+import { ScopeKey as ScopeKeyOps } from "../../../application/scope";
 import { dataIntegrityError } from "../sql/errors";
-import { createD1Executor } from "../sql/executor";
+import {
+  createD1Executor,
+  createStorageExecutor,
+  type SqlExecutor,
+} from "../sql/executor";
 import { text } from "../sql/row";
 import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
 import { rescheduleAlarm, runScopeAlarmTurn } from "./alarm";
@@ -13,10 +18,18 @@ import {
   SCOPE_SCHEMA_STATEMENTS,
   SCOPE_TABLES,
 } from "./schema";
-import { scopeFromColumns } from "./scopeName";
+import {
+  scopeColumns,
+  scopeColumnsFromName,
+  scopeFromColumns,
+} from "./scopeName";
 
 export type ScopeObjectEnv = Readonly<{
-  /** Global D1, needed for the scope-task due index (ADR 003). */
+  /**
+   * Global D1. The object writes its own slice of `scope_task_due_index`
+   * there, because Durable Objects cannot be enumerated and
+   * `ScopeTaskQueue.listDue` has to span every scope.
+   */
   GLOBAL_DB: D1Database;
 }>;
 
@@ -27,8 +40,7 @@ export type ScopeObjectEnv = Readonly<{
  * `ScopeUnitOfWorkProvider.run(scope, fn)` takes an arbitrary closure,
  * which cannot cross an RPC boundary, so the callback stays in the
  * caller's isolate and this object receives only two kinds of message —
- * a read, and a finished write-set to apply
- * ([ADR 002](../../../../../.thread/11/adr.md)). Keeping it that way is
+ * a read, and a finished write-set to apply. Keeping it that way is
  * what stops the whole application bundle from becoming a redeploy
  * reason for storage.
  *
@@ -39,14 +51,25 @@ export type ScopeObjectEnv = Readonly<{
  * The object binds its own `ScopeKey` on first contact and refuses a
  * mismatched one afterwards. Callers pass the key on every call rather
  * than relying on the object's name, because the name carries a test
- * namespace prefix (`./scopeName.ts`) that the stored rows must not.
+ * namespace prefix (`./scopeName.ts`) that the stored rows must not. The
+ * pin is read once at construction and held in the instance, so an
+ * addressed key costs a string comparison rather than a write and a read
+ * on every RPC.
  */
 export class ScopeObject extends DurableObject<ScopeObjectEnv> {
+  private readonly sql: SqlExecutor;
+  private pinned: Readonly<{ scope: ScopeKey; key: string }> | null = null;
+
   constructor(ctx: DurableObjectState, env: ScopeObjectEnv) {
     super(ctx, env);
+    this.sql = createStorageExecutor(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
       for (const ddl of SCOPE_SCHEMA_STATEMENTS) {
         ctx.storage.sql.exec(ddl);
+      }
+      const stored = await this.boundScope();
+      if (stored !== null) {
+        this.pinned = { scope: stored, key: ScopeKeyOps.serialize(stored) };
       }
     });
   }
@@ -55,8 +78,8 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
     scopeKey: string,
     input: SqlStatement,
   ): Promise<readonly SqlRow[]> {
-    this.bind(scopeKey);
-    return this.exec(input);
+    await this.bind(scopeKey);
+    return this.sql.query(input);
   }
 
   async applyWriteSet(
@@ -64,22 +87,19 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
     statements: readonly SqlStatement[],
     touchedTables: readonly string[],
   ): Promise<void> {
-    const scope = this.bind(scopeKey);
-    if (statements.length > 0) {
-      this.ctx.storage.transactionSync(() => {
-        for (const input of statements) {
-          this.exec(input);
-        }
-      });
-    }
+    const scope = await this.bind(scopeKey);
+    await this.sql.apply(statements);
     if (touchedTables.includes(SCHEDULED_TASKS_TABLE)) {
-      await this.publishDueIndex(scope);
+      // Arming first keeps the object's self-healing independent of D1:
+      // a failed publish leaves index drift, which the next alarm turn
+      // rewrites, but an unarmed object has no next turn at all.
       await rescheduleAlarm(this.ctx.storage);
+      await this.publishDueIndex(scope);
     }
   }
 
   override async alarm(): Promise<void> {
-    const bound = this.boundScope();
+    const bound = this.pinned?.scope ?? (await this.boundScope());
     if (bound === null) {
       await this.ctx.storage.deleteAlarm();
       return;
@@ -90,23 +110,19 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
       now: new Date(),
       leaseMs: SCOPE_TASK_LEASE_MS,
     });
-    await this.publishDueIndex(bound);
     await rescheduleAlarm(this.ctx.storage);
+    await this.publishDueIndex(bound);
   }
 
   private async publishDueIndex(scope: ScopeKey): Promise<void> {
-    const rows = this.exec(dueIndexRowsStatement());
-    const columns =
-      scope.type === "user"
-        ? { type: "user", id: scope.userId }
-        : { type: "workspace", id: scope.workspaceId };
+    const rows = await this.sql.query(dueIndexRowsStatement());
     await createD1Executor(this.env.GLOBAL_DB).apply(
-      dueIndexStatements(columns, rows),
+      dueIndexStatements(scopeColumns(scope), rows),
     );
   }
 
-  private boundScope(): ScopeKey | null {
-    const rows = this.exec(
+  private async boundScope(): Promise<ScopeKey | null> {
+    const rows = await this.sql.query(
       statement(
         `SELECT scope_type, scope_id FROM ${SCOPE_TABLES.scopeIdentity} WHERE id = 0`,
       ),
@@ -123,40 +139,38 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
    * object, which would let a row escape the `scope 検証` rule of
    * `spec/database/index.md` の「共通の規約」.
    */
-  private bind(scopeKey: string): ScopeKey {
-    const separator = scopeKey.indexOf(":");
-    const type = scopeKey.slice(0, separator);
-    const id = scopeKey.slice(separator + 1);
-    if (separator < 0 || (type !== "user" && type !== "workspace")) {
-      throw dataIntegrityError(`Malformed scope key ${scopeKey}`);
+  private async bind(scopeKey: string): Promise<ScopeKey> {
+    const pinned = this.pinned;
+    if (pinned !== null) {
+      return this.assertAddressed(pinned, scopeKey);
     }
-    this.exec(
+    const columns = scopeColumnsFromName(scopeKey);
+    await this.sql.apply([
       statement(
         `INSERT INTO ${SCOPE_TABLES.scopeIdentity} (id, scope_type, scope_id)
          VALUES (0, ?, ?) ON CONFLICT (id) DO NOTHING`,
-        type,
-        id,
+        columns.type,
+        columns.id,
       ),
-    );
-    const bound = this.boundScope();
-    if (bound === null) {
+    ]);
+    const stored = await this.boundScope();
+    if (stored === null) {
       throw dataIntegrityError("Scope object identity could not be pinned");
     }
-    const boundKey =
-      bound.type === "user"
-        ? `user:${bound.userId}`
-        : `workspace:${bound.workspaceId}`;
-    if (boundKey !== scopeKey) {
-      throw dataIntegrityError(
-        `Scope object is bound to ${boundKey} but was addressed as ${scopeKey}`,
-      );
-    }
-    return bound;
+    const bound = { scope: stored, key: ScopeKeyOps.serialize(stored) };
+    this.pinned = bound;
+    return this.assertAddressed(bound, scopeKey);
   }
 
-  private exec(input: SqlStatement): readonly SqlRow[] {
-    return this.ctx.storage.sql
-      .exec(input.sql, ...input.params)
-      .toArray() as unknown as SqlRow[];
+  private assertAddressed(
+    bound: Readonly<{ scope: ScopeKey; key: string }>,
+    scopeKey: string,
+  ): ScopeKey {
+    if (bound.key !== scopeKey) {
+      throw dataIntegrityError(
+        `Scope object is bound to ${bound.key} but was addressed as ${scopeKey}`,
+      );
+    }
+    return bound.scope;
   }
 }

@@ -8,9 +8,7 @@ import { describeUserBatchReaderContract } from "../../../conformance/userBatchR
 import { describeUserRepositoryContract } from "../../../conformance/userRepository";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 5 — D1 Identity. Ports wired in `../ports/identity.ts`.
-// Red until they are: a failure reading "not implemented: X.y" means the
-// adapter is missing, anything else means it disagrees with the contract.
+// Suites for the D1 Identity ports (`../ports/identity.ts`).
 const BACKEND = "cloudflare";
 
 describeUserRepositoryContract(BACKEND, makeCloudflareConformanceBackend);

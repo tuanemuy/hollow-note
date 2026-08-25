@@ -12,10 +12,10 @@ import type { SqlSession } from "../../sql/session";
  * the conformance factory.
  *
  * `namespace` and `objectKeyPrefix` are the isolation this backend was
- * handed out under ([ADR 004](../../../../../../.thread/11/adr.md)): the
- * workers pool separates storage per **file**, while the suites contract
- * for a fresh backend per **test**, so every factory call takes a new
- * namespace. Production passes empty strings through the same arguments.
+ * handed out under: the workers pool separates storage per **file**,
+ * while the suites contract for a fresh backend per **test**, so every
+ * factory call takes a new namespace. Production passes empty strings
+ * through the same arguments.
  */
 export type CloudflareBackendDeps = Readonly<{
   db: D1Database;

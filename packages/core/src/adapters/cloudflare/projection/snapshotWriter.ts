@@ -15,6 +15,7 @@ import {
 import { bigramIndexText } from "../search/bigram";
 import { throwTranslated } from "../sql/errors";
 import { insertRowsFromJson, jsonRows } from "../sql/json";
+import { occGuard } from "../sql/occGuard";
 import { text } from "../sql/row";
 import type { SqlSession } from "../sql/session";
 import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
@@ -191,6 +192,13 @@ export function createNoteSnapshotWriter(
     /**
      * The author columns are outside the FTS index, so an erasure leaves
      * the tokens alone and only the body row changes.
+     *
+     * The three no-ops are decided from the row that was read, and a
+     * guard — not a conditional `UPDATE` — is what makes that decision
+     * still true at commit: a conditional update that matched nothing
+     * would leave this returning `true` and the overlay serving a value
+     * storage never took. Losing the race aborts the unit instead, and
+     * the redelivered redaction then reads the newer row and no-ops.
      */
     async redactAuthor(input: AuthorRedaction): Promise<boolean> {
       const row = redactedRow(await readStored(input.noteId), input);
@@ -198,6 +206,17 @@ export function createNoteSnapshotWriter(
         return false;
       }
       await write(`the ${plane.table} author`, [
+        opaque(
+          occGuard(
+            statement(
+              `SELECT 1 FROM ${plane.table}
+               WHERE note_id = ? AND created_by = ? AND author_version < ?`,
+              input.noteId,
+              input.createdBy,
+              input.redactionVersion,
+            ),
+          ),
+        ),
         upsert({
           table: plane.table,
           key: input.noteId,
@@ -205,12 +224,10 @@ export function createNoteSnapshotWriter(
           statement: statement(
             `UPDATE ${plane.table}
              SET author_display_name = ?, author_handle = NULL, author_version = ?
-             WHERE note_id = ? AND created_by = ? AND author_version < ?`,
+             WHERE note_id = ?`,
             WITHDRAWN_AUTHOR_DISPLAY_NAME,
             input.redactionVersion,
             input.noteId,
-            input.createdBy,
-            input.redactionVersion,
           ),
         }),
       ]);

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { ScopeKey } from "../../../application/scope";
 import { deleteStoredFiles } from "../../../application/storage/deleteFiles";
@@ -14,6 +14,8 @@ import {
 } from "../../../domain/storage/valueObject";
 import { createCloudflareStoredFileRepository } from "../do/repositories/storedFileRepository";
 import { SCOPE_TABLES } from "../do/schema";
+import { scopeObjectName } from "../do/scopeName";
+import type { ScopeObject } from "../do/scopeObject";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import {
   createScopeUnitOfWorkProvider,
@@ -24,7 +26,25 @@ import type { ScopeSqlExecutor } from "../sql/executor";
 import { insertRowsFromJson, jsonRows } from "../sql/json";
 import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
-import { notImplementedPort } from "./pendingPorts";
+
+/**
+ * Stand-in for a port this test must not touch: every method throws,
+ * naming itself, so an accidental call is a named failure rather than a
+ * miscount. `then` and symbol keys stay `undefined` so the object is
+ * inert when a framework probes it for thenability or an inspection hook.
+ */
+function unusedPort<T extends object>(name: string): T {
+  return new Proxy({} as T, {
+    get(_target, property): unknown {
+      if (typeof property === "symbol" || property === "then") {
+        return undefined;
+      }
+      return (): never => {
+        throw new Error(`${name}.${String(property)} is out of scope here`);
+      };
+    },
+  });
+}
 
 /**
  * AC-5: how many SQL statements one `deleteFilesByOwner` turn issues.
@@ -42,6 +62,11 @@ import { notImplementedPort } from "./pendingPorts";
  * The outbox flush is staged the way the design goal assumes — one
  * `json_each` multi-row INSERT for the whole batch — so the measurement
  * is not made pessimistic by a stand-in.
+ *
+ * Two quantities are counted and pinned against each other: the executor
+ * calls the worker side makes, and the statements the object executes
+ * against its own SQLite. They agree, which is the claim that lets the
+ * figure be quoted as a statement count.
  *
  * The observable contract "no extra round trip proportional to the batch"
  * lives in `spec/testcases/storage/deleteFilesByOwner.md` and is
@@ -91,6 +116,45 @@ type Counts = {
   commits: number;
   /** Statements inside those applies. */
   commitStatements: number;
+  /** Statements the object actually executed against its own SQLite. */
+  executed: number;
+};
+
+/**
+ * Counts what runs *inside* the object rather than what was sent to it.
+ *
+ * Without this the measurement is a count of executor calls, which is
+ * only the same number while nothing in the object adds statements of
+ * its own — the identity pin used to add two per RPC before it was
+ * memoised. Wrapping `sql` on the object's own state is what keeps the
+ * two counts honest about each other.
+ */
+const countExecuted = async (
+  stub: DurableObjectStub<ScopeObject>,
+  counts: Counts,
+  body: () => Promise<void>,
+): Promise<void> => {
+  await runInDurableObject(stub, (_instance, state) => {
+    const real = state.storage.sql;
+    const wrapper = {
+      ...real,
+      exec: (query: string, ...bindings: unknown[]) => {
+        counts.executed += 1;
+        return real.exec(query, ...bindings);
+      },
+    } as unknown as SqlStorage;
+    Object.defineProperty(state.storage, "sql", {
+      configurable: true,
+      get: () => wrapper,
+    });
+  });
+  try {
+    await body();
+  } finally {
+    await runInDurableObject(stub, (_instance, state) => {
+      Reflect.deleteProperty(state.storage, "sql");
+    });
+  }
 };
 
 const counting = (
@@ -150,17 +214,15 @@ const stageOutbox = async (
 };
 
 const repositories = (session: SqlSession): ScopePlaneRepositories => ({
-  noteRepository: notImplementedPort("NoteRepository"),
-  noteRevisionRepository: notImplementedPort("NoteRevisionRepository"),
-  cleanupAdmission: notImplementedPort("ScopeCleanupAdmissionStore"),
-  noteProjectionRevisionStore: notImplementedPort(
-    "NoteProjectionRevisionStore",
-  ),
-  localNoteProjectionWriter: notImplementedPort("LocalNoteProjectionWriter"),
-  scopeTaskScheduler: notImplementedPort("ScopeTaskScheduler"),
-  appliedOperationStore: notImplementedPort("AppliedOperationStore"),
-  storageQuotaRepository: notImplementedPort("StorageQuotaRepository"),
-  llmUsageRepository: notImplementedPort("LlmUsageRepository"),
+  noteRepository: unusedPort("NoteRepository"),
+  noteRevisionRepository: unusedPort("NoteRevisionRepository"),
+  cleanupAdmission: unusedPort("ScopeCleanupAdmissionStore"),
+  noteProjectionRevisionStore: unusedPort("NoteProjectionRevisionStore"),
+  localNoteProjectionWriter: unusedPort("LocalNoteProjectionWriter"),
+  scopeTaskScheduler: unusedPort("ScopeTaskScheduler"),
+  appliedOperationStore: unusedPort("AppliedOperationStore"),
+  storageQuotaRepository: unusedPort("StorageQuotaRepository"),
+  llmUsageRepository: unusedPort("LlmUsageRepository"),
   storedFileRepository: createCloudflareStoredFileRepository({ session }),
 });
 
@@ -168,11 +230,8 @@ const runOneTurn = async (
   batchSize: number,
 ): Promise<Readonly<{ counts: Counts; deleted: number }>> => {
   namespaceSeq += 1;
-  const inner = createScopeStubExecutor(
-    env.SCOPE_OBJECT,
-    SCOPE,
-    `ac5-${namespaceSeq}`,
-  );
+  const namespace = `ac5-${namespaceSeq}`;
+  const inner = createScopeStubExecutor(env.SCOPE_OBJECT, SCOPE, namespace);
   const seeded = createCloudflareStoredFileRepository({
     session: createAutocommitSession(inner),
   });
@@ -180,7 +239,12 @@ const runOneTurn = async (
     await seeded.insert(avatar(n));
   }
 
-  const counts: Counts = { reads: 0, commits: 0, commitStatements: 0 };
+  const counts: Counts = {
+    reads: 0,
+    commits: 0,
+    commitStatements: 0,
+    executed: 0,
+  };
   const provider = createScopeUnitOfWorkProvider({
     openScope: () => counting(inner, counts),
     mintEventId,
@@ -189,17 +253,22 @@ const runOneTurn = async (
   });
 
   let deleted = 0;
-  await provider.run(SCOPE, async (ctx) => {
-    const page = await ctx.storedFileRepository.listByOwner(OWNER, null, {
-      page: 1,
-      limit: batchSize,
+  const stub = env.SCOPE_OBJECT.get(
+    env.SCOPE_OBJECT.idFromName(scopeObjectName(SCOPE, namespace)),
+  );
+  await countExecuted(stub, counts, async () => {
+    await provider.run(SCOPE, async (ctx) => {
+      const page = await ctx.storedFileRepository.listByOwner(OWNER, null, {
+        page: 1,
+        limit: batchSize,
+      });
+      deleted = await deleteStoredFiles(
+        ctx,
+        page.items.map((file) => file.id),
+        "operation-1",
+        NOW,
+      );
     });
-    deleted = await deleteStoredFiles(
-      ctx,
-      page.items.map((file) => file.id),
-      "operation-1",
-      NOW,
-    );
   });
   return { counts, deleted };
 };
@@ -255,5 +324,23 @@ describe("deleteFilesByOwner statement budget [cloudflare]", () => {
     expect(measured.counts.reads).toBe(22);
     expect(measured.counts.commitStatements).toBe(21);
     expect(measured.counts.reads + measured.counts.commitStatements).toBe(43);
+  });
+
+  it("AC-5: the object executes exactly the statements it was sent", async () => {
+    const small = await runOneTurn(10);
+    const large = await runOneTurn(40);
+
+    // The identity pin is read once at construction and held, so a turn
+    // against an object already in memory adds nothing of its own. This
+    // is what makes the figure above a count of SQL rather than a count
+    // of executor calls.
+    expect(small.counts.executed).toBe(
+      small.counts.reads + small.counts.commitStatements,
+    );
+    expect(large.counts.executed).toBe(
+      large.counts.reads + large.counts.commitStatements,
+    );
+    expect(small.counts.executed).toBe(43);
+    expect(large.counts.executed).toBe(163);
   });
 });

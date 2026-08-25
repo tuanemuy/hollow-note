@@ -17,14 +17,14 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
 - **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
 - **原子性**: global D1 の非集約更新は単一 SQL 文、scope 内の複数更新は `transactionSync` で行う。D1 と scope DO、または2つの scope DOを1 transactionに含めない
-- **scope 検証**: scope table の `owner_type / owner_id` または `scope_type / scope_id` は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する
+- **scope 検証**: scope 鍵として使っている列 — 今日は `notes.owner_type / owner_id` と `_scope_identity` — は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する。`stored_files.owner_type / owner_id`、`storage_quotas.owner_type / owner_id`、`llm_usages.user_id` は**会計上の帰属**であって scope 鍵ではないので、この検査の対象外である（`StorageOwner` は「バイトが誰の勘定に付くか」を記録し、物理 scope を上書きしない。workspace ノートの匿名エクスポート成果物は利用者に帰属しない）。物理分離そのものは `_scope_identity` の pin が担保するので、帰属列を検査しなくても他 scope の行が混ざることはない
 
 ## 物理配置
 
 | plane | テーブル |
 | --- | --- |
 | global D1: Identity | `users`, `identities`, `identity_removal_receipts`, `sessions`, `auth_tokens`, `login_attempts`, `external_connections`, `oauth_flow_states` |
-| global D1: directory / operation | `identity_unique_reservations`, `membership_directory`, `workspace_slug_reservations`, `invitation_routes`, `note_routes`, `distributed_operations`, `account_deletion_manifests`, `global_maintenance_runs`, `job_slots` |
+| global D1: directory / operation | `identity_unique_reservations`, `membership_directory`, `workspace_slug_reservations`, `invitation_routes`, `note_routes`, `distributed_operations`, `account_deletion_manifests`, `account_deletion_manifest_items`, `global_maintenance_runs`, `global_maintenance_run_lanes`, `job_slots` |
 | global D1: projection | `workspace_directory`, `job_history`, `job_history_removal_tombstones`, `job_history_target_routes`, `job_target_tombstones`, `public_note_search`, `public_note_search_tags`, `public_note_search_fts` |
 | global D1: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scope_task_due_index` |
 | scope DO: Workspace | `workspaces`, `memberships`, `invitations`, `membership_removal_locks`, `workspace_deletion_manifests`（workspace scope のみ） |
@@ -53,6 +53,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `claim_token` | text | NOT NULL, `reserve` の行挿入時に採番 |
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','releasing') |
 | `expires_at` | integer | reserved時NOT NULL |
+| `user_version` | integer | `activate` が受けたUserの版。reserved時NULL |
 | `updated_at` | integer | NOT NULL |
 
 同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `` `${parentOperationId}:${kind}:${normalizedKey}` `` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。恒久 claim の取り壊しは `claim_token` 一致を条件とする compare-and-set で行うので、`claim_token` は `reserve` が行を挿入するときにだけ採番し、`activate` / `beginRelease` の状態遷移の `UPDATE` では既存の値をそのまま引き継ぐ — `operation_id` や `updated_at` からの導出は契約を満たさない（[domains/identity.md](../domains/identity.md)、[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。
@@ -153,13 +154,84 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 
 ### account_deletion_manifests
 
-UserId shardに置く。headerは`operation_id` PK、`user_id`（非UNIQUE）、`request_key`、`state` (`buildingMemberships` / `preparing` / `rollingBack` / `buildingAuthorRoutes` / `committing` / `compacting` / `compactingRejected` / `completed` / `rejected`)、membership edge cursor、author route署名generation cursor、`redaction_version`、`completed_at`、`expires_at`を持つ。`UNIQUE(user_id, request_key)`で同じ要求を再生し、`UNIQUE(user_id) WHERE state NOT IN ('completed','rejected')`でrunning manifestを1件にする。terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。itemsは(`operation_id`, `kind`, `target_key`) PKとし、membership itemはworkspaceId・edge state・membershipId・prepare/release command key・dispatchedAt・ack・cleanup ack、authorRoute itemはNoteId・routeVersion・local/public redaction ackを持つ。
+UserId shardに置く。header と item は別表とする。itemは1 manifestあたり無制限に伸び、100件ずつのpage append・dispatch・compactがすべてitem行だけを触るので、headerと同じ行に畳むと1行の上限（2,000,000バイト）に触れる。
 
-membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。成功時は`compacting`、rollback完了時は`compactingRejected`へ進め、どちらもitemsを100件ずつcompactする。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`expires_at = terminal_at + 120日`を設定する。`(expires_at, operation_id) WHERE state IN ('completed','rejected')` indexから1command最大100件でterminal headerを回収し、running/building/compacting headerは対象外にする。
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `operation_id` | text | PK |
+| `user_id` | text | NOT NULL（非UNIQUE） |
+| `status` | text | NOT NULL, CHECK IN ('building','built','rollingBack','completed','rejected') |
+| `membership_cursor` | text | NULL可。membership edgeのkeyset cursor |
+| `author_route_cursor` | text | NULL可。author route署名generation cursor |
+| `receipts` | text | NOT NULL DEFAULT '[]'（JSON配列） |
+| `terminal_at` | integer | terminalのときNOT NULL |
+| `retain_until` | integer | terminalのときNOT NULL |
+
+- indexes: `UNIQUE(user_id) WHERE status NOT IN ('completed','rejected')`でrunning manifestを1件にする。`(retain_until, operation_id) WHERE status IN ('completed','rejected')`が回収の走査順
+- `request_key`は持たない。同じ要求の再生を弾くのは`distributed_operations`の`UNIQUE(kind, partition_key, request_key)`であり、要求鍵の正本を2つ置かない
+- terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）
+
+### account_deletion_manifest_items
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `operation_id` | text | PK part |
+| `key` | text | PK part |
+| `kind` | text | NOT NULL, CHECK IN ('membership','authorRoute') |
+| `workspace_id` | text | `kind = 'membership'` のときNOT NULL |
+| `edge_state` | text | NULL可, CHECK IN ('active','removing','pending') |
+| `membership_id` | text | NULL可 |
+| `prepare_command_key` / `prepare_dispatched_at` / `prepare_acked_at` | text / integer / integer | NULL可 |
+| `release_command_key` / `release_dispatched_at` / `release_acked_at` | text / integer / integer | NULL可 |
+| `cleanup_acked_at` | integer | NULL可 |
+| `note_id` | text | `kind = 'authorRoute'` のときNOT NULL |
+| `route_version` | integer | NULL可 |
+| `local_redaction_acked_at` / `public_redaction_acked_at` | integer | NULL可 |
+
+- PKは(`operation_id`, `key`)の2列とする。`AccountDeletionManifestItem.key`がそもそも`kind`を先頭に畳んだ合成鍵であり、`kind`を第3のPK列に立てると同じ鍵が2つの綴りを持つ
+- indexes: (`operation_id`, `kind`, `key`) — 種別ごとのpage走査とcompact用
+- **CHECK**: `kind` に応じた `workspace_id` / `note_id` のNOT NULL対応
+
+#### 進行
+
+membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。itemのcompactはstatusを動かさず、`built`（成功）または`rollingBack`（rollback完了）のまま100件ずつ進める。[usecases/identity.md](../usecases/identity.md) が `compacting` / `compactingRejected` と呼ぶ段階は header の列ではなく **item 行の残数**が持つ状態であり、header に専用の値を足さない。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`retain_until = terminal_at + 120日`を設定する。`(retain_until, operation_id) WHERE status IN ('completed','rejected')` indexから1command最大100件でterminal headerを回収し、`building` / `built` / `rollingBack` headerは対象外にする。
 
 ### global_maintenance_runs
 
-global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` / `jobTombstonePrune` / `accountManifestPrune`)、`as_of`、generation集合、**run生成時に固定した順序付きの表集合**、`state` (`running` / `completed`)、`lease_until`、`lease_owner`、generation/shardごとの`unclaimed | active | completed`と表集合へのposition（index）、keyset cursor、active command key、`completed_at`、`expires_at`を持つ。表集合はrun行が持つスナップショットで、resume中に配備の設定が変わっても動かない。laneが持つのは表名ではなく表集合へのpositionであり、**laneの現在表はrun行の表集合から引く。配備の設定から引いてはならない**（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）。`UNIQUE(kind) WHERE state = 'running'`でkindごとの実行中runを1つに制限する。run ID候補はhour bucket+kind+generation集合から決定するが、同kindに未完了runがあれば新しいhourの候補を作らず、最古running runの固定`as_of`とpositionを返す。初回/lease recoveryは未claim positionを最大6件claimする。target shardのDELETE成功後、routing catalog shardで現在positionのkeyset cursorと次command keyのcheckpointと次Queue outboxを同じtransactionに保存する（表は進めない — laneのpositionを進めるのは表完了ack側で、positionを使い切ったときにそれがshard完了ackになる）。両shardを同じtransactionには入れず、応答喪失時は保存済み入力cursorからDELETEを再実行する。DELETEは期限述語/keysetに対して冪等である。shard完了ackと次position claimも同じtransactionで行い、kind全体のactiveは6以下、全position ackでcompletedにしてから次のCronが新runを作れるようにする。completed時に`expires_at = completed_at + 30日`を設定し、`(expires_at, run_id) WHERE state = 'completed'` indexを使って1command最大100件で回収する。running runは`expires_at = NULL`で回収しない。
+global routing catalog shardに置く。runのheaderとlaneは別表とする。laneはgeneration × shardの直積ぶんの行を持ち、checkpointごとに1 lane行だけを条件付き更新するので、run行に畳むと1 lane の前進が run 全体の版を奪い合うことになる。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `run_id` | text | PK |
+| `kind` | text | NOT NULL, CHECK IN ('authStatePrune','jobTombstonePrune','accountManifestPrune') |
+| `status` | text | NOT NULL, CHECK IN ('running','completed') |
+| `tables` | text | NOT NULL（JSON配列）。**run生成時に固定した順序付きの表集合** |
+| `as_of` | integer | NOT NULL |
+| `lease_owner` | text | NOT NULL |
+| `lease_until` | integer | NOT NULL |
+| `completed_at` | integer | completed時NOT NULL |
+| `expires_at` | integer | completed時NOT NULL、runningはNULL |
+
+- indexes: `UNIQUE(kind) WHERE status = 'running'`でkindごとの実行中runを1つに制限する。`(expires_at, run_id) WHERE status = 'completed'`が回収の走査順
+- 表集合はrun行が持つスナップショットで、resume中に配備の設定が変わっても動かない（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）
+
+run ID候補はhour bucket+kind+generation集合から決定するが、同kindに未完了runがあれば新しいhourの候補を作らず、最古running runの固定`as_of`とpositionを返す。初回/lease recoveryは未claim positionを最大6件claimする。target shardのDELETE成功後、routing catalog shardで現在positionのkeyset cursorと次command keyのcheckpointと次Queue outboxを同じtransactionに保存する（表は進めない — laneのpositionを進めるのは表完了ack側で、positionを使い切ったときにそれがshard完了ackになる）。両shardを同じtransactionには入れず、応答喪失時は保存済み入力cursorからDELETEを再実行する。DELETEは期限述語/keysetに対して冪等である。shard完了ackと次position claimも同じtransactionで行い、kind全体のactiveは6以下、全position ackでcompletedにしてから次のCronが新runを作れるようにする。completed時に`expires_at = completed_at + 30日`を設定し、`(expires_at, run_id) WHERE status = 'completed'` indexを使って1command最大100件で回収する。running runは`expires_at = NULL`で回収しない。
+
+### global_maintenance_run_lanes
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `run_id` | text | PK part |
+| `generation` | text | PK part |
+| `shard_id` | text | PK part |
+| `status` | text | NOT NULL, CHECK IN ('unclaimed','active','completed') |
+| `table_index` | integer | NOT NULL。run行の`tables`へのposition |
+| `cursor` | text | NULL可。現在positionのkeyset cursor |
+| `command_key` | text | NOT NULL |
+
+- indexes: (`run_id`, `status`, `generation`, `shard_id`) — 未claim laneの選択用
+- laneが持つのは表名ではなく表集合へのpositionであり、**laneの現在表はrun行の`tables`から引く。配備の設定から引いてはならない**（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）
+- lease は run 行が持ち、lane の前進はその lease に対する fencing で守る。詳細は [platform/index.md](../platform/index.md)「Global Cron」
 
 ### job_slots
 
@@ -221,9 +293,9 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `updated_at` | integer | NOT NULL |
 
 - **インデックス**: `identities_user_idx` (`user_id`)、`identities_user_password_uq` UNIQUE (`user_id`) WHERE `kind = 'password'`（1 利用者 1 件）。provider accountのglobal uniquenessはreservationが担う
-- **件数上限**: Password/OAuth合計8件。UserId shardの最終UoWでcurrent件数を検査し、`BEFORE INSERT` triggerも同じ`user_id`が既に8件ならabortする。並行追加も同shard transactionで直列化され、`IdentityLimitExceeded`へ写像する
+- **件数上限**: Password/OAuth合計8件。UserId shardの最終UoWでcurrent件数を検査する。並行追加も同shard transactionで直列化され、`IdentityLimitExceeded`へ写像する。**DB側の`BEFORE INSERT` triggerは置かない**: `IdentityRepository`の契約は件数を制約せず、trigger が発火しても駆動エラーからは `SystemError(DatabaseError)` にしか翻訳できないため、多層防御にはならず業務規則を不透明な障害の裏へ隠すだけになる。上限を決める場所はドメインの`IdentityPolicy`ひとつである（[ADR 044](../adr/044-business-thresholds-in-domain.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）
 
-`identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `provider_account_key`, `created_at`, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
+`identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `kind` (`password` / `oauth`), `provider_account_key`（`kind = 'oauth'` のときだけ非NULL）, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
 - **CHECK**: `kind` に応じた列の NULL / NOT NULL の対応
 
 ### sessions
@@ -256,7 +328,8 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `expires_at` | integer | NOT NULL |
 
 - **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`)
-- pending tokenは(`user_id`, `purpose`)で部分UNIQUEとし最大1件。消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
+- pending tokenの「(`user_id`, `purpose`)ごとに最大1件」はusecase側が`deleteByUserAndPurpose`で保ち、**DB制約としては置かない**。`AuthTokenRepository`の契約は同じ組に複数のpendingが在ることを許しており（適合スイート ADP-identity-024）、部分UNIQUEを張るとポート契約に反する。複数pendingが在るときの`findPendingByUserAndPurpose`は`ORDER BY created_at DESC, id DESC`で「いちばん新しい発行」を返す — この値は再送間隔の判定材料なので、走査順まかせにしてはならない
+- 消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
 
 ### login_attempts
 
@@ -879,6 +952,8 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - 英単語の中間部分一致は失われる（`flare` で Cloudflare は引けない。前方一致 `cloud*` は可能）
 - クエリ内の 1 文字 CJK run は unigram の挙動になる
 - ハイライトの一致位置は生テキストへの部分一致で求めるため、FTS のヒットと必ずしも一致しない。境界をまたぐ偽陽性の行や、タイトル・タグ名だけで一致した行では `highlightedExcerpt` が `null` になる（前節「ハイライトと抜粋の生成」）
+- ハイライトは `excerpt` に一致が無かったとき、本文の**前方 4,000 文字**までしか探さない。窓は 160 文字なので、それより後ろにしか一致が無い行は `null` に落ちる。検索の 1 ページが 800,000 バイトの本文を limit 件ぶん運ばないための上限である
+- 書記素クラスタを跨ぐ文脈依存の小文字化（合成済みの結合列など）は一致しない。位置の写像を保つため小文字化は書記素クラスタごとに掛けるので、クラスタ境界を越えて 1 文字に畳む変換は再現できない。この場合も `null` に落ちるだけで、誤った位置を返すことはない
 
 ### Global projection tables
 
@@ -997,6 +1072,8 @@ INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つと
 - **正データではない。** 正は各 scope DO の `scheduled_tasks` であり、本表は「どの scope に仕事があるか」だけを持つ。`failed` 行は載せない
 - indexes: (`priority`, `due_at`, `kind`, `operation_id`) — `ScopeTaskScheduler` の選択規則を scope をまたいで適用する
 - 更新の主体は scope object 自身である。`scheduled_tasks` に触れた write-set を commit した RPC は、**呼び出し元へ応答を返す前に**自分の担当ぶんを置き換える。したがって `run(scope, fn)` が解決した時点で索引は新しい。D1 と scope DO を 1 transaction に含めない規約（本書「共通の規約」）は保たれる — これは順序の保証であってトランザクションの結合ではない
+- UoW の外（autocommit）で `scheduled_tasks` を触る経路 — 中央 runner の claim / settle — には commit hook が無いので、`ScopeTaskScheduler` 実装が書き込み直後に自 scope のスライスを置き換える。alarm の再武装はこの経路では行わない。武装は object の持ち分であり、object は commit された write-set が `scheduled_tasks` を名指したときと turn の終わりに必ず行う
+- 1 回に publish するスライスは**有界**とする。優先度ごとに `due_at` の早い 25 行、全体で最大 100 行。この索引は「どの scope に仕事があるか」を答えるためのもので全件の写しではなく、`ScopeTaskQueue.listDue` は優先度ごとに枠を確保してから次を取るので、上限を全体一律にすると 1 つの優先度の滞留が他の優先度を索引から押し出す。溢れた行は最も早い行から順に載り、残りは次の publish で載る
 - commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。余分な行が出ても、読み手は各行に対して改めて scope UoW を開いて `claimDue` で取り直すため、costは claim を 1 つ落とすことに留まる
 - Durable Objects を全列挙する手段が無いこと（`spec/platform/index.md`「Global Cron」: Cron は scope object を全列挙しない）と、ポート契約が `listDue` を必須としていることの両立がこの表の存在理由である
 

@@ -14,16 +14,10 @@ import { createD1OAuthStateStore } from "../../d1/repositories/oauthStateStore";
 import { createD1SessionRepository } from "../../d1/repositories/sessionRepository";
 import { createD1UserBatchReader } from "../../d1/repositories/userBatchReader";
 import { createD1UserRepository } from "../../d1/repositories/userRepository";
-import { port } from "../pendingPorts";
 import type { GlobalPortDeps } from "./deps";
 
 /**
- * Step 5 — the D1 Identity bundle.
- *
- * Owner of this file wires each port by (1) deleting its name from
- * `PENDING_PORTS` and (2) passing the adapter factory as the second
- * argument of the matching `port(...)` call. Nothing outside this file
- * has to change.
+ * The D1 Identity bundle.
  *
  * Suites: `conformance/identity.test.ts`.
  */
@@ -40,30 +34,13 @@ export type IdentityPorts = Readonly<{
 
 export function createIdentityPorts(deps: GlobalPortDeps): IdentityPorts {
   return {
-    userRepository: port<UserRepository>("UserRepository", () =>
-      createD1UserRepository(deps),
-    ),
-    identityRepository: port<IdentityRepository>("IdentityRepository", () =>
-      createD1IdentityRepository(deps),
-    ),
-    sessionRepository: port<SessionRepository>("SessionRepository", () =>
-      createD1SessionRepository(deps),
-    ),
-    authTokenRepository: port<AuthTokenRepository>("AuthTokenRepository", () =>
-      createD1AuthTokenRepository(deps),
-    ),
-    identityRemovalReceiptStore: port<IdentityRemovalReceiptStore>(
-      "IdentityRemovalReceiptStore",
-      () => createD1IdentityRemovalReceiptStore(deps),
-    ),
-    userBatchReader: port<UserBatchReader>("UserBatchReader", () =>
-      createD1UserBatchReader(deps),
-    ),
-    loginAttemptStore: port<LoginAttemptStore>("LoginAttemptStore", () =>
-      createD1LoginAttemptStore(deps),
-    ),
-    oauthStateStore: port<OAuthStateStore>("OAuthStateStore", () =>
-      createD1OAuthStateStore(deps),
-    ),
+    userRepository: createD1UserRepository(deps),
+    identityRepository: createD1IdentityRepository(deps),
+    sessionRepository: createD1SessionRepository(deps),
+    authTokenRepository: createD1AuthTokenRepository(deps),
+    identityRemovalReceiptStore: createD1IdentityRemovalReceiptStore(deps),
+    userBatchReader: createD1UserBatchReader(deps),
+    loginAttemptStore: createD1LoginAttemptStore(deps),
+    oauthStateStore: createD1OAuthStateStore(deps),
   };
 }

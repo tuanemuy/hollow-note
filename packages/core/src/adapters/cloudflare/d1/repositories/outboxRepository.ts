@@ -6,7 +6,9 @@ import type {
   OutboxRepository,
 } from "../../../../application/ports/outboxRepository";
 import type { DomainEvent } from "../../../../domain/common/event";
+import type { RowMutation } from "../../execution/writeSet";
 import { opaque } from "../../execution/writeSet";
+import { databaseError, throwTranslated } from "../../sql/errors";
 import {
   inJsonList,
   insertRowsFromJson,
@@ -15,10 +17,19 @@ import {
 } from "../../sql/json";
 import { int, json, text, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
-import { type SqlRow, statement } from "../../sql/statement";
+import { type SqlRow, type SqlStatement, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
 
 const TABLE = GLOBAL_TABLES.outboxEvents;
+
+/**
+ * Ceiling for the single JSON binding `save` folds a whole batch into.
+ * Both planes cap one bound value at 2,000,000 bytes
+ * (`spec/platform/index.md` 実上限); half of that is the design budget,
+ * on the same reasoning as the query budget there — the remainder is
+ * headroom for the driver's own framing.
+ */
+const MAX_SAVE_BINDING_BYTES = 1_000_000;
 
 const SAVE_COLUMNS = [
   "id",
@@ -66,6 +77,34 @@ export function createD1OutboxRepository(
 ): OutboxRepository {
   const { session } = deps;
 
+  const query = async (input: SqlStatement): Promise<readonly SqlRow[]> => {
+    try {
+      return await session.query(input);
+    } catch (cause) {
+      throwTranslated(TABLE, cause);
+    }
+  };
+
+  const write = async (mutations: readonly RowMutation[]): Promise<void> => {
+    try {
+      await session.write(mutations);
+    } catch (cause) {
+      throwTranslated(TABLE, cause);
+    }
+  };
+
+  /**
+   * The relay's two housekeeping calls run their own statement rather
+   * than staging one, so inside a unit of work they would commit while
+   * the unit around them still could not. The port places both outside
+   * one; refusing is how that stays true rather than assumed.
+   */
+  const refuseStaged = (operation: string): void => {
+    if (session.staged) {
+      throw databaseError(`${operation} must run outside a unit of work`);
+    }
+  };
+
   return {
     async save(events: readonly DomainEvent[]): Promise<void> {
       if (events.length === 0) {
@@ -81,9 +120,16 @@ export function createD1OutboxRepository(
         created_at: createdAt,
         attempts: 0,
       }));
+      const batch = jsonRows(rows);
+      const size = new TextEncoder().encode(batch).length;
+      if (size > MAX_SAVE_BINDING_BYTES) {
+        throw databaseError(
+          `Saving ${events.length} outbox events binds ${size} bytes, above the ${MAX_SAVE_BINDING_BYTES} limit; split the batch or shrink the payloads`,
+        );
+      }
       // A bulk insert has no single-row image, so it stages as `opaque`:
       // nothing reads the outbox back inside the unit that wrote it.
-      await session.write([
+      await write([
         opaque(
           statement(
             insertRowsFromJson({
@@ -92,7 +138,7 @@ export function createD1OutboxRepository(
               conflictKey: ["id"],
               conflict: "ignore",
             }),
-            jsonRows(rows),
+            batch,
           ),
         ),
       ]);
@@ -101,11 +147,12 @@ export function createD1OutboxRepository(
     async claimPending(
       args: ClaimPendingArgs,
     ): Promise<readonly OutboxEntry[]> {
+      refuseStaged("claimPending");
       if (args.limit <= 0) {
         return [];
       }
       const nowMs = args.now.getTime();
-      const rows = await session.query(
+      const rows = await query(
         statement(
           `UPDATE ${TABLE}
               SET claimed_at = ?, claimed_by = ?
@@ -188,11 +235,12 @@ export function createD1OutboxRepository(
       }
       // Successes and failures land in one atomic step, so a crash cannot
       // leave a dispatched row claimable again.
-      await session.write(mutations);
+      await write(mutations);
     },
 
     async pruneProcessed(olderThan: Date): Promise<{ deleted: number }> {
-      const rows = await session.query(
+      refuseStaged("pruneProcessed");
+      const rows = await query(
         statement(
           `DELETE FROM ${TABLE}
             WHERE processed_at IS NOT NULL AND processed_at < ?

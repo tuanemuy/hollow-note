@@ -668,7 +668,7 @@ commit そのものは件数によらず **1 回**（DO への RPC 1 往復 = `t
 
 ### Decision
 
-`0003_membership_directory.sql` で表を足し、spec から 2 点だけ離れる。
+`0001_global_schema.sql` に表を足し、spec から 2 点だけ離れる（当初は `0003_membership_directory.sql` として足したが、ADR-041 で 0001 へ畳んだ）。
 
 1. `membership_id` を NULL 可にし、`CHECK (state NOT IN ('active','removing') OR membership_id IS NOT NULL)` で settled edge にだけ要求する。
 2. keyset 用に `(user_id, operation_id)` の索引を足す。`operation_id` が account deletion manifest のページングする edge key である。
@@ -692,7 +692,7 @@ migration 0001 は `UNIQUE(partition_key, request_key)` と `UNIQUE(partition_ke
 
 ### Decision
 
-`0003_membership_directory.sql` で 2 本を `DROP INDEX` して kind 込みで作り直す（`(kind, partition_key, request_key)` と `(kind, partition_key) WHERE state NOT IN (...)`）。あわせて `countTerminalSince` が使う terminal 索引にも kind を入れ、partition 走査用の `(kind, partition_key, id)` を足す。0001 は編集しない — migration は追記のみで進める。
+2 本を kind 込みで張る（`(kind, partition_key, request_key)` と `(kind, partition_key) WHERE state NOT IN (...)`）。あわせて `countTerminalSince` が使う terminal 索引にも kind を入れ、partition 走査用の `(kind, partition_key, id)` を足す。当初は `0003_membership_directory.sql` で `DROP INDEX` してから作り直したが、ADR-041 で 0001 へ畳み、`0001_global_schema.sql` が最終形だけを張る。
 
 spec が `kind = 'accountDeletion'` に限っているのは accountDeletion の説明の文脈だからで、ポート契約は全 kind に対して同じ規則（partition ごとに running は 1 件）を要求している。実装は全 kind へ一般化した形を採る。
 
@@ -805,3 +805,455 @@ steps.md ステップ 11 は Cloudflare 側の入口を `adapters/cloudflare/__t
 - 良い点: cause の無い DatabaseError が、失われた原因を持っているかのように読めなくなる。
 - 良い点: 上限超過のメッセージが件数と対処（`json_each`）だけを述べる形に戻り、呼び出し元の特定に使える。
 - トレードオフ: `databaseError` に分岐が 1 つ増える。cause を必須にして専用のコンストラクタを分ける手もあるが、呼び出し 18 箇所のうち 2 箇所のために型を割る価値は無いと判断した。
+
+---
+
+## ADR-033: outbox `save` の 1 binding サイズ上限は `assertBindable` ではなくリポジトリ側で見る
+
+### Context
+
+`OutboxRepository.save` は 1 UoW ぶんのイベントを `jsonRows` で 1 つの binding に畳む。`assertBindable` が守っているのは binding の**個数**（100）だけで、値の**サイズ**（1 値 2,000,000 バイト、`spec/platform/index.md` 実上限）は誰も見ていない。payload の大きいイベントが並ぶと、静かに上限へ触れる。
+
+### Decision
+
+`d1/repositories/outboxRepository.ts` に `MAX_SAVE_BINDING_BYTES = 1_000_000` を置き、`save` が直列化した JSON のバイト数を測って超過を `SystemError(DatabaseError)` で落とす。`sql/json.ts` の `assertBindable` は触らない。
+
+- **置き場所**: サイズ超過は「この呼び出しが渡した件数と payload」の問題なので、件数を添えたメッセージを出せるのは呼び出し側だけである。汎用の `assertBindable` に足すと、どの binding が大きいのかを言えない検査になる。`do/dueIndex.ts` 側の同種の上限（routing W-008 のもう半分）も同じ理由でそれぞれの生成地点が持つ。
+- **上限値**: 実上限の半分。`spec/platform/index.md` が D1 query 数（実上限 1,000 に対し設計上限 500）で採っているのと同じ取り方で、残りはドライバ自身の framing の余地とする。
+- **分割ではなく失敗**: サイズで chunk に割ると 1 commit の文数が増え、ADR-008 の「`_occ_guard` で文数が最大 2 倍」と同じ予算を押す。イベント payload は識別子を運ぶ設計で 1MB に達するのは異常事態なので、静かに壊れる代わりに落とす側へ倒す。
+
+固定は `__tests__/routeGuard.test.ts`「refuses a batch too large for one bound value…」。
+
+### Consequences
+
+- 良い点: 上限に触れる経路が呼び出し地点で落ち、メッセージが件数とバイト数を名指しする。
+- トレードオフ: 1MB を超える正当なバッチは保存できない。到達したら分割ではなくイベント設計（payload に本文を載せていないか）を疑う合図として扱う。
+- トレードオフ: サイズ検査が 1 箇所に集約されていないので、新しい「1 binding に畳む」書き方を足す実装者は自分で上限を置く必要がある。
+
+---
+
+## ADR-034: 駆動エラーの翻訳はドライバを直接叩く地点にだけ置き、ポートを再利用する側では包まない
+
+### Context
+
+routing 束の 6 ファイルが `throwTranslated` を持っていなかった（`_occ_guard` の発火が生の `CHECK constraint failed` として application 層へ抜ける）。埋めるにあたり `scopeRouter.ts` の扱いが問題になった。`ScopeRouter.resolveNote` は自分で SQL を撃たず、`NoteRouteStore.resolve` を呼ぶだけである。
+
+### Decision
+
+`session.query` / `readRow` / `readRows` / `write` を**直接**呼ぶ地点だけを `try / catch` で包む。`scopeRouter.ts` は翻訳を持たない。
+
+`throwTranslated` は cause を `classifySqlError` で分類し、`occGuard` 以外を `SystemError(DatabaseError)` にする。すでに翻訳済みの `ConflictError` / `NotFoundError` を通すと `unknown` に分類され、`NOTE_NOT_FOUND` が `DatabaseError` に化ける。ポートを再利用する側で包むのは、翻訳の二度掛けであり実害がある。
+
+### Consequences
+
+- 良い点: 翻訳が「ドライバに触れる 1 箇所」に限られ、CLAUDE.md「adapter → application」と同じ形になる。
+- 良い点: `scopeRouter` は `noteRouteStore` の翻訳を通じて契約を満たす。ファイルを見ると翻訳が無いように見えるが、SQL を撃っていないので正しい。
+- トレードオフ: リポジトリ内でも「自分のエラーを投げる分岐」を `try` の中に入れると同じ事故が起きる。本 PR の実装は分岐を `try` の外に出す形で揃えてある。
+
+## ADR-035: `readRows` のオーバーレイは「補正できない読み」を静かに返さず拒む
+
+### Context
+
+ADR-009 の `readRows` は「SQL の結果からこの unit が触れた行を除き、ステージ済み行を足し、`limit` で切る」という形で read-your-writes を作る。この機構には、規律だけで支えられている穴が 2 つあった。
+
+1. **`matches` が optional だった。** 省略すると当該表のステージ済み行が `WHERE` と無関係に全部混ざる。JSDoc は「全表読みのときだけ省いてよい」と書いていたが、書き忘れと意図的な省略が型の上で同じ形になる。
+2. **`limit` と同一 unit 内の削除が両立しない。** オーバーレイは SQL が既に返した集合から引くことしかできない。`LIMIT n` が満杯で返り、そのうち 1 件がこの unit の削除に当たると、結果は n-1 件になる。storage 側に控えている n+1 件目は繰り上がらない。`limit + 1` 件読んで `hasMore` を決めるページングと組むと `hasMore` が false 側へ誤る。
+
+どちらも現時点で踏んでいる呼び出し元は無い（`readRows` の全呼び出しが `matches` を渡し、`limit` と staged 削除が同居する経路も無い）。
+
+### Decision
+
+- `matches` を必須にし、全表読みは `ALL_ROWS` という名前の述語を明示的に渡す。省略と「全部通す」が別の字面になる。
+- staged session の `readRows` は、`limit` が指定され、SQL の結果が `limit` に達して打ち切られており、かつその中にこの unit が削除した行が含まれるとき、`databaseError` で**拒む**。短いページを返すことも、storage へ読み直しに行くこともしない。
+- `opaque` は `table` を名乗れる形（`opaque({ table, statement })`）にし、名乗った表は `touchedTables()` に入る。`WriteSet.markTouched` は撤去する。
+
+### Consequences
+
+- 良い点: 「補正できない読み」が呼び出し地点で落ちる。`assertBindable` と同じ位置づけ — 起きたらアダプターのバグであって実行時条件ではない。
+- 良い点: `opaque` で `scheduled_tasks` を触っても due index publish と alarm 再武装が飛ばなくなる。規約を JSDoc ではなく `stage` の分岐が担う。
+- トレードオフ: `opaque` の `table` は依然 optional である。OCC guard のように書く表に commit 時フックが無い statement のほうが多く、必須化は 44 箇所の呼び出し元を書き換える。「名乗れる形にして `markTouched` を消す」ところまでで止め、必須化は行っていない。
+- トレードオフ: 同一 UoW 内で掃引しながらページングしたくなったら、`readRows` ではなく `query`（素通し）を選ぶ必要がある。ADR-014 の `deleteExpiredPage` は既にそうなっている。
+
+## ADR-036: 1 commit の文数上限は global 平面にだけ置く
+
+### Context
+
+`spec/platform/index.md`「実行予算と分割単位」→ Global D1 は 1 Worker invocation あたりの D1 query を 500（実上限 1,000 の半分）と定める。1 commit = 1 `batch()` = 文数ぶんの query なので、write-set の大きさはそのまま予算の消費である。ADR-008 の `_occ_guard` により 1 commit の文数は最大 2 倍になる。ところが `assertBindable` が「1 文あたりの binding」を守っているのに対し、「1 commit あたりの文数」は誰も見ていなかった。
+
+同じ節の Scope DO は「scope-local SQL に D1 の query count は掛からない」と明記し、代わりに 1 turn あたりの**行数**（50 notes / 100 rows / 200 assignments …）で有界化している。ADR-025 の実測どおり scope 平面の commit 内文数は `2n + 1` で件数に比例するが、その有界性は行数上限が既に与えている。
+
+### Decision
+
+`MAX_STATEMENTS_PER_COMMIT = 250`（500 の半分）を置き、global 平面の commit だけがこれを検査する。超過は `databaseError` で、文数と上限を名指しして落とす。scope 平面には置かない。
+
+250 の半分という取り方は、1 invocation が「write-set を作った読み」と「その commit」の両方を賄うことによる。guard による 2 倍は 250 の**内側**で数える。
+
+### Consequences
+
+- 良い点: 予算超過が本番の overage ではなく commit 地点の例外として現れる。バッチ上限を上げた変更が静かに予算を割ることがない。
+- 良い点: 上限が置かれていない平面（scope）について「なぜ置かないか」が型ではなく spec の別軸（行数）に紐づくと明示される。
+- トレードオフ: 250 は根拠のある切り方だが実測ではない。global 平面の最大 commit は現状 outbox の多行 INSERT 1 文 + 実体書き込みで、余裕は大きい。将来 shard 化で 1 commit が複数 shard へ散るようになれば、平面ではなく shard 単位で数え直す必要がある。
+
+## ADR-037: maintenance run の guard 敗北は、その呼び出しが読みで出したのと同じ答えへ倒す
+
+### Context
+
+`GlobalMaintenanceRunStore` の D1 実装だけが `_occ_guard` を 1 つも積んでおらず、「10 分 lease の保持者だけが進める」というポート JSDoc の契約を、`requireLeasedRun` の**読み**しか支えていなかった。読みと適用のあいだに別 owner が lease を奪っても、先行 writer の `checkpointLane` / `advanceOrAck` はそのまま着地する。
+
+run 行を書く 4 か所（`beginOrResumeKind` の resume 分岐と新規作成、`recoverLease`、`advanceOrAck` の run 完了）と lane 行を書く全経路に guard を前置するところまでは他の store（ADR-008 の二段構え）と同じでよい。決めるべきは**敗北の翻訳先**である。レビューの提案は一律 `ConflictError("MAINTENANCE_LEASE_HELD")` だった。
+
+### Decision
+
+guard が外れたときは、**同じ条件を読みで観測していたらその呼び出しが返したはずの値**へ倒す。
+
+- `beginOrResumeKind`: `{ result: "leased" }`。ポートは「live な foreign owner が持つ run」を戻り値で表現しており、呼び出し側（`pruneExpiredAuthState`）はそれを見て静かに降りる。新規作成分岐にも「この kind に running が無い」guard を足したので、同時 start の敗者もここへ落ちる。
+- `recoverLease`: `false`。読み経路が live な foreign lease に対して返すのと同じ値。
+- `claimLanes` / `checkpointLane` / `advanceOrAck`: `foreignLease`（`MAINTENANCE_LEASE_HELD`）。これらは読み経路でも同じ `ConflictError` を投げる。
+
+lane の guard は `NoteRouteStore` と同じ行同一性（`status` / `table_index` / `cursor IS ?`）で、run の guard は読んだ `status` / `lease_owner` / `lease_until` そのもの。
+
+### Consequences
+
+- 良い点: 敗者の答えが「直列に実行されていたら得たはずの答え」と一致する。cron が並走しても `beginOrResumeKind` から例外が出ず、`ConflictError` を握る呼び出し側を新設せずに済む。
+- 良い点: 奪われた旧 owner の checkpoint が着地しない（cursor の巻き戻し・table_index の二重進行が起きない）ことを `__tests__/globalConcurrency.test.ts` が実バインディングで観測する。
+- トレードオフ: `beginOrResumeKind` の guard は「lease を奪われた」以外に「その run が完了した」でも外れる。後者でも `leased` を返すので、直後の 1 回は空振りする。次の cron が新しい run を立てるので停止はしない。
+- トレードオフ: レビューの提案（一律 `foreignLease`）から外れている。ポートが戻り値で表現している状態を例外へ格上げしない、という理由で倒した。
+
+## ADR-038: 同じ hour bucket の完了済み run は「作り直し」て `started` を返す
+
+### Context
+
+`candidateRunId` は `authStatePrune:${hourBucket}:${generations}` と決定的で、完了した run は 30 日保持される。同じ bucket 内で run が完走したあとに cron / 手動再駆動が入ると、`readRunningRun` は null（completed なので）を返し、素の `INSERT` が run_id の PK 違反を起こして `SystemError(DatabaseError)` になっていた。memory は `table.set(candidateRunId, …)` で完了行を上書きして `started` を返す。ポート JSDoc は "only after completion does a candidate run start fresh (`started`)" なので正本は memory 側にある（ADR 046 の手続き）。
+
+### Decision
+
+run 行を `ON CONFLICT (run_id) DO UPDATE SET status='running', tables=…, as_of=…, lease_owner=…, lease_until=…, completed_at=NULL, expires_at=NULL` にする。lane は `DELETE FROM … WHERE run_id = ?` の後に入れ直す — memory が lanes 配列ごと差し替えるのと同じ形にし、shard 構成が縮んだときに前の run の lane が残って完了不能になる経路を塞ぐ。
+
+作り直しに倒すと「同時に 2 人が start する」が上書きで通ってしまうので、この分岐にも `SELECT 1 WHERE NOT EXISTS (running run of this kind)` の guard を前置する（敗者は ADR-037 のとおり `leased`）。
+
+### Consequences
+
+- 良い点: 両バックエンドの観測が揃う。DB 障害と区別できない `SystemError` が再駆動で出なくなる。
+- トレードオフ: 完了行の `completed_at` / `expires_at` が消えるので、同じ bucket の前回 run の完了時刻は追えなくなる。`pruneCompleted` の対象からも外れる（次の完了で入り直す）。
+- トレードオフ: lane の DELETE が run 作成のたびに 1 文増える（1 時間に 1 回の経路なので予算上は無視できる）。
+
+## ADR-039: pending auth token の読みは新しい順に固定し、部分 UNIQUE は置かない
+
+### Context
+
+`spec/database/index.md#auth_tokens` は「pending token は (`user_id`, `purpose`) で部分 UNIQUE とし最大 1 件」と定める。一方、適合スイート ADP-identity-024 は同一 `(userId, 'email_verification')` の pending token を 2 件 insert するので、この索引を張るとスイートが落ちる。実装は索引を置かない側（ポート契約側）に倒っていたが、その判断がどこにも残っていなかった。実害は `findPendingByUserAndPurpose` が `ORDER BY` 無しの `LIMIT 1` なので、pending が複数あると戻り値が SQLite の走査順まかせになる点にある。ポート JSDoc はこの読みを「トークンが最後に発行された時刻の唯一の読み取り」と位置づけ、再送間隔の判定材料にしている。
+
+### Decision
+
+部分 UNIQUE は置かない（最大 1 件は usecase 側が `deleteByUserAndPurpose` で保つ）。あわせて `findPendingByUserAndPurpose` を `ORDER BY created_at DESC, id DESC` にし、write-set のオーバーレイ側にも同じ `compare` を渡して、複数 pending 時の戻り値を「いちばん新しい発行」に固定する。
+
+memory は挿入順の `find` なので複数 pending 時の観測は D1 と揃わないが、適合スイートに複数 pending を観測するケースは無く、契約としては未定義の領域にある。memory を触らずに済む側（AC-7）を採った。
+
+### Consequences
+
+- 良い点: 再送間隔の判定が非決定でなくなる。DESC を採ったので、複数 pending が生まれても間隔判定は保守側（直近の発行を基準）に倒れる。
+- トレードオフ: 「1 件しかない」を DB が保証しない。`deleteByUserAndPurpose` を撃ち忘れた経路があれば静かに複数溜まる。
+- 宿題: `spec/database/index.md#auth_tokens` の当該記述を「DB 制約としては置かない」へ改める（束 7）。複数 pending 時の戻り値を契約にするなら適合スイートに 1 ケース足す話になるが、それは別 Issue。
+
+## ADR-040: `reserve` の unique 違反は PK 衝突と `operation_id` 衝突を区別する
+
+### Context
+
+`identity_unique_reservations` は PK `(kind, normalized_key)` に加えて `operation_id` に UNIQUE を持つ。`reserve` の INSERT は `ON CONFLICT (kind, normalized_key) DO UPDATE` を積んでいるので PK 衝突は例外にならず、この文が上げうる unique 違反は**実質 `operation_id` 側だけ**である。ところが `translateReserve` は `unique` を無条件に `heldByAnother`（`EMAIL_ALREADY_USED` など）へ翻訳していた。1 つの operation ID で 2 鍵を予約する呼び出しが現れると、**空いている鍵に対して「使われています」と返す**。
+
+`activate` の「複数行を全部か無かで publish する」というコメントも、`operation_id UNIQUE` の下では `readByOperation` が 0/1 件しか返さないので成立しない。
+
+### Decision
+
+`translateReserve` は unique 違反のメッセージが `identity_unique_reservations.operation_id` を名指すかを見て、名指す場合は `databaseError` に倒す（呼び出し側の契約違反であって、鍵の奪い合いではない）。成立しないコメントは削り、「1 operation = 最大 1 行」という物理スキーマ側の前提をファイル JSDoc に 1 行で残す。
+
+「1 operation = 何行か」をポート JSDoc・memory の `rowsByOperation`・D1 スキーマの三者でそろえる話は本 PR では倒さない（別 Issue へ defer）。
+
+### Consequences
+
+- 良い点: 空いている鍵を「使われている」と誤って拒む経路が消える。
+- トレードオフ: 列名でのメッセージ照合が `classifySqlError` の外に 1 つ増える。`classifySqlError` は制約の**種別**しか返さないので、どの索引かを知るにはここで見るしかない。索引名を変えたらこの照合も追随が要る。
+- 残る乖離: ポート JSDoc の `activate` / `release` は複数行に対する操作として書かれたままで、memory も複数行を許す。今日の呼び出し側は鍵ごとに別 operation ID を導出するので実害は無い。
+
+## ADR-041: 未適用の global D1 schema は 0001 に畳み、migration version 定数は置かない
+
+### Context
+
+`0003` が `0001` の張った `distributed_operations` の索引を `DROP INDEX` して kind 込みで作り直しており、`0002` は一度も存在しなかった。append-only の規律は「どこかに適用済みだから書き換えられない」ことに由来するが、この schema はまだどの配備にも当たっていない（本番配備一式は本 Issue のスコープ外）。加えて `GLOBAL_MIGRATION_VERSION` / `SCOPE_MIGRATION_VERSION` はどこからも読まれず、global 側は `0003` の追加後も 1 を名乗ったままだった。
+
+### Decision
+
+`0003` の内容（`membership_directory` と kind 込みの索引）を `0001_global_schema.sql` へ畳み、`0003` を削除する。global D1 の migration はふたたび 1 ファイルになる。2 つの migration version 定数は削除し、`do/schema.ts` の「両平面は同じ migration version を共有する」という一文も、値を持たない以上は主張を弱める。
+
+### Consequences
+
+- 良い点: 索引が 2 世代あるように見える状態と欠番が同時に消え、`spec/database/index.md` の「両者は同じ migration version」も 1 対 1 で真になる。
+- トレードオフ: append-only を今から始めるなら、最初の配備の直前にこの規律へ切り替える判断が別途要る。
+- 追随が要る箇所: ADR-027 / ADR-028 が `0003_membership_directory.sql` を名指していた 2 箇所は、本 ADR の決定に合わせて書き換え済み。
+
+## ADR-042: 2 つの vitest プロジェクトの境界は 1 箇所に置く
+
+### Context
+
+`node` は `packages/core/src/adapters/cloudflare/**` を丸ごと exclude し、`workers` は `src/adapters/cloudflare/**/__tests__/**/*.test.ts` を include していた。集合は交わらないが**和集合が全体を覆っておらず**、`adapters/cloudflare/` 直下や `d1/` 直下の `.test.ts` はどちらのプロジェクトも拾わない。`pnpm test` は緑のままそのファイルを走らせない。
+
+### Decision
+
+境界の綴りをリポジトリ直下の `vitest.shared.ts` に 1 つだけ置き、`node` の exclude と `workers` の include の両方をそこから導く。`workers` の include はディレクトリ全体（`**/*.{test,spec}.ts`）へ広げ、`node` が除外する範囲と一致させる。
+
+### Consequences
+
+- 良い点: 片方だけ広げても他方が自動で狭まるので、窓が開かない。
+- トレードオフ: ルートの vitest config が `packages/*` の下のファイルではなくルートの共有モジュールに依存する（config 同士が循環しないための向き）。
+
+## ADR-043: 適合スイートの本数は絶対値で固定する
+
+### Context
+
+`conformanceCoverage.test.ts` の 2 つの検査はどちらも集合の相対比較で、スイート本体と 2 つの呼び出し行を同時に消せば両方とも通ったまま契約が 1 本消える。
+
+### Decision
+
+`exported.size` と `memoryCalls.size` を絶対数（31 / 30）で固定する。数値を書き換えることが「契約を 1 本増減させた」という宣言になる。
+
+### Consequences
+
+- 良い点: スイートごと消す—間引きの一番素直な形—が赤くなる。
+- トレードオフ: ポートを 1 つ足すたびにこの 2 つの数字も更新する。意図した増減なら 1 行、そうでなければ検知したかった事象そのもの。
+
+## ADR-044: `claimDue` の per-row 排他は `_occ_guard` で閉じる
+
+### Context
+
+`ScopeTaskScheduler.claimDue` は候補を読み、条件付き `UPDATE`（述語は候補判定の再掲）をステージし、適用結果を見ずに候補全件を `ScopeTask` として返していた。SQLite は 0 行更新をエラーにしないので、候補読みと commit のあいだに別の writer が同じ行を取ると、敗者の `UPDATE` は no-op として成功裏に commit され、**敗者も勝者と同じ行を受け取る**。ポート JSDoc は「two `claimDue` calls running at once never hand out the same row」と無条件に約束しており、memory は UoW 直列化でこれを満たしている。契約を変えた記録は無く、単なる実装漏れだった。
+
+DO 経由の commit は `applyWriteSet` が `void` を返すため、`RETURNING` / `meta.changes` で「実際に当たった行」を取り出す経路が無い。
+
+### Decision
+
+`claimStatement` の直前に、候補述語を `(kind, operation_id)` で絞った `occGuard` を `opaque` で積む（ADR-008 の形をそのまま適用）。敗者の commit は CHECK 違反で中断し、`ConflictError("OPTIMISTIC_LOCK_FAILURE")` になる。
+
+同じ文を実行する alarm turn 側にも同じ guard を積む。turn は候補読みと `transactionSync` のあいだに `await` を持たないので現状は guard 無しでも安全だが、その安全性はコードから読み取れず、`await` を 1 つ足した瞬間に同じ壊れ方をする。
+
+共有適合スイート（`adapters/conformance/scopeTaskScheduler.ts`）には並行 claim ケースを**足さない**。両バックエンドの契約変更にあたり、偽クロック下の並行ケースは memory の直列化と観測が噛み合わない。CF 側は `__tests__/lease.test.ts` のバックエンド固有ケースで閉じ、共有スイートへの追加は別 Issue に送る。
+
+### Consequences
+
+- 良い点: 2 つの runner に提示された 1 行が 2 度配られなくなり、継続要求の二重実行が消える。実バインディング上で「2 本の `claimDue` のうち行を返すのはちょうど 1 本、もう 1 本は `OPTIMISTIC_LOCK_FAILURE`」が観測できるようになった（`_occ_guard` の CHECK 名は Durable Object の RPC 境界を越えても保たれることが実測で確認できた）。
+- トレードオフ: 1 回の `claimDue` が複数行を掴むとき、1 行でも競合すれば batch 全体が中断して 0 件になる。ポート JSDoc が「offering one row to two runners costs no more than a claim one of them loses」と budget している範囲であり、runner は次 tick で取り直す。
+- 同一 UoW 内で `claimDue` を 2 回呼ぶと、2 回目は 1 回目のステージ済み claim に guard が外れて中断する。契約は同一 UoW 内の二重 claim を要求していない（候補読みは意図的にオーバーレイを通らない）ので、これは正しい振る舞いとして受け入れる。
+
+## ADR-045: scope object が継続を駆動するのは、ハンドラレジストリが空でないときだけ
+
+### Context
+
+`ScopeObject.applyWriteSet` は `scheduled_tasks` を触れば無条件に alarm を武装し、`alarm()` は無条件に turn を回していた。同時に `createWorkerContainer` は `scopeTaskQueue` を配線しており、中央 runner（`runDueScopeTasks`）も同じ scope の行を claim する。ADR-019 の「契約を変えない」という決着は「1 scope に対する writer は 1 本」という前提の上に立っているのに、既定の合成が 2 writer 併走になっていた。
+
+さらに `registerScopeTaskHandler` の呼び出しはリポジトリ内に 0 件で、レジストリは常に空だった。空のまま武装すると turn は行を claim し、ハンドラが無いので `running` のまま放置し、`nextWakeAt` が lease 満了を返して再武装する。中央 runner の `listDue` はリース中の行を候補から外すので、継続要求は永久に進まない。
+
+### Decision
+
+**レジストリが空なら、object は継続の driver ではない**とみなす。すなわち turn は 1 行も claim せず、`rescheduleAlarm` は alarm を武装せずに削除する。レジストリに 1 つでもハンドラがあれば、従来どおり object が driver になり、alarm を武装して turn を回す。
+
+対案 (b)（`createWorkerContainer` から `scopeTaskQueue` を外す）は採らない。ADR-003 の due index は中央 runner の `listDue` のために新設した表であり、ポート契約が `listDue` の実装を要求しているため。
+
+レビューの対案 (a) は「claim せず `rescheduleAlarm` だけ行う」だったが、そのままでは過去の `due_at` に対して alarm を武装し続け、何もしない turn が即座に再配送される tight loop になる。武装まで止めるのがこの決定の要点である。
+
+### Consequences
+
+- 良い点: 「どちらが writer か」がレジストリという 1 つの事実から決まり、既定の合成で 2 writer が併走しなくなる。配備スライスはハンドラを登録するだけで object 側へ倒せる。
+- due index の publish はレジストリの有無にかかわらず行う。中央 runner が driver である配備では、これが唯一の可視化経路になる。
+- `registerScopeTaskHandler` は解除関数を返す。テストが登録をリセットできるようにするための形で、テスト専用 export を置かずに済む。
+- `runScopeAlarmTurn` はハンドラ表を引数でも受け取る（既定はモジュールレジストリ）。これでハンドラ経路（成功 / 失敗 / 予算切れ）を実バインディング上でテストできる。
+
+## ADR-046: alarm turn は失敗を backoff し、予算切れの claim 済み行は release する
+
+### Context
+
+`runScopeAlarmTurn` の `await handle(task, scope)` には `try / catch` が無く、ハンドラが投げると turn 全体が中断していた。その chunk で claim 済みの残り行は訪問されないまま `running` で残り（turn 自身の JSDoc が「訪問しない行を claim してはならない」と書いている状態そのもの）、失敗した行は `backoff` されないので `attempts` が 0 のまま `SCOPE_TASK_MAX_ATTEMPTS` に永久に届かない。参照実装の `application/workers/scopeTaskRunner.ts` は同じ位置に `try / catch` + `backOff` を持っている。
+
+CPU budget（`while (remaining > 0 && elapsedMs() < cpuBudgetMs)`）が打ち切るのは次チャンクの claim だけで、claim 済み最大 10 件のハンドラ実行は budget の外側にあった。AC-6 の `leaseMs` 下限論拠（1 turn = 2 秒 + 外部 I/O）が担保されていない。
+
+### Decision
+
+- ハンドラ実行を 1 件ずつ `try / catch` で囲み、失敗した行は turn 内で `backoffStatement` を撃つ（alarm 内なのでローカル適用）。turn は残りの行を訪問し続ける。
+- ハンドラ実行の**前**にも budget を見る。超過したら、その chunk の未訪問行を `releaseStatement`（`status='pending'`, `lease_expires_at=NULL`、`due_at` と `attempts` は据え置き）で返して turn を終える。backoff ではなく release にするのは、誰も試していない仕事に attempt を払わないため。
+- `ScopeAlarmTurnResult` に `failed` / `released` を足し、`unhandled > 0` は `Logger` へ落とす。
+
+### Consequences
+
+- 良い点: 恒久的に失敗する継続が attempt を積んで `failed` に park するようになり、ポート JSDoc の attempt ceiling が成立する。予算切れで claim 済みの行が 1 リース期間ぶん不可視になる経路も消えた。
+- `releaseStatement` はポートの状態遷移表に無い内部遷移である。turn の内側だけで使い、claim した本人がリースを返す形なので、他の writer との競合は起きない。
+- トレードオフ: 失敗が 1 件でも `attempts` が進むので、外部要因（D1 の一時障害など）で連続失敗すると ceiling に早く届く。これは中央 runner の既存の振る舞いと同じで、バックエンド間の非対称は生まない。
+
+## ADR-047: `ScopeObject` は束縛済み ScopeKey をメモ化し、due index スライスは有界にする
+
+### Context
+
+`ScopeObject.bind` は RPC のたびに `INSERT INTO _scope_identity … ON CONFLICT DO NOTHING` と `SELECT` を撃っていた。`query` も `applyWriteSet` も毎回これを通るので、読み 1 回が 3 文になり、読み専用の RPC が（衝突して no-op でも）暗黙の書き込みトランザクションを開いていた。AC-5 の計測ハーネスは executor の呼び出し回数を数えていたので、この分は「実測」に入っていなかった。
+
+`dueIndexRowsStatement` は `status <> 'failed'` の全行を LIMIT 無しで読み、`dueIndexStatements` がそれを 1 つの JSON バインディングに畳んでいた。scope のタスク総数に対して無界で、1 値 2,000,000 バイトの上限に無防備だった。
+
+### Decision
+
+- 束縛済み ScopeKey をインスタンスに保持する。constructor の `blockConcurrencyWhile` で `_scope_identity` を 1 回読み、以後 `bind` は文字列比較だけになる。まだ pin されていない object だけが INSERT + 読み戻しを 1 度行う。
+- 解析と列変換は `do/scopeName.ts` の `scopeColumns` / `scopeColumnsFromName` / `scopeFromColumns` に寄せ、`scopeObject.ts` と `scopeTaskScheduler.ts` のインライン再実装を消す。
+- `ScopeObject` の SQL は `createStorageExecutor` を通す。scope 平面でも `assertBindable`（bound parameter 100）が効くようになり、`createScopeStubExecutor` も送信前に同じ検査を掛ける。
+- `dueIndexRowsStatement` は優先度ごと 25 行（4 優先度で最大 100 行）に有界化する。フラットな `LIMIT` ではなく優先度ごとにするのは、`listDue` が優先度ごとに 1 枠予約する規則を持つため、ある優先度の滞留が別の優先度を索引から丸ごと押し出さないようにするため。
+
+### Consequences
+
+- **AC-5 の実測値（`bind` メモ化後）**: `deleteFilesByOwner` の 1 turn で scope object が実際に実行する SQL 文数は **`4n + 3`**。n=10 で 43 文、n=40 で 163 文。内訳は読み `2n + 2` 文（`2n + 2` 回の RPC 往復、1 往復 1 文）と、1 回の commit に入る `2n + 1` 文。`__tests__/deleteFilesByOwner.test.ts` は executor 呼び出し数と **object の内側で実行された文数**の両方を数え、両者が一致することを固定した。したがって `4n + 3` は「executor 呼び出し数」ではなく DO 内の実文数として引用してよい。
+- 読み経路から書き込み文が消えた。読み専用 RPC が暗黙の書き込みトランザクションを開くこともなくなる。
+- due index のスライスは scope のタスク総数によらず最大 100 行になる。溢れた行は索引に載らないが、載っている行が settle されるたびにスライスが再公開されるので順に現れる。scope 自身の alarm turn は `scheduled_tasks` を直接読むので、この打ち切りの影響を受けない。
+- **残る制約**: due index の行は素の `ScopeKey` を持ち、テスト名前空間 prefix を持たない（prefix は production のデータに漏れてはならない列に入る）。ADR-004 の factory ごとの分離が届かない唯一の表であり、UoW 経由で scope task を触るテストを同一ファイルに並べると相互汚染しうる。制約として `do/dueIndex.ts` の JSDoc に明記した。ADR-045 により既定ではレジストリが空＝ alarm が武装されないので、「先に作られた object の alarm が後から index を書き戻す」経路は実際には塞がっている。
+
+## ADR-048: 公開カーソルは署名しない — 契約語のほうを実装へ寄せる
+
+### Context
+
+`PublicNoteQueryService` のポート JSDoc は「Cursors are **signed** opaque values … condition changes, **tampering**, and retired generations surface as `ValidationError("INVALID_PAGINATION")`」と書いていた。実装は memory も Cloudflare も base64url した JSON で、載っているのは criteria から決定的に計算できる fingerprint だけである。fingerprint を作り直せば `after` は任意に動かせるので、契約語の「署名」「改竄検出」は両バックエンドとも満たしていない。
+
+### Decision
+
+[ADR 046](../../spec/adr/046-port-contract-divergence.md) の「正本のある側へ倒す」に従い、**実装ではなくポート JSDoc を直す**。cursor は「opaque かつ query fingerprint 付き。認証はされていない」と書き、あわせて「cursor はページの開始位置だけを決め、内容は決めない。可視性の述語は cursor によらず毎回掛かるので、cursor を capability として扱ってはならない」を契約として明記した。
+
+HMAC を入れる側に倒さなかった理由:
+
+- 両バックエンドが同じ振る舞いなので、実装を変えるなら memory も同時に変わる。AC-7 が「memory バックエンドの振る舞いを変更していない」を求めており、本 PR のスコープを越える。
+- 鍵の出所（DI・ローテーション・世代跨ぎの検証）を決める必要があり、それは物理 shard 化で `shard generation` を cursor に載せる時点の判断と一体である。
+- 守るべきものが cursor 側に無い。`searchPublic` / `listPublicSitemapEntries` / `listPublicAuthors` はいずれも `visibility = 'public' AND lifecycle = 'active'` を必ず掛けるので、位置を飛ばしても非公開行には届かない。
+
+### Consequences
+
+- 変更したのは `domain/note/ports/publicNoteQueryService.ts` の JSDoc と、`adapters/cloudflare/cursor.ts` の JSDoc・拒否メッセージ（"Tampered or retired" → "Unreadable or retired"）だけ。適合スイートは 1 行も変えていない（`ADP-note-025` が実際に観測しているのは「読めない cursor」と「条件が変わった cursor」で、どちらも fingerprint 検査で落ちる）。
+- memory 側の `cursor.ts` の JSDoc とメッセージには同じ文言が残っている。振る舞いは同じなので緑のままだが、文言の追随は memory を触ってよい機会に回す。
+- 将来 cursor を認証するなら、契約を強める変更として両バックエンド + 適合スイートを同時に動かすこと。
+
+## ADR-049: 検索の 1 ページは本文を運ばない — ハイライトは 2 文目で前方 4,000 文字だけを見る
+
+### Context
+
+`note_search` / `public_note_search` の `text` は投影された本文で、1 行あたり最大 800,000 バイト（ADR 017）。`NoteSummary` / `PublicNoteSummary` にこの列から作るフィールドは無く、使うのはハイライトが「excerpt に一致が無かったとき」だけである。にもかかわらず読みは `SELECT ns.*` で全行の本文を引いていた。limit 20 のページが最悪 16 MB を DO の RPC や D1 の応答に載せる形で、Workers の 128 MB という実上限に対して素直でない。
+
+`mapPositions` は写像を作るために 1 文字ずつ NFKC を掛けていたが、NFKC は合成を含むので文字単位の適用は文字列全体の適用と等しくない。本文が結合列（`か` + U+3099）で保存されていると、索引側（`bigramIndexText` は文字列全体に掛ける）は `が` を入れて FTS はヒットするのに、ハイライト側の needle が見つからず `highlightedExcerpt` が `null` に落ちていた。
+
+### Decision
+
+- ページの投影を `summaryColumns()` にする（`text` 以外の全列）。
+- ハイライトが本文を要るのは「keyword があり、かつ excerpt に一致が無かった行」だけなので、その note_id だけを対象に 2 文目を撃つ（`bodyHighlights`）。列は `substr(text, 1, 4000)`。
+- 写像は書記素クラスタ単位で正規化して作る（`Intl.Segmenter`）。合成はクラスタの内側で閉じるので、結合列も文字列全体の NFKC と一致する。
+
+### Consequences
+
+- 1 ページが運ぶ本文は最悪 `limit × 4,000` 文字になり、キーワード無しの検索では 1 文字も運ばない。文数は「keyword があり excerpt 不一致の行がある」ページでのみ +1。
+- 前方 4,000 文字より後ろにしか一致が無い本文はハイライトが `null` になる。行自体は従来どおりヒットし、view は素の excerpt へ落ちる — ADR 011「既知の限界」がすでに「title だけで一致した行」「トークン境界を跨いだ一致」に対して認めている落ち方と同じで、memory バックエンドは元々 excerpt しか見ないので契約上の差にもならない。`spec/database/index.md`「既知の限界」へこの 1 行を足すのは束 7 の持ち分。
+- 書記素クラスタ単位でも、クラスタを跨ぐ文脈依存の小文字化（ギリシャ語の語末シグマなど）は文字列全体の結果と一致しない。その場合はハイライトが `null` に落ちるだけで、誤った位置には決してならない。
+- `highlightExcerpt(excerpt, text, keyword)` は `highlightExcerpt(excerpt, keyword)` と `highlightBody(text, keyword)` の 2 本に割れた。「excerpt を優先し、無ければ本文の窓」という順序は呼び出し側（クエリサービス）が持つ。
+
+## ADR-050: `redactAuthor` は条件付き UPDATE ではなく guard で決める
+
+### Context
+
+ポート JSDoc は「A missing row, a row created by someone else, and a row already at that generation or later are all no-ops … Returns whether a row changed」。実装は読んだ行から 3 つの no-op を判定したうえで、`UPDATE … WHERE note_id = ? AND created_by = ? AND author_version < ?` を積み、無条件に `true` を返して overlay にも赤字化した行を置いていた。並行更新でこの UPDATE が 0 行に当たっても戻り値は `true` のままで、同じ UoW の後続の `readStored` は storage が受け取らなかった値を返す。
+
+### Decision
+
+条件を `occGuard` に移し、UPDATE 自体は `WHERE note_id = ?` の無条件更新にする。guard は「期待が成り立たないときだけ実行され、実行されれば必ず CHECK に反する」文なので、読んだときの判定が commit 時に崩れていれば unit ごと中断する。
+
+### Consequences
+
+- 戻り値 `true` は「行が変わった」と一致する。当たらなかった場合は `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が出て、赤字化の fan-out は at-least-once なので再配送で読み直し、そのときは新しい行を見て `false` の no-op に落ちる（収束は変わらない）。
+- overlay に置く行が storage の結果と食い違わなくなる（食い違うなら commit しない）。
+- guard は両平面の `_occ_guard` に載る。D1 の batch も DO の `transactionSync` も同じ形で中断する。
+
+## ADR-051: scope の読みは「件数に比例しない」ところまで絞る
+
+### Context
+
+`listMonthsWithNotes` は所有者の active ノート全件（`SELECT DISTINCT created_at`）を Worker のメモリへ引き上げていた。`created_at` はミリ秒なので実質 1 ノート 1 行で、10 GB まで伸びる scope では 1 RPC が数万〜数十万行を返す。`spec/platform/index.md`「Scope DO」の分割単位表は他の全経路に 50〜200 行の上限を置いており、ここだけ無界だった。`noteRevisionRepository` は削除・件数判定のためだけに `html` を含む全列（1 ノート 20 版 × 800,000 バイト）を読んでいた。`ObjectStorage.deleteMany` は R2 の 1 回 1,000 key の上限を見ていなかった。
+
+### Decision
+
+- `listMonthsWithNotes` は UTC 日でまとめ、日ごとの `MIN(created_at)` / `MAX(created_at)` だけを返す。1 日は 1 か月より短いので、その日のどのノートも「最古の instant の月」か「最新の instant の月」のどちらかに属する。よってこの 2 つで、その日に現れる月は漏れなく尽きる。SQL に IANA タイムゾーンを持ち込まずに済み、行数は「書き込みのあった日数」に落ちる。
+- `noteRevisionRepository` の削除・保持判定は `SELECT id, created_at` に絞る。`listByNote` は `LIMIT` を SQL に落とす。
+- `ObjectStorage.deleteMany` は 1,000 key ずつに切って順に消す。不在許容なので途中で落ちても再実行できる。
+
+### Consequences
+
+- 削除は依然 1 行 1 文（`deleteRowsFromJson` の 1 文にしていない）。`remove` mutation は同時に「この unit が消した行を後続の読みに見せない」overlay の項目でもあり、`RowMutation` には文を伴わない overlay 専用の形が無いためで、保持不変条件が 1 ノート 20 行に抑えている。文を 1 本にするなら `RowMutation` 側に overlay 専用の形を足す変更が要る。
+- `listMonthsWithNotes` の行数は「書き込みのあった日数」であって定数上限ではない。scope の寿命に対して線形（10 年で最大 3,650 行、1 行 3 整数）で、ノート件数からは切れている。定数上限にするには月境界の instant を JS で列挙して `json_each` + `EXISTS` に落とす形になるが、DST を含むタイムゾーン境界の算術を自前で持つことになるので採らなかった。
+- R2 の上限行を `spec/platform/index.md` の R2 表へ足すのは束 7 の持ち分。
+
+## ADR-052: 本番ソースから `.thread/11/adr.md` への参照を全廃し、理由そのものをその場に置く
+
+### Context
+
+`packages/core` と `spec/` の 24 箇所が、この作業ファイルを「ADR 001」「ADR 003」「ADR 004」といった番号で参照していた。`spec/adr/001-authentication-strategy.md` 〜 `004-workspace-roles.md` は実在するので、同じファイルの中で「ADR NNN」が 2 つの名前空間を指すことになり、リンクを踏まない読み手は取り違える。加えて CLAUDE.md「Design canon」は canon を `spec/` に限っており、`.thread/` は Issue が閉じれば参照が死ぬ作業ディレクトリである。このリポジトリで本番ソースが `.thread/` を指すのは本 PR が初めてだった。
+
+### Decision
+
+本番コード・`spec/`・`docs/` から `.thread/11/adr.md` への参照を 24 箇所すべて外す。番号の付け替えではなく、**判断の理由そのものを 1〜2 行でその場に書く**。CLAUDE.md「コメントは既定で書かない。WHY が自明でないときだけ」に照らせば、必要なのは参照ではなく理由である。
+
+- 参照先の JSDoc が既に理由を述べていた箇所（`writeSet.ts` の「どちらの実行基盤もコールバック形を取れない」、`scopeStub.ts` の「コールバックは RPC を越えられない」など）は、括弧の引用を落とすだけで内容が残る。
+- 理由が引用にしか無かった箇所は書き足す（`scopeObject.ts` の `GLOBAL_DB`、`noteRouteStore.ts` の guard、`scopeTaskScheduler.ts` の fencing と alarm 非再武装）。
+- `spec/adr/` の既存 ADR への参照はそのまま残す。canon であり番号空間も 1 つである。
+- 番号空間を明示する書き方（`.thread/11/adr.md ADR-003` など）へ統一する案は採らない。作業ファイルへの参照が本番ソースに残ること自体が、Issue の完了とともに切れるリンクを作る。
+
+### Consequences
+
+- 良い点: `grep -rn "\.thread" packages apps spec docs` が 0 件になり、番号の衝突が構造的に消える。
+- 良い点: 理由が読む場所にある。ADR を開かないと分からない記述が本番ソースから無くなる。
+- トレードオフ: 検討した代替案・棄却理由といった長い経緯は本ファイルにしか無い。読み手が要求と判断の背景まで辿りたい場合の入口が 1 つ減る。恒久的に要る背景は `spec/adr/` への昇格で持ち上げるべきで、その候補は本 Issue の報告に挙げる。
+
+## ADR-053: `identity_unique_reservations` は `user_version` を残し、`(user_id, kind)` 索引を落とす
+
+### Context
+
+どちらも `spec/database/index.md` の列表・索引に無く、実装だけが持っていた。`user_version` は `activate(operationId, expectedUserVersion)` が受けた版を書くが読み手が無い。`(user_id, kind)` 索引も `user_id` で引くクエリが無い。memory バックエンドは `DirectoryRow.userVersion` を同じく持ち、索引という概念は持たない。
+
+### Decision
+
+- `user_version` は**残し、spec の列表へ足す**。`spec/database/index.md#identity_unique_reservations` は「応答喪失は operation payload の全 key と現在の User/Identity version を確認して all-activate または all-release へ再開する」と定めており、活性化時に観測した版を行が持っていることがその照合の材料になる。memory も同じ値を持つので、両バックエンドの行像も揃う。
+- `(user_id, kind)` 索引は**落とす**。読み手が無い索引は D1 の write コストにそのまま乗り、必要になった時点で足せる。
+
+### Consequences
+
+- `identity_unique_reservations` の書き込みが索引 1 本ぶん軽くなる。
+- `user_id` で予約を列挙する経路が現れたら索引を足す判断が要る。今日そういうポートメソッドは無い。
+
+## ADR-054: `identities` の 8 件上限に DB トリガーを置かない
+
+### Context
+
+`spec/database/index.md#identities` は「UserId shard の最終 UoW で current 件数を検査し、`BEFORE INSERT` trigger も同じ `user_id` が既に 8 件なら abort する」と多層防御を定めていた。実装はアプリ側検査（`IdentityPolicy`）だけを持つ。
+
+### Decision
+
+トリガーは置かない。`spec/database/index.md` の当該行を、置かない旨と理由を述べる形へ改める。
+
+`IdentityRepository` の契約は件数を制約しておらず、適合スイートもこれを観測しない。そのうえ SQLite のトリガーが abort した結果はドライバのエラーとしてしか届かず、アダプターはそれを `SystemError(DatabaseError)` にしか翻訳できない — `IdentityLimitExceeded` は業務規則の符号であって、駆動エラーからは復元できない。したがってトリガーは多層防御にならず、上限違反を不透明な障害の裏へ隠すだけになる。[ADR 054](../../spec/adr/054-provider-account-uniqueness-owner.md) が provider account の一意性について採った「契約が要求しない制約は、ドメインの符号を壊さない範囲でだけ置く」と同じ立場である。
+
+### Consequences
+
+- 上限を決める場所がドメインの `IdentityPolicy` ひとつになる。
+- 直接 SQL で行を足す運用操作は上限を越えられる。ポート経由でない書き込みは元より契約の外なので、これは新しい穴ではない。
+
+## ADR-055: `account_deletion_manifests` / `global_maintenance_runs` の spec 節をポート契約側へ寄せる
+
+### Context
+
+物理表を 2 つ（`account_deletion_manifest_items` / `global_maintenance_run_lanes`）足すにあたり、header 側の列を spec に書き下ろすと既存の記述と食い違うことが分かった。spec は header の状態を 9 値（`buildingMemberships` … `compactingRejected`）とし、`request_key` 列と `UNIQUE(user_id, request_key)` を持つとしていたが、`AccountDeletionManifestHeader` は 5 値（`building` / `built` / `rollingBack` / `completed` / `rejected`）で `requestKey` を持たない。`global_maintenance_runs` も `state` ではなく `status`、`expires_at` の索引条件も同じ綴りの食い違いがある。
+
+### Decision
+
+ポート契約側へ寄せ、spec の当該節を書き直す（[ADR 026](../../spec/adr/026-port-contract-and-conformance.md)：永続化ポートの正本はポート定義と JSDoc）。
+
+- header の status は 5 値。縮約の進み具合は item 行の残数が持つので、`compacting` / `compactingRejected` に相当する状態を header に足さない。
+- header は `request_key` を持たない。同じ要求の再生を弾くのは `distributed_operations` の `UNIQUE(kind, partition_key, request_key)` であり、要求鍵の正本を 2 つ置かない。
+- 2 表分割そのものの理由も spec に書く（item は 100 件ずつ伸びるので header 行に畳めない、lane は 1 行ずつ条件付き更新するので run 行の版を奪い合わせない）。
+
+### Consequences
+
+- `spec/database/index.md` の当該 2 節がポートと 1 対 1 になる。
+- account deletion の状態機械を語る `spec/usecases/identity.md` 側に 9 値の名前が残っていれば、そちらの追随が別途要る（本 Issue では確認していない）。

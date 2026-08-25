@@ -5,11 +5,19 @@ import { ValidationError } from "../../application/errors";
  *
  * Same contract as every other backend's: the cursor carries the
  * fingerprint of the query that produced it, so a value replayed against
- * different conditions — or tampered with — is rejected with
- * `ValidationError("INVALID_PAGINATION")` instead of quietly returning
- * the wrong page. A cursor is opaque and backend-local: it never has to
- * decode against another backend's encoder, which is why this one is
- * free to differ from the memory backend's `Buffer`-based encoding.
+ * different conditions — or one that does not decode at all — is rejected
+ * with `ValidationError("INVALID_PAGINATION")` instead of quietly
+ * returning the wrong page. A cursor is opaque and backend-local: it
+ * never has to decode against another backend's encoder, which is why
+ * this one is free to differ from the memory backend's `Buffer`-based
+ * encoding.
+ *
+ * It is **not authenticated**. The encoding hides the position from a
+ * casual reader, but a caller who reconstructs the fingerprint can move
+ * `after` wherever it likes, and that is by design: a cursor selects
+ * where a page starts and never what it may contain, so every read
+ * applies its own visibility predicate regardless of the cursor it was
+ * handed. Nothing may treat a cursor as a capability.
  *
  * `after` holds the keyset position — the tuple the next page starts
  * after, joined the same way the `ORDER BY` orders it.
@@ -63,6 +71,6 @@ export const decodeOpaqueCursor = (
   }
   throw new ValidationError(
     "INVALID_PAGINATION",
-    "Tampered or retired pagination cursor",
+    "Unreadable or retired pagination cursor",
   );
 };

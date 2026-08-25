@@ -6,7 +6,7 @@ const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
 
 /**
  * The global mirror of one scope's `scheduled_tasks`
- * ([ADR 003](../../../../../.thread/11/adr.md)).
+ * (`spec/database/index.md#scope_task_due_index`).
  *
  * `ScopeTaskQueue.listDue` has to span every scope, and Durable Objects
  * cannot be enumerated — `listDurableObjectIds` is a test helper, and
@@ -27,7 +27,17 @@ const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
  * Replacing the whole slice — rather than mirroring each mutation — is
  * what makes the two paths that change tasks (a committed write-set and
  * an alarm turn's claims) converge on the same result without either
- * having to know which rows the other touched.
+ * having to know which rows the other touched. The slice is bounded by
+ * `dueIndexRowsStatement`, so both the row count and the JSON binding
+ * this folds it into stay independent of how much work a scope holds.
+ *
+ * The rows carry the bare `ScopeKey`, not the object's test namespace
+ * prefix — the columns exist to address a scope from a central runner,
+ * and a prefix would leak into production data. Two objects that share a
+ * `ScopeKey` under different namespaces therefore share one slice, which
+ * is the one place the per-factory isolation of `./scopeName.ts` does
+ * not reach. Tests that drive scope tasks through a unit of work must
+ * not share a file with other scope-task tests.
  */
 export function dueIndexStatements(
   scope: Readonly<{ type: string; id: string }>,

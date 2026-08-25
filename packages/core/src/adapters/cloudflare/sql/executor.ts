@@ -7,13 +7,12 @@ import type { SqlRow, SqlStatement } from "./statement";
  * Three implementations exist and they are interchangeable by design:
  * D1 (`createD1Executor`), a scope Durable Object reached over RPC
  * (`createScopeStubExecutor` in `../do/scopeStub.ts`), and the same
- * object's storage from inside its own `alarm()` (`createStorageExecutor`).
+ * object's own storage seen from inside it (`createStorageExecutor`).
  * `apply` is **atomic**: either every statement lands or none does.
  *
  * `apply` is the only write path. Repositories never call it — they
  * hand mutations to a `SqlSession`, which either applies them straight
- * away (outside a unit of work) or stages them for the commit
- * ([ADR 001](../../../../../.thread/11/adr.md)).
+ * away (outside a unit of work) or stages them for the commit.
  */
 export interface SqlExecutor {
   query(input: SqlStatement): Promise<readonly SqlRow[]>;
@@ -26,8 +25,7 @@ export interface SqlExecutor {
  * bookkeeping to do that depends on *which* tables changed: a write-set
  * that touched `scheduled_tasks` must leave the global due index
  * refreshed before the call returns, which is what makes a task visible
- * to `ScopeTaskQueue.listDue` the moment `run` resolves
- * ([ADR 003](../../../../../.thread/11/adr.md)).
+ * to `ScopeTaskQueue.listDue` the moment `run` resolves.
  */
 export interface ScopeSqlExecutor extends SqlExecutor {
   applyWriteSet(
@@ -69,10 +67,11 @@ export function createD1Executor(db: D1Database): SqlExecutor {
 }
 
 /**
- * A Durable Object's own SQL storage, used from inside the object —
- * `alarm()` and the write-set apply RPC. `transactionSync` cannot span
- * an `await`, which is why the whole write-set arrives as data before
- * this runs ([ADR 002](../../../../../.thread/11/adr.md)).
+ * A Durable Object's own SQL storage, and the only path `ScopeObject`
+ * takes to it — which is what puts the binding limit `assertBindable`
+ * enforces on both planes rather than only on D1. `transactionSync`
+ * cannot span an `await`, which is why the whole write-set arrives as
+ * data before this runs.
  */
 export function createStorageExecutor(
   storage: DurableObjectStorage,

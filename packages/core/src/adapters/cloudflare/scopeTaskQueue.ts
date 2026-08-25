@@ -5,9 +5,10 @@ import type {
 import { GLOBAL_TABLES } from "./d1/schema";
 import { selectDueRows } from "./do/scheduledTasks";
 import { scopeFromColumns } from "./do/scopeName";
+import { throwTranslated } from "./sql/errors";
 import { text } from "./sql/row";
 import type { SqlSession } from "./sql/session";
-import { statement } from "./sql/statement";
+import { type SqlRow, statement } from "./sql/statement";
 
 const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
 
@@ -23,7 +24,7 @@ const CANDIDATE_PREDICATE =
 
 /**
  * The scope-spanning due read, over the global mirror of every scope's
- * `scheduled_tasks` ([ADR 003](../../../../.thread/11/adr.md)).
+ * `scheduled_tasks` (`spec/database/index.md#scope_task_due_index`).
  *
  * Durable Objects cannot be enumerated, so this is the only way a central
  * runner learns which scopes have work — the port is explicit that a
@@ -40,17 +41,16 @@ const CANDIDATE_PREDICATE =
 export function createCloudflareScopeTaskQueue(
   deps: Readonly<{ session: SqlSession }>,
 ): ScopeTaskQueue {
-  return {
-    async listDue(now: Date, limit: number): Promise<readonly DueScopeTask[]> {
-      if (limit <= 0) {
-        return [];
-      }
-      const nowMs = now.getTime();
-      // `LIMIT limit` alone would miss the head of a priority that sits
-      // past the first `limit` rows of the global order, which is exactly
-      // what reservation has to reach. Bounding each priority to `limit`
-      // rows keeps the candidate set at `4 × limit` at worst.
-      const candidates = await deps.session.query(
+  // `LIMIT limit` alone would miss the head of a priority that sits past
+  // the first `limit` rows of the global order, which is exactly what
+  // reservation has to reach. Bounding each priority to `limit` rows
+  // keeps the candidate set at `4 × limit` at worst.
+  const queryCandidates = async (
+    nowMs: number,
+    limit: number,
+  ): Promise<readonly SqlRow[]> => {
+    try {
+      return await deps.session.query(
         statement(
           `SELECT ${COLUMNS} FROM (
              SELECT ${COLUMNS},
@@ -68,6 +68,17 @@ export function createCloudflareScopeTaskQueue(
           limit,
         ),
       );
+    } catch (cause) {
+      throwTranslated(`${TABLE} due scan`, cause);
+    }
+  };
+
+  return {
+    async listDue(now: Date, limit: number): Promise<readonly DueScopeTask[]> {
+      if (limit <= 0) {
+        return [];
+      }
+      const candidates = await queryCandidates(now.getTime(), limit);
       return selectDueRows(candidates, limit).map((row) => ({
         scope: scopeFromColumns(text(row, "scope_type"), text(row, "scope_id")),
         kind: text(row, "kind"),

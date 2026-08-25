@@ -42,11 +42,15 @@ export type ScopeUnitOfWorkOptions = Readonly<{
  *
  * The callback runs in the **caller's** isolate, not inside the object:
  * `run(scope, fn)` takes an arbitrary closure, which cannot be shipped
- * over RPC, so reads are RPC round trips and writes are staged locally
- * ([ADR 002](../../../../../.thread/11/adr.md)). Commit hands the whole
- * write-set to the object in one call, where it applies under
+ * over RPC, so reads are RPC round trips and writes are staged locally.
+ * Commit hands the whole write-set to the object in one call, where it
+ * applies under
  * `ctx.storage.transactionSync` — the object never awaits anything
  * inside that transaction, per `spec/platform/index.md`「外部要求」.
+ *
+ * A unit that staged nothing skips the commit call: with no statements
+ * and no touched tables the object would have nothing to do, and the
+ * round trip is the expensive part of this plane.
  *
  * Two triggers fire after a successful commit and only then: the relay
  * when the unit flushed events, and the scope-task trigger when it wrote
@@ -82,10 +86,12 @@ export function createScopeUnitOfWorkProvider(
           await options.stageOutbox(session, buffered);
         }
         const touched = writeSet.touchedTables();
-        try {
-          await executor.applyWriteSet(writeSet.statements(), touched);
-        } catch (cause) {
-          throwTranslated("the scope unit of work", cause);
+        if (!writeSet.isEmpty()) {
+          try {
+            await executor.applyWriteSet(writeSet.statements(), touched);
+          } catch (cause) {
+            throwTranslated("the scope unit of work", cause);
+          }
         }
         if (buffered.length > 0) {
           options.relayTrigger?.kick();

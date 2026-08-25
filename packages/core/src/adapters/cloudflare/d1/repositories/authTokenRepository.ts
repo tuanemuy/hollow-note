@@ -131,11 +131,16 @@ export function createD1AuthTokenRepository(
       userId: UserId,
       purpose: AuthTokenPurpose,
     ): Promise<PendingAuthToken | null> {
+      // The pair holds at most one pending token in practice, but nothing
+      // in the schema enforces it, so the newest issue is picked
+      // explicitly: this read is what a resend interval is measured from,
+      // and a scan-order answer would make that interval non-deterministic.
       const rows = await session.readRows({
         table: TABLE,
         statement: statement(
           `SELECT * FROM ${TABLE}
-           WHERE user_id = ? AND purpose = ? AND status = 'pending' LIMIT 1`,
+           WHERE user_id = ? AND purpose = ? AND status = 'pending'
+           ORDER BY created_at DESC, id DESC LIMIT 1`,
           userId,
           purpose,
         ),
@@ -144,6 +149,9 @@ export function createD1AuthTokenRepository(
           text(row, "user_id") === userId &&
           text(row, "purpose") === purpose &&
           text(row, "status") === "pending",
+        compare: (a, b) =>
+          int(b, "created_at") - int(a, "created_at") ||
+          (text(a, "id") < text(b, "id") ? 1 : -1),
         limit: 1,
       });
       const row = rows[0];

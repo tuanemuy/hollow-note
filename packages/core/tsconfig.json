@@ -7,7 +7,7 @@
   // program too.
   "exclude": [
     "src/adapters/cloudflare/**/*",
-    "src/application/di/cloudflareRuntime.ts"
+    "src/application/di/cloudflare*.ts"
   ],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],

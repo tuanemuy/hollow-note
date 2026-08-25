@@ -1,11 +1,12 @@
 -- Global D1 schema, migration version 1.
 --
 -- Scope: the tables of `spec/database/index.md` の「物理配置」 that have a
--- port today. `membership_directory`, `workspace_slug_reservations`,
--- `invitation_routes`, `job_slots`, `workspace_directory`, `job_history*`
--- and `external_connections` are deliberately absent — the domains that
--- own them have no ports yet, and a later slice adds them as its own
--- migration file.
+-- port today, plus `membership_directory`, which has no port of its own
+-- but is read by `AccountDeletionManifestStore.appendMembershipPage`.
+-- `workspace_slug_reservations`, `invitation_routes`, `job_slots`,
+-- `workspace_directory`, `job_history*` and `external_connections` are
+-- deliberately absent — the domains that own them have no ports yet, and
+-- a later slice adds them as its own migration file.
 --
 -- No FOREIGN KEY declarations. The port contract is the canon of a
 -- persistence port (ADR 026) and it nowhere requires referential
@@ -153,7 +154,40 @@ CREATE TABLE identity_unique_reservations (
   CHECK (state <> 'reserved' OR expires_at IS NOT NULL)
 );
 
-CREATE INDEX identity_unique_reservations_user_idx ON identity_unique_reservations (user_id, kind);
+-- `membership_id` is nullable because a `pending` edge is a reservation
+-- taken before the workspace-local Membership exists, so it has no id to
+-- carry yet; the CHECK still demands one from every settled edge.
+-- `(user_id, operation_id)` exists because `operation_id` is the edge key
+-- an account-deletion manifest pages by, and neither of the other two
+-- indexes can walk that order.
+CREATE TABLE membership_directory (
+  operation_id text PRIMARY KEY,
+  user_id text NOT NULL,
+  workspace_id text NOT NULL,
+  membership_id text,
+  role text NOT NULL,
+  state text NOT NULL CHECK (state IN ('pending', 'activating', 'active', 'removing')),
+  deletion_prepare_operation_id text,
+  deletion_prepare_expires_at integer,
+  reservation_expires_at integer,
+  created_at integer NOT NULL,
+  updated_at integer NOT NULL,
+  CHECK (state NOT IN ('active', 'removing') OR membership_id IS NOT NULL),
+  CHECK ((state IN ('pending', 'activating')) = (reservation_expires_at IS NOT NULL)),
+  CHECK (deletion_prepare_operation_id IS NULL OR deletion_prepare_expires_at IS NOT NULL)
+);
+
+CREATE UNIQUE INDEX membership_directory_edge_uq
+  ON membership_directory (user_id, workspace_id);
+CREATE INDEX membership_directory_user_edge_idx
+  ON membership_directory (user_id, operation_id);
+CREATE INDEX membership_directory_user_state_idx
+  ON membership_directory (user_id, state, created_at DESC, workspace_id);
+CREATE INDEX membership_directory_workspace_idx
+  ON membership_directory (workspace_id, state, user_id);
+CREATE INDEX membership_directory_recovery_idx
+  ON membership_directory (reservation_expires_at, operation_id)
+  WHERE state IN ('pending', 'activating');
 
 CREATE TABLE note_routes (
   note_id text PRIMARY KEY,
@@ -198,14 +232,20 @@ CREATE TABLE distributed_operations (
   expires_at integer
 );
 
+-- Every uniqueness rule is scoped to the kind as well as the partition
+-- key (`spec/database/index.md#distributed_operations`): `beginOrResume`
+-- starts a `noteMove` on a partition that already has a running
+-- `accountDeletion`, and replays a request key per kind.
 CREATE UNIQUE INDEX distributed_operations_request_uq
-  ON distributed_operations (partition_key, request_key);
+  ON distributed_operations (kind, partition_key, request_key);
 CREATE UNIQUE INDEX distributed_operations_active_uq
-  ON distributed_operations (partition_key) WHERE state NOT IN ('completed', 'rejected');
+  ON distributed_operations (kind, partition_key) WHERE state NOT IN ('completed', 'rejected');
 CREATE INDEX distributed_operations_recovery_idx
   ON distributed_operations (next_attempt_at, id) WHERE next_attempt_at IS NOT NULL;
 CREATE INDEX distributed_operations_terminal_idx
-  ON distributed_operations (partition_key, terminal_at) WHERE terminal_at IS NOT NULL;
+  ON distributed_operations (kind, partition_key, terminal_at) WHERE terminal_at IS NOT NULL;
+CREATE INDEX distributed_operations_partition_idx
+  ON distributed_operations (kind, partition_key, id);
 
 CREATE TABLE account_deletion_manifests (
   operation_id text PRIMARY KEY,
@@ -373,8 +413,8 @@ CREATE TABLE processed_events (
 );
 
 -- Derived index of scope-plane work, kept because Durable Objects cannot
--- be enumerated while `ScopeTaskQueue.listDue` must span every scope
--- (ADR 003). The authoritative rows live in each object's
+-- be enumerated while `ScopeTaskQueue.listDue` must span every scope.
+-- The authoritative rows live in each object's
 -- `scheduled_tasks`; a scope object refreshes its slice here inside the
 -- same call that commits a write-set touching that table, so a task is
 -- listed by the time `run` resolves. `lease_expires_at IS NULL` mirrors

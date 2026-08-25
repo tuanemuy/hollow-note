@@ -1,11 +1,10 @@
 import { describeUnitOfWorkContract } from "../../../conformance/unitOfWork";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 11 — the shared unit-of-work contract. The mechanism itself is
-// step 2's and already has backend-local coverage in
-// `../unitOfWork.test.ts`; this file observes it through the ports, so it
-// depends on `UserRepository` (step 5), `OutboxRepository` (step 7) and
-// `NoteRepository` (step 8) and belongs to no single bundle.
+// The shared unit-of-work contract, observed through the ports rather
+// than through the mechanism — that has its own backend-local coverage in
+// `../unitOfWork.test.ts`. It spans several port bundles, so it belongs
+// to no single one.
 const BACKEND = "cloudflare";
 
 describeUnitOfWorkContract(BACKEND, makeCloudflareConformanceBackend);

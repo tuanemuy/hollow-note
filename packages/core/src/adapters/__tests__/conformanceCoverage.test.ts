@@ -67,13 +67,23 @@ for (const file of walk(CONFORMANCE_DIR)) {
   }
 }
 
+/**
+ * Absolute, because the two set comparisons below are relative: deleting
+ * a suite together with both of its call sites satisfies them. Changing
+ * either number is the declaration that a port contract was added or
+ * withdrawn.
+ */
+const PERSISTENCE_SUITES = 30;
+const ALL_SUITES = PERSISTENCE_SUITES + 1;
+
 describe("port-conformance suite coverage", () => {
   it("runs the same suites against the memory and Cloudflare backends", () => {
     expect(sorted(cloudflareCalls)).toEqual(sorted(memoryCalls));
-    expect(memoryCalls.size).toBeGreaterThan(0);
+    expect(memoryCalls.size).toBe(PERSISTENCE_SUITES);
   });
 
   it("leaves no suite unwired to a backend", () => {
+    expect(exported.size).toBe(ALL_SUITES);
     // `signInOAuthClient` is the one suite no persistence backend calls:
     // it belongs to `adapters/oauth/`, which is why the check spans every
     // adapter's tests rather than the two backends'.

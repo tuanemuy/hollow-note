@@ -18,9 +18,8 @@ import { dataIntegrityError } from "../sql/errors";
  * production. It exists because the workers test pool isolates storage
  * per **file**, not per test, while the conformance suites contract for
  * a fresh backend per test: a new namespace yields a new object name and
- * therefore genuinely empty storage
- * ([ADR 004](../../../../../.thread/11/adr.md)). Keeping it an argument
- * rather than a branch means production takes the same code path.
+ * therefore genuinely empty storage. Keeping it an argument rather than
+ * a branch means production takes the same code path.
  */
 export const scopeObjectName = (scope: ScopeKey, namespace: string): string =>
   namespace === ""

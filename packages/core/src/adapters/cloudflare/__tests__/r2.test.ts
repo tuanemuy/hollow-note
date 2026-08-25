@@ -21,14 +21,29 @@ import { createR2ObjectStorage } from "../r2/objectStorage";
 const encoder = new TextEncoder();
 
 let seq = 0;
-const freshStorage = (): ObjectStorage => {
+const freshStorage = (bucket: R2Bucket = env.OBJECT_STORAGE): ObjectStorage => {
   seq += 1;
   return createR2ObjectStorage({
-    bucket: env.OBJECT_STORAGE,
+    bucket,
     publicBaseUrl: "https://files.example.com",
     keyPrefix: `r2-${seq}/`,
   });
 };
+
+/** The real bucket, with the size of every `delete` call recorded. */
+const countingDeletes = (sizes: number[]): R2Bucket =>
+  new Proxy(env.OBJECT_STORAGE, {
+    get(target, property, receiver) {
+      if (property === "delete") {
+        return (keys: string | string[]) => {
+          sizes.push(Array.isArray(keys) ? keys.length : 1);
+          return target.delete(keys);
+        };
+      }
+      const value: unknown = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 
 const metaFor = (bytes: Uint8Array) => ({
   mimeType: MimeType.create("text/plain"),
@@ -84,6 +99,30 @@ describe("cloudflare R2 object storage", () => {
     expect(await storage.get(present)).toBeNull();
 
     await expect(storage.deleteMany([present])).resolves.toBeUndefined();
+  });
+
+  it("spends the 1,000-key delete limit in chunks", async () => {
+    const batches: number[] = [];
+    const storage = freshStorage(countingDeletes(batches));
+    const bytes = encoder.encode("bulk");
+    const present = [1, 700, 1001].map((n) =>
+      ObjectKey.create(`users/user-1/media/bulk-${n}.txt`),
+    );
+    for (const key of present) {
+      await storage.put(key, bytes, metaFor(bytes));
+    }
+    const batch = Array.from({ length: 1001 }, (_, index) =>
+      ObjectKey.create(`users/user-1/media/bulk-${index + 1}.txt`),
+    );
+
+    await storage.deleteMany(batch);
+
+    // The ceiling belongs to R2, not to the local binding, so what the
+    // adapter owes is observed on the calls it makes.
+    expect(batches).toEqual([1000, 1]);
+    for (const key of present) {
+      expect(await storage.get(key)).toBeNull();
+    }
   });
 
   it("keeps two prefixed storages from reaching each other's keys", async () => {

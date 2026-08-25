@@ -6,14 +6,16 @@ import type {
   MaintenanceLane,
 } from "../../../../application/ports/globalMaintenanceRunStore";
 import { decodeOpaqueCursor, encodeOpaqueCursor } from "../../cursor";
+import type { RowMutation } from "../../execution/writeSet";
 import { opaque, upsert } from "../../execution/writeSet";
-import { databaseError } from "../../sql/errors";
+import { classifySqlError, databaseError } from "../../sql/errors";
 import {
   deleteRowsFromJson,
   insertRowsFromJson,
   jsonList,
   jsonRows,
 } from "../../sql/json";
+import { occGuard } from "../../sql/occGuard";
 import {
   compositeKey,
   date,
@@ -116,6 +118,43 @@ const laneRowKey = (
   shardId: string,
 ): string => compositeKey(runId, generation, shardId);
 
+/**
+ * "The run row is still exactly the one this call read." Staged in front
+ * of every write a lease holder makes, so a writer whose lease was taken
+ * — or whose run completed — between its read and the apply aborts the
+ * batch instead of landing a decision about a state that no longer holds.
+ */
+const runIdentityGuard = (run: Run): RowMutation =>
+  opaque(
+    occGuard(
+      statement(
+        `SELECT 1 FROM ${RUNS} WHERE run_id = ? AND status = ? AND lease_owner = ? AND lease_until = ?`,
+        run.runId,
+        run.status,
+        run.leaseOwner,
+        toTimestamp(run.leaseUntil),
+      ),
+    ),
+  );
+
+/** The same, for the lane row a progress write was decided from. */
+const laneIdentityGuard = (runId: string, lane: Lane): RowMutation =>
+  opaque(
+    occGuard(
+      statement(
+        `SELECT 1 FROM ${LANES}
+           WHERE run_id = ? AND generation = ? AND shard_id = ?
+             AND status = ? AND table_index = ? AND cursor IS ?`,
+        runId,
+        lane.generation,
+        lane.shardId,
+        lane.status,
+        lane.tableIndex,
+        lane.cursor,
+      ),
+    ),
+  );
+
 const byLaneOrder = (a: Lane, b: Lane): number =>
   a.generation === b.generation
     ? a.shardId < b.shardId
@@ -145,6 +184,12 @@ export type D1GlobalMaintenanceRunStoreDeps = Readonly<{
  * goes through the run row, so a deployment that re-orders its sweep
  * tables mid-run cannot move a lane onto a table whose keyset its cursor
  * does not belong to ([ADR 061](../../../../../spec/adr/061-maintenance-sweep-order-authority.md)).
+ *
+ * "Only the holder of the lease may advance progress" is enforced twice:
+ * `requireLeasedRun` decides the caller's answer from the row it read,
+ * and an `occGuard` repeating that row — plus one repeating the lane row
+ * a progress write was decided from — is staged in front of the write, so
+ * a writer whose lease was taken in between aborts instead of landing.
  */
 export function createD1GlobalMaintenanceRunStore(
   deps: D1GlobalMaintenanceRunStoreDeps,
@@ -241,33 +286,36 @@ export function createD1GlobalMaintenanceRunStore(
       cursor?: string | null;
       commandKey?: string;
     }>,
-  ) => {
+  ): readonly RowMutation[] => {
     const status = changes.status ?? lane.status;
     const tableIndex = changes.tableIndex ?? lane.tableIndex;
     const cursor = changes.cursor === undefined ? lane.cursor : changes.cursor;
     const commandKey = changes.commandKey ?? lane.commandKey;
-    return upsert({
-      table: LANES,
-      key: laneRowKey(runId, lane.generation, lane.shardId),
-      row: {
-        ...lane.raw,
-        status,
-        table_index: tableIndex,
-        cursor,
-        command_key: commandKey,
-      },
-      statement: statement(
-        `UPDATE ${LANES} SET status = ?, table_index = ?, cursor = ?, command_key = ?
+    return [
+      laneIdentityGuard(runId, lane),
+      upsert({
+        table: LANES,
+        key: laneRowKey(runId, lane.generation, lane.shardId),
+        row: {
+          ...lane.raw,
+          status,
+          table_index: tableIndex,
+          cursor,
+          command_key: commandKey,
+        },
+        statement: statement(
+          `UPDATE ${LANES} SET status = ?, table_index = ?, cursor = ?, command_key = ?
            WHERE run_id = ? AND generation = ? AND shard_id = ?`,
-        status,
-        tableIndex,
-        cursor,
-        commandKey,
-        runId,
-        lane.generation,
-        lane.shardId,
-      ),
-    });
+          status,
+          tableIndex,
+          cursor,
+          commandKey,
+          runId,
+          lane.generation,
+          lane.shardId,
+        ),
+      }),
+    ];
   };
 
   /**
@@ -285,21 +333,45 @@ export function createD1GlobalMaintenanceRunStore(
       ),
     );
 
+  /**
+   * Applies a lease holder's write. A tripped guard means the run or the
+   * lane moved under it, which for the caller is indistinguishable from
+   * never having held the lease.
+   */
+  const writeLeased = async (
+    runId: string,
+    mutations: readonly RowMutation[],
+  ): Promise<void> => {
+    try {
+      await session.write(mutations);
+    } catch (cause) {
+      if (classifySqlError(cause) === "occGuard") {
+        throw foreignLease(runId);
+      }
+      throw databaseError("the global maintenance run store", cause);
+    }
+  };
+
   return {
     async beginOrResumeKind(input) {
       const now = clock.now();
       const running = await readRunningRun(input.kind);
+      // A guard that trips here means another owner reached the run first;
+      // "leased" is the same answer this call would have given had that
+      // owner's write landed before its read.
+      const leased = (runId: string, asOf: Date) => ({
+        runId,
+        asOf,
+        result: "leased" as const,
+      });
       if (running !== null) {
         const lapsed = running.leaseUntil.getTime() <= now.getTime();
         if (running.leaseOwner !== input.leaseOwner && !lapsed) {
-          return {
-            runId: running.runId,
-            asOf: running.asOf,
-            result: "leased" as const,
-          };
+          return leased(running.runId, running.asOf);
         }
         try {
           await session.write([
+            runIdentityGuard(running),
             upsert({
               table: RUNS,
               key: running.runId,
@@ -318,6 +390,9 @@ export function createD1GlobalMaintenanceRunStore(
             ...(lapsed ? [reclaimLapsedLanes(running.runId)] : []),
           ]);
         } catch (cause) {
+          if (classifySqlError(cause) === "occGuard") {
+            return leased(running.runId, running.asOf);
+          }
           throw databaseError("the global maintenance run store", cause);
         }
         return {
@@ -345,6 +420,14 @@ export function createD1GlobalMaintenanceRunStore(
       );
       try {
         await session.write([
+          opaque(
+            occGuard(
+              statement(
+                `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${RUNS} WHERE kind = ? AND status = 'running')`,
+                input.kind,
+              ),
+            ),
+          ),
           upsert({
             table: RUNS,
             key: input.candidateRunId,
@@ -359,10 +442,23 @@ export function createD1GlobalMaintenanceRunStore(
               completed_at: null,
               expires_at: null,
             },
+            // The candidate id is deterministic per hour bucket and a
+            // completed run is retained 30 days, so a re-drive inside the
+            // same bucket meets its own finished row: starting fresh over
+            // it is what the port means by `started`.
             statement: statement(
               `INSERT INTO ${RUNS}
                  (run_id, kind, status, tables, as_of, lease_owner, lease_until, completed_at, expires_at)
-               VALUES (?, ?, 'running', ?, ?, ?, ?, NULL, NULL)`,
+               VALUES (?, ?, 'running', ?, ?, ?, ?, NULL, NULL)
+               ON CONFLICT (run_id) DO UPDATE SET
+                 kind = excluded.kind,
+                 status = 'running',
+                 tables = excluded.tables,
+                 as_of = excluded.as_of,
+                 lease_owner = excluded.lease_owner,
+                 lease_until = excluded.lease_until,
+                 completed_at = NULL,
+                 expires_at = NULL`,
               input.candidateRunId,
               input.kind,
               toJson(tables),
@@ -371,6 +467,12 @@ export function createD1GlobalMaintenanceRunStore(
               toTimestamp(input.leaseUntil),
             ),
           }),
+          opaque(
+            statement(
+              `DELETE FROM ${LANES} WHERE run_id = ?`,
+              input.candidateRunId,
+            ),
+          ),
           ...(lanes.length === 0
             ? []
             : [
@@ -396,6 +498,9 @@ export function createD1GlobalMaintenanceRunStore(
               ]),
         ]);
       } catch (cause) {
+        if (classifySqlError(cause) === "occGuard") {
+          return leased(input.candidateRunId, input.candidateAsOf);
+        }
         throw databaseError("the global maintenance run store", cause);
       }
       return {
@@ -423,15 +528,12 @@ export function createD1GlobalMaintenanceRunStore(
       if (claimable.length === 0) {
         return [];
       }
-      try {
-        await session.write(
-          claimable.map((lane) =>
-            laneUpdate(runId, lane, { status: "active" }),
-          ),
-        );
-      } catch (cause) {
-        throw databaseError("the global maintenance run store", cause);
-      }
+      await writeLeased(runId, [
+        runIdentityGuard(run),
+        ...claimable.flatMap((lane) =>
+          laneUpdate(runId, lane, { status: "active" }),
+        ),
+      ]);
       return claimable.map((lane) => projectLane(run, lane));
     },
 
@@ -455,16 +557,13 @@ export function createD1GlobalMaintenanceRunStore(
           `Lane is at ${tableAt(run, lane.tableIndex)}, not ${input.table}`,
         );
       }
-      try {
-        await session.write([
-          laneUpdate(input.runId, lane, {
-            cursor: input.cursor,
-            commandKey: input.nextCommandKey,
-          }),
-        ]);
-      } catch (cause) {
-        throw databaseError("the global maintenance run store", cause);
-      }
+      await writeLeased(input.runId, [
+        runIdentityGuard(run),
+        ...laneUpdate(input.runId, lane, {
+          cursor: input.cursor,
+          commandKey: input.nextCommandKey,
+        }),
+      ]);
     },
 
     async advanceOrAck(input) {
@@ -482,21 +581,14 @@ export function createD1GlobalMaintenanceRunStore(
         );
       }
 
-      const write = async (
-        mutations: Parameters<SqlSession["write"]>[0],
-      ): Promise<void> => {
-        try {
-          await session.write(mutations);
-        } catch (cause) {
-          throw databaseError("the global maintenance run store", cause);
-        }
-      };
+      const write = (mutations: readonly RowMutation[]): Promise<void> =>
+        writeLeased(input.runId, [runIdentityGuard(run), ...mutations]);
 
       if (!input.completed) {
         // A release only puts the lane back: every call site drops this
         // return value, so a lane handed back here would stay claimed with
         // nobody driving it until the lease lapses.
-        await write([laneUpdate(input.runId, lane, { status: "unclaimed" })]);
+        await write(laneUpdate(input.runId, lane, { status: "unclaimed" }));
         return { next: null, runCompleted: false };
       }
 
@@ -516,13 +608,13 @@ export function createD1GlobalMaintenanceRunStore(
             tableAt(run, nextIndex),
           ),
         };
-        await write([
+        await write(
           laneUpdate(input.runId, lane, {
             tableIndex: stepped.tableIndex,
             cursor: null,
             commandKey: stepped.commandKey,
           }),
-        ]);
+        );
         return { next: projectLane(run, stepped), runCompleted: false };
       }
 
@@ -539,8 +631,8 @@ export function createD1GlobalMaintenanceRunStore(
         // come back untouched. Re-minting the key here would part it from
         // the continuation the caller already queued under it.
         await write([
-          laneUpdate(input.runId, lane, { status: "completed" }),
-          laneUpdate(input.runId, pending, { status: "active" }),
+          ...laneUpdate(input.runId, lane, { status: "completed" }),
+          ...laneUpdate(input.runId, pending, { status: "active" }),
         ]);
         return { next: projectLane(run, pending), runCompleted: false };
       }
@@ -553,7 +645,7 @@ export function createD1GlobalMaintenanceRunStore(
       );
       const now = clock.now();
       await write([
-        laneUpdate(input.runId, lane, { status: "completed" }),
+        ...laneUpdate(input.runId, lane, { status: "completed" }),
         ...(runCompleted
           ? [
               upsert({
@@ -593,6 +685,7 @@ export function createD1GlobalMaintenanceRunStore(
       }
       try {
         await session.write([
+          runIdentityGuard(run),
           upsert({
             table: RUNS,
             key: runId,
@@ -613,6 +706,11 @@ export function createD1GlobalMaintenanceRunStore(
           ...(lapsed ? [reclaimLapsedLanes(runId)] : []),
         ]);
       } catch (cause) {
+        if (classifySqlError(cause) === "occGuard") {
+          // Somebody else reclaimed it first, which is the same answer as
+          // finding a live foreign lease on the read above.
+          return false;
+        }
         throw databaseError("the global maintenance run store", cause);
       }
       return true;

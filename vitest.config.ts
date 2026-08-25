@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { CLOUDFLARE_ADAPTER_DIR_FROM_ROOT } from "./vitest.shared";
 
 /**
  * Two projects, one run. `node` keeps the whole existing suite — domain
@@ -8,13 +9,11 @@ import { defineConfig } from "vitest/config";
  * workerd, and owns its own config next to the package that declares
  * `@cloudflare/vitest-plugin` and `wrangler`.
  *
- * The two include sets are disjoint: everything under
- * `adapters/cloudflare/` belongs to `workers` and is excluded here.
+ * The two projects partition the tree at `vitest.shared.ts`: everything
+ * under `adapters/cloudflare/` belongs to `workers` and is excluded here,
+ * so `pnpm test` is their union with nothing left over.
  * `--project node` / `--project workers` runs one of them alone.
  */
-export const CLOUDFLARE_ADAPTER_GLOB =
-  "packages/core/src/adapters/cloudflare/**";
-
 export default defineConfig({
   test: {
     projects: [
@@ -31,7 +30,7 @@ export default defineConfig({
             "**/dist/**",
             "**/.direnv/**",
             "spec/**",
-            CLOUDFLARE_ADAPTER_GLOB,
+            `${CLOUDFLARE_ADAPTER_DIR_FROM_ROOT}/**`,
           ],
           // Pinned to a non-UTC zone on purpose: UTC-only assertions
           // (BillingPeriod's UTC calendar month) are indistinguishable from

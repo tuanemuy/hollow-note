@@ -1,4 +1,5 @@
 import type { RowMutation, WriteSet } from "../execution/writeSet";
+import { databaseError } from "./errors";
 import type { SqlExecutor } from "./executor";
 import type { SqlRow, SqlStatement } from "./statement";
 
@@ -16,21 +17,38 @@ export type RowRead = Readonly<{
 }>;
 
 /**
+ * `matches` for a statement that genuinely selects a whole table.
+ *
+ * Spelling it out is the point: a missing predicate and a deliberately
+ * absent one look identical once `matches` is optional, and the first
+ * quietly mixes every staged row of the table into a filtered result.
+ */
+export const ALL_ROWS = (): boolean => true;
+
+/**
  * Reads a set of rows. Everything past `statement` exists so the session
  * can merge the rows this unit of work has staged but not yet committed.
  *
  * - `keyOf` derives the same key the staging mutation used.
  * - `matches` repeats the statement's `WHERE` over a staged row image.
- *   Omit it only when the statement selects a whole table.
+ *   Pass `ALL_ROWS` when the statement has no `WHERE`.
  * - `compare` repeats the statement's `ORDER BY`. Omit it when the
  *   statement has none.
  * - `limit` repeats the statement's `LIMIT`, applied after the merge.
+ *
+ * `limit` and same-unit deletions do not compose. The overlay can only
+ * subtract from what the statement already returned, so a `LIMIT n` that
+ * came back full and lost a row to a staged delete would have to reach
+ * back into storage for the n+1-th row to stay accurate. A staged
+ * session refuses that read rather than returning a short page — page a
+ * set you are also deleting from with `query`, or delete after the last
+ * page.
  */
 export type RowsRead = Readonly<{
   table: string;
   statement: SqlStatement;
   keyOf: (row: SqlRow) => string;
-  matches?: (row: SqlRow) => boolean;
+  matches: (row: SqlRow) => boolean;
   compare?: (a: SqlRow, b: SqlRow) => number;
   limit?: number;
 }>;
@@ -109,19 +127,28 @@ export function createStagedSession(
     },
     async readRows(spec: RowsRead): Promise<readonly SqlRow[]> {
       const stored = await executor.query(spec.statement);
-      const matches = spec.matches ?? (() => true);
+      const staged = stored.map((row) =>
+        writeSet.peek(spec.table, spec.keyOf(row)),
+      );
+      if (
+        spec.limit !== undefined &&
+        stored.length >= spec.limit &&
+        staged.includes(null)
+      ) {
+        throw databaseError(
+          `Set read of ${spec.table} combines LIMIT ${spec.limit} with a row this unit of work deleted; the page cannot be completed from the overlay`,
+        );
+      }
       // A stored row this unit has touched is dropped whichever way it
       // was touched — deleted rows stay out, rewritten ones come back
       // from the overlay with their new values.
       const merged = stored
-        .filter(
-          (row) => writeSet.peek(spec.table, spec.keyOf(row)) === undefined,
-        )
+        .filter((_, index) => staged[index] === undefined)
         .concat(
           writeSet
             .stagedRows(spec.table)
             .map(([, row]) => row)
-            .filter(matches),
+            .filter(spec.matches),
         );
       const ordered =
         spec.compare === undefined ? merged : [...merged].sort(spec.compare);

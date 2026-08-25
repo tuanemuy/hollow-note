@@ -4,15 +4,22 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   type ScopeTaskPriority as Priority,
+  type ScopeTask,
   ScopeTaskPriority,
 } from "../../../application/ports/scopeTaskScheduler";
 import { ScopeKey } from "../../../application/scope";
 import type { UserId } from "../../../domain/identity/valueObject";
 import { GLOBAL_TABLES } from "../d1/schema";
-import { nextWakeAt, runScopeAlarmTurn } from "../do/alarm";
+import {
+  nextWakeAt,
+  registerScopeTaskHandler,
+  runScopeAlarmTurn,
+  type ScopeAlarmHandler,
+  type ScopeAlarmHandlers,
+} from "../do/alarm";
 import { scheduleStatement } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { scopeObjectName } from "../do/scopeName";
@@ -23,8 +30,13 @@ import { statement } from "../sql/statement";
 /**
  * Backend-local observations of the scope Alarm turn
  * (`spec/platform/index.md`「Scope Alarm」): the weighted round-robin, the
- * row budget, the "no handler ⇒ leave it running" rule, and the wake
- * time derived from the two candidate columns.
+ * row budget, the "no handler ⇒ leave it running" rule, the failure
+ * handling a turn owes the attempt ceiling, and the wake time derived
+ * from the two candidate columns.
+ *
+ * A registry with no handler at all means this deployment does not drive
+ * tasks from the object, so most cases here register one first — that is
+ * what makes the object a writer.
  */
 
 const NAMESPACE = "alarm";
@@ -36,6 +48,19 @@ const stubFor = (scope: ScopeKey) =>
   env.SCOPE_OBJECT.get(
     env.SCOPE_OBJECT.idFromName(scopeObjectName(scope, NAMESPACE)),
   );
+
+const undo: (() => void)[] = [];
+
+/** Makes the object a task driver for the rest of the case. */
+const register = (kind: string, handler: ScopeAlarmHandler): void => {
+  undo.push(registerScopeTaskHandler(kind, handler));
+};
+
+const noop: ScopeAlarmHandler = async () => {};
+
+const handlersOf = (
+  entries: Readonly<Record<string, ScopeAlarmHandler>>,
+): ScopeAlarmHandlers => new Map(Object.entries(entries));
 
 /**
  * `arm` decides whether the commit declares `scheduled_tasks` touched
@@ -69,9 +94,22 @@ const seed = async (
   );
 };
 
+const rowsOf = async (scope: ScopeKey, columns: string) =>
+  createScopeStubExecutor(env.SCOPE_OBJECT, scope, NAMESPACE).query(
+    statement(
+      `SELECT ${columns} FROM ${SCHEDULED_TASKS_TABLE} ORDER BY operation_id`,
+    ),
+  );
+
 describe("scope alarm", () => {
   beforeAll(async () => {
     await applyD1Migrations(env.GLOBAL_DB, env.MIGRATIONS);
+  });
+
+  afterEach(() => {
+    while (undo.length > 0) {
+      undo.pop()?.();
+    }
   });
 
   it("reserves one slot per priority before any priority takes a second", async () => {
@@ -106,16 +144,22 @@ describe("scope alarm", () => {
           now,
           leaseMs: 60_000,
           rowBudget: 2,
+          handlers: handlersOf({ "some.other.kind": noop }),
         }),
     );
-    expect(result).toEqual({ claimed: 2, handled: 0, unhandled: 2 });
+    expect(result).toEqual({
+      claimed: 2,
+      handled: 0,
+      unhandled: 2,
+      failed: 0,
+      released: 0,
+    });
 
-    const executor = createScopeStubExecutor(
+    const running = await createScopeStubExecutor(
       env.SCOPE_OBJECT,
       scope,
       NAMESPACE,
-    );
-    const running = await executor.query(
+    ).query(
       statement(
         `SELECT operation_id FROM ${SCHEDULED_TASKS_TABLE}
           WHERE status = 'running' ORDER BY operation_id`,
@@ -144,18 +188,13 @@ describe("scope alarm", () => {
         scope,
         now,
         leaseMs: 60_000,
+        handlers: handlersOf({ "some.other.kind": noop }),
       }),
     );
 
-    const executor = createScopeStubExecutor(
-      env.SCOPE_OBJECT,
+    const rows = await rowsOf(
       scope,
-      NAMESPACE,
-    );
-    const rows = await executor.query(
-      statement(
-        `SELECT status, due_at, attempts, lease_expires_at FROM ${SCHEDULED_TASKS_TABLE}`,
-      ),
+      "status, due_at, attempts, lease_expires_at",
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -165,6 +204,182 @@ describe("scope alarm", () => {
       attempts: 0,
       lease_expires_at: now.getTime() + 60_000,
     });
+  });
+
+  /**
+   * The registry is what makes the object a writer of `scheduled_tasks`.
+   * With none, the central runner is the only one, and the object must
+   * neither take rows behind a lease nor arm itself for a turn that
+   * would do nothing — while the due index the runner reads still has to
+   * be published.
+   */
+  it("neither claims nor arms when the deployment registers no handler", async () => {
+    const scope = scopeOf("user-no-registry");
+    await seed(
+      scope,
+      [
+        {
+          kind: "usage.userCleanupContinued",
+          operationId: "op-idle",
+          priority: ScopeTaskPriority.securityCleanup,
+          dueAtMs: now.getTime() - 1_000,
+        },
+      ],
+      true,
+    );
+
+    expect(
+      await runInDurableObject(stubFor(scope), (_i, state) =>
+        state.storage.getAlarm(),
+      ),
+    ).toBeNull();
+
+    const turn = await runInDurableObject(stubFor(scope), (_i, state) =>
+      runScopeAlarmTurn({
+        storage: state.storage,
+        scope,
+        now,
+        leaseMs: 60_000,
+      }),
+    );
+    expect(turn.claimed).toBe(0);
+    expect((await rowsOf(scope, "status"))[0]).toMatchObject({
+      status: "pending",
+    });
+
+    const indexed = await env.GLOBAL_DB.prepare(
+      `SELECT operation_id FROM ${GLOBAL_TABLES.scopeTaskDueIndex}
+        WHERE scope_type = 'user' AND scope_id = 'user-no-registry'`,
+    ).all<{ operation_id: string }>();
+    expect(indexed.results.map((row) => row.operation_id)).toEqual(["op-idle"]);
+  });
+
+  /**
+   * The turn is the only writer positioned to spend an attempt on a
+   * failing target, so a handler that throws must not take the rest of
+   * the turn with it — nor leave the row at attempt zero forever.
+   */
+  it("backs off a task whose handler throws and visits the rest of the chunk", async () => {
+    const scope = scopeOf("user-failing-handler");
+    await seed(scope, [
+      {
+        kind: "explodes",
+        operationId: "op-bad",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 2_000,
+      },
+      {
+        kind: "works",
+        operationId: "op-good",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 1_000,
+      },
+    ]);
+
+    const visited: string[] = [];
+    const result = await runInDurableObject(stubFor(scope), (_i, state) =>
+      runScopeAlarmTurn({
+        storage: state.storage,
+        scope,
+        now,
+        leaseMs: 60_000,
+        handlers: handlersOf({
+          explodes: async (task: ScopeTask) => {
+            visited.push(task.operationId);
+            throw new Error("handler blew up");
+          },
+          works: async (task: ScopeTask) => {
+            visited.push(task.operationId);
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({ claimed: 2, handled: 1, failed: 1 });
+    expect(visited).toEqual(["op-bad", "op-good"]);
+
+    const rows = await rowsOf(
+      scope,
+      "operation_id, status, attempts, lease_expires_at",
+    );
+    expect(rows[0]).toMatchObject({
+      operation_id: "op-bad",
+      status: "pending",
+      attempts: 1,
+      lease_expires_at: null,
+    });
+    // Nothing settled the successful row, so it holds its lease.
+    expect(rows[1]).toMatchObject({
+      operation_id: "op-good",
+      status: "running",
+      attempts: 0,
+    });
+  });
+
+  /**
+   * A claimed row nobody visits is invisible for the whole lease, so a
+   * turn stopped by its CPU budget hands back what it has not reached —
+   * and hands it back untouched, since no attempt was spent on it.
+   */
+  it("releases the rows its CPU budget cut off instead of leaving them leased", async () => {
+    const scope = scopeOf("user-budget");
+    await seed(scope, [
+      {
+        kind: "slow",
+        operationId: "op-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 3_000,
+      },
+      {
+        kind: "slow",
+        operationId: "op-2",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 2_000,
+      },
+      {
+        kind: "slow",
+        operationId: "op-3",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAtMs: now.getTime() - 1_000,
+      },
+    ]);
+
+    let ticks = 0;
+    const result = await runInDurableObject(stubFor(scope), (_i, state) =>
+      runScopeAlarmTurn({
+        storage: state.storage,
+        scope,
+        now,
+        leaseMs: 60_000,
+        cpuBudgetMs: 2_000,
+        // Enough for the chunk's claim and one handler, then spent.
+        elapsedMs: () => {
+          ticks += 1;
+          return ticks <= 2 ? 0 : 5_000;
+        },
+        handlers: handlersOf({ slow: noop }),
+      }),
+    );
+
+    expect(result).toMatchObject({ claimed: 3, handled: 1, released: 2 });
+    const rows = await rowsOf(
+      scope,
+      "operation_id, status, attempts, due_at, lease_expires_at",
+    );
+    expect(rows[0]).toMatchObject({ operation_id: "op-1", status: "running" });
+    for (const row of rows.slice(1)) {
+      expect(row).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        lease_expires_at: null,
+      });
+    }
+    // Released, not backed off: every row still sits where it was.
+    expect(rows.map((row) => int(row, "due_at"))).toEqual([
+      now.getTime() - 3_000,
+      now.getTime() - 2_000,
+      now.getTime() - 1_000,
+    ]);
   });
 
   it("wakes at the smaller of the earliest due_at and the earliest lease expiry", async () => {
@@ -191,6 +406,7 @@ describe("scope alarm", () => {
   });
 
   it("drops the alarm once nothing is scheduled", async () => {
+    register("anything", noop);
     const scope = scopeOf("user-empty");
     const executor = createScopeStubExecutor(
       env.SCOPE_OBJECT,
@@ -206,6 +422,7 @@ describe("scope alarm", () => {
   });
 
   it("arms an alarm at the committed task's due time", async () => {
+    register("due.later", noop);
     const scope = scopeOf("user-armed");
     const dueAtMs = Date.now() + 3_600_000;
     await seed(
@@ -228,6 +445,7 @@ describe("scope alarm", () => {
   });
 
   it("refreshes the due index when the alarm turn claims a row", async () => {
+    register("some.other.kind", noop);
     const scope = scopeOf("user-fire");
     // Armed for an hour out, so workerd cannot deliver the alarm on its
     // own while the test is still setting up. The row is then backdated
@@ -270,6 +488,7 @@ describe("scope alarm", () => {
    * without the second visit costing the row anything.
    */
   it("re-arms at the lease it granted and re-enters cleanly on the next delivery", async () => {
+    register("some.other.kind", noop);
     const scope = scopeOf("user-reentry");
     const executor = createScopeStubExecutor(
       env.SCOPE_OBJECT,

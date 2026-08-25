@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
+import { CLOUDFLARE_ADAPTER_DIR } from "../../vitest.shared";
 
 const here = (relative: string): string =>
   fileURLToPath(new URL(relative, import.meta.url));
@@ -21,6 +22,10 @@ const here = (relative: string): string =>
  * Storage isolation in this pool is **per test file**, not per test, so
  * the conformance factory namespaces each backend it hands out. See
  * `__tests__/` for the factory.
+ *
+ * The include covers the whole adapter directory, which is exactly what
+ * the `node` project excludes (`vitest.shared.ts`), so no test file can
+ * fall between the two projects.
  */
 export default defineConfig(async () => ({
   plugins: [
@@ -38,7 +43,7 @@ export default defineConfig(async () => ({
   test: {
     name: "workers",
     globals: true,
-    include: ["src/adapters/cloudflare/**/__tests__/**/*.test.ts"],
+    include: [`${CLOUDFLARE_ADAPTER_DIR}/**/*.{test,spec}.ts`],
     testTimeout: 30_000,
   },
 }));

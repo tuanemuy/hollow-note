@@ -4,7 +4,7 @@ import { describeGlobalMaintenanceRunStoreContract } from "../../../conformance/
 import { describeIdentityUniqueDirectoryContract } from "../../../conformance/identityUniqueDirectory";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 6 — D1 directory / operation. Ports wired in `../ports/directory.ts`.
+// Suites for the D1 directory / operation ports (`../ports/directory.ts`).
 const BACKEND = "cloudflare";
 
 describeIdentityUniqueDirectoryContract(

@@ -3,17 +3,14 @@ import { OCC_GUARD_DDL } from "../sql/occGuard";
 /**
  * Scope-plane schema, carried in the Durable Object's own bundle.
  *
- * The two planes share a migration version
- * (`spec/database/index.md`: 両者の SQL schema は同じ migration version を
- * 共有するが、配置する表は異なる) but not a delivery mechanism: nothing
- * outside a Durable Object can run DDL against its storage, so the scope
- * schema is statements in the bundle rather than files a migration
- * runner reads. `applyScopeSchema` is idempotent and runs on every
- * object activation, which is what makes "an object that has never been
- * touched already has its tables" true without a deploy step.
+ * The two planes carry the same schema generation but not the same
+ * delivery mechanism: nothing outside a Durable Object can run DDL
+ * against its storage, so the scope schema is statements in the bundle
+ * rather than files a migration runner reads. `applyScopeSchema` is
+ * idempotent and runs on every object activation, which is what makes
+ * "an object that has never been touched already has its tables" true
+ * without a deploy step.
  */
-export const SCOPE_MIGRATION_VERSION = 1;
-
 export const SCHEDULED_TASKS_TABLE = "scheduled_tasks";
 
 export const SCOPE_TABLES = {

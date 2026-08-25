@@ -74,6 +74,7 @@ import type { ScopeKey } from "../scope";
 import type { AppRuntime } from "./runtime";
 import type {
   AppConfig,
+  AuthStateTable,
   DeletionTicketKeyRing,
   NoteReader,
   RequestContainer,
@@ -106,8 +107,16 @@ export type CloudflareRuntimeOptions = Readonly<{
   mailSender: MailSender;
   /** Public domain the object bucket is served from, no trailing slash. */
   objectStoragePublicBaseUrl: string;
-  shareTokenKeyRing?: ShareTokenKeyRing;
-  deletionTicketKeyRing?: DeletionTicketKeyRing;
+  /**
+   * Required, and deliberately without a generated default. Version 1 has
+   * to mean the same key on the request that reveals a value as on the one
+   * that protected it, and on Workers those two requests can land in
+   * different isolates — so a ring minted per isolate would silently break
+   * share links and deletion tickets across the boundary.
+   */
+  shareTokenKeyRing: ShareTokenKeyRing;
+  /** Required for the same reason as `shareTokenKeyRing`. */
+  deletionTicketKeyRing: DeletionTicketKeyRing;
   routingGenerations?: readonly string[];
   /** Logical shard ids the global maintenance lanes fan out over. */
   maintenanceShardIds?: readonly string[];
@@ -119,8 +128,9 @@ export type CloudflareRuntimeOptions = Readonly<{
   /**
    * Durable Object name prefix and R2 key prefix. Both are `""` in
    * production and set only where one deployment's storage has to be
-   * kept apart from another's inside the same bindings
-   * ([ADR 004](../../../../.thread/11/adr.md)).
+   * kept apart from another's inside the same bindings — the conformance
+   * factory does exactly that, since the workers pool isolates storage
+   * per file while the suites contract for a fresh backend per test.
    */
   objectNamespace?: string;
   objectKeyPrefix?: string;
@@ -128,7 +138,18 @@ export type CloudflareRuntimeOptions = Readonly<{
 
 export type CloudflareRuntime = AppRuntime;
 
-const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
+/**
+ * Sweep tables each maintenance kind walks unless the deployment says
+ * otherwise. Typing the `authStatePrune` sequence as `AuthStateTable`
+ * ties it to the union `authStateSweeps` is keyed by, so a misspelled
+ * table name is a type error rather than a row that is quietly never
+ * swept (ADR 062).
+ */
+export const DEFAULT_MAINTENANCE_TABLES: Readonly<
+  Record<MaintenanceKind, readonly string[]> & {
+    authStatePrune: readonly AuthStateTable[];
+  }
+> = {
   authStatePrune: [
     "auth_tokens",
     "sessions",
@@ -139,11 +160,6 @@ const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
   jobTombstonePrune: ["job_tombstones"],
   accountManifestPrune: ["account_deletion_manifests"],
 };
-
-const ephemeralKeyRing = (): ShareTokenKeyRing => ({
-  currentVersion: 1,
-  keys: new Map([[1, crypto.getRandomValues(new Uint8Array(32))]]),
-});
 
 /**
  * Composition root for the Cloudflare backend: global D1, one SQLite
@@ -175,12 +191,7 @@ export function createCloudflareRuntime(
     ...options.maintenanceTablesByKind,
   };
 
-  // Both rings must outlive a single request for the same reason as in
-  // the memory runtime: version 1 has to mean the same key on the
-  // request that reveals a value as on the one that protected it.
-  const shareTokenKeyRing = options.shareTokenKeyRing ?? ephemeralKeyRing();
-  const deletionTicketKeyRing =
-    options.deletionTicketKeyRing ?? ephemeralKeyRing();
+  const { shareTokenKeyRing, deletionTicketKeyRing } = options;
 
   let boundRelayTrigger: RelayTrigger | null = null;
   const relayTrigger: RelayTrigger = {

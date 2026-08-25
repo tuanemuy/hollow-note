@@ -1,4 +1,5 @@
 import { applyD1Migrations, env } from "cloudflare:test";
+import { DEFAULT_MAINTENANCE_TABLES } from "../../../application/di/cloudflareRuntime";
 import type {
   GlobalUnitOfWorkProvider,
   ScopeUnitOfWorkProvider,
@@ -49,8 +50,7 @@ import { createScopeInfraPorts } from "./ports/scopeInfra";
  *
  * The suites contract for a **fresh backend per test**
  * (`conformance/backend.ts`), while the workers pool isolates storage per
- * **file**. The gap is closed here, per plane
- * ([ADR 004](../../../../../.thread/11/adr.md)):
+ * **file**. The gap is closed here, per plane:
  *
  * - **Durable Objects** — every factory call takes a new namespace, and
  *   the namespace is part of the object's name. A new name is a new
@@ -63,14 +63,8 @@ import { createScopeInfraPorts } from "./ports/scopeInfra";
  * Production passes the same two arguments as empty strings, so it takes
  * the identical code path.
  *
- * ## Ports that do not exist yet
- *
- * Each bundle lives in `./ports/{bundle}.ts` and starts out returning
- * throwing stand-ins (`./pendingPorts.ts`). A suite failing with
- * "not implemented: X.y" has nothing to say about the contract; a suite
- * failing any other way does. The two unit-of-work providers are **not**
- * stand-ins — they are real, and what is pending is the repositories
- * they expose.
+ * The port implementations are grouped into `./ports/{bundle}.ts`, one
+ * bundle per conformance test file under `./conformance/`.
  */
 export async function makeCloudflareConformanceBackend(
   options: ConformanceBackendOptions = {},
@@ -229,7 +223,7 @@ export async function makeCloudflareConformanceBackend(
     /**
      * Writes `membership_directory` rows directly: the Workspace domain
      * has no ports yet, so there is no repository to go through, but the
-     * table is real (`d1/migrations/0003_membership_directory.sql`) and
+     * table is real (`d1/migrations/0001_global_schema.sql`) and
      * `AccountDeletionManifestStore.appendMembershipPage` reads it exactly
      * as it will in production. The seed's `edgeKey` is the row's
      * `operation_id`, which is the key that page walks.
@@ -290,18 +284,6 @@ export async function makeCloudflareConformanceBackend(
 }
 
 const HOUR_MS = 60 * 60 * 1000;
-
-const DEFAULT_MAINTENANCE_TABLES: Record<MaintenanceKind, readonly string[]> = {
-  authStatePrune: [
-    "auth_tokens",
-    "sessions",
-    "login_attempts",
-    "oauth_flow_states",
-    "identity_removal_receipts",
-  ],
-  jobTombstonePrune: ["job_tombstones"],
-  accountManifestPrune: ["account_deletion_manifests"],
-};
 
 let namespaceSeq = 0;
 let migration: Promise<void> | null = null;

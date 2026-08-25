@@ -5,10 +5,9 @@ import { describeOutboxRepositoryContract } from "../../../conformance/outboxRep
 import { describeScopeRouterContract } from "../../../conformance/scopeRouter";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
-// Step 7 — D1 route / infrastructure / cross-plane. Ports wired in
-// `../ports/route.ts`. `ScopeTaskQueue.listDue` is exercised by the
-// `scopeTaskScheduler` suite, which lives in `scopeInfra.test.ts` — the
-// two bundles meet there and both owners should watch that file.
+// Suites for the D1 route / infrastructure / cross-plane ports
+// (`../ports/route.ts`). `ScopeTaskQueue.listDue` is not among them: it
+// is exercised by the `scopeTaskScheduler` suite in `scopeInfra.test.ts`.
 const BACKEND = "cloudflare";
 
 describeNoteRouteStoreContract(BACKEND, makeCloudflareConformanceBackend);

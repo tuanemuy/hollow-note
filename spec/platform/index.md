@@ -111,6 +111,7 @@ Identity/email/handle/provider identityのequality uniquenessはnormalized key h
 | Queues | retention | 最大 14 日 |
 | R2 | object | 単一 PUT 5 GiB / multipart 4.995 TiB |
 | R2 | 同一 key の並行 write | 1 秒あたり 1 回 |
+| R2 | 1 回の delete | **1,000 key** |
 
 ## 行サイズの予算
 
@@ -149,11 +150,11 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
 | local projection rebuild | **100 notes** | 1 scheduled task の CPU と再開粒度 |
 
-scope-local の一括削除は、**書き込みをバッチ件数によらず 1 回の原子適用にまとめる**形で実装する（scope DO なら `transactionSync` 1 回 = RPC 1 往復、その中の outbox は多行 INSERT 1 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。
+scope-local の一括削除は、**書き込みをバッチ件数によらず 1 回の原子適用にまとめる**形で実装する（scope DO なら `transactionSync` 1 回。**書き込み側の RPC 往復は件数によらず 1 回**で、その中の outbox は多行 INSERT 1 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。
 
-一方で **1 turn の SQL 文の総数は件数に比例する**。Cloudflare 実装の実測はバッチ n 件あたり `4n + 3` 文で、内訳は列挙 2（ページ + `COUNT(*)`）、1 件あたり読み 2（`findById` + 削除前の版確認）、1 件あたり commit 内 2（`_occ_guard` + `DELETE`）、outbox 多行 INSERT 1 である。かつて掲げていた「列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1 の 3 文」は、所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約の下では成立しないため、実測値へ改めた。
+一方で **1 turn の SQL 文の総数と、読み側の RPC 往復は件数に比例する**。所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約から、読みは 1 件につき往復を持つ。バックエンドごとの実測値と内訳は各アダプターの持ち分で、予算文書には置かない（[ADR 056](../adr/056-performance-budget-placement.md) 決定 3）。
 
-全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。理由は [ADR 056](../adr/056-performance-budget-placement.md)。
+全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。ここでの「往復」は**ポート呼び出しの追加往復**（件数ぶんの `listByOwner` を要求しない、の意）であって、上の RPC 往復とは別の量である。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 
@@ -210,7 +211,9 @@ Cron は scope object を全列挙しない。scope-local cleanup は必ず Alar
 
 global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`(expiresAt, operationId)` keysetで100件ずつ回収する。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
 
-auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
+auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。
+
+**run の lease は fencing である。** lane の checkpoint と ack は、読んだ lease owner と lease 期限に対する条件付き更新として適用する（global D1 では `_occ_guard` の 1 文がこれを担う）。lapse した lease を 2 人が同時に奪いに行けば勝つのは 1 人で、奪われた側の checkpoint は着地しない — 着地すれば回収済み lane の cursor が巻き戻り、その表のその keyset は**その run では掃かれない**。`ScopeTaskScheduler` の settle が単一 writer 前提で fencing を持たない（上記「Alarm と scheduled task」）のと対照的に、こちらは複数 writer を前提として設計する。writer 多重度は配備の選択ではなく、Cron の再入と lease recovery が構造的に生む。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
 
 ## 外部要求
 

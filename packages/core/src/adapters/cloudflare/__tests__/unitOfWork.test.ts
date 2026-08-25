@@ -145,9 +145,69 @@ type TestGlobalContext = GlobalUnitOfWorkContext & {
   };
 };
 
+/**
+ * Opens once every participant has arrived, so a race can be staged
+ * without leaning on timing: both units read before either commits.
+ */
+const latch = (count: number): (() => Promise<void>) => {
+  let remaining = count;
+  let open = (): void => {};
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return async () => {
+    remaining -= 1;
+    if (remaining === 0) {
+      open();
+    }
+    await opened;
+  };
+};
+
 const scopeRepositories = (session: SqlSession) =>
   ({
     scopeTaskScheduler: {
+      async attemptsOf(kind: string, operationId: string): Promise<number> {
+        const row = await session.readRow({
+          table: SCHEDULED_TASKS_TABLE,
+          key: scopeTaskKey(kind, operationId),
+          statement: statement(
+            `SELECT * FROM ${SCHEDULED_TASKS_TABLE} WHERE kind = ? AND operation_id = ?`,
+            kind,
+            operationId,
+          ),
+        });
+        return int(row ?? {}, "attempts");
+      },
+      async bumpAttempts(
+        kind: string,
+        operationId: string,
+        expected: number,
+      ): Promise<void> {
+        await session.write([
+          opaque(
+            occGuard(
+              statement(
+                `SELECT 1 FROM ${SCHEDULED_TASKS_TABLE}
+                  WHERE kind = ? AND operation_id = ? AND attempts = ?`,
+                kind,
+                operationId,
+                expected,
+              ),
+            ),
+          ),
+          opaque({
+            table: SCHEDULED_TASKS_TABLE,
+            statement: statement(
+              `UPDATE ${SCHEDULED_TASKS_TABLE} SET attempts = attempts + 1
+                WHERE kind = ? AND operation_id = ? AND attempts = ?`,
+              kind,
+              operationId,
+              expected,
+            ),
+          }),
+        ]);
+      },
       async schedule(kind: string, operationId: string): Promise<void> {
         await session.write([
           upsert({
@@ -180,6 +240,12 @@ const scopeRepositories = (session: SqlSession) =>
 type TestScopeContext = ScopeUnitOfWorkContext & {
   scopeTaskScheduler: {
     schedule(kind: string, operationId: string): Promise<void>;
+    attemptsOf(kind: string, operationId: string): Promise<number>;
+    bumpAttempts(
+      kind: string,
+      operationId: string,
+      expected: number,
+    ): Promise<void>;
   };
 };
 
@@ -386,6 +452,53 @@ describe("cloudflare two-plane unit of work", () => {
     );
     expect(rows).toHaveLength(0);
     expect(scopeTaskKicks).toBe(0);
+  });
+
+  it("surfaces a scope-plane _occ_guard trip as OPTIMISTIC_LOCK_FAILURE", async () => {
+    // The guard fires inside `transactionSync`, so the constraint name
+    // has to survive the object's RPC boundary for `classifySqlError` to
+    // recognise it. Nothing but a genuine race reaches the guard — the
+    // repositories read the version first — so this is the only shape
+    // that observes the translation at all.
+    const scope = ScopeKey.user("user-scope-occ" as UserId);
+    await runScope(scope, async (ctx) => {
+      await ctx.scopeTaskScheduler.schedule("test.contended", "op-occ");
+    });
+
+    const bothRead = latch(2);
+    const contend = (): Promise<void> =>
+      runScope(scope, async (ctx) => {
+        const attempts = await ctx.scopeTaskScheduler.attemptsOf(
+          "test.contended",
+          "op-occ",
+        );
+        await bothRead();
+        await ctx.scopeTaskScheduler.bumpAttempts(
+          "test.contended",
+          "op-occ",
+          attempts,
+        );
+      });
+
+    const settled = await Promise.allSettled([contend(), contend()]);
+    const rejected = settled.filter(
+      (outcome): outcome is PromiseRejectedResult =>
+        outcome.status === "rejected",
+    );
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({
+      code: "OPTIMISTIC_LOCK_FAILURE",
+    });
+
+    const executor = createScopeStubExecutor(
+      env.SCOPE_OBJECT,
+      scope,
+      NAMESPACE,
+    );
+    const rows = await executor.query(
+      statement(`SELECT attempts FROM ${SCHEDULED_TASKS_TABLE}`),
+    );
+    expect(int(rows[0] ?? {}, "attempts")).toBe(1);
   });
 
   it("keeps two scopes apart", async () => {

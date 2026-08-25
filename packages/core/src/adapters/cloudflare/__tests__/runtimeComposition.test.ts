@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type CloudflareRuntime,
   createCloudflareRuntime,
+  DEFAULT_MAINTENANCE_TABLES,
 } from "../../../application/di/cloudflareRuntime";
 import type { MemoryRuntime } from "../../../application/di/memoryRuntime";
 import type { AppRuntime } from "../../../application/di/runtime";
@@ -89,6 +90,11 @@ const WORKER_PORTS = [
 
 const mailSender: MailSender = { send: vi.fn(async () => {}) };
 
+const keyRing = {
+  currentVersion: 1,
+  keys: new Map([[1, new Uint8Array(32)]]),
+};
+
 let seq = 0;
 
 const makeRuntime = (): CloudflareRuntime => {
@@ -102,6 +108,8 @@ const makeRuntime = (): CloudflareRuntime => {
     },
     oauth: { mode: "dev" },
     mailSender,
+    shareTokenKeyRing: keyRing,
+    deletionTicketKeyRing: keyRing,
     objectStoragePublicBaseUrl: "https://objects.hollow.test",
     objectNamespace: namespace,
     objectKeyPrefix: `${namespace}/`,
@@ -144,6 +152,12 @@ describe("createCloudflareRuntime", () => {
       "oauth_flow_states",
       "sessions",
     ]);
+    // Every table a default `authStatePrune` run names is one this
+    // deployment can actually sweep; the reverse would be skipped with a
+    // single error log (ADR 062).
+    expect(new Set(DEFAULT_MAINTENANCE_TABLES.authStatePrune)).toEqual(
+      new Set(Object.keys(container.authStateSweeps)),
+    );
   });
 
   it("wires the global plane to D1: a unit of work commits where the read views read", async () => {

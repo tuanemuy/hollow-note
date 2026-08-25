@@ -4,7 +4,7 @@ import type {
 } from "../../../../application/ports/identityRemovalReceiptStore";
 import type { PrunePage } from "../../../../domain/common/pagination";
 import { IdentityId, UserId } from "../../../../domain/identity/valueObject";
-import { upsert } from "../../execution/writeSet";
+import { opaque } from "../../execution/writeSet";
 import { date, enumOf, text, textOrNull, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import type { SqlRow } from "../../sql/statement";
@@ -71,14 +71,11 @@ export function createD1IdentityRemovalReceiptStore(
       if (stored !== null) {
         return;
       }
-      const row = toRow(receipt);
+      // `opaque`, not `upsert`: the statement is a no-op when a receipt is
+      // already there, so staging this call's row image would let a later
+      // read in the same unit see a receipt the write never made.
       await writeTranslated(session, `${TABLE} insert`, [
-        upsert({
-          table: TABLE,
-          key: receipt.identityId,
-          row,
-          statement: writer.insertIgnore(row),
-        }),
+        opaque(writer.insertIgnore(toRow(receipt))),
       ]);
     },
 
