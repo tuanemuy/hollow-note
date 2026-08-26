@@ -78,17 +78,17 @@ export async function deleteExpiredPage(
   if (size === 0) {
     return { deleted: 0, nextCursor: null };
   }
-  const rows = await session.query(
-    statement(
-      `SELECT ${spec.keyColumn} AS sweep_key FROM ${spec.table}
-       WHERE ${spec.expiresColumn} <= ? AND (? IS NULL OR ${spec.keyColumn} > ?)
+  const asOf = toTimestamp(now);
+  // The cursor is built into the SQL instead of guarded by `? IS NULL OR`:
+  // SQLite plans without looking at bound values, so the OR form cannot
+  // become a range constraint and every page would rescan the ones before it.
+  const afterCursor = cursor === null ? "" : ` AND ${spec.keyColumn} > ?`;
+  const rows = await session.query({
+    sql: `SELECT ${spec.keyColumn} AS sweep_key FROM ${spec.table}
+       WHERE ${spec.expiresColumn} <= ?${afterCursor}
        ORDER BY ${spec.keyColumn} LIMIT ?`,
-      toTimestamp(now),
-      cursor,
-      cursor,
-      size + 1,
-    ),
-  );
+    params: cursor === null ? [asOf, size + 1] : [asOf, cursor, size + 1],
+  });
   const keys = rows.map((row) => text(row, "sweep_key"));
   const page = keys.slice(0, size);
   if (page.length > 0) {
@@ -99,9 +99,13 @@ export async function deleteExpiredPage(
         remove({
           table: spec.table,
           key,
+          // The selection predicate rides along: a row that stopped being
+          // expired between the read and the write must survive.
           statement: statement(
-            `DELETE FROM ${spec.table} WHERE ${spec.keyColumn} = ?`,
+            `DELETE FROM ${spec.table}
+             WHERE ${spec.keyColumn} = ? AND ${spec.expiresColumn} <= ?`,
             key,
+            asOf,
           ),
         }),
       ),
@@ -145,10 +149,14 @@ export async function deleteBoundedByKey(
       remove({
         table: spec.table,
         key,
-        statement: statement(
-          `DELETE FROM ${spec.table} WHERE ${spec.keyColumn} = ?`,
-          key,
-        ),
+        // The selection predicate rides along: a row that left the set
+        // between the read and the write must survive. `refreshAuthEpoch`
+        // racing an epoch sweep would otherwise sign the caller out.
+        statement: {
+          sql: `DELETE FROM ${spec.table}
+                WHERE ${spec.keyColumn} = ? AND (${spec.where.sql})`,
+          params: [key, ...spec.where.params],
+        },
       }),
     ),
   );

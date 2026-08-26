@@ -1,6 +1,6 @@
 # 指摘台帳 — 薄いビュー（次ラウンドのレビュアーへ）
 
-Round 001 / 002 / 003 / 004 で **wont-fix / defer / 要確認** と判定した指摘、および各ラウンドで決着させた付随判断。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
+Round 001 / 002 / 003 / 004 / 005 で **wont-fix / defer / 要確認** と判定した指摘、および各ラウンドで決着させた付随判断。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
 fix 判定の全件は `triage.md` を参照。
 
 ## wont-fix
@@ -9,6 +9,8 @@ fix 判定の全件は `triage.md` を参照。
 |---|---|---|---|
 | `do/repositories/{storedFileRepository,noteRepository}.ts:readForUpdate 事前読み` | wont-fix | adr.md ADR-008 / ADR-013 / ADR-025 で決着済み。二段構え（ステージ時の読みで固有符号、guard は同時実行の砦）はこの PR の中核規律で、省くと版の不一致が呼び出し地点ではなく commit で現れる。最適化は ADR-002 が範囲外に置いた別作業 | — |
 | `authTokenRepository:findPending の「最新の発行を返す」を契約化する` | wont-fix（Round 002） | adr.md ADR-039 が「複数 pending 時の戻り値は契約としては未定義の領域。memory を触らずに済む側（AC-7）を採る」と決着済みで、契約化を別 Issue と明記している。適合スイートへのケース追加と memory の振る舞い変更が同時に要り、AC-7 と「適合スイート本体は変更しない」の双方に抵触する。四者不整合そのものはポート JSDoc を「未定義」へ、spec を「D1 実装の選択」へ倒して閉じる | 未起票 |
+| `do/scopeObject.ts:armAndPublish の鎖に合流が無い` | wont-fix（Round 005） | 性能のみの指摘で、レビュアー自身が正しさは保たれると認めている。直列化は Round 004 の付随決定で「古いスライスが新しいスライスを上書きする」欠陥を閉じるために採った形で、新事実は無い。配備一式（Worker entry / Queue consumer / Cron）は plan.md スコープ外で、今日 production から `applyWriteSet` を叩く呼び出し元が無く同時実行数も D1 RTT も実測できない。トレードオフは `.thread/11/adr.md` の直列化 Consequences に記録済み。配備スライスで実測してから引き直す | — |
+| `spec/inventory/frontend.md:3 の最終同期日` | wont-fix（Round 005。Round 004 の判定を継承） | 台帳の「最終同期」は「その日付時点で**生成元**と一致している」という主張で、生成元 `spec/pages/` は本 PR で 1 行も変わっていない（`grep cursor spec/pages/` → 0 件）。訂正した `PAGE-p41-002` の要点欄は生成元に対応物を持たない記述の修正であって突き合わせの結果ではないので、日付を上げると「していない照合をした」と主張することになる | — |
 | `CLAUDE.md:Adapters / Reference runtime / Development Commands の追随` | wont-fix（Round 003） | 指摘の事実関係は正しい（README / `docs/test.md` / `package.json` は改訂済みで CLAUDE.md だけが古い）が、**`CLAUDE.md` は本フェーズでは書き換えない方針**。coding agent への規範であり、採否はユーザーの判断に委ねる。提案文面（Adapters 節に `cloudflare/` を足す / Reference runtime 末尾を README と同文にする / Development Commands に `test:node` / `test:workers` を併記する）は完了報告でユーザーへ提示済み | — |
 
 ### wont-fix に準じる副論点
@@ -106,3 +108,13 @@ fix 判定の全件は `triage.md` を参照。
 |---|---|---|
 | `execution/writeSet.ts:staged 経路の guard 敗北翻訳` | defer | #55 |
 | `adapters/memory:publicPurgeAcks の死んだ表` | defer（AC-7 のため本 PR では触らない） | #56 |
+
+## Round 005 で決着させた付随判断（再審議しないこと）
+
+| Key | 決定 | 根拠 |
+|---|---|---|
+| `do/scopeObject.ts:commit 経路が publish 前に alarm を消す` | **commit 経路は「足すだけ」にする** — `applyWriteSet` からの upkeep は `armForStoredRows`（消さない）、`alarm()` の `finally` からの upkeep だけが `rescheduleAlarm`（turn の出口）を通る | 「publish 先・reschedule 後」は `armAndPublishNow` の「arming first keeps the object's self-healing independent of D1」を壊し、D1 の往復中に落ちると駆動する配備で行が武装されないまま残る。commit 経路を消さない側へ倒すと `spec/platform/index.md:202`「Alarm を消す地点は turn の出口 1 か所に限る」と実装が初めて 1 対 1 になり、`deleteAlarm` 後・publish 完了前のクラッシュ窓が構造的に消える。副作用は「最後の行が消えた commit の直後に空 turn が 1 回走る」だけ |
+| `sql/session.ts:readRows のステージ像に実行時検査を入れるか` | **入れない。契約を `RowMutation.upsert.row` / `RowsRead` の JSDoc に書く** | `readRows` が比較できるのは `stored[0]` のキー集合だけで、射影を絞った読み（`noteRevisionRepository` の `KEY_SELECTION`）では stored 側が狭く、不変条件（ステージ像は常に全列）を検査できない。毎読みのコストで偽の安心を買う形になる。`LIMIT` の修復不能検査は stored 側だけで判定できるので同型ではない |
+| `do/repositories/scopeTaskScheduler.ts:autocommit publish の非対称` | **object 駆動配備（`scopeAlarmDrivesTasks()` が真）では autocommit 経路を `databaseError` で拒む＋ JSDoc の前提条件を明示** | 構造的な移送（autocommit session が touched tables を集めて `applyWriteSet` を呼び、publish を object の 1 本に寄せる）は `sql/session.ts` / `sql/executor.ts` / `do/scopeStub.ts` / scheduler の依存 / `di/cloudflareRuntime.ts` / 適合ハーネスまで連鎖し、Blocker ゼロの収束ラウンドで開く範囲としては大きい。拒否はレジストリを読む 3 行で、production（`registerScopeTaskHandler` の呼び出し 0 件）でも適合ハーネスでも発火しないことを確認済み。移送は配備スライスの持ち分 |
+| `d1/repositories/identitySupport.ts:有界削除をどこまで直すか` | **選択述語を各 `DELETE` へ持ち越す。1 行 1 文は維持する** | 共通の規約が禁じているのは 1 文にバインド変数を件数ぶん並べること（上限 100）であり、1 文 1 変数の別々の文は触れない。`json_each` 1 文へ畳むと `remove()` のオーバーレイ（同一 UoW の read-your-writes）を捨て、「今日の呼び出し形では読み戻さない」に正しさを寄りかからせることになる。文数は `MAX_STATEMENTS_PER_COMMIT = 250` が既に見ている |
+| `domain/note/ports/{local,public}NoteQueryService.ts:タグ名重複の契約文` | **ポート JSDoc から契約文を落とし、実装コメント（`projection/searchClauses.ts` の `tagFilterBindings`）に残す。適合スイート・memory・`spec/domains/note.md` は触らない** | ADR 026 / AC-8 は「契約はポート JSDoc と適合スイートの両方に降ろす」を求めるので、片側だけの状態は解消が要る。本 PR は「適合スイート本体を変更しない」を通しており（#48 も同じ理由）、両バックエンドが今日同じ答えを返す以上、収束ラウンドで AC-8 の手続きを開く価値が無い。契約化したいなら適合スイート＋両バックエンドを同時に動かす別 Issue |

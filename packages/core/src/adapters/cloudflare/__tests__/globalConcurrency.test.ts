@@ -2,13 +2,15 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ConflictError } from "../../../application/errors";
 import { UuidV7Generator } from "../../../application/ports/idGenerator";
-import type { UserId } from "../../../domain/identity/valueObject";
+import type { SessionId, UserId } from "../../../domain/identity/valueObject";
 import { createTestClock } from "../../conformance/testClock";
 import { createD1AccountDeletionManifestStore } from "../d1/repositories/accountDeletionManifestStore";
 import { createD1DistributedOperationStore } from "../d1/repositories/distributedOperationStore";
 import { createD1GlobalMaintenanceRunStore } from "../d1/repositories/globalMaintenanceRunStore";
 import { createD1IdentityUniqueDirectory } from "../d1/repositories/identityUniqueDirectory";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { createD1LoginAttemptStore } from "../d1/repositories/loginAttemptStore";
+import { createD1SessionRepository } from "../d1/repositories/sessionRepository";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { createD1Executor } from "../sql/executor";
 import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
@@ -113,18 +115,23 @@ describe("cloudflare global control-plane concurrency", () => {
       ),
     ]);
 
+  const seedSession = (id: string, authEpoch: number): Promise<void> =>
+    executor.apply([
+      statement(
+        `INSERT INTO ${GLOBAL_TABLES.sessions}
+           (id, user_id, token_hash, auth_epoch, created_at, expires_at)
+         VALUES (?, 'user-a', ?, ?, ?, ?)`,
+        id,
+        `hash-${id}`,
+        authEpoch,
+        T0.getTime(),
+        T0.getTime() + HOUR_MS,
+      ),
+    ]);
+
   beforeEach(async () => {
     clock.set(T0);
-    await env.GLOBAL_DB.batch(
-      [
-        GLOBAL_TABLES.identityUniqueReservations,
-        GLOBAL_TABLES.distributedOperations,
-        GLOBAL_TABLES.globalMaintenanceRunLanes,
-        GLOBAL_TABLES.globalMaintenanceRuns,
-        GLOBAL_TABLES.accountDeletionManifests,
-        GLOBAL_TABLES.users,
-      ].map((table) => env.GLOBAL_DB.prepare(`DELETE FROM ${table}`)),
-    );
+    await executor.apply(GLOBAL_WIPE_STATEMENTS.map((sql) => statement(sql)));
   });
 
   it("gives a contested uniqueness key to exactly one reserver", async () => {
@@ -285,6 +292,51 @@ describe("cloudflare global control-plane concurrency", () => {
       ),
     );
     expect(rows).toEqual([{ state: "releasing", operation_id: "op-rival" }]);
+  });
+
+  it("spares the session an epoch refresh rescued mid-sweep", async () => {
+    await seedUser("user-a");
+    await seedSession("session-stale", 0);
+    await seedSession("session-current", 0);
+    const repository = createD1SessionRepository({ session });
+
+    const sweeping = createD1SessionRepository({
+      session: interposeOnce(session, () =>
+        repository.refreshAuthEpoch(
+          "session-current" as SessionId,
+          "user-a" as UserId,
+          1,
+        ),
+      ),
+    });
+    await sweeping.deleteOlderEpochByUser("user-a" as UserId, 1, 10);
+
+    const rows = await executor.query(
+      statement(`SELECT id FROM ${GLOBAL_TABLES.sessions} ORDER BY id`),
+    );
+    expect(rows.map((row) => row.id)).toEqual(["session-current"]);
+  });
+
+  it("spares a login attempt whose ttl a failure extended mid-sweep", async () => {
+    const key = "ip:198.51.100.7";
+    const store = createD1LoginAttemptStore(deps);
+    await store.recordFailure(key, T0, HOUR_MS);
+
+    clock.advance(HOUR_MS + 1);
+    const now = clock.now();
+    const sweeping = createD1LoginAttemptStore({
+      ...deps,
+      session: interposeOnce(session, () =>
+        store.recordFailure(key, now, HOUR_MS),
+      ),
+    });
+    await sweeping.deleteExpired(now, null, 10);
+
+    expect(await store.get(key)).toEqual({
+      key,
+      failureCount: 1,
+      lastFailedAt: now,
+    });
   });
 
   it("keeps both receipts when two finalize acks cross", async () => {

@@ -2,7 +2,7 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { GlobalUnitOfWorkContext } from "../../../application/execution/unitOfWork";
 import { EventId } from "../../../domain/common/event";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { createGlobalUnitOfWorkProvider } from "../execution/globalUnitOfWork";
 import { opaque, remove, upsert, WriteSet } from "../execution/writeSet";
@@ -43,7 +43,7 @@ describe("staged set reads", () => {
   });
 
   beforeEach(async () => {
-    await env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.users}`).run();
+    await executor.apply(GLOBAL_WIPE_STATEMENTS.map((sql) => statement(sql)));
     await executor.apply(["u-1", "u-2", "u-3"].map(insertUser));
   });
 

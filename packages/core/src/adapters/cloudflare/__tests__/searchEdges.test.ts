@@ -354,6 +354,15 @@ const markedIn = (html: string | null): readonly string[] =>
         unescapeHtml(match[1] ?? ""),
       );
 
+/**
+ * Code points of `value` that are surrogates on their own — what iterating
+ * a string by code point yields when a pair has been cut in half.
+ */
+const loneSurrogatesIn = (value: string): readonly number[] =>
+  [...value]
+    .map((character) => character.codePointAt(0) ?? 0)
+    .filter((code) => code >= 0xd800 && code <= 0xdfff);
+
 const FILLER = "lorem ipsum dolor sit amet ";
 
 describe("highlight position map", () => {
@@ -451,6 +460,20 @@ describe("highlight position map", () => {
     }
     // …and why the short cut still has to stop before a non-ASCII unit.
     expect([...REFERENCE_CLUSTERS.segment("á")]).toHaveLength(1);
+  });
+
+  it("cuts the body window on code point boundaries", () => {
+    // The 40 units of lead put the window's near edge on the low half of
+    // the first pair, and its 160-unit length puts the far edge on the high
+    // half of the second.
+    const source = `😀${"x".repeat(39)}roadmap${"y".repeat(112)}😀tail`;
+
+    const html = highlightBody(source, "roadmap");
+
+    expect(loneSurrogatesIn(html ?? "")).toEqual([]);
+    expect(markedIn(html)).toEqual(["roadmap"]);
+    expect(html?.startsWith("…x")).toBe(true);
+    expect(html?.endsWith("y…")).toBe(true);
   });
 
   it("escapes everything but its own marks", () => {

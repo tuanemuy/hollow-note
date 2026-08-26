@@ -250,6 +250,11 @@ export function nextWakeAt(storage: DurableObjectStorage): Date | null {
  * Arms the object for its next turn, or drops the alarm when there is
  * nothing to wake for — including the case where this deployment has no
  * handler registry and therefore no turn to run.
+ *
+ * This is the exit of a turn and nothing else. It is the only place an
+ * alarm may be dropped, and it is safe there because the alarm it drops
+ * has already been delivered — anywhere earlier it would take a
+ * due-index republish retry with it (`armForStoredRows`).
  */
 export async function rescheduleAlarm(
   storage: DurableObjectStorage,
@@ -265,14 +270,16 @@ export async function rescheduleAlarm(
 /**
  * Arms for the rows the object already holds, and never drops an alarm.
  *
- * This is what a rebuilt object runs. An alarm is durable state that
- * outlives the instance, and the one reason for it that `scheduled_tasks`
- * cannot express is a due-index republish retry — the sole recovery path
- * for a slice that never landed, since `listDue` reads the index alone.
- * Deleting here would erase that retry every time an evicted object is
- * addressed again. A deployment that drives no tasks therefore arms
- * nothing and deletes nothing; a stale alarm it may still carry is
- * dropped by the turn that delivers it.
+ * This is what a rebuilt object runs, and what follows a committed
+ * write-set. An alarm is durable state that outlives the instance, and
+ * the one reason for it that `scheduled_tasks` cannot express is a
+ * due-index republish retry — the sole recovery path for a slice that
+ * never landed, since `listDue` reads the index alone. Deleting from
+ * either occasion would erase that retry: on a rebuild, every time an
+ * evicted object is addressed again; on a commit, before the very
+ * publish the retry exists to guard. A deployment that drives no tasks
+ * therefore arms nothing and deletes nothing; a stale alarm it may still
+ * carry is dropped by the turn that delivers it.
  */
 export async function armForStoredRows(
   storage: DurableObjectStorage,

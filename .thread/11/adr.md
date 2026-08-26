@@ -656,6 +656,10 @@ commit そのものは件数によらず **1 回**（DO への RPC 1 往復 = `t
 - トレードオフ: 既定バッチ 100 件では 1 turn が 403 文・203 往復になる。DO ローカル SQL に D1 の query 予算は掛からないものの、`spec/platform/index.md` の foreground p95 SLO に対する余裕は読み往復の削減で作ることになる。削減余地（1 件あたり読み 2 → 1、さらに `listByIds` による一括読みで n → 1）は残っている。
 - トレードオフ: 実測値は `deleteStoredFiles` の実装形状に依存する。application 側が 1 件ずつ読む形をやめれば数は変わるので、本 ADR の数字は「今の application コードと今のポート契約の下での実測」である。
 
+## ADR-026: 欠番
+
+採番だけ消費し、本文は書かれていない。番号を詰めると既存の相互参照がずれるので空けたまま残す。本ファイルから ADR-026 を参照している箇所は無い。
+
 ## ADR-027: `membership_directory` は `operation_id` を edge key とし、`membership_id` を NULL 可にする
 
 ### Context
@@ -1859,7 +1863,7 @@ constructor が持っていた役目 —「駆動する配備が、駆動しな�
 ### Consequences
 
 - 良い点: ADR-070 の再試行が cold start を跨いで生き残る。既定配備（レジストリ空）でこそ効く。
-- 良い点: 「alarm を消してよいのは turn の出口だけ」という 1 つの規則になり、消す地点が 2 箇所から 1 箇所へ減った。
+- 良い点: 「alarm を消してよいのは turn の出口だけ」という 1 つの規則へ寄る。ただし本決定が閉じたのは constructor 経路だけで、規則が実装と 1 対 1 になるのは commit 経路も消さなくなった ADR-090 の後である。
 - トレードオフ: 駆動しない配備で古い alarm が 1 度だけ余分に配送されうる（その turn が自分で落とす）。ADR-045 の「レジストリ空の object は writer ではない」は保たれる — turn は 1 行も claim しない。
 - `__tests__/alarm.test.ts` の「keeps the republish retry alarm across a rebuild of the object」が、`state.abort()` で object を作り直したあとも `getAlarm()` が同じ値であることを実バインディングで固定する。既存の「republishes a slice whose publish failed on its own next alarm」は live インスタンスへ alarm を撃つだけなのでこの経路を観測していなかった。
 - **canon の追随（束 6 で反映済み）**: `spec/platform/index.md`「Scope Alarm」の起動時の張り直しの段落を「足すだけで消さない。消す地点は turn の出口 1 か所」へ直した。ADR-060 の Decision / Consequences も本決定で置き換わったことを明記した。
@@ -1890,7 +1894,7 @@ production の合成では `do/repositories/scopeTaskScheduler.ts` の autocommi
 
 - 良い点: 「全置換だから収束する」が順序の保証を伴って初めて真になる。ADR-003 が置いた「index は派生データ」の前提が、並行 commit の下でも崩れない。
 - 良い点: `alarm()` の `finally` の後始末も同じ鎖に乗るので、turn の publish と write-set の publish が交差する経路も同時に消える。
-- トレードオフ: 同一 scope へ並行に届いた write-set は、後始末の D1 往復ぶんだけ直列に待つ。commit 自体は待たない（`transactionSync` は既に終わっている）ので、待つのは呼び出し元が索引の可視性を得るまでの時間だけ。
+- トレードオフ: 同一 scope へ並行に届いた write-set は、後始末の D1 往復ぶんだけ直列に待つ。commit 自体は待たない（`transactionSync` は既に終わっている）ので、待つのは呼び出し元が索引の可視性を得るまでの時間だけ。ただし待ちは鎖に並んだ数ぶん積み上がり、N 本目の呼び出し元は D1 往復 N 回ぶん遅れる。**合流（まだ `scheduled_tasks` を読み始めていない末尾の publish に相乗りする）は入れない** — 正しさに要るのは「自分の書きより後に読み始めた publish が 1 回ある」ことだけなので合流しても順序は保てるが、今日 production から `applyWriteSet` を叩く呼び出し元が無く（配備一式は plan.md のスコープ外）、同時実行数も D1 RTT も測れない。観測できない改善のために alarm 周りの唯一の順序保証を複雑にはしない。引き直すのは配備スライスが実測してからである。
 - `__tests__/alarm.test.ts` の「does not let an overlapping publish land an older slice」が、object の `GLOBAL_DB` を包んで最初の batch を止めるという**仕込んだレース**で観測する（`projectionConcurrency.test.ts` の `interposeOnce` と同じ方針 — 起きるのを待たない）。着地順が `[1, 2]` であることを見るので、仕込みが空振りしたときは緑にならない。
 - **canon の追随（束 6 で反映済み）**: `do/dueIndex.ts` の JSDoc に加え、`spec/database/index.md#scope_task_due_index` に「publish はスライスの全置換であり、収束は順序の性質なので scope object が読みごと直列化する」の 1 項目を足した。
 
@@ -1970,3 +1974,185 @@ memory も共有適合スイートも動かないので AC-7 / AC-8 の手続き
 - 良い点: AC-6 が canon に着地する。「複数プロセスは引き金ではない」という誤った安心を読み手に与えない。
 - 良い点: 配備スライスが持つべき要件（runner の同時 1 起動）が、設計文の側から名指しで渡る。
 - トレードオフ: `ScopeTaskScheduler` の契約は今も `spec/domains/` に節を持たず、`spec/database/` と ポート JSDoc に分かれたままである。統合は #52 の持ち分。
+
+## ADR-086: 本文ハイライトの窓はコードポイント境界へ内側に丸める
+
+### Context
+
+`highlightBody` の窓は `first[0] - WINDOW_LEAD` と `from + WINDOW_LENGTH` で、いずれも UTF-16 コード単位のオフセットである。一致点の 40 単位手前・160 単位先がサロゲートペアの中に当たると、`render` の `slice` が対を割り、返す HTML の端に対にならないサロゲートが載る（W-003）。表示は U+FFFD に落ちるだけだが、返る文字列は well-formed でなくなり、モジュール JSDoc と `spec/database/index.md` の「返す文字列は常に元テキストの一部」という主張から外れる。JSON へ載せる／保存する下流でも壊れうる。`highlightExcerpt` の窓は `[0, excerpt.length]` なので影響を受けない。
+
+### Decision
+
+**窓の両端を、境界がサロゲートペアの中に落ちたときだけ 1 単位ずつ内側へ寄せる。** 近端は `+1`（孤立した下位サロゲートを捨てる）、遠端は `-1`（孤立した上位サロゲートを捨てる）。
+
+- 丸める単位はコードポイント境界であって書記素クラスタ境界ではない。クラスタを跨いで切ることは既定の振る舞い（窓は「文字数ぶんの文脈」でしかない）で、`render` の `Math.max(start, from)` / `Math.min(end, to)` は `<mark>` を窓へ切り詰める前提で書かれている。壊れるのは「対にならないサロゲート」だけなので、閉じるのもそこだけにする。
+- 外側ではなく内側へ丸める。外側だと遠端が `text.length` を越えうる（元テキスト自体が孤立サロゲートで終わる場合）ため、境界検査が 1 つ増える。内側なら窓は元の範囲に収まり、近端は必ず `first[0]` 以下に留まる（一致点はクラスタ境界なので、割れているなら厳密に手前）。
+- 遠端は丸める前の近端から数える。近端が 1 単位ずれても窓長を数え直さない — 窓長は表示上の目安で、1 単位の差に意味は無い。
+
+### Consequences
+
+- 返る断片は常に well-formed な元テキストの一部になる。`<mark>` の位置と HTML エスケープは変わらない。
+- 窓は最悪 2 単位短くなる。表示上の差は無い。
+- `__tests__/searchEdges.test.ts` の「cuts the body window on code point boundaries」が、両端がそれぞれ絵文字の対の中に落ちる本文で、出力にコードポイント単位の孤立サロゲートが 1 つも無いことを見る。丸めを外すと 0xDE00 と 0xD83D の 2 つが観測されて赤になることを確認した。
+- canon への追随は不要。`spec/database/index.md`「返す文字列は常に元テキストの一部」は元から真であるべき主張で、実装がそれに追いついただけである。
+
+## ADR-087: object 駆動配備での autocommit scheduler の拒否は、publish 地点ではなく `write` の入口に置く
+
+### Context
+
+ADR-020 は autocommit 経路の `ScopeTaskScheduler` を「due index は自分で publish し、alarm は張らない」と決めた。中央 runner が唯一の writer である既定配備では、索引に載れば `listDue` が拾うので足りる。しかし `registerScopeTaskHandler` を使う配備（`scopeAlarmDrivesTasks()` が真 ＝ ADR-045、その配備では中央 runner を併走させない ＝ ADR-085）でこの経路が使われると、行は索引にしか載らず、索引を読む者がいないので継続が誰にも起こされない。Round 005 の判定は「その配備では `databaseError` で拒む」だった。
+
+拒否をどこに置くかで振る舞いが変わる。`publishDueIndex` の入口に置くと、`write` の 2 つ目の `try / catch` が拾って `logger.warn` に落ちる（ADR-070 の「commit 済みの書きを失敗として返さない」ための catch）。つまり呼び出し元には何も届かず、行だけが起こされないまま残る — 指摘そのものが残る。
+
+### Decision
+
+`write` の**入口**、`session.write` より前に置く。`session.staged` が偽かつ `scopeAlarmDrivesTasks()` が真なら `databaseError` を投げ、scope 側の書き込み自体を起こさない。
+
+読み（`readRow` / `queryCandidates`）は拒まない。索引に載らない行が生まれるのは書きだけで、読みを塞いでも防げるものが無い。
+
+### Consequences
+
+- 良い点: 呼び出し元が落ちるので、その配備で autocommit の settle を書いた瞬間に気づける。静かなドリフトが観測不能な故障ではなくなる。
+- 良い点: 拒否が書き込みの前なので、落ちたときに scope 側へ半端な行が残らない。
+- トレードオフ: 「拒む条件」が `write` に、「publish するかの条件」が `publishDueIndex` にと 2 か所に分かれる。どちらも `session.staged` を見るが、意味が違う（前者は禁止、後者は分岐）ので畳まない。
+- production では発火しない（`registerScopeTaskHandler` の呼び出しは 0 件）。適合ハーネス（`__tests__/ports/scopeInfra.ts` 経由の `forScope`）もハンドラを登録しないので発火しない。
+- `__tests__/alarm.test.ts` の「refuses a write outside a unit of work where the object drives tasks」が両側を観測する — レジストリが空なら同じ `schedule` が通って索引に載り alarm は張られない、登録後は拒まれて行も残らない。
+
+## ADR-088: keyset の cursor 節は述語ではなく文の組み立てで出し入れする
+
+### Context
+
+D1 の掃引・ページングが 4 か所で `AND (? IS NULL OR key > ?)` の形をとっていた。1 本の SQL で「先頭ページ」と「続き」を兼ねられるので素直に見えるが、SQLite は**束縛値を見ずに計画する**ので `? IS NULL` を列への制約に落とせない。この `OR` 項は残余述語としてしか評価されず、cursor は「読み飛ばし」になって走査の開始位置を動かさない。1 ページ 100 件を P ページ回すと p ページ目が p×100 行を読み直し、全体が O(P²) になる。
+
+効く先は定常経路である。`identitySupport.deleteExpiredPage` は `sessions` / `auth_tokens` / `login_attempts` / `oauth_flow_states` / `identity_removal_receipts` の 5 表を兼ねており、いずれも行数が利用者数に比例する。`globalMaintenanceRunStore.pruneCompleted` は `(expires_at > ? OR (expires_at = ? AND run_id > ?))` と正しい複合 keyset を組み立てながら、前置した `? IS NULL OR` が `global_maintenance_runs_expiry_idx` の利用ごと潰していた。`accountDeletionManifestStore` の `appendMembershipPage` / `pruneTerminal` も同じ形。
+
+### Decision
+
+**cursor が無いときは cursor 節そのものを SQL に出さない。** 節の文字列と params 配列を `cursor === null` で分岐させ、`statement(...)` の可変長引数ではなく `{ sql, params }` を直に組む。cursor があるときだけ `AND key > ?`（複合なら `AND (a > ? OR (a = ? AND b > ?))`）が現れるので、索引のレンジ制約になる。
+
+### 検討した代替案
+
+**型ごとの番兵で `coalesce` へ落とす**（text 鍵なら `key > coalesce(?, '')`、integer なら下限値）。文が 1 本で済み計画も安定するが、鍵の型ごとに番兵を選ぶ知識が `deleteExpiredPage` のような表非依存のヘルパーへ入り込む。空文字列が正当な鍵になりうる表が将来出たときに静かに壊れる形でもあるので採らない。
+
+### Consequences
+
+- 良い点: 掃引の 1 ページのコストがページサイズに比例する形になった。`identitySupport` の 1 か所で 5 表に効く。
+- 良い点: `pruneCompleted` の複合 keyset が意図どおり `(expires_at, run_id)` の索引へ乗るようになった。
+- トレードオフ: 同じ SELECT に 2 つの形ができる。分岐は 1 行の三項に閉じており、params の並びも同じ順序なので読み違えは起きにくい。
+- 契約（ポート JSDoc / 共有適合スイート）は 1 行も動かない。返る行も `nextCursor` の意味も同じで、変わったのは計画だけである。適合スイートの cursor ケース（先頭ページ / 続き / 尽きたら null）がそのまま両分岐を通る。
+- canon への追随は不要。`spec/database/index.md` の「共通の規約」は `?` を件数ぶん並べないことを定めているだけで、cursor 節の出し入れには触れていない。
+
+## ADR-089: 有界削除は選択述語を DELETE へ持ち越す（1 行 1 文は維持する）
+
+### Context
+
+[ADR-014](#adr-014-期限切れ掃引と件数上限つき削除は束内の共有ヘルパーに畳む) の `deleteExpiredPage` / `deleteBoundedByKey` は、`expires_at <= ?` や `user_id = ? AND auth_epoch < ?` で**選んだ**行を `WHERE key = ?` だけで**消して**いた。読みと書きは D1 への別 round trip なので、そのあいだに行が条件から外れても消える。
+
+実害に届く。`SessionRepository.refreshAuthEpoch` は現在 session を新しい auth epoch へ引き上げる唯一の口で、`authResidueCleanup` の `deleteOlderEpochByUser` と競合する。旧世代として選ばれた直後に refresh が着地すると、いま使っている session が消えて利用者が強制サインアウトされる。`login_attempts` でも、選ばれた直後に `recordFailure` が `expires_at` を延ばした行を掃引が消し、失敗回数が 0 に戻ってスロットルが緩む。memory は同期区間で読み書きするのでこの窓を持たず、適合スイートには観測できない乖離である。
+
+### Decision
+
+**SELECT の述語をそのまま DELETE の `WHERE` へ足す。** `DELETE FROM t WHERE key = ? AND <選択述語>` の形にし、`deleteBoundedByKey` は受け取った `where` 断片を SQL・params とも再利用する。**1 行 1 文は維持する** — `remove()` mutation を鍵ごとに積む形は ADR-014 のまま変えない。
+
+### 検討した代替案
+
+**`json_each` の多行 DELETE 1 文へ畳む**（`DELETE FROM t WHERE <述語> AND <inJsonList(key)>`）。述語の持ち越しと文数の削減が同時に片づくが、`opaque` になるので write-set のオーバーレイに消去が見えなくなる。今日の呼び出し形（`requestPasswordReset` / `resendVerificationEmail` は削除→発行の順、`authResidueCleanup` は件数だけを見る）では代償が出ないものの、read-your-writes が呼び出し側の順序に依存する形を新たに作ることになる。「`?` を件数ぶん並べない」という `spec/database/index.md` の規約は**バインド変数の本数**に掛かる規約で、1 文 1 パラメータの DELETE を積むこの形はそれに触れていない。ページ上限 100 は `MAX_STATEMENTS_PER_COMMIT = 250` に収まる。
+
+### Consequences
+
+- 良い点: 強制サインアウトとスロットル緩和の窓が閉じた。UoW 内で呼ばれて窓が UoW 全体に広がる場合も、同じ述語が commit 時の DELETE に付いている。
+- 良い点: 「何で選んだか」と「何を消すか」が 1 か所に並び、片方だけ直して静かにずれる形が消えた。
+- トレードオフ: 返す件数は**選んだ件数**であって消えた件数ではない。競合した行のぶんだけ過大に申告する。呼び出し側はどちらも「まだ残っているか」の目安にしか使っておらず、次のページで実際の残りを見るので実害は無い。ポート JSDoc は件数の意味を規定していないので契約も動かない。**その一文をポート JSDoc へ足すことは本 PR では採らない** — 件数の意味は `PrunePage`（`domain/common/pagination.ts`）と 3 つの domain ポート・2 つの application ポートに跨るので、束 6 の担当範囲である `application/ports/` にだけ書くと canon が半分だけ述べられた状態になる。加えて競合窓は共有適合スイートから観測できないので、片側だけに載る契約文を新たに作ることになり、ADR-092 が同じ理由で落とした形をもう 1 つ増やす。足すなら 6 ファイルを一度に動かす別 Issue。
+- トレードオフ: `remove()` のオーバーレイは、DELETE が述語で空振りしても消えたことにする。同一 UoW でその表を読み戻す呼び出し側は今日 1 つも無い。
+- 契約（ポート JSDoc / 共有適合スイート）は 1 行も動かない。直列実行しか到達しない memory は元から同じ答えを返す。
+- 観測: `__tests__/globalConcurrency.test.ts` に 2 本足した（`interposeOnce` で読みと DELETE のあいだに `refreshAuthEpoch` / `recordFailure` を割り込ませる）。述語の持ち越しを外すと 2 本とも赤になることを実測した。
+
+## ADR-090: commit 経路の後始末は alarm を足すだけにし、消すのは turn の出口に限る
+
+### Context
+
+ADR-081 は constructor から `deleteAlarm` へ至る経路を閉じたが、`rescheduleAlarm` の呼び出し地点はもう 1 つあった。`ScopeObject.applyWriteSet` は `scheduled_tasks` に触れた write-set のたびに `armAndPublish` → `armAndPublishNow` を通り、そこが `rescheduleAlarm` を呼ぶ。`rescheduleAlarm` は `scopeAlarmDrivesTasks()` が偽（`registerScopeTaskHandler` の production 呼び出しは 0 件＝既定配備）なら `nextWakeAt` を読まずに `storage.deleteAlarm()` する。
+
+したがって既定配備では、`scheduled_tasks` を触る commit のたびに、**前回の publish 失敗が `armNoLaterThan` で張った再試行 alarm が先に消える**。ADR-070 はその alarm を「索引に載らなかった行の唯一の回復経路」と置いており（`listDue` は索引しか読まない）、`spec/database/index.md#scope_task_due_index` も同じ向きを「自然回復しない」と名指している。非クラッシュ経路では直後の全置換 publish が回復させるが、`deleteAlarm` 成功後・`publishDueIndex` 完了前に isolate が落ちると、索引に載らない行と唯一の回復経路が同時に失われる。復旧はその scope への次の書き込みだけになる。
+
+`spec/platform/index.md`「Scope Alarm」が置いた「Alarm を消す地点は turn の出口 1 か所に限る」とも正面から食い違っていた。
+
+### Decision
+
+**後始末を「種類」で分ける。** `armAndPublish(scope, upkeep)` の `upkeep` は `"commit"` か `"turnExit"` で、`"commit"` は `armForStoredRows`（張るだけ・決して消さない）、`"turnExit"` だけが `rescheduleAlarm`（行が無くなったので消す、を含む）を通る。publish 失敗時の `armNoLaterThan` は両方で従来どおり。
+
+武装を後ろへ倒す（＝行が無くなったから消す）必要があるのは turn の出口だけである。commit 経路が要求するのは前倒しの武装だけで、消す権能を持つ理由が無い。
+
+### 検討した代替案
+
+**`rescheduleAlarm` を publish の後ろへ動かす**（arm → publish → 失敗時に再 arm、の順序を publish → reschedule へ）。1 か所の並べ替えで済むが、`armAndPublishNow` の「Arming first keeps the object's self-healing independent of D1」を壊す。D1 の往復中に isolate が落ちると、駆動する配備で行が武装されないまま残る。窓を別の窓と取り替えるだけなので採らない。
+
+**spec を弱める**（「起動時の張り直しは消さない」と限定する）。上記のクラッシュ窓が残るので、canon を実装の側へ寄せる向きの解にならない。
+
+### Consequences
+
+- 良い点: 「alarm を消してよいのは turn の出口だけ」が実装と 1 対 1 になった。ADR-081 と本決定で、消す地点は `alarm()` の `finally` と未 bind 時の早期 return だけになる。
+- 良い点: `deleteAlarm` 成功後・publish 完了前のクラッシュ窓が構造的に消えた。回復経路を張った当人以外が消すことはもう無い。
+- トレードオフ: 最後の行が消えた commit の直後は、行が 1 つも無いのに alarm が 1 度だけ残る。その turn が `EMPTY_TURN` → `rescheduleAlarm` で自分で落とすので、余分な空 turn 1 回で収まる。
+- `__tests__/alarm.test.ts` が「publish を落として張った再試行 alarm が、`scheduled_tasks` を触る成功 commit のあとも残る」を実バインディングで固定する。
+- canon の追随: `do/dueIndex.ts` の「再試行を誰も取り上げない」段落へ commit 経路を含めた。`spec/platform/index.md`「Scope Alarm」は ADR-081 の時点で既にこの形なので動かさない。
+
+## ADR-091: autocommit publish の構造的な移送は配備スライスへ送り、本 PR は拒否で閉じる
+
+### Context
+
+ADR-087 は「object 駆動配備で autocommit の `ScopeTaskScheduler` を `databaseError` で拒む」を決め、その**置き場所**（`write` の入口）を記録した。拒否そのものを選んだ理由 — なぜレビュアーが挙げた構造的な移送を採らなかったか — は記録していない。
+
+移送案はこうである。`RowMutation` は既に `table` を持つので、`createAutocommitSession.write` が touched tables を集め、executor が `ScopeSqlExecutor` なら `apply` ではなく `applyWriteSet(statements, tables)` を呼ぶ。そうすれば autocommit の書きも object の `armAndPublish` 鎖を通り、publish は object の 1 本に寄り、scheduler から `publishDueIndex` / `logger` / `db` 依存が落ち、拒否そのものが不要になる。設計としてはこちらが素直である。
+
+### Decision
+
+**本 PR では拒否で閉じ、移送は配備スライスの持ち分とする。**
+
+理由は範囲である。移送は `sql/session.ts` / `sql/executor.ts` / `do/scopeStub.ts` / scheduler の依存 / `di/cloudflareRuntime.ts` / 適合ハーネスまで連鎖し、autocommit セッションの意味（「executor へ素通しする」）そのものを変える。Blocker 0 の収束ラウンドで開く範囲としては大きい。一方で拒否はレジストリを読む 3 行で、閉じる穴は同じ — 「索引にしか載らない行を誰も起こさない」配備でその経路が使われることを防ぐ。
+
+今日 production の呼び出し元は 0 件（`cloudflareRuntime.ts` は scheduler を `buildRepositories` の中でしか組み立てず、`runDueScopeTasks` は claim も settle も UoW の中で行う）なので、移送しても取り除ける実害は今日ゼロである。指摘の本体は「配備スライスが Queue consumer から UoW を開かずに settle した瞬間に穴が開き、そのとき気づける仕掛けが無い」だった。拒否はまさにその瞬間に気づかせる。
+
+### Consequences
+
+- 良い点: 穴が開く瞬間に呼び出し元が落ちる。移送を先送りしても、先送りが静かな故障に化けない。
+- 良い点: 収束ラウンドで実行機構の意味を変えずに済む。
+- トレードオフ: autocommit 経路の publish は object の直列化（ADR-082）の外に残る。並行 settle が古いスライスを着地させうる形は残るが、その形へ到達できるのは object 駆動でない配備で UoW を開かずに settle する呼び出し元だけで、今日は存在しない。
+- 移送を実際に行うのは配備スライス（Worker entry / Queue consumer / Cron。plan.md「含まれないもの」）である。そこで autocommit の settle が要ると決まったら、拒否ではなく移送へ倒す。
+
+## ADR-092: タグ名重複の契約文はポート JSDoc から落とし、実装側の WHY に残す
+
+### Context
+
+Round 001 は D1 の検索が `COUNT(DISTINCT tag) = tagNames.length` で数えるため、同じタグ名を 2 度渡すと 1 件も一致しなくなる取りこぼしを見つけた。実装は修正した（`projection/searchClauses.ts` の `tagFilterBindings` が `new Set` で重複を除いて `COUNT(DISTINCT …)` と釣り合わせる）が、同時に `LocalNoteQueryService` / `PublicNoteQueryService` の `tagNames` へ «a repeated name filters no differently from one» という**契約文**を足していた。
+
+ところが共有適合スイートに重複タグを渡すケースは 1 件も無く、`spec/domains/note.md` の型注釈も据え置きのままだった。CLAUDE.md「Port contracts and conformance」と AC-8 は「契約上の振る舞いを足すならポート JSDoc と適合スイートの両方に触れる」と定めるので、片側だけに載った状態は解消が要る。
+
+### Decision
+
+**契約文をポート JSDoc から落とす。** 適合スイート・`adapters/memory/`・`spec/domains/note.md` は 1 行も触らない。
+
+本 PR は「適合スイート本体を変更しない」を通しており（AC-7、#48 も同じ理由）、スイートを足す側へ倒すと両バックエンドの再検証まで開く。両バックエンドが今日同じ答えを返す以上（memory は `every` の再評価で自然に満たし、CF は重複除去で釣り合う）、収束ラウンドでその手続きを開く価値が無い。取りこぼしを防ぐ WHY は実装側（`tagFilterBindings`）に既にあり、そこが正しい置き場所である。
+
+### Consequences
+
+- 良い点: 「ポート JSDoc に書いてあるがスイートが観測しない契約」が 1 つ減った。ADR 026 の「契約の正本はポート定義、その実行形が共有スイート」が両側で揃う。
+- トレードオフ: 重複タグの扱いは契約として未定義に戻る。今日は両バックエンドが一致するが、退行を捕まえる仕掛けは無い。
+- 契約化したいなら、適合スイートに 2 ポートぶんのケースを足し、両バックエンドで緑を確認し、`spec/domains/note.md` の型注釈にも同じ一文を添える別 Issue になる。
+
+## ADR-093: `spec/inventory/frontend.md` の最終同期日は動かさない
+
+### Context
+
+本 PR は `PAGE-p41-002` の要点欄を「署名 cursor」→「opaque cursor」へ改めた（ADR-067 の撤回範囲）。同じ改訂で `adapter.md` / `domain.md` / `test.md` / `usecase.md` の 4 本は最終同期日を `2026-08-26` へ上げているのに、`frontend.md` だけ `2026-08-16` のまま据わっている。Round 004 でも同じ形が指摘され、除外と判定されている。
+
+### Decision
+
+**動かさない。** 判定は Round 004 のまま継承する。
+
+台帳の「最終同期」は「その日付時点で**生成元**と一致している」という主張である。`frontend.md` の生成元は `spec/pages/` で、本 PR はそこを 1 行も変えていない（`grep cursor spec/pages/` → 0 件）。訂正した要点欄は、生成元に対応物を持たない記述が台帳側にだけ存在していたものの修正であって、突き合わせの結果ではない。日付を上げると「していない照合をした」と主張することになる。
+
+### Consequences
+
+- 良い点: 同期日が「照合した日」の意味を保つ。台帳を再生成するとき、どこまでが実際に突き合わせ済みかを日付から読める。
+- トレードオフ: 「行を触ったのに日付が古い」という見た目は残り、同じ指摘が再び上がりうる。本 ADR と `review/triage-keys.md` の該当行がその答えになる。

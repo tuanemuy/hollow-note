@@ -4,7 +4,7 @@ import type { GlobalUnitOfWorkContext } from "../../../application/execution/uni
 import { ScopeKey } from "../../../application/scope";
 import { type DomainEvent, EventId } from "../../../domain/common/event";
 import type { UserId } from "../../../domain/identity/valueObject";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import {
@@ -64,11 +64,9 @@ describe("cloudflare atomicity under a refused statement", () => {
   });
 
   beforeEach(async () => {
-    await env.GLOBAL_DB.batch([
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.users}`),
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.outboxEvents}`),
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.scopeTaskDueIndex}`),
-    ]);
+    await env.GLOBAL_DB.batch(
+      GLOBAL_WIPE_STATEMENTS.map((sql) => env.GLOBAL_DB.prepare(sql)),
+    );
   });
 
   const storedUsers = async (): Promise<readonly string[]> => {

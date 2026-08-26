@@ -770,3 +770,157 @@ fix のうち 2 件（W-I01 / W-S03）は**恒久対処を別 Issue へ送り、
 |---|---|---|
 | `execution/globalUnitOfWork.ts:staged 敗北の guard 翻訳をポート契約の答えへ返す` | defer（W-I01 の恒久対処） | UoW commit で敗れた `_occ_guard` を、その mutation を出したポートの読み経路の答えへ翻訳して返す |
 | `adapters/memory:publicPurgeAcks の死んだ表を落とす` | defer（W-S03 の memory 側。AC-7 のため本 PR では触らない） | `PublicNoteProjectionWriter.removeForPurge` の ack 契約撤回に合わせ、memory の `publicPurgeAcks` 表を落とす |
+
+## Round 005
+
+レビュー 5 本の指摘（Blocker 0 / Warning 22 = 22 件）を重複統合したもの。総数 **19 件**（fix 17 / wont-fix 2 / defer 0 / 要確認 0）。
+束ねたのは 3 組 — `W-U01`≡`W-C04`（commit 経路の alarm 削除）、`W-U03`≡`W-R05`（publish 鎖の合流）、`W-U04`≡`W-R02`（autocommit publish の非対称）。**Blocker は 0 件**。
+
+Round 001〜004 の台帳と Key を突き合わせた結果、**既出の判定を継承したものが 1 件**（`spec/inventory/frontend.md:3` の最終同期日 ＝ Round 004 の `spec/inventory/*.md:3:最終同期の日付` の除外判断。再指摘 2）。
+`W-C05`（`.thread/11/adr.md` の ADR-026 欠番）は Round 001 で **fix** と判定しながら実施が落ちていた項目で、判定を継承したまま再度 fix とする（再指摘 2）。
+`readForUpdate` 事前読み・`findPending` の順序（#53）・`publicNoteQueryService` の並び順（#54）・`spec/inventory` の ADP 行（#52）・`DEFAULT_MAINTENANCE_TABLES`（#16）・`CLAUDE.md` の追随は、いずれも再指摘されていない。
+
+判定の付随決定を 5 件（W-U01 の倒し方 / W-U02 の範囲 / W-U04 の倒し方 / W-I03 の範囲 / W-C03 の倒し方）、末尾の「付随決定」表に置く。
+
+### UoW / 実行機構・SQL 土台
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/scopeObject.ts:armAndPublishNow が publish の前に alarm を消す` | commit 経路の `rescheduleAlarm` が、前回の publish 失敗が張った再試行 alarm を publish の前に消す（uow W-001 ≡ composition W-004） | fix | **コードで成立を確認した。** `scopeObject.ts:179-193` は `rescheduleAlarm` → `publishDueIndex` の順で走り、`alarm.ts:254-263` は `scopeAlarmDrivesTasks()` が偽（`registerScopeTaskHandler` の production 呼び出しは 0 件＝既定配備）なら `nextWakeAt` を読まずに `storage.deleteAlarm()` する。したがって `scheduled_tasks` を触る commit のたびに、前回の publish 失敗が `armNoLaterThan` で張った再試行が先に消える。非クラッシュ経路では直後の全置換 publish が回復させるが、`deleteAlarm` 成功後・publish 完了前に isolate が落ちると (a) 索引に載らない行 (b) 唯一の回復経路である再試行 alarm、が同時に失われる。`spec/database/index.md:1113` が「自然回復しない」と名指した向きで、復旧はその scope への次の書き込みのみ。Round 004 の (c′) が閉じたのは constructor 経路だけで、`rescheduleAlarm` のもう 1 つの呼び出し地点が残っていた。本 PR が書いた `spec/platform/index.md:202`「Alarm を消す地点は turn の出口 1 か所に限る」とも正面から食い違う。**倒し方は下記「付随決定」** | 1 |
+| `execution/writeSet.ts+sql/session.ts:ステージ行の列が読み文の射影に足りないとき集合読みが黙って行を落とす` | `readRows` が `matches` / `compare` をステージ像に適用するので、像に欠けた列があると行が静かに消え順序が壊れる | fix（JSDoc のみ。実行時検査は入れない） | 事実関係を確認した。`session.ts:151-195` は `spec.matches` / `spec.compare` をステージ像にだけ適用し、欠けた列は `undefined` になる。**今日の全リポジトリは完全な行像を積んでおり実害は無い**（`noteRevisionRepository.ts:95-96` はこの前提を call site のコメントとして明記している）。穴は正本側にある — `RowMutation.upsert.row` の JSDoc（`writeSet.ts:3-19`）も `RowsRead`（`session.ts:30-52`）も「その表を読む文が選ぶ列を全部持つこと」を要求していない。**提案された実行時検査は採らない** — `readRows` が比較できるのは `stored[0]` のキー集合だけで、射影を絞った読み（`noteRevisionRepository` の `KEY_SELECTION = "id, created_at"`）では stored 側が狭いので不変条件を検査できず、毎読みのコストで偽の安心を買うことになる。不変条件は「ステージ像は常に全列」であり、それは書き手側の契約なので JSDoc に置くのが正しい位置である | 1 |
+| `do/scopeObject.ts:armAndPublish の鎖に合流が無い` | 同一 scope の継続 arming が D1 往復 1 本ずつに serialize する（uow W-003 ≡ routing W-005） | wont-fix | **性能のみの指摘で、正しさは両レビュアーとも保たれると認めている**（routing W-005「急がないなら現状のままでも正しさは保たれるので、性能上の指摘に留める」）。直列化は Round 004 の付随決定 `W-U01/W-R01` で「古いスライスが新しいスライスを上書きする」欠陥を閉じるために意図して採った形であり、新事実は出ていない。加えて **Cloudflare 配備一式（Worker entry / Queue consumer / Cron）は plan.md「含まれないもの」で、今日 production から `applyWriteSet` を叩く呼び出し元は存在しない** — 同時実行数も D1 RTT も測れないまま「実行中 1 本 ＋ 保留フラグ」の合流機構を足すのは、観測できない改善のために alarm 周りの唯一の順序保証を複雑にする取引になる。トレードオフ（1 scope あたりのスループットが D1 RTT で頭打ち）を `.thread/11/adr.md` の直列化の Consequences に書き足し、配備スライスが実測してから引き直す | 1 |
+| `do/repositories/scopeTaskScheduler.ts:autocommit publish が直列化の外にあり alarm も張らない` | autocommit 経路は due index を publish するが object の鎖にも入らず arming もしない（uow W-004 ≡ routing W-002） | fix | 事実関係を確認した。`scopeTaskScheduler.ts:101-124` の autocommit 分岐は object の `upkeep` 鎖の外で publish し、`scopeStub.apply` は `touchedTables` に `[]` を渡す（`scopeStub.ts:44-46`）ので `armAndPublish` に入らない。**今日 production の呼び出し元は 0 件**（`cloudflareRuntime.ts:294` は `buildRepositories` の中でしか組み立てず、`runDueScopeTasks` は claim も settle も UoW の中で行う）だが、`ConformanceBackend.forScope` がこの形を公開しており、配備スライスが Queue consumer から UoW を開かずに settle した瞬間に (a) 古いスライスの上書き (b) object 駆動配備で誰も起こさない行、の 2 つが同時に開く。そのとき気づける仕掛けが今は無い。**倒し方は下記「付随決定」** | 1 |
+
+### Identity / directory / operation
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `d1/repositories/identitySupport.ts+accountDeletionManifestStore.ts+globalMaintenanceRunStore.ts:cursor の null ガード` | `(? IS NULL OR key > ?)` が索引のレンジ制約に落ちず keyset が読み飛ばしにしかならない | fix | 4 か所（`identitySupport.ts:84`、`accountDeletionManifestStore.ts:336,767`、`globalMaintenanceRunStore.ts:747`）を `grep` で確認した。`? IS NULL` は列に対する制約ではないので SQLite はこの `OR` 項を索引のレンジ制約へ落とせず、残余述語としてしか評価できない（SQLite は束縛値を見ずに文をコンパイルするため、値が非 NULL でも計画は変わらない）。`deleteExpiredPage` の 5 表は利用者数に比例して伸び、掃引はページごとに cursor 以前の**生存行**を走査し直す。`globalMaintenanceRunStore.pruneCompleted` は正しい複合 keyset を組み立てたうえで `global_maintenance_runs_expiry_idx` の利用ごと潰している。**これは「今日到達しない経路の理論的な性能懸念」ではなく、掃引という定常経路の計画そのもの**で、修正は文の組み立てを cursor の有無で分けるだけ（`identitySupport` は 1 か所で 5 表に効く）。契約も適合スイートも動かない | 1 |
+| `spec/database/index.md:309,325,341,354,697:期限索引の役割` | 期限索引を「安定 keyset で回収する」と書くが、掃引の順序は表キーだけで索引は順序を与えない（AC-9） | fix | ポート契約（`domain/common/pagination.ts` の `PrunePage`、`adapters/memory/support.ts`、`identitySupport.ts:62-69` の JSDoc）が揃って「`expiresAt <= now` はフィルタであって順序ではない」と定め、発行 SQL も `ORDER BY <表キー>` であることを確認した。`(expires_at, key)` 索引は expired 集合への絞り込みには効くが順序は与えられないので、「同一 expiry を安定 keyset で回収する」はどの表でも成立していない。正本はポート契約側（ADR 026 / 046）にあるので spec の 5 行を実態へ改める。逆に `(expires_at, key)` keyset を本当に採るのは `PrunePage` の cursor 意味論・memory・適合スイートが同時に動く別 Issue（本 PR では採らない） | 1 |
+| `d1/repositories/identitySupport.ts:103,149:有界削除が選択述語を DELETE へ持ち越さない` | 読みと書きのあいだに条件から外れた行も消える（TOCTOU）／1 行 1 文で発行している | fix（(1) 述語の持ち越しのみ。(2) 文数は現状維持） | (1) を採る。`deleteExpiredPage` / `deleteBoundedByKey` は `SELECT` を `expires_at <= ?` や `user_id = ? AND auth_epoch < ?` で絞るのに `DELETE` は `WHERE key = ?` だけで撃つ。`SessionRepository.refreshAuthEpoch` と `authResidueCleanup.deleteOlderEpochByUser` は同じ行を逆向きに動かしうるので、旧世代として選ばれた直後に refresh が着地すると現在の session が消えて強制サインアウトになる。`login_attempts` でも `recordFailure` が延ばした行を掃引が消してスロットルが緩む。memory は同期区間で読み書きするのでこの窓を持たず、適合スイートには観測できない乖離である。各 `DELETE` に選択述語を足すだけで閉じ、`remove()` のオーバーレイ寄与も保たれる。(2) の「1 行 1 文」は採らない — `spec/database/index.md` の共通の規約が禁じているのは**1 文にバインド変数を件数ぶん並べること**（上限 100）で、ここは 1 文 1 変数の別々の文なのでその規約には触れない。文数は `MAX_STATEMENTS_PER_COMMIT = 250` の番人が既に見ており、`json_each` 1 文へ畳むと `remove()` のオーバーレイ（同一 UoW の read-your-writes）を捨てることになる。理由を `.thread/11/adr.md` に残す | 1 |
+| `__tests__/globalConcurrency.test.ts:116-128:手書きの部分 wipe` | `GLOBAL_WIPE_STATEMENTS` を使わず 6 表を名指しし `account_deletion_manifest_items` が漏れている | fix | `beforeEach` が 6 表の `DELETE` を手書きしていること、`conformanceBackend.ts:79` と `projectionConcurrency.test.ts:136` は導出された `GLOBAL_WIPE_STATEMENTS` を使っていることを確認した。`d1/schema.ts:47-60` は「`GLOBAL_TABLES` に足した表が wipe から漏れない」ことを目的に導出しているのに、このファイルだけが手書きの副本を置いて穴を開け直している。`appendMembershipPage` / `appendAuthorRoutePage` を使うケースを 1 つ足した瞬間に実行順依存になる。置き換えは 1 か所。同型の部分 wipe が `idempotency.test.ts` / `lease.test.ts` にもあるので併せて揃える | 1 |
+
+### Routing / outbox / scope インフラ
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/database/index.md:1110:autocommit publish 経路の利用者` | 「中央 runner の claim / settle」と書くが runner は staged 経路を通る（AC-9） | fix | 原文と実装を突き合わせて確認した。`runDueScopeTasks` は claim も settle も `scopeUnitOfWorkProvider.run` の中で行い（`workers/scopeTaskRunner.ts:169-171, 205, 219-221`）、staged 経路＝ object が publish する側に落ちる。アダプター自身の JSDoc（`scopeTaskScheduler.ts:83-86`）は逆に「the central runner included, takes that path」と書いており、canon と実装コメントが正面から食い違う。`createCloudflareRuntime` も scheduler を `buildRepositories` の中でしか組み立てないので、autocommit 経路を通る production の呼び出し元は今日 1 つも無い。「反映済みのつもりで書かれた誤り」なので AC-9 の逃げ道（adr.md に理由を残す）にも当たらない | 1 |
+| `do/scopeObject.ts:86-101:constructor の再武装を観測するテストが無い` | `armForStoredRows` を no-op にしても全テストが緑 | fix | `alarm.test.ts:587-608` の `rebuild()` ケースがハンドラを登録しないまま走るため、`armForStoredRows` が `scopeAlarmDrivesTasks()` の偽分岐で即 return することを確認した。このテストが固定しているのは「constructor が alarm を**消さない**」ことだけで、`spec/platform/index.md` が新しく約束した「切り替え時に既に積まれている行は次に起きたときに武装され直す」側は 1 行も観測されていない。既存ヘルパー（`register` / `seed` / `rebuild` / `armedAt`）だけで 1 ケース書ける。W-U01 の修正と同じファイルなので同じ束で閉じる | 1 |
+| `spec/database/index.md:1112:due index スライスの並び順` | canon は「`due_at` の早い 25 行」だが実装は `COALESCE(lease_expires_at, due_at)` 順（AC-9） | fix | 実装（`scheduledTasks.ts:89-104` の `ROW_NUMBER() OVER (PARTITION BY priority ORDER BY COALESCE(lease_expires_at, due_at), kind, operation_id)`）と canon 行を突き合わせて確認した。**実装のほうが正しい** — `running` 行が次に取れるのはリース失効時なので、`due_at` で並べると遠い将来にリースが切れる行がいま due な `pending` 行をスライスから押し出す。canon の文言だけが古い | 1 |
+
+### Scope business / 投影・全文検索 / R2
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `projection/viewerCalendar.ts:formatterFor が行ごとに構築` | `Intl.DateTimeFormat` の構築が行数に比例する（不正 TZ 時は行あたり 2 回＋例外 2 回） | fix | `formatterFor` が毎回 `new Intl.DateTimeFormat` を作り、`wallClockOf` / `dayKeyOf` がそれを呼ぶ形であることを確認した。`countByDay` は行ごと、`listMonthsWithNotes` は行あたり 2 回呼ぶ。1 回の呼び出しのあいだ `timeZone` は不変なので、構築は完全に外へ括り出せる。**モジュールスコープの `Map` によるメモ化は採らない** — `timeZone` は利用者設定由来の文字列で、不正値がそのまま鍵になると無界に伸びる。`wallClockOf` / `dayKeyOf` を「フォーマッタを受け取る」形にし、`countByDay` / `listMonthsWithNotes` が 1 回だけ作る側へ倒す。`LocalNoteQueryService` を呼ぶ usecase は今日まだ無いが、適合スイートが通る定常経路であり修正は 1 ファイルに閉じる | 1 |
+| `r2/objectStorage.ts:sha256Of が本文全体を複製` | `crypto.subtle.digest` は view の範囲を尊重するので複製は不要、かつコメントの根拠が事実と違う | fix | `objectStorage.ts:51-62` を確認した。WebCrypto の `digest(algorithm, data: BufferSource)` は「get a copy of the bytes held by the buffer source」で定義され、view の `byteOffset` / `byteLength` が示す範囲だけを見る。したがって「view をそのまま渡すと誤ったバイトを digest する」というコメントの前提は成立せず、複製はアップロード本文ぶんの `ArrayBuffer` を余計に確保しているだけ（Workers の 128MB 制約下で大きな `put` が本文を 2 部持つ）。CLAUDE.md「WHY が非自明なときだけコメントを置く」に照らすと、誤った WHY はコメントが無いより悪い | 1 |
+| `search/highlight.ts:237-248:窓がサロゲートペアを割る` | `highlightBody` の窓が UTF-16 ユニット境界で切られ、対にならないサロゲートを返しうる | fix | `from = first[0] - WINDOW_LEAD` / `to = from + WINDOW_LENGTH` がコードユニットのオフセットで、コードポイント境界にも揃っていないことを確認した。表示は U+FFFD になるので安全側には倒れるが、モジュール JSDoc の「返す断片は利用者が実際に書いたテキストの一部である」と `spec/database/index.md` の「返す文字列は常に元テキストの一部」からは外れる。影響は `highlightBody` の経路だけ（`highlightExcerpt` は窓が全域）。境界をクラスタ境界（`map.starts` / `map.ends`）へ丸める形で閉じる | 1 |
+
+### 合成・スキーマ・テストハーネス・spec/docs
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/schema.ts:43-46:scope 検証の範囲を主張するコメント` | 「全 scope 表が帰属列を持ち復元・保存の両方で検査する」が本 PR 自身の改訂と食い違う | fix | 原文を突き合わせて確認した。`spec/database/index.md:22` は本 PR で「`stored_files.owner_type / owner_id`、`storage_quotas.owner_type / owner_id`、`llm_usages.user_id` は会計上の帰属であって scope 鍵ではないので検査の対象外」へ改訂済みで、実装もそちら側で正しい（`storedFileRepository.ts:231`、`__tests__/ports/scopeBusiness.ts:25`）。さらに `llm_usages` は `owner_type` / `owner_id` 列を持たないので「Every scope table carries …」自体が事実に反する。schema ファイルは次のバックエンド実装者が最初に読む場所で、ここだけが旧規約を主張している | 1 |
+| `spec/adr/056-performance-budget-placement.md:9,11:撤回済みの目標と不完全な一覧` | `spec/platform/index.md:796` が委譲した先の ADR が「3 文」目標と in-memory のみの一覧のまま | fix | 原文で確認した。ADR 056 のコンテキストは今も (a) 目標値として「件数によらず 3 文」を引用し、(b) 届かないバックエンドとして in-memory だけを名指す。本 PR は 3 文目標そのものを platform 側で取り下げ、Cloudflare 実装も `4n + 3` で届かないことを実測した。委譲先を辿った読み手が撤回済みの数字に着地する状態は、CLAUDE.md「Design canon」が `spec/adr/` を「今も有効な判断」の索引と定めていることに反する。決定文（3 つの決定）は動かさず、コンテキストへ 1〜2 文足す | 1 |
+| `domain/note/ports/{local,public}NoteQueryService.ts:タグ名重複の契約文` | 「重複は 1 件と同じ」を JSDoc に新設したが適合スイートにも `spec/domains/note.md` にも降りていない（AC-8） | fix（JSDoc から契約文を落とし、実装コメントへ降ろす） | 事実関係を確認した。両ポートの `tagNames` に「a repeated name filters no differently from one」という契約文が新設され、`adapters/conformance/{local,public}NoteQueryService.ts` に重複タグを渡すケースは 0 件、`spec/domains/note.md:471,507` も据え置き。CLAUDE.md「Port contracts and conformance」と AC-8 は「contractual behaviour を足すならポート JSDoc と適合スイートの両方に触れる」と定めるので、片側だけの状態は解消しなければならない。**適合スイートへケースを足す側は採らない** — 本 PR の方針は「適合スイート本体を変更しない」であり、AC-8 の手続き（両バックエンドが同じケースを通ることの確認）を収束ラウンドで開く価値が無い。実装側の WHY は既に `projection/searchClauses.ts:64-70`（`COUNT(DISTINCT …)` の左辺と釣り合わせるため重複を落とす）に現在形で書かれており、正本を失わない。契約文を 2 ポートの JSDoc から落とせば、契約とスイートの非対称は消え `spec/domains/note.md` は触らずに済む。契約化したいなら適合スイート＋両バックエンドを同時に動かす別 Issue（今回は起票しない） | 1 |
+| `.thread/11/adr.md:ADR-026 欠番` | ADR-025 → ADR-027 で番号が飛んだまま注記が無い | fix（Round 001 の判定を継承。実施漏れ） | Round 001 で **fix** と判定し（`triage.md:90`）修正対象にも挙げていた（`triage.md:228`）が、ファイルには何も入っていない（`grep 欠番 .thread/11/adr.md` → 0 件）。採番は 001〜085 の 84 本で重複も順序の乱れも無く、026 だけが飛んでいる。1 行で閉じる | 2 |
+| `spec/inventory/frontend.md:3:最終同期の日付` | 行を改訂したのに最終同期日だけ据え置き | wont-fix（Round 004 の判定を継承） | Round 004 の `spec/inventory/*.md:3:最終同期の日付` で **「行を触った 4 ファイルを 2026-08-26 にする（`frontend.md` は生成元 `spec/pages/` が未変更なので動かさない）」** と決着済みで、覆すべき新事実は出ていない。台帳の「最終同期」は「この日付時点で**生成元**と一致している」という主張であり、`spec/pages/` は本 PR で 1 行も変わっていない（`grep cursor spec/pages/` → 0 件）。今回直した `PAGE-p41-002` の要点欄は、そもそも生成元に対応物を持たない記述の訂正であって突き合わせの結果ではないので、日付を上げると「していない照合をした」と主張することになる。理由を `.thread/11/adr.md` に残す | 2 |
+
+### 付随決定
+
+| Key | 判定 | 理由 |
+|---|---|---|
+| `W-U01/W-C04:commit 経路の alarm 削除をどう倒すか` | **commit 経路は「足すだけ」にする** — `armAndPublishNow` を呼び出し元で分け、`applyWriteSet` からは `armForStoredRows`（決して消さない）、`alarm()` の `finally` からは従来どおり `rescheduleAlarm` を通す | uow が提案した「publish 先・reschedule 後」は採らない — `armAndPublishNow` のコメントが述べる「arming first keeps the object's self-healing independent of D1」を壊し、D1 の往復中にクラッシュすると駆動する配備で行が武装されないまま残る。composition の提案（commit 経路を `armForStoredRows` へ）は、`spec/platform/index.md:202` の「Alarm を消す地点は turn の出口 1 か所に限る」という本 PR 自身の宣言と実装を初めて 1 対 1 にする。副作用は「最後の行が消えた commit の直後も古い alarm が残り、空 turn が 1 回走ってから turn の出口が消す」だけで、これは宣言どおりの経路である。turn の出口で消すのは既に配送済みの alarm なので、再試行を消す窓は構造的に消える。観測は `alarm.test.ts` に 1 ケース — publish を落として再試行を張ったあと、`scheduled_tasks` を触る `applyWriteSet` を成功させても `getAlarm()` が非 null のまま（＝再試行が消えない）こと。`spec/platform/index.md` は既に正しいので動かさない |
+| `W-U02:ステージ像の完全性をどう担保するか` | **`RowMutation.upsert.row` と `RowsRead` の JSDoc に「その表を読む文が選ぶ列をすべて持つこと」を書く。実行時検査は入れない** | `readRows` がステージ像と比較できるのは `stored[0]` のキー集合だけで、射影を絞った読み（`noteRevisionRepository` の `KEY_SELECTION`）では stored 側が狭い。したがって検査は「ステージ像が読み文の射影を満たす」ことを検査できず、満たさない像を見逃したまま毎読みのコストだけが乗る。不変条件の持ち主は書き手（mutation を組む側）なので、契約は書き手側の JSDoc に置く。`LIMIT` の修復不能検査（`session.ts:173-180`）は「stored 側だけで判定できる」から実行時に置けたのであって、同じ形にはならない |
+| `W-U04/W-R02:autocommit publish の非対称をどう倒すか` | **(a) を採る — autocommit 経路の scheduler は `scopeAlarmDrivesTasks()` が真なら `databaseError` で拒む。あわせて JSDoc の前提条件を明示する** | routing の提案 (c)（`createAutocommitSession.write` が touched tables を集め、`ScopeSqlExecutor` なら `applyWriteSet` を呼ぶ）は筋が良いが、`sql/session.ts` / `sql/executor.ts` / `do/scopeStub.ts` / `scopeTaskScheduler.ts` の依存（`db` / `logger`）／`di/cloudflareRuntime.ts` ／適合ハーネス `__tests__/ports/scopeInfra.ts` まで連鎖し、Blocker ゼロの収束ラウンドで開く範囲としては大きい。(b) の JSDoc だけでは「その時に気づける仕掛けが無い」という指摘そのものが残る。(a) はレジストリを読むだけの 3 行で、production（`registerScopeTaskHandler` の呼び出し 0 件）でも適合ハーネス（`__tests__/ports/scopeInfra.ts` / `lease.test.ts` はハンドラを登録しない。登録するのは `alarm.test.ts` だけで、そちらは `applyWriteSet` 経由で seed する）でも一切発火しないことを確認済み。object 駆動配備が autocommit で settle した瞬間に静かにドリフトする代わりに、その場で落ちる。構造的な移送 (c) は配備スライスの持ち分として `.thread/11/adr.md` に残す |
+| `W-I03:有界削除をどこまで直すか` | **選択述語を各 `DELETE` へ持ち越す。1 行 1 文は維持する** | (1) の TOCTOU は memory が構造的に持たない乖離で、`refreshAuthEpoch` との競合は「現在の session が消えて強制サインアウト」という実害に届く。(2) の文数は別の軸 — 共通の規約が禁じているのは 1 文にバインド変数を件数ぶん並べること（上限 100）であり、1 文 1 変数の別々の文はその規約に触れない。`json_each` 1 文へ畳むと `remove()` が積むオーバーレイ（同一 UoW の read-your-writes）を捨てることになり、`SqlSession` が staged / autocommit の両方で同じリポジトリコードを走らせる契約の下では「今日の呼び出し形では読み戻さない」に正しさを寄りかからせる形になる。文数は `MAX_STATEMENTS_PER_COMMIT = 250` が既に見ている |
+| `W-C03:タグ名重複の契約をどちらへ倒すか` | **ポート JSDoc から契約文を落とし、実装コメント（`projection/searchClauses.ts`）に残す** | ADR 026 は「契約の正本はポート定義とその JSDoc、その実行形が適合スイート」と定める。片側だけに契約文がある状態は AC-8 が禁じた非対称なので、スイートを足すか JSDoc から落とすかのどちらかしかない。本 PR は「適合スイート本体を変更しない」を通しており（#48 も同じ理由で起票へ回した）、両バックエンドが今日同じ答えを返す（memory は `every`、CF は `new Set(...).size`）ことを踏まえると、収束ラウンドで AC-8 の手続きを開く価値は無い。実装側の WHY は `tagFilterBindings` の JSDoc に現在形で残るので、次の実装者が「重複をどう扱うか」を再発明することもない。`spec/domains/note.md` は触らない |
+
+### fix の観点別内訳
+
+- UoW / 実行機構・SQL 土台: 3
+- Identity / directory / operation: 4
+- Routing / outbox / scope インフラ: 3
+- Scope business / 投影・全文検索 / R2: 3
+- 合成・スキーマ・テストハーネス・spec/docs: 4
+
+合計 17（wont-fix 2 を除く）
+
+## 修正の実行計画（Round 005）
+
+束 1〜5 は担当ファイルが重ならないので並列委譲できる。束 6 は 1〜5 の完了後に直列で走らせる（spec / ADR の追随が束 1・束 3・束 5 の結論を材料にするため）。**各束は自分が決めた判断を作業メモに残し、`.thread/11/adr.md` への追記は束 6 がまとめて行う**（Round 001〜004 と同じ規律）。
+
+### 束 1: 再試行 alarm の生存・autocommit publish の前提・constructor 再武装の観測
+
+- 含む指摘: `review-005-uow.md` の W-001（≡ composition W-004）, W-004（≡ routing W-002）／ `review-005-routing.md` の W-003
+- 触るファイル（4）:
+  - `packages/core/src/adapters/cloudflare/do/scopeObject.ts`
+  - `packages/core/src/adapters/cloudflare/do/repositories/scopeTaskScheduler.ts`
+  - `packages/core/src/adapters/cloudflare/do/alarm.ts`（JSDoc のみ）
+  - `packages/core/src/adapters/cloudflare/__tests__/alarm.test.ts`
+- 修正方針:
+  - `armAndPublishNow` を「後始末の種類」で分岐させる — `applyWriteSet` からの upkeep は `armForStoredRows`（消さない）、`alarm()` の `finally` からの upkeep は `rescheduleAlarm`（turn の出口）。`armAndPublish(scope, mode)` の 1 引数で足りる。publish 失敗時の `armNoLaterThan` は両方で従来どおり。JSDoc の「Arming first keeps the object's self-healing independent of D1」は残し、「commit 経路は決して消さない — 前回の publish 失敗が張った再試行を次の commit が消さないため」を足す。
+  - autocommit の `publishDueIndex` は入口で `scopeAlarmDrivesTasks()` を見て、真なら `databaseError`（「object 駆動配備では scheduler を unit of work 越しに使うこと。この経路は arming を伴わないので継続が誰にも起こされない」）。`scopeTaskScheduler.ts:79-92` の「## Due index」節から「the central runner included」を落とし、autocommit の利用者を「UoW を開かずに scheduler を組み立てた呼び出し側（今日は適合ハーネスの `forScope` だけ）」へ言い換える。
+  - `alarm.test.ts` に 2 ケース — (a) publish を落として再試行 alarm を張ったあと、`scheduled_tasks` を触る `applyWriteSet` を**成功**させても `armedAt(scope)` が非 null のまま、(b) `register(...)` してから `arm = false` の `seed` で行を置き、`rebuild(scope)` → 任意の読みで `armedAt(scope)` が `nextWakeAt` になること（`armForStoredRows` を no-op にすると赤くなる）。
+  - canon 側（`spec/database/index.md:1110`）の言い換えは束 6 へ渡す。`spec/platform/index.md:202` は既に正しいので**動かさない**。
+
+### 束 2: ステージ像の完全性を契約に書く
+
+- 含む指摘: `review-005-uow.md` の W-002
+- 触るファイル（2）:
+  - `packages/core/src/adapters/cloudflare/execution/writeSet.ts`（`RowMutation.upsert.row` の JSDoc）
+  - `packages/core/src/adapters/cloudflare/sql/session.ts`（`RowsRead` の JSDoc）
+- 修正方針: `upsert` の `row` に「その表を読む文が選ぶ列をすべて持つこと。欠けた列は `readRows` の `matches` / `compare` で静かに誤動作する」を書く。`RowsRead` 側には「`matches` / `compare` はステージ像にだけ当たる」ことを現在形で 1 文。**実行時検査は入れない**（付随決定）。振る舞いは 1 ビットも変えない。
+
+### 束 3: D1 identity の keyset・有界削除・テストの wipe
+
+- 含む指摘: `review-005-identity.md` の W-001, W-003, W-004
+- 触るファイル（4〜6）:
+  - `packages/core/src/adapters/cloudflare/d1/repositories/identitySupport.ts`
+  - `packages/core/src/adapters/cloudflare/d1/repositories/accountDeletionManifestStore.ts`
+  - `packages/core/src/adapters/cloudflare/d1/repositories/globalMaintenanceRunStore.ts`
+  - `packages/core/src/adapters/cloudflare/__tests__/globalConcurrency.test.ts`（＋同型の部分 wipe を持つ `idempotency.test.ts` / `lease.test.ts`）
+- 修正方針:
+  - cursor 節は述語ではなく**文の組み立て**で分ける — `cursor === null` なら節ごと落とし、非 NULL なら `AND key > ?`（複合 keyset の 2 か所も同じ形）。`identitySupport` の 1 か所が 5 表に効く。
+  - 各 `DELETE` に `SELECT` と同じ述語を足す（`deleteExpiredPage` は `AND ${expiresColumn} <= ?`、`deleteBoundedByKey` は `AND ${where.sql}`）。`remove()` の積み上げと 1 行 1 文は維持する（付随決定）。
+  - `beforeEach` を `executor.apply(GLOBAL_WIPE_STATEMENTS.map(statement))` へ置き換える。
+
+### 束 4: 投影のフォーマッタ・R2 の digest・ハイライトの窓
+
+- 含む指摘: `review-005-scope.md` の W-001, W-002, W-003
+- 触るファイル（5）:
+  - `packages/core/src/adapters/cloudflare/projection/viewerCalendar.ts`
+  - `packages/core/src/adapters/cloudflare/do/repositories/localNoteQueryService.ts`（呼び出し側）
+  - `packages/core/src/adapters/cloudflare/r2/objectStorage.ts`
+  - `packages/core/src/adapters/cloudflare/search/highlight.ts`
+  - `packages/core/src/adapters/cloudflare/__tests__/searchEdges.test.ts`（サロゲート境界の 1 ケース）
+- 修正方針:
+  - `wallClockOf` / `dayKeyOf` を「フォーマッタを受け取る」形にし、`countByDay` / `listMonthsWithNotes` が呼び出しごとに 1 回だけ作る。モジュールスコープのメモ化は採らない（利用者設定由来の文字列が鍵になるため）。
+  - `sha256Of` は `crypto.subtle.digest("SHA-256", body)` へ直し、成立しない WHY のコメントを落とす。
+  - `highlightBody` の `from` / `to` を最も近いクラスタ境界（`map.starts` / `map.ends`）へ丸める。サロゲートペアを跨ぐ本文で、返る断片が常に元テキストの部分文字列であることを固定するケースを 1 本。
+
+### 束 5: タグ名重複の契約文を落とす
+
+- 含む指摘: `review-005-composition.md` の W-003
+- 触るファイル（2）:
+  - `packages/core/src/domain/note/ports/localNoteQueryService.ts`
+  - `packages/core/src/domain/note/ports/publicNoteQueryService.ts`
+- 修正方針: `tagNames` の JSDoc から «a repeated name filters no differently from one» を落とす（`localNoteQueryService` は「AND match. Normalized (`TagName` rules) names.」へ、`publicNoteQueryService` は「Normalized names.」へ）。実装側の WHY は `projection/searchClauses.ts` の `tagFilterBindings` に既にあるので足さない。**適合スイート・`adapters/memory/`・`spec/domains/note.md` は 1 行も触らない**（AC-7 / AC-8）。
+
+### 束 6: canon の追随（spec / ADR / 台帳）— 束 1〜5 の後に直列
+
+- 含む指摘: `review-005-identity.md` の W-002 ／ `review-005-routing.md` の W-001, W-004 ／ `review-005-composition.md` の W-001, W-002, W-005 ／ 束 1〜5 が渡した canon 側の持ち分
+- 触るファイル（5）:
+  - `spec/database/index.md`
+  - `spec/adr/056-performance-budget-placement.md`
+  - `packages/core/src/adapters/cloudflare/do/schema.ts`（ヘッダーコメント）
+  - `.thread/11/adr.md`
+  - `.thread/11/review/triage-keys.md`
+- 修正方針:
+  - **期限索引（W-I02）**: `:309` / `:325` / `:341` / `:354` / `:697` を「掃引は表キー順の keyset で進み、`expires_at` は絞り込みの述語である。`(expires_at, key)` 索引は期限切れ集合への絞り込みに効く」の線へ改める。`(expires_at, key)` keyset へ寄せる側は採らない（`PrunePage` の cursor 意味論・memory・適合スイートが同時に動く）。
+  - **autocommit publish の利用者（W-R01）**: `:1110` の「— 中央 runner の claim / settle —」を落とし、「UoW を開かずに scheduler を組み立てた呼び出し側（今日は適合ハーネスの `forScope` だけ）。object 駆動配備ではこの経路を拒む」へ。束 1 の (a) と 1 対 1 にする。
+  - **スライスの並び順（W-R04）**: `:1112` を「優先度ごとに、次に取れる時刻（`pending` は `due_at`、`running` はリース失効時刻）の早い 25 行」へ。
+  - **scope 検証（W-C01）**: `do/schema.ts:43-46` のコメントを 2 文に割る — 「scope 鍵として使う列（`notes.owner_type / owner_id` と `_scope_identity`）は復元・保存の両方で検査する」「`stored_files` / `storage_quotas` / `llm_usages` の帰属列は scope 鍵ではないので検査しない — 物理分離は `_scope_identity` の pin が担保する」。`spec/database/index.md`「共通の規約」への参照は残す。
+  - **ADR 056（W-C02）**: コンテキストへ 1〜2 文 — 「D1 / DO 実装も 1 件ごとの `findById` で版トークンを採る契約から `4n + 3` 文になり、3 文の目標は実測を経て `spec/platform/index.md` 側で `commit 1 回` へ改めた」。決定文（3 つの決定）は動かさない。
+  - **`.thread/11/adr.md`**: (i) ADR-025 の直後に「ADR-026 は欠番」の 1 行（W-C05） (ii) commit 経路は alarm を消さない（W-U01 の決定と、退けた「publish 先・reschedule 後」の理由） (iii) autocommit scheduler を object 駆動配備で拒む決定と、構造的な移送を配備スライスへ送った理由（W-U04） (iv) 有界削除は述語だけ持ち越し 1 行 1 文を維持した理由（W-I03） (v) タグ名重複の契約文を JSDoc から落とした判断（W-C03） (vi) publish 鎖に合流を入れない判断とトレードオフ（W-U03、wont-fix） (vii) `spec/inventory/frontend.md` の同期日を動かさない理由（W-C06、Round 004 継承）。
+  - **`triage-keys.md`**: 本ラウンドの wont-fix 2 件を追記する。**新規の Issue 起票は無い**。

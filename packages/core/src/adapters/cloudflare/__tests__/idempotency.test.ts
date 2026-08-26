@@ -7,7 +7,7 @@ import type { UserId } from "../../../domain/identity/valueObject";
 import { createTestClock } from "../../conformance/testClock";
 import { createD1IdempotencyStore } from "../d1/repositories/idempotencyStore";
 import { createD1OutboxRepository } from "../d1/repositories/outboxRepository";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { createCloudflareAppliedOperationStore } from "../do/repositories/appliedOperationStore";
 import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
@@ -48,10 +48,9 @@ describe("cloudflare replay of an operation whose response was lost", () => {
   });
 
   beforeEach(async () => {
-    await env.GLOBAL_DB.batch([
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.outboxEvents}`),
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.processedEvents}`),
-    ]);
+    await env.GLOBAL_DB.batch(
+      GLOBAL_WIPE_STATEMENTS.map((sql) => env.GLOBAL_DB.prepare(sql)),
+    );
   });
 
   it("tells only the first caller of an applied operation that it was first", async () => {

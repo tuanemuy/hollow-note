@@ -740,20 +740,29 @@ export function createD1GlobalMaintenanceRunStore(
           : decodeOpaqueCursor(cursor, PRUNE_CURSOR_FINGERPRINT).after;
       const [afterExpiresAt, afterRunId] =
         after === null ? [null, null] : splitKeyset(after);
-      const rows = await session.query(
-        statement(
-          `SELECT run_id, expires_at FROM ${RUNS}
-             WHERE status = 'completed' AND expires_at IS NOT NULL AND expires_at <= ?
-               AND (? IS NULL OR expires_at > ? OR (expires_at = ? AND run_id > ?))
+      // The keyset is built into the SQL rather than guarded by
+      // `? IS NULL OR`: SQLite plans without looking at bound values, so
+      // the OR form would hide `global_maintenance_runs_expiry_idx` from
+      // the planner and leave the cursor as a residual predicate.
+      const afterKeyset =
+        after === null
+          ? ""
+          : " AND (expires_at > ? OR (expires_at = ? AND run_id > ?))";
+      const rows = await session.query({
+        sql: `SELECT run_id, expires_at FROM ${RUNS}
+             WHERE status = 'completed' AND expires_at IS NOT NULL AND expires_at <= ?${afterKeyset}
              ORDER BY expires_at, run_id
              LIMIT ${effectiveLimit + 1}`,
-          toTimestamp(expiresAtOrBefore),
-          afterExpiresAt,
-          afterExpiresAt,
-          afterExpiresAt,
-          afterRunId,
-        ),
-      );
+        params:
+          after === null
+            ? [toTimestamp(expiresAtOrBefore)]
+            : [
+                toTimestamp(expiresAtOrBefore),
+                afterExpiresAt,
+                afterExpiresAt,
+                afterRunId,
+              ],
+      });
       const page = rows.slice(0, effectiveLimit);
       if (page.length === 0) {
         return { removed: 0, nextCursor: null };

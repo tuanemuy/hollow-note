@@ -40,9 +40,9 @@ export const DUE_INDEX_REPUBLISH_DELAY_MS = 10_000;
  * publish fails, and the turn that follows republishes the slice on its
  * way out. That retry does not depend on the deployment driving tasks
  * from the object: a turn with no handler registry does nothing and still
- * republishes. Nothing takes the retry away either — a rebuilt object
- * arms and never deletes, so an eviction and the next stray read leave it
- * standing.
+ * republishes. Nothing takes the retry away either — a rebuilt object and
+ * a later commit both only arm, so an eviction, the next stray read and
+ * an intervening write-set all leave it standing.
  *
  * Replacing the whole slice — rather than mirroring each mutation — is
  * what makes the two paths that change tasks (a committed write-set and

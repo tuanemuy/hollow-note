@@ -81,6 +81,23 @@ describe("cloudflare R2 object storage", () => {
     expect(stored.meta.checksum?.value).toBe(winner.checksum.value);
   });
 
+  it("measures a view by its own range, not by its backing buffer", async () => {
+    const storage = freshStorage();
+    const other = ObjectKey.create("users/user-1/media/file-2.txt");
+    const view = encoder
+      .encode("PADDING-payload-bytes-PADDING")
+      .subarray(8, 21);
+    const alone = encoder.encode("payload-bytes");
+
+    const viewed = await storage.put(key, view, metaFor(view));
+    const whole = await storage.put(other, alone, metaFor(alone));
+
+    expect(viewed.size).toBe(alone.byteLength);
+    expect(viewed.checksum.value).toBe(whole.checksum.value);
+    const stored = await storage.get(key);
+    expect(new TextDecoder().decode(stored?.bytes)).toBe("payload-bytes");
+  });
+
   it("treats a delete of absent keys as done", async () => {
     const storage = freshStorage();
     const present = ObjectKey.create("users/user-1/media/present.txt");

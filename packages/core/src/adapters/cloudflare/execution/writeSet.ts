@@ -6,6 +6,15 @@ import type { SqlRow, SqlStatement } from "../sql/statement";
  * read back — the row image that read-your-writes serves in the
  * meantime.
  *
+ * An `upsert` row image carries every column that any statement reading
+ * the table selects, whatever the statement shipped alongside it
+ * writes. `readRows` runs the caller's `matches` and `compare` over the
+ * image instead of over storage, so a column the image omits is
+ * `undefined` there: `matches` turns false and the row silently leaves
+ * the page, `compare` returns `NaN` and the order collapses. Building
+ * the image from the same whole-row helper the table's inserts use is
+ * what keeps this true as projections come and go.
+ *
  * `opaque` is the escape hatch for a statement with no single-row
  * meaning: an OCC guard, a counter increment, a bulk `DELETE … WHERE`.
  * It applies like the others but contributes nothing to the overlay, so

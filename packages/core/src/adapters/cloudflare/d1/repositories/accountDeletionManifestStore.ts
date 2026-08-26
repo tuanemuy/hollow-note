@@ -328,19 +328,22 @@ export function createD1AccountDeletionManifestStore(
         throw stateViolation(operationId, "membership pages require building");
       }
       const effectiveLimit = cap(limit);
-      const edges = await session.query(
-        statement(
-          `SELECT operation_id AS edge_key, workspace_id, state, membership_id
+      // The cursor is built into the SQL instead of guarded by
+      // `? IS NULL OR`: SQLite plans without looking at bound values, so
+      // the OR form leaves the keyset as a residual predicate and every
+      // page rescans the ones before it.
+      const afterEdge = afterEdgeKey === null ? "" : " AND operation_id > ?";
+      const edges = await session.query({
+        sql: `SELECT operation_id AS edge_key, workspace_id, state, membership_id
              FROM ${EDGES}
-            WHERE user_id = ? AND state IN ${DELETABLE_EDGE_STATES}
-              AND (? IS NULL OR operation_id > ?)
+            WHERE user_id = ? AND state IN ${DELETABLE_EDGE_STATES}${afterEdge}
             ORDER BY operation_id
             LIMIT ${effectiveLimit + 1}`,
-          current.header.userId,
-          afterEdgeKey,
-          afterEdgeKey,
-        ),
-      );
+        params:
+          afterEdgeKey === null
+            ? [current.header.userId]
+            : [current.header.userId, afterEdgeKey],
+      });
       const page = edges.slice(0, effectiveLimit);
       const last = page[page.length - 1];
       const nextCursor =
@@ -758,19 +761,20 @@ export function createD1AccountDeletionManifestStore(
           (cursor === null || text(row, "operation_id") > cursor)
         );
       };
+      // Same reason as `appendMembershipPage`: a `? IS NULL OR` guard is
+      // invisible to the planner, so the cursor is built into the SQL.
+      const afterHeader = cursor === null ? "" : " AND operation_id > ?";
       const rows = await session.readRows({
         table: HEADERS,
-        statement: statement(
-          `SELECT operation_id, status, retain_until FROM ${HEADERS}
+        statement: {
+          sql: `SELECT operation_id, status, retain_until FROM ${HEADERS}
              WHERE status IN ('completed', 'rejected')
-               AND retain_until IS NOT NULL AND retain_until <= ?
-               AND (? IS NULL OR operation_id > ?)
+               AND retain_until IS NOT NULL AND retain_until <= ?${afterHeader}
              ORDER BY operation_id
              LIMIT ${effectiveLimit + 1}`,
-          toTimestamp(asOf),
-          cursor,
-          cursor,
-        ),
+          params:
+            cursor === null ? [toTimestamp(asOf)] : [toTimestamp(asOf), cursor],
+        },
         keyOf: (row) => text(row, "operation_id"),
         matches: reclaimable,
         compare: (a, b) =>

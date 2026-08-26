@@ -5,7 +5,7 @@ import type { NoteSummary } from "./localNoteQueryService";
 
 export type PublicSearchCriteria = Readonly<{
   keyword: string | null;
-  /** Normalized names; a repeated name filters no differently from one. */
+  /** Normalized names. */
   tagNames: readonly string[];
   /** In-page search on a public owner page. */
   ownerFilter: NoteOwner | null;

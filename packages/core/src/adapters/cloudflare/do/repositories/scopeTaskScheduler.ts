@@ -17,12 +17,13 @@ import {
   remove,
   upsert,
 } from "../../execution/writeSet";
-import { throwTranslated } from "../../sql/errors";
+import { databaseError, throwTranslated } from "../../sql/errors";
 import { createD1Executor } from "../../sql/executor";
 import { occGuard } from "../../sql/occGuard";
 import { int, text, toJson, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, statement } from "../../sql/statement";
+import { scopeAlarmDrivesTasks } from "../alarm";
 import { dueIndexStatements } from "../dueIndex";
 import {
   backoffDelayMs,
@@ -81,15 +82,20 @@ const CONTEXT = "scheduled_tasks";
  * `ScopeTaskQueue.listDue` reads the global mirror of this table
  * (`../dueIndex.ts`). Inside a unit of work the scope object republishes
  * the slice itself when the committed write-set names this table, so
- * nothing is needed here — and every caller that reaches this scheduler
- * through a unit of work, the central runner included, takes that path.
- * Built straight over a scope's session there is no write-set to commit
- * and no hook, so the slice is republished here, after the write has
- * landed. The alarm is deliberately **not** re-armed on
- * that path: arming belongs to the object, which does it for every
- * committed write-set and at the end of every turn, and arming from
- * here would let an alarm turn race the caller for the row it just
- * wrote.
+ * nothing is needed here — and that is the path every caller that opens
+ * one takes, the central runner included. A caller that builds the
+ * scheduler straight over a scope's session instead — today only the
+ * conformance harness's `forScope` — has no write-set to commit and no
+ * hook, so the slice is republished here, after the write has landed.
+ *
+ * The alarm is deliberately **not** re-armed on that path: arming
+ * belongs to the object, which does it for every committed write-set and
+ * at the end of every turn, and arming from here would let an alarm turn
+ * race the caller for the row it just wrote. That leaves the path usable
+ * only where the index alone is enough to reach the row, so a deployment
+ * that drives continuations from the object (`scopeAlarmDrivesTasks`,
+ * which also means no central runner) is refused it outright: there a
+ * row published but never armed is a continuation nothing wakes.
  */
 export function createCloudflareScopeTaskScheduler(
   deps: CloudflareScopeTaskSchedulerDeps,
@@ -107,6 +113,11 @@ export function createCloudflareScopeTaskScheduler(
   };
 
   const write = async (mutations: readonly RowMutation[]): Promise<void> => {
+    if (!session.staged && scopeAlarmDrivesTasks()) {
+      throw databaseError(
+        "This deployment drives scope tasks from the scope object, and a write outside a unit of work arms no alarm; open one with ScopeUnitOfWorkProvider.run",
+      );
+    }
     try {
       await session.write(mutations);
     } catch (cause) {

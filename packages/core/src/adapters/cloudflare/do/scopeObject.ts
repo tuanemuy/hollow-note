@@ -43,6 +43,13 @@ const tolerate = async (
   }
 };
 
+/**
+ * Which occasion the upkeep follows, which is what decides whether it may
+ * drop the alarm: `turnExit` is the sole place that may, `commit` only
+ * ever arms.
+ */
+type Upkeep = "commit" | "turnExit";
+
 export type ScopeObjectEnv = Readonly<{
   /**
    * Global D1. The object writes its own slice of `scope_task_due_index`
@@ -117,7 +124,7 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
     const scope = await this.bind(scopeKey);
     await this.sql.apply(statements);
     if (touchedTables.includes(SCHEDULED_TASKS_TABLE)) {
-      await this.armAndPublish(scope);
+      await this.armAndPublish(scope, "commit");
     }
   }
 
@@ -139,7 +146,7 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
       // left unarmed has no next turn, so its rows would stop for good
       // rather than for one lease. The failure itself still propagates,
       // which is what makes the runtime redeliver the alarm.
-      await this.armAndPublish(bound);
+      await this.armAndPublish(bound, "turnExit");
     }
   }
 
@@ -155,10 +162,14 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
    *
    * A failed publish is the one direction nothing else covers, since
    * `listDue` reads the index alone and a scope missing from it is never
-   * looked for again. So the failure arms the object for a retry, which
-   * has to happen after `rescheduleAlarm` — that call drops the alarm
-   * outright where this deployment drives no tasks from the object, and
-   * would otherwise erase the retry.
+   * looked for again. So the failure arms the object for a retry — an
+   * alarm no row of `scheduled_tasks` can ask for again, which is why
+   * `commit` upkeep only ever pulls the alarm forward. Dropping one is
+   * left to `turnExit`, where the alarm being dropped has already been
+   * delivered; a commit that drops it instead would erase the retry a
+   * previous commit armed, and a crash between that drop and the publish
+   * it guards would lose both the row's place in the index and the only
+   * way back to it.
    *
    * Upkeep runs one at a time. Publishing is a read of `scheduled_tasks`
    * followed by a write to global D1, and the D1 round trip is not a
@@ -169,16 +180,23 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
    * of upkeep, read included, is what keeps the last slice written the
    * last slice read.
    */
-  private armAndPublish(scope: ScopeKey): Promise<void> {
-    const done = this.upkeep.then(() => this.armAndPublishNow(scope));
+  private armAndPublish(scope: ScopeKey, upkeep: Upkeep): Promise<void> {
+    const done = this.upkeep.then(() => this.armAndPublishNow(scope, upkeep));
     // A rejection must not poison the chain for the next write-set.
     this.upkeep = done.catch(() => {});
     return done;
   }
 
-  private async armAndPublishNow(scope: ScopeKey): Promise<void> {
+  private async armAndPublishNow(
+    scope: ScopeKey,
+    upkeep: Upkeep,
+  ): Promise<void> {
     // Arming first keeps the object's self-healing independent of D1.
-    await tolerate(REARM_FAILED, () => rescheduleAlarm(this.ctx.storage));
+    await tolerate(REARM_FAILED, () =>
+      upkeep === "turnExit"
+        ? rescheduleAlarm(this.ctx.storage)
+        : armForStoredRows(this.ctx.storage),
+    );
     try {
       await this.publishDueIndex(scope);
     } catch (cause) {

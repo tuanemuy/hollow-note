@@ -40,10 +40,12 @@ export const SCOPE_TABLES = {
  * see the header of `../d1/migrations/0001_global_schema.sql`.
  */
 export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
-  // The object's own ScopeKey, pinned on first contact. Every scope
-  // table carries `owner_type`/`owner_id` (or `scope_type`/`scope_id`)
-  // and the adapter checks them against this row on both restore and
-  // save (`spec/database/index.md` の「共通の規約」: scope 検証).
+  // The object's own ScopeKey, pinned on first contact. Columns that act
+  // as a scope key — `notes.owner_type`/`owner_id` and this row — are
+  // checked against it on both restore and save. The attribution columns
+  // of `stored_files` / `storage_quotas` / `llm_usages` are not scope
+  // keys and are not checked; the physical separation rests on this pin
+  // alone (`spec/database/index.md` の「共通の規約」: scope 検証).
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.scopeIdentity} (
      id integer PRIMARY KEY CHECK (id = 0),
      scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),

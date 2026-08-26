@@ -13,6 +13,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **楽観ロック**: 集約ルートのテーブルは `version integer NOT NULL DEFAULT 0` を持つ。更新は `WHERE version = :expected` で行い、0 行なら `ConflictError("OPTIMISTIC_LOCK_FAILURE")`
 - **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない。**この `ON DELETE CASCADE` / `RESTRICT` は論理的な所有関係の宣言であり、物理制約としての `FOREIGN KEY` 宣言を要求しない** — 親子の後始末はドメインイベントの購読者と bounded continuation が行い、削除はどちらの場合も明示の手順として書かれる。各表の「制約」列に並ぶ `FK → …` も同じ宣言であって、DDL の `FOREIGN KEY` を意味しない
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
+- **有界な掃引 / 削除**: 期限切れの回収（`deleteExpired`）と旧世代の回収（`deleteOlderEpochByUser` / `deleteByUserAndPurpose`）は、いずれも**表キー順**に 1 回最大 100 件で進む。`expires_at <= now` や `auth_epoch < current` は**絞り込みの述語であって順序ではない**（正本は `PrunePage` とポート契約。[ADR 026](../adr/026-port-contract-and-conformance.md)）。したがって (`expires_at`, key) の索引が与えるのは期限切れ集合への絞り込みだけで、ページの順序は与えない。keyset の cursor も表キーの値である
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
 - **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
@@ -306,7 +307,7 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 
 `identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `kind` (`password` / `oauth`), `provider_account_key`（`kind = 'oauth'` のときだけ非NULL）, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
 
-- **インデックス**: `identity_removal_receipts_operation_idx` (`operation_id`) はoperation単位の読み出し、`identity_removal_receipts_expires_idx` (`expires_at`, `identity_id`) は期限切れの100件ずつの回収に使う
+- **インデックス**: `identity_removal_receipts_operation_idx` (`operation_id`) はoperation単位の読み出し、`identity_removal_receipts_expires_idx` (`expires_at`, `identity_id`) は期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 - **CHECK**: `kind` に応じた列の NULL / NOT NULL の対応
 
 ### sessions
@@ -322,7 +323,7 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 
 - 版を持たない。`expires_at` はサインイン時に `Session.ttlMs`（30 日）で確定して更新しない。例外的に`signOutOtherSessions` / `changePassword`が現在の1行の`auth_epoch`だけをUserの新世代へ条件付き更新する
 - 認証は`users.auth_epoch = sessions.auth_epoch`を要求する。世代更新1行で大量sessionを即時失効し、物理削除はUserId/期限索引を使って1page最大100件で行う
-- **インデックス**: `sessions_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`sessions_expires_idx` (`expires_at`, `id`) — 旧世代/期限切れを100件ずつ削除する
+- **インデックス**: `sessions_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`sessions_expires_idx` (`expires_at`, `id`) — 旧世代 / 期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 
 ### auth_tokens
 
@@ -338,7 +339,7 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 | `created_at` | integer | NOT NULL |
 | `expires_at` | integer | NOT NULL |
 
-- **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`)
+- **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`) — 後ろの 2 本は旧世代 / 期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 - pending tokenの「(`user_id`, `purpose`)ごとに最大1件」はusecase側が`deleteByUserAndPurpose`で保ち、**DB制約としては置かない**。`AuthTokenRepository`の契約は同じ組に複数のpendingが在ることを許しており（適合スイート ADP-identity-024）、部分UNIQUEを張るとポート契約に反する。複数pendingが在るときに`findPendingByUserAndPurpose`がどの行を返すかは**契約として未定義**である（正本はポート定義）。D1実装はこの未定義の幅の中で`ORDER BY created_at DESC, id DESC`を選び、走査順まかせを避けている
 - 消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
 
@@ -351,7 +352,7 @@ run ID候補はhour bucket+kind+generation集合から決定するが、同kind�
 | `last_failed_at` | integer | NULL 可 |
 | `expires_at` | integer | NOT NULL |
 
-- **インデックス**: `login_attempts_expires_idx` (`expires_at`, `key`) — 同一expiryを安定keysetで回収する
+- **インデックス**: `login_attempts_expires_idx` (`expires_at`, `key`) — 期限切れ集合への絞り込みに使う。回収は `key` 順の keyset で進む（上記「有界な掃引 / 削除」）
 - **ロックの状態は列に持たない**。ロックは `failure_count` と `last_failed_at` から `LoginThrottlePolicy.evaluate` が導出する（[domains/identity.md](../domains/identity.md)）。保存しないのは、失敗回数の加算を単一の SQL 文にするためである — 書き込む値が読んだ値に依存していなければ「読んでから書く」形を避けられ、しきい値の規則を SQL に持ち込まずに済む
 - 加算は次の 1 文で行う。返る値がそのまま `LoginAttemptStore.recordFailure` の戻り値になる
 
@@ -694,7 +695,7 @@ global D1 に置く。サインイン用と連携用の両方の認可フロー�
 | `expires_at` | integer | NOT NULL |
 
 - **CHECK**: `intent IN ('linkIdentity','integration')` なら `user_id IS NOT NULL AND user_auth_epoch IS NOT NULL`。`signIn`なら両方NULL
-- **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 同一expiryを安定keysetで回収する
+- **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 期限切れ集合への絞り込みに使う。回収は `state` 順の keyset で進む（上記「有界な掃引 / 削除」）
 
 `take` は束縛が一致したときだけ削除する条件付きの操作で、`DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す。`WHERE` に期限を混ぜないのは、混ぜると束縛が一致した期限切れの行が残ってしまうため。
 
@@ -1107,10 +1108,10 @@ INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つと
 - **正データではない。** 正は各 scope DO の `scheduled_tasks` であり、本表は「どの scope に仕事があるか」だけを持つ。`failed` 行は載せない
 - indexes: (`priority`, `due_at`, `kind`, `operation_id`) — `ScopeTaskScheduler` の選択規則を scope をまたいで適用する
 - 更新の主体は scope object 自身である。`scheduled_tasks` に触れた write-set を commit した RPC は、**呼び出し元へ応答を返す前に**自分の担当ぶんを置き換える。したがって `run(scope, fn)` が解決した時点で索引は新しい。D1 と scope DO を 1 transaction に含めない規約（本書「共通の規約」）は保たれる — これは順序の保証であってトランザクションの結合ではない
-- UoW の外（autocommit）で `scheduled_tasks` を触る経路 — 中央 runner の claim / settle — には commit hook が無いので、`ScopeTaskScheduler` 実装が書き込み直後に自 scope のスライスを置き換える。alarm の再武装はこの経路では行わない。武装は object の持ち分であり、object は commit された write-set が `scheduled_tasks` を名指したときと turn の終わりに必ず行う
+- UoW を開かずに `ScopeTaskScheduler` を組み立てた呼び出し側 — 今日は適合ハーネスの `forScope` だけ — には commit hook が無いので、`ScopeTaskScheduler` 実装が書き込み直後に自 scope のスライスを置き換える。alarm の再武装はこの経路では行わない。武装は object の持ち分であり、object は commit された write-set が `scheduled_tasks` を名指したときと turn の終わりに必ず行う。したがってこの経路が届くのは「索引に載れば中央 runner が拾う」配備に限られ、object が継続を駆動する配備（[platform/index.md](../platform/index.md)「Scope Alarm」）では拒む — そこでは索引にしか載らない行を誰も起こさない
 - publish は**スライスの全置換**である。個々の変更を写すのではなく担当ぶんを丸ごと置き換えるので、`scheduled_tasks` を変える 2 つの経路（commit された write-set と Alarm turn の claim）は、互いにどの行を触ったかを知らずに同じ結果へ収束する。収束は順序の性質なので、**scope object は自分の publish を — `scheduled_tasks` の読みごと — 直列化する**。読みと D1 への往復が交差すると、古いスライスが後に着地して新しいスライスの行を落とす
-- 1 回に publish するスライスは**有界**とする。優先度ごとに `due_at` の早い 25 行、全体で最大 100 行。この索引は「どの scope に仕事があるか」を答えるためのもので全件の写しではなく、`ScopeTaskQueue.listDue` は優先度ごとに枠を確保してから次を取るので、上限を全体一律にすると 1 つの優先度の滞留が他の優先度を索引から押し出す。溢れた行は最も早い行から順に載り、残りは次の publish で載る
-- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。その Alarm を張るのは publish に失敗した object 自身である — publish が落ちたら 10 秒後の alarm を張り、その turn の後始末で索引を書き直す。ハンドラを登録しない配備でも turn は空回りして publish だけを行う。この alarm を消す地点は turn の出口だけなので（[platform/index.md](../platform/index.md)「Scope Alarm」）、object が evict されて作り直されても再試行は残る
+- 1 回に publish するスライスは**有界**とする。優先度ごとに、次に取れる時刻（`pending` は `due_at`、`running` はリース失効時刻）の早い 25 行、全体で最大 100 行。この索引は「どの scope に仕事があるか」を答えるためのもので全件の写しではなく、`ScopeTaskQueue.listDue` は優先度ごとに枠を確保してから次を取るので、上限を全体一律にすると 1 つの優先度の滞留が他の優先度を索引から押し出す。溢れた行は最も早い行から順に載り、残りは次の publish で載る
+- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。その Alarm を張るのは publish に失敗した object 自身である — publish が落ちたら 10 秒後の alarm を張り、その turn の後始末で索引を書き直す。ハンドラを登録しない配備でも turn は空回りして publish だけを行う。この alarm を消す地点は turn の出口だけなので（[platform/index.md](../platform/index.md)「Scope Alarm」）、object が evict されて作り直されても、その scope へ別の write-set が commit されても再試行は残る
 - drift の 2 方向は**非対称**である。索引に残った余分な行は、読み手が各行に対して改めて scope UoW を開いて `claimDue` で取り直すので、costは失敗する claim 1 回に留まる。一方**索引に載らなかった行**は `listDue` が索引しか読まないため誰も探しに来ず、自然回復しない。上記の再試行 alarm がその唯一の回復経路である
 - Durable Objects を全列挙する手段が無いこと（`spec/platform/index.md`「Global Cron」: Cron は scope object を全列挙しない）と、ポート契約が `listDue` を必須としていることの両立がこの表の存在理由である
 

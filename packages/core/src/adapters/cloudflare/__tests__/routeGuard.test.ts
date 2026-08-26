@@ -8,7 +8,7 @@ import { NoteId } from "../../../domain/note/valueObject";
 import { createTestClock } from "../../conformance/testClock";
 import { createD1NoteRouteStore } from "../d1/repositories/noteRouteStore";
 import { createD1OutboxRepository } from "../d1/repositories/outboxRepository";
-import { GLOBAL_TABLES } from "../d1/schema";
+import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import type { RowMutation } from "../execution/writeSet";
 import { WriteSet } from "../execution/writeSet";
 import { createD1Executor } from "../sql/executor";
@@ -67,10 +67,9 @@ describe("cloudflare note_routes under a concurrent transition", () => {
   });
 
   beforeEach(async () => {
-    await env.GLOBAL_DB.batch([
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.noteRoutes}`),
-      env.GLOBAL_DB.prepare(`DELETE FROM ${GLOBAL_TABLES.outboxEvents}`),
-    ]);
+    await env.GLOBAL_DB.batch(
+      GLOBAL_WIPE_STATEMENTS.map((sql) => env.GLOBAL_DB.prepare(sql)),
+    );
   });
 
   const storedState = async (): Promise<string | undefined> => {
@@ -194,9 +193,9 @@ describe("cloudflare outbox refusals", () => {
   });
 
   beforeEach(async () => {
-    await env.GLOBAL_DB.prepare(
-      `DELETE FROM ${GLOBAL_TABLES.outboxEvents}`,
-    ).run();
+    await env.GLOBAL_DB.batch(
+      GLOBAL_WIPE_STATEMENTS.map((sql) => env.GLOBAL_DB.prepare(sql)),
+    );
   });
 
   const stagedOutbox = () =>

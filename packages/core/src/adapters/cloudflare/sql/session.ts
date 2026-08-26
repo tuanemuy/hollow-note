@@ -38,6 +38,17 @@ export const ALL_ROWS = (): boolean => true;
  *   statement has none.
  * - `limit` repeats the statement's `LIMIT`, applied after the merge.
  *
+ * `matches` and `compare` see the staged row image, never storage, so
+ * every column they read has to be one that image carries (which is why
+ * `RowMutation` requires whole-row images). A set read cannot report a
+ * gap the way `readRow` does: that one hands the image to the caller,
+ * whose column readers raise `DataIntegrityError` on a missing column,
+ * whereas here the column merely reads as `undefined` and the page
+ * comes back short or misordered with nothing thrown. `statement` is
+ * free to project fewer columns than the image holds — narrowing it
+ * changes nothing here. What a new read has to be checked against is
+ * the images every writer of the table stages, not the projection.
+ *
  * `limit` and same-unit writes to the rows the statement returned do not
  * compose. The overlay can only rearrange what the statement already
  * returned, so a `LIMIT n` that came back full and lost a row — to a

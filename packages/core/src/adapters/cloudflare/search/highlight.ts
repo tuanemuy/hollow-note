@@ -205,6 +205,30 @@ const render = (
   return to < source.length ? `${rendered}${ELLIPSIS}` : rendered;
 };
 
+const HIGH_SURROGATE_FIRST = 0xd800;
+const LOW_SURROGATE_FIRST = 0xdc00;
+const LOW_SURROGATE_LAST = 0xdfff;
+
+/**
+ * Whether a UTF-16 offset falls between the halves of a surrogate pair —
+ * the one way an offset can name a position that is not a code point
+ * boundary. Cutting there would put an unpaired surrogate in the returned
+ * fragment, which is no longer a slice of well-formed text.
+ */
+const splitsSurrogatePair = (source: string, at: number): boolean => {
+  if (at <= 0 || at >= source.length) {
+    return false;
+  }
+  const before = source.charCodeAt(at - 1);
+  const after = source.charCodeAt(at);
+  return (
+    before >= HIGH_SURROGATE_FIRST &&
+    before < LOW_SURROGATE_FIRST &&
+    after >= LOW_SURROGATE_FIRST &&
+    after <= LOW_SURROGATE_LAST
+  );
+};
+
 const matchesIn = (source: string, keyword: string): readonly Range[] => {
   const needles = searchRunsOf(keyword);
   return needles.length === 0 ? [] : rangesIn(mapPositions(source), needles);
@@ -233,6 +257,9 @@ export function highlightExcerpt(
  * match — the fallback for a row whose excerpt holds no match. The caller
  * decides how much of the body to offer; a match past what it read simply
  * yields `null`, which is the fallback the view already handles.
+ *
+ * The window is counted in characters of context, so each end is pulled
+ * back to the nearest code point boundary before the text is cut.
  */
 export function highlightBody(text: string, keyword: string): string | null {
   const ranges = matchesIn(text, keyword);
@@ -241,8 +268,9 @@ export function highlightBody(text: string, keyword: string): string | null {
     return null;
   }
   const from = Math.max(0, first[0] - WINDOW_LEAD);
+  const to = Math.min(text.length, from + WINDOW_LENGTH);
   return render(text, ranges, [
-    from,
-    Math.min(text.length, from + WINDOW_LENGTH),
+    splitsSurrogatePair(text, from) ? from + 1 : from,
+    splitsSurrogatePair(text, to) ? to - 1 : to,
   ]);
 }

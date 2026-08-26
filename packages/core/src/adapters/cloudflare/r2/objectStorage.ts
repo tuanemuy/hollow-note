@@ -48,12 +48,13 @@ const externalError = (context: string, cause: unknown): SystemError =>
     cause,
   );
 
+/**
+ * SHA-256 over exactly the bytes the view spans — `digest` takes a
+ * `BufferSource` and reads the view's own `byteOffset` / `byteLength`, so a
+ * window onto a larger buffer needs no copy.
+ */
 const sha256Of = async (body: Uint8Array): Promise<Checksum> => {
-  // A fresh buffer rather than `body.buffer`: a view may be a window onto
-  // a larger (or shared) buffer, which would digest the wrong bytes.
-  const source = new ArrayBuffer(body.byteLength);
-  new Uint8Array(source).set(body);
-  const digest = await crypto.subtle.digest("SHA-256", source);
+  const digest = await crypto.subtle.digest("SHA-256", body);
   return Checksum.sha256(
     [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, "0"))

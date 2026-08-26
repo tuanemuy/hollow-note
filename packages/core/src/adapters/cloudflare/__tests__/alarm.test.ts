@@ -21,11 +21,13 @@ import {
   type ScopeAlarmHandlers,
 } from "../do/alarm";
 import { DUE_INDEX_REPUBLISH_DELAY_MS } from "../do/dueIndex";
+import { createCloudflareScopeTaskScheduler } from "../do/repositories/scopeTaskScheduler";
 import { scheduleStatement } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { scopeObjectName } from "../do/scopeName";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import { int, text } from "../sql/row";
+import { createAutocommitSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
@@ -605,6 +607,102 @@ describe("scope alarm", () => {
     expect(await rowsOf(scope, "operation_id")).toHaveLength(1);
 
     expect(await armedAt(scope)).toBe(armed);
+  });
+
+  /**
+   * Nor may a commit take it: the upkeep that follows one runs before
+   * the publish it exists for, so dropping the alarm there and crashing
+   * on the D1 round trip would lose the row from the index and the only
+   * way back to it at once. Again the default deployment is where it
+   * bites, since that is where dropping is unconditional.
+   */
+  it("keeps the republish retry alarm across a later successful commit", async () => {
+    const scope = scopeOf("user-publish-commit");
+    const dueAtMs = Date.now() + 3_600_000;
+    const taskOf = (operationId: string) => ({
+      kind: "due.later",
+      operationId,
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs,
+    });
+
+    await withPublishBroken(() => seed(scope, [taskOf("op-retained")], true));
+    const armed = await armedAt(scope);
+    expect(armed).not.toBeNull();
+
+    await seed(scope, [taskOf("op-second")], true);
+
+    // The publish this commit made carries both rows, and the retry the
+    // earlier failure armed is still standing.
+    expect(await indexedOf("user-publish-commit")).toEqual([
+      "op-retained",
+      "op-second",
+    ]);
+    expect(await armedAt(scope)).toBe(armed);
+  });
+
+  /**
+   * The other half of that rule. Rows a deployment driving no tasks left
+   * behind have to be picked up once one that does drives them, and the
+   * rows alone cannot ask for the alarm — the object arms for what it
+   * already holds the next time it is built.
+   */
+  it("arms a rebuilt object for the rows it already holds", async () => {
+    register("due.later", noop);
+    const scope = scopeOf("user-rearm-cold");
+    const dueAtMs = Date.now() + 3_600_000;
+    await seed(scope, [
+      {
+        kind: "due.later",
+        operationId: "op-rearm",
+        priority: ScopeTaskPriority.outboxRelay,
+        dueAtMs,
+      },
+    ]);
+    // Seeded without declaring the table touched, so nothing armed yet.
+    expect(await armedAt(scope)).toBeNull();
+
+    await rebuild(scope);
+    expect(await rowsOf(scope, "operation_id")).toHaveLength(1);
+
+    expect(await armedAt(scope)).toBe(dueAtMs);
+  });
+
+  /**
+   * A scheduler built straight over a scope's session publishes the due
+   * index but arms nothing, which is enough only while the central
+   * runner is the one that comes looking. Where the object drives tasks
+   * there is no such runner, so that write would be a continuation
+   * nobody wakes — the path is refused instead of drifting quietly.
+   */
+  it("refuses a write outside a unit of work where the object drives tasks", async () => {
+    const scope = scopeOf("user-autocommit-schedule");
+    const scheduler = () =>
+      createCloudflareScopeTaskScheduler({
+        session: createAutocommitSession(
+          createScopeStubExecutor(env.SCOPE_OBJECT, scope, NAMESPACE),
+        ),
+        scope,
+        db: env.GLOBAL_DB,
+      });
+    const taskOf = (operationId: string) => ({
+      kind: "due.later",
+      operationId,
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAt: new Date(Date.now() + 3_600_000),
+      payload: {},
+    });
+
+    await scheduler().schedule(taskOf("op-runner"));
+    expect(await indexedOf("user-autocommit-schedule")).toEqual(["op-runner"]);
+    expect(await armedAt(scope)).toBeNull();
+
+    register("due.later", noop);
+    await expect(scheduler().schedule(taskOf("op-refused"))).rejects.toThrow(
+      /unit of work/,
+    );
+    // Refused before the write, so the row never landed either.
+    expect(await rowsOf(scope, "operation_id")).toHaveLength(1);
   });
 
   /**
