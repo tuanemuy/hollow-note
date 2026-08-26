@@ -76,7 +76,6 @@ const positionOf = (
 export function createD1PublicNoteQueryService(
   session: SqlSession,
 ): PublicNoteQueryService {
-  /** One row more than asked for, which is how `hasMore` is known. */
   const page = async (
     context: string,
     sql: string,

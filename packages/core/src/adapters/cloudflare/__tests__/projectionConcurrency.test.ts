@@ -18,9 +18,9 @@ import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the projection half. The public plane is the first of the two
- * blocks below: `events-public-projection` runs at concurrency 4, so two
- * consumers can hold the same note at once.
+ * The public plane is the first of the two blocks below:
+ * `events-public-projection` runs at concurrency 4, so two consumers can
+ * hold the same note at once.
  *
  * The memory backend makes read-compare-write atomic by being
  * single-threaded, so the shared suites cannot reach this interleaving —
@@ -225,8 +225,8 @@ describe("cloudflare public projection concurrency", () => {
 });
 
 /**
- * The counter half of AC-4. `bump` spans two RPCs to the scope object —
- * the read and the write-set apply — so two turns on the same scope can
+ * `bump` spans two RPCs to the scope object — the read and the write-set
+ * apply — so two turns on the same scope can
  * interleave, and a lost update would hand two events the same revision
  * and make them unorderable against each other.
  *

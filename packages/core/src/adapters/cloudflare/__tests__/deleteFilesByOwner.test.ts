@@ -47,7 +47,7 @@ function unusedPort<T extends object>(name: string): T {
 }
 
 /**
- * AC-5: how many SQL statements one `deleteFilesByOwner` turn issues.
+ * How many SQL statements one `deleteFilesByOwner` turn issues.
  *
  * `spec/platform/index.md` の「実行予算と分割単位」→「Scope DO」 sets the
  * design goal for a scope-local bulk delete: the writes collapse into a
@@ -58,10 +58,10 @@ function unusedPort<T extends object>(name: string): T {
  * goal rather than a cap (ADR 056 決定 2), and this file is the
  * measurement that pins it.
  *
- * What is reproduced here is the
- * storage half of `application/storage/deleteFilesByOwner.ts`: the
- * `listByOwner` enumeration, the `deleteStoredFiles` loop it feeds, and
- * the outbox flush their events land in. The turn's surrounding calls
+ * What is reproduced here is the storage half of
+ * `application/storage/deleteFilesByOwner.ts`: the `listByOwner`
+ * enumeration, the `deleteStoredFiles` loop it feeds, and the outbox
+ * flush their events land in. The turn's surrounding calls
  * (`assertOwner`, `markApplied`, the scheduler settle) are constant in
  * the batch size and belong to other bundles, so they are left out.
  *

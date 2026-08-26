@@ -17,8 +17,7 @@ import type { SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the transaction half: what survives a write that the driver
- * refuses **partway through**.
+ * What survives a write that the driver refuses **partway through**.
  *
  * `unitOfWork.test.ts` covers the callback that throws before a commit is
  * ever attempted; the interesting case is the other one, where the batch

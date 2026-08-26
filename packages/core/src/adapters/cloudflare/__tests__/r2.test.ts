@@ -9,8 +9,6 @@ import {
 import { createR2ObjectStorage } from "../r2/objectStorage";
 
 /**
- * AC-4, the object-store half.
- *
  * R2 sits outside every unit of work, so its two failure modes are the
  * ones the ordering around it is designed to survive: two writers landing
  * on one key, and a delete for bytes that are already gone. Neither is a

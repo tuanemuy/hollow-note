@@ -1038,7 +1038,7 @@ describe("scope alarm", () => {
   });
 
   /**
-   * AC-4: the turn re-arms the object and the next delivery re-enters it.
+   * The turn re-arms the object and the next delivery re-enters it.
    * A row left running is work nobody settled, so the object has to come
    * back for it — but only once the lease it granted has lapsed, and
    * without the second visit costing the row anything.

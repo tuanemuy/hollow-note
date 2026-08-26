@@ -20,7 +20,7 @@ const MAX_BATCH = 100;
 /**
  * Batch read of `users` by id. The ids arrive as one JSON array expanded
  * with `json_each` rather than as 100 positional bindings, which would
- * exceed the plane's bound-parameter cap on its own
+ * spend the plane's whole bound-parameter budget on its own
  * (`spec/database/index.md` の「共通の規約」).
  */
 export function createD1UserBatchReader(

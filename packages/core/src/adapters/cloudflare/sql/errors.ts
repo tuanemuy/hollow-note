@@ -8,7 +8,7 @@ import {
  * Constraint classes a SQLite-backed driver (D1 or `ctx.storage.sql`)
  * can report. Adapters branch on this rather than on driver message
  * text, so the translation of a driver failure into the shared error
- * contracts happens in exactly one place (CLAUDE.md, adapter → application).
+ * contracts happens in exactly one place.
  */
 export type SqlFailureKind =
   | "occGuard"

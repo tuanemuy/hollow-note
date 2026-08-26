@@ -26,8 +26,8 @@ import { createAutocommitSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the lease half: a writer that took a row and never came back,
- * and two writers reaching for the same row at once.
+ * A writer that took a row and never came back, and two writers reaching
+ * for the same row at once.
  *
  * The claim is an `_occ_guard` over the candidate test followed by a
  * conditional `UPDATE`, which is how a backend with no interactive

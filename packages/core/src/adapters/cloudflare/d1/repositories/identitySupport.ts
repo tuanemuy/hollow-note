@@ -7,8 +7,6 @@ import type { SqlSession } from "../../sql/session";
 import type { SqlRow, SqlStatement, SqlValue } from "../../sql/statement";
 import { statement } from "../../sql/statement";
 
-/** Statement shapes shared by the D1 Identity repositories. */
-
 /** Builds the row-writing statements of one table from its column list. */
 export function createTableWriter(
   table: string,

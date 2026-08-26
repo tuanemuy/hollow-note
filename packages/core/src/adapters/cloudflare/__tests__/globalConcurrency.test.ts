@@ -16,8 +16,8 @@ import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the control-plane half: two writers that both read the same row
- * and then both write.
+ * Two writers that both read the same control-plane row and then both
+ * write.
  *
  * The memory backend serialises a unit of work, so the shared conformance
  * suites cannot reach this at all — which is exactly why it belongs here.

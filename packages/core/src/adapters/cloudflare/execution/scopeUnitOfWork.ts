@@ -44,9 +44,8 @@ export type ScopeUnitOfWorkOptions = Readonly<{
  * `run(scope, fn)` takes an arbitrary closure, which cannot be shipped
  * over RPC, so reads are RPC round trips and writes are staged locally.
  * Commit hands the whole write-set to the object in one call, where it
- * applies under
- * `ctx.storage.transactionSync` — the object never awaits anything
- * inside that transaction, per `spec/platform/index.md`「外部要求」.
+ * applies under `ctx.storage.transactionSync` — the object never awaits
+ * anything inside that transaction, per `spec/platform/index.md`「外部要求」.
  *
  * A unit that staged nothing skips the commit call: with no statements
  * and no touched tables the object would have nothing to do, and the

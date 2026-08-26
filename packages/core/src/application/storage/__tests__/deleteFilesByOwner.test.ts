@@ -90,7 +90,7 @@ async function seedFiles(
   );
 }
 
-/** Artifacts only exist as ephemeral rows the conversion slice will write. */
+/** No registration path mints an artifact, so its ephemeral row is built here. */
 async function seedArtifact(h: TestHarness, id: string): Promise<void> {
   const fileId = StoredFileId.create(id);
   const now = h.clock.now();

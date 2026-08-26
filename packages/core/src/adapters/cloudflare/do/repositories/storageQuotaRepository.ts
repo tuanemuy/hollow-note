@@ -47,7 +47,6 @@ const MUTABLE = COLUMNS.filter(
 const INSERT_SQL = `INSERT INTO ${TABLE} (${SELECTION}) VALUES (${COLUMNS.map(() => "?").join(", ")})`;
 const UPDATE_SQL = `UPDATE ${TABLE} SET ${MUTABLE.map((column) => `${column} = ?`).join(", ")} WHERE subject_type = ? AND subject_id = ?`;
 
-/** The key both the SQL `IN` list and the write-set overlay agree on. */
 const subjectColumns = (
   subject: QuotaSubject,
 ): Readonly<{ type: string; id: string }> =>
@@ -63,8 +62,8 @@ const overlayKey = (subject: QuotaSubject): string => {
 const rowKey = (row: SqlRow): string =>
   compositeKey(text(row, "subject_type"), text(row, "subject_id"));
 
-/** `subject_type || ':' || subject_id`; neither part can contain `:`
- * in the type position, so the join is unambiguous. */
+/** Mirrors the SQL `subject_type || ':' || subject_id`. The type is a
+ * closed set with no `:` in it, so the join is unambiguous. */
 const listKey = (subject: QuotaSubject): string => {
   const columns = subjectColumns(subject);
   return `${columns.type}:${columns.id}`;

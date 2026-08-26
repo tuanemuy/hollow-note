@@ -16,8 +16,8 @@ import { createAutocommitSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the idempotency half: a caller that never learned whether its
- * write landed and simply runs the same operation again.
+ * A caller that never learned whether its write landed and simply runs
+ * the same operation again.
  *
  * Three tables carry that guarantee and each does it differently —
  * `applied_operations` by a primary key the second insert loses,

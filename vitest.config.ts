@@ -40,7 +40,7 @@ export default defineConfig({
           env: { TZ: "Asia/Tokyo" },
           // scrypt(N=16384) at production cost makes the password cases the
           // slowest in the suite (~300ms against single-digit ms elsewhere),
-          // and on a loaded machine running files in parallel they have
+          // and on a loaded machine running files in parallel they can
           // overrun the 5s default.
           testTimeout: 10_000,
         },

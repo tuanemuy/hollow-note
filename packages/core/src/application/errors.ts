@@ -173,9 +173,9 @@ export function isValidationError(error: unknown): error is ValidationError {
  * can route them differently — a flood of `DataIntegrityError` means a
  * migration is broken, not the DB itself.
  *
- * `NetworkError` / `ExternalApiError` are template-only placeholders showing
- * the extension shape — no code throws them today. Delete them when you add
- * your first external adapter, or keep as reference.
+ * `NetworkError` has no thrower today; it is kept as the transport-level
+ * counterpart of `ExternalApiError`, which the OAuth client and the R2
+ * adapter raise.
  */
 export const SystemErrorCode = {
   DatabaseError: "DATABASE_ERROR",

@@ -34,10 +34,9 @@ export type CloudflareScopeHandle = ScopeHandle &
  * surface as `NOTE_NOT_FOUND` rather than a scope the caller would then
  * write into.
  *
- * `objectNamespace` is empty in production and set by the conformance
- * factory, whose backends need genuinely empty scope storage per test:
- * a new namespace yields a new object name, and a new name is a new
- * object.
+ * `namespace` is empty in production and set by the conformance factory,
+ * whose backends need genuinely empty scope storage per test: a new
+ * namespace yields a new object name, and a new name is a new object.
  */
 export function createCloudflareScopeRouter(
   deps: Readonly<{

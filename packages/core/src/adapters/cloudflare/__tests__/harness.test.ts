@@ -144,8 +144,7 @@ describe("cloudflare test harness", () => {
    * The suites contract for a fresh backend per test while this pool
    * isolates storage per *file*, so two backends built here — as two
    * suites in one bundle would be — must not see each other on any of the
-   * three planes. Nothing about it is per-suite: if it holds
-   * for two factory calls it holds for thirty.
+   * three planes.
    */
   it("hands out backends that cannot see one another on any plane", async () => {
     const first = await makeCloudflareConformanceBackend();

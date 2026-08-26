@@ -131,9 +131,8 @@ describe("createCloudflareRuntime", () => {
 
   it("satisfies the shared runtime interface, as the memory runtime does", () => {
     expect(asAppRuntime(makeRuntime())).toBeDefined();
-    // `memoryRuntime.ts` is off-limits to the slice that introduced
-    // `AppRuntime`, so it is not annotated with it. This is what holds
-    // the two composition roots to one shape until it is.
+    // `memoryRuntime.ts` does not declare `AppRuntime` itself, so this
+    // call is what holds the two composition roots to one shape.
     const memoryRuntime = null as unknown as MemoryRuntime;
     expect(asAppRuntime(memoryRuntime)).toBeNull();
   });

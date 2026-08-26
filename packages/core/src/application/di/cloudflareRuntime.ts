@@ -99,10 +99,10 @@ export type CloudflareRuntimeOptions = Readonly<{
    */
   oauth: OAuthRuntimeConfig;
   /**
-   * Required, because there is no Cloudflare `MailSender` adapter in
-   * this slice. Stating it as an option rather than defaulting to a
-   * logging stand-in keeps the gap visible at the composition root
-   * instead of turning verification mail into a silent no-op.
+   * Required, because there is no Cloudflare `MailSender` adapter.
+   * Stating it as an option rather than defaulting to a logging stand-in
+   * keeps the gap visible at the composition root instead of turning
+   * verification mail into a silent no-op.
    */
   mailSender: MailSender;
   /** Public domain the object bucket is served from, no trailing slash. */

@@ -49,7 +49,7 @@ const draft = (aggregateId: string) => ({
   aggregateId,
 });
 
-/** Minimal outbox staging: the real one arrives with `OutboxRepository`. */
+/** Minimal outbox staging, standing in for `OutboxRepository`. */
 const stageOutbox = async (
   session: SqlSession,
   events: readonly DomainEvent[],

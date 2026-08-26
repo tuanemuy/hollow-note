@@ -4,9 +4,8 @@
  * A statement is plain data — SQL text plus positional bindings — and
  * nothing else. That is deliberate: the scope plane ships whole
  * write-sets to a Durable Object over RPC, so a statement has to survive
- * structured clone. Never put a closure,
- * a `Date`, or a domain object in one; encode with the helpers in
- * `./row.ts` first.
+ * structured clone. Never put a closure, a `Date`, or a domain object in
+ * one; encode with the helpers in `./row.ts` first.
  */
 export type SqlValue = string | number | null | ArrayBuffer;
 

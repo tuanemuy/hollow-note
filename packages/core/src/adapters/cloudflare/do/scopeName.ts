@@ -26,7 +26,7 @@ export const scopeObjectName = (scope: ScopeKey, namespace: string): string =>
     ? ScopeKeyOps.serialize(scope)
     : `${namespace}/${ScopeKeyOps.serialize(scope)}`;
 
-/** Columns every scope table carries for the `scope 検証` rule. */
+/** A `ScopeKey` as the `(type, id)` column pair the schema stores it in. */
 export const scopeColumns = (
   scope: ScopeKey,
 ): Readonly<{ type: "user" | "workspace"; id: string }> =>

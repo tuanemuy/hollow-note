@@ -251,10 +251,10 @@ export function nextWakeAt(storage: DurableObjectStorage): Date | null {
  * nothing to wake for — including the case where this deployment has no
  * handler registry and therefore no turn to run.
  *
- * This is the exit of a turn and nothing else. It is the only place an
- * alarm may be dropped, and it is safe there because the alarm it drops
- * has already been delivered — anywhere earlier it would take a
- * due-index republish retry with it (`armForStoredRows`).
+ * This is the exit of a turn and nothing else. It is the only one of
+ * these helpers that may drop an alarm, and it is safe here because the
+ * alarm it drops has already been delivered — anywhere earlier it would
+ * take a due-index republish retry with it (`armForStoredRows`).
  */
 export async function rescheduleAlarm(
   storage: DurableObjectStorage,
