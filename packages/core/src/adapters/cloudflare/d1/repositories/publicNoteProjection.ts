@@ -77,12 +77,9 @@ export function createD1PublicNoteProjectionWriter(
     redactAuthor: (input: AuthorRedaction) => writer.redactAuthor(input),
 
     /**
-     * Purge-side removal. No generation is compared: the operation has
-     * already closed the route, so there is nothing left to compare
-     * against, and deleting a row that is already gone is the shape
-     * idempotency takes here — a redelivery of the same operation reaches
-     * the same end state without a separate acknowledgement row. The
-     * guard the writer carries is not that comparison; it only holds the
+     * The three inputs the port names beside `noteId` are unused on
+     * purpose: the contract compares no generation here. The guard the
+     * writer carries is not that comparison either — it only holds the
      * row still between the read and the withdrawal of its tokens, and a
      * redelivery re-reads and converges.
      */

@@ -53,9 +53,10 @@ function unusedPort<T extends object>(name: string): T {
  * design goal for a scope-local bulk delete: the writes collapse into a
  * single atomic apply whatever the batch size, carrying the outbox as one
  * multi-row INSERT, while the statement total and the read-side round
- * trips stay proportional to the count. The measured figures themselves
- * belong to the adapter rather than to the budget document (ADR 056
- * 決定 3), so this file is where they are pinned.
+ * trips stay proportional to the count. That document carries the
+ * Cloudflare figure itself — `4n + 3` statements per turn — as a design
+ * goal rather than a cap (ADR 056 決定 2), and this file is the
+ * measurement that pins it.
  *
  * What is reproduced here is the
  * storage half of `application/storage/deleteFilesByOwner.ts`: the

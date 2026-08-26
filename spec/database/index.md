@@ -11,7 +11,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **真偽値**: `integer` の 0 / 1
 - **列挙**: `text` に `CHECK` 制約を添える。判別ユニオンは判別子の列と、その値のときだけ非 NULL になる列の組で表す
 - **楽観ロック**: 集約ルートのテーブルは `version integer NOT NULL DEFAULT 0` を持つ。更新は `WHERE version = :expected` で行い、0 行なら `ConflictError("OPTIMISTIC_LOCK_FAILURE")`
-- **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない
+- **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない。**この `ON DELETE CASCADE` / `RESTRICT` は論理的な所有関係の宣言であり、物理制約としての `FOREIGN KEY` 宣言を要求しない** — 親子の後始末はドメインイベントの購読者と bounded continuation が行い、削除はどちらの場合も明示の手順として書かれる。各表の「制約」列に並ぶ `FK → …` も同じ宣言であって、DDL の `FOREIGN KEY` を意味しない
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
@@ -947,6 +947,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - 照合は前処理の 1〜2 段目だけ（NFKC 正規化 → 小文字化。ビグラム化は行わない）を検索語と対象テキストの双方に適用した文字列同士の部分一致で行う。クエリ側と同じ正規化を通すため、全角英数・半角カナ・大文字小文字のゆれは検索と同じ基準で吸収される
 - 検索語が複数の run に分かれる場合（クエリ構築で AND に結ばれる単位）は run ごとに一致を探し、見つかったものをすべて囲む。切り出す窓は最初の一致を基準に取る
 - NFKC は文字数を変えうるため、正規化と同時に**正規化後の位置 → 元テキストの位置**の写像を作り、切り出しとハイライトの区間は元テキストの位置で決める。返す文字列は常に元テキストの一部であり、正規化済みテキストを利用者に返してはならない
+- 単独の書記素クラスタになると保証できる ASCII の連なりは、クラスタへ分けずに一括で写す。ASCII 符号位置は NFKC 不変で、小文字化しても 1 コードユニットのままなので、一括の写像はクラスタごとに掛けた写像と一致する
 - キーワード未指定のときは `null`（型のとおり）。一致が 1 つも見つからないとき（境界をまたぐ偽陽性など、後述の「既知の限界」に当たる行）も `null` とし、画面は素の `excerpt` を出す
 - `highlightedExcerpt` は型のとおり 1 本の文字列で返す。`excerpt` / `text` は本文から抽出した**平文**なので、まず HTML エスケープしてから一致区間を `<mark>` … `</mark>` で囲む。標識を入れる側がエスケープまで責任を持つことで、表示層はこの値だけを HTML として描ける（素の `excerpt` は平文として扱う）
 
@@ -1107,8 +1108,9 @@ INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つと
 - indexes: (`priority`, `due_at`, `kind`, `operation_id`) — `ScopeTaskScheduler` の選択規則を scope をまたいで適用する
 - 更新の主体は scope object 自身である。`scheduled_tasks` に触れた write-set を commit した RPC は、**呼び出し元へ応答を返す前に**自分の担当ぶんを置き換える。したがって `run(scope, fn)` が解決した時点で索引は新しい。D1 と scope DO を 1 transaction に含めない規約（本書「共通の規約」）は保たれる — これは順序の保証であってトランザクションの結合ではない
 - UoW の外（autocommit）で `scheduled_tasks` を触る経路 — 中央 runner の claim / settle — には commit hook が無いので、`ScopeTaskScheduler` 実装が書き込み直後に自 scope のスライスを置き換える。alarm の再武装はこの経路では行わない。武装は object の持ち分であり、object は commit された write-set が `scheduled_tasks` を名指したときと turn の終わりに必ず行う
+- publish は**スライスの全置換**である。個々の変更を写すのではなく担当ぶんを丸ごと置き換えるので、`scheduled_tasks` を変える 2 つの経路（commit された write-set と Alarm turn の claim）は、互いにどの行を触ったかを知らずに同じ結果へ収束する。収束は順序の性質なので、**scope object は自分の publish を — `scheduled_tasks` の読みごと — 直列化する**。読みと D1 への往復が交差すると、古いスライスが後に着地して新しいスライスの行を落とす
 - 1 回に publish するスライスは**有界**とする。優先度ごとに `due_at` の早い 25 行、全体で最大 100 行。この索引は「どの scope に仕事があるか」を答えるためのもので全件の写しではなく、`ScopeTaskQueue.listDue` は優先度ごとに枠を確保してから次を取るので、上限を全体一律にすると 1 つの優先度の滞留が他の優先度を索引から押し出す。溢れた行は最も早い行から順に載り、残りは次の publish で載る
-- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。その Alarm を張るのは publish に失敗した object 自身である — publish が落ちたら 10 秒後の alarm を張り、その turn の後始末で索引を書き直す。ハンドラを登録しない配備でも turn は空回りして publish だけを行う
+- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。その Alarm を張るのは publish に失敗した object 自身である — publish が落ちたら 10 秒後の alarm を張り、その turn の後始末で索引を書き直す。ハンドラを登録しない配備でも turn は空回りして publish だけを行う。この alarm を消す地点は turn の出口だけなので（[platform/index.md](../platform/index.md)「Scope Alarm」）、object が evict されて作り直されても再試行は残る
 - drift の 2 方向は**非対称**である。索引に残った余分な行は、読み手が各行に対して改めて scope UoW を開いて `claimDue` で取り直すので、costは失敗する claim 1 回に留まる。一方**索引に載らなかった行**は `listDue` が索引しか読まないため誰も探しに来ず、自然回復しない。上記の再試行 alarm がその唯一の回復経路である
 - Durable Objects を全列挙する手段が無いこと（`spec/platform/index.md`「Global Cron」: Cron は scope object を全列挙しない）と、ポート契約が `listDue` を必須としていることの両立がこの表の存在理由である
 
@@ -1217,7 +1219,7 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 
 `kind = 'command'` の行は `expires_at IS NULL` で、Alarm pruner（`expires_at <= asOf`）の対象外である。**再配送されうる限り残さなければならない**のが理由で、コマンドの再配送は outbox の attempt 上限で有界になるが壁時計では有界でない — quarantine された行の手動再駆動と、継続要求が同じ key で再駆動される回復経路（[ADR 040](../adr/040-continuation-transport.md)）のどちらも期限を持たない。期限を切れば「期限後の再配送が二重適用になる」ので、切らないほうが安全側である。したがってこの行は当該 scope の寿命ぶん積み上がる。値を返すコマンドを足すスライスが `result` を使い始める時点で、そのコマンドの再駆動窓を根拠にした保持期間をここに定めること。
 
-`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
+`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。**1 つの personal scope が持つ barrier receipt は 1 件である** — `ScopeCleanupAdmissionStore` の読みはこの `kind` の行を 1 件として扱い、完了・回収・解除もその 1 件に対して行う。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する形を共通のprunerに揃えるが、1 scopeの回収はその1件で終わるので枠が埋まることはない。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
 
 鍵と秘密はテーブルに置かない。供給元（composition root が渡す鍵束）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
 

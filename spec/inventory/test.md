@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-25）
+生成元: `spec/testcases/`（最終同期: 2026-08-26）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 

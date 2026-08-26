@@ -41,7 +41,12 @@ export interface PublicNoteProjectionWriter {
   ): Promise<boolean>;
   /** Public counterpart of `LocalNoteProjectionWriter.redactAuthor`. */
   redactAuthor(input: AuthorRedaction): Promise<boolean>;
-  /** Idempotent purge-side removal, acknowledged under the operation. */
+  /**
+   * Purge-side removal. Idempotency is satisfied by the end state — the
+   * row is gone — and no acknowledgement of the operation is contracted:
+   * the operation has already closed the route, so no generation is left
+   * to compare and a redelivery reaches the same end state on its own.
+   */
   removeForPurge(
     input: Readonly<{
       noteId: NoteId;

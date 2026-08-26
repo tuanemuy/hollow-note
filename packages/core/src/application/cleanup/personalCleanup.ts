@@ -86,10 +86,11 @@ export const PERSONAL_BARRIER_PRUNE_PAGE_SIZE = 100;
  * then is the task settled — a turn whose response was lost finds the
  * row still due and repeats a scan that has nothing to remove.
  *
- * The full-page branch is unreachable on a backend that keeps at most
- * one barrier receipt per scope (the memory adapter, and what the
- * conformance suite pins today), so it is carried untested until a
- * backend that can hold several exists — #11.
+ * The full-page branch is unreachable on every backend in the tree: each
+ * keeps at most one barrier receipt per scope, which is also what the
+ * conformance suite pins. Observing the branch takes a port contract that
+ * admits several receipts per scope, so it is a change to the port and
+ * its suite (ADR 046), not a backend-local test.
  */
 export async function prunePersonalCleanupBarriers(
   container: WorkerContainer,

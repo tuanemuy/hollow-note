@@ -194,11 +194,13 @@ priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOと
 
 リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
 
-**1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[domains/index.md](../domains/index.md) の `ScopeTaskScheduler`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。引き金は「1 scope に複数 writer」であって「複数 worker プロセス」ではない — scope が分かれていれば writer も分かれる。
+**1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[database/index.md](../database/index.md) の `scheduled_tasks`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。
+
+**単一 writer が何に支えられているかは driver で異なる。** object の Alarm が driver の配備では scope ごとに writer が分かれるので、worker プロセスの多重度は引き金にならない。中央 runner が driver の配備では、runner が scope を選ぶ材料が全 scope 共有の due index（[database/index.md](../database/index.md) の `scope_task_due_index`）なので、起動が 2 本並走すれば両方が同じ scope を掴みうる — 1 ラウンド内の重複排除は起動をまたがない。この配備では**runner の起動が重ならないこと（1 配備あたり同時 1 起動）が単一 writer 前提そのもの**であり、配備はそれを保つ手段（Cron / Queue consumer の多重度の抑制）を持たなければならない。
 
 **どちらが writer かは、scope task ハンドラのレジストリが決める。** レジストリが空なら object は継続の driver ではない — turn は 1 行も claim せず、Alarm は武装せずに削除する。1 つでもハンドラが登録されていれば object が driver になる。したがって**配備はハンドラを登録するか、中央 runner（`listDue` → `claimDue`）を回すかのどちらか一方だけを選ぶ**。両方を有効にした配備は 1 scope に 2 writer を並べることになり、上段の単一 writer 前提が崩れる。driver を object 側へ倒す配備は、ハンドラの登録と中央 runner の停止を同じ切り替えとして扱うこと。due indexの publish はレジストリの有無にかかわらず行うので、中央 runner が driver である配備でも scope は可視のままである。
 
-切り替え時に既に積まれている行は、その object が次に起きたときに武装され直す（object は起動時に一度だけ Alarm を張り直す）。レジストリが空のあいだはこの張り直しが Alarm の削除になるので、既定の配備では何も起きない。
+切り替え時に既に積まれている行は、その object が次に起きたときに武装され直す（object は起動時に一度だけ Alarm を張り直す）。**この張り直しは Alarm を足すだけで、決して消さない** — レジストリが空の配備では何もしない。Alarm を消す地点は turn の出口 1 か所に限る。due index の publish 失敗が張る再試行（[database/index.md](../database/index.md) の `scope_task_due_index`）は Alarm 以外に居場所を持たないので、起動のたびに消す経路があると object の作り直しでそれが失われる。駆動しない配備に古い Alarm が残った場合は、配送された turn が 1 行も claim せずに自分で落とす。
 
 低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
@@ -217,7 +219,7 @@ global recoveryはshard/operation kindごとに `next_attempt_at, id` のキー�
 
 auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。
 
-**run の lease は fencing である。** lane の checkpoint と ack は、読んだ lease owner と lease 期限に対する条件付き更新として適用する（global D1 では `_occ_guard` の 1 文がこれを担う）。lapse した lease を 2 人が同時に奪いに行けば勝つのは 1 人で、奪われた側の checkpoint は着地しない — 着地すれば回収済み lane の cursor が巻き戻り、その表のその keyset は**その run では掃かれない**。`ScopeTaskScheduler` の settle が単一 writer 前提で fencing を持たない（上記「Alarm と scheduled task」）のと対照的に、こちらは複数 writer を前提として設計する。writer 多重度は配備の選択ではなく、Cron の再入と lease recovery が構造的に生む。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
+**run の lease は fencing である。** lane の checkpoint と ack は、読んだ lease owner と lease 期限に対する条件付き更新として適用する（global D1 では `_occ_guard` の 1 文がこれを担う）。lapse した lease を 2 人が同時に奪いに行けば勝つのは 1 人で、奪われた側の checkpoint は着地しない — 着地すれば回収済み lane の cursor が巻き戻り、その表のその keyset は**その run では掃かれない**。`ScopeTaskScheduler` の settle が単一 writer 前提で fencing を持たない（上記「Scope Alarm」）のと対照的に、こちらは複数 writer を前提として設計する。writer 多重度は配備の選択ではなく、Cron の再入と lease recovery が構造的に生む。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
 
 ## 外部要求
 

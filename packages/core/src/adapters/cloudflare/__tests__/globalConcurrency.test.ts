@@ -26,6 +26,16 @@ import { statement } from "../sql/statement";
  * rival writer *between* the observed writer's read and its apply, which
  * is the one interleaving the `_occ_guard` exists for; a bare
  * `Promise.all` would just as often serialise into the read-path answer.
+ *
+ * Every store here is built over `createAutocommitSession`, and that is
+ * the only shape in which a guard defeat reaches the repository at all:
+ * a staged `write` merely buffers the mutation, so inside a unit of work
+ * the loss surfaces at commit as the default translation
+ * (`OPTIMISTIC_LOCK_FAILURE`) instead. The re-read each store runs on a
+ * guard defeat — and the answers pinned below — therefore describe the
+ * autocommit form. `AccountDeletionManifestStore.writeHeader` and
+ * `DistributedOperationStore.beginOrResume` have no autocommit caller in
+ * the app wiring today, so this file is where their loser's answer lives.
  */
 
 const T0 = new Date("2026-08-26T00:00:00.000Z");

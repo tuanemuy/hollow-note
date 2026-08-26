@@ -51,7 +51,7 @@ export const personalCleanupParticipants = {
   ),
   outbox: absent(
     "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`",
-    "#11 / the slice adding a scope outbox read side",
+    "the slice adding a scope outbox read side",
   ),
 } as const satisfies Record<
   PersonalCleanupComponent,

@@ -1,6 +1,6 @@
 # 指摘台帳 — 薄いビュー（次ラウンドのレビュアーへ）
 
-Round 001 / 002 / 003 で **wont-fix / defer / 要確認** と判定した指摘。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
+Round 001 / 002 / 003 / 004 で **wont-fix / defer / 要確認** と判定した指摘、および各ラウンドで決着させた付随判断。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
 fix 判定の全件は `triage.md` を参照。
 
 ## wont-fix
@@ -82,3 +82,27 @@ fix 判定の全件は `triage.md` を参照。
 |---|---|---|
 | `publicNoteQueryService:公開検索の並び順が canon と食い違う` | defer | #54 |
 | `CLAUDE.md:CF アダプター追加後の追随` | wont-fix（完了報告でユーザーに提案） | — |
+
+## Round 004 で決着させた付随判断（再審議しないこと）
+
+| Key | 決定 | 根拠 |
+|---|---|---|
+| `do/scopeObject.ts:constructor が再試行 alarm を消す` | **constructor は alarm を「張るだけ」にし、決して消さない**（`scopeAlarmDrivesTasks()` が真のときだけ `nextWakeAt` を読んで `armNoLaterThan`、偽なら何もしない） | 案 (a)「constructor で due index と自分のスライスを突き合わせる」は `spec/platform/index.md`「外部要求」の「`blockConcurrencyWhile` の中で external I/O を待たない」に反する。案 (b)「再試行の意思を DO storage へ永続化」は、alarm 自体が既に DO の耐久状態で、消していたのは自分のコードだけなので二重に持つだけ（schema と `spec/database/index.md` の追随まで連れてくる）。採った形は cold start で成立し、駆動する配備が残置行を拾う役目も `armNoLaterThan(nextWakeAt)` で保たれる |
+| `do/scopeObject.ts:armAndPublish の並行 publish` | **object インスタンス内で `armAndPublish` を直列化する**（`private publishing: Promise<void>` の鎖。読みも鎖の中） | スライスは全置換なので順序さえ保てば最後の publish が正しい。世代列を足す案は `scope_task_due_index` の schema と AC-9 の追随、D1 側の条件付き削除まで連れてくる。production の合成では autocommit publish が no-op なので、object 内の直列化で writer は 1 本に揃う |
+| `d1/repositories/{accountDeletionManifestStore,distributedOperationStore}.ts:guard 敗北再読みの到達範囲` | **コードは消さない／staged へ通す仕掛けも入れない。到達範囲を ADR-073 の Consequences とテストの JSDoc に書く** | `SqlSession` の契約は「同じリポジトリコードが staged と autocommit の両方で走る」で、`ConformanceBackend` は両方の形でポートを呼ぶ。消せば ADR-073 が閉じた乖離が autocommit の形で再び開く。staged 経路で到達させるには UoW commit がどの mutation が guard だったかをポートへ返す仕掛けが要り ADR-001 の範囲を越える（別 Issue） |
+| `domain/note/ports/publicNoteProjectionWriter.ts:removeForPurge の ack 契約` | **契約を実態へ倒す（JSDoc から acknowledgement の語を落とす）。memory の `publicPurgeAcks` は動かさない** | ack を読む者が両バックエンドにも適合スイートにもいないので、ADR 046 の「正本のある側」は end state での冪等性の側。実装を契約へ寄せる案は読み手のいない表を 2 つ目のバックエンドにも作り、適合スイートへケースを足す（AC-8）。memory の表除去は AC-7 のため本 PR では行わず起票へ |
+| `spec/platform/index.md:197:fencing 決着文の直し方` | **driver で場合分けして書き直し、参照先を `spec/database/index.md` の `scheduled_tasks` / `scope_task_due_index` 節へ差し替える** | 中央 runner 配備では due index が全 scope 共有なので「起動が分かれても writer は分かれない」。`spec/domains/index.md` に `ScopeTaskScheduler` 節を起こす案は #52（ADP 行欠落）の受け皿と重なるので本 PR では採らない |
+
+## 起票が必要（Round 004・未起票）
+
+| Key | 判定 | タイトル案 |
+|---|---|---|
+| `execution/globalUnitOfWork.ts:staged 敗北の guard 翻訳をポート契約の答えへ返す` | defer | UoW commit で敗れた `_occ_guard` を、その mutation を出したポートの読み経路の答えへ翻訳して返す |
+| `adapters/memory:publicPurgeAcks の死んだ表を落とす` | defer | `PublicNoteProjectionWriter.removeForPurge` の ack 契約撤回に合わせ、memory の `publicPurgeAcks` 表を落とす |
+
+## 起票済み（Round 004）
+
+| Key | 判定 | Issue |
+|---|---|---|
+| `execution/writeSet.ts:staged 経路の guard 敗北翻訳` | defer | #55 |
+| `adapters/memory:publicPurgeAcks の死んだ表` | defer（AC-7 のため本 PR では触らない） | #56 |

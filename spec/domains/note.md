@@ -617,7 +617,9 @@ type NoteProjectionEntry = Readonly<{
 - `replaceSnapshotIfNewer` はノート本体とタグ集合を丸ごと入れ替え、3 か所と FTS 索引を同一transaction/batchで更新する。関連度用の列と `note_search_tags.normalized` には `normalized` を、一覧に載る表示名の `tag_display_names` には `name` を用いる
 - `remove` は `note_search` の行・FTS 索引の行・`note_search_tags` の当該ノートの行をすべて消す
 
-**エラーケース**: `SystemError(DatabaseError)`
+**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`（結果を決めた読みと、それを適用する書きのあいだで行が動いた場合。2 つを割り込ませうるバックエンドだけが投げる。呼び出し側は補償せず、再配送が読み直して `stale` か no-op へ収束する）、`SystemError(DatabaseError)`
+
+敗北を `stale` へ畳まないのは、contentless FTS の取り消しが「読んだ行のトークンを導出し直す」形だからである。負けた writer が `stale` として黙って終わると、勝者が持っているトークンを取り消すことになる。
 
 ### NoteRouteStore / NoteMovePort（application ports）
 
@@ -665,7 +667,7 @@ interface NoteMovePort {
 }
 ```
 
-`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`の削除+ack transactionを維持する。
+`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`が3表の削除を1 transactionで確定できる配置を維持する。冪等はend state（行が消えていること）で満たし、operationへのack行は契約しない — operationは既にrouteを閉じており、比較する世代が残っていないため、再配送は同じend stateへ到達する。
 
 `resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。500 件の上限を超える入力は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない（`UserBatchReader.resolveMany` の 100 件上限と同じ契約。[domains/identity.md](./identity.md)）。
 

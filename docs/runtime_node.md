@@ -2,7 +2,7 @@
 
 Single-process runtime backed by the in-memory reference adapters (`packages/core/src/adapters/memory/`). No database, no Docker, no Cloudflare account required. The full Outbox / domain-event lifecycle (relay → consumer → pruner) runs inside the same process as the HTTP server.
 
-This is the only runtime of the walking-skeleton slice and the default: `pnpm dev` / `pnpm build` / `pnpm start` all alias to the `:node` variants. The final target — Cloudflare Workers + Durable Objects + D1 (spec/platform) — arrives as Issue #11 and swaps only the adapter + entry layers; the memory adapters remain the fast local backend held to the same port-conformance suites.
+This is the only runtime of the walking-skeleton slice and the default: `pnpm dev` / `pnpm build` / `pnpm start` all alias to the `:node` variants. The final target is Cloudflare Workers + Durable Objects + D1 (spec/platform): its adapter group (`packages/core/src/adapters/cloudflare/`) and DI wiring (`packages/core/src/application/di/cloudflareRuntime.ts`) are in place and pass the same port-conformance suites, while the deployment side — the Worker entry point, a production `wrangler` configuration (only `packages/core/wrangler.test.jsonc` exists, for the `workers` vitest project), and the Queue consumers — is not built yet. The memory adapters remain the fast local backend held to those same suites.
 
 ## Quick start
 
@@ -91,7 +91,7 @@ The share-token encryption key ring is minted fresh at process start (ephemeral 
 
 `apps/web/app/worker/node/runner.ts#createNodeWorkerRunner` is the same-process orchestrator for the roles that ship as separate Workers on Cloudflare.
 
-| Role        | Cloudflare (Issue #11)      | Node                                                                                                              |
+| Role        | Cloudflare                  | Node                                                                                                              |
 | ----------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Relay       | cron + Service Binding      | 60-second `setInterval` fallback + `InProcessRelayTrigger.kick()` from the request-path UoW (`setImmediate` fan)   |
 | Consumer    | Queue subscriber            | `InMemoryQueueDispatcher` → `dispatchDomainEvent` (`packages/core/src/application/workers/subscribers.ts`): the registry routes an event to the subscribers registered for its type, and an event nobody subscribes to is acked with a warning |
@@ -99,7 +99,7 @@ The share-token encryption key ring is minted fresh at process start (ephemeral 
 | Pruner      | crons (outbox + auth state) | 24-hour `setInterval` — plus one round at `start()` — running three mutually isolated sweeps: `pruneOutbox`, `pruneAccountDeletionManifests` (terminal deletion headers and their control-plane rows), and the 30-day `identity_removal_receipts` sweep. `pruneExpiredAuthState` is implemented and tested but **not scheduled** here — its cron / queue wiring is Issue #15 |
 | DLQ         | Dedicated Worker            | `processOutboxEvents` already logs `[outbox] quarantining event …` when `failed_at` is stamped — no separate sweep |
 
-A scope-task claim takes a lease, so a row the turn did not settle — a kind this deployment has no handler for, a row whose own `backoff` then failed — is invisible to the ticks until `SCOPE_TASK_LEASE_MS` lapses (five minutes by default), not until the next second. Both cases log as they happen, and `[scope-tasks] no handler for …` carries the row's `dueAt`: reclaiming a lapsed lease leaves `dueAt` where it was, so how far past its time that row has drifted reads off the line, while how often the line repeats only tracks the lease period. There is no surface here for the age of the oldest task across all rows — the SLO that would measure it belongs to the runtime where a crashed writer's rows outlive the writer (`spec/platform`, Issue #11).
+A scope-task claim takes a lease, so a row the turn did not settle — a kind this deployment has no handler for, a row whose own `backoff` then failed — is invisible to the ticks until `SCOPE_TASK_LEASE_MS` lapses (five minutes by default), not until the next second. Both cases log as they happen, and `[scope-tasks] no handler for …` carries the row's `dueAt`: reclaiming a lapsed lease leaves `dueAt` where it was, so how far past its time that row has drifted reads off the line, while how often the line repeats only tracks the lease period. There is no surface here for the age of the oldest task across all rows — the SLO that would measure it belongs to the runtime where a crashed writer's rows outlive the writer (`spec/platform`).
 
 `runner.start()` drives one round of the relay, the scope tasks and the pruner immediately (crash-leftover backlog, due continuations left by a previous process, and retention that must not wait a whole interval), registers the three intervals plus SIGTERM / SIGINT handlers, and returns synchronously; the timers `unref` so short-lived scripts and tests can exit naturally. Commits kick the relay and the scope-task runner out-of-band via `bindNodeRelayTrigger` / `bindNodeScopeTaskTrigger`, and concurrent kicks collapse into one in-flight tick.
 

@@ -144,9 +144,11 @@ export function createCloudflareScopeTaskScheduler(
   };
 
   // Deliberately unmerged with the overlay: a candidate has to be a row
-  // that is committed and visible to every other writer, so a row this
-  // very unit of work scheduled is not one, and one it has already
-  // staged a claim for must not be selected twice.
+  // that is committed and visible to every other writer, which is what
+  // gives the claim guard something to race over. A row this very unit
+  // of work staged is therefore not a candidate, and one it staged a
+  // claim for is still selectable — the port asks callers for a single
+  // `claimDue` per unit of work for that reason.
   const queryCandidates = async (
     now: Date,
     limit: number,

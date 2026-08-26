@@ -623,3 +623,150 @@ Round 001 / 002 の台帳と Key を突き合わせた結果、**既出（wont-f
 | Key | 判定 | 起票 Issue |
 |---|---|---|
 | `publicNoteQueryService:public 検索の並び順が spec と食い違う` | defer（canon は動かさず `.thread/11/adr.md` ADR-076 に理由を記録） | #54 |
+
+## Round 004
+
+レビュー 5 本の指摘（Blocker 2 / Warning 14 = 16 件）を重複統合したもの。総数 **13 件**（fix 13 / wont-fix 0 / defer 0 / 要確認 0）。
+束ねたのは 3 組 — `B-U01`≡`B-R01`（uow / routing が独立に検出した同一欠陥）、`W-U01`≡`W-R01`（並行 publish の上書き）、`W-R02`≡`W-C02`（`spec/platform/index.md:197` の同一段落。fencing の主張と参照先の 2 つの欠陥を 1 件として扱う）。
+
+Round 001 / 002 / 003 の台帳と Key を突き合わせた結果、**既出（wont-fix / defer 済み）の再指摘は 0 件**。`CLAUDE.md` の追随・`findPending` の順序・`publicNoteQueryService` の並び順・`readForUpdate` 事前読み・`spec/inventory` の ADP 行（#52）・`DEFAULT_MAINTENANCE_TABLES`（#16）はいずれも再指摘されていない。W-C02 の対案（`spec/domains/index.md` に `ScopeTaskScheduler` 節を起こす）は #52 の受け皿と重なるので採らず、参照先の差し替えで閉じる。
+
+fix のうち 2 件（W-I01 / W-S03）は**恒久対処を別 Issue へ送り、本 PR では正本側の記述を実態へそろえる**形で閉じる。起票が必要なものは末尾の表に置く。
+
+判定の付随決定を 4 件（B-01 の倒し方 / W-U01 の倒し方 / W-I01 の扱い / W-S03 の倒し方）、末尾の「付随決定」表に置く。
+
+### UoW / 実行機構・SQL 土台
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/scopeObject.ts:constructor が再試行 alarm を消す` | ADR-070 の republish 再試行 alarm が object 再構築時の `rescheduleAlarm` に `deleteAlarm` される（**Blocker**、uow B-001 ≡ routing B-001） | fix | コードで成立を確認した。`scopeObject.ts:85-93` は `stored !== null` なら必ず `rescheduleAlarm(ctx.storage)` を呼び、`alarm.ts:257-260` はレジストリが空（`registerScopeTaskHandler` の production 呼び出しは 0 件＝既定）なら `nextWakeAt` を読まずに `storage.deleteAlarm()` する。alarm は DO storage の耐久状態であり、これを消すコードは `rescheduleAlarm` だけなので、`armNoLaterThan` が張った 10 秒後の再試行は「evict → 任意の RPC → constructor」で失われる。しかも 10 秒アイドルは evict 閾値そのものなので、再試行の配送自体が cold start になる経路（constructor が `alarm()` の手前で消す）が通常経路になりうる。ADR-070 が塞いだのは `armAndPublish` 内の順序だけで、`rescheduleAlarm` のもう 1 つの呼び出し地点が残っていた。`dueIndex.ts:38-43` の「その再試行は配備が task を駆動するかに依存しない」と `spec/platform/index.md:201` の「レジストリが空のあいだは張り直しが Alarm の削除になる」が両立していない。`alarm.test.ts:515` は同一 live インスタンスへ `runDurableObjectAlarm` を撃つだけで constructor を再入していないため塞げていない。**倒し方は下記「付随決定」の (c′)** | 1 |
+| `do/scopeObject.ts:armAndPublish の並行 publish` | 同一 scope への並行 commit が古いスライスで新しいスライスを上書きしうる（uow W-001 ≡ routing W-001） | fix | `applyWriteSet` は `this.sql.apply()`（storage 操作＝ input gate が閉じる）のあと `armAndPublish` で **D1 binding への `await`** に入る。D1 呼び出しは当該 object の storage 操作ではないので input gate が開き、次の `applyWriteSet` が配送されうる（`lease.test.ts:170,231` が同一 object への 2 呼び出しの交錯を実測している）。`publishDueIndex` は「`scheduled_tasks` を同期 SELECT → D1 へ `DELETE + INSERT`」の read-modify-write で排他が無く、A のスライスが B のあとに着地すると B が積んだ行が索引から消える。落ちるのは B-01 と同じ**欠落方向**で、しかも publish は成功しているので ADR-070 の再試行 alarm は張られず、既定配備では回復経路が無い（次に同じ scope の `scheduled_tasks` を触る write-set が来るまで鎖が止まる）。中央 runner の claim と利用者要求由来の `schedule` が同じ scope で重なれば起きる頻度。**倒し方は下記「付随決定」** | 1 |
+
+### Identity / directory / operation
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `d1/repositories/{accountDeletionManifestStore,distributedOperationStore}.ts:guard 敗北再読みの到達範囲` | `writeHeader` / `beginOrResume` の guard 敗北再読みが production の呼び出し経路から 1 つも到達しない | fix（記録側へ倒す。恒久対処は別 Issue） | 事実関係をコードで確認した。`sql/session.ts:196-198` の staged `write` は `writeSet.stage()` を呼ぶだけで投げないので、再読みは autocommit セッションでしか走らない。`writeHeader` の配線済み 2 呼び出し（`manifestBuild.ts:138` / `compaction.ts:58`）と `beginOrResume` の唯一の呼び出し（`admission.ts:111`）はいずれも `globalUnitOfWorkProvider.run` 経由で、実際に起きるのは `globalUnitOfWork.ts:88-92` の既定翻訳（`OPTIMISTIC_LOCK_FAILURE` で UoW ごと巻き戻る）である。ただし**コードは死んでいない** — `SqlSession` の JSDoc が「同じリポジトリコードが staged / autocommit の両方で走る」ことを契約しており、`ConformanceBackend` は両方の形でポートを呼ぶ。消せば ADR-073 が閉じた乖離が autocommit の形で再び開き、`globalConcurrency.test.ts` の観測も落とすことになる。したがって**消さない／staged へ通す仕掛けも本 PR では入れない**（UoW commit 側に「どの mutation が guard だったか」を持たせる設計変更が要り、ADR-001 の範囲を越える）。正本側の穴だけを塞ぐ — ADR-073 の Consequences に到達範囲の 1 行、`globalConcurrency.test.ts` の冒頭 JSDoc に「この束は autocommit セッションで組んでいる」の限定を書く | 1 |
+
+### Routing / outbox / scope インフラ
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/platform/index.md:197:fencing 決着文と参照先` | 「引き金は 1 scope に複数 writer であって複数 worker プロセスではない」が中央 runner 配備で不成立、かつ `spec/domains/index.md` の存在しない `ScopeTaskScheduler` 節を参照している（routing W-002 ≡ composition W-002。**AC-6 に直結**） | fix | 両方とも成立を確認した。(1) 中央 runner は `scopeTaskQueue.listDue`（全 scope 共有の due index）で scope を選ぶので、runner の起動が 2 本並走すれば同じ scope を掴みうる。`scopeTaskRunner.ts` の `claimedScopes` は 1 ラウンド内の重複排除にすぎず起動をまたがない。したがって「scope が分かれていれば writer も分かれる」は Alarm driver の配備でしか言えない。claim 自体は `_occ_guard` で排他だが、AC-6 が問うているのは settle（`complete` / `backoff` / `schedule`）の fencing で、リース超過した起動 1 の `complete(kind, operationId)` が起動 2 の積んだ継続行を消す筋書きはポート JSDoc（`application/ports/scopeTaskScheduler.ts:132-147`）が既に書いている。(2) `grep -c ScopeTaskScheduler spec/domains/index.md` は 0。AC-6 の決着を canon に残すのがこの段落の役目なので、主張が事実と食い違い参照が空振りしている状態は AC-6 未達に等しい。実配備（Queue consumer / Cron ハンドラ）は plan.md「含まれないもの」なので、記述の訂正だけで閉じる | 1 |
+| `do/repositories/scopeTaskScheduler.ts:146-159:claimDue 候補読みのコメント` | コメントが「同一 unit で staged 済みの claim は 2 度選ばれない」と、コードが持たない性質を主張している | fix | `queryCandidates` が `session.query`（オーバーレイ非参照の commit 済み直読み）であることを確認（`session.ts:142`）。同一 unit で `claimDue` を 2 度呼ぶと 1 度目に staged した claim は見えず、同じ行が再選択されて同じ `ScopeTask` が 2 度返る。memory はトランザクション内の table を直接書き換えるので 2 度目は候補にならず、**バックエンド間で振る舞いが割れる**。今日の唯一の呼び出し元（`runDueScopeTasks`）は 1 unit 1 回なので実害は無い。コメントの前半（候補は他の writer から見えている commit 済み行でなければならない）だけを残し、割れている前提はポート JSDoc 側へ「1 つの unit of work で `claimDue` を複数回呼ばない」として 1 行で明記する（ADR 046 の「正本のある側へ倒す」。memory も適合スイートも動かない） | 1 |
+
+### Scope business / 投影・全文検索 / R2
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `projection/snapshotWriter.ts:redactAuthor + do/repositories/noteProjection.ts:bump の割り込み観測` | OCC guard を持つ 2 経路に割り込みテストが無く、guard を外しても全テストが緑 | fix | どちらも JSDoc が具体的な失敗像で guard の必要性を主張している（ADR-050 / 投影 revision の lost update）のに、`projectionConcurrency.test.ts` が pin しているのは `replaceSnapshotIfNewer` / `removeIfNewer` / 初回 insert の 3 経路だけであることを確認。memory は単一スレッドなので共有適合スイートは原理的にこの割り込みを観測できず（AC-4 が「適合スイートが観測できない driver 固有の性質」として置いた枠そのもの）、`bump` は scope DO の 2 RPC（read → applyWriteSet）にまたがるので実際に割り込みうる。既存の `interposeOnce` をそのまま使え、適合スイート本体に触れないので AC-8 の手続きは不要 | 1 |
+| `__tests__/deleteFilesByOwner.test.ts:56 のコメントと ADR 056` | AC-5 テストの冒頭コメントが「実測値は予算文書に属さない」と決定 3 を根拠に主張し、決定 2 に従って実測値を載せた `spec/platform/index.md:155` と正反対 | fix | 原文で確認した。`spec/platform/index.md:155` は Round 003 で決定 2 どおりに直っており（`4n + 3` を本文に持ち、届かないバックエンドの話だけを ADR へ送る）、テストコメントだけが逆を言っている。canon と実装コメントが同じ論点で食い違って残ると、次に触る人がどちらを正とするか判断できない。当該 2 文を「予算文書が設計目標として持つ `4n + 3` をこのファイルが実測で pin する（ADR 056 決定 2）」へ直し、決定 3 への言及を落とす | 1 |
+| `domain/note/ports/publicNoteProjectionWriter.ts:44:removeForPurge の ack 契約` | ポート JSDoc の「acknowledged under the operation」を D1 は実装せず、memory の ack 表は誰も読まない | fix（契約を実態へ倒す） | 三者不整合を確認した。D1 実装は `operationId` / `routeVersion` / `projectionRevision` を 1 つも使わず行を消すだけ、memory の `publicPurgeAcks` は `store.ts:422` の宣言と `noteProjection.ts:219` の書き込みだけで**読み手が 0 件**、適合スイート `ADP-note-032` は「2 回呼んでも失敗しない」しか見ない。ADR 046 の「正本のある側へ倒す」に照らすと、観測者のいない ack を契約語として残す理由が無い。**ポート JSDoc を「冪等性は end state で満たし、別途の acknowledgement 行は契約しない」へ直す**。memory の死んだ表を落とす案は採らない — `adapters/memory/` の変更は AC-7 が禁じている。表の除去は別 Issue へ送る（下表） | 1 |
+| `search/highlight.ts:72:mapPositions の正規化コスト` | 未認証の公開検索 1 ページで書記素クラスタ単位の NFKC 正規化が最大 16 万回 | fix | `mapPositions` が `clusters.segment(source)` の 1 クラスタごとに `normalizeForSearch`（`bigram.ts:48` の `normalize("NFKC").toLowerCase()`）を呼ぶことを確認。`bodyHighlights` は `substr(text, 1, 4000)` に対して走り、excerpt に一致が無かった行は全行がそうなりうるので、`limit` 20 なら 1 リクエストで 4,000 × 20 × 2 呼び出し。`spec/database/index.md:966` の 4,000 文字上限は**転送量**の根拠であって CPU の見積もりはどこにも無く、`searchPublic` はサインイン不要の経路（ADR 063）。1 コードユニットで `< 0x80` のクラスタは NFKC が恒等・`toLowerCase` が長さを変えないので、ASCII 速路は写像の意味を 1 ビットも変えない。全文正規化での事前フィルタは採らない（クラスタ境界を跨ぐ合成で取りこぼす方向にずれる） | 1 |
+
+### 合成・スキーマ・テストハーネス・spec/docs
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/domains/note.md:620:投影 writer のエラーケース行` | 2 ポートの JSDoc だけ `OPTIMISTIC_LOCK_FAILURE` へ広げ、spec のエラーケース行が `SystemError(DatabaseError)` のまま | fix | 原文で確認した（`spec/domains/note.md:620` は `**エラーケース**: SystemError(DatabaseError)`）。ADR-068 が広げた契約が canon に着地していない。同じ PR が `spec/domains/identity.md:482` は JSDoc に合わせて書き換えており、他ドメインの同種の節（`usage.md:158` / `storage.md:262` / `note.md:423`）はいずれもエラーケース行に `ConflictError("OPTIMISTIC_LOCK_FAILURE")` を並べているので、この節だけが例外になる。AC-9 の「spec の持ち分を変えた決定は反映されている」に直接効く | 1 |
+| `spec/database/index.md:14:FOREIGN KEY を置かない決定が canon に無い` | 物理制約の指示として読める規約が残り、両バックエンドの DDL は FK を 1 本も置かない | fix | `0001_global_schema.sql:11-18` と `do/schema.ts:39-40` が FK を置かないこと、`spec/database/index.md:14` の共通の規約が「同じ database / domain の親子は原則 `ON DELETE CASCADE`」と物理制約の指示として書かれ、各表の「制約」列にも `FK → …` が入っていることを確認。理由は `.thread/11/adr.md` ADR-006 にあり AC-9 の逃げ道は満たすが、`.thread/` は canon ではない。同じ PR が隣接項目（scope 検証）と「制約」列の実効性（ADR-077）は実装に合わせて書き換えているので、ここだけ非対称。ADR-006 の決定文を規約 1 文として canon 語へ落とす（列の「制約」列は動かさない） | 1 |
+| `docs/runtime_node.md + application/cleanup/*.ts:着地済みの #11 を未来形で指す参照` | スライスが着地したのに `#11` を「これから来る」ものとして指す記述が本番ソースと docs に残る | fix | 4 か所を確認した。`docs/runtime_node.md:5`（「arrives as Issue #11 and swaps only the adapter + entry layers」）/ `:94` の表見出し / `:102`、`personalCleanup.ts:92`（「a backend that can hold several exists — #11」）、`participants.ts:54`（`"#11 / the slice adding a scope outbox read side"`）。README は本 PR で現在形へ直っているので docs 側だけが取り残されている。`personalCleanup.ts` の待っていた条件（1 scope に複数 barrier receipt を保持できるバックエンド）は CF の `ScopeCleanupAdmissionStore` の到着で満たされ、`participants.ts` の `#11` は scope outbox の読み側を足さずに閉じたので誤誘導になる。ADR-052（本番ソースから作業記録への参照を全廃する）と同じ向き | 1 |
+| `spec/inventory/*.md:3:最終同期の日付` | 行を書き換えたのに「最終同期」日付が 1 日前のまま | fix | `adapter.md` / `domain.md` / `test.md` / `usecase.md` が `2026-08-25`、`frontend.md` が `2026-08-16` であることを確認。本 PR は生成元（`spec/domains/` / `spec/testcases/` / `spec/usecases/`）と台帳の行を同じコミット群で書き換えているので、日付だけが嘘になる。行を触った 4 ファイルを `2026-08-26` にする（`frontend.md` は生成元 `spec/pages/` が未変更なので動かさない） | 1 |
+
+### 付随決定
+
+| Key | 判定 | 理由 |
+|---|---|---|
+| `B-01:再試行 alarm を cold start から守る倒し方` | **(c′) constructor は alarm を「張るだけ」にし、決して消さない** — `scopeAlarmDrivesTasks()` が真のときだけ `nextWakeAt` を読んで `armNoLaterThan` で武装し、偽のときは何もしない | 案 (a)「constructor で due index と自分のスライスを突き合わせる」は採れない — `spec/platform/index.md`「外部要求」が「DO transaction / `blockConcurrencyWhile` の中で external I/O を待たない」と明示しており、constructor の再武装はその `blockConcurrencyWhile` の中にある。案 (b)「再試行の意思を DO storage に永続化する」も採らない — alarm 自体が既に DO の耐久状態であり、消していたのは自分のコードだけなので、`_scope_identity` へ `due_index_dirty` を足すのは同じ耐久性を二重に持つだけで、schema と `spec/database/index.md` の追随（AC-9）まで連れてくる。(c′) は cold start で成立する — constructor が何も消さないので、evict 後に任意の RPC が来ても再試行 alarm は残り、配送時も constructor が `alarm()` の手前で消さない。alarm() 側は従来どおり `EMPTY_TURN` → `finally` の `armAndPublish` で publish を再試行し、成功すれば `rescheduleAlarm` が同じ turn の中で alarm を落とす（レジストリ空の配備で古い alarm が残り続けることはない）。constructor が持っていた「駆動する配備が、駆動しない配備の残した行を拾う」役目は `armNoLaterThan(nextWakeAt)` で保たれ、既に武装済みの早い alarm（＝再試行）を遅らせない。観測は「`state.abort()` で object を作り直し、次の RPC のあとも `getAlarm()` が非 null」を `alarm.test.ts` に足す |
+| `W-U01/W-R01:並行 publish の倒し方` | **object インスタンス内で `armAndPublish` を直列化する（`private publishing: Promise<void>` の鎖）** | スライスは全置換なので、順序さえ保てば最後の publish が正しい。世代を載せる案は `scope_task_due_index` に列を足し（AC-9 の追随）、D1 側の条件付き削除まで連れてくるのに対し、直列化は object 内の数行で閉じ、`spec/database/index.md` の「D1 と scope DO を 1 transaction に含めない」にも触れない。読み（`scheduled_tasks` の SELECT）も鎖の中に入るので、A の読みと B の読みが交差する経路ごと消える。production の合成では `do/repositories/scopeTaskScheduler.ts` の autocommit publish は staged 判定で no-op になるため、object 内の直列化で writer は 1 本に揃う。`dueIndex.ts` の「Replacing the whole slice … converge on the same result」に「順序は object が直列化して保つ」を書き足す。観測は並行 `applyWriteSet` 2 本のあと索引が最新スライスと一致すること |
+| `W-I01:死んでいる再読み経路の扱い` | **消さない／staged へ通す仕掛けも入れない。到達範囲を正本（ADR-073 の Consequences とテストの JSDoc）に書く。恒久対処は別 Issue** | `SqlSession` の契約は「同じリポジトリコードが staged と autocommit の両方で走る」であり、`ConformanceBackend` は両方の形でポートを呼ぶ。したがって再読みは autocommit の形では到達する生きたコードで、消せば ADR-073 が閉じた乖離がその形で再び開き、`globalConcurrency.test.ts` の 2 ケースも落ちる。staged 経路で到達させるには UoW の commit が「どの mutation が guard だったか」をポートへ返す仕掛けが要り、ADR-001（write-set は commit 時に 1 度だけ適用する）の範囲を越える。実害は「1 turn の無駄と、契約が resume と言う場面での 409」に留まり収束もするので、本 PR では記述で閉じる |
+| `W-S03:ack 契約をどちらへ倒すか` | **契約を実態へ倒す（ポート JSDoc から acknowledgement の語を落とす）。memory の `publicPurgeAcks` は動かさず別 Issue** | ADR 046 の手続きは「振る舞いの正本がどちらにあるか」で倒すこと。ここでは ack を読む者が両バックエンドにも適合スイートにも 1 人もいないので、正本は「end state での冪等性」の側にある。実装を契約へ寄せる案（D1 に ack 表を足す）は、読み手のいない表を 2 つ目のバックエンドにも作り、適合スイートへケースを足す（AC-8 の手続き）ことになる。memory の死んだ表を落とすのは筋だが `adapters/memory/` の変更は AC-7 が禁じているので、本 PR では触らず起票に回す。`spec/inventory/adapter.md:218` の ADP-note-032 行は語を変えずに済む |
+
+### fix の観点別内訳
+
+- UoW / 実行機構・SQL 土台: 2
+- Identity / directory / operation: 1
+- Routing / outbox / scope インフラ: 2
+- Scope business / 投影・全文検索 / R2: 4
+- 合成・スキーマ・テストハーネス・spec/docs: 4
+
+合計 13（wont-fix 0 / defer 0）
+
+## 修正の実行計画（Round 004）
+
+束 1〜5 は担当ファイルが重ならないので並列委譲できる。束 6 は 1〜5 の完了後に直列で走らせる（spec / ADR の追随が束 1・束 2・束 3 の結論を材料にするため）。**各束は自分が決めた判断を作業メモに残し、`.thread/11/adr.md` への追記は束 6 がまとめて行う**（Round 001〜003 と同じ規律）。
+
+### 束 1: 再試行 alarm の生存と publish の直列化
+
+- 含む指摘: `review-004-uow.md` の B-001・W-001 ／ `review-004-routing.md` の B-001・W-001（いずれも同一の 2 件）
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/do/scopeObject.ts`
+  - `packages/core/src/adapters/cloudflare/do/dueIndex.ts`（JSDoc）
+  - `packages/core/src/adapters/cloudflare/__tests__/alarm.test.ts`
+- 修正方針: constructor の `rescheduleAlarm` を「張るだけ」に置き換える — `scopeAlarmDrivesTasks()` が真のときだけ `nextWakeAt(ctx.storage)` を読み、非 null なら `armNoLaterThan` で武装する（偽なら何もしない）。constructor から `deleteAlarm` へ至る経路が消えるので、`armNoLaterThan` が張った再試行が cold start を越えて残る。`armAndPublish` は `private publishing: Promise<void>` の鎖に繋いで object インスタンス内で直列化し、`publishDueIndex` の読み（`scheduled_tasks` の SELECT）ごと鎖の中に入れる。`dueIndex.ts` の JSDoc は (i) 再試行 alarm を消す者がいなくなったこと (ii) 全置換の収束は object が publish を直列化することで保たれること、の 2 点を現在形で書く。テストは `alarm.test.ts` に 2 本 — (a) publish を落として武装したあと `runInDurableObject(stub, (_i, state) => state.abort())` で作り直し、次の RPC のあとも `getAlarm()` が非 null であること、(b) 同一 scope への並行 `applyWriteSet` 2 本のあと索引が最新スライスと一致すること。`spec/platform/index.md:201` と ADR-070 の Consequences の書き直しは束 6 へ渡す
+
+### 束 2: ポート契約と実態の突き合わせ（scope task / control plane）
+
+- 含む指摘: `review-004-routing.md` の W-003 ／ `review-004-identity.md` の W-001
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/do/repositories/scopeTaskScheduler.ts`（コメント）
+  - `packages/core/src/application/ports/scopeTaskScheduler.ts`（JSDoc 1 行）
+  - `packages/core/src/adapters/cloudflare/__tests__/globalConcurrency.test.ts`（冒頭 JSDoc）
+- 修正方針: `queryCandidates` のコメントは前半（候補は他の writer から見えている commit 済み行でなければならない）だけを残し、成り立っていない後半を落とす。割れている前提はポート JSDoc 側へ「1 つの unit of work で `claimDue` を複数回呼ばない（オーバーレイを参照しないバックエンドは同じ行を 2 度配る）」の 1 行として明記する — memory も適合スイートも動かないので AC-7 / AC-8 に触れない。`globalConcurrency.test.ts` の冒頭 JSDoc に「この束は `createAutocommitSession` でストアを組んでおり、`writeHeader` / `beginOrResume` の guard 敗北再読みはこの形でだけ到達する」の限定を書く。ADR-073 の Consequences への追記と別 Issue の起票は束 6 へ渡す
+
+### 束 3: 投影の割り込み観測と purge の ack 契約
+
+- 含む指摘: `review-004-scope.md` の W-001, W-003
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/__tests__/projectionConcurrency.test.ts`
+  - `packages/core/src/domain/note/ports/publicNoteProjectionWriter.ts`（JSDoc）
+  - `packages/core/src/adapters/cloudflare/d1/repositories/publicNoteProjection.ts`（`removeForPurge` の JSDoc を契約側の語に合わせる範囲のみ）
+- 修正方針: 既存の `interposeOnce` をそのまま使い 2 ケース足す — (a) `redactAuthor` の読みと write の間に rival の `replaceSnapshotIfNewer`（より新しい `authorVersion`）を差し込み、敗者が `ConflictError` になること・旧表示名が復活しないことを観測する、(b) scope セッションで `bump` の read と write の間に別の `bump` を差し込み、2 つの呼び出しが同じ revision を返さない（敗者が `ConflictError`）ことを観測する。適合スイート本体には触れない（AC-8 の手続き不要）。`removeForPurge` のポート JSDoc は「Idempotent purge-side removal. 冪等性は end state で満たし、別途の acknowledgement 行は契約しない」へ直す。**`adapters/memory/` は 1 行も触らない**（AC-7）。memory の `publicPurgeAcks` 除去の起票は束 6 へ渡す
+
+### 束 4: ハイライト位置写像の ASCII 速路
+
+- 含む指摘: `review-004-scope.md` の W-004
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/search/highlight.ts`
+  - `packages/core/src/adapters/cloudflare/__tests__/searchEdges.test.ts`
+- 修正方針: `mapPositions` に「1 コードユニットかつ `< 0x80` のクラスタは `normalize` を呼ばず `toLowerCase` だけ」の速路を足す（NFKC は ASCII 上で恒等、`toLowerCase` は長さを変えないので写像は不変）。JSDoc には「なぜ速路が写像を変えないか」だけを書く。`searchEdges.test.ts` に、ASCII 本文と非 ASCII 本文の双方で `bodyHighlights` の位置が速路の有無で変わらないことを固定するケースを 1 本足す（マークが元テキストの切り出しであることを見る既存の形を流用）
+
+### 束 5: テストコメントと着地済みスライスへの参照
+
+- 含む指摘: `review-004-scope.md` の W-002 ／ `review-004-composition.md` の W-004
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/__tests__/deleteFilesByOwner.test.ts`（冒頭コメント）
+  - `docs/runtime_node.md`
+  - `packages/core/src/application/cleanup/personalCleanup.ts`（コメント）
+  - `packages/core/src/application/cleanup/participants.ts`（`absent` の理由文字列）
+- 修正方針: `deleteFilesByOwner.test.ts:56` の 2 文を「予算文書（`spec/platform/index.md`「実行予算と分割単位」→「Scope DO」）が設計目標として持つ `4n + 3` を、このファイルが実測で pin する（ADR 056 決定 2）」へ直し、決定 3 への言及を落とす。`docs/runtime_node.md:5` は README と同じ現在形（adapter group と DI wiring は in place、残るのは entry point と配備設定）へ、`:94` の表見出しは `Cloudflare` から Issue 番号を外し、`:102` の「Issue #11」も同様に扱う（`#15` を指す行は動かさない）。`personalCleanup.ts:92` は「複数の barrier receipt を保持できるバックエンドが実在するので、観測を足すなら適合スイート側（ADR 046 の手続き）」へ書き換えて `#11` を外す。`participants.ts:54` は `"the slice adding a scope outbox read side"` へ縮める。**`apps/web/` と `adapters/memory/` は触らない**
+
+### 束 6: canon の追随（spec / ADR / 起票）— 束 1〜5 の後に直列
+
+- 含む指摘: `review-004-routing.md` の W-002 ≡ `review-004-composition.md` の W-002 ／ `review-004-composition.md` の W-001, W-003, W-005 ／ 束 1〜3 が渡した canon 側の持ち分
+- 触るファイル:
+  - `spec/platform/index.md`
+  - `spec/domains/note.md`
+  - `spec/database/index.md`
+  - `spec/inventory/{adapter,domain,test,usecase}.md`
+  - `.thread/11/adr.md`
+  - `.thread/11/review/triage-keys.md`
+- 修正方針:
+  - **AC-6 の決着文（W-R02 ≡ W-C02）**: `spec/platform/index.md:197` の最後の一文を driver で場合分けする — 「object Alarm が driver の配備では scope ごとに writer が分かれるので worker プロセスの多重度は引き金にならない。中央 runner が driver の配備では due index が全 scope 共有なので、**runner の起動が重ならないこと**（1 配備あたり同時 1 起動）が単一 writer 前提そのものである」。参照は `spec/domains/index.md` の存在しない節から `spec/database/index.md` の `scheduled_tasks` / `scope_task_due_index` 節へ差し替える（`:220` の run lease fencing 段落が経由する参照も同時に）。`spec/domains/index.md` に `ScopeTaskScheduler` 節を起こす案は #52 の受け皿と重なるので本 PR では採らない
+  - **再試行 alarm（束 1 の持ち分）**: `spec/platform/index.md:201` の「レジストリが空のあいだはこの張り直しが Alarm の削除になるので、既定の配備では何も起きない」を「起動時の張り直しは alarm を足すだけで消さない。レジストリが空の配備では turn が 1 行も動かさず、publish の再試行だけがそこを通る」へ。ADR-070 の Consequences に constructor 経路と (c′) の決定を書き足す
+  - **投影 writer のエラーケース（W-C01）**: `spec/domains/note.md:620` を `**エラーケース**: ConflictError("OPTIMISTIC_LOCK_FAILURE")（読みと適用のあいだに行が動いた場合。再配送が読み直して収束する）、SystemError(DatabaseError)` にする
+  - **FOREIGN KEY（W-C03）**: `spec/database/index.md:14` に「`ON DELETE CASCADE` / `RESTRICT` の記述は論理的な所有関係の宣言であり、物理制約の宣言を要求しない。親子の後始末はドメインイベントの購読者が行う」を 1 文足す（ADR-006 / ADR-077 の決定文を canon 語へ落とすだけ。列の「制約」列は動かさない）
+  - **台帳の日付（W-C05）**: `spec/inventory/{adapter,domain,test,usecase}.md:3` の最終同期を `2026-08-26` へ（`frontend.md` は生成元未変更のため動かさない）
+  - **`.thread/11/adr.md`**: 束 1〜5 の判断を追記する。少なくとも (i) constructor は alarm を消さない（B-01 の (c′)、案 (a) / (b) を退けた理由込み） (ii) object 内 publish の直列化 (iii) ADR-073 の Consequences に guard 敗北再読みの到達範囲（staged 経路は commit 時の既定翻訳のまま） (iv) `removeForPurge` の ack 契約を実態へ倒した判断と memory 側の死んだ表を残した理由（AC-7） (v) `claimDue` を 1 unit 1 回に限る旨をポート JSDoc へ書いた判断
+  - **起票（本 PR では行わず、完了報告で提示）**: 下表の 2 件を `triage-keys.md` の「起票が必要」へ記録する
+
+### 要確認の決定（メイン・Round 004）
+
+なし（本ラウンドの `要確認` は 0 件。付随決定 4 件はいずれもメインが上表で決着させた）
+
+## 起票が必要（Round 004・未起票）
+
+| Key | 判定 | タイトル案 |
+|---|---|---|
+| `execution/globalUnitOfWork.ts:staged 敗北の guard 翻訳をポート契約の答えへ返す` | defer（W-I01 の恒久対処） | UoW commit で敗れた `_occ_guard` を、その mutation を出したポートの読み経路の答えへ翻訳して返す |
+| `adapters/memory:publicPurgeAcks の死んだ表を落とす` | defer（W-S03 の memory 側。AC-7 のため本 PR では触らない） | `PublicNoteProjectionWriter.removeForPurge` の ack 契約撤回に合わせ、memory の `publicPurgeAcks` 表を落とす |

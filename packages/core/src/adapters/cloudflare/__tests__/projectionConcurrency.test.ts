@@ -5,18 +5,22 @@ import type { PublicNoteProjectionWriter } from "../../../domain/note/ports/publ
 import {
   makeProjectionEntry,
   noteId,
+  scopeOf,
   userId,
 } from "../../conformance/fixtures";
 import { createD1PublicNoteProjectionWriter } from "../d1/repositories/publicNoteProjection";
 import { createD1PublicNoteQueryService } from "../d1/repositories/publicNoteQueryService";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
+import { createScopeNoteProjectionRevisionStore } from "../do/repositories/noteProjection";
+import { createScopeStubExecutor } from "../do/scopeStub";
 import { createD1Executor } from "../sql/executor";
 import { createAutocommitSession, type SqlSession } from "../sql/session";
 import { statement } from "../sql/statement";
 
 /**
- * AC-4, the public-projection half: `events-public-projection` runs at
- * concurrency 4, so two consumers can hold the same note at once.
+ * AC-4, the projection half. The public plane is the first of the two
+ * blocks below: `events-public-projection` runs at concurrency 4, so two
+ * consumers can hold the same note at once.
  *
  * The memory backend makes read-compare-write atomic by being
  * single-threaded, so the shared suites cannot reach this interleaving —
@@ -67,6 +71,12 @@ const version = (projectionRevision: number) => ({
   routeVersion: 1,
 });
 
+const REDACTION = {
+  noteId: noteId(1),
+  createdBy: userId(1),
+  redactionVersion: 3,
+};
+
 describe("cloudflare public projection concurrency", () => {
   const executor = createD1Executor(env.GLOBAL_DB);
   const session = createAutocommitSession(executor);
@@ -79,8 +89,18 @@ describe("cloudflare public projection concurrency", () => {
   const publish = (body: string, revision: number) =>
     writer.replaceSnapshotIfNewer(snapshotOf(body), [], version(revision));
 
-  const found = async (keyword: string | null): Promise<readonly string[]> => {
-    const page = await queryService.searchPublic({
+  const publishAuthor = (displayName: string, authorVersion: number) =>
+    writer.replaceSnapshotIfNewer(
+      {
+        ...snapshotOf("四月"),
+        author: { displayName, handle: "yamada", version: authorVersion },
+      },
+      [],
+      { ...version(4), authorVersion },
+    );
+
+  const pageOf = (keyword: string | null) =>
+    queryService.searchPublic({
       keyword,
       tagNames: [],
       ownerFilter: null,
@@ -88,8 +108,12 @@ describe("cloudflare public projection concurrency", () => {
       cursor: null,
       limit: 10,
     });
-    return page.items.map((item) => item.excerpt);
-  };
+
+  const found = async (keyword: string | null): Promise<readonly string[]> =>
+    (await pageOf(keyword)).items.map((item) => item.excerpt);
+
+  const authors = async (): Promise<readonly string[]> =>
+    (await pageOf(null)).items.map((item) => item.authorDisplayName);
 
   /**
    * Structural only — it never compares the index against
@@ -176,5 +200,75 @@ describe("cloudflare public projection concurrency", () => {
     await integrityCheck();
     expect(await found(null)).toEqual(["六月の記録"]);
     expect(await found("四月")).toEqual([]);
+  });
+
+  /**
+   * The author columns are outside the FTS index, so what is at stake is
+   * the body row alone: the `UPDATE` is unconditional, and only the guard
+   * makes the three no-ops decided from the row that was read still true
+   * at commit.
+   */
+  it("refuses an author redaction whose row a rival consumer republished after it was read", async () => {
+    await publishAuthor("山田", 1);
+
+    await expect(
+      racing(() => publishAuthor("山田 太郎", 5)).redactAuthor(REDACTION),
+    ).rejects.toThrow(ConflictError);
+
+    // The rival's newer author generation stands: the stale erasure did
+    // not stamp the withdrawn name over it.
+    expect(await authors()).toEqual(["山田 太郎"]);
+    // The redelivery reads that newer row and settles on the no-op.
+    expect(await writer.redactAuthor(REDACTION)).toBe(false);
+    expect(await authors()).toEqual(["山田 太郎"]);
+  });
+});
+
+/**
+ * The counter half of AC-4. `bump` spans two RPCs to the scope object —
+ * the read and the write-set apply — so two turns on the same scope can
+ * interleave, and a lost update would hand two events the same revision
+ * and make them unorderable against each other.
+ *
+ * The scope object is namespaced per suite and never wiped, so each case
+ * takes a note of its own.
+ */
+describe("cloudflare scope projection revision concurrency", () => {
+  const session = createAutocommitSession(
+    createScopeStubExecutor(env.SCOPE_OBJECT, scopeOf(1), "revision-race"),
+  );
+  const store = createScopeNoteProjectionRevisionStore(session);
+
+  const racing = (rival: () => Promise<unknown>) =>
+    createScopeNoteProjectionRevisionStore(interposeOnce(session, rival));
+
+  it("refuses the first bump whose row a rival turn inserted after it was read", async () => {
+    const note = noteId(11);
+    const rivalRevisions: number[] = [];
+
+    await expect(
+      racing(async () => {
+        rivalRevisions.push(await store.bump(note));
+      }).bump(note),
+    ).rejects.toThrow(ConflictError);
+
+    expect(rivalRevisions).toEqual([1]);
+    // The redelivery reads what the rival left, so no two events carry 1.
+    expect(await store.bump(note)).toBe(2);
+  });
+
+  it("refuses the bump whose counter a rival turn advanced after it was read", async () => {
+    const note = noteId(12);
+    expect(await store.bump(note)).toBe(1);
+    const rivalRevisions: number[] = [];
+
+    await expect(
+      racing(async () => {
+        rivalRevisions.push(await store.bump(note));
+      }).bump(note),
+    ).rejects.toThrow(ConflictError);
+
+    expect(rivalRevisions).toEqual([2]);
+    expect(await store.bump(note)).toBe(3);
   });
 });

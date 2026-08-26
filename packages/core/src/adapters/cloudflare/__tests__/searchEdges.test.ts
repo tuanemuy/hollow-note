@@ -12,7 +12,12 @@ import {
   scopeOf,
   userId,
 } from "../../conformance/fixtures";
-import { bigramIndexText } from "../search/bigram";
+import {
+  bigramIndexText,
+  normalizeForSearch,
+  searchRunsOf,
+} from "../search/bigram";
+import { highlightBody, highlightExcerpt } from "../search/highlight";
 import { makeCloudflareConformanceBackend } from "./conformanceBackend";
 
 /**
@@ -289,5 +294,173 @@ describe("cloudflare note search edges", () => {
     expect(
       await scoped.localNoteQueryService.listMonthsWithNotes(owner(), "UTC"),
     ).toEqual([{ year: 2026, month: 3 }]);
+  });
+});
+
+const REFERENCE_CLUSTERS = new Intl.Segmenter("und", {
+  granularity: "grapheme",
+});
+
+/**
+ * The position map read the slow way — one `Intl.Segmenter` cluster at a
+ * time, each put through `normalize("NFKC").toLowerCase()`. This is the
+ * oracle the shipped map's ASCII short cut has to agree with.
+ */
+const referenceMap = (source: string) => {
+  let normalized = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (const { segment, index } of REFERENCE_CLUSTERS.segment(source)) {
+    const piece = normalizeForSearch(segment);
+    for (let i = 0; i < piece.length; i += 1) {
+      starts.push(index);
+      ends.push(index + segment.length);
+    }
+    normalized += piece;
+  }
+  return { normalized, starts, ends };
+};
+
+/** The slice of `source` the reference map puts the first match on. */
+const referenceSlice = (source: string, keyword: string): string | null => {
+  const needle = searchRunsOf(keyword)[0];
+  if (needle === undefined) {
+    return null;
+  }
+  const map = referenceMap(source);
+  const at = map.normalized.indexOf(needle);
+  if (at < 0) {
+    return null;
+  }
+  const start = map.starts[at];
+  const end = map.ends[at + needle.length - 1];
+  return start === undefined || end === undefined
+    ? null
+    : source.slice(start, end);
+};
+
+const unescapeHtml = (value: string): string =>
+  value
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&amp;", "&");
+
+const markedIn = (html: string | null): readonly string[] =>
+  html === null
+    ? []
+    : [...html.matchAll(/<mark>([\s\S]*?)<\/mark>/g)].map((match) =>
+        unescapeHtml(match[1] ?? ""),
+      );
+
+const FILLER = "lorem ipsum dolor sit amet ";
+
+describe("highlight position map", () => {
+  it.each([
+    {
+      name: "an ASCII stretch long enough to leave the segmenter",
+      source: `${FILLER.repeat(20)}the ROADMAP decision`,
+      keyword: "roadmap",
+    },
+    {
+      name: "an ASCII stretch interrupted by one non-ASCII character",
+      source: `${"café notes ".repeat(10)}the roadmap decision`,
+      keyword: "roadmap",
+    },
+    {
+      name: "an ASCII base carrying a combining mark inside the stretch",
+      source: `${FILLER.repeat(4)}café notes on the roadmap decision`,
+      keyword: "roadmap",
+    },
+    {
+      name: "a keyword the body spells as an ASCII base plus a combining mark",
+      source: `${FILLER.repeat(4)}notes from the café downstairs`,
+      keyword: "café",
+    },
+    {
+      name: "ASCII runs shorter than the bulk threshold",
+      source: "東京 plan 京都 roadmap 大阪 note",
+      keyword: "roadmap",
+    },
+    {
+      // The source spells its first character as base + U+3099; the
+      // keyword is the composed form.
+      name: "a body spelling its match with combining marks",
+      source: "がっこうの記録",
+      keyword: "がっこう",
+    },
+    {
+      name: "surrogate pairs ahead of the match",
+      source: "\u{1D54F}\u{1D550}\u{1D551} 😀😀 the roadmap decision",
+      keyword: "roadmap",
+    },
+    {
+      name: "a ZWJ sequence ahead of the match",
+      source: "👨‍👩‍👧 家族の roadmap を書く",
+      keyword: "roadmap",
+    },
+    {
+      name: "CRLF breaks inside an ASCII body",
+      source: `${"first line\r\nsecond line\r\n".repeat(4)}the roadmap decision`,
+      keyword: "roadmap",
+    },
+    {
+      name: "a full-width spelling of the keyword",
+      source: "予定：Ｒｏａｄｍａｐ を確認する",
+      keyword: "roadmap",
+    },
+    {
+      name: "a prepend character binding the ASCII unit after it",
+      source: "؀1234567890 the roadmap decision",
+      keyword: "roadmap",
+    },
+    {
+      name: "a compatibility character that NFKC expands",
+      source: `㍿ ${FILLER.repeat(3)}the roadmap decision`,
+      keyword: "roadmap",
+    },
+  ])(
+    "puts the mark where the cluster-by-cluster map does — $name",
+    ({ source, keyword }) => {
+      const expected = referenceSlice(source, keyword);
+      expect(expected).not.toBeNull();
+      expect(markedIn(highlightExcerpt(source, keyword))).toEqual([expected]);
+      expect(markedIn(highlightBody(source, keyword))).toEqual([expected]);
+    },
+  );
+
+  it("keeps NFKC and case folding one unit per unit across ASCII", () => {
+    for (let code = 0; code < 0x80; code += 1) {
+      const unit = String.fromCharCode(code);
+      // The premise of the ASCII short cut: no compatibility mapping, and a
+      // lower case that neither grows nor shrinks the unit.
+      expect(normalizeForSearch(unit)).toBe(unit.toLowerCase());
+      expect(unit.toLowerCase()).toHaveLength(1);
+    }
+  });
+
+  it("stands every ASCII unit alone as a cluster except CR before LF", () => {
+    for (let first = 0; first < 0x80; first += 1) {
+      for (let second = 0; second < 0x80; second += 1) {
+        const bound = first === 0x0d && second === 0x0a;
+        expect([
+          ...REFERENCE_CLUSTERS.segment(String.fromCharCode(first, second)),
+        ]).toHaveLength(bound ? 1 : 2);
+      }
+    }
+    // …and why the short cut still has to stop before a non-ASCII unit.
+    expect([...REFERENCE_CLUSTERS.segment("á")]).toHaveLength(1);
+  });
+
+  it("escapes everything but its own marks", () => {
+    const source = `<b>alpha & omega</b> "it's" the roadmap <script>`;
+
+    const html = highlightExcerpt(source, "roadmap");
+
+    expect(html).toBe(
+      "&lt;b&gt;alpha &amp; omega&lt;/b&gt; &quot;it&#39;s&quot; the " +
+        "<mark>roadmap</mark> &lt;script&gt;",
+    );
   });
 });

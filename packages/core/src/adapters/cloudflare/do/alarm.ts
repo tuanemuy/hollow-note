@@ -263,6 +263,30 @@ export async function rescheduleAlarm(
 }
 
 /**
+ * Arms for the rows the object already holds, and never drops an alarm.
+ *
+ * This is what a rebuilt object runs. An alarm is durable state that
+ * outlives the instance, and the one reason for it that `scheduled_tasks`
+ * cannot express is a due-index republish retry — the sole recovery path
+ * for a slice that never landed, since `listDue` reads the index alone.
+ * Deleting here would erase that retry every time an evicted object is
+ * addressed again. A deployment that drives no tasks therefore arms
+ * nothing and deletes nothing; a stale alarm it may still carry is
+ * dropped by the turn that delivers it.
+ */
+export async function armForStoredRows(
+  storage: DurableObjectStorage,
+): Promise<void> {
+  if (!scopeAlarmDrivesTasks()) {
+    return;
+  }
+  const at = nextWakeAt(storage);
+  if (at !== null) {
+    await armNoLaterThan(storage, at.getTime());
+  }
+}
+
+/**
  * Pulls the alarm forward to `atMs`, leaving an earlier one in place.
  *
  * This is for the callers that need a turn to happen for a reason the

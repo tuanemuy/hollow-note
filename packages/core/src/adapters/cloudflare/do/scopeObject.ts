@@ -11,7 +11,12 @@ import {
 } from "../sql/executor";
 import { text } from "../sql/row";
 import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
-import { armNoLaterThan, rescheduleAlarm, runScopeAlarmTurn } from "./alarm";
+import {
+  armForStoredRows,
+  armNoLaterThan,
+  rescheduleAlarm,
+  runScopeAlarmTurn,
+} from "./alarm";
 import { DUE_INDEX_REPUBLISH_DELAY_MS, dueIndexStatements } from "./dueIndex";
 import { dueIndexRowsStatement } from "./scheduledTasks";
 import {
@@ -73,6 +78,7 @@ export type ScopeObjectEnv = Readonly<{
 export class ScopeObject extends DurableObject<ScopeObjectEnv> {
   private readonly sql: SqlExecutor;
   private pinned: Readonly<{ scope: ScopeKey; key: string }> | null = null;
+  private upkeep: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: ScopeObjectEnv) {
     super(ctx, env);
@@ -88,8 +94,9 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
         // turn, and a turn needs an alarm to exist first. Rows left by a
         // deployment that drove no tasks from the object would otherwise
         // wait for the next write to this scope; one pass here closes
-        // that circle, and drops the alarm again where nothing drives it.
-        await tolerate(REARM_FAILED, () => rescheduleAlarm(ctx.storage));
+        // that circle. It only ever arms — dropping an alarm here would
+        // erase a republish retry whenever an evicted object is addressed.
+        await tolerate(REARM_FAILED, () => armForStoredRows(ctx.storage));
       }
     });
   }
@@ -152,8 +159,24 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
    * has to happen after `rescheduleAlarm` — that call drops the alarm
    * outright where this deployment drives no tasks from the object, and
    * would otherwise erase the retry.
+   *
+   * Upkeep runs one at a time. Publishing is a read of `scheduled_tasks`
+   * followed by a write to global D1, and the D1 round trip is not a
+   * storage operation — the object's input gate opens across it, so a
+   * second write-set lands and reads its own slice while the first is
+   * still in flight. Two slices then race to D1 and the older one can
+   * arrive last, dropping rows the newer one carried. Chaining the whole
+   * of upkeep, read included, is what keeps the last slice written the
+   * last slice read.
    */
-  private async armAndPublish(scope: ScopeKey): Promise<void> {
+  private armAndPublish(scope: ScopeKey): Promise<void> {
+    const done = this.upkeep.then(() => this.armAndPublishNow(scope));
+    // A rejection must not poison the chain for the next write-set.
+    this.upkeep = done.catch(() => {});
+    return done;
+  }
+
+  private async armAndPublishNow(scope: ScopeKey): Promise<void> {
     // Arming first keeps the object's self-healing independent of D1.
     await tolerate(REARM_FAILED, () => rescheduleAlarm(this.ctx.storage));
     try {

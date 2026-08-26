@@ -64,17 +64,84 @@ type PositionMap = Readonly<{
  */
 const clusters = new Intl.Segmenter("und", { granularity: "grapheme" });
 
+const CARRIAGE_RETURN = 0x0d;
+
+/**
+ * The end of the run of stand-alone ASCII units starting at `at`, which is
+ * `at` itself when the unit there is not one.
+ *
+ * A unit below 0x80 is a whole grapheme cluster on its own unless it is a
+ * CR (which binds a following LF) or the next unit is non-ASCII: every
+ * other thing that extends a cluster — combining marks, ZWJ, spacing
+ * marks, Hangul jamo, regional indicators, prepend characters — lies
+ * outside ASCII. Such a run is also fixed by NFKC and lower-cases one unit
+ * per unit, so the whole run maps onto its own lower case with each index
+ * standing for itself, and the segmenter can be skipped over it.
+ */
+const asciiRunEnd = (source: string, at: number): number => {
+  let end = at;
+  while (end < source.length) {
+    const code = source.charCodeAt(end);
+    if (code >= 0x80 || code === CARRIAGE_RETURN) {
+      break;
+    }
+    if (end + 1 < source.length && source.charCodeAt(end + 1) >= 0x80) {
+      break;
+    }
+    end += 1;
+  }
+  return end;
+};
+
+/**
+ * Shortest run worth leaving the segmenter for — re-entering it costs a
+ * slice of the remaining text, so alternating scripts must not pay that per
+ * character. The probe at the far end of the window rejects a short run in
+ * constant time, since a run this long needs every one of those units to be
+ * ASCII.
+ */
+const MIN_ASCII_RUN = 16;
+
+const longAsciiRunEnd = (source: string, at: number): number =>
+  at + MIN_ASCII_RUN <= source.length &&
+  source.charCodeAt(at + MIN_ASCII_RUN - 1) < 0x80
+    ? asciiRunEnd(source, at)
+    : at;
+
 const mapPositions = (source: string): PositionMap => {
   let normalized = "";
   const starts: number[] = [];
   const ends: number[] = [];
-  for (const { segment, index } of clusters.segment(source)) {
-    const piece = normalizeForSearch(segment);
-    for (let i = 0; i < piece.length; i += 1) {
-      starts.push(index);
-      ends.push(index + segment.length);
+  let at = 0;
+  while (at < source.length) {
+    const runEnd = longAsciiRunEnd(source, at);
+    if (runEnd - at >= MIN_ASCII_RUN) {
+      normalized += source.slice(at, runEnd).toLowerCase();
+      for (let i = at; i < runEnd; i += 1) {
+        starts.push(i);
+        ends.push(i + 1);
+      }
+      at = runEnd;
+      continue;
     }
-    normalized += piece;
+    const base = at;
+    for (const { segment, index } of clusters.segment(source.slice(base))) {
+      const start = base + index;
+      if (longAsciiRunEnd(source, start) - start >= MIN_ASCII_RUN) {
+        at = start;
+        break;
+      }
+      const piece =
+        segment.length === 1 && segment.charCodeAt(0) < 0x80
+          ? segment.toLowerCase()
+          : normalizeForSearch(segment);
+      for (let i = 0; i < piece.length; i += 1) {
+        starts.push(start);
+        ends.push(start + segment.length);
+      }
+      normalized += piece;
+      at = start + segment.length;
+    }
   }
   return { normalized, starts, ends };
 };

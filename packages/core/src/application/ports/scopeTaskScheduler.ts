@@ -77,6 +77,10 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * lapsed lease — so that only the writer whose predicate still matches
  * takes the row. Exclusivity stops at the claim.
  *
+ * Call `claimDue` at most once per unit of work. A backend that stages
+ * its writes selects candidates from committed rows, so a second call
+ * inside the same unit hands the first call's rows out again.
+ *
  * Selection is the same rule for `claimDue` and
  * `ScopeTaskQueue.listDue`; neither returns more than `limit` rows.
  * Candidates are the rows that are `pending` with `dueAt <= now` or

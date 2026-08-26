@@ -115,6 +115,46 @@ const indexedOf = async (scopeId: string): Promise<string[]> => {
   return indexed.results.map((row) => row.operation_id);
 };
 
+/** Drops the live instance, so the next call has to construct a new one. */
+const rebuild = async (scope: ScopeKey): Promise<void> => {
+  await expect(
+    runInDurableObject(stubFor(scope), (_i, state) => {
+      state.abort();
+    }),
+  ).rejects.toThrow(/abort/);
+};
+
+const D1_STALL_MS = 50;
+
+/**
+ * Holds the object's first due-index batch back and records the order the
+ * batches reach D1 in. That is what stages the overlap: a publish issued
+ * later has to overtake one still in flight for the older slice to land
+ * last.
+ */
+const stallFirstPublish = (instance: unknown): number[] => {
+  const holder = instance as { env: { GLOBAL_DB: D1Database } };
+  const real = holder.env.GLOBAL_DB;
+  const landed: number[] = [];
+  let issued = 0;
+  holder.env = {
+    GLOBAL_DB: {
+      prepare: (sql: string) => real.prepare(sql),
+      batch: async (statements: D1PreparedStatement[]) => {
+        issued += 1;
+        const seq = issued;
+        if (seq === 1) {
+          await new Promise((resolve) => setTimeout(resolve, D1_STALL_MS));
+        }
+        const result = await real.batch(statements);
+        landed.push(seq);
+        return result;
+      },
+    } as unknown as D1Database,
+  };
+  return landed;
+};
+
 /** Hides the due index for one write, so the publish that follows fails. */
 const withPublishBroken = async (run: () => Promise<void>): Promise<void> => {
   await env.GLOBAL_DB.exec(
@@ -535,6 +575,70 @@ describe("scope alarm", () => {
     expect(await indexedOf("user-publish-heals")).toEqual(["op-heal"]);
     // The turn itself drove nothing, so the retry leaves nothing behind.
     expect(await armedAt(scope)).toBeNull();
+  });
+
+  /**
+   * That retry lives in durable storage rather than in the instance, and
+   * an idle object is evicted within seconds — so the rebuild any later
+   * call triggers must leave it standing. The default deployment is where
+   * it matters: the registry is empty, so no row of `scheduled_tasks` can
+   * ask for that alarm on its own once it is gone.
+   */
+  it("keeps the republish retry alarm across a rebuild of the object", async () => {
+    const scope = scopeOf("user-publish-cold");
+    const task = {
+      kind: "due.later",
+      operationId: "op-cold",
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs: Date.now() + 3_600_000,
+    };
+
+    const before = Date.now();
+    await withPublishBroken(() => seed(scope, [task], true));
+    const after = Date.now();
+    const armed = await armedAt(scope);
+    expect(armed).toBeGreaterThanOrEqual(before);
+    expect(armed).toBeLessThanOrEqual(after + DUE_INDEX_REPUBLISH_DELAY_MS);
+
+    await rebuild(scope);
+    // A read is enough to construct the object again.
+    expect(await rowsOf(scope, "operation_id")).toHaveLength(1);
+
+    expect(await armedAt(scope)).toBe(armed);
+  });
+
+  /**
+   * A publish ends in a write to global D1, which is not a storage
+   * operation — the input gate opens across it, so a second write-set
+   * lands and reads its own slice while the first is still in flight.
+   * Slices are whole, so the last one to arrive wins: the older one must
+   * not be able to overtake the newer.
+   */
+  it("does not let an overlapping publish land an older slice", async () => {
+    const scope = scopeOf("user-publish-concurrent");
+    const dueAtMs = Date.now() + 3_600_000;
+    const taskOf = (operationId: string) => ({
+      kind: "due.later",
+      operationId,
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs,
+    });
+
+    const landed = await runInDurableObject(stubFor(scope), (instance) =>
+      stallFirstPublish(instance),
+    );
+    await Promise.all([
+      seed(scope, [taskOf("op-a")], true),
+      seed(scope, [taskOf("op-b")], true),
+    ]);
+
+    // Both publishes went through the stall, and the second waited for
+    // the first rather than overtaking it.
+    expect(landed).toEqual([1, 2]);
+    expect(await indexedOf("user-publish-concurrent")).toEqual([
+      "op-a",
+      "op-b",
+    ]);
   });
 
   it("wakes at the smaller of the earliest due_at and the earliest lease expiry", async () => {

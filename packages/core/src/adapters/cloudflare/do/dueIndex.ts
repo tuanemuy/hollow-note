@@ -40,12 +40,18 @@ export const DUE_INDEX_REPUBLISH_DELAY_MS = 10_000;
  * publish fails, and the turn that follows republishes the slice on its
  * way out. That retry does not depend on the deployment driving tasks
  * from the object: a turn with no handler registry does nothing and still
- * republishes.
+ * republishes. Nothing takes the retry away either — a rebuilt object
+ * arms and never deletes, so an eviction and the next stray read leave it
+ * standing.
  *
  * Replacing the whole slice — rather than mirroring each mutation — is
  * what makes the two paths that change tasks (a committed write-set and
  * an alarm turn's claims) converge on the same result without either
- * having to know which rows the other touched. The slice is bounded by
+ * having to know which rows the other touched. Convergence is an ordering
+ * property, so the object serializes its publishes — the read of
+ * `scheduled_tasks` included — against one another; two that overlap
+ * across the D1 round trip would otherwise let the older slice land last
+ * and drop the rows the newer one carried. The slice is bounded by
  * `dueIndexRowsStatement`, so both the row count and the JSON binding
  * this folds it into stay independent of how much work a scope holds.
  *
