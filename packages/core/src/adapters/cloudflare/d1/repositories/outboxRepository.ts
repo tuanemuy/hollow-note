@@ -71,7 +71,12 @@ const toEntry = (row: SqlRow): OutboxEntry => ({
  * the same statement that takes the lease is the one that reports what it
  * took, so two workers cannot both see a row as claimable. `pruneProcessed`
  * is one statement too, but its caller only wants a count, so it reads the
- * driver's affected-row count instead of returning the rows.
+ * driver's affected-row count instead of returning the rows. That count is
+ * the one thing the two planes do not share: only D1 reports it, so
+ * `pruneProcessed` serves the global outbox alone until the slice that
+ * relays a scope object's outbox teaches that plane's executor to count
+ * (`../../sql/executor.ts`, `applyCounted`). Nothing calls it there today —
+ * `pruneOutbox` runs on the worker container's global repository.
  */
 export function createD1OutboxRepository(
   deps: Readonly<{ session: SqlSession; clock: Clock }>,

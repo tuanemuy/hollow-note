@@ -1441,7 +1441,7 @@ ADR-036 は「1 commit = 1 `batch()` = 文数ぶんの query」を根拠に `MAX
 - 良い点: 「バッチ上限を上げた変更が静かに予算を割ることがない」という ADR-036 の謳い文句が、UoW 経由でない書きにも初めて当てはまる。
 - 良い点: prune の応答が保持期間ぶんの id ではなく 1 つの数になる。文数は 1 のまま。
 - トレードオフ: 文数超過の例外が `executor.apply` の内側で起きるようになったため、global UoW ではこれが `throwTranslated("the global unit of work", …)` を一度通る。`kind` は `SystemError(DatabaseError)` のまま変わらないが、メッセージが 1 段入れ子になる。
-- トレードオフ: `applyCounted` が optional なので、対応していない executor で `writeCounted` を呼ぶと実行時に落ちる。今日この経路を持つポートは `pruneProcessed` だけで、`refuseStaged` により global 平面の autocommit session からしか呼べない。
+- トレードオフ: `applyCounted` が optional なので、対応していない executor で `writeCounted` を呼ぶと実行時に落ちる。今日この経路を持つポートは `pruneProcessed` だけで、`applyCounted` を持つのは `createD1Executor` だけ（`refuseStaged` が保証するのは autocommit であることだけで平面は弁別しない）。したがって `pruneProcessed` は global 平面専用で、scope 平面の outbox に relay / prune を配線するスライスが `createStorageExecutor` / `createScopeStubExecutor` へ `applyCounted` ごと足す。今日 scope 平面から `pruneProcessed` を呼ぶ配線は無い（`pruneOutbox` は `WorkerContainer.outboxRepository` だけを触る）。
 
 ## ADR-064: `readRows` の `LIMIT` ガードは「結果から落ちた stored 行」で判定する
 
@@ -2156,3 +2156,83 @@ Round 001 は D1 の検索が `COUNT(DISTINCT tag) = tagNames.length` で数え�
 
 - 良い点: 同期日が「照合した日」の意味を保つ。台帳を再生成するとき、どこまでが実際に突き合わせ済みかを日付から読める。
 - トレードオフ: 「行を触ったのに日付が古い」という見た目は残り、同じ指摘が再び上がりうる。本 ADR と `review/triage-keys.md` の該当行がその答えになる。
+
+## ADR-094: object 駆動 turn の `leaseMs` は env から読み、既定値は定数のままにする
+
+### Context
+
+AC-6 は「fencing token を足さず、`leaseMs` を十分に取る運用で足りる」で決着した。その安全性は**配備が値を選べること**に全面的に依存しており、ポート JSDoc は「`leaseMs` は配備が選ぶ値」、`spec/platform/index.md`「Scope Alarm」は上下 2 つの境界が作る帯を定めている。中央 runner 側はそれが可能（`runDueScopeTasks` の `options.leaseMs`、Node 側は `SCOPE_TASK_LEASE_MS` 環境変数）だが、`ScopeObject.alarm()` だけがポートの定数を直読みしていた。`ScopeObjectEnv` は `GLOBAL_DB` しか持たず、object を driver に選んだ配備は帯の中の別の値をコードの書き換えなしには選べない。
+
+### Decision
+
+`ScopeObjectEnv` に任意の `SCOPE_TASK_LEASE_MS?: string` を足し、`alarm()` が turn ごとにそれを読む。未設定・空文字なら `SCOPE_TASK_LEASE_MS` 定数へフォールバックし、正の整数でない値は `dataIntegrityError` で拒む。
+
+- **注入点は env だけ**。Durable Object は DI コンテナから設定を受け取れず、構成が届く経路は constructor の env に限られる。値そのものは `this.env` に残るので、読みは turn ごとで足りる（`alarm()` の 1 か所）。
+- **不正値で既定へ落とさない**。黙って定数へ戻ると、配備が選んだ帯の外で turn が走っていることを誰も知らないまま lease が短すぎる／長すぎる状態になる。落ちるのは alarm turn だけで、scope のデータ面の読み書きは止まらない。
+- **検証を `application/di/env.ts` と共有しない**。共有すると adapter が DI 配線を import することになり、依存の向きが逆流する。規則（正の整数のミリ秒、未設定は定数）は 2 行で、両者の文言も揃えてある。
+
+### Consequences
+
+- 良い点: AC-6 の決着が前提にした「配備が帯から選ぶ」が、中央 runner 駆動と object 駆動の両方で成り立つ。
+- 良い点: `alarm.test.ts` の「grants the lease the deployment configured」が、既定値ではなく env の値で lease が切られることを実バインディングで観測する。定数の直読みへ戻すと赤くなる。
+- トレードオフ: 不正値は object を構築した配備の alarm turn を落とす。boot で拒む Node 側と違い、気づくのは最初の turn である。
+
+## ADR-095: scope 平面の `pruneProcessed` は未実装のままとし、canon を将来形へ倒す
+
+### Context
+
+`OutboxRepository` は 1 実装で両平面に当たるが、`pruneProcessed` だけは `session.writeCounted` → `executor.applyCounted` を通る。`applyCounted` を持つのは `createD1Executor` だけで、scope 平面の 2 つの executor（`createScopeStubExecutor` / `createStorageExecutor`）はどちらも持たない（ADR-063 が optional にした理由そのもの）。一方 `spec/database/index.md` の `outbox_events` 節は「`pruneProcessed` は plane を問わず撃つ」と**現在形で**書き、それを根拠に scope 側の部分索引を正当化していた。今日 `pruneOutbox` は `WorkerContainer.outboxRepository`（global 平面）しか触らず、適合スイートも global 平面の合成しか回さないので、この乖離を観測できる経路が無い。
+
+### Decision
+
+**(b) を採る — 実装は動かさず、canon を実態へ倒す。**
+
+- `spec/database/index.md` の当該行を「同じ実装が両 plane に当たるので、scope 平面へ prune を配線した時点で索引がそのまま効く。今日その配線を持つのは global 平面だけで、`pruneProcessed` は駆動の affected-row count を読むため scope 平面の executor が答えられるようになるまで global 平面に限られる」へ改める。部分索引を両 plane に置く決定自体は動かさない（配線の順序に索引の有無を依存させない）。
+- ADR-063 の Consequences から「`refuseStaged` により global 平面の autocommit session からしか呼べない」を落とす。`refuseStaged` が保証するのは autocommit であることだけで平面は弁別しない。
+- 同じ事実を `outboxRepository.ts` の class JSDoc へ現在形で書く（次の実装者が最初に読む場所）。
+
+(a)「`createStorageExecutor` に `applyCounted` を足し、`ScopeObject` に RPC を 1 本生やす」は採らない。scope 平面の relay / prune を配線するスライスが来るまで呼び出し元が 0 件のまま、`ScopeSqlExecutor` を組み立てる全地点（`do/scopeStub.ts`、テストの装飾 executor）に答えようのない責務を増やす。配線と同時に足すほうが、契約と利用者が同じスライスで揃う。
+
+### Consequences
+
+- 良い点: 「今日できること」と「配線した時点でできること」が canon の上で区別される。scope outbox の relay を足すスライスが、何を一緒に足すべきかを 1 か所で読める。
+- トレードオフ: `OutboxRepository` は依然「平面によって 1 メソッドだけ実行できない」実装のままである。ポート契約の上では欠落なので、scope 平面へ配線する側は `applyCounted` を同じスライスで足す義務を負う。
+
+## ADR-096: `pruneTerminal` の keyset は `operation_id` 単独として spec を実装へ倒す
+
+### Context
+
+`AccountDeletionManifestStore.pruneTerminal` は memory / D1 とも `status IN ('completed','rejected') AND retain_until <= asOf` を**絞り込みの述語**とし、順序と cursor を表キー `operation_id` だけで決めている。これは本 PR が新設した「有界な掃引 / 削除」の形そのもので、前進も冪等性も保たれる。ところが canon 側は `spec/database/index.md`（索引の役割・進行）、`spec/usecases/identity.md`、`spec/testcases/identity/deleteAccount.md`、`spec/platform/index.md`、`spec/inventory/test.md` の 6 か所が `(retainUntil, operationId)` の複合 keyset を約束したままだった。本 PR は identity 系の期限索引を新しい規約へ揃えた際、この表だけ取り残していた（Round 005 の W-I02 と同型の残り）。
+
+### Decision
+
+**spec を実装へ倒す。** 6 か所を「`operationId` keyset（`retainUntil <= asOf` は絞り込み）」へ改め、`pruneTerminal` を「有界な掃引 / 削除」の対象として同節に名指す。
+
+DDL の `account_deletion_manifests_terminal_idx (retain_until, operation_id) WHERE status IN ('completed','rejected')` は**動かさない**。この索引が与えるのは「terminal かつ保持期限を過ぎた集合」への絞り込みで、順序は与えない — `sessions_expires_idx` などと同じ位置づけであり、spec の索引欄もその言い回しへ揃えた。
+
+逆向き（実装を複合 keyset へ）は採らない。`pruneTerminal` の cursor 表現を変えると memory 実装と適合スイート（ADP-common-025）が同時に動き、AC-7 と「適合スイート本体を変更しない」の双方に触れる。ポート JSDoc は cursor の中身を規定していないので、契約の正本を裏切ってもいない。
+
+### Consequences
+
+- 良い点: 掃引・削除の keyset 規約が control plane の全表で 1 つになる。`retain_until` を索引の順序と読み違えた次の実装者が、順序を与えない索引に `ORDER BY` を寄りかからせることがない。
+- トレードオフ: 同一 `retain_until` の行が `operation_id` 順に混ざるので、「古い順に回収する」ようには見えなくなる。回収の要件は期限到達済みを 100 件ずつ前進させることだけなので、実害は無い。
+
+## ADR-097: `ConformanceBackend` の任意メンバーは両ハーネスが必ず提供する
+
+### Context
+
+`ConformanceBackend.seedMembershipEdges` は任意メンバーで、スイート側は `if (seed === undefined) { ctx.skip(); }` で 3 ケースを飛ばす（Workspace ドメインが無い今、seed できないバックエンドを排除しないための逃げ道）。`conformanceCoverage.test.ts` が固定しているのはスイート名の集合・factory の同定・全スイートの配線の 3 つで、**ケース数は固定していない**（ADR-043 の決定）。したがってどちらかのハーネスからこのメンバーが落ちると、3 ケースが静かに skip されたまま緑になり、AC-2 の「全件パス」が崩れたことを誰も観測できない。
+
+### Decision
+
+「任意メンバーを**今日はどちらのバックエンドも提供している**」を検査で固定する。
+
+- `conformanceCoverage.test.ts` が `conformance/backend.ts` から任意メンバー（`name?(`）の集合を導き、`memory` / `cloudflare` 両ハーネスの `conformanceBackend.ts` がそれぞれを実装していることを検査する。メンバーを増やしたときも自動的に両ハーネスへ要求が掛かる。
+- `cloudflare/__tests__/harness.test.ts` が、実際に組み上がった backend オブジェクトの当該メンバーが `undefined` でないことを実バインディングで観測する（テキスト検査が通る偽物を排除する）。
+
+ケース数を絶対値で固定する案は採らない（ADR-043 が「本数は絶対値、ケースは固定しない」で決着済み）。`ConformanceBackend` から `?` を外して必須にする案も採らない — 任意である理由（Workspace ドメインが無いバックエンドを排除しない）は今も有効で、必須化はポート契約ではなくハーネス契約の変更として `adapters/conformance/` 本体に触れる。
+
+### Consequences
+
+- 良い点: skip が「バックエンドが答えられない」ことの表明として残りつつ、今日答えられる 2 つが黙って答えなくなることは無くなる。
+- トレードオフ: 検査はテキストで、`conformance/backend.ts` のインターフェース宣言の書式（2 スペース字下げ + `name?(`）に依存する。書式が変われば任意メンバーの集合が空になり、その場合は集合が空であること自体を赤にしている。

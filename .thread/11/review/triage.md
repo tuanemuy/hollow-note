@@ -924,3 +924,63 @@ Round 001〜004 の台帳と Key を突き合わせた結果、**既出の判定
   - **ADR 056（W-C02）**: コンテキストへ 1〜2 文 — 「D1 / DO 実装も 1 件ごとの `findById` で版トークンを採る契約から `4n + 3` 文になり、3 文の目標は実測を経て `spec/platform/index.md` 側で `commit 1 回` へ改めた」。決定文（3 つの決定）は動かさない。
   - **`.thread/11/adr.md`**: (i) ADR-025 の直後に「ADR-026 は欠番」の 1 行（W-C05） (ii) commit 経路は alarm を消さない（W-U01 の決定と、退けた「publish 先・reschedule 後」の理由） (iii) autocommit scheduler を object 駆動配備で拒む決定と、構造的な移送を配備スライスへ送った理由（W-U04） (iv) 有界削除は述語だけ持ち越し 1 行 1 文を維持した理由（W-I03） (v) タグ名重複の契約文を JSDoc から落とした判断（W-C03） (vi) publish 鎖に合流を入れない判断とトレードオフ（W-U03、wont-fix） (vii) `spec/inventory/frontend.md` の同期日を動かさない理由（W-C06、Round 004 継承）。
   - **`triage-keys.md`**: 本ラウンドの wont-fix 2 件を追記する。**新規の Issue 起票は無い**。
+
+## Round 006
+
+レビュー 5 本の指摘（Blocker 0 / Warning 8 = 8 件）。重複束ねは無し（同じ Key を 2 人が挙げたものは 0 件）。総数 **8 件**（fix 8 / wont-fix 0 / defer 0 / 要確認 0）。**Blocker は 0 件。**
+
+Round 001〜005 の台帳と Key を突き合わせた結果、**既出の判定を継承したものは 0 件**（8 件すべて新規）。`readForUpdate` 事前読み・`findPending` の順序（#53）・`publicNoteQueryService` の並び順（#54）・`spec/inventory` の ADP 行（#52）・`DEFAULT_MAINTENANCE_TABLES`（#16）・`CLAUDE.md` の追随・`armAndPublish` の合流欠如は、いずれも再指摘されていない。
+
+指摘の内訳は「canon と実装の乖離 3 件（W-R01 / W-R02 / W-I01）」「テストが主張どおりの性質を観測していない 4 件（W-U01 / W-U02 / W-U03 / W-C01）」「作業記録の参照追随 1 件（W-C02）」で、**振る舞いを変える修正は W-R02 の 1 件だけ**である。
+
+判定の付随決定を 3 件（W-R01 の倒し方 / W-R02 の注入点 / W-I01 の DDL の扱い）、末尾の「付随決定」表に置く。
+
+### UoW / 実行機構・SQL 土台
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/scopeObject.ts:turn 出口の publish 失敗 → 再武装が観測されていない` | `withPublishBroken` を使う 4 ケースはすべて commit 経路で、turn 経路で publish を壊したケースが無い（uow W-001） | fix | **コードで成立を確認した。** `armAndPublishNow` は `turnExit` で `rescheduleAlarm`（唯一の `deleteAlarm()` 地点）を先に通すので、続く publish が落ちたときに `catch` の `armNoLaterThan` が効かなければ、その scope は索引にも載らず alarm も持たない状態で固定される — `dueIndex.ts` の JSDoc と `spec/database/index.md` が「自然回復しない唯一の方向」と名指した状態そのもの。既存 4 ケース（`alarm.test.ts:531,567,599,629`）はすべて commit 経路で、`rescheduleAlarm` を publish の後ろへ動かす将来の変更をこのファイルは止められない。既存ヘルパー（`withPublishBroken` / `armedAt` / `indexedOf`）だけで 1 ケース書ける | 1 |
+| `__tests__/unitOfWork.test.ts:391:_occ_guard が行を残さない主張が beforeEach の wipe で無条件に通る` | テスト名の「even after it has fired」は前のテストの出来事で、その効果は wipe で消えている（uow W-002） | fix | `GLOBAL_TABLES_TO_WIPE` が FTS5 以外の全 `GLOBAL_TABLES` を含み `_occ_guard` も毎テスト `DELETE FROM` されることを確認した。ケースは guard を一度も発火させずに 0 件を数えており、`occGuard()` の「実行されれば必ず `CHECK` に反する」が守られていない退行（sentinel を `SELECT 0` から `CHECK` に触れない値へ変える）を検出できない。同一テスト内で `bumpVersion` を 2 回撃って発火させてから数える形にすれば、テスト間順序にも依存しなくなる。**実測**: `occGuard` の `SELECT 0` を `SELECT 1` に変えると本ケースが赤くなる（変更前は緑のまま通る） | 1 |
+| `__tests__/alarm.test.ts:765:drops the alarm once nothing is scheduled が一度も張らない alarm の null を見ている` | `applyWriteSet([], [SCHEDULED_TASKS_TABLE])` は 0 文で `apply` が即 return し、`armForStoredRows` も `nextWakeAt() === null` で何もしない（uow W-003） | fix | 事実関係を確認した。`user-empty` はこのファイル内で他に使われない新規 scope なので、`getAlarm()` が `null` なのは「消したから」ではなく「一度も張っていないから」で、アサーションは無条件に通る。加えて Round 005 の決定で commit 経路は**そもそも alarm を消さない**ので、テスト名が主張する性質はこの経路に存在しない。「最後の行が消えた commit は alarm を残し、続く 1 回の空 turn がそれを落とす」へ組み替えると、Round 005 の決定「副作用は空 turn が 1 回走るだけ」を固定する唯一のケースにもなる | 1 |
+
+### Identity / directory / operation
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/database/index.md:180,207+usecases/identity.md:827+testcases/identity/deleteAccount.md:70:pruneTerminal の keyset` | 実装は `operation_id` 単独 keyset（`retain_until <= asOf` は絞り込み）だが canon 4 か所は複合 keyset を約束したまま（identity W-001、AC-9） | fix（spec を実装へ倒す。DDL は動かさない） | 両バックエンドの実装（`accountDeletionManifestStore.ts:768-780` / `memory/repositories/accountDeletionManifestStore.ts:467-498`）が `ORDER BY operation_id` / `operation_id > cursor` で一致し、ポート JSDoc は cursor の中身を規定していないことを確認した。これは本 PR が新設した「有界な掃引 / 削除」の形そのもので、前進も冪等性も保たれる。canon 側は指摘の 4 か所に加えて `spec/platform/index.md:218` と `spec/inventory/test.md:245` にも同じ約束が残っており、**計 6 か所**を実態へ倒す。逆向き（実装を複合 keyset へ）は `PrunePage` 相当の cursor 意味論・memory・適合スイート（ADP-common-025）が同時に動き、AC-7 と「適合スイート本体を変更しない」の双方に触れる。**DDL の扱いは下記「付随決定」** | 1 |
+
+### Routing / outbox / scope インフラ
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `d1/repositories/outboxRepository.ts:pruneProcessed が scope 平面で実行不能なのに canon が索引を正当化している` | `applyCounted` を持つのは `createD1Executor` だけなのに、spec は「plane を問わず撃つ」を現在形で書いている（routing W-001、AC-9） | fix（canon を将来形へ。実装は動かさない） | **コードで両方を確認した。** (1) `createScopeStubExecutor` / `createStorageExecutor` に `applyCounted` は無く、`createAutocommitSession.writeCounted` は無ければ `databaseError` を投げる（`sql/session.ts:132-138`）。(2) `pruneProcessed` を scope 平面から呼ぶ配線は**存在しない** — `createD1OutboxRepository` の呼び出しは production では `stageOutbox`（`save` のみ）と `createWorkerContainer`（global session）の 2 か所だけで、`pruneOutbox` は `WorkerContainer.outboxRepository` しか触らない。適合ハーネスの `ports/route.ts` も D1 session で組む。したがって今日壊れている経路は無く、canon の現在形（「plane を問わず撃つので両 plane に索引を置く」）だけが誤り。ADR-063 の「`refuseStaged` により global 平面からしか呼べない」も、`refuseStaged` が平面を弁別しない以上根拠として成立しない。**倒し方は下記「付随決定」** | 1 |
+| `do/scopeObject.ts:leaseMs が SCOPE_TASK_LEASE_MS 定数の直読み` | AC-6 の決着が配備へ委ねた唯一のつまみを object 駆動配備だけ回せない（routing W-002、AC-6） | fix | **AC-6 に直結するので裏を取った。** ポート JSDoc（`scopeTaskScheduler.ts:139-151`）は「`leaseMs` は配備が選ぶ値で、最悪ケースの turn を超え、かつ age SLO を下回らねばならない」と書き、`spec/platform/index.md`「Scope Alarm」はその 2 つの境界が作る帯を定義している。中央 runner 側は `runDueScopeTasks` の `options.leaseMs` と `SCOPE_TASK_LEASE_MS` 環境変数（`di/env.ts:44`）で帯から選べるのに、`ScopeObject.alarm()` だけが定数を直読みしており、`ScopeObjectEnv` は `GLOBAL_DB` しか持たない。つまり **AC-6 の決着（fencing token を足さない）の安全性が依存している前提が、object 駆動配備では成立していない**。今日 production に object 駆動配備が無いのは事実だが、`spec/platform` の「駆動する配備は帯から選ぶ」は object 駆動を明示的に含む。**注入点は下記「付随決定」** | 1 |
+
+### Scope business / 投影・全文検索 / R2
+
+指摘 0 件。
+
+### 合成・スキーマ・テストハーネス・spec/docs
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `adapters/__tests__/conformanceCoverage.test.ts:84-108:任意メンバーの脱落を検知できない` | `seedMembershipEdges` が落ちても 3 ケースが静かに skip されて緑のまま通る（composition W-001、AC-2 / AC-3） | fix | 事実関係を確認した。本テストが固定するのはスイート名の集合・factory の同定・全スイートの配線の 3 つで、ケース数は固定していない（ADR-043 の決定）。`seedMembershipEdges` は `ConformanceBackend` で任意（`backend.ts:133`）、スイートは `ctx.skip()` で 3 ケースを飛ばす（`accountDeletionManifestStore.ts:413,444,512`）。**なお指摘の「node 側 3 skip は memory が `seedMembershipEdges` を持たないため」は誤り** — memory も CF も実装しており（`memory/__tests__/conformanceBackend.ts:144` / `cloudflare/__tests__/conformanceBackend.ts:231`）、node の 3 skip は資格情報が無い `adapters/oauth` の実 API ケース。したがって今日の実害は無いが、**どちらのハーネスからメンバーが落ちても緑のまま通る**という穴は指摘のとおり成立する。塞ぐのは `backend.ts` から任意メンバーの集合を導いて両ハーネスに要求する検査（ADR-097）。ケース数を絶対値で固定する案は ADR-043 が決着済みなので採らない | 1 |
+| `.thread/11/testing.md:37:存在しないファイルを名指ししている` | `__tests__/conformance.test.ts` は 7 ファイルへ分割済み（composition W-002） | fix | `packages/core/src/adapters/cloudflare/__tests__/conformance/` に `{identity,directory,route,scopeBusiness,scopeInfra,projection,unitOfWork}.test.ts` の 7 本があり、単一ファイルは存在しないことを確認した。分割の判断と代替手段は ADR-031 に記録済みなので、記録の欠落ではなく参照の追随漏れ。手順自体は動くが、期待結果を字義どおり照合すると空振りする。`plan.md` / `steps.md` は計画時点の記録なので動かさない | 1 |
+
+### 付随決定
+
+| Key | 判定 | 理由 |
+|---|---|---|
+| `W-R01:scope 平面の pruneProcessed をどちらへ倒すか` | **(b) を採る — 実装は動かさず canon を将来形へ倒す**（`spec/database/index.md` の索引正当化、ADR-063 の Consequences、`outboxRepository.ts` の class JSDoc の 3 か所） | (a)「`createStorageExecutor` に `applyCounted` を足し `ScopeObject` に RPC を 1 本生やす」は、scope 平面の relay / prune を配線するスライスが来るまで**呼び出し元が 0 件**のまま、`ScopeSqlExecutor` を組み立てる全地点（`do/scopeStub.ts`、テストの装飾 executor）に責務を増やす。ADR-063 が `applyCounted` を optional にしたのは「affected-row count はドライバの応答の性質であって seam の性質ではない」からで、利用者のいない実装を先に置くのはその判断を裏返す。契約と利用者が同じスライスで揃うほうが、配線側が何を一緒に足すべきかを 1 か所で読める。部分索引を両 plane に置く決定自体は動かさない（配線の順序に索引の有無を依存させない） |
+| `W-R02:leaseMs をどこから注入するか` | **`ScopeObjectEnv` に任意の `SCOPE_TASK_LEASE_MS?: string` を足し、`alarm()` が turn ごとに読む。未設定は定数へフォールバック、不正値は `dataIntegrityError`** | Durable Object は DI コンテナから設定を受け取れず、構成が届く経路は constructor の env だけである（`di/cloudflareRuntime.ts` は object の**外**で組み立てられ、`ScopeUnitOfWorkProvider.run` のコールバックは RPC 境界を越えられない）。読みを `alarm()` に置いたのは、値が `this.env` に残るので turn ごとで足り、object の構築（＝ scope のデータ面すべて）を設定ミスで止めないため。**不正値で既定へ落とさない** — 黙って定数へ戻ると、配備が選んだ帯の外で turn が走っていることを誰も知らない。`application/di/env.ts` の `readScopeTaskTuning` を再利用する案は採らない（adapter が DI 配線を import して依存の向きが逆流する。規則自体は 2 行で、メッセージ文言は揃えてある） |
+| `W-I01:DDL の terminal 索引をどう扱うか` | **`account_deletion_manifests_terminal_idx (retain_until, operation_id) WHERE status IN ('completed','rejected')` は動かさない。spec の索引欄を「絞り込みに使う（順序は「有界な掃引 / 削除」）」へ揃える** | この索引が与えるのは「terminal かつ保持期限を過ぎた集合」への絞り込みで、順序は与えない。同じ性質を持つ identity 系の期限索引（`sessions_expires_idx` / `auth_tokens` / `identity_removal_receipts` / `login_attempts` / `oauth_flow_states`）は本 PR が既にその言い回しへ揃えており、`account_deletion_manifests` だけが取り残されていた。索引を `(operation_id)` へ組み替える案は、terminal 行への絞り込みという本来の効き目を捨てて PK 索引の重複を作るだけになる |
+
+### fix の観点別内訳
+
+- UoW / 実行機構・SQL 土台: 3
+- Identity / directory / operation: 1
+- Routing / outbox / scope インフラ: 2
+- Scope business / 投影・全文検索 / R2: 0
+- 合成・スキーマ・テストハーネス・spec/docs: 2
+
+合計 8（wont-fix / defer は 0 件）

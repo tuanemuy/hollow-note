@@ -34,7 +34,7 @@
 - **目的:** D1・Durable Objects・R2 の全アダプターが、in-memory と同一の適合スイートを実バインディングに対して全件通ることを確認する
 - **手順:**
   1. `pnpm exec vitest run --project workers --reporter=verbose`
-- **期待結果:** 失敗 0 / skip 0 で終了する。`packages/core/src/adapters/cloudflare/__tests__/conformance.test.ts` が実行され、memory 側 `packages/core/src/adapters/memory/__tests__/conformance.test.ts` が呼んでいる `describeXxxContract` と同じスイート群がすべて緑になる
+- **期待結果:** 失敗 0 / skip 0 で終了する。`packages/core/src/adapters/cloudflare/__tests__/conformance/*.test.ts`（7 ファイル）が実行され、memory 側 `packages/core/src/adapters/memory/__tests__/conformance.test.ts` が呼んでいる `describeXxxContract` と同じスイート群がすべて緑になる。集合の一致そのものは `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts` が固定する
 - **確認ポイント:** 呼ばれているスイート名の集合が memory 側と一致すること（片方だけ呼ばれていないスイートがないこと）。`todo` / `skip` / `it.skipIf` で回避されたケースが 0 件であること。バインディングが実物であること（出力に miniflare / workerd 由来の起動があり、in-memory 実装へ読み替えられていないこと）
 
 ### 2. 適合スイート呼び出し集合の一致（スタブ・部分実装の検出）

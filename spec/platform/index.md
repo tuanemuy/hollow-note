@@ -192,7 +192,7 @@ Alarm handler は次を守る。
 
 priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。
 
-リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
+リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。**帯の中のどの値を使うかは配備が選ぶ**。中央 runner が driver の配備は `SCOPE_TASK_LEASE_MS` 環境変数で、object が driver の配備は同名の scope object binding の変数で選ぶ（objectはDIから設定を受け取れず、構成が届く経路がそこしかない）。未設定なら既定値、正の整数のミリ秒でない値は turn を落とす — 黙って既定へ戻すと帯の外でturnが走っていることを誰も知らないまま進む。
 
 **1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[database/index.md](../database/index.md) の `scheduled_tasks`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。
 
@@ -215,7 +215,7 @@ priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOと
 
 Cron は scope object を全列挙しない。scope-local cleanup は必ず Alarm で起動する。
 
-global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`(retainUntil, operationId)` keysetで100件ずつ回収する。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
+global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`operationId` keysetで100件ずつ回収する（`retainUntil <= asOf`は絞り込み）。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
 
 auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。
 

@@ -13,7 +13,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **楽観ロック**: 集約ルートのテーブルは `version integer NOT NULL DEFAULT 0` を持つ。更新は `WHERE version = :expected` で行い、0 行なら `ConflictError("OPTIMISTIC_LOCK_FAILURE")`
 - **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない。**この `ON DELETE CASCADE` / `RESTRICT` は論理的な所有関係の宣言であり、物理制約としての `FOREIGN KEY` 宣言を要求しない** — 親子の後始末はドメインイベントの購読者と bounded continuation が行い、削除はどちらの場合も明示の手順として書かれる。各表の「制約」列に並ぶ `FK → …` も同じ宣言であって、DDL の `FOREIGN KEY` を意味しない
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
-- **有界な掃引 / 削除**: 期限切れの回収（`deleteExpired`）と旧世代の回収（`deleteOlderEpochByUser` / `deleteByUserAndPurpose`）は、いずれも**表キー順**に 1 回最大 100 件で進む。`expires_at <= now` や `auth_epoch < current` は**絞り込みの述語であって順序ではない**（正本は `PrunePage` とポート契約。[ADR 026](../adr/026-port-contract-and-conformance.md)）。したがって (`expires_at`, key) の索引が与えるのは期限切れ集合への絞り込みだけで、ページの順序は与えない。keyset の cursor も表キーの値である
+- **有界な掃引 / 削除**: 期限切れの回収（`deleteExpired` / `pruneTerminal`）と旧世代の回収（`deleteOlderEpochByUser` / `deleteByUserAndPurpose`）は、いずれも**表キー順**に 1 回最大 100 件で進む。`expires_at <= now` / `retain_until <= asOf` や `auth_epoch < current` は**絞り込みの述語であって順序ではない**（正本は `PrunePage` とポート契約。[ADR 026](../adr/026-port-contract-and-conformance.md)）。したがって (`expires_at`, key) の索引が与えるのは期限切れ集合への絞り込みだけで、ページの順序は与えない。keyset の cursor も表キーの値である
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
 - **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
@@ -177,7 +177,7 @@ UserId shardに置く。header と item は別表とする。itemは1 manifest�
 | `terminal_at` | integer | NULL可。terminalへ移す遷移が入れる（DB制約は置かず状態機械が守る） |
 | `retain_until` | integer | NULL可。同じ遷移が`terminal_at + 120日`を入れる（同上） |
 
-- indexes: `UNIQUE(user_id) WHERE status NOT IN ('completed','rejected')`でrunning manifestを1件にする。`(retain_until, operation_id) WHERE status IN ('completed','rejected')`が回収の走査順
+- indexes: `UNIQUE(user_id) WHERE status NOT IN ('completed','rejected')`でrunning manifestを1件にする。`(retain_until, operation_id) WHERE status IN ('completed','rejected')`は保持期限を過ぎたterminal headerの集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 - `request_key`は持たない。同じ要求の再生を弾くのは`distributed_operations`の`UNIQUE(kind, partition_key, request_key)`であり、要求鍵の正本を2つ置かない
 - terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）
 
@@ -204,7 +204,7 @@ UserId shardに置く。header と item は別表とする。itemは1 manifest�
 
 #### 進行
 
-membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。itemのcompactはstatusを動かさず、`built`（成功）または`rollingBack`（rollback完了）のまま100件ずつ進める。縮約中であることは header の列ではなく **item 行の残数**が持つ状態であり、header に専用の値を足さない。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`retain_until = terminal_at + 120日`を設定する。`(retain_until, operation_id) WHERE status IN ('completed','rejected')` indexから1command最大100件でterminal headerを回収し、`building` / `built` / `rollingBack` headerは対象外にする。
+membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。itemのcompactはstatusを動かさず、`built`（成功）または`rollingBack`（rollback完了）のまま100件ずつ進める。縮約中であることは header の列ではなく **item 行の残数**が持つ状態であり、header に専用の値を足さない。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`retain_until = terminal_at + 120日`を設定する。terminal headerの回収は`status IN ('completed','rejected') AND retain_until <= asOf`で絞り、`operation_id`順に1command最大100件で進む（上記「有界な掃引 / 削除」）。`building` / `built` / `rollingBack` headerは対象外にする。
 
 ### global_maintenance_runs
 
@@ -1068,7 +1068,7 @@ domain event の送信箱と、消費側の重複排除表。**両 plane に同�
 | `claimed_at` / `claimed_by` | integer / text | NULL可。lease の持ち主 |
 | `last_error` | text | NULL可 |
 
-- indexes: (`created_at`, `id`) `WHERE processed_at IS NULL` が relay の claim 走査、(`processed_at`) `WHERE processed_at IS NOT NULL` が prune の走査。**部分索引はどちらも両 plane に置く** — `pruneProcessed` は plane を問わず `processed_at IS NOT NULL AND processed_at < ?` を撃つので、片側だけ索引が無いと同じリポジトリが plane によって全表走査になる
+- indexes: (`created_at`, `id`) `WHERE processed_at IS NULL` が relay の claim 走査、(`processed_at`) `WHERE processed_at IS NOT NULL` が prune の走査。**部分索引はどちらも両 plane に置く** — 同じリポジトリ実装が両 plane の `outbox_events` に当たるので、`processed_at IS NOT NULL AND processed_at < ?` の走査は scope 平面へ prune を配線した時点でそのまま効く。今日その配線を持つのは global 平面だけで、`pruneProcessed` は駆動の affected-row count を読むため scope 平面の executor がそれを答えられるようになるまで global 平面に限られる
 - `processed_events` は本書「物理配置」が定める (`consumer`, `event_id`) PK と `processed_at` NOT NULL だけを持ち、索引を追加しない。読みは常に PK の等値である
 
 #### _occ_guard

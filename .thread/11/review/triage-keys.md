@@ -1,6 +1,6 @@
 # 指摘台帳 — 薄いビュー（次ラウンドのレビュアーへ）
 
-Round 001 / 002 / 003 / 004 / 005 で **wont-fix / defer / 要確認** と判定した指摘、および各ラウンドで決着させた付随判断。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
+Round 001 / 002 / 003 / 004 / 005 / 006 で **wont-fix / defer / 要確認** と判定した指摘、および各ラウンドで決着させた付随判断。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
 fix 判定の全件は `triage.md` を参照。
 
 ## wont-fix
@@ -118,3 +118,14 @@ fix 判定の全件は `triage.md` を参照。
 | `do/repositories/scopeTaskScheduler.ts:autocommit publish の非対称` | **object 駆動配備（`scopeAlarmDrivesTasks()` が真）では autocommit 経路を `databaseError` で拒む＋ JSDoc の前提条件を明示** | 構造的な移送（autocommit session が touched tables を集めて `applyWriteSet` を呼び、publish を object の 1 本に寄せる）は `sql/session.ts` / `sql/executor.ts` / `do/scopeStub.ts` / scheduler の依存 / `di/cloudflareRuntime.ts` / 適合ハーネスまで連鎖し、Blocker ゼロの収束ラウンドで開く範囲としては大きい。拒否はレジストリを読む 3 行で、production（`registerScopeTaskHandler` の呼び出し 0 件）でも適合ハーネスでも発火しないことを確認済み。移送は配備スライスの持ち分 |
 | `d1/repositories/identitySupport.ts:有界削除をどこまで直すか` | **選択述語を各 `DELETE` へ持ち越す。1 行 1 文は維持する** | 共通の規約が禁じているのは 1 文にバインド変数を件数ぶん並べること（上限 100）であり、1 文 1 変数の別々の文は触れない。`json_each` 1 文へ畳むと `remove()` のオーバーレイ（同一 UoW の read-your-writes）を捨て、「今日の呼び出し形では読み戻さない」に正しさを寄りかからせることになる。文数は `MAX_STATEMENTS_PER_COMMIT = 250` が既に見ている |
 | `domain/note/ports/{local,public}NoteQueryService.ts:タグ名重複の契約文` | **ポート JSDoc から契約文を落とし、実装コメント（`projection/searchClauses.ts` の `tagFilterBindings`）に残す。適合スイート・memory・`spec/domains/note.md` は触らない** | ADR 026 / AC-8 は「契約はポート JSDoc と適合スイートの両方に降ろす」を求めるので、片側だけの状態は解消が要る。本 PR は「適合スイート本体を変更しない」を通しており（#48 も同じ理由）、両バックエンドが今日同じ答えを返す以上、収束ラウンドで AC-8 の手続きを開く価値が無い。契約化したいなら適合スイート＋両バックエンドを同時に動かす別 Issue |
+
+## Round 006 で決着させた付随判断（再審議しないこと）
+
+| Key | 決定 | 根拠 |
+|---|---|---|
+| `d1/repositories/outboxRepository.ts:scope 平面の pruneProcessed` | **実装は動かさず canon を将来形へ倒す** — `spec/database/index.md` の索引正当化・ADR-063 の Consequences・`outboxRepository.ts` の class JSDoc を「scope 平面へ prune を配線した時点で効く。`applyCounted` はその配線と同じスライスで足す」へ | scope 平面の 2 executor に `applyCounted` が無いのは ADR-063 の意図（affected-row count はドライバの応答の性質）で、`pruneProcessed` を scope 平面から呼ぶ配線は今日 0 件（`pruneOutbox` は `WorkerContainer.outboxRepository` のみ、適合ハーネスも D1 session）。利用者の無い実装を先に置くと `ScopeSqlExecutor` の全組み立て地点に責務だけが増える。詳細は `.thread/11/adr.md` ADR-095 |
+| `do/scopeObject.ts:leaseMs の注入点` | **`ScopeObjectEnv` の任意 `SCOPE_TASK_LEASE_MS?: string` を `alarm()` が turn ごとに読む。未設定は定数、不正値は `dataIntegrityError`** | Durable Object は DI から設定を受け取れず env が唯一の経路。不正値で既定へ落とすと帯の外で turn が走っていることを誰も知らない。`di/env.ts` の `readScopeTaskTuning` 再利用は adapter → DI 配線の逆流なので採らない。詳細は ADR-094 |
+| `spec/database/index.md:180:account_deletion_manifests の terminal 索引` | **DDL は動かさない。spec の索引欄を「期限到達済み terminal 集合への絞り込みに使う（順序は「有界な掃引 / 削除」）」へ揃える** | 索引 `(retain_until, operation_id)` は絞り込みに効き順序は与えない。identity 系の期限索引は本 PR で既に同じ言い回しへ揃っており、この 1 表だけが取り残されていた。`(operation_id)` へ組み替える案は terminal 絞り込みを捨てて PK 索引を重複させるだけ。詳細は ADR-096 |
+| `adapters/conformance/backend.ts:任意メンバーの扱い` | **任意メンバーは「今日はどちらのバックエンドも提供している」を検査で固定する**（`conformanceCoverage.test.ts` が `backend.ts` から集合を導き両ハーネスに要求、`harness.test.ts` が実オブジェクトで観測） | ケース数の絶対値固定は ADR-043 が決着済みで採らない。`?` を外して必須にする案は `adapters/conformance/` 本体の変更にあたり、任意である理由（Workspace ドメインが無いバックエンドを排除しない）も今なお有効。詳細は ADR-097 |
+
+**Round 006 の wont-fix / defer は 0 件、新規の Issue 起票も 0 件**（8 件すべて fix）。

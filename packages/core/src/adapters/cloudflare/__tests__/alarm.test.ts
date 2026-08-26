@@ -25,10 +25,11 @@ import { createCloudflareScopeTaskScheduler } from "../do/repositories/scopeTask
 import { scheduleStatement } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { scopeObjectName } from "../do/scopeName";
+import type { ScopeObjectEnv } from "../do/scopeObject";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import { int, text } from "../sql/row";
 import { createAutocommitSession } from "../sql/session";
-import { statement } from "../sql/statement";
+import { type SqlRow, statement } from "../sql/statement";
 
 /**
  * Backend-local observations of the scope Alarm turn
@@ -124,6 +125,16 @@ const rebuild = async (scope: ScopeKey): Promise<void> => {
       state.abort();
     }),
   ).rejects.toThrow(/abort/);
+};
+
+/**
+ * Rewrites the live instance's env, standing in for a deployment that
+ * configured the object differently. Its own env is the only channel a
+ * Durable Object has for that.
+ */
+const withLeaseMs = (instance: unknown, leaseMs: string): void => {
+  const holder = instance as { env: ScopeObjectEnv };
+  holder.env = { ...holder.env, SCOPE_TASK_LEASE_MS: leaseMs };
 };
 
 const D1_STALL_MS = 50;
@@ -580,6 +591,44 @@ describe("scope alarm", () => {
   });
 
   /**
+   * The exit of a turn is the one place that drops the alarm, so it is
+   * also the one place a failed publish has nothing left to lean on: the
+   * drop has already happened when the publish is attempted. The retry
+   * it arms is what keeps the scope from ending up neither in the index
+   * nor holding an alarm.
+   */
+  it("re-arms after a publish that failed at the exit of a turn", async () => {
+    const scope = scopeOf("user-publish-turn");
+    const task = {
+      kind: "due.later",
+      operationId: "op-turn",
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs: Date.now() + 3_600_000,
+    };
+
+    await withPublishBroken(() => seed(scope, [task], true));
+    expect(await armedAt(scope)).not.toBeNull();
+
+    // The turn drives nothing (empty registry), so its exit drops the
+    // alarm before publishing — and this publish fails too.
+    const before = Date.now();
+    await withPublishBroken(async () => {
+      expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    });
+    const after = Date.now();
+
+    expect(await indexedOf("user-publish-turn")).toEqual([]);
+    const rearmed = await armedAt(scope);
+    expect(rearmed).not.toBeNull();
+    expect(rearmed).toBeGreaterThanOrEqual(before);
+    expect(rearmed).toBeLessThanOrEqual(after + DUE_INDEX_REPUBLISH_DELAY_MS);
+
+    // And that retry still heals the drift when the index comes back.
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    expect(await indexedOf("user-publish-turn")).toEqual(["op-turn"]);
+  });
+
+  /**
    * That retry lives in durable storage rather than in the instance, and
    * an idle object is evicted within seconds — so the rebuild any later
    * call triggers must leave it standing. The default deployment is where
@@ -762,20 +811,47 @@ describe("scope alarm", () => {
     expect(wake?.getTime()).toBe(now.getTime() + 60_000);
   });
 
-  it("drops the alarm once nothing is scheduled", async () => {
-    register("anything", noop);
+  /**
+   * The commit that empties `scheduled_tasks` only ever arms, so the
+   * alarm it leaves behind outlives the last row — and the empty turn
+   * that follows is what drops it. That one spare turn is the whole
+   * price of keeping the drop at the exit of a turn.
+   */
+  it("keeps the alarm when the last row is completed and drops it on the empty turn", async () => {
+    register("due.later", noop);
     const scope = scopeOf("user-empty");
-    const executor = createScopeStubExecutor(
+    // An hour out, so workerd cannot deliver it while the test is still
+    // setting up and race the delivery under observation.
+    const dueAtMs = Date.now() + 3_600_000;
+    await seed(
+      scope,
+      [
+        {
+          kind: "due.later",
+          operationId: "op-last",
+          priority: ScopeTaskPriority.outboxRelay,
+          dueAtMs,
+        },
+      ],
+      true,
+    );
+    expect(await armedAt(scope)).toBe(dueAtMs);
+
+    // Completing the last row is an ordinary write-set that declares the
+    // table touched, exactly as `ScopeTaskScheduler.complete` does.
+    await createScopeStubExecutor(
       env.SCOPE_OBJECT,
       scope,
       NAMESPACE,
+    ).applyWriteSet(
+      [statement(`DELETE FROM ${SCHEDULED_TASKS_TABLE}`)],
+      [SCHEDULED_TASKS_TABLE],
     );
-    await executor.applyWriteSet([], [SCHEDULED_TASKS_TABLE]);
+    expect(await rowsOf(scope, "operation_id")).toHaveLength(0);
+    expect(await armedAt(scope)).toBe(dueAtMs);
 
-    const alarmAt = await runInDurableObject(stubFor(scope), (_i, state) =>
-      state.storage.getAlarm(),
-    );
-    expect(alarmAt).toBeNull();
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    expect(await armedAt(scope)).toBeNull();
   });
 
   it("arms an alarm at the committed task's due time", async () => {
@@ -799,6 +875,47 @@ describe("scope alarm", () => {
       state.storage.getAlarm(),
     );
     expect(armed).toBe(dueAtMs);
+  });
+
+  /**
+   * The lease is advisory and carries no fencing token, so the whole
+   * safety of settling rests on the deployment picking `leaseMs` out of
+   * the band `spec/platform/index.md`「Scope Alarm」defines. A turn the
+   * object drives has to honour that choice, not a compiled-in default.
+   */
+  it("grants the lease the deployment configured", async () => {
+    register("some.other.kind", noop);
+    const scope = scopeOf("user-lease-tuned");
+    const leaseMs = 90_000;
+    await seed(
+      scope,
+      [
+        {
+          kind: "nobody.handles.this",
+          operationId: "op-lease",
+          priority: ScopeTaskPriority.outboxRelay,
+          dueAtMs: Date.now() + 3_600_000,
+        },
+      ],
+      true,
+    );
+    await runInDurableObject(stubFor(scope), (instance, state) => {
+      withLeaseMs(instance, String(leaseMs));
+      state.storage.sql.exec(
+        `UPDATE ${SCHEDULED_TASKS_TABLE} SET due_at = ?`,
+        Date.now() - 1_000,
+      );
+    });
+
+    const before = Date.now();
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    const after = Date.now();
+
+    const row = (await rowsOf(scope, "status, lease_expires_at"))[0];
+    expect(row).toMatchObject({ status: "running" });
+    const leaseExpiresAt = int(row as SqlRow, "lease_expires_at");
+    expect(leaseExpiresAt).toBeGreaterThanOrEqual(before + leaseMs);
+    expect(leaseExpiresAt).toBeLessThanOrEqual(after + leaseMs);
   });
 
   it("refreshes the due index when the alarm turn claims a row", async () => {

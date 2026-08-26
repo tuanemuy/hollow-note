@@ -22,6 +22,8 @@ const CONFORMANCE_DIR = join(ADAPTERS_DIR, "conformance");
 const CALL_SITES = /^(describe[A-Za-z]*Contract)\s*\(/gm;
 const EXPORTS = /\bexport\s+function\s+(describe[A-Za-z]*Contract)\b/g;
 const FACTORIES = /\b(make[A-Za-z]*ConformanceBackend)\b/g;
+/** Members a `ConformanceBackend` may leave out — `name?(...)`. */
+const OPTIONAL_MEMBERS = /^\s{2}([a-z][A-Za-z]*)\?\(/gm;
 
 const walk = (dir: string): readonly string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -51,6 +53,11 @@ const sorted = (names: ReadonlySet<string>): readonly string[] =>
 const testFiles = walk(ADAPTERS_DIR).filter((path) =>
   path.endsWith(".test.ts"),
 );
+
+const HARNESSES = ["memory", "cloudflare"].map((backend) => ({
+  backend,
+  path: join(ADAPTERS_DIR, backend, "__tests__", "conformanceBackend.ts"),
+}));
 
 const memoryFiles = testFiles.filter((path) =>
   path.includes(`${join("memory", "__tests__")}`),
@@ -97,6 +104,30 @@ describe("port-conformance suite coverage", () => {
     expect(sorted(namesIn(cloudflareFiles, FACTORIES))).toEqual([
       "makeCloudflareConformanceBackend",
     ]);
+  });
+
+  /**
+   * An optional member is the third way to lose a contract silently: the
+   * suites that need one skip themselves when a backend does not offer
+   * it, so a harness that drops it stays green with fewer cases. The
+   * option exists for backends that genuinely cannot answer, and today
+   * both do — pinning that here is what makes dropping one a decision
+   * rather than an accident.
+   */
+  it("has every harness offer every optional backend member", () => {
+    const optional = sorted(
+      namesIn([join(CONFORMANCE_DIR, "backend.ts")], OPTIONAL_MEMBERS),
+    );
+    expect(optional).not.toEqual([]);
+    for (const harness of HARNESSES) {
+      const source = readFileSync(harness.path, "utf8");
+      for (const member of optional) {
+        expect(
+          new RegExp(`^\\s+(async\\s+)?${member}\\(`, "m").test(source),
+          `${harness.backend} must implement ${member}`,
+        ).toBe(true);
+      }
+    }
   });
 
   it("leaves no suite unwired to a backend", () => {

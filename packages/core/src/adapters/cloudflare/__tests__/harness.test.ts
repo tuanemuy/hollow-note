@@ -129,6 +129,18 @@ describe("cloudflare test harness", () => {
   });
 
   /**
+   * The suites skip the cases an optional backend member feeds rather
+   * than failing them, so a harness that stopped offering one would take
+   * three contract cases out of the run and stay green. This backend can
+   * seed membership edges — the D1 directory table is right there — so
+   * the run has to keep spending them.
+   */
+  it("offers the optional membership-edge seed the suites need", async () => {
+    const backend = await makeCloudflareConformanceBackend();
+    expect(backend.seedMembershipEdges).toBeDefined();
+  });
+
+  /**
    * The suites contract for a fresh backend per test while this pool
    * isolates storage per *file*, so two backends built here — as two
    * suites in one bundle would be — must not see each other on any of the

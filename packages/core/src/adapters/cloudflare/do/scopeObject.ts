@@ -57,7 +57,31 @@ export type ScopeObjectEnv = Readonly<{
    * `ScopeTaskQueue.listDue` has to span every scope.
    */
   GLOBAL_DB: D1Database;
+  /**
+   * Lease an alarm turn grants, in milliseconds; the `SCOPE_TASK_LEASE_MS`
+   * constant when unset. A deployment that drives tasks from the object
+   * picks the value out of the band `spec/platform/index.md`「Scope Alarm」
+   * defines, the same choice the central runner makes with the variable
+   * of this name — and an object receives configuration only through the
+   * env it is constructed with.
+   */
+  SCOPE_TASK_LEASE_MS?: string;
 }>;
+
+const leaseMsOf = (raw: string | undefined): number => {
+  if (raw === undefined || raw.trim() === "") {
+    return SCOPE_TASK_LEASE_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    // Falling back to the default would put the turn outside the band the
+    // deployment chose without saying so.
+    throw dataIntegrityError(
+      `SCOPE_TASK_LEASE_MS must be a positive integer (ms), got ${JSON.stringify(raw)}`,
+    );
+  }
+  return parsed;
+};
 
 /**
  * One scope of the data plane, as a SQLite-backed Durable Object.
@@ -139,7 +163,7 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
         storage: this.ctx.storage,
         scope: bound,
         now: new Date(),
-        leaseMs: SCOPE_TASK_LEASE_MS,
+        leaseMs: leaseMsOf(this.env.SCOPE_TASK_LEASE_MS),
       });
     } finally {
       // A turn that throws must not take the arming with it: an object

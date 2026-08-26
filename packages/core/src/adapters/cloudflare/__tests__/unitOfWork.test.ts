@@ -388,7 +388,25 @@ describe("cloudflare two-plane unit of work", () => {
     expect(row?.version).toBe(1);
   });
 
+  /**
+   * The guard aborts by violating its own CHECK, so the row it inserts
+   * can never land — the whole point of the sentinel value. A guard that
+   * left rows behind would still abort the batch, and every case above
+   * would stay green while the table grew once per lost race.
+   */
   it("leaves the guard table empty even after it has fired", async () => {
+    await run(async (ctx) => {
+      await ctx.userRepository.insert("user-1");
+    });
+    await run(async (ctx) => {
+      await ctx.userRepository.bumpVersion("user-1", 0);
+    });
+    await expect(
+      run(async (ctx) => {
+        await ctx.userRepository.bumpVersion("user-1", 0);
+      }),
+    ).rejects.toMatchObject({ code: "OPTIMISTIC_LOCK_FAILURE" });
+
     const row = await env.GLOBAL_DB.prepare(
       `SELECT COUNT(*) AS n FROM ${GLOBAL_TABLES.occGuard}`,
     ).first<{ n: number }>();

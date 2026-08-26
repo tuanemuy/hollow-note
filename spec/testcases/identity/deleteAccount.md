@@ -67,7 +67,7 @@
 | author route pageのcommit後に応答を失う | build continuationを再実行する | operation ID+NoteIdで重複せず、headerのopaque cursorから次pageへ進む | |
 | ack済みaccount manifest itemが101件ある | compactする | 100件削除してcontinuationを保存し、次turnの1件後だけheaderをcompletedにする | |
 | ack済みaccount manifest itemが1,000件ある | compactする | 10 turnに分け、各transactionを100件以下に保つ | |
-| completed/rejected account manifest headerが期限到達済みで101件ある | terminal prunerを実行する | `(retainUntil, operationId)` keysetの100+1件で回収し、`building` / `built` / `rollingBack` のheaderは残す | |
+| completed/rejected account manifest headerが期限到達済みで101件ある | terminal prunerを実行する | `operationId` keyset（`retainUntil <= asOf`は絞り込み）の100+1件で回収し、`building` / `built` / `rollingBack` のheaderは残す | |
 | terminal header 100件の削除commit後に応答を失う | prune continuationを再実行する | 同じ固定`asOf`/cursorから冪等に再開し、未回収headerを欠落させない | |
 | 32 UserId shardにterminal headerがありrunが次hourまで未完了 | 次Cronで再開する | `accountManifestPrune`の同じrun/generation/shard positionを再開し、kind全体のactive laneを最大6に保つ | |
 | UserId shardでterminal DELETE後、run checkpoint前に停止する | laneを再実行する | 同じ入力cursorのDELETEを冪等再実行し、次cursor/Queue outboxをcatalog transactionでcheckpointする | |
