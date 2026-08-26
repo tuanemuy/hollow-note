@@ -15,9 +15,9 @@
 
 - 依存の追加が入るため、まず `pnpm install`
 - Cloudflare アダプターの確認: `pnpm exec vitest run --project workers --reporter=verbose`
-  （`--project workers` は本 Issue のステップ 1 が root `vitest.config.ts` に足す vitest project。ステップ 1 完了前は存在しない）
-- 既存 Node ランタイムの確認: `pnpm exec vitest run --project node --reporter=verbose`
-- 両方まとめて: `pnpm test`（= `vitest run`）
+  （`workers` は本 Issue が root `vitest.config.ts` に足した vitest project。素の別名は `pnpm test:workers`）
+- 既存 Node ランタイムの確認: `pnpm exec vitest run --project node --reporter=verbose`（別名 `pnpm test:node`）
+- 両方まとめて: `pnpm test`（= `vitest run`。2 プロジェクトの和）
 - 静的検査: `pnpm typecheck` / `pnpm lint` / `pnpm format:check`
 - 既存アプリのブラウザ回帰: `cp apps/web/.env.example apps/web/.env` の上で `APP_URL=http://localhost:3000` と `OAUTH_DEV_MODE=true` を設定し、`pnpm dev`
 
@@ -34,8 +34,8 @@
 - **目的:** D1・Durable Objects・R2 の全アダプターが、in-memory と同一の適合スイートを実バインディングに対して全件通ることを確認する
 - **手順:**
   1. `pnpm exec vitest run --project workers --reporter=verbose`
-- **期待結果:** 失敗 0 / skip 0 で終了する。`packages/core/src/adapters/cloudflare/__tests__/conformance/*.test.ts`（7 ファイル）が実行され、memory 側 `packages/core/src/adapters/memory/__tests__/conformance.test.ts` が呼んでいる `describeXxxContract` と同じスイート群がすべて緑になる。集合の一致そのものは `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts` が固定する
-- **確認ポイント:** 呼ばれているスイート名の集合が memory 側と一致すること（片方だけ呼ばれていないスイートがないこと）。`todo` / `skip` / `it.skipIf` で回避されたケースが 0 件であること。バインディングが実物であること（出力に miniflare / workerd 由来の起動があり、in-memory 実装へ読み替えられていないこと）
+- **期待結果:** **22 ファイル / 368 passed / 0 skipped / 0 failed**（exit 0）。`packages/core/src/adapters/cloudflare/__tests__/conformance/*.test.ts`（`{directory,identity,projection,route,scopeBusiness,scopeInfra,unitOfWork}.test.ts` の 7 ファイル）が実行され、memory 側 `packages/core/src/adapters/memory/__tests__/conformance.test.ts` が呼んでいる `describeXxxContract` と同じスイート群がすべて緑になる。集合の一致そのものは `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts`（node プロジェクト側）が固定する
+- **確認ポイント:** 呼ばれているスイート名の集合が memory 側と一致すること（片方だけ呼ばれていないスイートがないこと）。`todo` / `skip` / `it.skipIf` で回避されたケースが 0 件であること。バインディングが実物であること — 出力に vitest の `|workers|` プロジェクト名が付き、`harness.test.ts` の各ケース（`env.{GLOBAL_DB,OBJECT_STORAGE,SCOPE_OBJECT}` の実在、`applyD1Migrations` 後の `sqlite_master`、DO 初回接触でのスキーマ生成、`nodejs_compat`）が緑であること。in-memory 実装へ読み替えられていないことは確認項目 2 の識別子検査が固定する
 
 ### 2. 適合スイート呼び出し集合の一致（スタブ・部分実装の検出）
 
@@ -45,8 +45,8 @@
 - **手順:**
   1. `pnpm exec vitest run --project workers --project node --reporter=verbose` の出力から、Cloudflare 側と memory 側それぞれの適合スイート由来の describe 名とケース数を数える
   2. 実装側に `throw new Error("not implemented")` / `TODO` / `FIXME` / 空実装が残っていないことを `packages/core/src/adapters/cloudflare/` に対して確認する
-- **期待結果:** Cloudflare 側と memory 側の適合スイート由来のケース数が一致する。未実装マーカーが 0 件
-- **確認ポイント:** ポート単位で欠落がないか（plan.md の 35 ポート）。適合スイート本体（`packages/core/src/adapters/conformance/`）に差分があるなら、その差分は memory 側も通していること
+- **期待結果:** Cloudflare 側と memory 側で呼ばれている適合スイートの**集合**が一致する。これは `conformanceCoverage.test.ts` が固定しており（`PERSISTENCE_SUITES = 30`、両側の呼び出し集合の一致、CF 入口が名乗る factory が `makeCloudflareConformanceBackend` の 1 種だけであること）、手順 1 の数え上げはその裏取りとして使う。ケース数の絶対値は意図的に固定していないので、数がスイート追加で動くこと自体は失敗ではない。未実装マーカーが 0 件
+- **確認ポイント:** ポート単位で欠落がないか（plan.md の 35 ポート）。適合スイート本体（`packages/core/src/adapters/conformance/`）は本 Issue では 1 行も変更していない見込みなので、まず `git diff origin/main...HEAD -- packages/core/src/adapters/conformance/` が空であることを確認する。空でないなら、その差分は memory 側も通していること
 
 ### 3. transaction / 再試行 / 冪等性 / lease 回収の統合確認
 
@@ -54,20 +54,20 @@
 - **検証手段:** api
 - **目的:** 適合スイートが観測できない driver 固有の性質（D1 batch の原子性、`transactionSync` の巻き戻し、同一 operation の再実行の冪等性、リース失効後の再 claim）を実バインディングで確認する
 - **手順:**
-  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、`packages/core/src/adapters/cloudflare/__tests__/` 配下のバックエンド固有テスト（unitOfWork / durability / alarm / r2 等）の結果を読む
-- **期待結果:** 次の 4 点がそれぞれケースとして存在し、緑であること — (a) D1 batch を途中で失敗させたとき一部だけ残らない、(b) 応答喪失を模した同一 operation の再実行が冪等（`applied_operations` / `processed_events` / outbox `id` 衝突が no-op）、(c) `scheduled_tasks` のリース失効後に別 writer が再 claim でき `due_at` / `attempts` / `priority` / `payload` が claim 前のまま保たれる、(d) R2 の同一 key 並行 write と `deleteMany` の不在許容
+  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、`packages/core/src/adapters/cloudflare/__tests__/` 配下のバックエンド固有テスト（`durability` / `idempotency` / `lease` / `r2` / `alarm` / `unitOfWork` / `globalConcurrency` / `projectionConcurrency` / `routeGuard` / `sessionOverlay` / `searchEdges` / `support`）の結果を読む
+- **期待結果:** 次の 4 点がそれぞれケースとして存在し、緑であること — (a) D1 batch を途中で失敗させたとき一部だけ残らない（`durability.test.ts` の `keeps no part of a D1 batch whose middle statement is refused` / `keeps no part of a global unit of work whose commit is refused` / `rolls a scope write-set back inside transactionSync and publishes no index`）、(b) 応答喪失を模した同一 operation の再実行が冪等（`idempotency.test.ts` の `applied_operations` / `processed_events` / `folds a re-saved outbox id onto the stored row instead of replacing it`）、(c) `scheduled_tasks` のリース失効後に別 writer が再 claim でき、行が claim 前のまま保たれる（`lease.test.ts` の `lets a second writer reclaim a lapsed lease without moving the row`）、(d) R2 の同一 key 並行 write と不在 key の delete 許容（`r2.test.ts` の `leaves one whole object behind when two writes race for a key` / `treats a delete of absent keys as done` / `spends the 1,000-key delete limit in chunks`）
 - **確認ポイント:** (a) が「例外を投げた」だけで終わらず、失敗後にストアを読み直して残骸が無いことまで観測しているか
 
 ### 4. `deleteFilesByOwner` の SQL 文数の実測
 
 - **対応する受け入れ基準:** AC-5
 - **検証手段:** api
-- **目的:** `spec/platform/index.md` の「列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1 の 3 文」という設計目標に対する実測値を確定させる
+- **目的:** `spec/platform/index.md`「実行予算と分割単位」の設計目標（**書き込みはバッチ件数によらず 1 回の原子適用**）に対する実測値を確定させる
 - **手順:**
-  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、文数を計数しているケースの結果を読む
-  2. 実測値が 3 文でなかった場合、`spec/platform/index.md` の該当行が実測値に改められているかを確認する
-- **期待結果:** 実測値が記録されており、spec の記述と一致している。`spec/testcases/storage/deleteFilesByOwner.md` の「件数に比例しない」は変更されていない
-- **確認ポイント:** 件数を変えても文数が変わらないこと（比例していないこと）を観測しているか
+  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、`packages/core/src/adapters/cloudflare/__tests__/deleteFilesByOwner.test.ts` の 4 ケース（`AC-5:` で始まる）の結果を読む
+  2. 実測値が当初の目標（3 文）と違っていた場合、`spec/platform/index.md` の該当行が実測値に改められているかを確認する
+- **期待結果:** 4 ケースが緑で、実測は 1 turn **`4n + 3` 文**（`n` 件に対し読み `2n + 2` ＋ 単一 commit 内 `2n + 1`）。`spec/platform/index.md:153-155` が同じ数（`4n + 3`、commit は件数によらず 1 回）を、上限ではなく設計目標として書いている。`spec/testcases/storage/deleteFilesByOwner.md` の「件数に比例した**往復**を要求しない」（＝ポート呼び出しの往復の話で、SQL 文数の話ではない）は変更されていない
+- **確認ポイント:** **commit の回数が件数によらず 1 であること**（`counts.commits` が 10 件でも 40 件でも 1）と、列挙が定数 2 文・outbox flush が多行 INSERT 1 文であること。**SQL 文の総数と読み側の往復は件数に比例してよい** — 比例定数 `4n + 3` が spec の記述と一致していればよく、「文数が件数に比例しないこと」を期待してはいけない（旧目標の名残）
 
 ### 5. `ScopeTaskScheduler` の fencing 決着が記録されている
 
@@ -75,11 +75,12 @@
 - **検証手段:** api
 - **目的:** settle（`complete` / `backoff` / `schedule`）に fencing token が要るかの結論と根拠が残っていることを確認する
 - **手順:**
-  1. `.thread/11/adr.md` に該当の判断エントリがあることを確認する
-  2. 「claim token を契約へ足す」を選んだ場合は、ポート JSDoc（`packages/core/src/application/ports/scopeTaskScheduler.ts`）・適合スイート（`packages/core/src/adapters/conformance/scopeTaskScheduler.ts`）・`spec/domains/` の該当箇所に反映されていることを確認する
-  3. `pnpm exec vitest run --project node --project workers --reporter=verbose` が両バックエンドで緑であることを確認する
-- **期待結果:** 結論・根拠が adr.md にあり、契約を変えた場合は 3 箇所すべてに反映され、両バックエンドが同じスイートを通っている
-- **確認ポイント:** 「運用で足りる」を選んだ場合、その前提（`leaseMs` の下限、writer 多重度）が明文化されているか
+  1. `.thread/11/adr.md` に該当の判断エントリがあることを確認する（**決着は「`leaseMs` の帯 ＋ 単一 writer という運用で足りる」で、契約には claim token を足していない**）
+  2. 前提の明文化を 3 か所で確認する — ポート JSDoc `packages/core/src/application/ports/scopeTaskScheduler.ts`（lease が advisory で fencing token を持たないこと、`leaseMs` の下限・上限）、`spec/platform/index.md`「Scope Alarm」（帯、単一 writer が driver ごとに何に支えられているか、レジストリが driver を決めること）、注入点 `packages/core/src/adapters/cloudflare/do/scopeObject.ts` の `ScopeObjectEnv.SCOPE_TASK_LEASE_MS` と `leaseMsOf`
+  3. 契約を変えていないので、適合スイート（`packages/core/src/adapters/conformance/scopeTaskScheduler.ts`）と `spec/domains/` には差分が無いことを確認する（`git diff origin/main...HEAD -- packages/core/src/adapters/conformance/` が空）
+  4. `pnpm exec vitest run --project node --project workers --reporter=verbose` が両バックエンドで緑であることを確認する
+- **期待結果:** 結論・根拠が adr.md にあり、上の 3 か所が同じ帯・同じ前提を述べていて、契約（適合スイート）は無変更のまま両バックエンドが同じスイートを通っている
+- **確認ポイント:** 「運用で足りる」の前提（`leaseMs` の帯、writer 多重度）が明文化されているだけでなく、**object 駆動配備がその帯から値を選べること自体がテストで観測されている**か — `packages/core/src/adapters/cloudflare/__tests__/alarm.test.ts` の 3 ケース（配備が設定した値を honour する / 未設定なら `SCOPE_TASK_LEASE_MS` 定数 / 正の整数でない値は turn を落として 1 行も claim しない）
 
 ### 6. 既存 Node 参照ランタイムの回帰（自動テスト・静的検査）
 
@@ -92,8 +93,8 @@
   3. `pnpm typecheck`
   4. `pnpm lint`
   5. `pnpm format:check`
-- **期待結果:** 1 は既存 76 ファイル・978 件が失敗 0 で通る（本 Issue が適合スイートにケースを足した場合はその増分だけ増える）。2 は node / workers 両プロジェクトを回して失敗 0。3・4・5 はエラー 0
-- **確認ポイント:** `packages/core/src/adapters/memory/` と `apps/web/` に振る舞いの変更が入っていないこと（`git diff origin/main...HEAD --stat` で確認）。`--project node` の TZ ピン（`Asia/Tokyo`）が維持されていること
+- **期待結果:** 1 は **77 ファイル・984 passed / 3 skipped**、失敗 0（変更前は 76 ファイル・978 件。増分は適合スイート由来ではなく (a) 新設の `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts` が node プロジェクトへ +1 ファイル・+4 ケース、(b) `packages/core/src/application/workers/__tests__/scopeTaskRunner.test.ts` へ +2 ケース。3 skipped は資格情報の無い `adapters/oauth` の実 API ケースで、変更前から skip されている）。2 は node / workers 両プロジェクトの和で **99 ファイル・1352 passed / 3 skipped**、失敗 0（77+22 ファイル / 984+368 件で和が一致する＝二重実行も取りこぼしも無い）。3・4・5 はエラー 0
+- **確認ポイント:** `packages/core/src/adapters/memory/` と `apps/web/` に**差分がゼロ**であること — `git diff origin/main...HEAD -- packages/core/src/adapters/memory apps/web` が空出力（AC-7 の本体はこれ）。`--project node` の TZ ピン（`Asia/Tokyo`）が `vitest.config.ts` に維持されていること
 
 ### 7. 既存 Node 参照ランタイムの回帰（アプリの起動と主要動線）
 
@@ -128,8 +129,8 @@
 - **検証手段:** api
 - **目的:** `noteRouteStore.resolveMany`（最大 500）/ `userBatchReader.resolveMany`（最大 100）が `?` の並べ書きで上限超過にならないことを確認する
 - **手順:**
-  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、上限件数（500 / 100）での `resolveMany` ケースの結果を読む
-- **期待結果:** `too many SQL variables` 相当のエラーが出ず、全件解決される。多行 INSERT / DELETE も同様
+  1. `pnpm exec vitest run --project workers --reporter=verbose` の出力から、`packages/core/src/adapters/cloudflare/__tests__/support.test.ts` の `resolves all 500 note routes in one statement` / `resolves all 100 users in one statement` の結果を読む
+- **期待結果:** `too many SQL variables` 相当のエラーが出ず、全件解決される。多行 INSERT / DELETE も同様（同ファイルの `inserts, reads and deletes a list well past the binding limit in one statement each`）。上限そのものの拒否は `refuses a statement that would exceed the driver's binding limit`
 - **確認ポイント:** JSON 1 value + `json_each` 展開に落ちているか（`?` を件数分並べていないか）
 
 ### 2. 適合スイート間の相互汚染（fresh backend 契約）
@@ -139,8 +140,8 @@
 - **手順:**
   1. `pnpm exec vitest run --project workers --reporter=verbose` を 2 回連続で実行する
   2. `pnpm exec vitest run --project workers --reporter=verbose --sequence.shuffle` のようにケース順を変えて実行する（vitest のシャッフルオプションが使えない場合は 1 回目の結果と 2 回目の結果が同一であることの確認に留める）
-- **期待結果:** どの実行でも同じ結果（失敗 0）になる。実行順や実行回数で結果が変わらない
-- **確認ポイント:** factory 呼び出しごとに名前空間が分かれているか（前のケースが書いた D1 行・R2 オブジェクト・DO ストレージが次のケースから見えないこと）
+- **期待結果:** どの実行でも同じ結果（22 ファイル・368 passed / 0 skipped、失敗 0）になる。実行順や実行回数で結果が変わらない
+- **確認ポイント:** factory 呼び出しごとに名前空間が分かれているか（前のケースが書いた D1 行・R2 オブジェクト・DO ストレージが次のケースから見えないこと）。実物での観測は `harness.test.ts` の `hands out backends that cannot see one another on any plane` と `leaves no migrated table out of the wipe`（DO は object 名、R2 は key prefix で分かれ、D1 だけが 1 DB 共有＋ factory 先頭で全消し）
 
 ### 3. 全文検索（FTS5 + bigram）と memory 実装の契約差
 
@@ -153,7 +154,7 @@
 
 ## 既存機能への影響確認
 
-- **既存の自動テスト（978 件）** — 確認項目 6 の手順 1 で確認する。root `vitest.config.ts` の `projects` 化が既存のテスト収集を取りこぼしていないか、ファイル数・ケース数を変更前と突き合わせる
+- **既存の自動テスト（変更前 76 ファイル・978 件 → 変更後 77 ファイル・984 passed / 3 skipped）** — 確認項目 6 の手順 1 で確認する。root `vitest.config.ts` の `projects` 化が既存のテスト収集を取りこぼしていないか、ファイル数・ケース数を変更前と突き合わせる（増分の内訳は確認項目 6 の期待結果）
 - **`pnpm typecheck`** — tsconfig を 4 つ目（`tsconfig.cloudflare.json`）に増やすため、既存 3 つの型検査範囲が狭まっていないことを確認する（確認項目 6 の手順 3）
 - **開発サーバーの起動と主要動線** — 確認項目 7 で確認する。`wrangler` を devDependency に足すことでの実行時への漏れ出しがないこと
 - **ビルド** — `pnpm build:node` が通ること。CI が別ジョブで回している

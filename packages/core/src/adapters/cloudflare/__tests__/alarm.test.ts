@@ -7,6 +7,7 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   type ScopeTaskPriority as Priority,
+  SCOPE_TASK_LEASE_MS,
   type ScopeTask,
   ScopeTaskPriority,
 } from "../../../application/ports/scopeTaskScheduler";
@@ -916,6 +917,87 @@ describe("scope alarm", () => {
     const leaseExpiresAt = int(row as SqlRow, "lease_expires_at");
     expect(leaseExpiresAt).toBeGreaterThanOrEqual(before + leaseMs);
     expect(leaseExpiresAt).toBeLessThanOrEqual(after + leaseMs);
+  });
+
+  it("grants the built-in lease when the deployment configures none", async () => {
+    register("some.other.kind", noop);
+    const scope = scopeOf("user-lease-default");
+    await seed(
+      scope,
+      [
+        {
+          kind: "nobody.handles.this",
+          operationId: "op-default-lease",
+          priority: ScopeTaskPriority.outboxRelay,
+          dueAtMs: Date.now() + 3_600_000,
+        },
+      ],
+      true,
+    );
+    await runInDurableObject(stubFor(scope), (_i, state) => {
+      state.storage.sql.exec(
+        `UPDATE ${SCHEDULED_TASKS_TABLE} SET due_at = ?`,
+        Date.now() - 1_000,
+      );
+    });
+
+    const before = Date.now();
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+    const after = Date.now();
+
+    const row = (await rowsOf(scope, "status, lease_expires_at"))[0];
+    expect(row).toMatchObject({ status: "running" });
+    const leaseExpiresAt = int(row as SqlRow, "lease_expires_at");
+    expect(leaseExpiresAt).toBeGreaterThanOrEqual(before + SCOPE_TASK_LEASE_MS);
+    expect(leaseExpiresAt).toBeLessThanOrEqual(after + SCOPE_TASK_LEASE_MS);
+  });
+
+  /**
+   * The other half of the same decision: a value outside the band has to
+   * stop the turn rather than fall back to the constant, because a turn
+   * running on a lease nobody chose is exactly what the fencing-free
+   * settle cannot survive. Failing before the claim is what keeps the
+   * misconfiguration from also costing the row a lease period.
+   */
+  it("refuses the turn and claims nothing when the configured lease is not a positive integer", async () => {
+    register("some.other.kind", noop);
+    const scope = scopeOf("user-lease-invalid");
+    await seed(
+      scope,
+      [
+        {
+          kind: "nobody.handles.this",
+          operationId: "op-invalid-lease",
+          priority: ScopeTaskPriority.outboxRelay,
+          dueAtMs: Date.now() + 3_600_000,
+        },
+      ],
+      true,
+    );
+    await runInDurableObject(stubFor(scope), (instance, state) => {
+      withLeaseMs(instance, "0");
+      state.storage.sql.exec(
+        `UPDATE ${SCHEDULED_TASKS_TABLE} SET due_at = ?`,
+        Date.now() - 1_000,
+      );
+    });
+
+    await expect(runDurableObjectAlarm(stubFor(scope))).rejects.toThrow(
+      /SCOPE_TASK_LEASE_MS/,
+    );
+
+    expect((await rowsOf(scope, "status, attempts"))[0]).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+
+    // The turn's exit re-armed for a row still due in the past, so an
+    // object left in this state would re-enter the failing turn for the
+    // rest of the file.
+    await runInDurableObject(stubFor(scope), (instance, state) => {
+      withLeaseMs(instance, String(SCOPE_TASK_LEASE_MS));
+      state.storage.sql.exec(`DELETE FROM ${SCHEDULED_TASKS_TABLE}`);
+    });
   });
 
   it("refreshes the due index when the alarm turn claims a row", async () => {

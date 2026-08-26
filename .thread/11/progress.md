@@ -45,5 +45,4 @@ notes / stored_files の `listByOwner` は OFFSET ページングのため素通
 - **`MemoryRuntime` の `AppRuntime` 適合はテスト 1 ケースだけで固定されている** — 型注釈は `memoryRuntime.ts` に置くのが自然だが、AC-7（既存 Node ランタイムを触らない）のため見送った。
 - **`cloudflareRuntime.ts` は 2 つの tsconfig にまたがる例外として列挙されている** — 同種のファイルを 2 つ目に足すときは両方の編集が要る（ADR-030）。
 - **`conformanceCoverage.test.ts` の判定はテキスト走査で行頭の呼び出しだけを数える** — 入口ファイルが平坦な呼び出しの並びである限り成立するが、ループや関数で包むと検知できない（ADR-031）。
-- **`d1/repositories/globalMaintenanceRunStore.ts` は keyset cursor の区切りに NUL バイトを直接埋め込んでいる** — 実装として正しく自己整合しているが、`rg` などがこのファイルをバイナリ扱いする。
-- **workers プロジェクトの実行時に `uncaught exception` のログが 2 種類出る** — harness の scope 不一致ケースと durability の CHECK 違反ケース。いずれも RPC 越しの拒否を workerd が再報告しているだけで、テストは緑。
+- **workers プロジェクトの実行時に `uncaught exception` のログが 3 種類出る** — harness の scope 不一致ケース、durability の CHECK 違反ケース、alarm の不正 `SCOPE_TASK_LEASE_MS` ケース（ADR-098）。いずれも意図的に落とした呼び出しを workerd が再報告しているだけで、テストは緑。

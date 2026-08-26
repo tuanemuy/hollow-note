@@ -2236,3 +2236,28 @@ DDL の `account_deletion_manifests_terminal_idx (retain_until, operation_id) WH
 
 - 良い点: skip が「バックエンドが答えられない」ことの表明として残りつつ、今日答えられる 2 つが黙って答えなくなることは無くなる。
 - トレードオフ: 検査はテキストで、`conformance/backend.ts` のインターフェース宣言の書式（2 スペース字下げ + `name?(`）に依存する。書式が変われば任意メンバーの集合が空になり、その場合は集合が空であること自体を赤にしている。
+
+## ADR-098: `SCOPE_TASK_LEASE_MS` の 3 分岐は「claim の有無」まで含めて観測する
+
+### Context
+
+ADR-094 は `ScopeObject` の `leaseMsOf` を「未設定 / 空文字 → `SCOPE_TASK_LEASE_MS` 定数、正の整数のミリ秒でない値 → `dataIntegrityError`、それ以外 → その値」の 3 分岐と決めた。AC-6 の決着（settle に fencing token を足さない）は「配備が帯の中の値を選ぶ」という前提だけに寄りかかっており、その前提を object 駆動配備で成立させるのがこの関数である。
+
+ところが Round 007 時点の観測点は `alarm.test.ts` の「grants the lease the deployment configured」1 件（有効値 `"90000"`）だけで、`leaseMsOf` を `Number(raw) || SCOPE_TASK_LEASE_MS` の 1 行へ戻しても全テストが緑のまま通った。中央 runner 側の同名変数を読む `di/env.ts` の `leaseMsField` は別実装・別経路なので、そちらのテストはこの穴を埋めない。
+
+### Decision
+
+`alarm.test.ts` に 2 ケース足し、3 分岐すべてを観測する。
+
+- **未設定**: env を触らない turn の `lease_expires_at` が `before + SCOPE_TASK_LEASE_MS` 〜 `after + SCOPE_TASK_LEASE_MS` に収まる。
+- **不正値**: `withLeaseMs(instance, "0")` の turn が reject し、**かつ `scheduled_tasks` の行が `pending` / `attempts = 0` のまま**である。
+
+不正値のケースは例外だけを見ない。`Number(raw) || SCOPE_TASK_LEASE_MS` へ戻す形では `"0"` が偽値なので既定へ落ち、**turn は成功して行を claim する**ところまで進むので、claim の有無まで見て初めて 1 ケースで両方の退行（フォールバックへの緩和と、turn が行を巻き込むこと）を捕まえられる。値の種類は `"0"` 1 種に絞る — `"abc"` / `"1.5"` / `"-1"` を並べても通る行は同じ 1 本である。
+
+ケースの末尾では env を既定へ戻し `scheduled_tasks` を空にする。`alarm()` の `finally` は turn が落ちても再武装する（ADR-081 / ADR-090 の「Alarm を消す地点は turn の出口 1 か所」）ため、過去日時で due な行を残すと workerd が同じ失敗 turn を配送し続け、以降のケースへノイズが漏れる。行が無ければ次の配送は空 turn として自分で alarm を落として終わる。
+
+### Consequences
+
+- 良い点: canon（`spec/platform/index.md`「Scope Alarm」の「黙って既定へ戻さない」）と実装の対応が、退行させると赤になる形で固定された。**実測**: 1 行へ戻すと `refuses the turn and claims nothing when the configured lease is not a positive integer` が `promise resolved "true" instead of rejecting` で赤になる。
+- トレードオフ: 意図的に落とす turn なので、workerd がその例外をテスト出力へ `uncaught exception` として 1 度書く。同じ形は既に `harness.test.ts` の scope 誤アドレス拒否にもあり、このスイートでは既定の見え方である。
+- 波及: workers プロジェクトのケース数が 366 → 368、`pnpm test` の総数が 1350 → 1352 になる（ファイル数は 22 / 99 のまま）。`.thread/11/testing.md` の期待件数もこれに合わせてある。

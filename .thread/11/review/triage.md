@@ -984,3 +984,72 @@ Round 001〜005 の台帳と Key を突き合わせた結果、**既出の判定
 - 合成・スキーマ・テストハーネス・spec/docs: 2
 
 合計 8（wont-fix / defer は 0 件）
+
+## Round 007
+
+レビュー 3 本の指摘（Blocker 0 / Warning 4）。uow W-001 と routing W-001 が同一 Key なので束ねて **3 件**（fix 3 / wont-fix 0 / defer 0 / 要確認 0）。**Blocker は 0 件。**
+
+Round 001〜006 の台帳と Key を突き合わせた結果、**既出の判定を継承したものは 0 件**（3 件すべて新規）。`readForUpdate` 事前読み・`findPending` の順序（#53）・`publicNoteQueryService` の並び順（#54）・`spec/inventory` の ADP 行（#52）・`DEFAULT_MAINTENANCE_TABLES`（#16）・`CLAUDE.md` の追随・`armAndPublish` の合流欠如は、いずれも再指摘されていない。ADR-094（`leaseMs` の注入点）は Round 006 で決着済みで、W-01 はその決定の**観測**が無いことを指すので再審議には当たらない。
+
+指摘の内訳は「テストが主張どおりの性質を観測していない 1 件（W-01）」「Phase 4 が実行する手順書と最終状態の食い違い 2 件（W-02 / W-03）」で、**本番コードの振る舞いを変える修正は 0 件**である。
+
+`testing.md` は Phase 4 の動作検証がそのまま実行する成果物なので、W-02 / W-03 の 2 か所だけでなく**全 11 項目を最終状態と突き合わせて直した**（下記「testing.md の全面照合」）。
+
+### UoW / 実行機構・SQL 土台
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/scopeObject.ts:leaseMsOf の不正値拒否と既定値フォールバックが観測されていない` | 3 分岐のうち有効値の分岐しかテストが無く、`Number(raw) \|\| SCOPE_TASK_LEASE_MS` へ戻しても全テストが緑（uow W-001 / routing W-001、AC-6） | fix | **実測で成立を確認した。** ADR-094 の決定と `spec/platform/index.md`「Scope Alarm」は「未設定なら既定値、正の整数のミリ秒でない値は turn を落とす — 黙って既定へ戻すと帯の外で turn が走っていることを誰も知らない」を canon にしており、fencing token を持たない settle の安全性はこの 1 関数に載っている。ところが観測点は `alarm.test.ts` の「grants the lease the deployment configured」（有効値 `"90000"`）1 件のみだった。`di/env.ts` の `leaseMsField` は別実装・別経路なのでこの穴を埋めない。既存ヘルパー（`withLeaseMs` / `rowsOf`）だけで 2 ケース書ける。**実測**: `leaseMsOf` を `Number(raw) \|\| SCOPE_TASK_LEASE_MS` の 1 行へ戻すと `refuses the turn and claims nothing when the configured lease is not a positive integer` が赤になる（`promise resolved "true" instead of rejecting`）。修正前は 22 ケース全緑 | 2 |
+
+### Routing / outbox / scope インフラ
+
+指摘 1 件は上の UoW 欄へ束ねた（同一 Key）。routing 固有の指摘は 0 件。
+
+### Identity / directory / operation
+
+指摘 0 件。
+
+### Scope business / 投影・全文検索 / R2
+
+休止（Round 006 で fix ゼロ）。
+
+### 合成・スキーマ・テストハーネス・spec/docs
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `.thread/11/testing.md:確認項目 4 の確認ポイントが最終実測と矛盾する` | 「件数を変えても文数が変わらないこと（比例していないこと）」は `4n + 3` の実測と逆で、Phase 4 が偽の赤を出す（composition W-001、AC-5） | fix | **canon 側と突き合わせて確認した。** `spec/platform/index.md:153-155` は「書き込みはバッチ件数によらず 1 回の原子適用」を設計目標に置き、「1 turn の SQL 文の総数と読み側の RPC 往復は件数に比例する。実測は `4n + 3`」と明記している。`deleteFilesByOwner.test.ts` の 4 ケースも `commits` が常に 1、`reads` / `commitStatements` の差分が `2×30` で比例部分を分離する形になっており、比例しないのは commit の回数と outbox flush だけ。取り残されていたのは testing.md の確認ポイント 1 行と、旧目標（「3 文」）を引いていた目的の 1 行。両方を実測後の主張へ置き換える。`spec/testcases/storage/deleteFilesByOwner.md` の「件数に比例した往復を要求しない」は**ポート呼び出しの往復**の話で別の量なので動かさない（その旨も手順書に書き添える） | 1 |
+| `.thread/11/testing.md:確認項目 6 の期待件数が実態と合わない` | 「既存 76 ファイル・978 件（適合スイートにケースを足した場合はその増分）」に対し実測は 77 ファイル・984 passed / 3 skipped で、増分は適合スイート由来ではない（composition W-002、AC-7） | fix | **`git diff origin/main...HEAD -- packages/core/src/adapters/conformance/` が空**であることを確認した。増分の出どころは (a) 新設の `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts`（node プロジェクトへ +1 ファイル・+4 ケース）、(b) `application/workers/__tests__/scopeTaskRunner.test.ts` の +2 ケースで、括弧内の免責はこの差分を説明しない。3 skipped は資格情報の無い `adapters/oauth` の実 API ケースで変更前から skip されている。あわせて AC-7 の本体（memory / apps/web の差分ゼロ）を確認ポイントから期待結果側へ上げる | 1 |
+
+### testing.md の全面照合（W-02 / W-03 の付随作業）
+
+Phase 4 が読む手順書なので、指摘のあった 2 項目以外も最終状態と突き合わせた。直したのは次の 8 か所。
+
+| 箇所 | 直した内容 |
+|---|---|
+| 検証環境の起動 | 「`--project workers` はステップ 1 完了前は存在しない」という計画時点の但し書きを落とし、`pnpm test:workers` / `pnpm test:node` の別名を併記 |
+| 確認項目 1 期待結果 | 実測値（22 ファイル / 368 passed / 0 skipped）を明示。適合入口 7 ファイルの実ファイル名を列挙。`conformanceCoverage.test.ts` が node プロジェクト側であることを明記 |
+| 確認項目 1 確認ポイント | 「出力に miniflare / workerd 由来の起動がある」は実際の出力に現れないので偽の赤になる。vitest の `\|workers\|` プロジェクト名と `harness.test.ts` の実バインディング観測ケースへ置き換え |
+| 確認項目 2 | 「ケース数が一致する」→「**集合**が一致する。ケース数の絶対値は固定していない」（ADR-043 の決定と揃える）。適合スイート本体の差分ゼロを先に確認する手順を追加 |
+| 確認項目 3 | 「unitOfWork / durability / alarm / r2 等」を実在するテストファイル 12 本の列挙に。(a)〜(d) にそれぞれ実在するケース名を添える |
+| 確認項目 4 | W-02 の本体（目的・期待結果・確認ポイント） |
+| 確認項目 5 | 「claim token を足した場合」の条件分岐を、実際の決着（運用で足りる／契約は無変更）を前提にした確認手順へ。明文化先 3 か所を実ファイルパスで名指しし、確認ポイントに新規 3 ケースの観測を足す |
+| 確認項目 6 ＋ 既存機能への影響確認 | W-03 の本体。`pnpm test` の和（99 ファイル・1352 passed / 3 skipped）も明示 |
+
+エッジケース 3 項目と確認項目 7 / 8 は、コマンド・ファイルパス・検証手段（api / browser）とも最終状態と一致していたので、ケース名の補強のみに留めた。**存在しないファイルパスの名指しは 0 件**（Round 006 の W-C02 で直った `conformance.test.ts` 以外に残っていない）。
+
+### 付随決定
+
+| Key | 判定 | 理由 |
+|---|---|---|
+| `W-01:不正値の分岐を何で観測するか` | **例外が飛ぶことだけでなく「1 行も claim されない」ことまで観測する**（`status = 'pending'` / `attempts = 0`）。値の分岐は `"0"` 1 種に絞る | 例外だけを見るケースは `leaseMsOf` を「不正なら既定値」へ緩める退行を止められる一方、`Number(raw) \|\| DEFAULT` へ戻す形（`"0"` が偽値なので既定へ落ちる）では**turn が成功して行を claim する**ところまで進む。claim の有無まで見て初めて 1 ケースで両方の退行を捕まえられる。文字列 `"abc"` / `"1.5"` / `"-1"` を並べる案は同じ 1 行を通るだけなので採らない |
+| `W-01:失敗した turn が残す alarm の後始末` | **ケースの末尾で env を既定へ戻し `scheduled_tasks` を空にする** | `alarm()` の `finally` は turn が落ちても `armAndPublish("turnExit")` を通す（Round 004 / 005 で決着した「turn の出口だけが alarm を消せる」形）ので、過去日時で due な行が残ったままだと workerd が同じ失敗 turn を配送し続け、以降のケースへノイズが漏れる。行を消せば次の配送は空 turn として自分で alarm を落として終わる |
+
+### fix の観点別内訳
+
+- UoW / 実行機構・SQL 土台: 1（routing との重複 1 件を束ねた後）
+- Identity / directory / operation: 0
+- Routing / outbox / scope インフラ: 0
+- Scope business / 投影・全文検索 / R2: 0（休止）
+- 合成・スキーマ・テストハーネス・spec/docs: 2
+
+合計 3（wont-fix / defer は 0 件、新規の Issue 起票も 0 件）

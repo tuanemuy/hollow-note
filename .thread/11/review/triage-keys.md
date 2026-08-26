@@ -129,3 +129,13 @@ fix 判定の全件は `triage.md` を参照。
 | `adapters/conformance/backend.ts:任意メンバーの扱い` | **任意メンバーは「今日はどちらのバックエンドも提供している」を検査で固定する**（`conformanceCoverage.test.ts` が `backend.ts` から集合を導き両ハーネスに要求、`harness.test.ts` が実オブジェクトで観測） | ケース数の絶対値固定は ADR-043 が決着済みで採らない。`?` を外して必須にする案は `adapters/conformance/` 本体の変更にあたり、任意である理由（Workspace ドメインが無いバックエンドを排除しない）も今なお有効。詳細は ADR-097 |
 
 **Round 006 の wont-fix / defer は 0 件、新規の Issue 起票も 0 件**（8 件すべて fix）。
+
+## Round 007 で決着させた付随判断（再審議しないこと）
+
+| Key | 決定 | 根拠 |
+|---|---|---|
+| `__tests__/alarm.test.ts:leaseMsOf の不正値をどこまで観測するか` | **例外が飛ぶことに加えて「1 行も claim されない」（`status = 'pending'` / `attempts = 0`）まで観測する。不正値は `"0"` 1 種** | 例外だけのケースでは `Number(raw) \|\| SCOPE_TASK_LEASE_MS` へ戻す退行（`"0"` が偽値なので既定へ落ち、turn は成功して行を claim する）を捕まえられない。文字列を複数並べても通る行は同じなので増やさない。**実測**: 1 行へ戻すと当該ケースが赤（`promise resolved "true" instead of rejecting`）。詳細は ADR-098 |
+| `__tests__/alarm.test.ts:失敗 turn が残す alarm の後始末` | **ケース末尾で env を既定へ戻し `scheduled_tasks` を空にする** | `alarm()` の `finally` は turn が落ちても再武装する（Round 004 / 005 の「turn の出口だけが alarm を消せる」）ので、過去日時で due な行を残すと workerd が同じ失敗 turn を配送し続ける。行を消せば次の配送が空 turn として alarm を落として終わる |
+| `.thread/11/testing.md:Phase 4 が読む手順書の扱い` | **指摘の 2 項目に留めず、全 11 項目を最終状態（コマンド・件数・ファイルパス・検証手段）と突き合わせて直す** | 手順書は Phase 4 がそのまま実行する成果物なので、期待結果が最終状態とずれている箇所はすべて偽の赤になる。計画時点の但し書き（「ステップ 1 完了前は存在しない」）や旧目標（「3 文」）が残っていた |
+
+**Round 007 の wont-fix / defer は 0 件、新規の Issue 起票も 0 件**（3 件すべて fix）。
