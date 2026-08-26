@@ -470,3 +470,156 @@ Round 001 の台帳と Key を突き合わせた結果、**既出（wont-fix / d
 |---|---|---|
 | `spec/inventory/adapter.md:ADP 行欠落 5 ポート` | defer（既存の穴で本 Issue が作ったものではない） | #52 |
 | `authTokenRepository:findPendingByUserAndPurpose の順序契約` | wont-fix（正本をポート JSDoc に置き「未定義」と明記して解消）＋ 起票 | #53 |
+
+## Round 003
+
+レビュー 5 本の指摘（Blocker 2 / Warning 19 = 21 件）を重複統合したもの。総数 **20 件**（fix 18 / wont-fix 1 / defer 1 / 要確認 0）。
+Blocker は重複統合後 **2 件**（`B-U01`≡`W-R01` を 1 件へ束ねた）。
+
+Round 001 / 002 の台帳と Key を突き合わせた結果、**既出（wont-fix / defer 済み）の再指摘は 0 件**。`review-003-uow.md` は `conformance/scopeTaskScheduler.ts:並行claimケース`（#48）を明示的に「蒸し返さない」と断っており、`readForUpdate 事前読み` / `findPending の順序` / `publicNoteProjection の非public行` / `spec/inventory の ADP 行` / `DEFAULT_MAINTENANCE_TABLES` はいずれも再指摘されていない。
+
+判定の付随決定を 3 件（B-U01 の倒し方 / W-C02 の扱い / W-S04 の扱い）、末尾の「付随決定」表に置く。
+
+### UoW / 実行機構・SQL 土台
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `do/scopeObject.ts:armAndPublish/publish 失敗の欠落方向に自己修復経路が無い` | 既定配備（ハンドラレジストリ空）では publish 失敗で索引に載らなかった行が永久に中央 runner から見えない（**Blocker**、uow B-001 ≡ routing W-001） | fix | コードで成立を確認した。`alarm.ts:257` の `rescheduleAlarm` は `scopeAlarmDrivesTasks()`（`handlers.size > 0`）が偽なら常に `deleteAlarm()` で、`registerScopeTaskHandler` の呼び出しは production コードに 0 件。したがって `scopeObject.ts:150-156` の `armAndPublish` は既定配備では「alarm を消してから publish する」形になり、publish が落ちると (a) 索引に行が無い (b) object は武装されない (c) `scopeTaskQueue.listDue` は索引しか読まない、の 3 つが同時に成り立って回復経路が消える。`dueIndex.ts:24-27` の「absorbed by the central runner … a stale row costs at most one failed claim」は**余分な行**の方向しか覆っておらず、`spec/database/index.md:1089` の「Alarm が治す」は ADR-045 が既定配備でその Alarm を消したことで成り立たない。plan.md「リスクと注意点」最終行の最悪ケース（personal cleanup の継続が止まり `accountDeletionBarrier` が開いたまま User が `deleting` で残る）にそのまま乗る。**倒し方は下記「付随決定」の (a)** — publish が落ちたときだけレジストリの有無に関わらず再試行用 alarm を張る | 1 |
+| `sql/session.ts:readRows/compare がページ外へ動かす更新` | LIMIT ガードが「述語から外れた／消えた」しか見ず、`compare` の並べ替えでページ外へ出た行を取りこぼす | fix | `session.ts:147-165` の `dropsAStoredRow()` が `staged[i] === null`（削除）と `!spec.matches(row)`（述語外）の 2 つだけを見ることを確認。`matches` を満たしたまま `compare` の順序上ページ外へ動く更新はガードを素通りし、storage 側の n+1 番目の行を欠いた**中身の違うページ**が返る。`RowsRead` の JSDoc は落ち方を "deleted, or updated out of the predicate" と数え上げているので、契約上は「安全」と読める。現行の呼び出し 6 か所が到達しないことはレビュアーが確認済みだが、ガードを広げるのは同一ファイル完結で 2 行。ADR-064 が決めた「結果から落ちた stored 行で判定する」の趣旨をそのまま拡張する形で、決定の蒸し返しではない | 1 |
+| `__tests__/sessionOverlay.test.ts:112 の修正経緯コメント` | 「以前のガードはこれを通していた」という過去形の説明が残る | fix | round 002 時点のガード（`staged.includes(null)`）を指した記述で、現在のコードに存在しない状態を説明している。CLAUDE.md「Default to no comments」と ADR-052 の向きの双方に合わない。現在形の理由へ書き換えるだけ | 1 |
+
+### Identity / directory / operation
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/usecases/identity.md+domains/index.md+testcases/deleteAccount.md:manifest header の状態語彙` | header の status が canon 内で自己矛盾（`preparing` / `committing` / `compactingRejected` が残存）（**Blocker**、AC-9） | fix | 4 ファイルを突き合わせて確認した。`spec/database/index.md:172` は本 PR で `CHECK IN ('building','built','rollingBack','completed','rejected')` の 5 値へ改訂済みで、実装（`application/ports/accountDeletionManifestStore.ts` と `begin` が入れる `'building'`）とも一致する。一方 `spec/usecases/identity.md:809/815/821/827`、`spec/domains/index.md:147`、`spec/testcases/identity/deleteAccount.md:26` は `preparing` / `committing` / `compactingRejected` を header の実在する state として断定している。**加えて `spec/database/index.md:160`（`distributed_operations` 節）自身も「`preparing` / `committing` などは …`account_deletion_manifests.state` が持つ」と書いており、同じ文書の中で列名（`status`）と語彙の両方が食い違う** — 指摘の範囲より 1 か所広い。ADR-055 の Consequences は「usecases 側の追随が別途要る（本 Issue では確認していない）」であって反映しない理由ではないので、AC-9 では救えない | 1 |
+| `d1/repositories/identityUniqueDirectory.ts:beginRelease の guard 敗北翻訳` | ポート JSDoc が「一致しない行は no-op」と契約している経路で `OPTIMISTIC_LOCK_FAILURE` を投げる | fix | ポート JSDoc（`domain/identity/ports/identityUniqueDirectory.ts:102-107`）が「An absent row, a `reserved` row, a `releasing` row, another user's row, and a token that no longer matches are all no-ops」と列挙で契約していること、実装（`identityUniqueDirectory.ts:380-417`）が読み経路では正しく早期 return する一方、読みと適用のあいだに相手が着地すると `throwTranslated` へ落ちることを確認。相手が先なら**静かに成功**する呼び出しが、後なら失敗する。ADR-057 が本ラウンドで掲げた「guard 敗北時の翻訳は読み経路の答えへ倒す」を `activate` にだけ適用した非対称そのもので、決定の蒸し返しではなく適用漏れ。呼び出し側 `identityRemovalRelease` は outbox consumer で、負け続ければ quarantine に届く | 1 |
+| `d1/repositories/identityUniqueDirectory.ts:activateLoss の同一 operation リプレイ` | 同じ operation の並行リプレイに負けた場合も `OPTIMISTIC_LOCK_FAILURE` になる | fix | `identityUniqueDirectory.ts:145-158` の `activateLoss` が `readByOperation(operationId).length === 0` の 2 分岐しか持たないことを確認。guard は `state <> 'active'` を含むので同じ operationId・同じ `expectedUserVersion` のリプレイが先に着地しただけで外れるが、読み経路の答えは「`state !== 'active'` の予約が 0 件 → mutation 0 件 → 成功」である。ポート JSDoc は「A caller that loses the `activate` / `release` response reconciles by re-issuing the same operation's call — both must be idempotent for the same `operationId`」と冪等性を契約しており、継続配送は at-least-once なので二重配送は実在する経路。関数自身の JSDoc（「読み経路が返したはずの答え」）とも食い違う | 1 |
+| `d1/repositories/distributedOperationStore.ts:beginOrResume の unique 違反` | 同一 request key のリプレイが `resumed: true` を受け取れず `ALREADY_RUNNING` に倒れる | fix | `distributedOperationStore.ts:177-186` が `occGuard` / `unique` を一律 `DISTRIBUTED_OPERATION_ALREADY_RUNNING` へ倒すことを確認。表は `UNIQUE(kind, partition_key, request_key)` と `UNIQUE(kind, partition_key) WHERE state NOT IN (...)` の 2 本を持ち、`spec/database/index.md:160` が前者を「同じ送信の再生を担う」と定めている。直列実行なら `siblings.find(row => row.requestKey === ...)` が当たって `resumed: true` を返す分岐があるので、敗者だけ答えが違う。ADR-040 が `reserve` について決めた「どの索引が外れたかで翻訳を分ける」の適用漏れ。ADR-057 の「敗北時は読み経路を撃ち直す」でも同じ結論になる | 1 |
+| `d1/repositories/sessionRepository.ts:55-59 の索引名指し` | 削除済みの `(user_id, token_hash)` 索引を実在するものとして JSDoc が名指す | fix | `0001_global_schema.sql` の `sessions` が持つ索引は `token_hash` の UNIQUE・`sessions_user_epoch_idx`・`sessions_expires_idx` の 3 本だけで、複合索引は本 PR（ADR-069）が落としたことを確認。走査路は等価なので実害は無いが、この JSDoc を根拠に索引を足し直す改修を招く。1 文の書き換え | 1 |
+| `d1/repositories/accountDeletionManifestStore.ts:writeHeader guard の観測` | ADR-057 で足した状態 guard に実行されるテストが 1 本も無い | fix | `grep -rn "markBuilt\|markCompleted\|beginRollback" adapters/cloudflare/__tests__/` が 0 件であることを確認。`globalConcurrency.test.ts` が固定しているのは `reserve` / `activate` / `acknowledgeReceipt` / `beginOrResume` / maintenance lease の 5 系統のみ。共有適合スイートは memory が UoW を直列化するのでこの分岐に構造的に到達できず、ADR-057 の「観測は `globalConcurrency.test.ts` の実バインディングに置いた」が 3 変更のうち 1 つについて成立していない。`interposeOnce` の既存の形をそのまま使える | 1 |
+
+### Routing / outbox / scope インフラ
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `application/workers/scopeTaskRunner.ts:claim catch の広さ` | `isConflictError` で全 `ConflictError` を握り潰し、契約が許した 1 コード以外も無言 skip する | fix | `scopeTaskRunner.ts:169-178` が `code` を見ないこと、本 PR が追記したポート JSDoc（`application/ports/scopeTaskScheduler.ts:153-161`）が許した追加の失敗は `ConflictError("OPTIMISTIC_LOCK_FAILURE")` **1 コードだけ**であることを確認。ADR-056 の Consequences はこの広さを「skip は安全側」としてトレードオフに記録しているが、そこで想定しているのは**一過性の競合**であり、恒常的な別コードが同じ scope を毎ラウンド「claim を競り負けた」と偽って飛ばし続ける形（＝継続の鎖が warn 1 行で無言停止する）は評価されていない。契約行を正本として実装をそこへ寄せる 1 式の変更で、memory も適合スイートも動かない。ADR-056 の Consequences の当該行は書き直す | 1 |
+| `d1/repositories/noteRouteFanOutReader.ts:page の順序と索引` | `state <> 'reserved'` + `ORDER BY note_id` が canon 索引 `(created_by, state, note_id)` で順序を取れない | fix | 発行 SQL（`noteRouteFanOutReader.ts:92-99`）と DDL（`0001_global_schema.sql:213-214`）、`spec/database/index.md:121` の索引行を突き合わせて確認。`state` が不等値なので `note_id` 順は索引から出ず、`created_by` 一致ぶんを読んでからのソートになる。keyset の意味（前方の削除で位置がずれない）は残るが 1 page のコストが著者の route 総数に比例し、account deletion の author route 固定は 100 件 page を繰り返すので多作な利用者ほど効く。**対案 (a)（`state IN (...)` の等値集合）は採らない** — SQLite は IN の各値をループするので複数値では結局ソートが入り、順序は索引から出ない。**(b) を採る**: 索引を `(created_by, note_id)` / `(scope_type, scope_id, note_id)` に改め `state` は残余述語にする。migration は未適用の 1 ファイルなので追記の規律は掛からず、spec の索引行（AC-9）を同時に直す | 1 |
+
+### Scope business / 投影・全文検索 / R2
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `__tests__/searchEdges.test.ts:166-213 の打ち切り観測` | 索引テキストの打ち切りを観測するテストが無く、それを主張するコメントが算術的に誤っている | fix | 当該ケースの唯一の境界アサーションが `<= MAX_BOUND_VALUE_BYTES`（2,000,000）であること、`"記録".repeat(133_333)` の重なりビグラムが 1,866,654 バイトで**打ち切りを外しても 2,000,000 を超えない**ことを算術で確認した。つまりケース名の "without exceeding a bound value" は `MAX_INDEX_TEXT_BYTES` の働きを一切証明しない。一方でこの本文は 1,800,000 の予算は**実際に超える**ので、打ち切り自体は走っている — 観測だけが無い。コメント（167-171 行）の「2.33x — past the 2,000,000-byte cap」も誤りで、上限を越えさせるのは倍率ではなく NFKC 展開（`bigram.ts:86-97` の JSDoc は正しく書いている）。spec「既知の限界」の約束（頭からは引ける・末尾は落ちる）と 1 対 1 に対応する観測へ差し替える | 1 |
+| `spec/platform/index.md:### Scope DO の ADR 056 引用` | 「決定 3」を、その決定が述べていない主張の根拠として引き、同 ADR の決定 2 と食い違う | fix | 在force の `spec/adr/056` の決定 2 は「**バックエンド依存の数値は実行基盤の予算文書に置く**（表の直後の段落として、上限ではなく設計目標と明記して）」、決定 3 は「**どのバックエンドがその数に届かないか**は予算文書ではなく本 ADR のコンテキストに残す」であることを原文で確認。`spec/platform/index.md:155` の新しい文「バックエンドごとの実測値と内訳は各アダプターの持ち分で、予算文書には置かない（ADR 056 決定 3）」は決定 3 を一般化して決定 2 を反転させており、その反転はどこにも記録が無い。結果として AC-5 が求めた「当該行を実測値へ改める」が canon 上は未達で、`4n + 3` は `.thread/` とテストコメントにしか無い。決定 2 に従って実測値 1 行を段落へ戻し、引用を決定 2 へ直す | 1 |
+| `search/bigram.ts:119-133:非 CJK run が 1 トークン` | 長い非 CJK run が予算を越えるとその列の索引テキストが丸ごと空になる | fix | `bigramIndexText` が `run.cjk ? bigramsOf(run.text) : [run.text]` で**非 CJK run 全体を 1 トークン**として積み、最初の反復で予算を越えると `return tokens.join(" ")` が空文字列を返すことをコードで確認。空白も非 CJK なので「本文中の連続する非 CJK 部分」がまとめて 1 run になる。到達経路も成立する — U+FDFA は 3 バイトだが NFKC で 18 文字（約 33 バイト、約 11 倍）へ展開するので、`PlainTextContent` の上限 800,000 バイトの 2 割程度でも展開後 1 run が 1.8MB を越える。`spec/database/index.md`「既知の限界」の「本文の前方から入るので頭からは引ける」がこの経路だけ成り立たない。非 CJK run を空白で割って積めば `unicode61` が見るトークン列は 1 バイトも変わらず（＝既存索引の取り消し互換性も保たれる）、予算超過時の落ち方だけが「前方から入る」へ戻る | 1 |
+| `d1/repositories/publicNoteQueryService.ts:public 検索の並び順` | `note_id` 昇順固定で spec の `updatedAt DESC, noteId` / FTS 順位 RRF と食い違う | defer | 実装（`publicNoteQueryService.ts:137` の `ORDER BY ns.note_id ASC`、`bm25` 不使用）と canon（`spec/domains/note.md:485`）の食い違いを確認した。**本 PR の退行ではない** — memory も同型で、`PublicSearchCriteria` に sort 相当のフィールドが無く現行ポートでは表現できない。倒すにはポート契約の変更＋両バックエンド＋適合スイートが同時に動く必要があり、plan.md「含まれないもの」の「`localNoteQueryService` / `publicNoteQueryService` の relevance 順の契約強化」を越える。canon 側を現状（`noteId` keyset）へ書き換える案は採らない — RRF は物理 shard 化まで生きる設計意図であり、実装が追いつくまでの間 canon を弱めると引き直す根拠が消える。**AC-8 / AC-9 の「倒さないなら理由を残す」として `.thread/11/adr.md` に 1 項を残し、別 Issue を起票する**（#47 / #49 と同じ扱い） | 1 |
+
+### 合成・スキーマ・テストハーネス・spec/docs
+
+| Key | 指摘 | 判定 | 理由 | 再指摘 |
+|---|---|---|---|---|
+| `spec/adr/021:41 と spec/adr/063:42 の食い違い` | 021 の書き換えが ADR 063 の適用範囲を越え、063 の影響節を同一 PR が反証している | fix | 021:41 が「公開検索、**公開workspace一覧**、Note routeの…cursorでshard別keysetを持ち…公開読みモデルのcursorは認証しない（ADR 063）」となっている一方、`spec/adr/063` の影響節が「workspace directory 側のカーソル（`UserWorkspaceDirectory.listActiveByUser` / `PublicWorkspaceDirectoryReader.listPublished`）は…**それらの記述は今も「署名 cursor」のまま**」と明言していることを原文で確認。`spec/domains/workspace.md` ほかは実際に「署名 cursor」のまま残っており、021 だけが片側へ倒れている。021 の当該文で公開 workspace 一覧を分離し、「認証しない」の主語を ADR 063 が観測したポートに限る（Round 002 の要確認で採った「範囲は観測したポートに限る」＝ ADR-067 と同じ線） | 1 |
+| `CLAUDE.md:Adapters / Reference runtime / Development Commands` | README・`docs/test.md` と同じ主張を持つ CLAUDE.md だけが古い | wont-fix | 指摘の事実関係は正しい（README:30 は `cloudflare (D1 / DO / R2)` を含み、README:54 は「adapter group と DI wiring は in place」へ、`package.json` は `test:node` / `test:workers` を持つ）。ただし **`CLAUDE.md` は本フェーズでは書き換えない方針**（coding agent 向けの規範であり、書き換えの可否はユーザーの判断に委ねる）。**提案内容は完了報告に載せてユーザーに委ねる** | 1 |
+| `spec/database/index.md:実在しない制約の宣言` | 列表の「制約」列が、表にも migration にも無い制約を宣言している | fix | 2 か所を原文で確認した。(1) `note_routes.migration_id` の制約列は「`state = 'moving'` のとき NOT NULL」だが、3 行下の本文は「`migration_id` / `last_migration_id` はCHECKを持たず、対で状態機械だけが動かす」と書く（migration にも CHECK は無い）。(2) `scope_task_due_index.lease_expires_at` の制約列は「`status = 'running'` の行だけ NOT NULL」だが、**この表に `status` 列は存在しない**（由来表 `scheduled_tasks` の状態を指しており、実装コメントのほうが正しい）。同じ PR が `note_routes` に相関 CHECK 5 本を実装しているため、読み手は制約列を「DB が守るもの」と読む。実効でない項目は「状態機械が守る（DB 制約は置かない）」の書き方へ統一し、`lease_expires_at` は由来表を名指す | 1 |
+| `do/schema.ts:249 vs 0001_global_schema.sql:404 の processed 索引` | scope 平面の `outbox_events` にだけ processed 索引が無い | fix | global 側が `outbox_events_pending_idx` と `outbox_events_processed_idx` の 2 本、scope 側（`do/schema.ts:249-250`）が pending の 1 本だけであることを確認。`OutboxRepository` は両平面で同一実装で、`pruneProcessed` は `WHERE processed_at IS NOT NULL AND processed_at < ?` を撃つ。今日は scope 側 outbox が `save` にしか使われていないので実害は無いが、非対称の理由がコードにも canon にも無く、scope outbox の relay / prune を配線する次のスライスが全表走査を踏む。DDL 2 行で対称にするのが最も安い | 1 |
+| `adapters/__tests__/conformanceCoverage.test.ts:80 が実引数を見ない` | CF スイートが memory ファクトリーを渡しても緑のまま通り AC-3 が静かに崩れる | fix | 検査が呼び出し**名**の集合比較（`CALL_SITES` 正規表現）と絶対数（30 / 31）だけで、`describe…Contract(BACKEND, X)` の `X` を一切見ないことを確認。`makeMemoryConformanceBackend` と `makeCloudflareConformanceBackend` はどちらも `MakeConformanceBackend` なので型でも止まらず、memory バックエンドは workerd 上でも動くのでテストも緑のまま通る。**今日は 7 ファイルすべてが `makeCloudflareConformanceBackend` を渡しており AC-3 は実際には満たされている**ので、これは「現に壊れている穴」ではなく「テスト名が主張する性質を観測していない」種類の穴。既に textual な検査なので、CF 側の `conformance/*.test.ts` に `makeCloudflareConformanceBackend` 以外の `make…ConformanceBackend` 識別子が現れないことを 1 つ足せば閉じる（memory 側も対称に） | 1 |
+
+### 付随決定
+
+| Key | 判定 | 理由 |
+|---|---|---|
+| `B-U01:due index の drift をどちらの側で治すか` | **(a) publish 失敗時だけ、レジストリの有無に関わらず再試行用の alarm を張る** | (b)「publish を write-set と同じ原子単位に入れる」は採れない — `spec/database/index.md`「共通の規約」が D1 と scope DO を 1 transaction に含めないことを明示しており、ADR-003 の索引はその前提の上に立っている。(c)「drift を `ScopeTaskQueue.listDue` 側で検出して治す」も採れない — 索引に**無い** scope を検出するには DO の全列挙が要り、`spec/platform/index.md`「Global Cron」が禁じている（そもそもこの表の存在理由）。(a) は既存の機構だけで閉じる: レジストリが空でも `alarm()` は `runScopeAlarmTurn` が `EMPTY_TURN` を返して即 `finally` の `armAndPublish` へ入るので、turn を回さないまま publish だけ再試行できる。ADR-060 が選んだ「arm 先行」の順序も動かさない。実装上の注意は 2 つ — 再試行 alarm は `rescheduleAlarm` の `deleteAlarm` を**後から**上書きする位置に置くこと、レジストリ非空の配備では既に武装済みの時刻を遅らせないよう `getAlarm()` と比較して早い方を採ること。あわせて `dueIndex.ts` の JSDoc・ADR-060 の「互いの保険」・`spec/database/index.md:1089` を「欠落方向は publish 再試行 alarm が、余分方向は中央 runner の失敗 claim 1 回が吸収する」へ書き直す（AC-9）。既定配備（`register` せずに publish を落とす）を観測するテストを 1 本足す |
+| `W-C02:CLAUDE.md の追随` | **wont-fix（この PR では変更しない）＋ 提案を完了報告へ** | `CLAUDE.md` は coding agent への規範であり、本フェーズでは書き換えない方針。指摘の事実関係は正しいので、Adapters 節 / Reference runtime 末尾 / Development Commands の 3 か所の具体的な文面を完了報告でユーザーへ提示し、採否を委ねる |
+| `W-S04:public 検索の並び順` | **defer（別 Issue 起票）＋ `.thread/11/adr.md` に理由を記録** | spec を現状へ書き換えると RRF という設計意図が canon から消える。実装へ倒すにはポート（`PublicSearchCriteria` に sort が無い）から動かす必要があり plan.md のスコープ外。AC-9 の「反映しない差分は adr.md に理由とともに残す」で本 PR 内は閉じ、契約強化は Issue へ |
+
+### fix の観点別内訳
+
+- UoW / 実行機構・SQL 土台: 3
+- Identity / directory / operation: 6
+- Routing / outbox / scope インフラ: 2
+- Scope business / 投影・全文検索 / R2: 3
+- 合成・スキーマ・テストハーネス・spec/docs: 4
+
+合計 18（wont-fix 1 / defer 1 を除く）
+
+## 修正の実行計画（Round 003）
+
+束 1〜5 は担当ファイルが重ならないので並列委譲できる。束 6 は 1〜5 の完了後に直列で走らせる（spec / ADR の追随が束 1・束 5 の結論を材料にするため）。**各束は自分が決めた判断を作業メモに残し、`.thread/11/adr.md` への追記は束 6 がまとめて行う**（Round 001 / 002 と同じ規律）。
+
+### 束 1: due index の欠落方向を治す
+
+- 含む指摘: `review-003-uow.md` の B-001 ／ `review-003-routing.md` の W-001（同一）
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/do/scopeObject.ts`
+  - `packages/core/src/adapters/cloudflare/do/dueIndex.ts`（JSDoc）
+  - `packages/core/src/adapters/cloudflare/__tests__/alarm.test.ts`
+- 修正方針: `armAndPublish` の publish 側 catch で再試行 alarm を張る。`rescheduleAlarm` が先に `deleteAlarm` している（レジストリ空の配備）ことを前提に、publish が落ちたときだけ `getAlarm()` と `now + 再試行間隔` を比べて早い方を `setAlarm` する（レジストリ非空の配備で既に武装済みの turn を遅らせないため）。`alarm()` は既に `finally` で `armAndPublish` を通すので、レジストリが空でも `runScopeAlarmTurn` が `EMPTY_TURN` を返して publish だけが再試行される。`dueIndex.ts` の JSDoc は「drift は Alarm が治す／余分な行は中央 runner が吸収する」を「**欠落方向**は publish 再試行 alarm、**余分方向**は失敗 claim 1 回」へ書き直す。テストは `register` せずに publish を落とし、(i) object が武装されること (ii) alarm を 1 度走らせると索引に行が現れること、の 2 点を実バインディングで固定する。`spec/database/index.md:1089` と ADR-060 の書き直しは束 6 へ渡す
+
+### 束 2: control-plane store の guard 敗北翻訳と観測
+
+- 含む指摘: `review-003-identity.md` の W-001, W-002, W-003, W-004, W-005
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/d1/repositories/identityUniqueDirectory.ts`
+  - `packages/core/src/adapters/cloudflare/d1/repositories/distributedOperationStore.ts`
+  - `packages/core/src/adapters/cloudflare/d1/repositories/sessionRepository.ts`（JSDoc 1 文）
+  - `packages/core/src/adapters/cloudflare/__tests__/globalConcurrency.test.ts`
+- 修正方針: ADR-057 の「guard 敗北時は読み経路を撃ち直してその答えへ倒す」を、`activate` 以外の 3 経路へ一様に適用する。`beginRelease` は敗北時に `readOne(kind, normalizedKey)` を撃ち、観測した claim（`active` かつ `expectedUserId` かつ `expectedClaimToken`）が無ければ **return**（契約どおりの no-op）、それ以外は `throwTranslated`。`activateLoss` は 3 分岐にし、`state === 'active'` かつ `user_version === expectedUserVersion` の行が残っていれば成功として扱う。`beginOrResume` は `occGuard` / `unique` を受けたら `inPartition(kind, partitionKey)` を撃ち直し、同じ request key の行があれば `{ operation, resumed: true }`、無ければ現行どおり `ALREADY_RUNNING`。`sessionRepository` の JSDoc は「`token_hash` の UNIQUE で 1 行に絞り、`user_id` は所有者の照合として掛ける」へ。`globalConcurrency.test.ts` に `interposeOnce` のケースを 3 本足す — `writeHeader` の状態 guard（`begin` → `markBuilt` に対抗 `markBuilt` を割り込ませ、敗者が `stateViolation` を受け `status` が二重に進まない）、`beginRelease` の no-op、同一 request key の並行 `beginOrResume`
+
+### 束 3: SQL 土台のガードと runner の catch
+
+- 含む指摘: `review-003-uow.md` の W-001, W-002 ／ `review-003-routing.md` の W-002
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/sql/session.ts`
+  - `packages/core/src/adapters/cloudflare/__tests__/sessionOverlay.test.ts`
+  - `packages/core/src/application/workers/scopeTaskRunner.ts`
+  - `packages/core/src/application/workers/__tests__/scopeTaskRunner.test.ts`
+- 修正方針: `readRows` の LIMIT ガードを「`compare` を持つ読みでは、overlay が書き換えた stored 行が 1 件でもあれば拒否する（`matches` を満たしていても）」まで広げ、`RowsRead` の JSDoc の落ち方の列挙に「`compare` の順序を動かす更新」を足す。`sessionOverlay.test.ts:112-114` のコメントは現在形の理由へ書き換え、あわせて並べ替えでページ外へ動くケースを 1 本足す。`scopeTaskRunner` の catch は `isConflictError(cause) && cause.code === "OPTIMISTIC_LOCK_FAILURE"` に絞り、それ以外は再 throw。既存の `withLostClaim` は `OPTIMISTIC_LOCK_FAILURE` を注入しているので、別コードの `ConflictError` が素通ししないケースを 1 本足す。memory の観測は 1 ビットも変わらない（AC-7）。ADR-056 の Consequences の書き直しは束 6 へ渡す
+
+### 束 4: bigram の予算とその観測
+
+- 含む指摘: `review-003-scope.md` の W-001, W-003
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/search/bigram.ts`
+  - `packages/core/src/adapters/cloudflare/__tests__/searchEdges.test.ts`
+- 修正方針: `bigramIndexText` の非 CJK run を空白で割って 1 語 1 トークンとして積む。`unicode61` が見るトークン列は変わらないので既存索引の取り消し互換性は保たれる（`bigram.ts` 冒頭の「変更すれば全索引を作り直し」に抵触しない）。JSDoc に「予算は前方から詰めるので、超過は末尾のトークンだけを落とす」を 1 文。`searchEdges.test.ts:166-213` は spec「既知の限界」と 1 対 1 に対応する観測へ差し替える — 本文の頭のキーワードは引け、予算を越えた末尾にしかないキーワードは引けず、`replaceSnapshotIfNewer` は `"written"` を返す。境界アサーションは `MAX_BOUND_VALUE_BYTES` ではなく `MAX_INDEX_TEXT_BYTES` に対して置く（前者は打ち切りを外しても通る）。167-171 行のコメントは `bigram.ts` の JSDoc と同じ根拠（NFKC 展開）へ直す
+
+### 束 5: 索引の非対称と適合スイートの実引数
+
+- 含む指摘: `review-003-routing.md` の W-003 ／ `review-003-composition.md` の W-004, W-005
+- 触るファイル:
+  - `packages/core/src/adapters/cloudflare/d1/migrations/0001_global_schema.sql`
+  - `packages/core/src/adapters/cloudflare/do/schema.ts`
+  - `packages/core/src/adapters/cloudflare/d1/repositories/noteRouteFanOutReader.ts`（JSDoc のみ）
+  - `packages/core/src/adapters/__tests__/conformanceCoverage.test.ts`
+- 修正方針: `note_routes` の 2 索引を `(created_by, note_id)` / `(scope_type, scope_id, note_id)` へ改め、`state <> 'reserved'` は残余述語として残す（keyset の順序が索引から出るようにする。migration は未適用の 1 ファイルなので追記の規律は掛からない）。`noteRouteFanOutReader` の JSDoc に「不等値の `state` を索引の前置に置かないのは、`note_id` 順を索引から取るため」を 1 文。`do/schema.ts` に global 側と同じ `outbox_events_processed_idx`（部分索引）を足して両平面を対称にする。`conformanceCoverage.test.ts` は、CF 側 `__tests__/conformance/*.test.ts` に `makeCloudflareConformanceBackend` 以外の `make…ConformanceBackend` 識別子が現れないこと（memory 側も対称に）を 1 ケース足し、テスト名が主張する性質を観測させる。`spec/database/index.md` の索引行の追随は束 6 へ渡す
+
+### 束 6: canon の追随（spec / ADR）— 束 1〜5 の後に直列
+
+- 含む指摘: `review-003-identity.md` の B-001 ／ `review-003-scope.md` の W-002, W-004（記録） ／ `review-003-composition.md` の W-001, W-003 ／ 束 1・束 3・束 5 が渡した canon 側の持ち分
+- 触るファイル:
+  - `spec/usecases/identity.md`
+  - `spec/domains/index.md`
+  - `spec/testcases/identity/deleteAccount.md`
+  - `spec/database/index.md`
+  - `spec/platform/index.md`
+  - `spec/adr/021-scope-sharded-data-plane.md`
+  - `.thread/11/adr.md`
+- 修正方針:
+  - **manifest header の 5 値化（B-I01）**: `spec/usecases/identity.md:809` は「manifest header を `building` で開く」、`:821` の「`committing` へ進め」は「author route 固定完了で `markBuilt`（`built`）」、`:815` / `:827` / `deleteAccount.md:26` の `compactingRejected` は「`rollingBack` のまま item を 100 件ずつ縮約する」へ。`spec/domains/index.md:147` の括弧書きは「`preparing` / `committing` という語は使わない。header の status は 5 値」へ。**`spec/database/index.md:160`（`distributed_operations` 節）の「`preparing` / `committing` などは `account_deletion_manifests.state` が持つ」も同時に直す**（列名も `status`）。`:827` / `deleteAccount.md:69` の `expiresAt` は header の列名 `retain_until` に合わせる。`spec/database/index.md` 側へ 9 値を戻す案は ADR 026 / ADR-055 に反するので採らない
+  - **AC-5 の実測値（W-S02）**: `spec/platform/index.md:155` の引用を決定 3 から**決定 2** へ直し、同じ段落に実測値を 1 行入れる（「Cloudflare 実装の実測は 1 turn `4n + 3` 文・commit 1 回」）。上限ではなく設計目標であることを明記する（決定 2 の要求）
+  - **署名 cursor の範囲（W-C01）**: `spec/adr/021:41` の当該文で公開 workspace 一覧を分離し、「認証しない」の主語を ADR 063 が観測したポート（`PublicNoteQueryService` の 3 メソッドと `NoteRouteFanOutReader` の 2 メソッド）に限る。`spec/adr/063` の影響節は動かさない（両者が同じことを言えばよい）
+  - **列表の制約（W-C03）**: `note_routes.migration_id` / `last_migration_id` と `distributed_operations` / `account_deletion_manifests` の terminal 系は「状態機械が守る（DB 制約は置かない）」へ統一。`scope_task_due_index.lease_expires_at` は「`scheduled_tasks.status = 'running'` の行だけ NOT NULL」と由来表を名指す
+  - **索引行（束 5 の持ち分）**: `spec/database/index.md:121` の `note_routes` indexes 行を `(created_by, note_id)` / `(scope_type, scope_id, note_id)` へ改め、`state` を残余述語にした理由を 1 文。`outbox_events` / `processed_events` の両平面共通の節を足し、processed 索引を両平面に置くことを書く
+  - **drift（束 1 の持ち分）**: `spec/database/index.md:1089` を「欠落方向は publish 再試行 alarm が、余分方向は中央 runner の失敗 claim 1 回が吸収する」へ。ADR-060 の「互いの保険」も同じ形へ訂正
+  - **`.thread/11/adr.md`**: 束 1〜5 の判断を追記し、ADR-056 の Consequences（catch の広さ）と ADR-057 の Consequences（観測の所在）を実態へ直す。**W-S04（public 検索の並び順）を 1 項として残す** — 現行ポートに sort が無く両バックエンドとも `noteId` keyset であること、canon の RRF 記述は物理 shard 化と同時に引き直すこと、別 Issue へ起票したこと
+
+### 要確認の決定（メイン・Round 003）
+
+なし（本ラウンドの `要確認` は 0 件。付随決定 3 件はいずれもメインが上表で決着させた）
+
+## defer で起票した Issue（Round 003）
+
+| Key | 判定 | 起票 Issue |
+|---|---|---|
+| `publicNoteQueryService:public 検索の並び順が spec と食い違う` | defer（canon は動かさず `.thread/11/adr.md` ADR-076 に理由を記録） | #54 |

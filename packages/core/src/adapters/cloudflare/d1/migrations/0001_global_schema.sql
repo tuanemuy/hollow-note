@@ -210,8 +210,11 @@ CREATE TABLE note_routes (
   CHECK ((state = 'tombstone') = (tombstone_expires_at IS NOT NULL))
 );
 
-CREATE INDEX note_routes_created_by_idx ON note_routes (created_by, state, note_id);
-CREATE INDEX note_routes_scope_idx ON note_routes (scope_type, scope_id, state, note_id);
+-- `state` is deliberately not a prefix column: the fan-out scans filter it
+-- with `<> 'reserved'`, and an inequality before `note_id` would stop the
+-- keyset order from coming out of the index.
+CREATE INDEX note_routes_created_by_idx ON note_routes (created_by, note_id);
+CREATE INDEX note_routes_scope_idx ON note_routes (scope_type, scope_id, note_id);
 
 CREATE TABLE distributed_operations (
   id text PRIMARY KEY,

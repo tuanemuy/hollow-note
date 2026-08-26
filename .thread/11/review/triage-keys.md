@@ -1,6 +1,6 @@
 # 指摘台帳 — 薄いビュー（次ラウンドのレビュアーへ）
 
-Round 001 / 002 で **wont-fix / defer / 要確認** と判定した指摘。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
+Round 001 / 002 / 003 で **wont-fix / defer / 要確認** と判定した指摘。同じ内容を再指摘する場合は、判定を覆すべき新事実を添えること。
 fix 判定の全件は `triage.md` を参照。
 
 ## wont-fix
@@ -9,6 +9,7 @@ fix 判定の全件は `triage.md` を参照。
 |---|---|---|---|
 | `do/repositories/{storedFileRepository,noteRepository}.ts:readForUpdate 事前読み` | wont-fix | adr.md ADR-008 / ADR-013 / ADR-025 で決着済み。二段構え（ステージ時の読みで固有符号、guard は同時実行の砦）はこの PR の中核規律で、省くと版の不一致が呼び出し地点ではなく commit で現れる。最適化は ADR-002 が範囲外に置いた別作業 | — |
 | `authTokenRepository:findPending の「最新の発行を返す」を契約化する` | wont-fix（Round 002） | adr.md ADR-039 が「複数 pending 時の戻り値は契約としては未定義の領域。memory を触らずに済む側（AC-7）を採る」と決着済みで、契約化を別 Issue と明記している。適合スイートへのケース追加と memory の振る舞い変更が同時に要り、AC-7 と「適合スイート本体は変更しない」の双方に抵触する。四者不整合そのものはポート JSDoc を「未定義」へ、spec を「D1 実装の選択」へ倒して閉じる | 未起票 |
+| `CLAUDE.md:Adapters / Reference runtime / Development Commands の追随` | wont-fix（Round 003） | 指摘の事実関係は正しい（README / `docs/test.md` / `package.json` は改訂済みで CLAUDE.md だけが古い）が、**`CLAUDE.md` は本フェーズでは書き換えない方針**。coding agent への規範であり、採否はユーザーの判断に委ねる。提案文面（Adapters 節に `cloudflare/` を足す / Reference runtime 末尾を README と同文にする / Development Commands に `test:node` / `test:workers` を併記する）は完了報告でユーザーへ提示済み | — |
 
 ### wont-fix に準じる副論点
 
@@ -26,6 +27,7 @@ fix 判定の全件は `triage.md` を参照。
 | `adapters/memory:暗号 / Intl アダプターの分離` | defer | plan.md「含まれないもの」が明示的にスコープ外と定め、ADR-030 が理由を述べている | 未起票 |
 | `DEFAULT_MAINTENANCE_TABLES の単一正本化` | 部分 defer | 本 PR ではテストで一致を固定するに留める。正本統合は別ブランチ `issue/16/sweep-table-order-single-source` の持ち分 | #16 |
 | `spec/inventory/adapter.md:5 ポートの ADP 行が 0 件` | defer（Round 002） | `ScopeTaskScheduler` / `ScopeTaskQueue` / `OutboxRepository` / `DistributedOperationStore` / `AppliedOperationStore` は台帳生成時点からの既存の穴で本 PR の作り込みではない。埋めるには 5 ポート ≒ 25 行を全バックエンド共通の採番規則で起こし memory 側の ADP 行とも整合させる必要があり、plan.md のスコープ（今日ポートがある 30 スイートの CF 実装）を越える | 未起票 |
+| `publicNoteQueryService:public 検索の並び順が spec と食い違う` | defer（Round 003） | 実装は `ORDER BY note_id ASC` 固定で canon（`spec/domains/note.md:485` の `updatedAt DESC, noteId` / FTS 順位の RRF）と食い違うが、**本 PR の退行ではなく memory も同型**で、`PublicSearchCriteria` に sort が無いため現行ポートでは表現できない。倒すにはポート契約＋両バックエンド＋適合スイートが同時に動き、plan.md「含まれないもの」の「relevance 順の契約強化」を越える。canon を現状へ弱める案は採らない（RRF は物理 shard 化まで生きる設計意図）。理由は `.thread/11/adr.md` に記録 | 未起票 |
 
 ## 要確認（メイン判断待ち）
 
@@ -60,3 +62,23 @@ fix 判定の全件は `triage.md` を参照。
 | `spec/inventory/adapter.md:ADP 行欠落 5 ポート` | defer | #52 |
 | `authTokenRepository:findPendingByUserAndPurpose の順序契約` | wont-fix | #53 |
 | `spec/database/index.md:978 公開 workspace 一覧の署名 cursor` | wont-fix | ポート未実装のため範囲外（`spec/adr/063` の影響節に記録） |
+
+## 起票が必要（Round 003・未起票）
+
+| Key | 判定 | タイトル案 |
+|---|---|---|
+| `publicNoteQueryService:public 検索の並び順が spec と食い違う` | defer | 公開ノート検索の並び順を契約（`updatedAt DESC, noteId` / FTS 順位の RRF）に合わせる — ポートに sort を足し両バックエンドと適合スイートを同時に動かす |
+
+## Round 003 で決着させた付随判断（再審議しないこと）
+
+| Key | 決定 | 根拠 |
+|---|---|---|
+| `do/scopeObject.ts:due index の drift をどちらで治すか` | **publish 失敗時だけレジストリの有無に関わらず再試行 alarm を張る（案 a）** | (b) publish を write-set と同じ原子単位に入れるのは「D1 と scope DO を 1 transaction に含めない」規約に反する。(c) `listDue` 側で欠落を検出するには DO の全列挙が要り `spec/platform/index.md`「Global Cron」が禁じている。(a) はレジストリ空でも `alarm()` が `EMPTY_TURN` → `finally` の `armAndPublish` を通るので既存機構だけで閉じる |
+| `adapters/__tests__/conformanceCoverage.test.ts:実引数を見ない` | fix（textual な識別子検査を 1 つ足す） | 今日は CF 側 7 ファイルすべてが `makeCloudflareConformanceBackend` を渡しており AC-3 は実際には満たされている。穴は「テスト名が主張する性質を観測していない」種類のもので、既存の textual 検査に 1 ケース足せば閉じる |
+
+## 起票済み（Round 003）
+
+| Key | 判定 | Issue |
+|---|---|---|
+| `publicNoteQueryService:公開検索の並び順が canon と食い違う` | defer | #54 |
+| `CLAUDE.md:CF アダプター追加後の追随` | wont-fix（完了報告でユーザーに提案） | — |

@@ -205,6 +205,78 @@ describe("cloudflare global control-plane concurrency", () => {
     ).toBeNull();
   });
 
+  it("treats a concurrent replay of the same activation as done", async () => {
+    await seedUser("user-a");
+    const directory = createD1IdentityUniqueDirectory(deps);
+    await directory.reserve({
+      kind: "handle",
+      normalizedKey: "bob",
+      userId: "user-a" as UserId,
+      operationId: "op-a",
+      expiresAt: new Date(T0.getTime() + HOUR_MS),
+    });
+
+    const observed = createD1IdentityUniqueDirectory({
+      ...deps,
+      session: interposeOnce(session, () => directory.activate("op-a", 0)),
+    });
+
+    await expect(observed.activate("op-a", 0)).resolves.toBeUndefined();
+
+    expect(await directory.resolveClaim("handle", "bob")).toEqual({
+      userId: "user-a",
+      claimToken: expect.any(String),
+    });
+    const rows = await executor.query(
+      statement(
+        `SELECT state, user_version FROM ${GLOBAL_TABLES.identityUniqueReservations}`,
+      ),
+    );
+    expect(rows).toEqual([{ state: "active", user_version: 0 }]);
+  });
+
+  it("stays silent when a teardown loses the claim it observed", async () => {
+    await seedUser("user-a");
+    const directory = createD1IdentityUniqueDirectory(deps);
+    await directory.reserve({
+      kind: "handle",
+      normalizedKey: "carol",
+      userId: "user-a" as UserId,
+      operationId: "op-claim",
+      expiresAt: new Date(T0.getTime() + HOUR_MS),
+    });
+    await directory.activate("op-claim", 0);
+    const claim = await directory.resolveClaim("handle", "carol");
+    if (claim === null) {
+      throw new Error("expected an active claim");
+    }
+
+    const teardown = (operationId: string) => ({
+      kind: "handle" as const,
+      normalizedKey: "carol",
+      expectedUserId: "user-a" as UserId,
+      expectedClaimToken: claim.claimToken,
+      operationId,
+    });
+    const observed = createD1IdentityUniqueDirectory({
+      ...deps,
+      session: interposeOnce(session, () =>
+        directory.beginRelease(teardown("op-rival")),
+      ),
+    });
+
+    await expect(
+      observed.beginRelease(teardown("op-observed")),
+    ).resolves.toBeUndefined();
+
+    const rows = await executor.query(
+      statement(
+        `SELECT state, operation_id FROM ${GLOBAL_TABLES.identityUniqueReservations}`,
+      ),
+    );
+    expect(rows).toEqual([{ state: "releasing", operation_id: "op-rival" }]);
+  });
+
   it("keeps both receipts when two finalize acks cross", async () => {
     const store = createD1AccountDeletionManifestStore({ session, clock });
     await store.begin("op-manifest", "user-a" as UserId);
@@ -221,6 +293,41 @@ describe("cloudflare global control-plane concurrency", () => {
       "uniquenessRelease",
       "authResidue",
     ]);
+  });
+
+  it("settles a crossed header transition on the status that landed", async () => {
+    const store = createD1AccountDeletionManifestStore({ session, clock });
+    await store.begin("op-twice", "user-a" as UserId);
+
+    const observed = createD1AccountDeletionManifestStore({
+      session: interposeOnce(session, () => store.markBuilt("op-twice")),
+      clock,
+    });
+
+    await expect(observed.markBuilt("op-twice")).resolves.toBeUndefined();
+    expect((await store.describe("op-twice"))?.status).toBe("built");
+  });
+
+  it("refuses to complete a manifest that was rolled back under it", async () => {
+    const settled = { requiredFinalizeReceipts: [], clock } as const;
+    const store = createD1AccountDeletionManifestStore({ ...settled, session });
+    await store.begin("op-fork", "user-a" as UserId);
+    await store.markBuilt("op-fork");
+
+    const observed = createD1AccountDeletionManifestStore({
+      ...settled,
+      session: interposeOnce(session, () => store.beginRollback("op-fork")),
+    });
+
+    expect(
+      await conflictCode(
+        observed.markCompleted("op-fork", T0, new Date(T0.getTime() + HOUR_MS)),
+      ),
+    ).toBe("ACCOUNT_DELETION_MANIFEST_STATE_VIOLATION");
+
+    const header = await store.describe("op-fork");
+    expect(header?.status).toBe("rollingBack");
+    expect(header?.terminalAt).toBeNull();
   });
 
   it("leaves a partition with one running operation when two begin at once", async () => {
@@ -253,6 +360,28 @@ describe("cloudflare global control-plane concurrency", () => {
         "WHERE state = 'running'",
       ),
     ).toBe(1);
+  });
+
+  it("resumes the operation a crossed replay of the same request created", async () => {
+    const begin = (by: string, on: SqlSession) =>
+      createD1DistributedOperationStore({
+        ...deps,
+        session: on,
+      }).beginOrResume({
+        kind: "accountDeletion",
+        partitionKey: "user-2",
+        requestKey: "request-same",
+        payload: { by },
+      });
+
+    const observed = await begin(
+      "observed",
+      interposeOnce(session, () => begin("rival", session)),
+    );
+
+    expect(observed.resumed).toBe(true);
+    expect(observed.operation.payload).toEqual({ by: "rival" });
+    expect(await countRows(GLOBAL_TABLES.distributedOperations)).toBe(1);
   });
 
   it("hands a lapsed maintenance lease to exactly one of two owners", async () => {

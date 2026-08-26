@@ -20,6 +20,7 @@ import {
   type ScopeAlarmHandler,
   type ScopeAlarmHandlers,
 } from "../do/alarm";
+import { DUE_INDEX_REPUBLISH_DELAY_MS } from "../do/dueIndex";
 import { scheduleStatement } from "../do/scheduledTasks";
 import { SCHEDULED_TASKS_TABLE } from "../do/schema";
 import { scopeObjectName } from "../do/scopeName";
@@ -100,6 +101,33 @@ const rowsOf = async (scope: ScopeKey, columns: string) =>
       `SELECT ${columns} FROM ${SCHEDULED_TASKS_TABLE} ORDER BY operation_id`,
     ),
   );
+
+const armedAt = (scope: ScopeKey): Promise<number | null> =>
+  runInDurableObject(stubFor(scope), (_i, state) => state.storage.getAlarm());
+
+const indexedOf = async (scopeId: string): Promise<string[]> => {
+  const indexed = await env.GLOBAL_DB.prepare(
+    `SELECT operation_id FROM ${GLOBAL_TABLES.scopeTaskDueIndex}
+      WHERE scope_type = 'user' AND scope_id = ? ORDER BY operation_id`,
+  )
+    .bind(scopeId)
+    .all<{ operation_id: string }>();
+  return indexed.results.map((row) => row.operation_id);
+};
+
+/** Hides the due index for one write, so the publish that follows fails. */
+const withPublishBroken = async (run: () => Promise<void>): Promise<void> => {
+  await env.GLOBAL_DB.exec(
+    `ALTER TABLE ${GLOBAL_TABLES.scopeTaskDueIndex} RENAME TO due_index_hidden`,
+  );
+  try {
+    await run();
+  } finally {
+    await env.GLOBAL_DB.exec(
+      `ALTER TABLE due_index_hidden RENAME TO ${GLOBAL_TABLES.scopeTaskDueIndex}`,
+    );
+  }
+};
 
 describe("scope alarm", () => {
   beforeAll(async () => {
@@ -457,36 +485,56 @@ describe("scope alarm", () => {
     };
 
     // The publish is a write to global D1, and D1 faults are ordinary.
-    await env.GLOBAL_DB.exec(
-      `ALTER TABLE ${GLOBAL_TABLES.scopeTaskDueIndex} RENAME TO due_index_hidden`,
-    );
-    try {
-      await seed(scope, [task], true);
-    } finally {
-      await env.GLOBAL_DB.exec(
-        `ALTER TABLE due_index_hidden RENAME TO ${GLOBAL_TABLES.scopeTaskDueIndex}`,
-      );
-    }
+    const before = Date.now();
+    await withPublishBroken(() => seed(scope, [task], true));
+    const after = Date.now();
 
     expect((await rowsOf(scope, "operation_id, status"))[0]).toMatchObject({
       operation_id: "op-publish",
       status: "pending",
     });
-    expect(
-      await runInDurableObject(stubFor(scope), (_i, state) =>
-        state.storage.getAlarm(),
-      ),
-    ).toBe(dueAtMs);
+    // The task's own wake time is an hour out; the failed publish pulls
+    // the alarm in front of it so the retry does not wait for the row.
+    const armed = await armedAt(scope);
+    expect(armed).toBeGreaterThanOrEqual(before);
+    expect(armed).toBeLessThanOrEqual(after + DUE_INDEX_REPUBLISH_DELAY_MS);
+    expect(armed).toBeLessThan(dueAtMs);
 
     // Publishing replaces the whole slice, so the drift heals itself.
     await seed(scope, [task], true);
-    const indexed = await env.GLOBAL_DB.prepare(
-      `SELECT operation_id FROM ${GLOBAL_TABLES.scopeTaskDueIndex}
-        WHERE scope_type = 'user' AND scope_id = 'user-publish-fails'`,
-    ).all<{ operation_id: string }>();
-    expect(indexed.results.map((row) => row.operation_id)).toEqual([
-      "op-publish",
-    ]);
+    expect(await indexedOf("user-publish-fails")).toEqual(["op-publish"]);
+  });
+
+  /**
+   * The direction of due-index drift nothing else covers: `listDue` reads
+   * the index alone, so a slice that never landed leaves a scope nobody
+   * comes looking for. This has to hold in the default deployment, where
+   * the registry is empty — the object drives no tasks, `rescheduleAlarm`
+   * drops its alarm, and the retry is the only thing keeping it awake.
+   */
+  it("republishes a slice whose publish failed on its own next alarm", async () => {
+    const scope = scopeOf("user-publish-heals");
+    const task = {
+      kind: "due.later",
+      operationId: "op-heal",
+      priority: ScopeTaskPriority.outboxRelay,
+      dueAtMs: Date.now() + 3_600_000,
+    };
+
+    const before = Date.now();
+    await withPublishBroken(() => seed(scope, [task], true));
+    const after = Date.now();
+
+    expect(await indexedOf("user-publish-heals")).toEqual([]);
+    const armed = await armedAt(scope);
+    expect(armed).toBeGreaterThanOrEqual(before);
+    expect(armed).toBeLessThanOrEqual(after + DUE_INDEX_REPUBLISH_DELAY_MS);
+
+    expect(await runDurableObjectAlarm(stubFor(scope))).toBe(true);
+
+    expect(await indexedOf("user-publish-heals")).toEqual(["op-heal"]);
+    // The turn itself drove nothing, so the retry leaves nothing behind.
+    expect(await armedAt(scope)).toBeNull();
   });
 
   it("wakes at the smaller of the earliest due_at and the earliest lease expiry", async () => {

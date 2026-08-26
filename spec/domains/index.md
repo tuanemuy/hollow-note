@@ -117,7 +117,7 @@ type AccountDeletionReceipt =
 type AccountDeletionManifestHeader = Readonly<{
   operationId: string;
   userId: UserId;
-  status: "building" | "built" | "rollingBack" | "completed" | "rejected";   // ポートが公開する粒度。永続化列の細かいstateは database/index.md の `account_deletion_manifests`
+  status: "building" | "built" | "rollingBack" | "completed" | "rejected";   // 永続化列も同じ5値（database/index.md の `account_deletion_manifests.status`）
   membershipCursor: string | null;
   authorRouteCursor: string | null;
   receipts: readonly AccountDeletionReceipt[];
@@ -144,7 +144,7 @@ interface GlobalMaintenanceRunStore {
 - 1 UoW は 1 scope object の repository と local outbox だけを公開する
 - 別 scope または global D1 の UoW を入れ子にしない
 - scope 内の Job / Note / StoredFile metadata / Membership の強制終端は同じ UoW に入る
-- scope をまたぐ note move と account deletion は `DistributedOperationStore` が持つ operation ID / state で再開する（`state` の語彙は `running` / `completed` / `rejected` の 3 値。`preparing` / `committing` は account deletion manifest header 側の state であって、この 3 値には含まれない）
+- scope をまたぐ note move と account deletion は `DistributedOperationStore` が持つ operation ID / state で再開する（`state` の語彙は `running` / `completed` / `rejected` の 3 値。account deletion manifest header の `status`（`building` / `built` / `rollingBack` / `completed` / `rejected` の 5 値）は別の状態機械で、両者を混ぜない）
 - 1 つの operation が同じ scope へ配る**コマンドの重複排除**は `AppliedOperationStore` が `(operationId, commandKey)` で担い、barrier receipt を扱う `ScopeCleanupAdmissionStore` とは**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。記録はガードするコマンドと同じ Unit of Work に入る
 - `ScopeCleanupAdmissionStore`はcurrent scopeに束縛する。`assertWritable`はworkspace scopeではWorkspace deletion state、personal scopeではaccount deletion barrier receiptを検査する。`assertActorWritable`は加えてworkspaceのmembership removal prepare lockをactor UserIdで検査し、当該actor由来のNote/Tag/Storage/Usage/Integration/Job writeをlocal commit時に拒否する。全ドメインの通常write入口が両方を呼ぶ。`beginPersonalAccountDeletion`はpersonal DOの直列化点でbarrier receiptを保存し、先行writeはbarrier前に確定して後続scanに拾わせ、後続writeは`ACCOUNT_DELETING`で拒否する。workspace cleanup ownerは`Workspace.deleting`または削除manifest header、personal cleanup ownerはbarrier receiptのoperation IDを照合する。cleanup consumerはremote D1を読まず、別ID・欠落・未commit・完了済みを拒否する。`assertOwner`が完了後に偽になるのは、これが「まだ掃除して良いか」を問う述語だからで、完了済みを冪等に受ける`markCompleted` / `acknowledgePersonalComponent`（[ADR 039](../adr/039-cleanup-participants-declaration.md)）とは問いが違う。完了後のackを通すと、`pruneCompleted`が回収した後の遅延配送がbarrierを`running`へ戻しうる。personal barrier resultには配備が宣言した全component（composition rootがparticipant registryから実装へ渡す集合であって、enum全体ではない）のackをoperation専用に保存する。宣言していないcomponentへダミーackを置かず、unrelated scheduled taskの有無も完了条件にしない。`describePersonalCleanup`は再駆動された継続を安く決着させるための読み取りで、barrierがまだrunningか、どのcomponentがack済みかを答える。already completedなら残りを処理せずglobal receiptを再ackするだけで済む。receiptが無い場合と別operationがscopeを持つ場合は`null`を返す
 - `abortPersonalAccountDeletion`は同じrunning ownerだけが呼べ、receiptを削除して通常writeを再開する。account deletion receiptは全local task/event consumer ack前に`markCompleted`できず、それまではexpiryを持たずprune禁止。完了時に同じUoWで120日後のprune taskを保存し、期限到達後はscope Alarmが最大100件ずつ消す。遅延重複を保持窓内は安全にno-op化する

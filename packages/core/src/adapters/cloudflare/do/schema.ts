@@ -248,6 +248,8 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS outbox_events_pending_idx
      ON ${SCOPE_TABLES.outboxEvents} (created_at, id) WHERE processed_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS outbox_events_processed_idx
+     ON ${SCOPE_TABLES.outboxEvents} (processed_at) WHERE processed_at IS NOT NULL`,
 
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.processedEvents} (
      consumer text NOT NULL,

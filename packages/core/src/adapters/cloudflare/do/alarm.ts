@@ -262,6 +262,25 @@ export async function rescheduleAlarm(
   await storage.setAlarm(at.getTime());
 }
 
+/**
+ * Pulls the alarm forward to `atMs`, leaving an earlier one in place.
+ *
+ * This is for the callers that need a turn to happen for a reason the
+ * rows do not express — `nextWakeAt` is derived from `scheduled_tasks`
+ * alone, so it cannot ask for one. The turn that follows re-derives the
+ * proper wake time on its way out, which is what stops the pulled-forward
+ * time from sticking.
+ */
+export async function armNoLaterThan(
+  storage: DurableObjectStorage,
+  atMs: number,
+): Promise<void> {
+  const armed = await storage.getAlarm();
+  if (armed === null || armed > atMs) {
+    await storage.setAlarm(atMs);
+  }
+}
+
 const exec = (
   storage: DurableObjectStorage,
   input: SqlStatement,

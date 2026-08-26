@@ -53,9 +53,11 @@ const fromRow = (row: SqlRow): Session =>
   });
 
 /**
- * `sessions` on global D1. Lookup by wire token goes through the
- * `(user_id, token_hash)` index — the UserId locator routes the request
- * to the shard and the hash is matched inside it, never by scanning.
+ * `sessions` on global D1. Lookup by wire token narrows to a single row
+ * through the `token_hash` UNIQUE and matches `user_id` as the owner
+ * check (the same shape as `auth_tokens.findByTokenHash`) — the UserId
+ * locator routes the request to the shard and the hash is matched inside
+ * it, never by scanning.
  */
 export function createD1SessionRepository(
   deps: Readonly<{ session: SqlSession }>,

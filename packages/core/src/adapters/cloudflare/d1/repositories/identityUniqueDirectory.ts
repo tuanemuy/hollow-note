@@ -18,6 +18,7 @@ import {
   compositeKey,
   dateOrNull,
   enumOf,
+  intOrNull,
   text,
   toTimestamp,
 } from "../../sql/row";
@@ -63,6 +64,7 @@ type Reservation = Readonly<{
   claimToken: string;
   state: ReservationState;
   expiresAt: Date | null;
+  userVersion: number | null;
   raw: SqlRow;
 }>;
 
@@ -74,6 +76,7 @@ const toReservation = (row: SqlRow): Reservation => ({
   claimToken: text(row, "claim_token"),
   state: enumOf(row, "state", STATES),
   expiresAt: dateOrNull(row, "expires_at"),
+  userVersion: intOrNull(row, "user_version"),
   raw: row,
 });
 
@@ -141,22 +144,40 @@ export function createD1IdentityUniqueDirectory(
 
   /**
    * The answer the read path would have given had the winning writer
-   * landed first, re-derived after a guard tripped: the reservation
-   * moved to another operation, or the user version moved on.
+   * landed first, re-derived after a guard tripped: the reservation moved
+   * to another operation, or the user version moved on.
+   *
+   * `null` is that answer being success — a concurrent replay of the same
+   * operation activated the very rows this call meant to activate, at the
+   * same version, which is what the read path's own `state !== 'active'`
+   * filter would have left with nothing to write. At-least-once
+   * continuation delivery makes that replay a real path.
    */
   const activateLoss = async (
     operationId: string,
     expectedUserVersion: number,
-  ): Promise<ConflictError> =>
-    (await readByOperation(operationId)).length === 0
-      ? new ConflictError(
-          "UNIQUE_RESERVATION_NOT_FOUND",
-          `No reservation for operation ${operationId}`,
-        )
-      : new ConflictError(
-          "OPTIMISTIC_LOCK_FAILURE",
-          `Reservations of operation ${operationId} moved away from version ${expectedUserVersion}`,
-        );
+  ): Promise<ConflictError | null> => {
+    const reservations = await readByOperation(operationId);
+    if (reservations.length === 0) {
+      return new ConflictError(
+        "UNIQUE_RESERVATION_NOT_FOUND",
+        `No reservation for operation ${operationId}`,
+      );
+    }
+    if (
+      reservations.every(
+        (reservation) =>
+          reservation.state === "active" &&
+          reservation.userVersion === expectedUserVersion,
+      )
+    ) {
+      return null;
+    }
+    return new ConflictError(
+      "OPTIMISTIC_LOCK_FAILURE",
+      `Reservations of operation ${operationId} moved away from version ${expectedUserVersion}`,
+    );
+  };
 
   const activeClaim = async (
     kind: IdentityUniqueKind,
@@ -359,7 +380,11 @@ export function createD1IdentityUniqueDirectory(
         await session.write(mutations);
       } catch (cause) {
         if (classifySqlError(cause) === "occGuard") {
-          throw await activateLoss(operationId, expectedUserVersion);
+          const loss = await activateLoss(operationId, expectedUserVersion);
+          if (loss === null) {
+            return;
+          }
+          throw loss;
         }
         throwTranslated("the identity uniqueness directory", cause);
       }
@@ -414,6 +439,19 @@ export function createD1IdentityUniqueDirectory(
           }),
         ]);
       } catch (cause) {
+        if (classifySqlError(cause) === "occGuard") {
+          // The read path above is a no-op on exactly the conditions this
+          // guard repeats, so a caller that loses the race must get that
+          // same silence rather than a conflict it cannot act on.
+          const observed = await activeClaim(input.kind, input.normalizedKey);
+          if (
+            observed === null ||
+            observed.userId !== input.expectedUserId ||
+            observed.claimToken !== input.expectedClaimToken
+          ) {
+            return;
+          }
+        }
         throwTranslated("the identity uniqueness directory", cause);
       }
     },

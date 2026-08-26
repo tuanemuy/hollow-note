@@ -588,7 +588,7 @@ D1 ではこの契約を `INSERT … ON CONFLICT DO UPDATE SET failure_count = f
 
 サイトマップは購読で更新しない。`listSitemapEntries` / `listPublicProfiles` / `listPublicWorkspaces` が要求のたびに現在の状態から列挙する引き取り型のため、ハンドルの変更にイベント駆動の追随は要らない。公開ページのキャッシュについても、無効化の仕組みを本設計は持たない。
 
-payload は変化の通知にとどめ、投影に必要な現在値を運ばない。global consumerは `note_routes(created_by, state, note_id)` をキーセットでページングし、各Noteのpublic再投影と、重複排除したscopeへのlocal author refresh commandを送る。active membershipだけを台帳にしないため、作成者がworkspaceから離脱した後も残るNoteを更新できる。各writerはcurrent Identity versionを含む完全snapshotを条件付きで置換する（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
+payload は変化の通知にとどめ、投影に必要な現在値を運ばない。global consumerは `note_routes(created_by, note_id)` をキーセットでページングし、各Noteのpublic再投影と、重複排除したscopeへのlocal author refresh commandを送る。active membershipだけを台帳にしないため、作成者がworkspaceから離脱した後も残るNoteを更新できる。各writerはcurrent Identity versionを含む完全snapshotを条件付きで置換する（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）。
 
 ## エラーコード
 

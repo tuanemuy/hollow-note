@@ -11,8 +11,8 @@ import {
 } from "../sql/executor";
 import { text } from "../sql/row";
 import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
-import { rescheduleAlarm, runScopeAlarmTurn } from "./alarm";
-import { dueIndexStatements } from "./dueIndex";
+import { armNoLaterThan, rescheduleAlarm, runScopeAlarmTurn } from "./alarm";
+import { DUE_INDEX_REPUBLISH_DELAY_MS, dueIndexStatements } from "./dueIndex";
 import { dueIndexRowsStatement } from "./scheduledTasks";
 import {
   SCHEDULED_TASKS_TABLE,
@@ -143,16 +143,30 @@ export class ScopeObject extends DurableObject<ScopeObjectEnv> {
    * Both are derived state, so neither failure may reach the caller — the
    * write they follow has already committed, and reporting a failure
    * would invite a retry of work that took effect. They are tolerated
-   * independently because each is the other's fallback: an object that
-   * armed rewrites the index on its next turn, and a scope that is only
-   * in the index is still reachable by the central runner.
+   * independently: a scope that is only in the index is still reachable
+   * by the central runner.
+   *
+   * A failed publish is the one direction nothing else covers, since
+   * `listDue` reads the index alone and a scope missing from it is never
+   * looked for again. So the failure arms the object for a retry, which
+   * has to happen after `rescheduleAlarm` — that call drops the alarm
+   * outright where this deployment drives no tasks from the object, and
+   * would otherwise erase the retry.
    */
   private async armAndPublish(scope: ScopeKey): Promise<void> {
     // Arming first keeps the object's self-healing independent of D1.
     await tolerate(REARM_FAILED, () => rescheduleAlarm(this.ctx.storage));
-    await tolerate("scope task due index publish failed", () =>
-      this.publishDueIndex(scope),
-    );
+    try {
+      await this.publishDueIndex(scope);
+    } catch (cause) {
+      ConsoleLogger.warn("scope task due index publish failed", { cause });
+      await tolerate(REARM_FAILED, () =>
+        armNoLaterThan(
+          this.ctx.storage,
+          Date.now() + DUE_INDEX_REPUBLISH_DELAY_MS,
+        ),
+      );
+    }
   }
 
   private async publishDueIndex(scope: ScopeKey): Promise<void> {

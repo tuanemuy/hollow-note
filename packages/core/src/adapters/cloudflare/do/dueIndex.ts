@@ -5,6 +5,14 @@ import { type SqlRow, type SqlStatement, statement } from "../sql/statement";
 const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
 
 /**
+ * How long a scope object waits before republishing a slice whose publish
+ * failed. Short enough that a transient D1 fault does not strand a
+ * continuation for long, long enough that an outage lasting minutes costs
+ * a scope a handful of retries rather than a spin.
+ */
+export const DUE_INDEX_REPUBLISH_DELAY_MS = 10_000;
+
+/**
  * The global mirror of one scope's `scheduled_tasks`
  * (`spec/database/index.md#scope_task_due_index`).
  *
@@ -21,10 +29,18 @@ const TABLE = GLOBAL_TABLES.scopeTaskDueIndex;
  * (`spec/database/index.md`: D1 と scope DO を 1 transaction に含めない);
  * this is an ordering guarantee, not a shared commit. A publish that
  * fails is tolerated rather than reported, because the write it follows
- * has already landed. Drift is healed by the object's next alarm — or,
- * where the deployment drives no tasks from the object and it therefore
- * arms none, absorbed by the central runner, since a stale row costs at
- * most one failed claim, which the port's JSDoc already budgets for.
+ * has already landed.
+ *
+ * The two directions of the drift that leaves are not symmetric. A row
+ * this table still carries after the object dropped it costs at most one
+ * failed claim, which the port's JSDoc already budgets for. A row that
+ * never landed here is invisible to `ScopeTaskQueue.listDue`, which reads
+ * nothing else — so nothing would come looking for that scope again. The
+ * object therefore arms itself for `DUE_INDEX_REPUBLISH_DELAY_MS` when a
+ * publish fails, and the turn that follows republishes the slice on its
+ * way out. That retry does not depend on the deployment driving tasks
+ * from the object: a turn with no handler registry does nothing and still
+ * republishes.
  *
  * Replacing the whole slice — rather than mirroring each mutation — is
  * what makes the two paths that change tasks (a committed write-set and

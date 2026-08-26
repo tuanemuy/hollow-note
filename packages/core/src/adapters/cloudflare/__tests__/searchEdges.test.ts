@@ -163,31 +163,43 @@ describe("cloudflare note search edges", () => {
     expect(found.items[0]?.highlightedExcerpt).toBeNull();
   });
 
-  it("indexes a body at the content-size budget without exceeding a bound value", async () => {
-    // 800,000 bytes of CJK (ADR 017's ceiling for `PlainTextContent`),
-    // which bigrams to about 2.33x — past the 2,000,000-byte cap on one
-    // bound value unless the index text is held to a budget. Neither
-    // local D1 nor local SQLite enforces that cap, so the bound value is
+  it("indexes the head of a CJK body whose bigrams overflow a bound value", async () => {
+    // `㍿` is 3 bytes of source that NFKC expands to four CJK characters,
+    // so a body far inside ADR 017's 800,000-byte ceiling for
+    // `PlainTextContent` still bigrams past the cap: 300,033 bytes here
+    // become 2,800,069 bytes of index text if nothing cuts them. Neither
+    // local D1 nor local SQLite enforces the cap, so the bound value is
     // measured here rather than left to the driver to reject.
-    const body = "記録".repeat(Math.floor(800_000 / (2 * 3)));
+    const filler = "㍿".repeat(100_000);
+    const text = `研究の見立て${filler}巻末の付記`;
     expect(
-      new TextEncoder().encode(bigramIndexText(body)).length,
+      new TextEncoder().encode(bigramIndexText(text)).length,
     ).toBeLessThanOrEqual(MAX_BOUND_VALUE_BYTES);
 
-    await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
-      makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
-        title: "大きな記録",
-        text: `研究の見立て${body}`,
-        excerpt: "研究の見立て",
-      }),
-      [],
-      VERSION,
-    );
+    expect(
+      await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+        makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
+          title: "大きな記録",
+          text,
+          excerpt: "研究の見立て",
+        }),
+        [],
+        VERSION,
+      ),
+    ).toBe("written");
 
-    const found = await scoped.localNoteQueryService.search(
-      criteria({ keyword: "研究" }),
-    );
-    expect(found.items.map((item) => item.id)).toEqual(["note-001"]);
+    // Only `title` / `text` / `tag_names` are indexed, so both keywords
+    // stand or fall on the truncated body alone: the head is in, the tail
+    // is past the budget.
+    expect(
+      (
+        await scoped.localNoteQueryService.search(criteria({ keyword: "研究" }))
+      ).items.map((item) => item.id),
+    ).toEqual(["note-001"]);
+    expect(
+      (await scoped.localNoteQueryService.search(criteria({ keyword: "付記" })))
+        .items,
+    ).toEqual([]);
 
     // The withdrawal re-derives the same truncated token set, so a
     // replacement leaves the contentless index intact.
@@ -195,7 +207,7 @@ describe("cloudflare note search edges", () => {
       await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
         makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
           title: "大きな記録",
-          text: `改訂の見立て${body}`,
+          text: `改訂の見立て${filler}巻末の付記`,
           excerpt: "改訂の見立て",
         }),
         [],
@@ -210,6 +222,45 @@ describe("cloudflare note search edges", () => {
       (await scoped.localNoteQueryService.search(criteria({ keyword: "研究" })))
         .items.length,
     ).toBe(0);
+  });
+
+  it("indexes the head of a non-CJK run that alone overflows the budget", async () => {
+    // Whitespace is non-CJK, so everything between two CJK stretches is a
+    // single run — here the whole body. `ﷺ` is 3 bytes that NFKC expands
+    // to 33, so 180,000 bytes of source carry that one run past the
+    // budget while staying well inside the content ceiling.
+    const filler = "ﷺ".repeat(60_000);
+    const text = `roadmap ${filler} epilogue`;
+    expect(
+      new TextEncoder().encode(bigramIndexText(text)).length,
+    ).toBeLessThanOrEqual(MAX_BOUND_VALUE_BYTES);
+
+    expect(
+      await scoped.localNoteProjectionWriter.replaceSnapshotIfNewer(
+        makeProjectionEntry(1, userId(1), at("2026-01-10T00:00:00Z"), {
+          title: "Long note",
+          text,
+          excerpt: "opening lines",
+        }),
+        [],
+        VERSION,
+      ),
+    ).toBe("written");
+
+    expect(
+      (
+        await scoped.localNoteQueryService.search(
+          criteria({ keyword: "roadmap" }),
+        )
+      ).items.map((item) => item.id),
+    ).toEqual(["note-001"]);
+    expect(
+      (
+        await scoped.localNoteQueryService.search(
+          criteria({ keyword: "epilogue" }),
+        )
+      ).items,
+    ).toEqual([]);
   });
 
   it("names both months when one UTC day straddles a local month boundary", async () => {

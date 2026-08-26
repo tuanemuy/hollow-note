@@ -35,7 +35,7 @@ import {
   toTimestamp,
 } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
-import { type SqlRow, statement } from "../../sql/statement";
+import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
 
 const HEADERS = GLOBAL_TABLES.accountDeletionManifests;
@@ -226,10 +226,17 @@ export function createD1AccountDeletionManifestStore(
 
   const writeHeader = async (
     current: Header,
-    changes: Readonly<Record<string, string | number | null>>,
-    assignments: string,
-    params: readonly (string | number | null)[],
+    next: AccountDeletionManifestStatus,
+    terminal?: Readonly<{ terminalAt: Date; retainUntil: Date }>,
   ): Promise<void> => {
+    const changes: readonly (readonly [string, SqlValue])[] =
+      terminal === undefined
+        ? [["status", next]]
+        : [
+            ["status", next],
+            ["terminal_at", toTimestamp(terminal.terminalAt)],
+            ["retain_until", toTimestamp(terminal.retainUntil)],
+          ];
     try {
       await session.write([
         // Every caller decided its transition from the status it read a
@@ -247,10 +254,12 @@ export function createD1AccountDeletionManifestStore(
         upsert({
           table: HEADERS,
           key: current.header.operationId,
-          row: { ...current.raw, ...changes },
+          row: { ...current.raw, ...Object.fromEntries(changes) },
           statement: statement(
-            `UPDATE ${HEADERS} SET ${assignments} WHERE operation_id = ? AND status = ?`,
-            ...params,
+            `UPDATE ${HEADERS} SET ${changes
+              .map(([column]) => `${column} = ?`)
+              .join(", ")} WHERE operation_id = ? AND status = ?`,
+            ...changes.map(([, value]) => value),
             current.header.operationId,
             current.header.status,
           ),
@@ -258,6 +267,13 @@ export function createD1AccountDeletionManifestStore(
       ]);
     } catch (cause) {
       if (classifySqlError(cause) === "occGuard") {
+        // Every caller reads "already at the status I wanted" as a no-op
+        // success, so losing the race to that very transition has to land
+        // on the same answer; anything else really is a violation.
+        const landed = await findHeader(current.header.operationId);
+        if (landed?.header.status === next) {
+          return;
+        }
         throw stateViolation(
           current.header.operationId,
           `status is no longer ${current.header.status}`,
@@ -456,7 +472,7 @@ export function createD1AccountDeletionManifestStore(
           `cannot mark ${current.header.status} built`,
         );
       }
-      await writeHeader(current, { status: "built" }, "status = 'built'", []);
+      await writeHeader(current, "built");
     },
 
     async beginRollback(operationId: string): Promise<void> {
@@ -470,12 +486,7 @@ export function createD1AccountDeletionManifestStore(
           `cannot roll back from ${current.header.status}`,
         );
       }
-      await writeHeader(
-        current,
-        { status: "rollingBack" },
-        "status = 'rollingBack'",
-        [],
-      );
+      await writeHeader(current, "rollingBack");
     },
 
     async claimPending(
@@ -702,16 +713,7 @@ export function createD1AccountDeletionManifestStore(
       if (!(await requiredAcknowledged(operationId))) {
         throw stateViolation(operationId, "finalize acks are incomplete");
       }
-      await writeHeader(
-        current,
-        {
-          status: "completed",
-          terminal_at: toTimestamp(terminalAt),
-          retain_until: toTimestamp(retainUntil),
-        },
-        "status = 'completed', terminal_at = ?, retain_until = ?",
-        [toTimestamp(terminalAt), toTimestamp(retainUntil)],
-      );
+      await writeHeader(current, "completed", { terminalAt, retainUntil });
     },
 
     async markRejected(
@@ -732,16 +734,7 @@ export function createD1AccountDeletionManifestStore(
       if (!(await rollbackReleased(operationId))) {
         throw stateViolation(operationId, "release acks are incomplete");
       }
-      await writeHeader(
-        current,
-        {
-          status: "rejected",
-          terminal_at: toTimestamp(terminalAt),
-          retain_until: toTimestamp(retainUntil),
-        },
-        "status = 'rejected', terminal_at = ?, retain_until = ?",
-        [toTimestamp(terminalAt), toTimestamp(retainUntil)],
-      );
+      await writeHeader(current, "rejected", { terminalAt, retainUntil });
     },
 
     async pruneTerminal(

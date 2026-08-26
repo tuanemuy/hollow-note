@@ -93,6 +93,33 @@ describe("staged set reads", () => {
       ),
     });
 
+  const epochPageOf = (session: SqlSession, limit: number) =>
+    session.readRows({
+      table: GLOBAL_TABLES.users,
+      statement: statement(
+        `SELECT * FROM ${GLOBAL_TABLES.users}
+          ORDER BY auth_epoch, id LIMIT ${limit}`,
+      ),
+      keyOf: (row) => String(row.id),
+      matches: ALL_ROWS,
+      compare: (a, b) =>
+        Number(a.auth_epoch) - Number(b.auth_epoch) ||
+        String(a.id).localeCompare(String(b.id)),
+      limit,
+    });
+
+  const bumpEpoch = (id: string, epoch: number) =>
+    upsert({
+      table: GLOBAL_TABLES.users,
+      key: id,
+      row: { id, status: "pending", auth_epoch: epoch },
+      statement: statement(
+        `UPDATE ${GLOBAL_TABLES.users} SET auth_epoch = ? WHERE id = ?`,
+        epoch,
+        id,
+      ),
+    });
+
   it("refuses a full page that a staged delete has punched a hole in", async () => {
     const writeSet = new WriteSet();
     const session = createStagedSession(executor, writeSet);
@@ -101,7 +128,7 @@ describe("staged set reads", () => {
     // Storage holds three rows and the statement asked for two, so the
     // row that should fill the gap is one this session cannot reach.
     await expect(pageOf(session, 2)).rejects.toThrow(
-      /combines LIMIT 2 with a row this unit of work dropped/,
+      /combines LIMIT 2 with a row this unit of work deleted/,
     );
   });
 
@@ -110,30 +137,41 @@ describe("staged set reads", () => {
     const session = createStagedSession(executor, writeSet);
     await session.write([activateUser("u-1")]);
 
-    // The row is still there, so the delete-only guard let this through
-    // and the overlay returned a page one short of what it promised.
+    // The row is still stored, but it no longer answers the predicate, so
+    // the page loses it and the row that should fill the gap is the one
+    // the statement left behind in storage.
     await expect(pendingPageOf(session, 2)).rejects.toThrow(
-      /combines LIMIT 2 with a row this unit of work dropped/,
+      /combines LIMIT 2 with a row this unit of work updated out of the predicate/,
     );
   });
 
-  it("serves a full page when the staged update stays in the predicate", async () => {
+  it("refuses a full ordered page the staged update can push past its edge", async () => {
+    const writeSet = new WriteSet();
+    const session = createStagedSession(executor, writeSet);
+    await session.write([bumpEpoch("u-1", 9)]);
+
+    // Storage orders u-1, u-2, u-3 at epoch 0; the staged epoch sends u-1
+    // behind u-3, so the true page is u-2, u-3 and the overlay holds no
+    // u-3 to put there.
+    await expect(epochPageOf(session, 2)).rejects.toThrow(
+      /combines LIMIT 2 with a row this unit of work updated in a way the ORDER BY may move past the page boundary/,
+    );
+  });
+
+  it("serves a full ordered page whose staged row the statement never returned", async () => {
     const writeSet = new WriteSet();
     const session = createStagedSession(executor, writeSet);
     await session.write([
       upsert({
         table: GLOBAL_TABLES.users,
-        key: "u-1",
-        row: { id: "u-1", status: "pending" },
-        statement: statement(
-          `UPDATE ${GLOBAL_TABLES.users} SET auth_epoch = 1 WHERE id = ?`,
-          "u-1",
-        ),
+        key: "u-0",
+        row: { id: "u-0", status: "pending", auth_epoch: 0 },
+        statement: insertUser("u-0"),
       }),
     ]);
 
-    const rows = await pendingPageOf(session, 2);
-    expect(rows.map((row) => row.id)).toEqual(["u-1", "u-2"]);
+    const rows = await epochPageOf(session, 2);
+    expect(rows.map((row) => row.id)).toEqual(["u-0", "u-1"]);
   });
 
   it("still serves a page the statement did not fill", async () => {

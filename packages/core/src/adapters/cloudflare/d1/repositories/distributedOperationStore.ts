@@ -178,6 +178,16 @@ export function createD1DistributedOperationStore(
       } catch (cause) {
         const failure = classifySqlError(cause);
         if (failure === "occGuard" || failure === "unique") {
+          // Two indexes can refuse this insert, and only one of them means
+          // "another operation is running": `(kind, partition_key,
+          // request_key)` refusing it means the winner *is* this request,
+          // which the read path answers with the operation it created.
+          const replay = (
+            await inPartition(input.kind, input.partitionKey)
+          ).find((row) => row.requestKey === input.requestKey);
+          if (replay !== undefined) {
+            return { operation: replay, resumed: true };
+          }
           throw new ConflictError(
             "DISTRIBUTED_OPERATION_ALREADY_RUNNING",
             `Partition ${input.partitionKey} already has a running ${input.kind} operation`,

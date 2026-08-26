@@ -21,6 +21,7 @@ const CONFORMANCE_DIR = join(ADAPTERS_DIR, "conformance");
 
 const CALL_SITES = /^(describe[A-Za-z]*Contract)\s*\(/gm;
 const EXPORTS = /\bexport\s+function\s+(describe[A-Za-z]*Contract)\b/g;
+const FACTORIES = /\b(make[A-Za-z]*ConformanceBackend)\b/g;
 
 const walk = (dir: string): readonly string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -28,10 +29,13 @@ const walk = (dir: string): readonly string[] =>
     return entry.isDirectory() ? walk(path) : [path];
   });
 
-const namesIn = (files: readonly string[]): ReadonlySet<string> => {
+const namesIn = (
+  files: readonly string[],
+  pattern: RegExp = CALL_SITES,
+): ReadonlySet<string> => {
   const found = new Set<string>();
   for (const file of files) {
-    for (const match of readFileSync(file, "utf8").matchAll(CALL_SITES)) {
+    for (const match of readFileSync(file, "utf8").matchAll(pattern)) {
       const name = match[1];
       if (name !== undefined) {
         found.add(name);
@@ -48,14 +52,15 @@ const testFiles = walk(ADAPTERS_DIR).filter((path) =>
   path.endsWith(".test.ts"),
 );
 
-const memoryCalls = namesIn(
-  testFiles.filter((path) => path.includes(`${join("memory", "__tests__")}`)),
+const memoryFiles = testFiles.filter((path) =>
+  path.includes(`${join("memory", "__tests__")}`),
 );
-const cloudflareCalls = namesIn(
-  testFiles.filter((path) =>
-    path.includes(`${join("cloudflare", "__tests__", "conformance")}`),
-  ),
+const cloudflareFiles = testFiles.filter((path) =>
+  path.includes(`${join("cloudflare", "__tests__", "conformance")}`),
 );
+
+const memoryCalls = namesIn(memoryFiles);
+const cloudflareCalls = namesIn(cloudflareFiles);
 
 const exported = new Set<string>();
 for (const file of walk(CONFORMANCE_DIR)) {
@@ -80,6 +85,18 @@ describe("port-conformance suite coverage", () => {
   it("runs the same suites against the memory and Cloudflare backends", () => {
     expect(sorted(cloudflareCalls)).toEqual(sorted(memoryCalls));
     expect(memoryCalls.size).toBe(PERSISTENCE_SUITES);
+  });
+
+  it("hands each backend's suites that backend's own factory", () => {
+    // The suite names above match whichever factory is passed, and both
+    // factories share one type, so a file that imported the other one
+    // would still run green — against the wrong backend.
+    expect(sorted(namesIn(memoryFiles, FACTORIES))).toEqual([
+      "makeMemoryConformanceBackend",
+    ]);
+    expect(sorted(namesIn(cloudflareFiles, FACTORIES))).toEqual([
+      "makeCloudflareConformanceBackend",
+    ]);
   });
 
   it("leaves no suite unwired to a backend", () => {

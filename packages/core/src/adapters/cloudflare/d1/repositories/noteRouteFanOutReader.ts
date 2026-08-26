@@ -61,6 +61,11 @@ const toRoute = (row: SqlRow): NoteRoute => {
  * ahead of the cursor cannot make the walk skip a row. The cursor carries
  * the query's fingerprint, which is what turns a cursor replayed against
  * the other scan into `INVALID_PAGINATION` instead of a wrong page.
+ *
+ * `state` stays a residual predicate rather than an index prefix: it is
+ * matched with `<> 'reserved'`, and an inequality ahead of `note_id` would
+ * cost the walk its index-ordered keyset — one page would then read every
+ * route the author owns instead of a page's worth.
  */
 export function createD1NoteRouteFanOutReader(
   deps: Readonly<{ session: SqlSession }>,

@@ -138,7 +138,10 @@ export type RunDueScopeTasksOptions = Readonly<{
  * scope whose claim lost its race to another writer is isolated the same
  * way: that loss reaches a staged backend only at commit, so the adapter
  * cannot answer it as an empty batch, and the rows it names belong to the
- * writer that won them.
+ * writer that won them. Only that one failure — the `claimDue` contract's
+ * `OPTIMISTIC_LOCK_FAILURE` — is skipped, since skipping is safe solely
+ * because the rows have a winner; any other conflict is a fault whose
+ * scope would otherwise stall behind a warning every round.
  */
 export async function runDueScopeTasks(
   container: WorkerContainer,
@@ -167,7 +170,7 @@ export async function runDueScopeTasks(
         ctx.scopeTaskScheduler.claimDue({ now, limit: budget, leaseMs }),
       );
     } catch (cause) {
-      if (!isConflictError(cause)) {
+      if (!isConflictError(cause) || cause.code !== "OPTIMISTIC_LOCK_FAILURE") {
         throw cause;
       }
       container.logger.warn(

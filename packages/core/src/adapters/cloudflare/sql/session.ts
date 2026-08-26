@@ -38,13 +38,17 @@ export const ALL_ROWS = (): boolean => true;
  *   statement has none.
  * - `limit` repeats the statement's `LIMIT`, applied after the merge.
  *
- * `limit` and same-unit writes that drop a row do not compose. The
- * overlay can only subtract from what the statement already returned, so
- * a `LIMIT n` that came back full and lost a row — to a staged delete, or
- * to a staged update that no longer satisfies `matches` — would have to
- * reach back into storage for the n+1-th row to stay accurate. A staged
- * session refuses that read rather than returning a short page — page a
- * set you are also writing to with `query`, or write after the last page.
+ * `limit` and same-unit writes to the rows the statement returned do not
+ * compose. The overlay can only rearrange what the statement already
+ * returned, so a `LIMIT n` that came back full and lost a row — to a
+ * staged delete, or to a staged update that no longer satisfies
+ * `matches` — would have to reach back into storage for the n+1-th row
+ * to stay accurate. Under `compare` an update that keeps satisfying
+ * `matches` is no better: the new values feed the sort, so the row can
+ * move past the page boundary and the n+1-th row is again the one that
+ * should take its place. A staged session refuses all three rather than
+ * returning a page that is short or holds the wrong rows — page a set
+ * you are also writing to with `query`, or write after the last page.
  */
 export type RowsRead = Readonly<{
   table: string;
@@ -149,18 +153,30 @@ export function createStagedSession(
       const staged = stored.map((row) =>
         writeSet.peek(spec.table, spec.keyOf(row)),
       );
-      const dropsAStoredRow = (): boolean =>
-        staged.some(
-          (row) => row === null || (row !== undefined && !spec.matches(row)),
-        );
-      if (
-        spec.limit !== undefined &&
-        stored.length >= spec.limit &&
-        dropsAStoredRow()
-      ) {
-        throw databaseError(
-          `Set read of ${spec.table} combines LIMIT ${spec.limit} with a row this unit of work dropped from the result — deleted, or updated out of the predicate; the page cannot be completed from the overlay`,
-        );
+      const unrepairable = (): string | undefined => {
+        for (const row of staged) {
+          if (row === null) {
+            return "deleted";
+          }
+          if (row === undefined) {
+            continue;
+          }
+          if (!spec.matches(row)) {
+            return "updated out of the predicate";
+          }
+          if (spec.compare !== undefined) {
+            return "updated in a way the ORDER BY may move past the page boundary";
+          }
+        }
+        return undefined;
+      };
+      if (spec.limit !== undefined && stored.length >= spec.limit) {
+        const reason = unrepairable();
+        if (reason !== undefined) {
+          throw databaseError(
+            `Set read of ${spec.table} combines LIMIT ${spec.limit} with a row this unit of work ${reason}; the page cannot be completed from the overlay`,
+          );
+        }
       }
       // A stored row this unit has touched is dropped whichever way it
       // was touched — deleted rows stay out, rewritten ones come back

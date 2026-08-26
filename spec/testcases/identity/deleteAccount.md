@@ -23,7 +23,7 @@
 | 全scope prepare後 | 別ownerが脱退・降格・除名される | `MEMBERSHIP_REMOVAL_PREPARED`で拒否され、commitはLastOwnerにならず完了できる | |
 | 3scope中2scopeをprepare後に3つ目が失敗する | rollback prepareする | 2scopeのlockを冪等にreleaseし、Membership/Job/個人データは一切削除されていない | |
 | prepare失敗時にpersonal barrier解除応答を失う | recoveryする | 同じoperation IDで`abortPersonalAccountDeletion`を再送し、workspace lockとbarrier双方の解除ack後だけUserをactiveに戻す。operation rejectedはmanifest縮約後だけ公開する | |
-| 数千membership item固定後にprepareが失敗する | rollbackする | 全lock/barrier release ack後に`compactingRejected`へ進み、itemsを100件ずつ消して0件時だけoperation/manifestをrejectedにし、headerを120日保持する | |
+| 数千membership item固定後にprepareが失敗する | rollbackする | 全lock/barrier release ack後もheaderは`rollingBack`のままitemsを100件ずつ消し、0件時だけoperation/manifestをrejectedにして、headerを120日保持する | |
 | 250 workspace lock取得後に次scopeのprepareが失敗する | `rollbackRelease`を進める | release未ack itemを100+100+50件、外部接続最大6のwaveで配送し、全release ack前はUser active/manifest compactへ進まない | |
 | release 100件のack transaction後に応答を失う | rollback continuationを再実行する | 保存済みrelease ackを飛ばして残件だけを再配送し、二重releaseなく収束する | |
 | workspace prepareはcommitしたがUserId manifestへのprepare ack応答を失い、同waveの別scopeが失敗する | rollbackする | 送信前の`prepareDispatchedAt`を正本に当該workspaceもreleaseし、孤児lockを残さない | |
@@ -67,7 +67,7 @@
 | author route pageのcommit後に応答を失う | build continuationを再実行する | operation ID+NoteIdで重複せず、headerのopaque cursorから次pageへ進む | |
 | ack済みaccount manifest itemが101件ある | compactする | 100件削除してcontinuationを保存し、次turnの1件後だけheaderをcompletedにする | |
 | ack済みaccount manifest itemが1,000件ある | compactする | 10 turnに分け、各transactionを100件以下に保つ | |
-| completed/rejected account manifest headerが期限到達済みで101件ある | terminal prunerを実行する | `(expiresAt, operationId)` keysetの100+1件で回収し、running/building/compacting headerは残す | |
+| completed/rejected account manifest headerが期限到達済みで101件ある | terminal prunerを実行する | `(retainUntil, operationId)` keysetの100+1件で回収し、`building` / `built` / `rollingBack` のheaderは残す | |
 | terminal header 100件の削除commit後に応答を失う | prune continuationを再実行する | 同じ固定`asOf`/cursorから冪等に再開し、未回収headerを欠落させない | |
 | 32 UserId shardにterminal headerがありrunが次hourまで未完了 | 次Cronで再開する | `accountManifestPrune`の同じrun/generation/shard positionを再開し、kind全体のactive laneを最大6に保つ | |
 | UserId shardでterminal DELETE後、run checkpoint前に停止する | laneを再実行する | 同じ入力cursorのDELETEを冪等再実行し、次cursor/Queue outboxをcatalog transactionでcheckpointする | |

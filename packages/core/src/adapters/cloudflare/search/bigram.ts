@@ -106,6 +106,25 @@ const utf8Length = (value: string): number => {
   return bytes;
 };
 
+const WHITESPACE = /\s+/u;
+
+/**
+ * The units a run contributes to the index text: overlapping bigrams for
+ * CJK, whitespace-delimited words for everything else.
+ *
+ * A non-CJK run is not emitted whole because whitespace is itself non-CJK,
+ * so one run spans every word between two CJK stretches — an English body
+ * is a single run. Emitting it as one unit would make the byte budget
+ * all-or-nothing for that column, and a run that alone exceeds the budget
+ * would leave the column with no index at all instead of its head.
+ * `unicode61` splits on whitespace anyway, so the tokens it sees are
+ * unchanged by cutting here.
+ */
+const indexUnitsOf = (run: SearchRun): readonly string[] =>
+  run.cjk
+    ? bigramsOf(run.text)
+    : run.text.split(WHITESPACE).filter((word) => word.length > 0);
+
 /**
  * The text a projection writer feeds one FTS column. CJK runs become
  * space-separated overlapping bigrams so `unicode61` sees each pair as
@@ -120,7 +139,7 @@ export const bigramIndexText = (value: string): string => {
   const tokens: string[] = [];
   let bytes = 0;
   for (const run of splitRuns(normalizeForSearch(value))) {
-    for (const token of run.cjk ? bigramsOf(run.text) : [run.text]) {
+    for (const token of indexUnitsOf(run)) {
       const size = utf8Length(token) + (tokens.length === 0 ? 0 : 1);
       if (bytes + size > MAX_INDEX_TEXT_BYTES) {
         return tokens.join(" ");
