@@ -22,6 +22,8 @@ Guidance for coding agents working in this repository.
 
 Design and inventories live there, not here. This file holds principles and pointers only — anything a single feature could falsify belongs in `spec/` or `docs/`.
 
+`.thread/{number}/` holds the work log of one issue and is not canon. Never cite it from code, `spec/`, or `docs/`: its ADR numbering collides with `spec/adr/`, and the link dies when the issue closes. Write the reason itself where it applies, and promote it to `spec/` only when it outlives the change.
+
 ## Workspace layout
 
 pnpm monorepo. `pnpm-workspace.yaml` declares exactly two package globs — `apps/*` and `packages/*`. One lockfile at the root; packages resolve each other via package `exports` pointing straight at `.ts` sources (no build step for internal packages). `@repo/core` exposes a single flat rule — `"./*": "./src/*.ts"` — so every subpath maps 1:1 to a file and there is no barrel to import from.
@@ -30,7 +32,7 @@ pnpm monorepo. `pnpm-workspace.yaml` declares exactly two package globs — `app
 - `apps/web` (`@repo/web`) — the TanStack Start app: routes, components, the presentation layer, the server entry and worker runner, `scripts/`, and the build config.
 - Root — shared tooling only: Biome, the vitest config, delegating scripts. `@types/*` are publicly hoisted (see `pnpm-workspace.yaml`) so `.d.ts` files inside the pnpm store can resolve `react` / `vitest` types.
 
-A future app (MCP server, CLI, …) is a new `apps/*` package that declares `"@repo/core": "workspace:*"` and owns its DI wiring or reuses one from `packages/core/src/application/di/`. No tsconfig `paths` mirror is needed.
+A future app (MCP server, CLI, …) is a new `apps/*` package that declares `"@repo/core": "workspace:*"` and owns its DI wiring or reuses one from `packages/core/src/application/di/`. A composition root is expressed as `AppRuntime` (`application/di/runtime.ts`), so a new one is type-checked against the same four methods rather than drifting into its own shape. No tsconfig `paths` mirror is needed.
 
 ## Development Commands
 
@@ -39,10 +41,10 @@ Run from the repo root — root scripts delegate to `@repo/web` where relevant:
 - `pnpm dev` / `pnpm build` / `pnpm start` — aliases of `pnpm dev:node` / `pnpm build:node` / `pnpm start:node`, which are also callable directly
 - `pnpm lint` / `pnpm lint:fix` / `pnpm format` / `pnpm format:check` (Biome, whole repo)
 - `pnpm typecheck` (root `tsgo` for the vitest config + `pnpm -r typecheck` across packages)
-- `pnpm test` / `pnpm test:unit` (one vitest run at the root, spanning `apps/web` and `packages/core`; `test` aliases `test:unit`)
+- `pnpm test` / `pnpm test:unit` (every vitest project at the root; `test` aliases `test:unit`) — `pnpm test:node` / `pnpm test:workers` run one project each, since the two use different pools
 - Web-only scripts not delegated at the root: `pnpm --filter @repo/web <script>` (or run inside `apps/web`)
 
-Persistence is in-memory, so there is no database to provision and no migration script. Copy `apps/web/.env.example` to `apps/web/.env` before the first `pnpm dev` — that file documents every variable, including which sign-in identity provider to configure.
+The reference runtime persists in memory, so there is no database to provision and nothing to migrate before `pnpm dev`. Copy `apps/web/.env.example` to `apps/web/.env` first — that file documents every variable, including which sign-in identity provider to configure.
 
 After changes: `pnpm typecheck && pnpm lint:fix && pnpm format`.
 
