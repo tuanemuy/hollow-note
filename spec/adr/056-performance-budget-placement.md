@@ -8,7 +8,7 @@
 
 `spec/testcases/` はバックエンド非依存の契約で、適合スイートがその実行形になる（[ADR 026](./026-port-contract-and-conformance.md)）。そこに「列挙 1 文 ＋ 多行 DELETE 1 文 ＋ 多行 outbox INSERT 1 文で、件数によらず 3 文」のような **SQL 文数**の期待結果を書くと、契約が特定バックエンドの実現手段に縛られる。
 
-どのバックエンドが届かないかは具体的に分かっている。in-memory アダプターは OCC トークンを行ごとに `findById` で読む実装制約を持つため、一括削除でも 1 件ずつの読み取りが発生し、この文数には届かない。in-memory は fake ではなく正規のバックエンドとして扱う立場（[ADR 024](./024-in-memory-adapter-as-first-class-backend.md)）なので、「in-memory は免除する」という書き方も取れない。条件付きの契約は、どのバックエンドが免除されるかを台帳から読めなくする。
+どのバックエンドが届かないかは具体的に分かっている。**今日ある 2 つのバックエンドはいずれも届かない。** in-memory アダプターは OCC トークンを行ごとに `findById` で読む実装制約を持つため、一括削除でも 1 件ずつの読み取りが発生する。Cloudflare の D1 / DO アダプターも、版トークンを 1 件ごとの `findById` でしか採れないというポート契約（`TransactionalRepository`）と、所有者単位の一括削除メソッドを持たないドメイン設計（[domains/storage.md](../domains/storage.md)）から、1 turn `4n + 3` 文になる。したがって実行基盤側が保持する設計目標は文数ではなく「**書き込みは件数によらず 1 回の原子適用**」であり、その実測値と根拠は [platform/index.md](../platform/index.md) の「Scope DO」が持つ。in-memory は fake ではなく正規のバックエンドとして扱う立場（[ADR 024](./024-in-memory-adapter-as-first-class-backend.md)）なので、「in-memory は免除する」という書き方も取れない。条件付きの契約は、どのバックエンドが免除されるかを台帳から読めなくする。
 
 移送先の候補である `spec/platform/index.md` の `### Scope DO` は、予算を `| 経路 | 1 回の上限 | 根拠 |` の 3 列表で**行数**として持ち、文数の列を持たない。既存の表に「3 文」の行を足すと、軸の違うものが同じ表に混ざる。
 

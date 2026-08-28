@@ -331,7 +331,7 @@ Workspace削除後も意図的に残すoutbox、Job履歴正データ、compact 
 
 削除受理後は利用者によるabortを提供せず、失敗時も同じoperation IDでforward recoveryする。manifest/CASCADE/global cleanupが複数turnに跨ってもactiveへ戻さないため、cursor通過後に新しいedge/Job/Noteが入らない。`WorkspaceDeletionManifestStore`は同じUoWでpage itemとcursorを保存し、全global ack後に完了tombstoneへ縮約する。tombstoneはscope routingの保持期間以上残し、削除済みscope宛ての遅延writeを恒久的に拒否する。
 
-membership removal prepare leaseはTTL 10分、orchestratorは2分ごとにrenewする。`hasConflict`は期限を過ぎたprepared lockも自動で無効にせず、安全側に拒否する。global recoveryだけがD1 operationをprimaryで確認し、preparing/runningならrenew、rejected/completedならreleaseする。commit開始前に全lockの残存5分以上を確認し、各lockを`committed`へ遷移してからdestructive cleanupを始める。committed lockは自動失効せず完了/recoveryがreleaseする。
+membership removal prepare leaseはTTL 10分、orchestratorは2分ごとにrenewする。`hasConflict`は期限を過ぎたprepared lockも自動で無効にせず、安全側に拒否する。global recoveryだけがD1 operationをprimaryで確認し、`running`ならrenew、`rejected` / `completed`ならreleaseする。commit開始前に全lockの残存5分以上を確認し、各lockを`committed`へ遷移してからdestructive cleanupを始める。committed lockは自動失効せず完了/recoveryがreleaseする。
 
 ## ドメインイベント
 

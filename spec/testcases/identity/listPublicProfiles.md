@@ -14,7 +14,7 @@
 | 対象が `limit` を超える | 列挙する | `limit` 件と `nextCursor` が返る | |
 | `nextCursor` を渡す | 列挙する | 続きが重複なく返る | |
 | 対象が 0 件 | 列挙する | 空配列と `nextCursor: null` が返る | |
-| public Noteが32 shardへ分散する | 利用者を列挙する | 同時6接続のwaveで所有者を集約し、署名cursorのshard別位置から続きを返す | |
+| public Noteが32 shardへ分散する | 利用者を列挙する | 同時6接続のwaveで所有者を集約し、opaque cursorのshard別位置から続きを返す | |
 | reshard中に同じ利用者が旧新へ現れる | 列挙する | UserIdで重複排除し、その利用者の最新updatedAtを採る | |
 | 同じ利用者の公開Noteが複数shardにある | page境界をまたいで列挙する | 全shard headの同一UserIdを消費して1件だけ返し、次pageへ同じ利用者を再出現させない | |
 | 1pageの利用者が32 User shardへ分散する | 表示を解決する | UserIdでgroupingして最大6接続のwaveで読み、全shard scanを行わない | |

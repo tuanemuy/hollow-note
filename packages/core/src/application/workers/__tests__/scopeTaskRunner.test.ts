@@ -25,6 +25,7 @@ import {
   STORAGE_OWNER_DELETE_TASK_KIND,
 } from "../../cleanup/participants";
 import type { WorkerContainer } from "../../di/types";
+import { ConflictError } from "../../errors";
 import { signUpVerified } from "../../identity/__tests__/authFlowHelpers";
 import {
   acceptDeletion,
@@ -97,6 +98,46 @@ const restartWorkers = (h: TestHarness): WorkerContainer => {
     scopeTaskQueue: createMemoryScopeTaskQueue(h.backend),
   };
 };
+
+// A backend whose claim is a conditional update answers the writer that
+// lost the race with a conflict; memory serializes instead, so the loss
+// is injected here.
+const withFailingClaim = (
+  container: WorkerContainer,
+  losing: ScopeKey,
+  cause: Error,
+): WorkerContainer => ({
+  ...container,
+  scopeUnitOfWorkProvider: {
+    run: (scope, fn) =>
+      container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+        fn(
+          ScopeKey.serialize(scope) === ScopeKey.serialize(losing)
+            ? {
+                ...ctx,
+                scopeTaskScheduler: {
+                  ...ctx.scopeTaskScheduler,
+                  claimDue: () => Promise.reject(cause),
+                },
+              }
+            : ctx,
+        ),
+      ),
+  },
+});
+
+const withLostClaim = (
+  container: WorkerContainer,
+  losing: ScopeKey,
+): WorkerContainer =>
+  withFailingClaim(
+    container,
+    losing,
+    new ConflictError(
+      "OPTIMISTIC_LOCK_FAILURE",
+      "another writer claimed the rows",
+    ),
+  );
 
 describe("runDueScopeTasks", () => {
   it("resumes a cleanup that outgrew its first turn and hands the completion to the manifest", async () => {
@@ -279,6 +320,83 @@ describe("runDueScopeTasks", () => {
       processed: 1,
     });
     expect(runs).toBe(2);
+  });
+
+  it("isolates a scope whose claim lost the race, and finishes the rest of the round", async () => {
+    const h = createTestHarness();
+    const losing = scopeOf("user-1");
+    const scheduleIn = (scope: ScopeKey, priority: ScopeTaskPriority) =>
+      h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+        ctx.scopeTaskScheduler.schedule({
+          kind: "working",
+          operationId: `op-${ScopeKey.serialize(scope)}`,
+          priority,
+          dueAt: h.clock.now(),
+          payload: {},
+        }),
+      );
+    await scheduleIn(losing, ScopeTaskPriority.securityCleanup);
+    await scheduleIn(scopeOf("user-2"), ScopeTaskPriority.outboxRelay);
+    const ran: string[] = [];
+
+    const round = await runDueScopeTasks(
+      withLostClaim(h.workerContainer, losing),
+      {
+        handlers: {
+          working: async (_container, task) => {
+            ran.push(ScopeKey.serialize(task.scope));
+          },
+        },
+      },
+    );
+
+    expect(round).toEqual({ processed: 1 });
+    expect(ran).toEqual([ScopeKey.serialize(scopeOf("user-2"))]);
+    expect(scheduledTasks(h, "user-1")[0]?.state).toBe("pending");
+    expect(
+      h.logger.entries.some((entry) =>
+        entry.message.includes("[scope-tasks] claim lost the race"),
+      ),
+    ).toBe(true);
+  });
+
+  it("raises a claim conflict the port never promised instead of skipping the scope", async () => {
+    const h = createTestHarness();
+    const failing = scopeOf("user-1");
+    await h.container.scopeUnitOfWorkProvider.run(failing, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: "working",
+        operationId: "op-user-1",
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAt: h.clock.now(),
+        payload: {},
+      }),
+    );
+    const ran: string[] = [];
+
+    await expect(
+      runDueScopeTasks(
+        withFailingClaim(
+          h.workerContainer,
+          failing,
+          new ConflictError("STATE_VIOLATION", "the row is not claimable"),
+        ),
+        {
+          handlers: {
+            working: async (_container, task) => {
+              ran.push(ScopeKey.serialize(task.scope));
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow("the row is not claimable");
+
+    expect(ran).toEqual([]);
+    expect(
+      h.logger.entries.some((entry) =>
+        entry.message.includes("[scope-tasks] claim lost the race"),
+      ),
+    ).toBe(false);
   });
 
   it("isolates a failing task from the rest of the round", async () => {

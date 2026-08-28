@@ -1,5 +1,14 @@
 {
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "vitest.workers.config.ts"],
+  // Checked by `tsconfig.cloudflare.json` instead — those files target the
+  // Workers runtime and cannot share this one's `lib` / `types`. The
+  // Cloudflare composition root sits beside its sibling runtimes in
+  // `application/di/` but names Workers bindings, so it belongs to that
+  // program too.
+  "exclude": [
+    "src/adapters/cloudflare/**/*",
+    "src/application/di/cloudflare*.ts"
+  ],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "types": ["node"],

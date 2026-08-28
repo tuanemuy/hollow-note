@@ -77,6 +77,10 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * lapsed lease — so that only the writer whose predicate still matches
  * takes the row. Exclusivity stops at the claim.
  *
+ * Call `claimDue` at most once per unit of work. A backend that stages
+ * its writes selects candidates from committed rows, so a second call
+ * inside the same unit hands the first call's rows out again.
+ *
  * Selection is the same rule for `claimDue` and
  * `ScopeTaskQueue.listDue`; neither returns more than `limit` rows.
  * Candidates are the rows that are `pending` with `dueAt <= now` or
@@ -150,7 +154,15 @@ export const SCOPE_TASK_LEASE_MS = 5 * 60 * 1000;
  * be positive — zero or less hands out a lease that has already lapsed,
  * so the same round can claim one row twice.
  *
- * Error contract: `SystemError(DatabaseError)`.
+ * Error contract: `SystemError(DatabaseError)`. `claimDue` may in
+ * addition throw `ConflictError("OPTIMISTIC_LOCK_FAILURE")` when another
+ * writer took one of the candidate rows between reading the candidates
+ * and applying the claim: the whole batch then yields nothing and the
+ * caller re-reads next round. Only a backend that builds exclusivity
+ * from a conditional update can raise it, and a backend that stages its
+ * writes raises it at commit — past the point where the adapter could
+ * fold the loss back into an empty result — so the caller, not the
+ * adapter, is what keeps a lost race from ending a round.
  */
 export interface ScopeTaskScheduler {
   schedule(

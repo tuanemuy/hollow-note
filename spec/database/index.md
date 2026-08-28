@@ -11,26 +11,27 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **真偽値**: `integer` の 0 / 1
 - **列挙**: `text` に `CHECK` 制約を添える。判別ユニオンは判別子の列と、その値のときだけ非 NULL になる列の組で表す
 - **楽観ロック**: 集約ルートのテーブルは `version integer NOT NULL DEFAULT 0` を持つ。更新は `WHERE version = :expected` で行い、0 行なら `ConflictError("OPTIMISTIC_LOCK_FAILURE")`
-- **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない
+- **外部キー**: 同じ database / domain の親子は原則`ON DELETE CASCADE`。ただし1親に無制限の子を持ち、削除をbounded continuationにするWorkspace→Membership/InvitationとJob parent→childrenは`RESTRICT`で子を先に消す。別 plane / domain の参照には張らない。**この `ON DELETE CASCADE` / `RESTRICT` は論理的な所有関係の宣言であり、物理制約としての `FOREIGN KEY` 宣言を要求しない** — 親子の後始末はドメインイベントの購読者と bounded continuation が行い、削除はどちらの場合も明示の手順として書かれる。各表の「制約」列に並ぶ `FK → …` も同じ宣言であって、DDL の `FOREIGN KEY` を意味しない
 - **削除**: ノートのゴミ箱以外に論理削除は使わない
+- **有界な掃引 / 削除**: 期限切れの回収（`deleteExpired` / `pruneTerminal`）と旧世代の回収（`deleteOlderEpochByUser` / `deleteByUserAndPurpose`）は、いずれも**表キー順**に 1 回最大 100 件で進む。`expires_at <= now` / `retain_until <= asOf` や `auth_epoch < current` は**絞り込みの述語であって順序ではない**（正本は `PrunePage` とポート契約。[ADR 026](../adr/026-port-contract-and-conformance.md)）。したがって (`expires_at`, key) の索引が与えるのは期限切れ集合への絞り込みだけで、ページの順序は与えない。keyset の cursor も表キーの値である。**選んだ述語は消す文にも持ち越す** — `DELETE` の `WHERE` は表キーに加えて選択に使った述語をそのまま含める。選びと消しを別の往復で行う配備では、そのあいだに条件から外れた行（`refreshAuthEpoch` が引き上げた現在 session、`recordFailure` が延長した失敗記録）が鍵一致だけで消える。返す件数は選んだ件数であって消えた件数ではない
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
 - **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
 - **原子性**: global D1 の非集約更新は単一 SQL 文、scope 内の複数更新は `transactionSync` で行う。D1 と scope DO、または2つの scope DOを1 transactionに含めない
-- **scope 検証**: scope table の `owner_type / owner_id` または `scope_type / scope_id` は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する
+- **scope 検証**: scope 鍵として使っている列 — 今日は `notes.owner_type / owner_id` と `_scope_identity` — は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する。`stored_files.owner_type / owner_id`、`storage_quotas.owner_type / owner_id`、`llm_usages.user_id` は**会計上の帰属**であって scope 鍵ではないので、この検査の対象外である（`StorageOwner` は「バイトが誰の勘定に付くか」を記録し、物理 scope を上書きしない。workspace ノートの匿名エクスポート成果物は利用者に帰属しない）。物理分離そのものは `_scope_identity` の pin が担保するので、帰属列を検査しなくても他 scope の行が混ざることはない
 
 ## 物理配置
 
 | plane | テーブル |
 | --- | --- |
 | global D1: Identity | `users`, `identities`, `identity_removal_receipts`, `sessions`, `auth_tokens`, `login_attempts`, `external_connections`, `oauth_flow_states` |
-| global D1: directory / operation | `identity_unique_reservations`, `membership_directory`, `workspace_slug_reservations`, `invitation_routes`, `note_routes`, `distributed_operations`, `account_deletion_manifests`, `global_maintenance_runs`, `job_slots` |
+| global D1: directory / operation | `identity_unique_reservations`, `membership_directory`, `workspace_slug_reservations`, `invitation_routes`, `note_routes`, `distributed_operations`, `account_deletion_manifests`, `account_deletion_manifest_items`, `global_maintenance_runs`, `global_maintenance_run_lanes`, `job_slots` |
 | global D1: projection | `workspace_directory`, `job_history`, `job_history_removal_tombstones`, `job_history_target_routes`, `job_target_tombstones`, `public_note_search`, `public_note_search_tags`, `public_note_search_fts` |
-| global D1: infrastructure | `outbox_events`, `processed_events`, `_occ_guard` |
+| global D1: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scope_task_due_index` |
 | scope DO: Workspace | `workspaces`, `memberships`, `invitations`, `membership_removal_locks`, `workspace_deletion_manifests`（workspace scope のみ） |
 | scope DO: business | `stored_files`, `reference_import_attempts`, `reference_import_summaries`, `notes`, `note_projection_revisions`, `note_revisions`, `tags`, `tag_assignments`, `backup_records`, `jobs`, `storage_quotas`, `llm_usages` |
 | scope DO: local projection | `note_search`, `note_search_tags`, `note_search_fts` |
-| scope DO: infrastructure | `outbox_events`, `processed_events`, `_occ_guard`, `scheduled_tasks`, `tag_operations`, `tag_operation_locks`, `job_removal_manifests`, `scope_job_admission_leases`, `move_authorization_locks`, `applied_operations` |
+| scope DO: infrastructure | `_scope_identity`, `outbox_events`, `processed_events`, `_occ_guard`, `scheduled_tasks`, `tag_operations`, `tag_operation_locks`, `job_removal_manifests`, `scope_job_admission_leases`, `move_authorization_locks`, `applied_operations` |
 
 `processed_events` の主キーは global / scope とも (`consumer`, `event_id`) とする。`scheduled_tasks` は (`kind`, `operation_id`) を一意にし、次の Alarm 時刻は下記 `scheduled_tasks` の規則で決める。`applied_operations` は note move・membership command・account deletion の operation ID を scope ごとに重複排除する（`AppliedOperationStore.markApplied` の `(operationId, commandKey)`。列は 2 つに分けず 1 つへ畳む — 下記 `applied_operations`）。同じ表が account deletion の barrier receipt も持つが、そちらは `ScopeCleanupAdmissionStore` の担当で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)）。
 
@@ -53,6 +54,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `claim_token` | text | NOT NULL, `reserve` の行挿入時に採番 |
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','releasing') |
 | `expires_at` | integer | reserved時NOT NULL |
+| `user_version` | integer | `activate` が受けたUserの版。reserved時NULL |
 | `updated_at` | integer | NOT NULL |
 
 同じnormalized valueは必ず同じshardへ到達する。変更はreservationを先に確保し、UserId shardの正データ更新後にactivateする。1つの親operationがemail/providerAccountなど複数rowを予約するときは `` `${parentOperationId}:${kind}:${normalizedKey}` `` をrowごとのsub-operation IDにし、`operation_id UNIQUE`へ抵触させない。`kind`は`:`を含まない閉じた列挙で自由形の鍵が末尾に来るので、合成で決定性と識別性が得られる。不可逆性は要らない（[ADR 048](../adr/048-uniqueness-reservation-operation-id.md)）。結果には生の鍵がそのまま埋まるので、ログや他のsinkへは出さない（出すなら`{ parentOperationId, kind }`）。失敗時は確保済みsub-operationを全release、応答喪失はoperation payloadの全keyと現在のUser/Identity versionを確認してall-activateまたはall-releaseへ再開する。lookupはactive reservationからUserIdを得てUser shardを読む。恒久 claim の取り壊しは `claim_token` 一致を条件とする compare-and-set で行うので、`claim_token` は `reserve` が行を挿入するときにだけ採番し、`activate` / `beginRelease` の状態遷移の `UPDATE` では既存の値をそのまま引き継ぐ — `operation_id` や `updated_at` からの導出は契約を満たさない（[domains/identity.md](../domains/identity.md)、[ADR 060](../adr/060-conditional-unique-claim-teardown.md)）。
@@ -64,7 +66,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `operation_id` | text | PK |
 | `user_id` | text | NOT NULL |
 | `workspace_id` | text | NOT NULL |
-| `membership_id` | text | NOT NULL |
+| `membership_id` | text | `active` / `removing` ではNOT NULL。`pending` / `activating` ではNULL可 |
 | `role` | text | NOT NULL |
 | `state` | text | NOT NULL, CHECK IN ('pending','activating','active','removing') |
 | `deletion_prepare_operation_id` | text | NULL可。pending edgeのaccount deletion lock owner |
@@ -73,8 +75,9 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
+- `membership_id` を settled state にだけ要求するのは、`pending` edge が workspace-local Membership の**存在に先立つ**予約だからである。運ぶべき ID がまだ無い時点で行が要るので、制約は `CHECK (state NOT IN ('active','removing') OR membership_id IS NOT NULL)` として置く
 - UNIQUE (`user_id`, `workspace_id`)。`pending` / `activating` は所有 / 参加workspace数とaccount deletionに、`removing`は後始末完了待ちのaccount deletion / integration cleanup列挙に含める。`reserveAndClaimActivation`はpending INSERT、同じUserId shardのActive User検査、`activating`化を1 transactionで行い、DeletingならINSERTごとrollbackする。account deletionは先行`activating`を最大100件ずつ解決待ちし、0件確認後にpending edgeへdeletion prepare ownerを設定する。owner設定後のactivationは拒否し、rollback releaseはpendingを保ち、commitだけがedgeを取消す
-- indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用。UserId物理shard後のworkspace削除は後者をscatterせずmanifest route keyを使う
+- indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用、(`user_id`, `operation_id`) は account deletion manifest の edge key 昇順ページング用。edge key は `operation_id` であり、前 2 本はどちらもその順序を走れないので専用の索引を持つ。UserId物理shard後のworkspace削除は 2 本目をscatterせずmanifest route keyを使う
 - pending/activating recoveryは`(reservation_expires_at, operation_id) WHERE state IN ('pending','activating')`を最大100件ずつ読む。期限切れactivatingはworkspace scopeのInvitation/Membershipをoperation IDで照合し、local commit済みならactive、未commitならabandonedへ収束させる。account deletionはこのrecoveryを起動し、先行activatingが0件になるまでscanを待つ
 
 ### workspace_slug_reservations
@@ -103,14 +106,18 @@ email / provider identity / handle は `identity_unique_reservations` を使う�
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','moving','purging','tombstone') |
 | `target_scope_type` | text | `state = 'moving'` のとき NOT NULL |
 | `target_scope_id` | text | `state = 'moving'` のとき NOT NULL |
+| `migration_id` | text | NULL可。進行中のmoveの識別子（DB制約は置かず状態機械が守る） |
+| `last_migration_id` | text | NULL可。直近に完了したswitchの`migration_id`（同上） |
 | `operation_id` | text | `state IN ('reserved','moving','purging')` のとき NOT NULL |
 | `updated_at` | integer | NOT NULL |
 | `reservation_expires_at` | integer | `state = 'reserved'` のとき NOT NULL |
 | `tombstone_expires_at` | integer | `state = 'tombstone'` のとき NOT NULL |
 
-create は `reserved` でrouteを確保し、scope-local commit後にoperation ID条件で `active` にする。route switch は `WHERE note_id = ? AND route_version = ? AND scope_type = ? AND scope_id = ?` の compare-and-swap 1文で行う。完全削除は同じ条件で `purging` にして外部到達を閉じ、scope削除とpublic projection removeの完了後に30日保持の`tombstone`へ進める。
+状態と列の対応は相関CHECK 5本で持つ — `target_scope_type` と `target_scope_id` はそれぞれ `state = 'moving'` と同値、`reservation_expires_at` は `state = 'reserved'` と同値、`tombstone_expires_at` は `state = 'tombstone'` と同値、`operation_id` は `state IN ('reserved','moving','purging')` のとき非NULLとする。`migration_id` / `last_migration_id` はCHECKを持たず、対で状態機械だけが動かす。
 
-indexes: (`created_by`, `state`, `note_id`) はmembership離脱後も残る著者表示refresh、(`scope_type`, `scope_id`, `state`, `note_id`) はworkspace表示refreshに使う。物理shard後は各shardの同索引を`NoteRouteFanOutReader`がscatter-gatherし、最大32 shard・同時6接続・全体200件へmergeする。署名cursorはgenerationと各shardのkeysetを保持し、reshard中は旧新をNoteId/routeVersionで重複排除する。`created_by` はroute予約時に固定し、Note moveでは変えない。
+create は `reserved` でrouteを確保し、scope-local commit後にoperation ID条件で `active` にする。route switch は `WHERE note_id = ? AND route_version = ? AND scope_type = ? AND scope_id = ?` の compare-and-swap 1文で行う。switch の応答を失ったあとの再試行は、`state = 'active'` かつ `route_version = expected + 1` かつ `last_migration_id` が当該 `migration_id` と一致することで「自分の switch が着地済み」と冪等に判定する — `route_version` だけでは別のmoveが進めた版と区別できないため、完了したswitchの識別子を1つ残す。完全削除は同じ条件で `purging` にして外部到達を閉じ、scope削除とpublic projection removeの完了後に30日保持の`tombstone`へ進める。
+
+indexes: (`created_by`, `note_id`) はmembership離脱後も残る著者表示refresh、(`scope_type`, `scope_id`, `note_id`) はworkspace表示refreshに使う。どちらも `state` を含めないのは、走査が `state <> 'reserved'` の不等値で絞るためである — `note_id` の前に不等値の列を置くと keyset の順序が索引から出なくなるので、`state` は残余述語として評価させる。物理shard後は各shardの同索引を`NoteRouteFanOutReader`がscatter-gatherし、最大32 shard・同時6接続・全体200件へmergeする。opaque cursorはgenerationと各shardのkeysetを保持する（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）。reshard中は旧新をNoteId/routeVersionで重複排除する。`created_by` はroute予約時に固定し、Note moveでは変えない。
 
 ### invitation_routes
 
@@ -135,30 +142,106 @@ token発行時はglobal reservationを先に作り、scope-local Invitation comm
 | `id` | text | PK |
 | `kind` | text | NOT NULL, CHECK IN ('noteMove','notePurge','workspaceDeletion','accountDeletion','membershipChange','nameChange','integrationDisconnect') |
 | `partition_key` | text | NOT NULL |
-| `request_key` | text | accountDeletionのuserRequestではNOT NULL |
+| `request_key` | text | NOT NULL |
 | `state` | text | NOT NULL, CHECK IN ('running','completed','rejected') |
 | `payload` | text | NOT NULL（JSON） |
 | `attempts` | integer | NOT NULL DEFAULT 0 |
 | `next_attempt_at` | integer | NULL 可 |
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
-| `expires_at` | integer | terminal accountDeletionではNOT NULL、runningはNULL |
+| `terminal_at` | integer | NULL可。terminal（`completed` / `rejected`）へ移す遷移が入れる（DB制約は置かず状態機械が守る） |
+| `expires_at` | integer | NULL可。terminal accountDeletionだけが入れる（同上） |
 
-`next_attempt_at` の partial index（非 NULL）を recovery Cron が使う。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
+`request_key` は全kindでNOT NULLとする。再送の重複排除は `UNIQUE(kind, partition_key, request_key)` が担うが、SQLiteはNULL同士を互いに相異なるものとして扱うため、NULLを許した瞬間にその行は索引の重複排除から外れる。呼び出し側が固有の再送キーを持たないkindは、同じ送信から決定的に導ける値を入れる。
 
-accountDeletionは`UNIQUE(partition_key, request_key)`で同じ送信を再生し、`UNIQUE(partition_key) WHERE kind = 'accountDeletion' AND state NOT IN ('completed','rejected')`でrunning operationを1件にする。rejected後は別request keyで新operationを許す。manifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合（`preparing` / `committing` など）はこの3値ではなく`account_deletion_manifests.state`が持つ。
+`terminal_at` は terminal へ移した時刻で、`countTerminalSince`（しきい値判定の観測値）と `deleteTerminal`（回収）が鍵にする。`expires_at = terminal_at + 120日` はこの列から導く。
+
+`attempts` / `next_attempt_at` を動かすのは recovery Cron だけで、`next_attempt_at` の partial index（非 NULL）がその claim の走査路である。`expires_at` を書くのは accountDeletion の manifest を terminal へ移す transaction だけである（下記）。この 3 列は `beginOrResume` / `complete` / `reject` の遷移では触らないので、それらの経路を持たない配備では既定値のまま残る。payload は状態機械の入力を固定し、再開時に利用者入力を読み直さない。
+
+一意性はいずれも **kind ごとに閉じる**。`UNIQUE(kind, partition_key, request_key)` が同じ送信の再生を、`UNIQUE(kind, partition_key) WHERE state NOT IN ('completed','rejected')` が「partition ごとに running は 1 件」を担保する。`kind` を鍵に含めるのは、同じ partition key を共有する別種の operation が共存しうるためである — 実行中の `accountDeletion` を持つ partition で `noteMove` を始めることは正当であり、kind を含めない索引ではこれが制約違反になる。`countTerminalSince` が使う terminal 索引と partition 走査用の索引も同じく kind から始める。rejected後は別request keyで新operationを許す。accountDeletionではmanifestをterminalへ移すtransactionでoperationにも同じ`expires_at = terminal_at + 120日`を設定し、account manifest prunerがheaderとoperationを同じUserId-shard transactionで削除する。completed Userはdeletedなので新operationを許可しない。build / dispatch の進み具合はこの3値ではなく`account_deletion_manifests.status`（`building` / `built` / `rollingBack` / `completed` / `rejected`）が持つ。
 
 物理分割時、noteMove/notePurgeの`partition_key = noteId`で、対応する`note_routes`とpublic projectionと同じnote coordination shardへ置く。workspaceDeletionはworkspaceIdをpartition keyとしてglobal tombstone/ackを持ち、route key正本はworkspace scopeのmanifestに残す。accountDeletion/nameChangeはUserId shard、membershipChangeはそのdirectoryの調停key、integrationDisconnectはUserId shardへ置く。1つのoperationが別shardの正データを直接transaction更新せず、既存のreserve/command/ack Sagaを使う。
 
 ### account_deletion_manifests
 
-UserId shardに置く。headerは`operation_id` PK、`user_id`（非UNIQUE）、`request_key`、`state` (`buildingMemberships` / `preparing` / `rollingBack` / `buildingAuthorRoutes` / `committing` / `compacting` / `compactingRejected` / `completed` / `rejected`)、membership edge cursor、author route署名generation cursor、`redaction_version`、`completed_at`、`expires_at`を持つ。`UNIQUE(user_id, request_key)`で同じ要求を再生し、`UNIQUE(user_id) WHERE state NOT IN ('completed','rejected')`でrunning manifestを1件にする。terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）。itemsは(`operation_id`, `kind`, `target_key`) PKとし、membership itemはworkspaceId・edge state・membershipId・prepare/release command key・dispatchedAt・ack・cleanup ack、authorRoute itemはNoteId・routeVersion・local/public redaction ackを持つ。
+UserId shardに置く。header と item は別表とする。itemは1 manifestあたり無制限に伸び、100件ずつのpage append・dispatch・compactがすべてitem行だけを触るので、headerと同じ行に畳むと1行の上限（2,000,000バイト）に触れる。
 
-membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。成功時は`compacting`、rollback完了時は`compactingRejected`へ進め、どちらもitemsを100件ずつcompactする。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`expires_at = terminal_at + 120日`を設定する。`(expires_at, operation_id) WHERE state IN ('completed','rejected')` indexから1command最大100件でterminal headerを回収し、running/building/compacting headerは対象外にする。
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `operation_id` | text | PK |
+| `user_id` | text | NOT NULL（非UNIQUE） |
+| `status` | text | NOT NULL, CHECK IN ('building','built','rollingBack','completed','rejected') |
+| `membership_cursor` | text | NULL可。membership edgeのkeyset cursor |
+| `author_route_cursor` | text | NULL可。author routeのgenerationを含むopaque cursor |
+| `receipts` | text | NOT NULL DEFAULT '[]'（JSON配列） |
+| `terminal_at` | integer | NULL可。terminalへ移す遷移が入れる（DB制約は置かず状態機械が守る） |
+| `retain_until` | integer | NULL可。同じ遷移が`terminal_at + 120日`を入れる（同上） |
+
+- indexes: `UNIQUE(user_id) WHERE status NOT IN ('completed','rejected')`でrunning manifestを1件にする。`(retain_until, operation_id) WHERE status IN ('completed','rejected')`は保持期限を過ぎたterminal headerの集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
+- `request_key`は持たない。同じ要求の再生を弾くのは`distributed_operations`の`UNIQUE(kind, partition_key, request_key)`であり、要求鍵の正本を2つ置かない
+- terminal headerを保持中でも別request keyの新manifestを許すが、再要求のしきい値の計数はこの表ではなく`distributed_operations`側で行う。`DistributedOperationStore.countTerminalSince`が保持中のterminal行を数え、しきい値（8件）と窓（120日）の判定はドメインの`AccountDeletionRetryPolicy`が行う。**数えて → 判定して → はじめて作る**（作ってからロールバックしない）（[ADR 044](../adr/044-business-thresholds-in-domain.md)）
+
+### account_deletion_manifest_items
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `operation_id` | text | PK part |
+| `key` | text | PK part |
+| `kind` | text | NOT NULL, CHECK IN ('membership','authorRoute') |
+| `workspace_id` | text | `kind = 'membership'` のときNOT NULL |
+| `edge_state` | text | NULL可, CHECK IN ('active','removing','pending') |
+| `membership_id` | text | NULL可 |
+| `prepare_command_key` / `prepare_dispatched_at` / `prepare_acked_at` | text / integer / integer | NULL可 |
+| `release_command_key` / `release_dispatched_at` / `release_acked_at` | text / integer / integer | NULL可 |
+| `cleanup_acked_at` | integer | NULL可 |
+| `note_id` | text | `kind = 'authorRoute'` のときNOT NULL |
+| `route_version` | integer | NULL可 |
+| `local_redaction_acked_at` / `public_redaction_acked_at` | integer | NULL可 |
+
+- PKは(`operation_id`, `key`)の2列とする。`AccountDeletionManifestItem.key`がそもそも`kind`を先頭に畳んだ合成鍵であり、`kind`を第3のPK列に立てると同じ鍵が2つの綴りを持つ
+- indexes: (`operation_id`, `kind`, `key`) — 種別ごとのpage走査とcompact用
+- **CHECK**: `kind` に応じた `workspace_id` / `note_id` のNOT NULL対応
+
+#### 進行
+
+membership pageはheaderと同じUserId shardのactive/removing/pending edgeをkeyset最大100件appendし、author pageはroute readerから受けた最大100件を冪等appendする。headerはpersonal cleanup、auth residue、external connection、global Job history、uniqueness releaseのreceiptも持つ。各pageのitems/cursor/次の決定的continuation、各dispatch pageのack/次taskは同じUserId-shard transactionで保存する。operation payloadへitem配列を埋めない。remote送信前に最大100 itemへ決定的command keyと`dispatched_at`を保存する。prepare失敗時は`rollingBack`へ進め、prepare dispatched itemをack有無にかかわらずrelease pendingとして最大100件・6接続waveで配送する。未取得lockへのreleaseはno-op ack、取得済みlockは解除する。release dispatched/ackと次rollback taskを同じtransactionで保存し、personal abort ackを含む全release ack前は縮約しない。全required item ack/receipt後だけUser finalizeを許す。itemのcompactはstatusを動かさず、`built`（成功）または`rollingBack`（rollback完了）のまま100件ずつ進める。縮約中であることは header の列ではなく **item 行の残数**が持つ状態であり、header に専用の値を足さない。item 0件のtransactionだけがheaderを`completed`または`rejected`へ移し、`retain_until = terminal_at + 120日`を設定する。terminal headerの回収は`status IN ('completed','rejected') AND retain_until <= asOf`で絞り、`operation_id`順に1command最大100件で進む（上記「有界な掃引 / 削除」）。`building` / `built` / `rollingBack` headerは対象外にする。
 
 ### global_maintenance_runs
 
-global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` / `jobTombstonePrune` / `accountManifestPrune`)、`as_of`、generation集合、**run生成時に固定した順序付きの表集合**、`state` (`running` / `completed`)、`lease_until`、`lease_owner`、generation/shardごとの`unclaimed | active | completed`と表集合へのposition（index）、keyset cursor、active command key、`completed_at`、`expires_at`を持つ。表集合はrun行が持つスナップショットで、resume中に配備の設定が変わっても動かない。laneが持つのは表名ではなく表集合へのpositionであり、**laneの現在表はrun行の表集合から引く。配備の設定から引いてはならない**（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）。`UNIQUE(kind) WHERE state = 'running'`でkindごとの実行中runを1つに制限する。run ID候補はhour bucket+kind+generation集合から決定するが、同kindに未完了runがあれば新しいhourの候補を作らず、最古running runの固定`as_of`とpositionを返す。初回/lease recoveryは未claim positionを最大6件claimする。target shardのDELETE成功後、routing catalog shardで現在positionのkeyset cursorと次command keyのcheckpointと次Queue outboxを同じtransactionに保存する（表は進めない — laneのpositionを進めるのは表完了ack側で、positionを使い切ったときにそれがshard完了ackになる）。両shardを同じtransactionには入れず、応答喪失時は保存済み入力cursorからDELETEを再実行する。DELETEは期限述語/keysetに対して冪等である。shard完了ackと次position claimも同じtransactionで行い、kind全体のactiveは6以下、全position ackでcompletedにしてから次のCronが新runを作れるようにする。completed時に`expires_at = completed_at + 30日`を設定し、`(expires_at, run_id) WHERE state = 'completed'` indexを使って1command最大100件で回収する。running runは`expires_at = NULL`で回収しない。
+global routing catalog shardに置く。runのheaderとlaneは別表とする。laneはgeneration × shardの直積ぶんの行を持ち、checkpointごとに1 lane行だけを条件付き更新するので、run行に畳むと1 lane の前進が run 全体の版を奪い合うことになる。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `run_id` | text | PK |
+| `kind` | text | NOT NULL, CHECK IN ('authStatePrune','jobTombstonePrune','accountManifestPrune') |
+| `status` | text | NOT NULL, CHECK IN ('running','completed') |
+| `tables` | text | NOT NULL（JSON配列）。**run生成時に固定した順序付きの表集合** |
+| `as_of` | integer | NOT NULL |
+| `lease_owner` | text | NOT NULL |
+| `lease_until` | integer | NOT NULL |
+| `completed_at` | integer | completed時NOT NULL |
+| `expires_at` | integer | completed時NOT NULL、runningはNULL |
+
+- indexes: `UNIQUE(kind) WHERE status = 'running'`でkindごとの実行中runを1つに制限する。`(expires_at, run_id) WHERE status = 'completed'`が回収の走査順
+- 表集合はrun行が持つスナップショットで、resume中に配備の設定が変わっても動かない（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）
+
+run ID候補はhour bucket+kind+generation集合から決定するが、同kindに未完了runがあれば新しいhourの候補を作らず、最古running runの固定`as_of`とpositionを返す。初回/lease recoveryは未claim positionを最大6件claimする。target shardのDELETE成功後、routing catalog shardで現在positionのkeyset cursorと次command keyのcheckpointと次Queue outboxを同じtransactionに保存する（表は進めない — laneのpositionを進めるのは表完了ack側で、positionを使い切ったときにそれがshard完了ackになる）。両shardを同じtransactionには入れず、応答喪失時は保存済み入力cursorからDELETEを再実行する。DELETEは期限述語/keysetに対して冪等である。shard完了ackと次position claimも同じtransactionで行い、kind全体のactiveは6以下、全position ackでcompletedにしてから次のCronが新runを作れるようにする。completed時に`expires_at = completed_at + 30日`を設定し、`(expires_at, run_id) WHERE status = 'completed'` indexを使って1command最大100件で回収する。running runは`expires_at = NULL`で回収しない。
+
+### global_maintenance_run_lanes
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `run_id` | text | PK part |
+| `generation` | text | PK part |
+| `shard_id` | text | PK part |
+| `status` | text | NOT NULL, CHECK IN ('unclaimed','active','completed') |
+| `table_index` | integer | NOT NULL。run行の`tables`へのposition |
+| `cursor` | text | NULL可。現在positionのkeyset cursor |
+| `command_key` | text | NOT NULL |
+
+- indexes: (`run_id`, `status`, `generation`, `shard_id`) — 未claim laneの選択用
+- laneが持つのは表名ではなく表集合へのpositionであり、**laneの現在表はrun行の`tables`から引く。配備の設定から引いてはならない**（[ADR 061](../adr/061-maintenance-sweep-order-authority.md)）
+- lease は run 行が持ち、lane の前進はその lease に対する fencing で守る。詳細は [platform/index.md](../platform/index.md)「Global Cron」
 
 ### job_slots
 
@@ -220,9 +303,11 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `updated_at` | integer | NOT NULL |
 
 - **インデックス**: `identities_user_idx` (`user_id`)、`identities_user_password_uq` UNIQUE (`user_id`) WHERE `kind = 'password'`（1 利用者 1 件）。provider accountのglobal uniquenessはreservationが担う
-- **件数上限**: Password/OAuth合計8件。UserId shardの最終UoWでcurrent件数を検査し、`BEFORE INSERT` triggerも同じ`user_id`が既に8件ならabortする。並行追加も同shard transactionで直列化され、`IdentityLimitExceeded`へ写像する
+- **件数上限**: Password/OAuth合計8件。UserId shardの最終UoWでcurrent件数を検査する。並行追加も同shard transactionで直列化され、`IdentityLimitExceeded`へ写像する。**DB側の`BEFORE INSERT` triggerは置かない**: `IdentityRepository`の契約は件数を制約せず、trigger が発火しても駆動エラーからは `SystemError(DatabaseError)` にしか翻訳できないため、多層防御にはならず業務規則を不透明な障害の裏へ隠すだけになる。上限を決める場所はドメインの`IdentityPolicy`ひとつである（[ADR 044](../adr/044-business-thresholds-in-domain.md)、[ADR 054](../adr/054-provider-account-uniqueness-owner.md)）
 
-`identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `provider_account_key`, `created_at`, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
+`identity_removal_receipts`はUserId shardに`identity_id` PK、`user_id`, `operation_id`, `kind` (`password` / `oauth`), `provider_account_key`（`kind = 'oauth'` のときだけ非NULL）, `expires_at`を30日保持する。Identity削除とreceipt/outboxを同じtransactionで保存するため、応答喪失後の同一解除は成功を返せ、global consumerは削除済みrowを読まずprovider reservationを解放できる。
+
+- **インデックス**: `identity_removal_receipts_operation_idx` (`operation_id`) はoperation単位の読み出し、`identity_removal_receipts_expires_idx` (`expires_at`, `identity_id`) は期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 - **CHECK**: `kind` に応じた列の NULL / NOT NULL の対応
 
 ### sessions
@@ -238,7 +323,7 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 
 - 版を持たない。`expires_at` はサインイン時に `Session.ttlMs`（30 日）で確定して更新しない。例外的に`signOutOtherSessions` / `changePassword`が現在の1行の`auth_epoch`だけをUserの新世代へ条件付き更新する
 - 認証は`users.auth_epoch = sessions.auth_epoch`を要求する。世代更新1行で大量sessionを即時失効し、物理削除はUserId/期限索引を使って1page最大100件で行う
-- **インデックス**: `sessions_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`sessions_expires_idx` (`expires_at`, `id`) — 旧世代/期限切れを100件ずつ削除する
+- **インデックス**: `sessions_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`sessions_expires_idx` (`expires_at`, `id`) — 旧世代 / 期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
 
 ### auth_tokens
 
@@ -254,8 +339,9 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `created_at` | integer | NOT NULL |
 | `expires_at` | integer | NOT NULL |
 
-- **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`)
-- pending tokenは(`user_id`, `purpose`)で部分UNIQUEとし最大1件。消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
+- **インデックス**: `auth_tokens_user_purpose_idx` (`user_id`, `purpose`)、`auth_tokens_user_epoch_idx` (`user_id`, `auth_epoch`, `id`)、`auth_tokens_expires_idx` (`expires_at`, `id`) — 後ろの 2 本は旧世代 / 期限切れ集合への絞り込みに使う（回収の順序は上記「有界な掃引 / 削除」）
+- pending tokenの「(`user_id`, `purpose`)ごとに最大1件」はusecase側が`deleteByUserAndPurpose`で保ち、**DB制約としては置かない**。`AuthTokenRepository`の契約は同じ組に複数のpendingが在ることを許しており（適合スイート ADP-identity-024）、部分UNIQUEを張るとポート契約に反する。複数pendingが在るときに`findPendingByUserAndPurpose`がどの行を返すかは**契約として未定義**である（正本はポート定義）。D1実装はこの未定義の幅の中で`ORDER BY created_at DESC, id DESC`を選び、走査順まかせを避けている
+- 消費時はcurrent `users.auth_epoch`との一致も同じUserId shard transactionで検査する。旧世代/期限切れ行は1page最大100件で回収する
 
 ### login_attempts
 
@@ -266,7 +352,7 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 | `last_failed_at` | integer | NULL 可 |
 | `expires_at` | integer | NOT NULL |
 
-- **インデックス**: `login_attempts_expires_idx` (`expires_at`, `key`) — 同一expiryを安定keysetで回収する
+- **インデックス**: `login_attempts_expires_idx` (`expires_at`, `key`) — 期限切れ集合への絞り込みに使う。回収は `key` 順の keyset で進む（上記「有界な掃引 / 削除」）
 - **ロックの状態は列に持たない**。ロックは `failure_count` と `last_failed_at` から `LoginThrottlePolicy.evaluate` が導出する（[domains/identity.md](../domains/identity.md)）。保存しないのは、失敗回数の加算を単一の SQL 文にするためである — 書き込む値が読んだ値に依存していなければ「読んでから書く」形を避けられ、しきい値の規則を SQL に持ち込まずに済む
 - 加算は次の 1 文で行う。返る値がそのまま `LoginAttemptStore.recordFailure` の戻り値になる
 
@@ -274,11 +360,16 @@ global routing catalog shardに置く。`run_id` PK、`kind` (`authStatePrune` /
 INSERT INTO login_attempts (key, failure_count, last_failed_at, expires_at)
 VALUES (?1, 1, ?2, ?3)
 ON CONFLICT(key) DO UPDATE SET
-  failure_count = failure_count + 1,
+  failure_count = CASE
+    WHEN login_attempts.expires_at <= ?2 THEN 1
+    ELSE login_attempts.failure_count + 1
+  END,
   last_failed_at = excluded.last_failed_at,
   expires_at     = excluded.expires_at
 RETURNING failure_count, last_failed_at;
 ```
+
+- 加算が条件式なのは、**期限切れの記録が不在として読めるだけでなく不在として振る舞う**ためである。行の物理削除は `deleteExpired` の掃引に委ねられているので「期限切れの行が残っている」状態は正常であり、`get` が `null` を返した直後の `recordFailure` は 1 から数え直さなければならない。`?2` は `last_failed_at` に書くのと同じ `now` であって、しきい値ではない — 書き込む値が読んだ値に依存しない性質も、`LoginThrottlePolicy` の規則を SQL に持ち込まない方針も保たれる
 - `key` は用途ごとに名前空間を分けた 2 系統を持つ（[domains/identity.md](../domains/identity.md) の `LoginAttemptKey`）。パスワードサインインは `signIn:{正規化済みメールアドレス}:{clientKey}`（`forSignIn`）、共有リンクのパスワード照合は `share:{共有トークンのハッシュ}:{clientKey}`（`forSharePassword`）。名前空間を先頭に置くのは、別種の照合の失敗が同じ行に集まって互いのロックを誘発するのを防ぐため。共有側の材料が素の共有トークンではなく `TokenHash` なのは、この列に共有の秘密を平文で残さないためである
 
 ---
@@ -604,7 +695,7 @@ global D1 に置く。サインイン用と連携用の両方の認可フロー�
 | `expires_at` | integer | NOT NULL |
 
 - **CHECK**: `intent IN ('linkIdentity','integration')` なら `user_id IS NOT NULL AND user_auth_epoch IS NOT NULL`。`signIn`なら両方NULL
-- **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 同一expiryを安定keysetで回収する
+- **インデックス**: `oauth_flow_states_expires_idx` (`expires_at`, `state`) — 期限切れ集合への絞り込みに使う。回収は `state` 順の keyset で進む（上記「有界な掃引 / 削除」）
 
 `take` は束縛が一致したときだけ削除する条件付きの操作で、`DELETE … WHERE state = ? AND state_binding_hash = ? RETURNING *` で削除し、返った行の `expires_at` を見て期限切れなら `null` を返す。`WHERE` に期限を混ぜないのは、混ぜると束縛が一致した期限切れの行が残ってしまうため。
 
@@ -857,6 +948,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - 照合は前処理の 1〜2 段目だけ（NFKC 正規化 → 小文字化。ビグラム化は行わない）を検索語と対象テキストの双方に適用した文字列同士の部分一致で行う。クエリ側と同じ正規化を通すため、全角英数・半角カナ・大文字小文字のゆれは検索と同じ基準で吸収される
 - 検索語が複数の run に分かれる場合（クエリ構築で AND に結ばれる単位）は run ごとに一致を探し、見つかったものをすべて囲む。切り出す窓は最初の一致を基準に取る
 - NFKC は文字数を変えうるため、正規化と同時に**正規化後の位置 → 元テキストの位置**の写像を作り、切り出しとハイライトの区間は元テキストの位置で決める。返す文字列は常に元テキストの一部であり、正規化済みテキストを利用者に返してはならない
+- 単独の書記素クラスタになると保証できる ASCII の連なりは、クラスタへ分けずに一括で写す。ASCII 符号位置は NFKC 不変で、小文字化しても 1 コードユニットのままなので、一括の写像はクラスタごとに掛けた写像と一致する
 - キーワード未指定のときは `null`（型のとおり）。一致が 1 つも見つからないとき（境界をまたぐ偽陽性など、後述の「既知の限界」に当たる行）も `null` とし、画面は素の `excerpt` を出す
 - `highlightedExcerpt` は型のとおり 1 本の文字列で返す。`excerpt` / `text` は本文から抽出した**平文**なので、まず HTML エスケープしてから一致区間を `<mark>` … `</mark>` で囲む。標識を入れる側がエスケープまで責任を持つことで、表示層はこの値だけを HTML として描ける（素の `excerpt` は平文として扱う）
 
@@ -873,6 +965,9 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 - 英単語の中間部分一致は失われる（`flare` で Cloudflare は引けない。前方一致 `cloud*` は可能）
 - クエリ内の 1 文字 CJK run は unigram の挙動になる
 - ハイライトの一致位置は生テキストへの部分一致で求めるため、FTS のヒットと必ずしも一致しない。境界をまたぐ偽陽性の行や、タイトル・タグ名だけで一致した行では `highlightedExcerpt` が `null` になる（前節「ハイライトと抜粋の生成」）
+- ハイライトは `excerpt` に一致が無かったとき、本文の**前方 4,000 文字**までしか探さない。窓は 160 文字なので、それより後ろにしか一致が無い行は `null` に落ちる。検索の 1 ページが 800,000 バイトの本文を limit 件ぶん運ばないための上限である
+- bigram索引テキストにはバイト予算（1,800,000）があり、これを越える分のトークンは索引に入らない。本文の前方から入るので頭からは引けるが、末尾しか一致点が無いキーワードは引けない。打ち切りの単位はトークンで、CJK は 2 文字ビグラム、非 CJK は空白区切りの 1 語である。したがって空白を 1 つも含まない 1 語が単独で予算を越える場合は、その語が丸ごと落ちる（1.8MB の 1 語は前方一致でも引けないため、入れても得るものが無い）。投影そのものは成功する（索引に入らないことを理由に投影を失敗させると、そのNoteは再試行を経てquarantineへ行き永久に検索へ出ないため）。予算はcontentless索引の取り消しが「入れたときと同じトークン」を再導出できることに依存するので、変えると既存の索引行が綴れなくなる
+- 書記素クラスタを跨ぐ文脈依存の小文字化（合成済みの結合列など）は一致しない。位置の写像を保つため小文字化は書記素クラスタごとに掛けるので、クラスタ境界を越えて 1 文字に畳む変換は再現できない。この場合も `null` に落ちるだけで、誤った位置を返すことはない
 
 ### Global projection tables
 
@@ -952,7 +1047,87 @@ indexes:
 
 projection consumerはcurrent routeを解決し、scopeのatomic snapshotとversion付きIdentity/Workspace current stateを読む。routeが`purging` / `tombstone`なら削除する。本体・tag表・FTSは1つのD1 batchで置換する。比較は階層化し、routeVersionが大きければowner context切替として残り3成分をリセットして受理、同routeVersion内だけ`(projection_revision, author_version, workspace_version)`を成分比較する。大小が混在するsnapshotは書かず、全sourceを読み直して再試行する。
 
+### 両 plane 共通の infrastructure table
+
+#### outbox_events / processed_events
+
+domain event の送信箱と、消費側の重複排除表。**両 plane に同じ形で置く。** `OutboxRepository` の実装は 1 つで、渡されたセッションの側の表に当たる。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `id` | text | PK |
+| `type` | text | NOT NULL |
+| `payload` | text | NOT NULL（JSON） |
+| `occurred_at` | integer | NOT NULL |
+| `aggregate_id` | text | NOT NULL |
+| `created_at` | integer | NOT NULL |
+| `attempts` | integer | NOT NULL DEFAULT 0 |
+| `processed_at` | integer | NULL可。配送完了時刻 |
+| `failed_at` | integer | NULL可。quarantine 時刻 |
+| `next_attempt_at` | integer | NULL可 |
+| `claimed_at` / `claimed_by` | integer / text | NULL可。lease の持ち主 |
+| `last_error` | text | NULL可 |
+
+- indexes: (`created_at`, `id`) `WHERE processed_at IS NULL` が relay の claim 走査、(`processed_at`) `WHERE processed_at IS NOT NULL` が prune の走査。**部分索引はどちらも両 plane に置く** — 同じリポジトリ実装が両 plane の `outbox_events` に当たるので、`processed_at IS NOT NULL AND processed_at < ?` の走査は scope 平面へ prune を配線した時点でそのまま効く。今日その配線を持つのは global 平面だけで、`pruneProcessed` は駆動の affected-row count を読むため scope 平面の executor がそれを答えられるようになるまで global 平面に限られる
+- `processed_events` は本書「物理配置」が定める (`consumer`, `event_id`) PK と `processed_at` NOT NULL だけを持ち、索引を追加しない。読みは常に PK の等値である
+
+#### _occ_guard
+
+条件付き更新が満たされなかったことを、原子適用の単位ごと中断させるための表。global D1 と scope DO の両方に置く。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `id` | integer | PK, `CONSTRAINT _occ_guard_conflict CHECK (id <> 0)` |
+
+**この表は行を持たない。違反されるために存在する。** 原子適用の単位は D1 の `batch()` と scope DO の `transactionSync` であり、どちらも「条件付き `UPDATE ... WHERE version = :expected` が 0 行に当たった」ことをエラーにしない（SQLite は 0 行更新を成功として返す）。中断させる手段がこの表である。
+
+期待が**成り立たないときにだけ**実行され、かつ実行されれば必ず `CHECK` に反する 1 文を、条件付き更新の**直前に**同じ単位へ積む。
+
+```sql
+INSERT INTO _occ_guard (id) SELECT 0 WHERE NOT EXISTS (<期待が成り立つときだけ行を返す SELECT>);
+```
+
+- 直前に置くのは、1 つの batch / transaction の中で後続の文が先行文の効果を見るため。更新のあとに置いた guard は、自分が書いた版を読んでしまう
+- 制約名を固定するのは、駆動側のエラーメッセージからこの中断だけを識別し、`ConflictError("OPTIMISTIC_LOCK_FAILURE")` へ翻訳できるようにするため。他の `CHECK` 違反と混同しない
+- 楽観ロック以外の条件付き更新（route の CAS、uniqueness reservation の 3 分岐）も同じ仕掛けを使う。翻訳先の誤りはアダプターが決める
+
+#### scope_task_due_index
+
+`ScopeTaskQueue.listDue` のための派生索引。global D1 に置く。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `scope_type` | text | PK part, CHECK IN ('user','workspace') |
+| `scope_id` | text | PK part |
+| `kind` | text | PK part |
+| `operation_id` | text | PK part |
+| `due_at` | integer | NOT NULL |
+| `priority` | integer | NOT NULL |
+| `lease_expires_at` | integer | NULL可。由来行の `scheduled_tasks.status = 'running'` のときだけ値を持つ（この表に `status` 列は無く、NULL がそのまま `pending` を写す） |
+
+- **正データではない。** 正は各 scope DO の `scheduled_tasks` であり、本表は「どの scope に仕事があるか」だけを持つ。`failed` 行は載せない
+- indexes: (`priority`, `due_at`, `kind`, `operation_id`) — `ScopeTaskScheduler` の選択規則を scope をまたいで適用する
+- 更新の主体は scope object 自身である。`scheduled_tasks` に触れた write-set を commit した RPC は、**呼び出し元へ応答を返す前に**自分の担当ぶんを置き換える。したがって `run(scope, fn)` が解決した時点で索引は新しい。D1 と scope DO を 1 transaction に含めない規約（本書「共通の規約」）は保たれる — これは順序の保証であってトランザクションの結合ではない
+- UoW を開かずに `ScopeTaskScheduler` を組み立てた呼び出し側 — 今日は適合ハーネスの `forScope` だけ — には commit hook が無いので、`ScopeTaskScheduler` 実装が書き込み直後に自 scope のスライスを置き換える。alarm の再武装はこの経路では行わない。武装は object の持ち分であり、object は commit された write-set が `scheduled_tasks` を名指したときと turn の終わりに必ず行う。したがってこの経路が届くのは「索引に載れば中央 runner が拾う」配備に限られ、object が継続を駆動する配備（[platform/index.md](../platform/index.md)「Scope Alarm」）では拒む — そこでは索引にしか載らない行を誰も起こさない
+- publish は**スライスの全置換**である。個々の変更を写すのではなく担当ぶんを丸ごと置き換えるので、`scheduled_tasks` を変える 2 つの経路（commit された write-set と Alarm turn の claim）は、互いにどの行を触ったかを知らずに同じ結果へ収束する。収束は順序の性質なので、**scope object は自分の publish を — `scheduled_tasks` の読みごと — 直列化する**。読みと D1 への往復が交差すると、古いスライスが後に着地して新しいスライスの行を落とす
+- 1 回に publish するスライスは**有界**とする。優先度ごとに、次に取れる時刻（`pending` は `due_at`、`running` はリース失効時刻）の早い 25 行、全体で最大 100 行。この索引は「どの scope に仕事があるか」を答えるためのもので全件の写しではなく、`ScopeTaskQueue.listDue` は優先度ごとに枠を確保してから次を取るので、上限を全体一律にすると 1 つの優先度の滞留が他の優先度を索引から押し出す。溢れた行は最も早い行から順に載り、残りは次の publish で載る
+- commit と索引更新のあいだで落ちた場合の drift は、当該 scope の Alarm が自分の `scheduled_tasks` を正として書き直して治す。その Alarm を張るのは publish に失敗した object 自身である — publish が落ちたら 10 秒後の alarm を張り、その turn の後始末で索引を書き直す。ハンドラを登録しない配備でも turn は空回りして publish だけを行う。この alarm を消す地点は turn の出口だけなので（[platform/index.md](../platform/index.md)「Scope Alarm」）、object が evict されて作り直されても、その scope へ別の write-set が commit されても再試行は残る
+- drift の 2 方向は**非対称**である。索引に残った余分な行は、読み手が各行に対して改めて scope UoW を開いて `claimDue` で取り直すので、costは失敗する claim 1 回に留まる。一方**索引に載らなかった行**は `listDue` が索引しか読まないため誰も探しに来ず、自然回復しない。上記の再試行 alarm がその唯一の回復経路である
+- Durable Objects を全列挙する手段が無いこと（`spec/platform/index.md`「Global Cron」: Cron は scope object を全列挙しない）と、ポート契約が `listDue` を必須としていることの両立がこの表の存在理由である
+
 ### Scope infrastructure tables
+
+#### _scope_identity
+
+scope object が自分の ScopeKey を保持する 1 行の表。
+
+| カラム | 型 | 制約 |
+| --- | --- | --- |
+| `id` | integer | PK, CHECK `id = 0`（1 行に固定） |
+| `scope_type` | text | NOT NULL, CHECK IN ('user','workspace') |
+| `scope_id` | text | NOT NULL |
+
+「scope table の `owner_type / owner_id` または `scope_type / scope_id` は object 自身の ScopeKey と一致しなければならない」（本書「共通の規約」）を検査するには、object が自分の ScopeKey を知っている必要がある。object の名前から逆算はできない — 名前は `idFromName` の入力であって読み出せる値ではなく、テスト時には名前空間の接頭辞も付く。したがって最初に到達した呼び出しが ScopeKey を書き込み、以降の呼び出しはそれとの一致を検査する。不一致は 2 つの scope が 1 つの object へ到達したことを意味し、`SystemError(DataIntegrityError)` として拒否する。
 
 #### scheduled_tasks
 
@@ -1039,11 +1214,13 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 | `kind` | text | NOT NULL |
 | `result` | text | NOT NULL（同じ command の再試行へ返す JSON。**値を返すコマンドを足すスライスが使う**列） |
 | `applied_at` | integer | NOT NULL |
-| `expires_at` | integer | NULL可。進行中account deletion barrierはNULL |
+| `expires_at` | integer | NULL可。進行中account deletion barrierと`kind = 'command'`はNULL |
 
-この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`(operationId, commandKey)`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
+この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`kind = 'command'`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
 
-`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
+`kind = 'command'` の行は `expires_at IS NULL` で、Alarm pruner（`expires_at <= asOf`）の対象外である。**再配送されうる限り残さなければならない**のが理由で、コマンドの再配送は outbox の attempt 上限で有界になるが壁時計では有界でない — quarantine された行の手動再駆動と、継続要求が同じ key で再駆動される回復経路（[ADR 040](../adr/040-continuation-transport.md)）のどちらも期限を持たない。期限を切れば「期限後の再配送が二重適用になる」ので、切らないほうが安全側である。したがってこの行は当該 scope の寿命ぶん積み上がる。値を返すコマンドを足すスライスが `result` を使い始める時点で、そのコマンドの再駆動窓を根拠にした保持期間をここに定めること。
+
+`kind = 'accountDeletionBarrier'`はpersonal scopeの全通常write admissionを閉じる正本で、`result`に`{ state: running | completed, userId, componentAcks: { …宣言されたcomponentをキーとするマップ… } }`を持つ（キーは配備が宣言したcomponentであって、enum全体の固定列挙ではない）。各componentの最終pageは、残件があれば次task、0件なら自身のackを同じscope-local UoWで保存する。running中は`expires_at IS NULL`でAlarm prunerの対象外とする。prepare rejection時は同じoperation ownerを条件にrowを削除し、解除ack後だけUserをactiveへ戻す。**配備が宣言した全component**（composition rootがparticipant registryから実装へ渡す集合）のackが揃った場合だけcompleted commandを受け、`expires_at = completedAt + 120日`にする。宣言していないcomponentへダミーackを置かない（[ADR 039](../adr/039-cleanup-participants-declaration.md)）。このcommitと同じUoWで`identity.personalBarrierPruneContinued`を期限時刻へ登録する。scope全体のunrelated `scheduled_tasks` / outboxが空かどうかでは代用しない。**1 つの personal scope が持つ barrier receipt は 1 件である** — `ScopeCleanupAdmissionStore` の読みはこの `kind` の行を 1 件として扱い、完了・回収・解除もその 1 件に対して行う。Alarm prunerは`expires_at <= asOf`を最大100件ずつ消し、100件なら同じ固定`asOf`のtaskを再登録する形を共通のprunerに揃えるが、1 scopeの回収はその1件で終わるので枠が埋まることはない。barrier作成・component ack・完了・回収・解除と通常writeは同じDOで直列化される。
 
 鍵と秘密はテーブルに置かない。供給元（composition root が渡す鍵束）の定義と項目の一覧は [presentation/index.md](../presentation/index.md) を正典とする。
 

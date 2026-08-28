@@ -83,9 +83,9 @@ D1 read replication は global read の latency / throughput を分散するが�
 
 global容量は表群ごとに週次予測する。publicは `公開Note件数 × p95投影行サイズ × FTS/索引実測係数`、job historyは `90日内のrequested Job数 × (p95履歴行+target reverse route+index係数)`、controlはroute / membership / operation/cleanup manifest ackの平均行サイズと増加率で見積もる。write QPSにはJobのenqueue/start/progress/terminal/removeとreverse route更新をすべて含める。使用率50%、D1 write p95 200ms超、またはoverloaded率1%を5分継続した時点でshard-aware readerを検証する。60%または90日以内に70%到達予測でdual-write/backfillを開始し、70%で新規公開など非critical writeを流量制御する。
 
-物理shardはtransaction groupを分断しない。NoteId hashの同じ `note coordination shard` に `note_routes`、noteMove/notePurge operation、当該Noteのpublic search/tag/FTS行をco-locateする。purgeのpublic delete+ack、moveのroute+operationはこのshard内transactionで保つ。public検索は最大32 shardを同時6接続のwaveで読み、署名opaque cursorがshard generation・各shardのkeyset位置・絶対rankを持つ。各shardから1page最大limit件だけ読み、keywordなしは `(updated_at DESC, note_id)`、keywordありはshard内FTS順位のReciprocal Rank Fusionと`updated_at, note_id` tie-breakでmergeする。単一DB時のglobal bm25同値は保証せず、shard数に依らず再現可能な順位を契約とする。dual-readはNoteIdで重複排除する。
+物理shardはtransaction groupを分断しない。NoteId hashの同じ `note coordination shard` に `note_routes`、noteMove/notePurge operation、当該Noteのpublic search/tag/FTS行をco-locateする。purgeのpublic delete+ack、moveのroute+operationはこのshard内transactionで保つ。public検索は最大32 shardを同時6接続のwaveで読み、opaque cursorがshard generation・各shardのkeyset位置・絶対rankを持つ（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）。各shardから1page最大limit件だけ読み、keywordなしは `(updated_at DESC, note_id)`、keywordありはshard内FTS順位のReciprocal Rank Fusionと`updated_at, note_id` tie-breakでmergeする。単一DB時のglobal bm25同値は保証せず、shard数に依らず再現可能な順位を契約とする。dual-readはNoteIdで重複排除する。
 
-NoteId shard上の二次キー走査は共通shard readerだけが行う。`created_by` / `scope` route fan-out、sitemap、public authorは最大32 shard・全体limit 200（sitemapは呼出しlimit）・同時6接続のwaveとし、署名cursorにgenerationと各shard位置を持つ。`resolveMany`は最大500 NoteIdをshard別batchへgroupingする。reshard中はいずれも旧新を読み、NoteId/UserIdとversionで重複排除する。
+NoteId shard上の二次キー走査は共通shard readerだけが行う。`created_by` / `scope` route fan-out、sitemap、public authorは最大32 shard・全体limit 200（sitemapは呼出しlimit）・同時6接続のwaveとし、opaque cursorにgenerationと各shard位置を持つ。`resolveMany`は最大500 NoteIdをshard別batchへgroupingする。reshard中はいずれも旧新を読み、NoteId/UserIdとversionで重複排除する。
 
 `workspace_directory`はWorkspaceId hashで分ける。利用者のworkspace pageはUserId shardから得た最大20 IDだけを最大6接続で直接解決する。公開workspace/sitemap一覧は最大32 shard・同時6接続・全体200件を`(updatedAt DESC, workspaceId)`でmergeし、署名cursorにgenerationと各shard位置を持つ。総件数を求める全shard countは提供しない。
 
@@ -111,6 +111,7 @@ Identity/email/handle/provider identityのequality uniquenessはnormalized key h
 | Queues | retention | 最大 14 日 |
 | R2 | object | 単一 PUT 5 GiB / multipart 4.995 TiB |
 | R2 | 同一 key の並行 write | 1 秒あたり 1 回 |
+| R2 | 1 回の delete | **1,000 key** |
 
 ## 行サイズの予算
 
@@ -149,7 +150,11 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
 | local projection rebuild | **100 notes** | 1 scheduled task の CPU と再開粒度 |
 
-scope-local の一括削除は、1 turn の SQL 文数がバッチ件数に比例しない形で実装する（SQL バックエンドなら列挙 1 ＋ 多行 DELETE 1 ＋ 多行 outbox INSERT 1 の 3 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。理由は [ADR 056](../adr/056-performance-budget-placement.md)。
+scope-local の一括削除は、**書き込みをバッチ件数によらず 1 回の原子適用にまとめる**形で実装する（scope DO なら `transactionSync` 1 回。**書き込み側の RPC 往復は件数によらず 1 回**で、その中の outbox は多行 INSERT 1 文）。ただしこれは**上限ではなく実装が満たすべき設計目標**であり、行数を軸に持つ上の表とは軸が違う。
+
+一方で **1 turn の SQL 文の総数と、読み側の RPC 往復は件数に比例する**。所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約から、読みは 1 件につき往復を持つ。Cloudflare 実装の実測は 1 turn `4n + 3` 文（`n` 件に対し読み `2n + 2` ＋ commit 内 `2n + 1`）で、commit は件数によらず 1 回である。これも上限ではなく実装が満たすべき設計目標として置く（[ADR 056](../adr/056-performance-budget-placement.md) 決定 2）。どのバックエンドがこの数に届かないかは同 ADR のコンテキストが持ち、この節には書かない（同 決定 3）。
+
+全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。ここでの「往復」は**ポート呼び出しの追加往復**（件数ぶんの `listByOwner` を要求しない、の意）であって、上の RPC 往復とは別の量である。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 
@@ -187,7 +192,15 @@ Alarm handler は次を守る。
 
 priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOとし、超過はglobal運用eventへ送る。
 
-リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。
+リース期間の下限は最悪ケースのturn所要時間で決める — これを下回るとturn中に別writerが同じ行を掴む。リース期間はwriterが落ちたtaskの回復遅延そのものでもあるため、上限側は、age SLOを持ち、かつクラッシュしたwriterの行が状態として生き残る配備に掛かる — その配備ではリース期間がage SLOを上回ると、クラッシュ1回の回収がそれだけでSLO違反を含む。**帯の中のどの値を使うかは配備が選ぶ**。中央 runner が driver の配備は `SCOPE_TASK_LEASE_MS` 環境変数で、object が driver の配備は同名の scope object binding の変数で選ぶ（objectはDIから設定を受け取れず、構成が届く経路がそこしかない）。未設定なら既定値、正の整数のミリ秒でない値は turn を落とす — 黙って既定へ戻すと帯の外でturnが走っていることを誰も知らないまま進む。
+
+**1 つの scope に対する同時 writer は、その object 自身の Alarm turn 1 本を既定とする。** settle（`complete` / `backoff` / `schedule`）は行キー `(kind, operationId)` だけで撃たれ、claim を同定するトークンを持たない（[database/index.md](../database/index.md) の `scheduled_tasks`）。したがって「リースを超過した旧 writer の settle が、その間に別 writer が再 claim した行を消す」ことを防いでいるのは、リース期間の帯と単一 writer の 2 つだけである。DO は単一スレッドで Alarm の多重起動が無く、Global Cron は scope object を全列挙しないので、既定の構成ではこれが構造的に成り立つ。中央 runner（`listDue` → `claimDue`）を scope の Alarm と併走させる配備はこの前提を崩すので、**実配備の前に settle の fencing を設計し直すこと**。
+
+**単一 writer が何に支えられているかは driver で異なる。** object の Alarm が driver の配備では scope ごとに writer が分かれるので、worker プロセスの多重度は引き金にならない。中央 runner が driver の配備では、runner が scope を選ぶ材料が全 scope 共有の due index（[database/index.md](../database/index.md) の `scope_task_due_index`）なので、起動が 2 本並走すれば両方が同じ scope を掴みうる — 1 ラウンド内の重複排除は起動をまたがない。この配備では**runner の起動が重ならないこと（1 配備あたり同時 1 起動）が単一 writer 前提そのもの**であり、配備はそれを保つ手段（Cron / Queue consumer の多重度の抑制）を持たなければならない。
+
+**どちらが writer かは、scope task ハンドラのレジストリが決める。** レジストリが空なら object は継続の driver ではない — turn は 1 行も claim せず、Alarm は武装せずに削除する。1 つでもハンドラが登録されていれば object が driver になる。したがって**配備はハンドラを登録するか、中央 runner（`listDue` → `claimDue`）を回すかのどちらか一方だけを選ぶ**。両方を有効にした配備は 1 scope に 2 writer を並べることになり、上段の単一 writer 前提が崩れる。driver を object 側へ倒す配備は、ハンドラの登録と中央 runner の停止を同じ切り替えとして扱うこと。due indexの publish はレジストリの有無にかかわらず行うので、中央 runner が driver である配備でも scope は可視のままである。
+
+切り替え時に既に積まれている行は、その object が次に起きたときに武装され直す（object は起動時に一度だけ Alarm を張り直す）。**この張り直しは Alarm を足すだけで、決して消さない** — レジストリが空の配備では何もしない。Alarm を消す地点は turn の出口 1 か所に限る。due index の publish 失敗が張る再試行（[database/index.md](../database/index.md) の `scope_task_due_index`）は Alarm 以外に居場所を持たないので、起動のたびに消す経路があると object の作り直しでそれが失われる。駆動しない配備に古い Alarm が残った場合は、配送された turn が 1 行も claim せずに自分で落とす。
 
 低priority taskが継続的に補充されてもsecurity cleanupとlease reapingを飢餓させない。
 
@@ -202,9 +215,11 @@ priority 0の最古task ageは1分、outboxは5分、projectionは15分をSLOと
 
 Cron は scope object を全列挙しない。scope-local cleanup は必ず Alarm で起動する。
 
-global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`(expiresAt, operationId)` keysetで100件ずつ回収する。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
+global recoveryはshard/operation kindごとに `next_attempt_at, id` のキーセットでclaimし、1 invocation最大100 operationsまたは400 queriesでyieldする。claim leaseは10分、同じoperation IDの重複Cronはlease中no-op、残件はQueue continuationへ渡す。kindごとに最低10件枠を確保し、特定kindの滞留で他を飢餓させない。account deletionの`rollingBack`はrelease未ack itemを100件page・最大6接続で再配送し、terminal manifestは120日後に`operationId` keysetで100件ずつ回収する（`retainUntil <= asOf`は絞り込み）。personal barrierのterminal receiptはglobal scanせず、完了時に登録したscope Alarm taskが期限後100件ずつ回収する。
 
-auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
+auth state / Job tombstone / account terminal manifest cleanupはglobal maintenance run storeにhour bucket+kind+generation集合由来の決定的run ID候補、10分lease、generation/shardごとのclaim/ackを保存する。kindごとのrunning runは1つだけで、前hourのrunが未完了なら次hourのCronもその最古runを固定`asOf`のまま再開し、完了後だけ新runを作る。初回Cron/lease recoveryは未claim shardから最大6 commandを起動し、各laneは1 shard・1 tableのkeysetを最大100行だけ進める。target shardのDELETEとrouting catalogの進捗更新はtransactionを共有しない。DELETE成功後にcatalog上の現在positionのcursorと次command key、次Queue outboxだけを原子的にcheckpointし、応答喪失時は同じ入力cursorから冪等にDELETEを再実行する。table/shard完了時にackと次の未claim shard取得を原子的に行い、kind全体のactive laneを6以下に保つ。reshard中は旧新generationを別positionで処理し、全position ackでcompleted、同じkindのCron再入はlease中no-opにする。completed runはcommand replay/監査用に30日保持する。3種のCronはいずれも共通prunerの初回taskを発行し、`pruneExpiredAuthState`の`global.maintenanceRunPruneContinued`分岐だけが`(expiresAt, runId)` keysetで100件ずつ回収する。running runは対象外である。
+
+**run の lease は fencing である。** lane の checkpoint と ack は、読んだ lease owner と lease 期限に対する条件付き更新として適用する（global D1 では `_occ_guard` の 1 文がこれを担う）。lapse した lease を 2 人が同時に奪いに行けば勝つのは 1 人で、奪われた側の checkpoint は着地しない — 着地すれば回収済み lane の cursor が巻き戻り、その表のその keyset は**その run では掃かれない**。`ScopeTaskScheduler` の settle が単一 writer 前提で fencing を持たない（上記「Scope Alarm」）のと対照的に、こちらは複数 writer を前提として設計する。writer 多重度は配備の選択ではなく、Cron の再入と lease recovery が構造的に生む。削除済みworkspaceのscope-local manifest/header回収はここへ混ぜず、保持中scope objectのAlarmとmaintenance allowlistで進める。
 
 ## 外部要求
 

@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   lint-typecheck-unit:
-    name: Lint / Format / Typecheck / Unit tests
+    name: Lint / Format / Typecheck / Unit tests (node)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,7 +40,32 @@ jobs:
         run: pnpm typecheck
 
       - name: Unit tests
-        run: pnpm test:unit
+        run: pnpm test:node
+
+  # Its own job because it is the slower half and pays for a workerd
+  # isolate per test file: sharing the node job's budget would surface a
+  # regression as a timeout rather than as a failing test.
+  unit-tests-workers:
+    name: Unit tests (workers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm test:workers
 
   build:
     name: Build (node)

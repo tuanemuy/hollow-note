@@ -8,14 +8,17 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "typecheck": "tsgo"
+    "typecheck": "tsgo && tsgo -p tsconfig.cloudflare.json"
   },
   "dependencies": {
     "uuid": "^14.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.0.0",
+    "@cloudflare/workers-types": "^5.20260823.1",
     "@types/node": "^25.7.0",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.6",
+    "wrangler": "^4.125.0"
   }
 }

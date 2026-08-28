@@ -145,7 +145,7 @@
 | PAGE-p40-003 | サインアップ・サインインへ移動 | `spec/pages/index.md#P-40: トップ` | P-01 または P-02 へ遷移する |
 | PAGE-p40-004 | サインイン済みのリダイレクト（`/` → P-10） | `spec/pages/index.md#P-40: トップ` | sign-in 済み user を current または personal P-10 へ送る。P-40 は画面内の導線ではなく `/` のリダイレクトでこの役割を果たすため、sign-in 済みの訪問者はこの画面を見ない |
 | PAGE-p41-001 | P-41 公開検索ページ | `spec/pages/index.md#P-41: 公開検索` | keyword、tags、UTC updated period と results を表示し、initial、searching、results、zero、short query、rate limit、error を表現する。公開 CSP と referrer policy を適用する |
-| PAGE-p41-002 | 公開ノートを検索・絞り込み | `spec/pages/index.md#P-41: 公開検索` | 2 文字以上 keyword、tags、inclusive date range を送信し、署名 cursor の query fingerprint を保持する。発信元 rate limit と範囲 error を扱う |
+| PAGE-p41-002 | 公開ノートを検索・絞り込み | `spec/pages/index.md#P-41: 公開検索` | 2 文字以上 keyword、tags、inclusive date range を送信し、opaque cursor の query fingerprint を保持する。発信元 rate limit と範囲 error を扱う |
 | PAGE-p41-003 | 公開検索結果を追加読込 | `spec/pages/index.md#P-41: 公開検索` | 同一 filter の opaque cursor で次 page を読み、results を追加する |
 | PAGE-p41-004 | 公開ノートを開く | `spec/pages/index.md#P-41: 公開検索` | result note ID の P-44 へ遷移する |
 | PAGE-p42-001 | P-42 利用者公開ページ | `spec/pages/index.md#P-42: 利用者の公開ページ` | public profile と owner-filtered public notes を表示し、loading、list、empty、not found、self banner を表現する。公開 CSP と metadata を適用する |

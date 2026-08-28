@@ -16,7 +16,7 @@ The goal is to give you a worked example of:
 - **Hexagonal architecture + DDD** — Enforces a one-way dependency flow `domain → application → adapters → presentation`. Side effects are confined to the boundary via port / adapter separation.
 - **In-memory reference adapters** — `packages/core/src/adapters/memory/` is a regular backend, not a test fake: it backs `pnpm dev` and is held to the shared port-conformance suites (`adapters/conformance/`) that any future backend must pass identically.
 - **Outbox pattern** — Domain events are persisted in the same transaction as aggregate writes, then a relay publishes them to consumers. At-least-once delivery, no ordering guarantees, idempotency is the subscriber's responsibility.
-- **TypeScript / Biome / Vitest** — Type checking with `tsgo`, lint and format via Biome, a single Vitest run covering domain, usecases, and port conformance.
+- **TypeScript / Biome / Vitest** — Type checking with `tsgo`, lint and format via Biome, and one Vitest run split into two projects: `node` for domain, usecases, and port conformance over the in-memory adapters, `workers` for the Cloudflare adapters against real bindings inside workerd.
 - **Structured error serialization** — Each layer carries its own `kind`-tagged serialized form; presentation composes the union structurally. HTTP status mapping lives only in presentation.
 
 ## Directory layout
@@ -27,7 +27,7 @@ packages/
    └─ src/
       ├─ domain/      # entities, value objects, port interfaces, domain events
       ├─ application/ # use cases, UoW, cross-cutting ports (clock / id / logger), DTO projection, DI
-      ├─ adapters/    # memory (reference backend), node, oauth, conformance (shared port suites)
+      ├─ adapters/    # memory (reference backend), cloudflare (D1 / DO / R2), node, oauth, conformance (shared port suites)
       └─ lib/         # structural primitives shared by every layer (e.g. CodedError)
 apps/
 └─ web/               # @repo/web — the TanStack Start app + its build config
@@ -51,7 +51,7 @@ For the deeper rationale, see [`CLAUDE.md`](CLAUDE.md), [`docs/backend_implement
 
 There is **one** runtime wiring — **Node.js + the in-memory adapters** ([ADR 025](spec/adr/025-single-reference-runtime.md)). No database, no Docker, no cloud account: the HTTP server and the full outbox lifecycle (relay, scope tasks, prune) run in a single process, and all data resets on restart. This is what `pnpm dev` / `pnpm build` / `pnpm start` run.
 
-The final execution platform is Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues ([`spec/platform/index.md`](spec/platform/index.md)). Getting there means adding an adapter group under `packages/core/src/adapters/{provider}/` plus a paired entry point and DI wiring — the inward layers stay put, and the new backend is held to the same port-conformance suites the memory backend passes today.
+The final execution platform is Cloudflare Workers + scope Durable Objects + global D1 + R2 + Queues ([`spec/platform/index.md`](spec/platform/index.md)). Its adapter group (`packages/core/src/adapters/cloudflare/`) and DI wiring are in place and pass the same port-conformance suites the memory backend passes; what remains is the paired entry point and the deployment configuration. The inward layers stay put either way.
 
 Operational guidance: [`docs/runtime_node.md`](docs/runtime_node.md). Test layering and fake policy: [`docs/test.md`](docs/test.md).
 
@@ -96,7 +96,9 @@ pnpm format                      # Biome format --write
 pnpm format:check
 
 pnpm test                        # alias of pnpm test:unit
-pnpm test:unit                   # Vitest (unit + the shared port-conformance suites)
+pnpm test:unit                   # Vitest, both projects (node + workers)
+pnpm test:node                   # node project only (unit + the shared port-conformance suites)
+pnpm test:workers                # workers project only (Cloudflare adapters inside workerd)
 ```
 
 Recommended routine after changes:

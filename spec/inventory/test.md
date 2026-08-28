@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-25）
+生成元: `spec/testcases/`（最終同期: 2026-08-26）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -198,7 +198,7 @@
 | TC-identity-057 | deleteAccount: 全scope prepare後 — 別ownerが脱退・降格・除名される | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `MEMBERSHIP_REMOVAL_PREPARED`で拒否され、commitはLastOwnerにならず完了できる |
 | TC-identity-058 | deleteAccount: 3scope中2scopeをprepare後に3つ目が失敗する — rollback prepareする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 2scopeのlockを冪等にreleaseし、Membership/Job/個人データは一切削除されていない |
 | TC-identity-059 | deleteAccount: prepare失敗時にpersonal barrier解除応答を失う — recoveryする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 同じoperation IDで`abortPersonalAccountDeletion`を再送し、workspace lockとbarrier双方の解除ack後だけUserをactiveに戻す。operation rejectedはmanifest縮約後だけ公開する |
-| TC-identity-060 | deleteAccount: 数千membership item固定後にprepareが失敗する — rollbackする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 全lock/barrier release ack後に`compactingRejected`へ進み、itemsを100件ずつ消して0件時だけoperation/manifestをrejectedにし、headerを120日保持する |
+| TC-identity-060 | deleteAccount: 数千membership item固定後にprepareが失敗する — rollbackする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 全lock/barrier release ack後もheaderは`rollingBack`のままitemsを100件ずつ消し、0件時だけoperation/manifestをrejectedにして、headerを120日保持する |
 | TC-identity-061 | deleteAccount: 250 workspace lock取得後に次scopeのprepareが失敗する — `rollbackRelease`を進める | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | release未ack itemを100+100+50件、外部接続最大6のwaveで配送し、全release ack前はUser active/manifest compactへ進まない |
 | TC-identity-062 | deleteAccount: release 100件のack transaction後に応答を失う — rollback continuationを再実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 保存済みrelease ackを飛ばして残件だけを再配送し、二重releaseなく収束する |
 | TC-identity-063 | deleteAccount: workspace prepareはcommitしたがUserId manifestへのprepare ack応答を失い、同waveの別scopeが失敗する — rollbackする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 送信前の`prepareDispatchedAt`を正本に当該workspaceもreleaseし、孤児lockを残さない |
@@ -238,11 +238,11 @@
 | TC-identity-097 | deleteAccount: 250 workspaceのprepareが必要 — dispatchする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 1page最大100件、外部scope同時6接続以下のwaveで処理し、全prepare ackまでauthor route scanへ進まない |
 | TC-identity-098 | deleteAccount: actorのworkspace Note createがprepare barrierより先にcommitする — author route manifestを構築する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 全barrier ack後にroute scanするため作成済みrouteを固定し、local/public redaction対象に含める |
 | TC-identity-099 | deleteAccount: actorのworkspace writeがprepare barrier後に到着する — commitする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `assertActorWritable`が拒否し、author route scan後方へ対象が増えない |
-| TC-identity-100 | deleteAccount: author routeが250件ある — manifestを構築する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 署名generation cursorで100+100+50件を固定し、各itemのlocal/public ackを保存する |
-| TC-identity-101 | deleteAccount: author route pageのcommit後に応答を失う — build continuationを再実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | operation ID+NoteIdで重複せず、headerの署名cursorから次pageへ進む |
+| TC-identity-100 | deleteAccount: author routeが250件ある — manifestを構築する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | generationを含むopaque cursorで100+100+50件を固定し、各itemのlocal/public ackを保存する |
+| TC-identity-101 | deleteAccount: author route pageのcommit後に応答を失う — build continuationを再実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | operation ID+NoteIdで重複せず、headerのopaque cursorから次pageへ進む |
 | TC-identity-102 | deleteAccount: ack済みaccount manifest itemが101件ある — compactする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 100件削除してcontinuationを保存し、次turnの1件後だけheaderをcompletedにする |
 | TC-identity-103 | deleteAccount: ack済みaccount manifest itemが1,000件ある — compactする | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 10 turnに分け、各transactionを100件以下に保つ |
-| TC-identity-104 | deleteAccount: completed/rejected account manifest headerが期限到達済みで101件ある — terminal prunerを実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `(expiresAt, operationId)` keysetの100+1件で回収し、running/building/compacting headerは残す |
+| TC-identity-104 | deleteAccount: completed/rejected account manifest headerが期限到達済みで101件ある — terminal prunerを実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `operationId` keyset（`retainUntil <= asOf`は絞り込み）の100+1件で回収し、`building` / `built` / `rollingBack` のheaderは残す |
 | TC-identity-105 | deleteAccount: terminal header 100件の削除commit後に応答を失う — prune continuationを再実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 同じ固定`asOf`/cursorから冪等に再開し、未回収headerを欠落させない |
 | TC-identity-106 | deleteAccount: 32 UserId shardにterminal headerがありrunが次hourまで未完了 — 次Cronで再開する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `accountManifestPrune`の同じrun/generation/shard positionを再開し、kind全体のactive laneを最大6に保つ |
 | TC-identity-107 | deleteAccount: UserId shardでterminal DELETE後、run checkpoint前に停止する — laneを再実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 同じ入力cursorのDELETEを冪等再実行し、次cursor/Queue outboxをcatalog transactionでcheckpointする |
@@ -282,7 +282,7 @@
 | TC-identity-141 | listPublicProfiles: 対象が `limit` を超える — 列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | `limit` 件と `nextCursor` が返る |
 | TC-identity-142 | listPublicProfiles: `nextCursor` を渡す — 列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | 続きが重複なく返る |
 | TC-identity-143 | listPublicProfiles: 対象が 0 件 — 列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | 空配列と `nextCursor: null` が返る |
-| TC-identity-144 | listPublicProfiles: public Noteが32 shardへ分散する — 利用者を列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | 同時6接続のwaveで所有者を集約し、署名cursorのshard別位置から続きを返す |
+| TC-identity-144 | listPublicProfiles: public Noteが32 shardへ分散する — 利用者を列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | 同時6接続のwaveで所有者を集約し、opaque cursorのshard別位置から続きを返す |
 | TC-identity-145 | listPublicProfiles: reshard中に同じ利用者が旧新へ現れる — 列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | UserIdで重複排除し、その利用者の最新updatedAtを採る |
 | TC-identity-146 | listPublicProfiles: 同じ利用者の公開Noteが複数shardにある — page境界をまたいで列挙する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | 全shard headの同一UserIdを消費して1件だけ返し、次pageへ同じ利用者を再出現させない |
 | TC-identity-147 | listPublicProfiles: 1pageの利用者が32 User shardへ分散する — 表示を解決する | spec/testcases/identity/listPublicProfiles.md#テストケース-listpublicprofiles | UserIdでgroupingして最大6接続のwaveで読み、全shard scanを行わない |
@@ -1284,10 +1284,10 @@
 | TC-note-318 | projectNoteChanges: 利用者がハンドルを変更した — `identity.user.handleChanged` を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | `note_routes(created_by)` を200件ずつ読み、各Noteのpublic再投影とscope-local refreshを最大6 RPCで送る |
 | TC-note-319 | projectNoteChanges: 利用者が表示名を変更し、作成済みworkspaceから既に離脱している — `identity.user.profileUpdated` を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | membership edgeではなく不変のroute `created_by` から旧workspaceを発見し、残るlocal表示も更新する |
 | TC-note-320 | projectNoteChanges: 1利用者が数千scopeでNoteを作成している — author refreshする | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | routeを200件ずつキーセット継続し、1 invocationのRPCは同時6本までに制限する |
-| TC-note-321 | projectNoteChanges: author routeが2page以上ある — `projection.authorRouteFanOutContinued`を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | 署名opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む |
+| TC-note-321 | projectNoteChanges: author routeが2page以上ある — `projection.authorRouteFanOutContinued`を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む |
 | TC-note-322 | projectNoteChanges: `identity.user.handleChanged` が配送順の入れ替わりで古くなっている — 処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | payload の値ではなく解決した現在値を書くため、古い値が復活しない |
 | TC-note-323 | projectNoteChanges: ワークスペースのイベント（`workspace.slugChanged` / `published` / `unpublished` / `profileUpdated`） — 処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | scope routeを200件ずつ読み、version付きcurrent Workspaceを含む個別snapshotを再投影する |
-| TC-note-324 | projectNoteChanges: workspace routeが2page以上ある — `projection.workspaceRouteFanOutContinued`を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | 署名opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む |
+| TC-note-324 | projectNoteChanges: workspace routeが2page以上ある — `projection.workspaceRouteFanOutContinued`を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | opaque cursorを同じreaderへ渡し、全shardの続きへ漏れなく進む |
 | TC-note-325 | projectNoteChanges: ワークスペースが作られた — `workspace.created` を処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | 購読しない（作成直後は対象routeが0件） |
 | TC-note-326 | projectNoteChanges: Note snapshot読込後にIdentity更新snapshotが先に保存される — 古いNote snapshotを書こうとする | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | authorVersionが小さくベクトルがincomparableとなりno-op。全sourceを再読込して新Note＋新authorを保存する |
 | TC-note-327 | projectNoteChanges: `identity.user.deleted` の投影後に削除前のNote eventが遅延到着する — 処理する | spec/testcases/note/projectNoteChanges.md#テストケース-projectnotechanges | tombstoneのauthorVersionより古いため旧表示名・handleを復活させない |
@@ -1612,7 +1612,7 @@
 | TC-note-646 | searchPublicNotes: NoteId hash shardが32個ある — 1page検索する | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | 同時6接続のwaveで各shard最大`limit`候補だけを読み、深いpageでもworkがpage番号に比例しない |
 | TC-note-647 | searchPublicNotes: keyword検索でshardごとのFTS統計が異なる — mergeする | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | shard内rankのReciprocal Rank Fusionと`updatedAt, noteId` tie-breakを使い、global bm25同値ではなく明示した安定順位を返す |
 | TC-note-648 | searchPublicNotes: shard追加のdual-read中に同じNoteが旧新へある — 検索する | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | NoteIdで重複排除し、cursorのshard generationに従って次pageも同じ集合を読む |
-| TC-note-649 | searchPublicNotes: cursorの検索条件・署名・shard generationが一致しない — 検索する | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | `ValidationError("INVALID_PAGINATION")` を返す |
+| TC-note-649 | searchPublicNotes: cursorの検索条件・shard generationが一致しない、または値が読めない — 検索する | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | `ValidationError("INVALID_PAGINATION")` を返す |
 | TC-note-650 | searchPublicNotes: 1page目の後に対象NoteのupdatedAtが変わる — 同じcursorで続ける | spec/testcases/note/searchPublicNotes.md#テストケース-searchpublicnotes | cursor時点のsnapshot isolationは保証しない。page内/dual-read重複は除くが、更新結果を確実に見るには先頭から再検索する |
 | TC-note-651 | setSharePassword: 限定公開のノート — 8 文字以上のパスワードを設定する | spec/testcases/note/setSharePassword.md#テストケース-setsharepassword | `hasSharePassword: true` になり、`shareLink.password` が `{ hash, updatedAt: now }` になる |
 | TC-note-652 | setSharePassword: — — 7 文字のパスワードを設定する | spec/testcases/note/setSharePassword.md#テストケース-setsharepassword | `BusinessRuleError(WeakPassword)` が投げられる |

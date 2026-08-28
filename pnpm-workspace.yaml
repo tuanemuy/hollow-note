@@ -12,3 +12,4 @@ allowBuilds:
   esbuild: true
   protobufjs: false
   sharp: false
+  workerd: true

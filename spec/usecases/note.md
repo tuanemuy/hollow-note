@@ -341,7 +341,7 @@ ReferenceReport = {
 1. `ownerHandle` があれば利用者を、`workspaceSlug` があれば公開ワークスペースを解決して `ownerFilter` を組み立てる
 2. `tagNames` は `searchNotes` と同じく `TagName` の正規化規則で正規化してから渡す
 3. `updatedFrom` / `updatedTo` のどちらかがあれば `updatedWithin: DateRange` に解決する。基準列は読み取りモデルの更新日時（`note_search.updated_at`）で、`from` は `updatedFrom` の 0 時、`toExclusive` は `updatedTo` の翌日 0 時（指定日を含める）。`searchNotes` と違い閲覧者のタイムゾーンを持てない（サインイン不要の経路）ため、境界は UTC で解決する。片方だけの指定は、欠けた側を範囲の端（`from` は epoch、`toExclusive` は十分先の未来）で埋める
-4. global public shard reader の `PublicNoteQueryService.searchPublic` を呼ぶ。cursorにはquery fingerprint、shard generation、各shardのkeyset位置/絶対rankを署名して含め、1pageで各shardから読む候補を`limit`件に固定する。dual-read中はNoteIdで重複排除する
+4. global public shard reader の `PublicNoteQueryService.searchPublic` を呼ぶ。cursorにはquery fingerprint、shard generation、各shardのkeyset位置/絶対rankを含め（認証はしない。[ADR 063](../adr/063-public-cursor-not-authenticated.md)）、1pageで各shardから読む候補を`limit`件に固定する。dual-read中はNoteIdで重複排除する
 
 ### エラーケース
 
@@ -740,7 +740,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
    - Integration の `deleteBackupRecordsForNote` — バックアップ記録の削除
    - Note の `projectNoteChanges` — 読み取りモデルからの除去
    - Usage の `applyStorageDelta` — 件数の減算
-6. global consumerはNoteId hashで決まるnote coordination shardの`PublicNoteProjectionWriter.removeForPurge`を呼び、同じshardにco-locateしたpublic 3表の削除とoperationの`projectionRemoved` ackを1 transactionで確定する。そのack後だけ`finishPurge`で30日tombstoneにする
+6. global consumerはNoteId hashで決まるnote coordination shardの`PublicNoteProjectionWriter.removeForPurge`を呼び、同じshardにco-locateしたpublic 3表の削除を1 transactionで確定する。削除は世代を比較せずend stateで冪等になり、別途のack行は持たない。その削除の確定後だけ`finishPurge`で30日tombstoneにする
 
 recoveryはpayloadに固定したactor/Membership version、scope、expected Note version、routeVersion、projectionRevisionを使う。Noteが残り再検査不能ならabort、Noteが消えていればpublic remove以降を再開する。利用者入力を読み直さない
 
@@ -1312,7 +1312,7 @@ BulkOperation =
 
 ### 処理フロー
 
-1. global D1 の `PublicNoteQueryService.listPublicSitemapEntries` を呼ぶ。cursorはpublic shard generationと各shardのkeysetを含む署名opaque値で、最大32 shardを同時6接続のwaveで読み全体limitへmergeする
+1. global D1 の `PublicNoteQueryService.listPublicSitemapEntries` を呼ぶ。cursorはpublic shard generationと各shardのkeysetを含むopaque値で、最大32 shardを同時6接続のwaveで読み全体limitへmergeする
 
 ### エラーケース
 
@@ -1351,7 +1351,7 @@ type ProjectionRequest =
 1. plane を検証する。`local` は `scope` 必須で、その scope object の repository / writer だけを使う。`public` は `scope = null` とする。NoteIdを持つnote-scoped event/requestだけが`NoteRouteStore`でcurrent scopeを解決してsnapshotを読む。Identity/Workspace eventとroute fan-out continuationは先に下記reader分岐へ入り、NoteId解決を要求しない。note-scoped routeが`purging` / `tombstone`、またはsnapshotがprivate / trashed / purgedならpublic行を削除する
 2. イベントの種別で分岐する
    - `note.created` / `note.contentUpdated` / `note.conversionFailed` / `note.awaitingIntegration` / `note.renamed` / `note.styleModeChanged` / `note.visibilityChanged` / `note.moved` / `note.trashed` / `note.restored` → current routeと全sourceのcurrent versionを読み、local/publicとも世代ベクトル付き`replaceSnapshotIfNewer`で置換する
-   - `note.purged` → `deletionOperationId`が非nullのlocal処理は`ScopeCleanupAdmissionStore.assertOwner`を通す。localはremove、publicはpayloadの内部operation ID / routeVersion / projectionRevisionで`removeForPurge`を呼び、削除とoperation ackをatomicにする。move元の遅延eventはrouteVersion不一致で無視する
+   - `note.purged` → `deletionOperationId`が非nullのlocal処理は`ScopeCleanupAdmissionStore.assertOwner`を通す。localはremove、publicはpayloadの内部operation ID / routeVersion / projectionRevisionで`removeForPurge`を呼び、public 3表の削除をatomicにする（ack行は契約しない）。move元の遅延eventはrouteVersion不一致で無視する
    - `tag.assigned` / `tag.unassigned` → Note・タグ・projectionRevisionを同じscope read transactionで引き直す。publicは完全snapshotをrevision条件付きで置換する
    - `tag.renamed` → 対象ノートを `TagAssignmentRepository.listByTag(tagId, { afterNoteId: null, limit: 200 })` で1ページだけ列挙し、1件につき決定的IDのlocal `projection.reprojectRequested`と、routeVersionを持たないpublic `publicProjection.reprojectRequested` outboxを同じscope UoWへ積む。200件なら `projection.tagFanOutContinued` を積む
    - `tag.merged` / `tag.deleted` / `tag.unusedBatchDeleted` → 完了監査だけなので投影しない。merge/delete operationは各200件pageでassignment変更・projection revision bump・個別再投影taskを同一UoWへ保存済みである

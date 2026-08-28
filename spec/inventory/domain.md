@@ -1,6 +1,6 @@
 # Inventory — domain
 
-生成元: `spec/domains/`（最終同期: 2026-08-25）
+生成元: `spec/domains/`（最終同期: 2026-08-26）
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -107,7 +107,7 @@
 | DOM-identity-057 | `LoginAttemptStore.recordFailure` | `spec/domains/identity.md#ポート` | 失敗回数を単一原子操作で加算し加算後状態を返す |
 | DOM-identity-058 | `LoginAttemptStore.clear` | `spec/domains/identity.md#ポート` | 認証成功時に失敗記録を削除する |
 | DOM-identity-059 | `LoginAttemptStore.deleteExpired` | `spec/domains/identity.md#ポート` | 期限切れ失敗記録を keyset で有界削除する |
-| DOM-identity-060 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) 部分一意索引が保証する at-most-one live token を読み、再送間隔の判定に使う |
+| DOM-identity-060 | `AuthTokenRepository.findPendingByUserAndPurpose` | `spec/domains/identity.md#ポート` | (user, purpose) の live token を読み、再送間隔の判定に使う。複数 pending は許され、どれが返るかは未定義 |
 | DOM-identity-061 | `SignInOAuthClient.deriveCodeChallenge` | `spec/domains/identity.md#ポート` | code verifier から PKCE S256 challenge を純粋・決定的に導く |
 | DOM-identity-062 | `IdentityUniqueDirectory.beginRelease` | `spec/domains/identity.md#ポート` | normalizedKey で引いた行が `active`・所有者一致・`expectedClaimToken` 一致のときだけ `releasing` にして解放側 operation へ付け替える。行なし・`reserved`・`releasing`・別利用者・トークン不一致はすべて no-op |
 | DOM-identity-063 | `AccountDeletionRetryPolicy` ドメインサービス | `spec/domains/identity.md#ドメインサービス` | 120 日の窓と 8 件の上限を持ち、保持中の terminal 行が上限に達していれば `BusinessRuleError(AccountDeletionRetryLimitExceeded)` にする |
@@ -284,7 +284,7 @@
 | DOM-note-038 | `LocalNoteQueryService.listMonthsWithNotes` | `spec/domains/note.md#ポート` | owner のノートがある現地暦月を列挙する |
 | DOM-note-039 | `LocalNoteQueryService.countByDay` | `spec/domains/note.md#ポート` | 半開期間を time zone の日別に集計する |
 | DOM-note-040 | `LocalNoteQueryService.countByContentStatus` | `spec/domains/note.md#ポート` | owner・本文状態の Note 数を返す |
-| DOM-note-041 | `PublicNoteQueryService.searchPublic` | `spec/domains/note.md#ポート` | public shard を署名 cursor で有界検索・merge する |
+| DOM-note-041 | `PublicNoteQueryService.searchPublic` | `spec/domains/note.md#ポート` | public shard を opaque cursor（認証しない）で有界検索・merge する |
 | DOM-note-042 | `PublicNoteQueryService.listPublicSitemapEntries` | `spec/domains/note.md#ポート` | 公開 Note sitemap entry を shard 横断列挙する |
 | DOM-note-043 | `PublicNoteQueryService.listPublicAuthors` | `spec/domains/note.md#ポート` | 個人所有の公開 Note を持つ owner を重複なく列挙する |
 | DOM-note-044 | `LocalNoteProjectionWriter.replaceSnapshotIfNewer` | `spec/domains/note.md#ポート` | 世代ベクトルが新しい完全 snapshot を原子的に置換する |
@@ -305,8 +305,8 @@
 | DOM-note-059 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
 | DOM-note-060 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | DOM-note-061 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
-| DOM-note-062 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の `active` / `moving` / `purging` route を署名 cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
-| DOM-note-063 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の `active` / `moving` / `purging` route を署名 cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
+| DOM-note-062 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の `active` / `moving` / `purging` route を opaque cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
+| DOM-note-063 | `NoteRouteFanOutReader.listByScope` | `spec/domains/note.md#ポート` | scope の `active` / `moving` / `purging` route を opaque cursor で shard 横断列挙する（除外は `reserved` だけ。`tombstone` は unspecified） |
 | DOM-note-064 | `ShareTokenProtector.protect` | `spec/domains/note.md#ポート` | share token を現行版鍵で暗号化する。失敗は `SystemError(DataIntegrityError)` |
 | DOM-note-065 | `ShareTokenProtector.reveal` | `spec/domains/note.md#ポート` | 保存 key version の鍵で share token を復号する。未知の keyVersion・ciphertext の破損は `SystemError(DataIntegrityError)` |
 | DOM-note-066 | `NoteMovePort.freezeSource` | `spec/domains/note.md#ポート` | source を再認可して move snapshot を固定する |

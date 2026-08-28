@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "core-cloudflare-adapters-test",
+  "main": "src/adapters/cloudflare/__tests__/worker.ts",
+  "compatibility_date": "2026-08-20",
+  // `node:async_hooks` (unit-of-work nesting detection) and `node:crypto`
+  // (the scrypt password hasher shared with the Node runtime) both need it.
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "GLOBAL_DB",
+      "database_name": "hollow-global-test",
+      "database_id": "hollow-global-test"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "OBJECT_STORAGE",
+      "bucket_name": "hollow-objects-test"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SCOPE_OBJECT",
+        "class_name": "ScopeObject"
+      }
+    ]
+  },
+  // SQLite-backed, not the key-value backend: the scope plane is defined
+  // as a SQL schema (spec/database/index.md) and needs `ctx.storage.sql`.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ScopeObject"]
+    }
+  ]
+}

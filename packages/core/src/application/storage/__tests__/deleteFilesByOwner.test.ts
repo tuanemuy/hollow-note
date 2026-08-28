@@ -90,7 +90,7 @@ async function seedFiles(
   );
 }
 
-/** Artifacts only exist as ephemeral rows the conversion slice will write. */
+/** No registration path mints an artifact, so its ephemeral row is built here. */
 async function seedArtifact(h: TestHarness, id: string): Promise<void> {
   const fileId = StoredFileId.create(id);
   const now = h.clock.now();
@@ -386,10 +386,11 @@ describe("deleteFilesByOwner", () => {
 
     await run(h, { container: counting });
 
-    // The spec's "three statements whatever the count" is not verified
-    // here: deleting through the OCC token reads every row first, so the
-    // statement count is not fixed. What is checked is the enumeration
-    // count and one deletion event per deleted file.
+    // The spec's "one atomic apply whatever the count" is a property of
+    // each backend's write path, not of this layer: deleting through the
+    // OCC token reads every row first, so nothing here is fixed by
+    // statement count. What is checked is the enumeration count and one
+    // deletion event per deleted file.
     expect(enumerations).toBe(1);
     expect(deletionEvents(h)).toHaveLength(40);
   });

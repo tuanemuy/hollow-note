@@ -125,8 +125,8 @@ export function isForbiddenError(error: unknown): error is ForbiddenError {
 
 /**
  * Application-level rejection of an input that is well-typed but invalid
- * against a runtime rule the static type cannot carry: tampered / retired
- * pagination cursors (`INVALID_PAGINATION`), unauthenticated session
+ * against a runtime rule the static type cannot carry: unreadable /
+ * retired pagination cursors (`INVALID_PAGINATION`), unauthenticated session
  * material (`UNAUTHENTICATED`), throttled / locked verification attempts.
  * Distinct from transport-shape validation, which lives at the
  * presentation boundary.
@@ -173,9 +173,9 @@ export function isValidationError(error: unknown): error is ValidationError {
  * can route them differently — a flood of `DataIntegrityError` means a
  * migration is broken, not the DB itself.
  *
- * `NetworkError` / `ExternalApiError` are template-only placeholders showing
- * the extension shape — no code throws them today. Delete them when you add
- * your first external adapter, or keep as reference.
+ * `NetworkError` has no thrower today; it is kept as the transport-level
+ * counterpart of `ExternalApiError`, which the OAuth client and the R2
+ * adapter raise.
  */
 export const SystemErrorCode = {
   DatabaseError: "DATABASE_ERROR",
