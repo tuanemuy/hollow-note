@@ -3,6 +3,7 @@ import { NotFoundState } from "@/components/ui/ErrorState";
 import { serializeError } from "@/presentation/errorResponse";
 import { NoteBody } from "../NoteBody";
 import { loadNote } from "./action";
+import { NoteDetailMenu } from "./menu";
 
 /**
  * P-11 ノート詳細（閲覧のみの最小形、モック P11-note.html）。本文の
@@ -32,10 +33,18 @@ export async function NoteDetail({
 
   return (
     <main className="mx-auto max-w-[var(--content-max)] px-4 pt-10 pb-16 sm:px-6">
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-ink-tertiary">
+      <div className="mb-4 flex flex-wrap items-start gap-2 text-xs text-ink-tertiary">
         <VisibilityBadge visibility={note.visibility} />
         <span className="text-hairline-strong">·</span>
         <span>{createdAtFormat.format(note.createdAt)}</span>
+        <span className="min-w-2 flex-1" />
+        {note.permissions.canEdit ? (
+          <NoteDetailMenu
+            noteId={note.noteId}
+            ownerType={note.ownerType}
+            ownerId={note.ownerId}
+          />
+        ) : null}
       </div>
 
       <h1 className="mb-8 text-3xl font-normal tracking-tightest leading-[1.18]">

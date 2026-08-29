@@ -23,7 +23,8 @@ export type GetInvitationPreviewInput = Readonly<{
  * invitation row outlives it inside the scope, and `workspaceMissing` is
  * what tells the visitor the link led somewhere that no longer exists.
  * `alreadyMember` is decided last so a member who follows an old link is
- * sent to the workspace rather than told the invitation went stale.
+ * sent to the workspace rather than told the invitation went stale — the
+ * only branch whose response carries `workspaceId` (view.ts).
  */
 export async function getInvitationPreview({
   container,
@@ -63,7 +64,15 @@ export async function getInvitationPreview({
   const users = await userBatchReader.resolveMany([invitation.invitedBy]);
   const inviter = users.get(invitation.invitedBy)?.entity;
 
+  const state = previewState(
+    workspace,
+    invitation,
+    membership !== null,
+    clock.now(),
+  );
+
   return {
+    workspaceId: state === "alreadyMember" ? target.workspaceId : null,
     workspaceName: workspace?.name ?? "",
     workspaceDescription: workspace?.description ?? "",
     role: invitation.role,
@@ -72,12 +81,7 @@ export async function getInvitationPreview({
         ? null
         : inviter.displayName,
     email: invitation.email,
-    state: previewState(
-      workspace,
-      invitation,
-      membership !== null,
-      clock.now(),
-    ),
+    state,
   };
 }
 

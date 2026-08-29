@@ -44,15 +44,29 @@ export async function InvitationPreview({
   }
 
   if (preview.state === "alreadyMember") {
+    // 受諾済みのリンクを本人が再訪した経路。`acceptInvitation` は
+    // `INVITATION_NOT_PENDING` で落ちるので受諾は出さず、そのワークスペース
+    // の文脈へ直接送る（PAGE-p06-003）。`workspaceId` を載せるのはこの分岐
+    // だけで（`InvitationPreviewView` の JSDoc）、`null` なら状態を作れて
+    // いないのでノート一覧へ倒す。
     return (
       <ResultPanel
         tone="success"
         title="すでに参加しています"
-        body={`${preview.workspaceName} のメンバーです。上部のスコープトークンから切り替えて開けます。`}
+        body={`${preview.workspaceName} のメンバーです。そのまま開けます。`}
         actions={
-          <a className={primaryLinkClass} href="/notes">
-            ノート一覧へ
-          </a>
+          preview.workspaceId === null ? (
+            <a className={primaryLinkClass} href="/notes">
+              ノート一覧へ
+            </a>
+          ) : (
+            <a
+              className={primaryLinkClass}
+              href={`/workspaces/${encodeURIComponent(preview.workspaceId)}/settings/general`}
+            >
+              {preview.workspaceName} を開く
+            </a>
+          )
         }
       />
     );
@@ -108,10 +122,10 @@ export async function InvitationPreview({
       </dl>
 
       {userId === null ? (
-        // PAGE-p06-004。招待 URL を同一オリジンの復帰先として渡す。
-        // `/signup` は復帰先を扱わない（登録の完了はメール確認を挟むので
-        // 復帰の起点がこの往復に残らない）ため、そのまま招待へ戻れるのは
-        // サインインの経路だけになる。
+        // PAGE-p06-004。招待 URL を同一オリジンの復帰先として両方の経路へ
+        // 渡す。`/signup` の復帰先は外部プロバイダー登録ならそのまま効き、
+        // メール + パスワードならサインインへ引き継がれる（メール確認を
+        // 挟むので、その往復の中では復帰できない）。
         <div className="flex flex-col gap-2">
           <a
             className={primaryLinkClass}
@@ -119,11 +133,14 @@ export async function InvitationPreview({
           >
             サインインして参加する
           </a>
-          <a className={ghostLinkClass} href="/signup">
+          <a
+            className={ghostLinkClass}
+            href={`/signup?redirect=${encodeURIComponent(returnPath)}`}
+          >
             アカウントを作る
           </a>
           <p className="mt-2 text-xs text-ink-tertiary">
-            アカウントを作った後は、この招待リンクをもう一度開いてください。
+            メールで登録した場合は、確認を終えてからこの招待リンクをもう一度開いてください。
           </p>
         </div>
       ) : (

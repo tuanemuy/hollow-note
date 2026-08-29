@@ -131,7 +131,7 @@ export async function resendInvitation({
     }),
   );
 
-  await sendInvitationMail(container, {
+  const mailSent = await sendInvitationMail(container, {
     to: pending.email,
     workspaceName: access.workspaceName,
     role: pending.role,
@@ -144,5 +144,6 @@ export async function resendInvitation({
     invitationId,
     expiresAt,
     invitationUrl: invitationUrl(config.appUrl, replacement.token),
+    mailSent,
   };
 }

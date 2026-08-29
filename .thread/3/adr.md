@@ -1047,3 +1047,95 @@ PAGE-p06-004 は「未 sign-in 時に invitation URL を安全な同一オリジ
 
 - `InvitationPreviewView` に `workspaceId` が入れば、`alreadyMember` はワークスペース文脈への直接遷移に置き換わる。
 - `/signup` に復帰先を通す仕組み（メール確認リンクへ復帰先を載せる、または確認後の初回サインインへ引き継ぐ）が入るまで、招待からの新規登録は 1 手多い。
+
+## ADR-064: `InvitationPreviewView` の `workspaceId` は `alreadyMember` の分岐だけに載せる
+
+### Context
+
+ADR-063 の帰結どおり、`alreadyMember`（受諾済みのリンクを本人が開き直す最も普通の経路）だけがワークスペースへ送れない。`acceptInvitation` は受諾済み招待に `INVITATION_NOT_PENDING` を返すため流用できない。一方 `getInvitationPreview` は未サインインでも読める公開に近い読み取りで、`spec/usecases/workspace.md#getInvitationPreview` の出力 DTO にはワークスペースの識別子が無い。
+
+### Decision
+
+`InvitationPreviewView` に `workspaceId: string | null` を足し、`state === "alreadyMember"` のときだけ非 null にする。他の 5 状態（`acceptable` / `expired` / `revoked` / `accepted` / `workspaceMissing`）では `null` を返す。判定は `previewState` の結果を先に確定させ、その値だけを条件に使う。
+
+- `alreadyMember` の閲覧者は既にそのワークスペースのメンバーであり、自分のワークスペース一覧から同じ ID を得られる。追加の露出にならない唯一の分岐がここだけである。
+- 逆に `acceptable` を未サインインで読むのはリンクを持っているだけの相手なので、そこへ ID を渡すと spec が許していない露出になる。
+- 型は判別共用体にせず、平坦な nullable に置いた。このファイルの DTO はすべて平坦で、`workspaceId` 以外のフィールドは状態に依存しないため、共用体は narrowing の義務だけを増やす。不変条件は view の JSDoc と回帰テストで固定する。
+
+### Consequences
+
+- P-06 の `alreadyMember` はノート一覧への案内ではなく、対象ワークスペース文脈への直接遷移にできる（ADR-063 の Consequences が解消する）。
+- 露出範囲は静的には保証されないので、`invitationResponse.test.ts` が「未サインインの `acceptable` では `null`」「`alreadyMember` では当該 ID」の 2 本で固定する。
+
+## ADR-065: 招待メールの送達可否を `mailSent` として view に載せる
+
+### Context
+
+`sendInvitationMail` は送信の失敗をログに落として握り潰す。招待自体は既に永続化されており、送信の失敗で発行を巻き戻すのは誤りだからである（`spec/usecases/workspace.md#inviteMember` のエラーケース「記録して継続」）。しかしそのため `IssuedInvitationView` / `ResentInvitationView` から送達可否が読めず、`PAGE-p32-002` の「mail warning を表示」を満たせない。
+
+### Decision
+
+`sendInvitationMail` の戻り値を `Promise<boolean>` にし、`IssuedInvitationView` / `ResentInvitationView` に `mailSent: boolean` を足す。`inviteMember` の末尾呼び出し経路は `resendInvitation` の値をそのまま写す。制御フローは変えない — 失敗は今までどおりログに残り、招待もトークン交換も成立する。
+
+- warning が表すのは「招待は成立したがメールは出ていないので、招待者が `invitationUrl` を自分で共有する必要がある」という状態であり、招待の失敗ではない。P-32 の「招待リンクのコピー」導線が代替手段として既にあるので、warning はそこへ誘導する注記になる。
+- identity 側（`resendVerificationEmail` / `requestPasswordReset`）は送達可否を返さない。あちらは応答をアカウントの存在オラクルにしない一様応答が契約（ADR 028）で、返してはいけない値だからである。招待は認可済みの招待者に対する応答なので、この非対称は意図的である。
+
+### Consequences
+
+- `MailSender` の契約（送信失敗が呼び出し元を失敗させない）は不変。変わったのは結果の伝え方だけで、ポートには触れていない。
+- 「送達失敗でも発行は成立する」は回帰しやすいため、失敗する `MailSender` を注入した `invitationResponse.test.ts` の 3 本で `mailSent: false` と招待行の存在を同時に固定する。
+
+## ADR-066: `moveNote` の `expectedVersion` は転送境界で受け取らず、server function が呼ぶ直前に引く
+
+### Context
+
+`spec/inventory/frontend.md` の PAGE-p11-009 は「target owner と expected version を送信し」と定めるが、`getNote`（UC-note-002）の出力 DTO はノートの版を持たない — `spec/usecases/note.md#getnote` の出力表にも `version` の行が無く、`NoteDetailView` にも無い。版を返すのは書き込み系（`renameNote` / `updateNoteVisibility` / `moveNote` …）だけで、画面が最初に版を得る経路が存在しない。一方 `moveNote` の入力 `expectedVersion` は必須である。
+
+### Decision
+
+`moveNoteFn`（`routes/notes/-action.tsx`）は `expectedVersion` を転送境界で受け取らず、`ScopeRouter.resolveNote` → `noteReaderFor(scope).findById` で**呼ぶ直前に 1 回だけ**引いた版を `moveNote` に渡す。
+
+- 根拠は `spec/usecases/identity.md` の共通規約「対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す」。`runBulkNoteOperationItem` → `purgeNote` と同じ形である。
+- 代償は「画面を開いてから移動するまでの間に入った編集」を弾けないこと。`moveNote` 自身が持つ Membership version の pin 照合・route version・move authorization lock は効いたままなので、失われるのは note 本体の版に対する前向きの防護 1 つに限られる。本スライスに編集経路が無いため、今この窓を通る操作は存在しない。
+- `getNote` が版を返すようになったら、断片が見た版をクライアントへ渡して転送境界で受け取る形へ戻す。そのときだけ PAGE-p11-009 の「expected version を送信し」が字義どおり満たされる。
+
+### Consequences
+
+- `presentation` が `ScopeRouter` / `NoteReader` を直に読む箇所が 1 つ増える。`components/workspace/settingsRead.ts` が同じ理由（読み取りユースケースが射影を持たない）で置いている前例に乗る形で、認可の判断は `moveNote` が持ったままである。
+- 不在・他人のノート・移動中は `ScopeRouter.resolveNote` が `NOTE_NOT_FOUND` を投げるので、事前読みが増えても応答の集合は `moveNote` 単体と変わらない。
+
+## ADR-067: P-43 の公開ノート一覧は「正本が今返す答え」として 0 件のまま出す
+
+### Context
+
+P-43 は公開ノートの一覧・タグ絞込・ページ内検索を持つ。正本は `PublicNoteQueryService.searchPublic`（グローバル公開投影）だが、(1) ノートの公開状態をその投影へ書く経路がまだ無く、(2) 読み口自体が `RequestContainer` に出ていない（`di/types.ts` にあるのは書き手の `publicNoteProjectionWriter` だけ）。`application/workspace/publicNoteCount.ts` の JSDoc が同じ事実を「`searchPublic` はどの workspace にも 0 を返す」と述べている。
+
+### Decision
+
+一覧セクションは**空状態を描く**。ワークスペース scope を直接走査して `visibility.status === "public"` で絞る近道は取らない。
+
+- 公開可否の述語は匿名閲覧者に対する認可そのものなので、presentation に置くと「未サインインで壊れない」より先に「未サインインに漏れない」を崩す。`countPublicNotes` が application 層にあるのはその境界を守るためで、同じ判断をこちら側へ複製しない。
+- 描いている 0 件は嘘ではない。正本が今どの条件に対しても返す答えそのものである。
+- 検索語とタグは URL（`validateSearch` の `q` / `tags`）に載せ、ブリッジの `.validator` でも閉じる。読み出しユースケースが入った時点で差し替わるのはこのセクションだけで、条件の受け口は動かない。
+- タグ facet（候補の一覧）は出さない。供給する読み出しが無いので、出せるのは URL に既に載っている「適用中のタグ」＝解除の入口だけである。
+
+### Consequences
+
+- PAGE-p43-003（公開ノートを開く）は行が並ばないため到達できない。遷移先の P-44（`/n/:noteId`）も本スライスの対象外で、ルートごと存在しない。
+- メンバー閲覧バナーに件数を載せない。件数は `countPublicNotes` が答えられるが、この関数は workspace の全ノートを無制限に走査するため（JSDoc の警告）、匿名で叩ける URL からは呼ばない。
+
+## ADR-068: `alreadyMember` はワークスペースへ直接送り、`/signup` も同一オリジンの復帰先を通す（ADR-063 を更新）
+
+### Context
+
+ADR-063 は当時の 2 つの欠落（`InvitationPreviewView` に `workspaceId` が無い / `/signup` が復帰先を持たない）を前提に、`alreadyMember` をノート一覧＋スコープトークンの案内に畳み、`/signup` を復帰先なしの副導線に置いた。ADR-064 で `workspaceId` が入り、前提の片方が消えた。
+
+### Decision
+
+- `alreadyMember` は `preview.workspaceId` を使ってそのワークスペースの文脈（`/workspaces/:id/settings/general` — ScopeToken の遷移先と同じ）へ直接送る。`workspaceId` が `null` の分岐はノート一覧へ倒す。受諾は出さない（ADR-063 のとおり `acceptPending` が `INVITATION_NOT_PENDING` で落ちる）ので、変わったのは行き先だけである。
+- `/signup` に `/signin` と同じ `redirect` 検索パラメータを持たせ、`safeRedirectPath` を通す。外部プロバイダー登録はその場でセッションが立つので `OAuthButton` がそのまま復帰先に使い、メール + パスワード登録は復帰先を `/signin` のリンクへ引き継ぐ（登録の完了がメール確認を挟む以上、その往復の中では復帰できない — ADR-063 の観察は有効なまま）。
+
+### Consequences
+
+- ADR-063 の 2 つの Consequences は解消した。残るのは「確認メールのリンク自体には復帰先が載らない」ことで、メール登録の経路は確認後にもう一度招待リンクを開く 1 手が要る。文言もその形に合わせてある。
+- `/signup` は `validateSearch` を持つルートになった。値は `.catch(undefined)` で既定へ倒すので、壊れたクエリで登録画面が開けなくなることはない。

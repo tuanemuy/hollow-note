@@ -395,7 +395,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 ### 出力DTO
 
-`invitationId`, `email`, `role`, `expiresAt`, `invitationUrl`
+`invitationId`, `email`, `role`, `expiresAt`, `invitationUrl`, `mailSent: boolean`
+
+`mailSent` はメールを送出できたかを表す。送信の失敗は招待を失敗させない（下の「エラーケース」）が、失敗したなら招待リンクは招待者が自分で共有するしかないため、P-32 が警告を出せるように結果を返す。
 
 ### 処理フロー
 
@@ -421,7 +423,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 未処理の招待が上限（50 件） | `ValidationError("INVITATION_LIMIT_REACHED")` |
 | 招待者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
 | ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
-| メール送信の失敗 | 記録して継続（招待は成立させる） |
+| メール送信の失敗 | 記録して継続（招待は成立させ、`mailSent: false` を返す） |
 
 ## resendInvitation
 
@@ -435,7 +437,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 ### 出力DTO
 
-`invitationId`, `expiresAt`, `invitationUrl`
+`invitationId`, `expiresAt`, `invitationUrl`, `mailSent: boolean`
+
+`mailSent` の意味は `inviteMember` と同じで、送信の失敗は再送自体を失敗させない。`inviteMember` が末尾呼び出しでこのユースケースを使うときは、その値をそのまま写して返す。
 
 ### 処理フロー
 
@@ -503,6 +507,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | `inviterName` | `string` |
 | `email` | `string` |
 | `state` | `"acceptable" \| "expired" \| "revoked" \| "accepted" \| "alreadyMember" \| "workspaceMissing"` |
+| `workspaceId` | `string \| null` |
+
+`workspaceId` は `state: "alreadyMember"` のときだけ非 null にする。このユースケースは未サインインでも読めるため、他の状態で返すとリンクを持っているだけの相手にワークスペースの識別子を渡すことになる。`alreadyMember` の閲覧者は既にそのワークスペースを持っているので追加の露出にならず、受諾済みのリンクを本人が開き直した経路（`acceptInvitation` は `INVITATION_NOT_PENDING` を返すため使えない）でワークスペースへ送る唯一の手立てになる（P-06）。
 
 ### 処理フロー
 

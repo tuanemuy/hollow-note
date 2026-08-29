@@ -26,6 +26,7 @@ import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
+import { Route as WSlugRouteImport } from './routes/w/$slug'
 import { Route as WorkspacesNewRouteImport } from './routes/workspaces/new'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
@@ -120,6 +121,11 @@ const StorageSplatRoute = StorageSplatRouteImport.update({
   path: '/storage/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WSlugRoute = WSlugRouteImport.update({
+  id: '/w/$slug',
+  path: '/w/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspacesNewRoute = WorkspacesNewRouteImport.update({
   id: '/workspaces/new',
   path: '/workspaces/new',
@@ -182,6 +188,7 @@ export interface FileRoutesByFullPath {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/w/$slug': typeof WSlugRoute
   '/workspaces/new': typeof WorkspacesNewRoute
   '/notes/': typeof NotesIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -208,6 +215,7 @@ export interface FileRoutesByTo {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/w/$slug': typeof WSlugRoute
   '/workspaces/new': typeof WorkspacesNewRoute
   '/notes': typeof NotesIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -236,6 +244,7 @@ export interface FileRoutesById {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/w/$slug': typeof WSlugRoute
   '/workspaces/new': typeof WorkspacesNewRoute
   '/notes/': typeof NotesIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -265,6 +274,7 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/w/$slug'
     | '/workspaces/new'
     | '/notes/'
     | '/settings/'
@@ -291,6 +301,7 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/w/$slug'
     | '/workspaces/new'
     | '/notes'
     | '/settings'
@@ -318,6 +329,7 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/w/$slug'
     | '/workspaces/new'
     | '/notes/'
     | '/settings/'
@@ -342,6 +354,7 @@ export interface RootRouteChildren {
   InvitationsTokenRoute: typeof InvitationsTokenRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
   StorageSplatRoute: typeof StorageSplatRoute
+  WSlugRoute: typeof WSlugRoute
   WorkspacesNewRoute: typeof WorkspacesNewRoute
   NotesIndexRoute: typeof NotesIndexRoute
   WorkspacesWorkspaceIdSettingsRouteRoute: typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
@@ -470,6 +483,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StorageSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/w/$slug': {
+      id: '/w/$slug'
+      path: '/w/$slug'
+      fullPath: '/w/$slug'
+      preLoaderRoute: typeof WSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/new': {
       id: '/workspaces/new'
       path: '/workspaces/new'
@@ -585,6 +605,7 @@ const rootRouteChildren: RootRouteChildren = {
   InvitationsTokenRoute: InvitationsTokenRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
   StorageSplatRoute: StorageSplatRoute,
+  WSlugRoute: WSlugRoute,
   WorkspacesNewRoute: WorkspacesNewRoute,
   NotesIndexRoute: NotesIndexRoute,
   WorkspacesWorkspaceIdSettingsRouteRoute:

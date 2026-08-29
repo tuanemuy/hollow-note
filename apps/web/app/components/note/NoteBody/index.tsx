@@ -86,10 +86,19 @@ export function NoteBody({
     setPromoted(true);
   }, [shadowHtml]);
 
+  // PAGE-p11-014。見出しは shadow root の中なので素の `#anchor` では
+  // ブラウザーが辿れない。移動はこちらで行い、URL の fragment は現在地の
+  // 表示（共有・戻る先）としてだけ書き換える。`replaceState` に既存の
+  // state をそのまま渡すのは、ルーターが握る履歴エントリーを壊さないため。
   const scrollToHeading = (anchorId: string) => {
     hostRef.current?.shadowRoot
       ?.getElementById(anchorId)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `#${encodeURIComponent(anchorId)}`,
+    );
   };
 
   return (

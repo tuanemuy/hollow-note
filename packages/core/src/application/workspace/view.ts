@@ -141,18 +141,28 @@ export type WorkspaceDeletionAcceptedView = Readonly<{
   status: "accepted";
 }>;
 
+/**
+ * `mailSent` is false when the mail could not be handed to `MailSender`.
+ * The invitation itself is already durable — the send is deliberately not
+ * allowed to fail it (spec/usecases/workspace.md#invitemember) — so the
+ * flag is what lets P-32 warn that the recipient has no mail and that
+ * `invitationUrl` has to be shared by hand.
+ */
 export type IssuedInvitationView = Readonly<{
   invitationId: string;
   email: string;
   role: WorkspaceRoleView;
   expiresAt: Date;
   invitationUrl: string;
+  mailSent: boolean;
 }>;
 
+/** `mailSent` as in {@link IssuedInvitationView}. */
 export type ResentInvitationView = Readonly<{
   invitationId: string;
   expiresAt: Date;
   invitationUrl: string;
+  mailSent: boolean;
 }>;
 
 export type InvitationPreviewState =
@@ -167,8 +177,16 @@ export type InvitationPreviewState =
  * `inviterName` is nullable because `UserBatchReader.resolveMany` omits
  * ids it cannot resolve — an inviter whose account was deleted has no
  * display name left to show, and the preview must still render.
+ *
+ * `workspaceId` is non-null exactly while `state` is `alreadyMember`, the
+ * one branch whose viewer already holds the workspace anyway: the preview
+ * is readable signed out, so any other branch would hand a workspace
+ * identifier to whoever holds the link. It is what sends a member who
+ * re-opens a link they already used to the workspace itself, since a
+ * consumed invitation can no longer be accepted.
  */
 export type InvitationPreviewView = Readonly<{
+  workspaceId: string | null;
   workspaceName: string;
   workspaceDescription: string;
   role: WorkspaceRoleView;

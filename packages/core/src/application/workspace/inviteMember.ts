@@ -129,6 +129,7 @@ export async function inviteMember({
       role: live.entity.role,
       expiresAt: resent.expiresAt,
       invitationUrl: resent.invitationUrl,
+      mailSent: resent.mailSent,
     };
   }
 
@@ -182,7 +183,7 @@ export async function inviteMember({
     invitationRouteStore.activate({ tokenHash: secret.hash, operationId }),
   );
 
-  await sendInvitationMail(container, {
+  const mailSent = await sendInvitationMail(container, {
     to: email,
     workspaceName: access.workspaceName,
     role,
@@ -197,5 +198,6 @@ export async function inviteMember({
     role,
     expiresAt,
     invitationUrl: invitationUrl(config.appUrl, secret.token),
+    mailSent,
   };
 }
