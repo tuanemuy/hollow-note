@@ -1139,3 +1139,36 @@ ADR-063 は当時の 2 つの欠落（`InvitationPreviewView` に `workspaceId` 
 
 - ADR-063 の 2 つの Consequences は解消した。残るのは「確認メールのリンク自体には復帰先が載らない」ことで、メール登録の経路は確認後にもう一度招待リンクを開く 1 手が要る。文言もその形に合わせてある。
 - `/signup` は `validateSearch` を持つルートになった。値は `.catch(undefined)` で既定へ倒すので、壊れたクエリで登録画面が開けなくなることはない。
+
+## ADR-069: shard トポロジーを前提にする一覧テストケースは、参照バックエンドで観測できる部分だけをテストにする
+
+### Context
+
+`spec/testcases/workspace/` の一覧系には、最終プラットフォーム（32 shard / 最大 6 接続 / reshard 中の二世代読み）を前提にした行がある。
+
+- `TC-workspace-176` / `-196`: 「UserId / WorkspaceId で grouping し、最大 6 接続の wave で解決する」
+- `TC-workspace-188`: 「公開 workspace が 32 shard へ分散する — 同時 6 接続の wave で全体最大 200 件へ merge する」
+- `TC-workspace-189` / `-199`: 「reshard 中に旧新へ存在する — WorkspaceId で重複排除し、大きい sourceVersion を採る」
+
+参照ランタイム（Node + memory、[ADR 025](../../spec/adr/025-single-reference-runtime.md)）は単一のプロセス内 shard・単一の routing generation を持つ。接続数の wave も二世代の重複排除も、この backend には表現するものがない。
+
+選択肢:
+
+1. shard 数・接続数を模したフェイクを置いて wave を観測する
+2. 観測できる部分だけをテストにし、残りは適合スイート側の責務として記録する
+3. 行ごと落とす
+
+### Decision
+
+2 を採る。
+
+- **grouping と有界性**は観測できる。`userBatchReader` / `workspaceDirectoryBatchReader` を「実アダプターへ委譲しつつ呼び出し id 列を記録する薄いラッパー」で包み、1 ページが **1 回**の呼び出しで、**重複のない** id 列で、**上限内**（20 / 100）で解決されることを確かめる（`recordUserBatchReads` / `recordWorkspaceDirectoryReads`）。これは接続数ではなく「join でも全走査でもない」というポートの契約そのもので、実装が n+1 に退行すれば red になる。
+- **200 件上限と枯渇シグナル**も観測できる。`TC-workspace-188` は `limit: 201` が `INVALID_PAGINATION` になること、`nextCursor` を `null` まで辿ると全件が欠落・重複なく出ることで押さえる。
+- **二世代の重複排除**（`-189` / `-199`）だけは参照バックエンドに執行形がない。テストを書かず、当該テストファイルの冒頭コメントに「単一 generation のため執行形なし、`workers` プロジェクトの directory 適合が担う」と理由を残す。
+
+1 は採らない。shard 数を模したフェイクは memory アダプターの内部を写し取るだけで、`docs/test.md` の fake ポリシー（リポジトリ / ストアのフェイクは置かない、検証は適合スイートが担う）に反する。3 も採らない — 観測できる部分まで捨てることになる。
+
+### Consequences
+
+- 一覧系のチェックリスト行は「参照ランタイムで観測できる範囲で緑」であり、shard トポロジー由来の性質は `pnpm test:workers` 側の適合が担保する。`pnpm test:node` だけの緑を本番の保証と読まないこと（`docs/test.md` の同旨）。
+- 部分失敗は逆に memory でも執行形がある。`MemoryBackend.workspaceDirectoryOutages` に WorkspaceId を入れると、batch reader はその行だけ `unavailable` に落ち、公開列挙は全体を失敗させる。`TC-workspace-200` / `-201` と sitemap の「短いページを返さない」性質はこれで押さえた。
