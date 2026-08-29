@@ -8,6 +8,7 @@ import { ConflictError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { projectWorkspaceDirectory } from "./directoryProjection";
+import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -36,6 +37,9 @@ export type UpdateWorkspaceProfileInput = Readonly<{
  * Concurrency is decided by the version observed before the transaction:
  * a profile write that committed in between makes this one stale and is
  * answered as `OPTIMISTIC_LOCK_FAILURE` rather than silently overwritten.
+ * That version does not move when a Membership does, so the actor's own
+ * permission is re-decided inside the transaction as well
+ * (`ensureActorCan`).
  */
 export async function updateWorkspaceProfile({
   container,
@@ -90,6 +94,7 @@ export async function updateWorkspaceProfile({
     await ctx.cleanupAdmission.assertWritable();
     await ctx.cleanupAdmission.assertActorWritable(userId);
     await ctx.workspaceOperationLockStore.assertWritable();
+    await ensureActorCan(ctx, workspaceId, userId, "manageWorkspace");
 
     const fresh = await ctx.workspaceRepository.findById(workspaceId);
     if (fresh === null) {

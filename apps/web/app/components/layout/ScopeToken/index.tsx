@@ -31,6 +31,10 @@ export type ShellScope =
 
 export const PERSONAL_SHELL_SCOPE: ShellScope = { kind: "personal" };
 
+/**
+ * 追加読み込みの失敗は `loaded` に添える。差し替えてしまうと、1 回の失敗で
+ * すでに表示していた一覧が消えて「今どこにいるか」の唯一の入口が空になる。
+ */
 type Listing =
   | Readonly<{ kind: "idle" }>
   | Readonly<{ kind: "loading" }>
@@ -38,6 +42,8 @@ type Listing =
       kind: "loaded";
       items: readonly UserWorkspaceView[];
       nextCursor: string | null;
+      pending: boolean;
+      error: string | null;
     }>
   | Readonly<{ kind: "failed"; message: string }>;
 
@@ -72,7 +78,9 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
 
   const load = (cursor: string | null) => {
     setListing((current) =>
-      current.kind === "loaded" ? current : { kind: "loading" },
+      current.kind === "loaded"
+        ? { ...current, pending: true, error: null }
+        : { kind: "loading" },
     );
     listWorkspaces({ data: { cursor } })
       .then((page) => {
@@ -83,10 +91,17 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
               ? [...current.items, ...page.workspaces]
               : page.workspaces,
           nextCursor: page.nextCursor,
+          pending: false,
+          error: null,
         }));
       })
       .catch((error: unknown) => {
-        setListing({ kind: "failed", message: displayError(error) });
+        const message = displayError(error);
+        setListing((current) =>
+          current.kind === "loaded"
+            ? { ...current, pending: false, error: message }
+            : { kind: "failed", message },
+        );
       });
   };
 
@@ -210,14 +225,17 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
               {listing.message}
             </p>
           ) : null}
+          {listing.kind === "loaded" && listing.error !== null ? (
+            <p className="px-4 py-2 text-xs text-error" role="status">
+              {listing.error}
+            </p>
+          ) : null}
           {listing.kind === "loaded" && listing.nextCursor !== null ? (
-            <button
-              type="button"
-              onClick={() => load(listing.nextCursor)}
-              className="block w-full px-4 py-2 text-left text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
-            >
-              さらに読み込む
-            </button>
+            <LoadMoreChoice
+              pending={listing.pending}
+              retry={listing.error !== null}
+              onSelect={() => load(listing.nextCursor)}
+            />
           ) : null}
 
           <div className="my-2 border-t border-hairline" />
@@ -260,6 +278,32 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function LoadMoreChoice({
+  pending,
+  retry,
+  onSelect,
+}: {
+  pending: boolean;
+  retry: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      aria-busy={pending}
+      onClick={onSelect}
+      className="block w-full px-4 py-2 text-left text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
+    >
+      {pending
+        ? "読み込み中..."
+        : retry
+          ? "もう一度読み込む"
+          : "さらに読み込む"}
+    </button>
   );
 }
 

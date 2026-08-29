@@ -239,7 +239,7 @@ type WorkspaceDirectorySnapshot = Readonly<{
 }>;
 
 interface WorkspaceDirectoryProjectionWriter {
-  applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<boolean>; // 書いたらtrue
+  applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<void>;
   tombstone(input: { workspaceId: WorkspaceId; operationId: string }): Promise<void>;
 }
 
@@ -252,11 +252,11 @@ interface WorkspaceSlugReservationStore {
 }
 ```
 
-`WorkspaceDirectoryProjectionWriter` は `workspace_directory` の唯一の書き手で、`workspace.created` / `.profileUpdated` / `.slugChanged` / `.published` / `.unpublished` は scope-local commit 後の snapshot 1 件に、`workspace.deleted` は tombstone になる。投影は out-of-band かつ at-least-once なので、順序は `sourceVersion` だけで決める — 保存済みの版以下の snapshot は書かずに `false` を返し、これが stale event の規則と応答喪失の再送の規則を兼ねる。tombstone は終端で、どの版の snapshot も再開させない（削除済み workspace が一覧やサイトマップへ戻らないため）。同じ operation ID の tombstone は冪等、別 operation の tombstone は `ConflictError`。`slug` は書き込み時に他の行から奪う（[database/index.md](../database/index.md) の `workspace_directory`）。
+`WorkspaceDirectoryProjectionWriter` は `workspace_directory` の唯一の書き手で、`workspace.created` / `.profileUpdated` / `.slugChanged` / `.published` / `.unpublished` は scope-local commit 後の snapshot 1 件に、`workspace.deleted` は tombstone になる。投影は out-of-band かつ at-least-once なので、順序は `sourceVersion` だけで決める — 保存済みの版以下の snapshot は何も書かない。これが stale event の規則と応答喪失の再送の規則を兼ねる。**どちらだったかは答えない**（ガード付き UPDATE が 0 行だったことを報告できないバックエンドがあり、呼び出し側も必要としない。投影は誰が書いたかに関わらず最大の版へ収束する）。tombstone は終端で、どの版の snapshot も再開させない（削除済み workspace が一覧やサイトマップへ戻らないため）。同じ operation ID の tombstone は冪等、別 operation の tombstone は `ConflictError`。`slug` は書き込み時に他の行から奪う（[database/index.md](../database/index.md) の `workspace_directory`）。
 
 `WorkspaceRepository` は current workspace scope に束縛されて自 scope の 1 行しか見えないので、slug の global uniqueness は `WorkspaceSlugReservationStore` が global D1 の `workspace_slug_reservations` で担う。`ConflictError("SLUG_ALREADY_USED")` を返すのはこのポートであり、`WorkspaceRepository` ではない。`WorkspaceSlug` は自身の構築時に小文字化されるので、渡す値がそのまま `normalized_slug` である。
 
-予約は operation ID ごとの 2 相で、`reserve` → workspace-local commit → `activate`。local commit が着地しなかった場合は `abandon` で補償する。slug 変更では `activate` の `releasing` に手放す側の slug を渡し、新旧の切替を 1 transaction で行う — 新しい公開 URL が有効になるまで旧 URL が解決し続け、両方が解決する窓も両方が解決しない窓も生じない。`release` は代わりを取らずに手放す唯一の経路で、ワークスペース削除が directory tombstone の ack 後に呼ぶ（同じ slug の再利用を tombstone が妨げないため）。期限を持つのは `reserved` 行だけであり、`active` な予約は所有者の `activate(releasing)` / `release` でしか解放されない。
+予約は operation ID ごとの 2 相で、`reserve` → workspace-local commit → `activate`。local commit が着地しなかった場合は `abandon` で補償する。slug 変更では `activate` の `releasing` に手放す側の slug を渡し、新旧の切替を 1 transaction で行う — 新しい公開 URL が有効になるまで旧 URL が解決し続け、両方が解決する窓も両方が解決しない窓も生じない。`release` は代わりを取らずに手放す唯一の経路で、呼び出し元は 2 つある — ワークスペース削除が directory tombstone の ack 後に呼ぶ場合（同じ slug の再利用を tombstone が妨げないため）と、`changeWorkspaceSlug` が slug を `null` にする場合（次の予約が無いので `activate(releasing)` の交換が使えない）である。期限を持つのは `reserved` 行だけであり、`active` な予約は所有者の `activate(releasing)` / `release` でしか解放されない。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("SLUG_ALREADY_USED")`、`SystemError(DatabaseError)`
 
@@ -279,7 +279,11 @@ repository は current workspace scope に束縛される。slug検索、公開w
 
 `PublicWorkspaceDirectoryReader.listPublished`はWorkspaceId hashの最大32 shardを同時6接続のwaveで読み、各shardの`(updated_at DESC, workspace_id)` keysetを署名opaque cursorへ保持して全体最大200件へmergeする。reshard中は旧新generationを読み、WorkspaceId/sourceVersionで重複排除する。総件数は数えず、サイトマップ生成側が`nextCursor`を末尾まで反復する。
 
-directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。除名・脱退はこの2相を`MembershipDirectoryReservationStore.beginRemoval` / `completeRemoval`で回す。`removing` edgeは`listActiveByUser`から即座に外れるので、宣言した瞬間に一覧から消える。`(userId, workspaceId)`で鍵を引くのは、行の`operation_id`が作成した join のものであり除名側が導出できないためで、冪等性は目標状態で取る — `removing`への再実行も、消えた edge の`completeRemoval`も成功する。edgeが不在の`beginRemoval`も成功し、`pending` / `activating`（未確定の join）への両操作と、`removing`を経ていない`completeRemoval`は`ConflictError`にする。
+directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。除名・脱退はこの2相を`MembershipDirectoryReservationStore.beginRemoval` / `completeRemoval`で回す。`removing` edgeは`listActiveByUser`から即座に外れるので、宣言した瞬間に一覧から消える。`(userId, workspaceId)`で鍵を引くのは、行の`operation_id`が作成した join のものであり除名側が導出できないためで、冪等性は目標状態で取る — `removing`への再実行も、消えた edge の`completeRemoval`も成功する。edgeが不在の`beginRemoval`も成功し、`removing`を経ていない`completeRemoval`は`ConflictError`にする。
+
+除名は可逆で、`abandonRemoval`が`removing → active`を戻す。除名・脱退の規則は宣言の前と削除transactionの中の2回評価され、2回目が拒否しうる（同時に2人のownerを外す2つの除名は、1回目を両方通り2回目を片方しか通らない）。この遷移が無いと、負けた側のedgeが`removing`のまま残り、まだownerである利用者の一覧からワークスペースが消えたまま戻せなくなる。冪等性は同じく目標状態で取る — 既に`active`も、`completeRemoval`まで進んで不在になったedgeも成功する。
+
+`beginRemoval`は`active`に加えて`activating`も受ける。`activating`は`activate`が着地しなかったjoinが残す状態で、membershipが在るかどうかの正本は呼び出し側が既に読んだworkspace scopeである。拒否すると、edgeが確定しなかったメンバーを永久に除名できず、manifestを歩くワークスペース削除がその item で止まる。join側は`activate`を失うが、その補償（`abandon`）は`pending` / `activating`に閉じているので除名を打ち消さない。`pending`だけは引き続き`ConflictError`にする — account deletionのprepare lockが持つ状態であり、既に判断を下した削除に逆らうことになるためである。`abandonRemoval`は逆に`pending` / `activating`を`ConflictError`にする（どの除名もそれらを宣言していないので、戻す対象が無い）。
 
 ワークスペース削除はmanifestに固定したIDを`deleteByIds`へ最大100件ずつ渡し、Membership/Invitationを先に消してからWorkspaceを消す。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
 
@@ -292,6 +296,7 @@ interface InvitationRepository extends TransactionalRepository<Invitation, Invit
   findByTokenHash(tokenHash: TokenHash): Promise<Versioned<Invitation> | null>;
   findPendingByWorkspaceAndEmail(workspaceId: WorkspaceId, email: Email): Promise<Versioned<Invitation> | null>;
   listByWorkspace(workspaceId: WorkspaceId, pagination: Pagination): Promise<PaginationResult<Invitation>>;
+  listPendingByWorkspace(workspaceId: WorkspaceId, pagination: Pagination): Promise<PaginationResult<Invitation>>;
   countPendingIssuedSince(workspaceId: WorkspaceId, since: Date): Promise<number>;
   deleteByIds(ids: readonly InvitationId[]): Promise<number>; // 最大100件
 }
@@ -316,15 +321,18 @@ interface MembershipDirectoryReservationStore {
   commitAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   releaseAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   listActivatingByUser(userId: UserId, limit: number): Promise<readonly { operationId: string; workspaceId: WorkspaceId }[]>;
-  applyRoleIfNewer(input: { userId: UserId; workspaceId: WorkspaceId; role: WorkspaceRole; sourceVersion: number }): Promise<boolean>; // 書いたらtrue
+  applyRoleIfNewer(input: { userId: UserId; workspaceId: WorkspaceId; role: WorkspaceRole; sourceVersion: number }): Promise<void>;
   beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
+  abandonRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
   completeRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
 }
+```
 
 `MembershipDirectoryReservationStore`はcurrent UserId shardに束縛する。`reserveAndClaimActivation`はpending row insert、同shardのcurrent UserがActiveであることの検査、`activating`へのclaimを1 transactionで行う。Userがdeletingならrowを一切insertしない。account deletion開始前にclaim済みの`activating` edgeはaccept Sagaがactive/abandonedへ収束するまで削除manifest構築を待たせる。pending edgeのprepare/release/commitはedge operation IDとdeletion operation IDの組で冪等にする。
 
-`applyRoleIfNewer`は`workspace.membership.roleChanged`をedgeの`role`へ投影する唯一の書き手で、`listActiveByUser`が返すroleはこのedgeからしか来ない。順序は`sourceVersion`（変更後のMembershipの版）だけで決め、保存済みの版**より大きい**ときだけ書いて`true`を返す。予約が運んだ初期roleはどの版よりも古いものとして扱う。この1つの規則が再配送・後着・同時適用の3つを兼ねる — 同じ変更の再配送は版が大きくならないので何も書かず、後から届いた古い変更はroleを巻き戻さず、同時適用は保存済み行との比較なので版が大きい方が勝つ。鍵は`beginRemoval`と同じ`(userId, workspaceId)`で、行の`operation_id`はjoinのものであり role 変更側が導出できない。`pending` / `activating` edgeにも適用する（`activate`はroleを触らないため、未確定のまま届いた変更を落とすとroleが取り残される）。**edgeが不在なら何もせず`false`を返し、決してinsertしない** — 除名後に届いた古い変更が削除済みedgeを復活させないため。
+`applyRoleIfNewer`は`workspace.membership.roleChanged`をedgeの`role`へ投影する唯一の書き手で、`listActiveByUser`が返すroleはこのedgeからしか来ない。順序は`sourceVersion`（変更後のMembershipの版）だけで決め、保存済みの版**より大きい**ときだけ書く。予約が運んだ初期roleはどの版よりも古いものとして扱う。この1つの規則が再配送・後着・同時適用の3つを兼ねる — 同じ変更の再配送は版が大きくならないので何も書かず、後から届いた古い変更はroleを巻き戻さず、同時適用は保存済み行との比較なので版が大きい方が勝つ。鍵は`beginRemoval`と同じ`(userId, workspaceId)`で、行の`operation_id`はjoinのものであり role 変更側が導出できない。`pending` / `activating` edgeにも適用する（`activate`はroleを触らないため、未確定のまま届いた変更を落とすとroleが取り残される）。**edgeが不在なら何もせず、決してinsertしない** — 除名後に届いた古い変更が削除済みedgeを復活させないため。この呼び出しが書き手だったかどうかは`applySnapshotIfNewer`と同じ理由で答えない。
 
+```ts
 interface MembershipRemovalPreparationStore {
   prepare(input: { operationId: string; userId: UserId; expectedMembershipVersion: number; expiresAt: Date }): Promise<void>;
   renew(operationId: string, expiresAt: Date): Promise<void>;
@@ -362,6 +370,8 @@ type WorkspaceDeletionManifestItem =
 ```
 
 `InvitationRouteStore.resolveActive` は `active` な route を、期限切れかどうかに関わらず解決する。期限の判定は workspace scope の Invitation が持つので、route で打ち切ると preview の `expired` と accept の `InvitationExpired` が「存在しない」に潰れてしまう。書き込み側は逆で、期限を過ぎた `reserved` 行の `activate` は `ConflictError` にし、recovery が `abandon` する（[database/index.md](../database/index.md) の `invitation_routes`）。
+
+`listByWorkspace` と `listPendingByWorkspace` はどちらも `createdAt DESC, id DESC` の全順序で読む（`id` の tiebreak が無いと同時刻の招待が page 間で重複・欠落しうる）。分かれているのは絞り込みの位置である。`listByWorkspace` は status を絞らず、削除 manifest が歩く列挙であり `count` はワークスペースの招待総数になる。画面が引く保留中一覧は `listPendingByWorkspace` を使い、`count` は保留中の総数になる — page を引いてから絞ると、終端状態の招待が 1 ページ分並んだだけで保留中の招待が隠れ、件数も縮む。期限切れは status ではないので、期限を過ぎた `pending` はどちらにも返り続ける（判定は `Invitation.isExpired` が呼び出し側の `now` に対して行う）。
 
 `countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。
 
@@ -417,6 +427,6 @@ WorkspaceErrorCode =
 
 ## ユースケース（概要）
 
-`resolveWorkspaceAccess`, `createWorkspace`, `updateWorkspaceProfile`, `changeWorkspaceSlug`, `publishWorkspace`, `unpublishWorkspace`, `deleteWorkspace`, `inviteMember`, `resendInvitation`, `revokeInvitation`, `getInvitationPreview`, `acceptInvitation`, `listMembers`, `listPendingInvitations`, `listUserWorkspaces`, `changeMemberRole`, `removeMember`, `leaveWorkspace`, `deleteMembershipsForUser`, `listPublicWorkspaces`, `getPublicWorkspace`
+`resolveWorkspaceAccess`, `createWorkspace`, `updateWorkspaceProfile`, `getWorkspaceSettings`, `changeWorkspaceSlug`, `checkWorkspaceSlugAvailability`, `publishWorkspace`, `unpublishWorkspace`, `getWorkspacePublication`, `deleteWorkspace`, `getWorkspaceDeletionStatus`, `inviteMember`, `resendInvitation`, `revokeInvitation`, `getInvitationPreview`, `acceptInvitation`, `listMembers`, `listPendingInvitations`, `listUserWorkspaces`, `changeMemberRole`, `removeMember`, `leaveWorkspace`, `deleteMembershipsForUser`, `listPublicWorkspaces`, `getPublicWorkspace`
 
 詳細は [usecases/workspace.md](../usecases/workspace.md)。

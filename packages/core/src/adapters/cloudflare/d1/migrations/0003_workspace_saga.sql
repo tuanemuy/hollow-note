@@ -11,6 +11,12 @@
 -- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
 -- as UNIX milliseconds, enumerations as `text` with a `CHECK`.
 
+-- `releasing` is in the CHECK because `spec/database/index.md` names it,
+-- but no adapter ever writes it and none should: the slug exchange is
+-- atomic (`activate` publishes the new key and frees the old one in one
+-- transaction), so the state it would name is never observable. Keeping
+-- it in the enumeration costs nothing and keeps the DDL readable next to
+-- the canon; dropping it would make the two disagree.
 CREATE TABLE workspace_slug_reservations (
   normalized_slug text PRIMARY KEY,
   workspace_id text NOT NULL,

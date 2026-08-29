@@ -36,11 +36,18 @@ export const Route = createFileRoute("/w/$slug")({
         tags: deps.tags,
       },
     }),
-  head: ({ match }) => {
+  head: ({ match, loaderData }) => {
     const config = match.context?.config;
     if (!config) return {};
+    const workspace = loaderData?.workspace ?? null;
     const { meta, links } = buildHead(config, {
-      title: `ワークスペース — ${config.siteName}`,
+      title:
+        workspace === null
+          ? `ワークスペース — ${config.siteName}`
+          : `${workspace.name} — ${config.siteName}`,
+      ...(workspace !== null && workspace.description !== ""
+        ? { description: workspace.description }
+        : {}),
       path: `/w/${match.params.slug}`,
     });
     return { meta, links };

@@ -86,10 +86,11 @@ const fromRow = (row: SqlRow): Invitation =>
  * `invitations` of one workspace scope
  * (`spec/database/index.md#invitations`).
  *
- * No status or expiry predicate is applied beyond the one method that
- * names it: a lapsed invitation still resolves and still lists, because
- * `Invitation.isExpired` is the domain's answer against the caller's
- * `now`.
+ * A status predicate is applied only in the methods that name it, and an
+ * expiry one never is: a lapsed invitation still resolves and still
+ * lists — including in `listPendingByWorkspace`, since expiry is not a
+ * status — because `Invitation.isExpired` is the domain's answer against
+ * the caller's `now`.
  */
 export function createCloudflareInvitationRepository(
   deps: Readonly<{ session: SqlSession }>,
@@ -124,6 +125,40 @@ export function createCloudflareInvitationRepository(
     }
   };
 
+  const listWhere = async (
+    where: string,
+    params: readonly SqlValue[],
+    pagination: Pagination,
+  ): Promise<PaginationResult<Invitation>> => {
+    const limit = Math.max(0, pagination.limit);
+    const offset = Math.max(0, (pagination.page - 1) * limit);
+    try {
+      const [items, totals] = await Promise.all([
+        session.query(
+          statement(
+            `SELECT ${base.selection} FROM ${TABLE} WHERE ${where}
+               ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+            ...params,
+            limit,
+            offset,
+          ),
+        ),
+        session.query(
+          statement(
+            `SELECT COUNT(*) AS total FROM ${TABLE} WHERE ${where}`,
+            ...params,
+          ),
+        ),
+      ]);
+      return {
+        items: items.map(fromRow),
+        count: totals[0] === undefined ? 0 : int(totals[0], "total"),
+      };
+    } catch (cause) {
+      throwTranslated(`${TABLE} listing`, cause);
+    }
+  };
+
   return {
     ...base,
 
@@ -155,33 +190,18 @@ export function createCloudflareInvitationRepository(
       workspaceId: WorkspaceId,
       pagination: Pagination,
     ): Promise<PaginationResult<Invitation>> {
-      const limit = Math.max(0, pagination.limit);
-      const offset = Math.max(0, (pagination.page - 1) * limit);
-      try {
-        const [items, totals] = await Promise.all([
-          session.query(
-            statement(
-              `SELECT ${base.selection} FROM ${TABLE} WHERE workspace_id = ?
-                 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
-              workspaceId,
-              limit,
-              offset,
-            ),
-          ),
-          session.query(
-            statement(
-              `SELECT COUNT(*) AS total FROM ${TABLE} WHERE workspace_id = ?`,
-              workspaceId,
-            ),
-          ),
-        ]);
-        return {
-          items: items.map(fromRow),
-          count: totals[0] === undefined ? 0 : int(totals[0], "total"),
-        };
-      } catch (cause) {
-        throwTranslated(`${TABLE} listing`, cause);
-      }
+      return listWhere("workspace_id = ?", [workspaceId], pagination);
+    },
+
+    async listPendingByWorkspace(
+      workspaceId: WorkspaceId,
+      pagination: Pagination,
+    ): Promise<PaginationResult<Invitation>> {
+      return listWhere(
+        "workspace_id = ? AND status = 'pending'",
+        [workspaceId],
+        pagination,
+      );
     },
 
     async countPendingIssuedSince(

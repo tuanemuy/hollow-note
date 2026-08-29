@@ -1547,3 +1547,274 @@ ADR-084 は「閲覧者自身のメールアドレスを返す読み取りがア
 - ADR-084 を解消した。一致していれば「参加する」の 1 クリックで参加し、不一致のときだけ確認（「招待先とは別のアカウントでサインインしています」）が挟まる。
 - `spec/manual-tests/workspace.md` の TC-03 / TC-04 / TC-30 と `.thread/3/testing.md` 項目 6・エッジケース 4 を、確認が条件付きで出る形に直した。
 - `TC-identity-008` の投影の期待値に `email` を足した。
+
+## ADR-090: `viewerFor` は workspace 不在を `workspaceRole: null` へ縮退させる
+
+### Context
+
+ADR-046 は「workspace 不在は `resolveWorkspaceAccess` が投げる `WORKSPACE_NOT_FOUND` をそのまま通す」と決めたが、`accessControl.viewerFor` だけはその向きが噛み合っていない。削除サガが Workspace 行を消してからノートを消すまでの窓で、匿名の閲覧者は workspace を一切引かないため公開ノートを読めるのに、サインイン中の閲覧者は `WORKSPACE_NOT_FOUND` で落ちる。同じノートの見え方がサインインの有無で変わり、`spec/usecases/note.md` 共通手順 5（権限が無ければ `NOTE_NOT_FOUND`）とも種別が異なる。
+
+### Decision
+
+`viewerFor` の workspace 経路だけ `NotFoundError("WORKSPACE_NOT_FOUND")` を握って `workspaceRole: null` に縮退させる。それ以外のエラーは再送出する。`viewerFor` は入口検査ではなく**閲覧者コンテキストの構築**であり、「この人が持つ workspace ロールは無い」は不在でも非メンバーでも同じ事実だからである。判定は後段の `NoteAccessPolicy` が一手で行い、public / unlisted は読め、それ以外は `NOTE_NOT_FOUND` に落ちる。
+
+ADR-046 の「不在をそのまま通す」は入口として workspace を要求する経路（`createBlankNote` / `storeAvatar` / `recalculateStorageUsage` / `listNotes`）にはそのまま残す。そこでは workspace そのものが操作対象なので、不在を隠す理由が無い。
+
+### Consequences
+
+- `getNote` は削除中ワークスペースの公開ノートを、サインインの有無に関わらず同じ答えで返す。
+- `moveNote` は `canEdit` を要求するので、縮退後は `WORKSPACE_NOT_FOUND` ではなく `NOTE_NOT_FOUND` を返す。移動先の存在確認は `resolveTargetOwner` が別に持つため、TC-note-242（不明な移動先）は変わらない。
+- `listNotes` の workspace 認可分岐（ADR-060）に member / 非メンバー / 不在ワークスペースの 3 ケースを足し、認可境界に検出力を入れた。
+
+## ADR-092: 保留中招待の絞り込みを store 側へ移し、ADR-034 を置き換える
+
+### Context
+
+ADR-034 は `listPendingInvitations` の `count` を「射影後の `invitations.length`」と決め、その Consequences に反証条件を明記していた —「保留中が 1 ページ（既定 50 件）を超えると `count` が総数ではなくページ内件数になる。総数が要るなら status 別の count をポートへ足す必要がある」。
+
+実際に踏むのは超過ではなく逆向きの形だった。`InvitationRepository.listByWorkspace` は status を絞らず `createdAt DESC, id DESC` を返すので、直近 50 件が accepted / revoked のワークスペースでは page 1 の全件が終端状態になり、ページング**後**に `Invitation.isPending` で絞る実装は「保留中の招待なし」を表示する。保留中の招待は実在するのに P-32 のメンバー管理画面から消える。`count` がページ内件数であることも、ページャを駆動できない点で同じ穴の裏面である。
+
+### Decision
+
+ADR-034 を置き換える。ポートへ `listPendingByWorkspace(workspaceId, pagination)` を新設し、絞り込みを store 側で行う。`listByWorkspace` は全ステータスのまま残す — 削除 manifest（`workspaceDeletionLocal`）はその列挙を必要とするため。`count` は保留中の総数になり、ユースケースは `page.count` をそのまま返す。
+
+期限切れは status ではないので、`listPendingByWorkspace` は lapsed な `pending` を返し続ける。画面は `expired` フラグ付きで表示し、再送を提供する。
+
+ADR-026 のとおりポート JSDoc と適合スイートを対で触った（ADP-workspace-022b: 終端行がページを空にせず count も縮めないこと / lapsed が残ること）。memory と Cloudflare DO の両バックエンドが同一スイートを通す。
+
+### Consequences
+
+- ADR-034 が守ろうとした「画面の件数と一覧の行数が一致する」は、1 ページに収まる限り同値のまま保たれる。溢れた場合はページャが正しく総数を知る側へ倒れる。
+- ADR-034 が予告した「status 別の count をポートへ足す」を、count 単体ではなくページング付きの listing として実現した。総数と行の両方が 1 往復で揃う。
+- 既存テストの期待値（ページ内 count）を更新し、検出力として TC-workspace-178b（終端招待 60 件が既定 1 ページを埋めても保留中が見える）と TC-workspace-178c（`count` が総数）を足した。
+- `WorkspaceReader` の `invitation` Pick に `listPendingByWorkspace` を追加した（`application/di/types.ts`）。読み取り専用メソッドなので UoW の外で引ける点は `listByWorkspace` と変わらない。
+
+## ADR-091: membership edge の directory 解決は 1 本の共有ヘルパーに閉じる
+
+### Context
+
+`listUserWorkspaces` と `getUsageSnapshot` は、どちらも「membership edge のページ → `WorkspaceDirectoryBatchReader.resolveMany` → `deleted` / `unavailable` / `active` の 3 分岐 → 欠損キーは `unavailable` へ縮退」を行う。両者は独立に書き写されており、`listUserWorkspaces` 側だけが TC-workspace-200 / 201 と「never-projected」ケースで 3 分岐を拘束していた。usage 側の `deleted` / `unavailable` は 1 度も実行されず、`switch` を `active` だけに縮退させても全テストが緑になる状態だった。
+
+### Decision
+
+`application/workspace/directoryResolution.ts` に `resolveWorkspaceEdges` を置き、両ユースケースから呼ぶ。返す `ResolvedWorkspaceEdge` は `active` / `unavailable` の 2 変種だけを持ち、`deleted` は行の不在で表す — 「欠損キーを削除と読んではならない」というポート契約を、呼び出し側が破れない形にする。投影の中身（`UserWorkspaceView` か `WorkspaceUsageView` か）は各ユースケースが決め、ヘルパーは「どの edge が生き残るか」だけを決める。
+
+### Consequences
+
+- 3 分岐の検出力が 1 箇所に集約され、`listUserWorkspaces` のテストが usage 側も守る。変異チェックで、`deleted` を落とさない変異は両ファイルのテストが、`unavailable` を落とす変異は 4 ケースが red になることを確認した。
+- usage 側は `targets` / `degraded` / `byId` の再組み立てが不要になり、`mapBounded` を行そのものに掛けて edge 順を保つ形へ縮む。`unavailable` 行は scope RPC を出さないので、同時 scope 読みの上限 6 は変わらない。
+
+## ADR-095: P-43 の `head` 用にワークスペースの名前・説明をブリッジが素の値で返す
+
+### Context
+
+`PAGE-p43-001` は公開ページに metadata を要求するが、`/w/:slug` の `head` はブリッジが返す断片（未解決の promise）の中身に届かないため、すべての公開ワークスペースが同じタイトル・同じ説明で共有カードと検索結果に並んでいた。公開区分の画面なので、ここが区別できないことの影響は他の画面より大きい。
+
+### Decision
+
+`renderPublicWorkspace` が `getPublicWorkspace` を読み、`{ name, description }` だけを断片とは別の素の値として返す（設定レイアウト / ワークスペース版ノート一覧と同じ形）。`head` はこの値からタイトルと `description` を組み、`buildHead` が `og:*` / `twitter:*` まで広げる。
+
+- 見つからないスラッグはブリッジでは `null` に畳み、head を既定へ倒すだけにする。終端表示（非公開・削除済み・不在・不正スラッグを 1 つに畳む）は断片側が描くという ADR-067 の形を動かさない。`notFound` 以外の失敗はそのまま投げ、ルートの `errorComponent` に渡す。
+- 結果としてこの画面は `getPublicWorkspace` を 1 リクエストにつき 2 回読む。ブリッジのハンドラーは RSC の render scope の外なので、断片側の `cache()` は共有されない。断片へ view を渡して 1 回にする案は `PublicWorkspacePage` の入力を「解決済みの view」へ変えることになり、この画面の「スラッグから引く」責務が呼び出し側に散る。
+
+### Consequences
+
+- 公開ページのタイトルがワークスペース名になり、説明が空でなければ `description` / `og:description` に載る。空のときは既定の説明のままにする（空文字を書き出すと既定より悪い）。
+- 読みが 2 回になる。公開ページは匿名から叩ける URL なので、投影のキャッシュを入れるならこの経路が最初の対象になる。
+
+## ADR-096: 追加読み込みの失敗は一覧を残したまま添え、移動先候補は `nextCursor` が尽きるまで辿れるようにする
+
+### Context
+
+`ScopeToken` は「さらに読み込む」が 1 回失敗しただけで `failed` に差し替わり、表示済みの一覧が消えていた。`NoteMovePicker` は 1 ページ目しか読まず、`listUserWorkspaces` の 1 ページが 20 件である以上 21 件目以降のワークスペースへ移動できない。しかも editor 以上への絞り込みはページを引いた**後**に行うので（`listMoveTargetsFn`）、1 ページ目が全部 viewer なら候補は 0 件と表示されていた。
+
+### Decision
+
+どちらも `loaded` に `pending` / `error` を持たせ、追加読み込みの失敗は一覧に添えるエラー欄にする。ボタンはそのまま再試行の入口として残し、`pending` の間は無効化する（同じカーソルの二度押しで同じページが二重に積まれるため）。
+
+`NoteMovePicker` は `nextCursor` を保持して「さらに読み込む」を出す。「移動できる先がありません」は `nextCursor === null` のときだけ出す — 後段で絞る形である以上、候補 0 件と候補の終わりは別物である。ロール絞り込みをポートの述語へ移す案は採らない（`listActiveByUser` は viewer も要るスコープトークンと共有する読みで、ADR-047 と同じ理由）。
+
+### Consequences
+
+- 一覧が消えないので、`ScopeToken`（「今どこにいるか」の唯一の入口）が一時的な失敗で空にならない。
+- 移動先の候補はワークスペース数に比例して手数が増える。追加読み込みを繰り返せば全件に届くので、`PAGE-p11-009` / `PAGE-p10-007` の到達性は満たす。
+
+## ADR-093: 設定 3 画面は読み取りユースケース 3 本を直接呼び、拒否は `kind` で畳む
+
+### Context
+
+ADR-056 / 058 / 059 は `getWorkspaceSettings` / `getWorkspacePublication` / `getWorkspaceDeletionStatus` を置いたが、画面側は ADR-054 の暫定（`components/workspace/settingsRead.ts` が `resolveWorkspaceAccess` に射影と `WorkspaceAuthorization.can` を足す）のままだった。そのため 3 画面の可否がすべて `canManage` に潰れ、P-33 の公開ノート件数は公開**後**にしか出ず、P-34 の「実行中 / 完了」を読む経路が無かった。
+
+### Decision
+
+`settingsRead.ts` を消し、P-31 → `getWorkspaceSettings`、P-33 → `getWorkspacePublication`、P-34 → `getWorkspaceDeletionStatus` → `getWorkspaceSettings` の順に呼ぶ。読み出しは各コンポーネント直下の `action.ts`（`WorkspaceMembersPanel` と同じ置き場）に置き、view は core の型をそのまま使う。
+
+- 可否は画面ごとに違うフラグで閉じる。P-31 は `canManage`、P-33 は `canPublish`、P-34 は `canDelete`。権限表が今どれも owner を要求することは画面の関心ではない。
+- 非メンバー（`InsufficientRole`）と削除済み（`WORKSPACE_NOT_FOUND`）は、断片の中で `serializeError(...).kind` を見て終端表示へ畳む。断片の中で `throw` すると Flight が素の Error を運んで `kind` タグが落ちるため（`WorkspaceMembersPanel` と同じ理由）。`instanceof` は使わない。
+- 設定レイアウトのシェル（`loadWorkspaceSettingsShell`）も同じ 3 kind を `workspace: null` へ畳む。判定はユースケースが持ったままで、ここでやるのは表示への写像だけ。シェルごと落とすと閲覧者名も失われ、個人の文脈への導線（WS-02）が出せなくなる。
+- P-34 は進行を先に読む。削除が終わったワークスペースには行が残らず `getWorkspaceSettings` は `WORKSPACE_NOT_FOUND` を投げるので、2 本を並列にすると「完了」を描けない。
+- スラッグ欄の接頭辞に要る配備のオリジンだけは、どの DTO にも無い設定値なので P-31 の読み出しが `config.appUrl` を添えて返す。P-33 の公開 URL は `getWorkspacePublication` の `publicUrl` に寄せ、presentation では組み立てない。
+
+### Consequences
+
+- ADR-054 は撤去。presentation から `@repo/core/domain/*` の import と認可判定が消え、同じ処理が 2 か所にある状態も解消した。
+- P-33 は公開前から件数と「0 件なら空のまま」の注意を出せる（ADR-058 の目的）。切り替えの楽観状態は `published` / `publicUrl` / `publicNoteCount` を 1 つの patch reducer に束ね、`publishWorkspace` の応答が持つ確定値を再取得を待たずに書き戻す。
+- P-34 の「実行中」は再訪時に `deleting` を読んで描き、受理直後の表示と同じ画面に畳む（違うのは見出しだけ）。受理後は受理を描いたうえで `/notes` へ送り直し、WS-10 手順 4 の「個人の文脈へ遷移する」を満たす。
+- 「完了」は行の不在なので、設定レイアウト自身も同時に `workspace: null` に落ちる。断片が単独で完了を描くのは、シェルと断片の読みの間で削除が終わった窓だけである。
+
+## ADR-097: 移動の requestKey は `noteId:target:routeVersion` にし、合流した operation では前進しない
+
+### Context
+
+`beginOrResume` の契約は「同じ requestKey は同じ operation を replay し、**別の requestKey は走行中の operation に合流する**」。`moveNote` は戻り値の requestKey を見ずに合流先の payload を自分の plan として採用していたため、switch 済みの移動が settle されずに `running` で残っている状態で同じノートを別のワークスペースへ移すと、pre-switch abort が「唯一の実体である staged copy」を消してノートと revision を完全に失う（レビュー B-001）。
+
+修正実行計画の方針 1 は requestKey を `noteId:targetScope` に固定するとしていた。しかし memory / D1 いずれの `beginOrResume` も **terminal な同一 requestKey の行をそのまま返す**（`sameRequest` は state を見ない）。`noteId:target` だけを鍵にすると、個人 → WS-A → 個人 → WS-A という往復で 3 回目の移動が 1 回目の **completed な operation を再生**し、target に残った `applied_operations` の記録により手順 6 が丸ごと skip され、空の target へ route が切り替わる。ADR-080 が塞いだのと同種のデータ消失が別の入口から開く。
+
+### Decision
+
+requestKey を `${noteId}:${serialize(target)}:${route.routeVersion}` とし、戻った operation の `requestKey` が自分のものでなければ `ConflictError("NOTE_MOVE_IN_PROGRESS")` を返して前進しない。
+
+- `routeVersion` は「この移動が出発する route の世代」である。失敗した移動は route の世代を進めない（`abortMove` は世代を据え置き、claim に失敗すれば触れてすらいない）ので、**同じ移動の再試行は必ず同じ鍵**に落ちる。世代を進めるのは `switchMove` だけなので、**別の移動は必ず別の鍵**になる。方針 1 の目的（再試行の replay）を満たしつつ、往復による terminal 衝突を型どおりに排除する。
+- 合流した operation で前進しないのは、合流先の plan が自分の要求ではないからである。応答を plan から組み直しても、その plan の source は自分が確認した source ではなく、abort は自分が stage していない scope を巻き戻す。合流は control plane の便宜であってサガの再開ではない。
+- 併せて `plan.source` / `plan.target` が要求の 2 scope と一致することを検査し、外れていれば `SystemError(DataIntegrityError)` にする。鍵が一致する以上一致しないのは payload の破損であり、競合ではない。
+
+### Consequences
+
+- switch 後に落ちて `running` のまま残った operation があると、そのノートの**以後の移動はすべて** `NOTE_MOVE_IN_PROGRESS` で拒否される。データを失うより止まるほうを選んだ結果で、駆動口（recovery cron / scope alarm）は Issue #28 のまま。`moveNote` の JSDoc に明記した。
+- `expectedVersion` は鍵から外れたので、転送境界が版を持つかどうかが operation の同一性を左右しなくなった（レビュー frontend B-002 の 2 点目）。
+- 「同じノートの移動が進行中」の spec エラー表に、要求が一致しない場合の 1 行を足した。
+
+## ADR-098: `moveNote` の `expectedVersion` は `number | null` にして、恒真な検査をやめる
+
+### Context
+
+ADR-066 は「`getNote` が版を返さないので、`moveNoteFn` は呼ぶ直前に `ScopeRouter` → `NoteReader` で版を引いて渡す」と決めていた。ところが `moveNote` 自身も同じ行を読んでから `stored.expectedVersion !== input.expectedVersion` を判定するので、**この検査は常に通る**（レビュー frontend B-002 の 1 点目）。楽観ロックがあるように見えて無い状態で、presentation が読み取りポートを直に叩く代償だけが残っていた。
+
+### Decision
+
+入力を `expectedVersion: number | null` にする。`null` は「版を持たない呼び出し元」を表し、そのとき版の検査は**行わない**。`moveNoteFn` は `null` を渡し、`scopeRouter` / `noteReaderFor` の直読みをやめる。
+
+- ADR-066 の判断そのもの（転送境界で版を受け取らない）は維持する。変えたのは「持っていない版を作って渡す」のをやめ、持っていないことを型で表した点だけである。失われる防護は ADR-066 が既に代償として認めた 1 つと同一で、増えていない。
+- `getNote` が版を返すようになったら、画面が見た版を転送境界で受け取って `number` を渡す。そのとき初めて PAGE-p11-009 が字義どおり満たされる。
+
+### Consequences
+
+- `spec/usecases/note.md#movenote` の入力 DTO を `expectedVersion: number | null` に改めた。
+- 応答の `version` は「要求側の版 + 1」ではなく **target に staged された実体の版**を返すようになった（`stageTarget` が返す）。再開で staging を skip した場合は target の行を読み直す。
+
+## ADR-099: switch 済み operation の再開（fix-plan G1 方針 2）は本ラウンドでは実装しない
+
+### Context
+
+方針 2 は「`NoteRoute` が『switch 済みかつ最後の switch が自分の migrationId』を表現できるようにし、switch 済みなら `claimRoute` と pre-switch 三脚を飛ばして `activateTarget` / `retireSource` だけ回す」。これは `snapshotSource` の `reauthorize: false`（W-010）の実在する呼び出し元にもなる。
+
+再開を検出するには、route が指す先が自分の target であることに加えて **その switch を行った migration の id** が要る。`moveNote` の事前確認は route が既に target を指しているとき「所有者が同じ」の早期 return に落ちるので、走行中 operation の存在に気づく手掛かりが他に無い。id を得る道は 2 つしかない。
+
+1. `NoteRoute` に `lastMigrationId` を出す（`application/ports/noteRouteStore.ts` ＋ memory / D1 の両アダプター ＋ 適合スイート）。行そのものは両アダプターに既にある。
+2. 早期 return の枝でも `beginOrResume` を呼ぶ。走行中が無ければ operation を**新規に作ってしまう**ので、無変更の移動が制御行を書き、`TC-note-244`（無変更・無イベント）が崩れる。
+
+1 は本グループの担当ファイル外（並行して別のグループが動いている）、2 は spec の「移動先が同じ → 変更もイベントもなく成功」に反する。
+
+### Decision
+
+方針 2 は実装せず、報告に回す。W-010 はレビューが挙げたもう一方の案（引数を落とす）で閉じ、`snapshotSource` から `reauthorize` を削って「このフェーズに来る leg は必ず switch 前である」を型と JSDoc の両方で言い切る。
+
+### Consequences
+
+- switch 後に落ちた移動を前進させる入口は引き続き無い（ADR-076 の状態のまま）。ADR-097 により、その状態のノートは**以後の移動も拒否される**ようになったので、駆動口（Issue #28）の優先度は上がった。
+- 実装するときは `NoteRoute.lastMigrationId` を公開するのが最短で、`DistributedOperationStore.findByOperationId` は既にあるため port の追加は 1 フィールドで足りる。`TC-note-265` / `-266` / `-269` の「再要求は前進しない」半分は、そのとき「前進する」へ書き換わる。
+
+## ADR-100: 除名・脱退の `removing` 宣言に打ち消し遷移を足し、`beginRemoval` は `activating` を吸収する（ADR-045 の「可視の停止」を置き換える）
+
+### Context
+
+ADR-041 は「宣言後に拒否されると edge が `removing` のまま残る」窓を、ガードを 2 度走らせることで閉じたと主張していた。しかし 2 度目の評価は**終端的なビジネス規則で落ちうる**（レビュー B-001）。`MembershipDirectoryReservationStore` には `removing` から戻る遷移が無く、`completeRemoval` は `removing` を消すだけなので、落ちた側の利用者はメンバーのままワークスペースを一覧から永久に失う。再実行しても同じ規則が先に拒否するので API では回復できない。
+
+同じ「戻れない `removing`」の裏返しが ADR-045 の Consequences にある。join の `activate` 応答が失われて `activating` のまま残った edge に削除サガの cleanup が当たると、`beginRemoval` が `ConflictError` を返して turn が backoff → 駐車する。ADR-045 はこれを「握り潰して ack すると stale edge が残るので、可視の停止を選んだ」と決めていた（レビュー W-001）。だが停止した削除は `markCompleted` に到達せず、admission tombstone も立たず、**運用者が動かす手立てが無い**。可視ではあるが復旧不能である。
+
+### Decision
+
+ポートに `abandonRemoval(userId, workspaceId)`（`removing → active`）を足し、`removeMember` / `leaveWorkspace` の書き込み UoW が失敗したときに呼ぶ。他の 2 遷移と同じく目標状態で冪等（`active` / 不在は成功、`pending` / `activating` は `ConflictError`）。
+
+あわせて `beginRemoval` の契約を「`active` に加えて `activating` も吸収する」に緩め、ADR-045 の「可視の停止」を**置き換える**。scope が「メンバーシップは無い / 消す」と答えている以上、edge の未確定な claim を理由に除名や削除を止める理由は無い。負けるのは join の `activate` の側で、その補償 `abandon` は `pending` / `activating` にしか当たらないので除名を巻き戻すことはできない。`pending` は account deletion の prepare lock が持つ状態なので拒否のまま残す。
+
+`WorkspaceOperationLockStore` 側の変更は無く、cleanup turn（`workspaceDeletionGlobal.ts`）のコードも変えていない — 契約が緩んだことで駐車しなくなる。
+
+### Consequences
+
+- 除名・脱退は「宣言 → 拒否 → 宣言を取り消す」の 3 相になり、拒否された側の edge は `active` に戻る。適合スイートに ADP-workspace-074 の 3 ケースを足した。
+- `activate` を失った join は、除名・削除に負けたときに `MEMBERSHIP_EDGE_CONFLICT` を受ける。join の再実行は edge が消えた後なら新しい join として成立する。
+- ADR-045 の Consequences 第 3 項（駐車を選ぶ）はこの ADR で無効になる。ADR-037 の「`pending` / `activating` への両操作は `ConflictError`」も `beginRemoval` については無効。
+- 補償は「対象のメンバーシップが既に消えている」ときだけ打たない（`MEMBERSHIP_NOT_FOUND`）。並行する除名が先に着地した場合で、そこで戻すと除名済みの利用者の一覧にワークスペースが甦る。その edge は勝った側の `completeRemoval` が落とす。
+- D1 の `membership_directory` は `(state IN ('pending','activating')) = (reservation_expires_at IS NOT NULL)` を CHECK しているので、`activating → removing` では `reservation_expires_at` を NULL にする。マイグレーションは不要。
+
+## ADR-101: ワークスペース書き込みの actor 認可を書き込み UoW の中でもう一度行う
+
+### Context
+
+`updateWorkspaceProfile` / `changeWorkspaceSlug` / `publishWorkspace` / `unpublishWorkspace` / `deleteWorkspace` / `inviteMember` / `resendInvitation` / `revokeInvitation` / `changeMemberRole` / `removeMember` は、いずれも `resolveWorkspaceAccess` を UoW の**外**で引いて権限を決め、UoW の中では actor の Membership を読み直していなかった（レビュー W-003）。Workspace の OCC は Membership の変化を捕まえないので、降格・除名の直後に着地する in-flight 要求は失われた権限で書き込める。`spec/usecases/workspace.md` 冒頭が投影遅延の安全性の根拠にしている「mutation 直前の local 権限確認」は実装に存在しなかった。
+
+### Decision
+
+`membershipMutation.ts` に `ensureActorCan(ctx, workspaceId, actorUserId, action)` を置き、上記すべての書き込み UoW の中で呼ぶ。UoW 外の `resolveWorkspaceAccess` は早期拒否として残す（global 予約を取る前に落とす価値がある）。`leaveWorkspace` は actor と対象が同一で、`requireRemovableMembership` が UoW 内で本人の Membership を読むため足さない。
+
+呼ぶ**位置**は 2 通りに分かれる。ワークスペース単位の書き込みと招待 3 件は barrier（`assertWritable`）の直後に置く。メンバーシップ変更 2 件（`changeMemberRole` / `removeMember`）は対象側の規則（`ensureNotSelfRoleChange` / `ensureNotSelfRemoval` / `ensureOwnerRemains`）の**後**に置く。どちらでも書き込み前に必ず走るので安全性は同じで、違うのは複数の拒否が同時に成り立つときにどれを報告するかだけである。
+
+### Consequences
+
+- 「最後の owner を残す」は誰が要求しても真なので、対象側の規則を先に答える。逆順にすると `TC-workspace-022` / `TC-workspace-211` が要求する `LastOwnerCannotLeave` は**到達不能**になる — `manageMembers` を持つ actor は同じワークスペースの最後の owner ではありえないので、in-tx の actor 検査が常に先に落ちるからである。ADR-074 が執行形にした並行窓は、この順序でだけ残る。
+- 書き込み UoW ごとに Membership の読みが 1 回増える。scope object 内の読みなので往復は増えない。
+- 新しい write 入口は `assertWritable` の 1 行に加えてこの 1 行も必要になる。型は助けないので、テストが網である（`removeMember.test.ts` / `updateWorkspaceProfile.test.ts` の降格窓）。
+
+## ADR-102: 決定的 operation ID を共有する slug 予約の補償は「自分の commit が落ちたとき」に限る
+
+### Context
+
+ADR-030 は `changeWorkspaceSlug` の予約 operation ID を `workspace.changeSlug:{workspaceId}:{slug}` と決定的に導出し、「同じ workspace が同じ slug を短時間に取り直す 2 つの要求は 1 行を共有する。どちらも同じ結果へ収束するので実害はない」と結論していた。これは `reserve` と `activate` については正しいが、**`abandon` については誤り**だった（レビュー B-002）。`abandon` は「この operation の `reserved` 行を落とす」だけを条件にしており、どの試行が作った行かを区別できない。OCC で負けた試行の補償が、勝った試行がまだ `activate` していない行を落とす。結果は「scope は新 slug を持つが global に予約が無い」で、同じ slug への再実行は早期 return するため API からは回復できない。
+
+### Decision
+
+補償の直前に workspace を読み直し、`slug` が既に新 slug になっていれば `abandon` を打たない。判定の正本は scope（どの試行の commit が着地したか）で、予約側には答えが無いためこの向きにする。ポート契約（`reserve` の応答に新規作成かどうかを載せる案）は変えない — 変更が 3 バックエンドと適合スイートに波及する一方、得られる情報は scope の読み 1 回で足りるため。
+
+### Consequences
+
+- 補償パスに読みが 1 回増える。失敗パスだけなので通常経路の往復は変わらない。
+- 落とせなかった予約行は TTL の回収に委ねる（`compensate` と同じ扱い）。
+- ADR-030 の Consequences「実害はない」をこの ADR が限定する: 実害が無いのは `reserve` / `activate` の冪等性についてのみで、補償は試行を区別しなければならない。
+
+## ADR-103: 「まだ動かない」は canon ではなく `.thread/3/testing.md` が持つ
+
+### Context
+
+本スライスの実装中、`spec/manual-tests/` へ「本スライスの対象外（Issue #N 待ち）」の注記が 21 箇所入り、あわせて手順書が UI 文言を約 50 箇所逐語引用する形へ書き換わった（レビュー general B-001 / W-001）。どちらも動機は同じで、Phase 4 の実行者が迷わないようにすることだった。
+
+しかし `spec/` は現在有効な要件と設計の canon であり、進捗ログを持たない。「Issue #9 待ち」は Issue が閉じた瞬間に偽になり、外部の可変な参照にも依存する。逐語引用のほうは `spec/manual-tests/index.md` の記述規約に正面から違反しており、文言を 1 語直しただけで正しい実装が FAIL 判定される形を canon に固定してしまう（文言の正本は `spec/design/` にある）。
+
+### Decision
+
+- 21 箇所の進捗注記を canon から落とし、`.thread/3/testing.md` の「本計画で扱わないもの」表へ集約する。手順書には「こう動くべき」だけを残す。
+- 逐語引用を「挙動と伝わるべき情報」へ戻す。今回の書き換えが本当に足したかった価値 — 画面の同定（URL・パス・設定タブ名・スコープトークン）と分岐の明確化（一致 / 不一致で確認が入るか、コピー操作が発行直後だけに出るか） — は保つ。URL・パス・ロール名・ワークスペース名は規約が逐語を許すのでそのまま残す。
+- 恒久的にスライスへ依存しない情報は canon に残す（参照ランタイムでは招待リンクを `mail.sent` ログの `actionUrl` から読む、など）。
+
+### Consequences
+
+- Phase 4 の実行性は落ちない。具体は `.thread/3/testing.md` が既に持っており、`.thread/` は canon ではないので逐語で書いてよい。
+- 手順書と実装のあいだに「未実装だから FAIL する手順」が残るが、それは失敗として記録しないことが `.thread/3/testing.md` の表で宣言される。手順書の側にその表への注記は書かない（書けば同じ問題が戻る）。
+- 「対象外」を canon に書いてよいのは `spec/manual-tests/account.md` のカバレッジ表がやっているような**恒久的な理由**（UI から再現できない・手動では時間がかかる）に限る。
+
+## ADR-104: 招待経由サインアップのメール確認の省略は本スライスで実装しない
+
+### Context
+
+`spec/scenario/workspace.md#WS-04` は「招待されたメールアドレスのままサインアップした場合は、招待メールの受信をもって到達性が確認できているため、メール確認を省いてそのままサインインさせる」と定めている。`signUpWithPassword` は `invitationToken` を受けるが本スライスまで無視のままで、`/signup` はそもそも token を運んでいない（レビュー frontend B-003）。
+
+### Decision
+
+実装しない。`/signup` の `validateSearch` へ token を足し、`signUpFn` を通して core 側でトークン照合と確認省略を実装する変更は、Identity 側の確認フロー（確認済みフラグの立て方と、招待 token とアドレスの照合の位置）に踏み込む。本 Issue の受け入れ基準はワークスペース側にあり、この一手は独立した縦スライスとして扱うほうが安い。
+
+canon（`spec/scenario/` と `spec/manual-tests/workspace.md` TC-03 手順 6）は WS-04 の要求のまま**変えない** — 要求が撤回されたわけではないためである。未実装であることは `.thread/3/testing.md` の「本計画で扱わないもの」表が持つ（ADR-103）。
+
+### Consequences
+
+- Phase 4 では TC-03 手順 6 を失敗として記録しない。dev IdP で作るアカウントは確認の往復が無いため、招待リンクへの復帰そのものは手順 5 → 7 で確認できる。
+- ADR-068 が決めた「メール + パスワード登録は復帰先を `/signin` のリンクへ引き継ぐ」は、この一手が入るまでの形として有効なままである。

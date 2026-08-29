@@ -1,6 +1,6 @@
 # Inventory — frontend
 
-生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-16）
+生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-29）
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -25,9 +25,9 @@
 | PAGE-p05-001 | P-05 OAuth コールバックページ | `spec/pages/index.md#P-05: OAuth コールバック` | Google・OpenRouter の callback を処理中、成功、cancel、state・期限・通信失敗、scope 不足として表示し、成功時は保存済み復帰先へ戻る |
 | PAGE-p05-002 | OAuth callback を完了 | `spec/pages/index.md#P-05: OAuth コールバック` | provider、state、code を callback 完了 action に渡し、state 単回消費と PKCE を経て sign-in session または integration 接続を確定する |
 | PAGE-p05-003 | OAuth を再許可 | `spec/pages/index.md#P-05: OAuth コールバック` | scope 不足・失効状態から同じ provider の認可開始へ戻る |
-| PAGE-p06-001 | P-06 招待確認ページ | `spec/pages/index.md#P-06: 招待の確認` | workspace、説明、role、招待者を表示し、未 sign-in、期限切れ、revoked、used、already member、workspace missing、処理中、完了を区別する |
+| PAGE-p06-001 | P-06 招待確認ページ | `spec/pages/index.md#P-06: 招待の確認` | workspace、説明、role、招待者、招待先メールアドレスを表示し、未 sign-in、期限切れ、revoked、used、already member、workspace missing、別アカウントでの受諾確認、処理中、完了を区別する |
 | PAGE-p06-002 | 招待 preview を取得 | `spec/pages/index.md#P-06: 招待の確認` | URL token と任意 user session を送って、参加前情報と受諾可否状態を取得する |
-| PAGE-p06-003 | 招待を受諾 | `spec/pages/index.md#P-06: 招待の確認` | sign-in 済み user と token を送信し、membership 作成後に対象 workspace 文脈へ遷移する |
+| PAGE-p06-003 | 招待を受諾 | `spec/pages/index.md#P-06: 招待の確認` | sign-in 済み user と token を送信し、membership 作成後に対象 workspace 文脈へ遷移する。招待先と閲覧者のアドレスが一致しないときだけ確認を挟む |
 | PAGE-p06-004 | 認証して招待へ復帰 | `spec/pages/index.md#P-06: 招待の確認` | 未 sign-in 時に invitation URL を安全な同一オリジン復帰先として P-01 または P-02 へ遷移する |
 | PAGE-p06-005 | 招待を辞退 | `spec/pages/index.md#P-06: 招待の確認` | server state を変更せずトップまたは元画面へ遷移する |
 | PAGE-p10-001 | P-10 ノート一覧ページ | `spec/pages/index.md#P-10: ノート一覧` | current scope の notes を tile・list・calendar で表示し、loading、追加読込、空、絞込ゼロ、error、selection、bulk progress・結果を持つ。viewer は download 以外の bulk 操作を隠す |

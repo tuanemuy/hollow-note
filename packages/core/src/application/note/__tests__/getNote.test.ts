@@ -16,6 +16,7 @@ import {
   TEST_APP_URL,
   type TestHarness,
 } from "../../__tests__/helpers";
+import { removeWorkspaceRow } from "../../workspace/__tests__/harness";
 import { createBlankNote } from "../createBlankNote";
 import { getNote } from "../getNote";
 import { emptyReferenceReport } from "../view";
@@ -91,6 +92,7 @@ async function seedWorkspaceNote(
   params: Readonly<{
     role: "owner" | "editor" | "viewer" | null;
     trashed?: boolean;
+    visibility?: "private" | "public";
   }>,
 ): Promise<NoteId> {
   seedCounter += 1;
@@ -111,7 +113,9 @@ async function seedWorkspaceNote(
     text: "Hello",
     excerpt: "Hello",
     headings: [],
-    visibilityStatus: "private",
+    ...(params.visibility === "public"
+      ? { visibilityStatus: "public" as const, publishedAt: now }
+      : { visibilityStatus: "private" as const }),
     styleMode: "default",
     lifecycle: trashed ? "trashed" : "active",
     ...(trashed
@@ -221,6 +225,30 @@ describe("getNote", () => {
   it("a non-member cannot reach a private workspace note", async () => {
     const h = createTestHarness();
     const noteId = await seedWorkspaceNote(h, { role: null });
+
+    await expectNoteNotFound(get(h, noteId, OTHER));
+  });
+
+  it("a public workspace note reads the same signed in and signed out once the workspace row is gone", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, {
+      role: null,
+      visibility: "public",
+    });
+    removeWorkspaceRow(h, WORKSPACE);
+
+    const anonymous = await get(h, noteId, null);
+    const signedIn = await get(h, noteId, OTHER);
+
+    expect(signedIn.noteId).toBe(noteId);
+    expect(signedIn.visibility).toBe("public");
+    expect(signedIn.permissions).toEqual(anonymous.permissions);
+  });
+
+  it("a private workspace note whose workspace row is gone is NOTE_NOT_FOUND, not WORKSPACE_NOT_FOUND", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, { role: "editor" });
+    removeWorkspaceRow(h, WORKSPACE);
 
     await expectNoteNotFound(get(h, noteId, OTHER));
   });

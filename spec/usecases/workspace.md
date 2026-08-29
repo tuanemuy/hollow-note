@@ -10,6 +10,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 既存Membershipのrole変更・削除はscope-local commitを先に行い、そのeventでglobal directoryを更新する。遅延中に一覧へ古いrole / edgeが見えても、mutation直前のlocal権限確認が必ず拒否するため権限昇格にはならない。directory更新はsource version条件付きで、古いeventが新しいroleを戻さない。
 
+この「mutation直前のlocal権限確認」を成立させるため、**ワークスペースへの書き込みはすべて、書き込むtransactionの中でactorのMembershipを読み直して権限を再確認する**（プロフィール更新・slug変更・公開 / 非公開・削除受理・招待の発行 / 再送 / 取り消し・role変更・除名）。transactionの外の`resolveWorkspaceAccess`は残すが、それはglobal予約を取る前に権限の無い要求を落とすための早期拒否であって、判定の正本ではない。Workspaceの版はMembershipが変わっても動かないので、要求の処理中に降格・除名されたactorは外側の確認だけでは止まらない。呼ぶ位置は書き込みの前でありさえすればよく、対象側の規則（自分自身の変更・最後のownerの保護）を先に評価するか後にするかは、複数の拒否が同時に成り立つときにどれを報告するかだけを決める。
+
 ## resolveWorkspaceAccess
 
 ### 概要
@@ -162,12 +164,14 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 1. 権限を `manageWorkspace` で確認する
 2. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
-3. workspace scope で `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
-4. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
+3. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
+4. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
 
 ### エラーケース
 
-`createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`、`ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("ACCOUNT_DELETING")`、`ConflictError("WORKSPACE_DELETING")`。local commit が拒否された場合は確保済みの slug reservation を `abandon` する。
+`createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`、`ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("ACCOUNT_DELETING")`、`ConflictError("WORKSPACE_DELETING")`。
+
+local commit が拒否された場合は確保済みの slug reservation を `abandon` する。ただし**この試行の commit が落ちたときに限る** — 補償の直前に workspace を読み直し、scope が既に新しい slug を持っていれば何も打たない。予約 operation ID は `(workspaceId, slug)` から決定的に導かれるので同じ slug を狙う 2 つの要求は 1 行を共有し、条件を付けないと負けた試行の補償が勝った試行の予約を落とす。どちらの commit が着地したかを知っているのは scope だけなので、判定はそちら側で行う。
 
 ## checkWorkspaceSlugAvailability
 
@@ -216,7 +220,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 2. `WorkspaceRepository.findById` で引く。既に `published` なら変更もイベントもなく、現在の状態を射影して返す
 3. `Workspace.publish` を適用して保存し、イベントを収集する（スラッグ未設定はドメインが `SlugRequiredToPublish` で拒否する）
 4. local commit 後に `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` で `workspace_directory` を更新する。公開ページとサイトマップはこの行を見るため、投影しなければ公開が外から見えない
-5. `NoteQueryService.searchPublic` で公開ノート件数を数えて `publicNoteCount` として返す（0 件でも成功する。公開ページが空であることを画面が案内するために返す）
+5. ワークスペースが所有するノートを workspace scope で走査し、`visibility` が公開のものを数えて `publicNoteCount` として返す（0 件でも成功する。公開ページが空であることを画面が案内するために返す）
+
+数え方が公開ページ本体（`NoteQueryService.searchPublic` が引く公開投影）と分かれているのは、ノートの公開状態を公開投影へ書く経路がまだ無く、投影を数えるとどのワークスペースも 0 件になるからである。scope は自分が所有するノートの可視性の正本なのでこの数字は正確で、一致していないのは公開ページが描く投影のほうである。**投影がノートの公開状態を運ぶようになったら `searchPublic` へ差し替える** — そのとき走査も消える。走査はページではなく件数なので、ワークスペースのノート数に比例した往復になる。
 
 ### エラーケース
 
@@ -319,7 +325,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 3. operation IDを採番し、最初のworkspace-local transactionで`hasActiveMove`を確認して`beginDeletion`を呼び、決定的IDの`workspace.deletionLocalContinued { operationId }`を`scheduled_tasks`へ保存する。これが全scope mutationを閉じる切替点であり、task保存と同じcommitの成功後にacceptedを返す。staged targetを消してsourceだけをretireする競合を防ぐ
 4. deletion ownerとして `JobRepository.listActiveByScope({ type: "workspace", workspaceId }, limit: 100)` を0件になるまで引き、取り消しと後始末を`scheduled_tasks`で継続する。deleting切替後なので新しいJobは入らない
 5. `workspace.deletionLocalContinued` workerはheader stateから再開し、`WorkspaceDeletionManifestStore`でMembershipとInvitationを各100件ずつキーセットで読み、`{ userId, membershipId }`と`{ tokenHash, invitationId }`をlocal manifestへ固定する。page/cursorと次の同名taskを同じUoWで保存し、両方の終端後にmarkReadyする
-6. manifest完成後かつ手順4の強制終端continuationが0件まで完了したことを確認する。`listLocalPending(operationId, 100)`でmanifest itemを読み、Membership/Invitationをkind別に`deleteByIds`で最大100件ずつ削除して、同じUoWで`acknowledgeLocal`と次の`workspace.deletionLocalContinued`を保存する。local pendingが0件になった最後のUoWでだけ、子行が0件であることを確認してWorkspaceを削除し、`workspace.deleted { workspaceId, operationId }`を保存する。manifest/tombstoneはglobal cleanup ackまで残す。FKはRESTRICTを安全網とし、数千edgeを親DELETEのCASCADEへ渡さない
+6. manifest完成後かつ手順4の強制終端continuationが0件まで完了したことを確認する。`listLocalPending(operationId, 100)`でmanifest itemを読み、Membership/Invitationをkind別に`deleteByIds`で最大100件ずつ削除して、同じUoWで`acknowledgeLocal`と次の`workspace.deletionLocalContinued`を保存する。local pendingが0件になった最後のUoWでだけ、Membership / Invitationの残件を数え直して0件であることを確認してからWorkspaceを削除し、`workspace.deleted { workspaceId, operationId }`を保存する。manifestが固定しそこねた子が残っていれば、削除を失敗させずにmembership列挙からやり直す（appendは対象ごとに冪等）。数千edgeを親DELETEのCASCADEへ渡さないのが目的なので、安全網も物理制約ではなくこの数え直しが担う（Workspace → Membership / Invitation の `RESTRICT` は論理的な所有関係の宣言であって DDL の `FOREIGN KEY` を要求しない。[database/index.md](../database/index.md)）。manifest/tombstoneはglobal cleanup ackまで残す
 
 | ドメイン | 購読ユースケース | 責務 |
 | --- | --- | --- |
@@ -332,7 +338,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 上表の各cleanup commandと、それらが保存するscope-local `scheduled_tasks` は`workspace.deleted`の`operationId`を必ずpayloadへ保持する。ScopeRouterでは通常write用`assertWritable`を迂回せず、`assertDeletionOwner(operationId)`がWorkspace lifecycleまたはmanifest headerと一致した場合だけ削除continuationとして通す。別operation IDやoperation ID欠落は拒否する。
 
-7. local cleanup開始後、global orchestratorは `workspace_directory` をtombstoneにし、同じWorkspaceId shardのrowで`slug = null`・表示PIIをredactしてpublic routeを直ちにnot foundにする。そのack後にslug key shardのreservationをreleaseするため、旧directory tombstoneが同じslugの再利用を妨げない。manifestを100件ずつ読み、userIdからmembership directory shard、tokenHashからinvitation route shardへ最大6接続で直接delete commandを送る。各item ackをoperation IDで記録し、reshard中は旧新両generationへdeleteする。全ack後に`workspace.deletionManifestCompactContinued { operationId }`をscopeへ保存する。workerはlocal/global双方のack済みitemを`compactAcknowledged(operationId, 100)`で1pageだけ回収し、残件中は同じtaskを同一UoWで再登録する。itemsが0件になった最後のUoWだけが`markCompleted`でheaderをcompleted tombstone化する。local行削除後や応答喪失でも正データを読み直さずmanifestから再開し、遅延した通常writeはcompleted tombstoneで拒否する
+7. local phaseがWorkspace行を消した最後のUoWで、決定的IDの`workspace.deletionGlobalCleanupContinued { operationId }`を`scheduled_tasks`へ積む（手順 3 / 手順 7 末尾の 2 つと同じ形の継続で、global orchestratorの駆動口はこれである）。orchestratorは `workspace_directory` をtombstoneにし、同じWorkspaceId shardのrowで`slug = null`・表示PIIをredactしてpublic routeをnot foundにする。そのack後にslug key shardのreservationをreleaseするため、旧directory tombstoneが同じslugの再利用を妨げない。manifestを100件ずつ読み、userIdからmembership directory shard、tokenHashからinvitation route shardへ最大6接続で直接delete commandを送る。各item ackをoperation IDで記録し、reshard中は旧新両generationへdeleteする。全ack後に`workspace.deletionManifestCompactContinued { operationId }`をscopeへ保存する。workerはlocal/global双方のack済みitemを`compactAcknowledged(operationId, 100)`で1pageだけ回収し、残件中は同じtaskを同一UoWで再登録する。itemsが0件になった最後のUoWだけが`markCompleted`でheaderをcompleted tombstone化する。local行削除後や応答喪失でも正データを読み直さずmanifestから再開し、遅延した通常writeはcompleted tombstoneで拒否する
+
+global cleanupがlocal phaseの**後**に走ることで、削除受理からdirectory tombstoneまでの窓はlocal phaseのturn数だけ開く。この窓で観測できるのは `listPublicWorkspaces` が組むサイトマップだけである — 公開ページ本体（`getPublicWorkspace`）はscope側の lifecycle を見るので `beginDeletion` の瞬間からnot foundになるのに対し、サイトマップは `PublicWorkspaceDirectoryReader.listPublished` しか読まないため、メンバーの多いワークスペースはlocal phaseのあいだ列挙され続ける。受理と同時にglobal turnを積まないのは、global cleanupが対象を正データではなく**完成したmanifest**からしか読まないためである。manifestが`markReady`に達するのはlocal phaseの中であり、それ以前に走らせても消すべきedge / routeの集合が確定していない。手放すslugも、Workspace行が消える前のturnが読み取ってpayloadへ載せる
 
 `inviteMember` / `resendInvitation` / `acceptInvitation`はglobal reservationの前にworkspace scopeの`assertWritable`を呼び、local commit transactionでも再確認する。2回の間にdeletingへ変わった場合はlocal writeを拒否し、確保済みroute/directory reservationを同じoperation IDでabandonする。その他のworkspace writeはScopeRouter入口の共通検査で拒否する。
 
@@ -345,10 +353,11 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 確認入力の不一致 | `ValidationError("CONFIRMATION_MISMATCH")` |
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
 | 移動が stage 済み | `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` |
-| 別 operation が削除中・削除が終端済み | `ConflictError("WORKSPACE_DELETING")` / `ConflictError` |
+| 既に削除が進行中 | 進行中の `operationId` を返して受理済みとして扱う |
+| 削除が終端済み（Workspace 行が消えている） | `NotFoundError("WORKSPACE_NOT_FOUND")` |
 | 要求者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
 
-同じ operation ID の再要求は受理済みの `operationId` を返して何も書かない（`beginDeletion` は operation ID について冪等である）。
+進行中の削除に**合流する**（別の operation を開かない）のは、要求パスが毎回新しい operation ID を採番するためである。要求そのものは冪等な鍵を持たないので、二重送信を `ConflictError` にすると、確認欄を正しく埋めた 2 回目の押下が失敗として見える。削除は終端であり結果は同じなので、進行中の operation ID を返して受理済みとして扱う。`beginDeletion` 自体は operation ID について冪等なので、継続 turn の再実行も何も書かない。
 
 ## getWorkspaceDeletionStatus
 
@@ -504,7 +513,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | `workspaceName` | `string` |
 | `workspaceDescription` | `string` |
 | `role` | `string` |
-| `inviterName` | `string` |
+| `inviterName` | `string \| null` |
 | `email` | `string` |
 | `state` | `"acceptable" \| "expired" \| "revoked" \| "accepted" \| "alreadyMember" \| "workspaceMissing"` |
 | `workspaceId` | `string \| null` |
@@ -517,7 +526,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 2. `WorkspaceRepository.findById` を引き、不在なら `state: "workspaceMissing"`
 3. `Invitation.isExpired` と `status` から `state` を決める
 4. `userId` があり既にメンバーなら `state: "alreadyMember"`
-5. 招待者の表示名を `UserBatchReader.resolveMany` でUserId shard別に解決する
+5. 招待者の表示名を `UserBatchReader.resolveMany` でUserId shard別に解決する。招待者のアカウントが既に無い場合は `inviterName: null` にする（招待そのものは有効なままで、名乗る相手が消えただけである）
 
 ### エラーケース
 
@@ -607,8 +616,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 ### 処理フロー
 
 1. `resolveWorkspaceAccess` でロールを解決し、`WorkspaceAuthorization.ensureCan(role, "manageMembers")` を呼ぶ
-2. `InvitationRepository.listByWorkspace` を引き、`status === "pending"` のものだけを射影する
-3. `expired` は `Invitation.isExpired(invitation, now)`
+2. `InvitationRepository.listPendingByWorkspace` を引き、`count` をそのまま返す。絞り込みは store 側にあるので `count` はワークスペースの保留中総数であり、終端状態の招待が 1 ページ分並んでも保留中の招待は隠れず件数も縮まない
+3. `expired` は `Invitation.isExpired(invitation, now)`。期限切れは status ではないので、期限を過ぎた `pending` も一覧に残る（画面が出す操作は再送である）
 
 ### エラーケース
 
@@ -713,6 +722,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 3. `ensureOwnerRemains(ownerCount, target, null)` を呼ぶ
 4. account deletion lockまたは`WorkspaceOperationLockStore.hasMoveConflict(target.userId)`が真なら拒否する。`JobRepository.listActiveByRequester(target.userId, 100)`で最終述語にlimitを適用する
 5. global directory edgeを`removing`にしてから、local UoWで4のJob終端・後始末・Membership削除・`workspace.membership.removed`を保存する。同時に残Job正データと`BackupRecord.userId`を100件ずつ削除するsecurity cleanup taskを保存し、全residue削除と`job.removed`発行が完了してからD1 edgeを削除する
+6. 手順 5 の transaction が拒否されたら `abandonRemoval` で宣言を取り消し、edgeを`active`へ戻す。手順 2〜4 の規則は宣言の前と削除transactionの中の2回評価され、2回目が拒否しうる（最後のownerの保護・削除受理・actorのrole喪失はいずれも再試行で解けない終端の拒否である）。取り消さなければ、まだメンバーである利用者の一覧からワークスペースが消えたまま戻せない。**Membershipが既に無いという拒否だけは取り消さない** — 同じMembershipの別の除名が着地したということであり、edgeはその除名のものである
 
 生成物の回収は除名では特に落とせない。一括ダウンロードの生成物は要求者の個人 subject に帰属して TTL が 7 日あるため、回収しなければ、アクセス権を失った利用者の手元にこのワークスペースのノート本文を含む ZIP が 7 日残る（[usecases/job.md](./job.md)）。
 
@@ -748,6 +758,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 2. account deletion lockと`WorkspaceOperationLockStore.hasMoveConflict(userId)`を確認し、`ensureOwnerRemains(ownerCount, membership, null)`を呼ぶ
 3. `JobRepository.listActiveByRequester(userId, 100)`で脱退者の実行中Jobを集める
 4. directory edgeを`removing`にしてから、local UoWでJob終端・Membership削除・security cleanup task保存を行う。残Job正データとBackupRecordを消し終えてからdirectory edgeを削除する
+5. 手順 4 の transaction が拒否されたら `removeMember` 手順 6 と同じ形で `abandonRemoval` を呼び、宣言を取り消す。2 人の owner が同時に脱退すれば手順 2 の owner 数の確認は両方が通り、削除transactionは片方しか通らない。Membershipが既に無い場合だけは取り消さない
 
 ### エラーケース
 

@@ -120,7 +120,16 @@ function applyRoster(current: Roster, action: RosterAction): Roster {
   }
 }
 
-type IssuedInvitation = Readonly<{ email: string; url: string }>;
+/**
+ * `mailSent` が false のときは招待そのものは成立していて、メールだけが
+ * 出ていない。招待者がリンクを自分で渡す必要がある状態なので、成功の
+ * 文言ではなく注意へ切り替える（`IssuedInvitationView.mailSent`）。
+ */
+type IssuedInvitation = Readonly<{
+  email: string;
+  url: string;
+  mailSent: boolean;
+}>;
 
 /**
  * 送信の要求（`<form action>` が渡す `FormData`）と、owner の確認に対する
@@ -130,6 +139,8 @@ type IssuedInvitation = Readonly<{ email: string; url: string }>;
 type InvitePayload = FormData | "confirmOwner" | "cancelOwner";
 
 type InviteState = Readonly<{
+  /** 判断の対象になったアドレス。入力が変わったら失効させるために持つ。 */
+  email: string;
   error: string | null;
   issued: IssuedInvitation | null;
   /** owner ロールの重さを説明する確認の待ち（WS-03 異常系）。 */
@@ -137,10 +148,14 @@ type InviteState = Readonly<{
 }>;
 
 const IDLE_INVITE: InviteState = {
+  email: "",
   error: null,
   issued: null,
   ownerConfirmEmail: null,
 };
+
+/** 再送の応答。`mailSent` の意味は {@link IssuedInvitation} と同じ。 */
+type ResentInvitation = Readonly<{ url: string; mailSent: boolean }>;
 
 type Confirming =
   | Readonly<{ kind: "removeMember"; membershipId: string }>
@@ -209,10 +224,20 @@ export function WorkspaceMembersBoard({
       // ので、ここを抜けた値だけがユースケースに届く。
       const formatError = emailFormatError(address);
       if (formatError !== null) {
-        return { error: formatError, issued: null, ownerConfirmEmail: null };
+        return {
+          email: address,
+          error: formatError,
+          issued: null,
+          ownerConfirmEmail: null,
+        };
       }
       if (inviteRole === "owner" && payload !== "confirmOwner") {
-        return { error: null, issued: null, ownerConfirmEmail: address };
+        return {
+          email: address,
+          error: null,
+          issued: null,
+          ownerConfirmEmail: address,
+        };
       }
       dispatchRoster({
         kind: "addInvitation",
@@ -224,9 +249,14 @@ export function WorkspaceMembersBoard({
         const view = await inviteMember({
           data: { workspaceId, email: address, role: inviteRole },
         });
-        issued = { email: view.email, url: view.invitationUrl };
+        issued = {
+          email: view.email,
+          url: view.invitationUrl,
+          mailSent: view.mailSent,
+        };
       } catch (error) {
         return {
+          email: address,
           error: displayError(error),
           issued: null,
           ownerConfirmEmail: null,
@@ -236,7 +266,7 @@ export function WorkspaceMembersBoard({
       // 招待はもう成立しているので、再取得の失敗を「送れなかった」と
       // 見せない（再送で 2 通目を出させないため try の外に置く）。
       await reconcile();
-      return { error: null, issued, ownerConfirmEmail: null };
+      return { email: address, error: null, issued, ownerConfirmEmail: null };
     },
     IDLE_INVITE,
   );
@@ -244,7 +274,11 @@ export function WorkspaceMembersBoard({
   // 入力中の形式の指摘。空欄は「まだ書いていない」なので指摘しない
   // （送信ボタンの活性は空欄でも閉じる）。
   const emailProblem = email.trim() === "" ? null : emailFormatError(email);
-  const inviteProblem = emailProblem ?? inviteState.error;
+  // サーバーの指摘は、判断の対象になったアドレスが残っているあいだだけ
+  // 効く（スラッグ側と同じ形）。
+  const staleInvite = inviteState.email !== email.trim();
+  const inviteProblem =
+    emailProblem ?? (staleInvite ? null : inviteState.error);
 
   const copyInvitationUrl = (url: string) => {
     navigator.clipboard
@@ -395,7 +429,7 @@ export function WorkspaceMembersBoard({
             </p>
           </form>
 
-          {inviteState.ownerConfirmEmail === null ? null : (
+          {inviteState.ownerConfirmEmail === null || staleInvite ? null : (
             <Alert
               tone="warning"
               role="note"
@@ -433,12 +467,25 @@ export function WorkspaceMembersBoard({
 
           {inviteState.issued !== null ? (
             <div className="mt-4 border-t border-hairline pt-4">
-              <p className="mb-2 text-sm text-ink-secondary">
-                <b className="font-medium text-ink">
-                  {inviteState.issued.email}
-                </b>{" "}
-                に招待を送りました。リンクを直接渡すこともできます。
-              </p>
+              {inviteState.issued.mailSent ? (
+                <p className="mb-2 text-sm text-ink-secondary">
+                  <b className="font-medium text-ink">
+                    {inviteState.issued.email}
+                  </b>{" "}
+                  に招待を送りました。リンクを直接渡すこともできます。
+                </p>
+              ) : (
+                <Alert
+                  tone="warning"
+                  role="status"
+                  title="招待メールを送れませんでした"
+                >
+                  <b className="font-medium text-ink">
+                    {inviteState.issued.email}
+                  </b>{" "}
+                  への招待は作成できています。下のリンクをコピーして直接渡してください。
+                </Alert>
+              )}
               <button
                 type="button"
                 className={subtleButtonClass}
@@ -471,7 +518,7 @@ export function WorkspaceMembersBoard({
         >
           メンバー{" "}
           <span className="text-sm font-normal text-ink-tertiary">
-            {roster.members.length} 人
+            {roster.members.length} 人（owner {ownerCount} 人）
           </span>
         </h2>
 
@@ -745,7 +792,7 @@ function MemberRow({
           className="col-start-2 text-xs text-ink-secondary"
         >
           {confirmingLeave
-            ? "脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残ります。再び参加するには招待が必要です。"
+            ? "脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残るので、手元に残したいものは脱退前にノート一覧・ノート詳細のメニューから個人へ移してください。再び参加するには招待が必要です。"
             : `除名すると、${name} はこのワークスペースのノートに一切アクセスできなくなります。${name} が作成したノートはワークスペースに残ります。`}
         </span>
       ) : null}
@@ -785,23 +832,23 @@ function PendingRow({
   );
   const [isResending, startResending] = useTransition();
   const [resendError, setResendError] = useState<string | null>(null);
-  const [resentUrl, setResentUrl] = useState<string | null>(null);
+  const [resent, setResent] = useState<ResentInvitation | null>(null);
 
   const onResend = () => {
     startResending(async () => {
       setExpired(false);
-      let url: string;
+      let sent: ResentInvitation;
       try {
         const view = await resendInvitation({
           data: { workspaceId, invitationId: invitation.invitationId },
         });
-        url = view.invitationUrl;
+        sent = { url: view.invitationUrl, mailSent: view.mailSent };
       } catch (error) {
         setResendError(displayError(error));
         return;
       }
       setResendError(null);
-      setResentUrl(url);
+      setResent(sent);
       await onResent();
     });
   };
@@ -830,6 +877,15 @@ function PendingRow({
         <span className={fieldErrorClass} role="status" aria-live="polite">
           {resendError}
         </span>
+        <span
+          className="block text-xs text-warning not-empty:mt-1"
+          role="status"
+          aria-live="polite"
+        >
+          {resent !== null && !resent.mailSent
+            ? "招待メールを送れませんでした。リンクをコピーして直接渡してください。"
+            : null}
+        </span>
       </span>
       <span className="col-start-2 flex shrink-0 flex-wrap items-center gap-2 min-[520px]:col-start-3">
         {sending ? null : confirming ? (
@@ -853,11 +909,11 @@ function PendingRow({
           </>
         ) : (
           <>
-            {resentUrl === null ? null : (
+            {resent === null ? null : (
               <button
                 type="button"
                 className={ghostButtonClass}
-                onClick={() => onCopy(resentUrl)}
+                onClick={() => onCopy(resent.url)}
               >
                 リンクをコピー
               </button>

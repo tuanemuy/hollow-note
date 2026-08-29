@@ -147,6 +147,71 @@ describe("removeMember", () => {
     expect(edgeOf(h, OWNER)?.edgeState).toBe("active");
   });
 
+  /**
+   * The guards run twice, and the second run can still refuse — here
+   * because the actor lost `manageMembers` after the announcement. The
+   * `removing` edge has to come back, or a member who was never removed
+   * would lose the workspace from their list with no call able to give it
+   * back (nothing else walks an edge out of `removing`).
+   */
+  it("TC-workspace-211: an actor demoted after the announcement is refused and the target keeps their edge", async () => {
+    const h = createWorkspaceHarness();
+    await seedWorkspace(h, {
+      workspaceId: WORKSPACE,
+      members: [
+        { userId: OWNER, role: "owner", membershipId: "m-owner" },
+        { userId: SECOND_OWNER, role: "owner", membershipId: "m-owner-2" },
+        { userId: EDITOR, role: "editor", membershipId: "m-editor" },
+      ],
+    });
+
+    const store = h.container.membershipDirectoryReservationStore;
+    const container = {
+      ...h.container,
+      membershipDirectoryReservationStore: {
+        ...store,
+        beginRemoval: async (userId: UserId, workspaceId: WorkspaceId) => {
+          await store.beginRemoval(userId, workspaceId);
+          // The window the announcement opens: the actor is demoted
+          // between the transaction that authorized them and the one that
+          // was to perform the removal.
+          await changeMemberRole({
+            container: h.container,
+            input: {
+              workspaceId: WORKSPACE,
+              actorUserId: SECOND_OWNER,
+              membershipId: "m-owner",
+              role: "editor",
+            },
+          });
+        },
+      },
+    };
+
+    await expectBusinessRule(
+      removeMember({
+        container,
+        input: {
+          workspaceId: WORKSPACE,
+          actorUserId: OWNER,
+          membershipId: "m-editor",
+        },
+      }),
+      "WORKSPACE_INSUFFICIENT_ROLE",
+    );
+
+    expect(storedMembership(h, WORKSPACE, "m-editor")).not.toBeNull();
+    expect(outboxPayloads(h, MEMBERSHIP_REMOVED)).toEqual([]);
+    // The edge is `active` again, so the workspace is back in the list of
+    // a member who never left it.
+    expect(edgeOf(h, EDITOR)?.edgeState).toBe("active");
+    await expect(
+      listUserWorkspaces({ container: h.container, input: { userId: EDITOR } }),
+    ).resolves.toMatchObject({
+      workspaces: [{ workspaceId: WORKSPACE, role: "editor" }],
+    });
+  });
+
   it("TC-workspace-212: an owner cannot remove themselves even with a second owner present", async () => {
     const h = createWorkspaceHarness();
     await seedWorkspace(h, {
@@ -328,6 +393,65 @@ describe("removeMember", () => {
         input: { userId: EDITOR },
       }),
     ).resolves.toMatchObject({ workspaces: [], hasMore: false });
+  });
+
+  it("TC-workspace-218: a removal that lost the race leaves the winner's edge alone", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const store = h.container.membershipDirectoryReservationStore;
+    // The winner's edge drop is not acknowledged yet, so its edge is
+    // still `removing` when the loser's failure path runs.
+    const winner = {
+      ...h.container,
+      membershipDirectoryReservationStore: {
+        ...store,
+        completeRemoval: async () => {
+          throw new Error("residue cleanup has not acknowledged yet");
+        },
+      },
+    };
+    let raced = false;
+    const container = {
+      ...h.container,
+      membershipDirectoryReservationStore: {
+        ...store,
+        beginRemoval: async (userId: UserId, workspaceId: WorkspaceId) => {
+          await store.beginRemoval(userId, workspaceId);
+          if (!raced) {
+            raced = true;
+            await removeMember({
+              container: winner,
+              input: {
+                workspaceId: WORKSPACE,
+                actorUserId: OWNER,
+                membershipId: "m-editor",
+              },
+            });
+          }
+        },
+      },
+    };
+
+    await expectNotFound(
+      removeMember({
+        container,
+        input: {
+          workspaceId: WORKSPACE,
+          actorUserId: OWNER,
+          membershipId: "m-editor",
+        },
+      }),
+      "MEMBERSHIP_NOT_FOUND",
+    );
+
+    // The membership is gone, so the announcement stands: restoring it
+    // would put the workspace back in a removed member's list.
+    expect(storedMembership(h, WORKSPACE, "m-editor")).toBeNull();
+    expect(edgeOf(h, EDITOR)?.edgeState).toBe("removing");
+    await expect(
+      listUserWorkspaces({ container: h.container, input: { userId: EDITOR } }),
+    ).resolves.toMatchObject({ workspaces: [] });
   });
 
   it("TC-workspace-232: an unknown membership id is MEMBERSHIP_NOT_FOUND and announces nothing", async () => {

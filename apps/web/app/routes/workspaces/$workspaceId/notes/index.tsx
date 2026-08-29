@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Suspense } from "react";
 import { AppShell } from "@/components/layout/AppShell";
+import { ReaderShell } from "@/components/layout/ReaderShell";
 import { NoteListSkeleton } from "@/components/note/NoteListSkeleton";
 import { Deferred } from "@/components/ui/Deferred";
 import {
@@ -41,14 +42,21 @@ export const Route = createFileRoute("/workspaces/$workspaceId/notes/")({
   },
   component: WorkspaceNotesPage,
   // 非メンバーと削除済み・不在を 1 つの表示に畳む（存在の有無を漏らさない）。
+  // `loader` が失敗している以上シェルに渡す利用者が無いので、上部バーが
+  // 戻り先だけの最小形（`ReaderShell`、スコープは個人）で包む — 素のページに
+  // 落とさず、次の行き先を必ず 1 つ残すため（`notes/$noteId` と同じ理由）。
   errorComponent: ({ error }) => {
     const serialized = extractSerializedError(error);
-    return serialized.kind === "notFound" ||
-      (serialized.kind === "business" &&
-        serialized.code === WORKSPACE_INSUFFICIENT_ROLE) ? (
-      <WorkspaceUnavailableState />
-    ) : (
-      <ServerErrorState />
+    return (
+      <ReaderShell>
+        {serialized.kind === "notFound" ||
+        (serialized.kind === "business" &&
+          serialized.code === WORKSPACE_INSUFFICIENT_ROLE) ? (
+          <WorkspaceUnavailableState />
+        ) : (
+          <ServerErrorState />
+        )}
+      </ReaderShell>
     );
   },
 });

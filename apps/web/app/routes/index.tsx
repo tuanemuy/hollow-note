@@ -12,14 +12,17 @@ import { buildHead } from "@/presentation/head";
  * 引き継ぎ（WS-02「選択は次回の訪問時にも引き継がれる」）を読むのは
  * ここだけ。権限は遷移先が判定するので、ここでは記録された選択を信じる
  * — 除名済み・削除済みのワークスペースはその画面が個人へ誘導する。
+ *
+ * 2 つの読みは並列に走らせる。`lastScopeFn` は Cookie を読むだけで
+ * セッションに依存しないので、直列にすると入口を開くたびに往復 2 回ぶん
+ * 待たせることになる。
  */
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
-    const user = await sessionUserFn();
+    const [user, scope] = await Promise.all([sessionUserFn(), lastScopeFn()]);
     if (user === null) {
       return;
     }
-    const scope = await lastScopeFn();
     throw scope.kind === "workspace"
       ? redirect({
           to: "/workspaces/$workspaceId/notes",

@@ -39,14 +39,14 @@ export function createMemoryWorkspaceDirectoryProjectionWriter(
   return {
     async applySnapshotIfNewer(
       snapshot: WorkspaceDirectorySnapshot,
-    ): Promise<boolean> {
+    ): Promise<void> {
       const stored = table.get(snapshot.workspaceId);
       if (
         stored !== undefined &&
         (stored.lifecycle === "deleting" ||
           stored.sourceVersion >= snapshot.sourceVersion)
       ) {
-        return false;
+        return;
       }
       const applied: WorkspaceDirectoryRow = {
         workspaceId: snapshot.workspaceId,
@@ -63,7 +63,6 @@ export function createMemoryWorkspaceDirectoryProjectionWriter(
         takeSlug(snapshot.slug, snapshot.workspaceId);
       }
       table.set(snapshot.workspaceId, applied);
-      return true;
     },
 
     async tombstone(input): Promise<void> {

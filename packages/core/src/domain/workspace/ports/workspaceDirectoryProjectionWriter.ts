@@ -37,12 +37,12 @@ export type WorkspaceDirectorySnapshot = Readonly<{
  * out-of-order arrival rather than assume a sequence.
  *
  * `sourceVersion` is what orders them. A snapshot at or below the stored
- * version is ignored and answers `false`, which is both the stale-event
- * rule and the lost-response rule: replaying the same event a second time
- * writes nothing and leaves the row the winner produced. Of two
- * concurrent applies the higher version wins whichever arrives second,
- * because the comparison is against the stored row rather than against
- * what the caller last read.
+ * version is ignored, which is both the stale-event rule and the
+ * lost-response rule: replaying the same event a second time writes
+ * nothing and leaves the row the winner produced. Of two concurrent
+ * applies the higher version wins whichever arrives second, because the
+ * comparison is against the stored row rather than against what the
+ * caller last read.
  *
  * A tombstone is terminal. Once `tombstone` has run, no snapshot may
  * reopen the row at any version — a `deleted` verdict the batch reader
@@ -65,15 +65,21 @@ export type WorkspaceDirectorySnapshot = Readonly<{
 export interface WorkspaceDirectoryProjectionWriter {
   /**
    * Upserts the row when `sourceVersion` is greater than the stored one.
-   * Answers whether the row was written — `false` means the snapshot was
-   * stale or the row is a tombstone.
+   * A stale snapshot, and any snapshot against a tombstone, writes
+   * nothing.
+   *
+   * Nothing is answered. Whether this particular call was the one that
+   * wrote is not knowable to every backend — a guarded upsert that
+   * affected no row is indistinguishable from one that did where the
+   * driver reports no row count — and no caller needs it: the row
+   * converges on the highest version regardless of who applied it.
    *
    * The row's `updatedAt` (the sitemap's keyset order) is stamped by the
    * backend clock at apply time, not carried in the snapshot: it orders
    * projection applies, and a source instant would order them by an event
    * whose delivery may be arbitrarily late.
    */
-  applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<boolean>;
+  applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<void>;
   /**
    * Turns the row into the deletion tombstone: `lifecycle = 'deleting'`
    * under `operationId`, with the slug released and the display fields

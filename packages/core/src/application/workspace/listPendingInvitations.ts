@@ -1,4 +1,3 @@
-import { Invitation } from "@repo/core/domain/workspace/invitation";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
@@ -27,11 +26,13 @@ const DEFAULT_LIMIT = 50;
  * that has not joined, which is not part of the member roster every
  * member may see.
  *
- * The store lists every status and the narrowing happens here, so `count`
- * is the number of pending invitations shown rather than the store's
- * total — an accepted or revoked invitation is not something the screen
- * counts. A lapsed invitation stays in the list, flagged `expired`, since
- * resending it is the action the screen offers.
+ * The narrowing to `pending` happens in the store, so `count` is the
+ * total number of pending invitations rather than how many this page
+ * holds: narrowing after the page was drawn would report "no pending
+ * invitations" for a workspace whose latest page is all accepted or
+ * revoked, and would hand the pager a number it cannot page with. A
+ * lapsed invitation stays in the list, flagged `expired`, since resending
+ * it is the action the screen offers.
  *
  * The response deliberately carries no token: the link is reachable only
  * from the mail, or from the URL the issuing call returned.
@@ -50,12 +51,12 @@ export async function listPendingInvitations({
   const workspaceId = WorkspaceId.create(input.workspaceId);
   const page = await container
     .workspaceReaderFor(ScopeKey.workspace(workspaceId))
-    .invitation.listByWorkspace(workspaceId, pagination);
+    .invitation.listPendingByWorkspace(workspaceId, pagination);
 
   const now = container.clock.now();
-  const invitations = page.items
-    .filter(Invitation.isPending)
-    .map((invitation) => toPendingInvitationView(invitation, now));
+  const invitations = page.items.map((invitation) =>
+    toPendingInvitationView(invitation, now),
+  );
 
-  return { invitations, count: invitations.length };
+  return { invitations, count: page.count };
 }

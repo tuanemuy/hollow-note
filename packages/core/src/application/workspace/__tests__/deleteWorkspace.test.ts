@@ -1,4 +1,8 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
+import {
+  MembershipId,
+  WorkspaceId,
+} from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import type { WorkerContainer } from "../../di/types";
 import { createBlankNote } from "../../note/createBlankNote";
@@ -253,6 +257,54 @@ describe("deleteWorkspace", () => {
       ).resolves.toMatchObject({ workspaces: [] });
     }
     expect(membershipEdges(h)).toHaveLength(0);
+  });
+
+  /**
+   * A join whose `activate` was lost twice leaves the edge `activating`
+   * while the workspace-local Membership exists, so the manifest names
+   * it. The cleanup turn has to be able to end that item: parking on it
+   * would leave the deletion permanently unfinished — no completed
+   * header, no reclaimed manifest — with no request able to move it on.
+   */
+  it("TC-workspace-093: a member whose edge never settled does not park the global cleanup", async () => {
+    const h = createWorkspaceHarness();
+    await seedWorkspace(h, {
+      workspaceId: WORKSPACE,
+      name: NAME,
+      slug: SLUG,
+      publication: "published",
+      members: [
+        { userId: OWNER, role: "owner", membershipId: "m-owner" },
+        {
+          userId: EDITOR,
+          role: "editor",
+          membershipId: "m-editor",
+          edge: "none",
+        },
+      ],
+    });
+    await h.container.membershipDirectoryReservationStore.reserveAndClaimActivation(
+      {
+        operationId: "join-editor",
+        userId: UserId.create(EDITOR),
+        workspaceId: WorkspaceId.create(WORKSPACE),
+        membershipId: MembershipId.create("m-editor"),
+        role: "editor",
+        expiresAt: new Date(h.clock.now().getTime() + 10 * 60 * 1000),
+      },
+    );
+    expect(membershipEdges(h, EDITOR).map((edge) => edge.edgeState)).toEqual([
+      "activating",
+    ]);
+
+    const { operationId } = await accept(h);
+    await drainScopeTasks(h);
+
+    expect(membershipEdges(h)).toHaveLength(0);
+    expect(manifest(h).deletionManifestHeaders.values()).toEqual([
+      expect.objectContaining({ operationId, state: "completed" }),
+    ]);
+    expect(scheduledTasks(h, WORKSPACE)).toHaveLength(0);
   });
 
   it("TC-workspace-095: the manifest fixes each member's userId and each invitation's tokenHash, and the Workspace row goes last", async () => {

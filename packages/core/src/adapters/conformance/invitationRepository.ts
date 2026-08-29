@@ -226,6 +226,71 @@ export function describeInvitationRepositoryContract(
       expect(foreign.count).toBe(0);
     });
 
+    it("ADP-workspace-075: listPendingByWorkspace narrows in the store, so terminal rows cannot empty a page or shrink the count", async () => {
+      const now = backend.clock.now();
+      // 4 and 3 are the newest rows and both terminal: a caller that
+      // narrowed after paging would see an empty first page of limit 2.
+      await seed(1, new Date(now.getTime() - 2 * MINUTE_MS));
+      await seed(2, new Date(now.getTime() - MINUTE_MS));
+      for (const n of [3, 4]) {
+        await seed(n, now);
+      }
+      const accepted = await read(4);
+      await scoped.invitationRepository.save(
+        Invitation.accept(accepted.pending, userId(2), now).entity,
+        accepted.expectedVersion,
+      );
+      const revoked = await read(3);
+      await scoped.invitationRepository.save(
+        Invitation.revoke(revoked.pending, now).entity,
+        revoked.expectedVersion,
+      );
+
+      const first = await scoped.invitationRepository.listPendingByWorkspace(
+        workspaceId(1),
+        { page: 1, limit: 2 },
+      );
+      expect(first.items.map((row) => row.id)).toEqual([
+        invitationId(2),
+        invitationId(1),
+      ]);
+      // `count` is the pending total, not the workspace total (4) nor the
+      // number of rows this page holds.
+      expect(first.count).toBe(2);
+
+      const second = await scoped.invitationRepository.listPendingByWorkspace(
+        workspaceId(1),
+        { page: 2, limit: 1 },
+      );
+      expect(second.items.map((row) => row.id)).toEqual([invitationId(1)]);
+      expect(second.count).toBe(2);
+
+      const foreign = await scoped.invitationRepository.listPendingByWorkspace(
+        workspaceId(2),
+        { page: 1, limit: 10 },
+      );
+      expect(foreign.items).toEqual([]);
+      expect(foreign.count).toBe(0);
+    });
+
+    it("ADP-workspace-075: listPendingByWorkspace still returns a lapsed invitation, since expiry is not a status", async () => {
+      const now = backend.clock.now();
+      await seed(1, new Date(now.getTime() - 30 * DAY_MS));
+
+      const page = await scoped.invitationRepository.listPendingByWorkspace(
+        workspaceId(1),
+        { page: 1, limit: 10 },
+      );
+      expect(page.count).toBe(1);
+      const listed = page.items[0];
+      if (listed === undefined) {
+        throw new Error("lapsed invitation missing from the pending listing");
+      }
+      expect(listed.id).toBe(invitationId(1));
+      expect(listed.status).toBe("pending");
+      expect(Invitation.isExpired(listed, now)).toBe(true);
+    });
+
     it("ADP-workspace-023: countPendingIssuedSince counts outstanding stock from an inclusive boundary", async () => {
       const now = backend.clock.now();
       const older = new Date(now.getTime() - DAY_MS);

@@ -1,13 +1,14 @@
-import { loadWorkspaceSettings } from "@/components/workspace/settingsRead";
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
+import { serializeError } from "@/presentation/errorResponse";
+import { loadWorkspacePublication } from "./action";
 import { WorkspacePublishBoard } from "./panel";
 
 /**
  * P-33 ワークスペース公開設定の本体（モック P33-workspace-publish.html）。
  *
- * 公開 URL は配備のオリジンとスラッグから作るのでここで解決する。
- * 公開ノート件数は `publishWorkspace` の応答にしか無いため、初期表示では
- * 持たない（島が公開操作の応答から受け取る）。
+ * 公開 URL も公開ノート件数も `getWorkspacePublication` が初期表示で返す。
+ * 件数は非公開のときも数えるので、「公開ページが空のままになる」注意は
+ * 判断を変えられる唯一の瞬間、つまり公開する前に出せる（WS-08 手順 2）。
  */
 export async function WorkspacePublishPanel({
   workspaceId,
@@ -16,18 +17,17 @@ export async function WorkspacePublishPanel({
   workspaceId: string;
   userId: string;
 }) {
-  const settings = await loadWorkspaceSettings(workspaceId, userId);
-  if (settings === null) {
-    return <WorkspaceUnavailable />;
+  // 非メンバー・削除済みの畳み方は `WorkspaceGeneralForm` と同じ。
+  let publication: Awaited<ReturnType<typeof loadWorkspacePublication>>;
+  try {
+    publication = await loadWorkspacePublication(workspaceId, userId);
+  } catch (error) {
+    const { kind } = serializeError(error);
+    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+      return <WorkspaceUnavailable />;
+    }
+    throw error;
   }
-  return (
-    <WorkspacePublishBoard
-      workspace={settings}
-      publicUrl={
-        settings.slug === null
-          ? null
-          : `${settings.appUrl.replace(/\/$/, "")}/w/${settings.slug}`
-      }
-    />
-  );
+
+  return <WorkspacePublishBoard publication={publication} />;
 }

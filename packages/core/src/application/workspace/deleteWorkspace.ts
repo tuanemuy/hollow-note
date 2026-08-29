@@ -6,6 +6,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ConflictError, ValidationError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -92,6 +93,7 @@ export async function deleteWorkspace({
     async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ensureActorCan(ctx, workspaceId, userId, "deleteWorkspace");
 
       const versioned = await ctx.workspaceRepository.findById(workspaceId);
       if (versioned === null) {

@@ -9,7 +9,10 @@ import {
   type TestHarness,
 } from "./harness";
 
-/** spec/testcases/workspace/listPendingInvitations.md (TC-workspace-177〜182). */
+/**
+ * spec/testcases/workspace/listPendingInvitations.md
+ * (TC-workspace-177〜182, TC-workspace-303 / 304).
+ */
 
 const WORKSPACE = "workspace-1";
 const OWNER = "owner-1";
@@ -82,7 +85,7 @@ describe("listPendingInvitations", () => {
     ]);
   });
 
-  it("TC-workspace-178: accepted and revoked invitations are excluded, and count follows the narrowing", async () => {
+  it("TC-workspace-178: accepted and revoked invitations are excluded, and count is the pending total", async () => {
     const h = createWorkspaceHarness();
     await seedTeam(h);
     await seedInvitation(h, WORKSPACE, {
@@ -109,8 +112,58 @@ describe("listPendingInvitations", () => {
     expect(view.invitations.map((i) => i.invitationId)).toEqual([
       "invitation-pending",
     ]);
-    // The store counts every status; the screen counts what it shows.
     expect(view.count).toBe(1);
+  });
+
+  it("TC-workspace-303: a page's worth of terminal invitations does not hide the pending ones", async () => {
+    const h = createWorkspaceHarness();
+    await seedTeam(h);
+    await seedInvitation(h, WORKSPACE, {
+      invitationId: "invitation-pending",
+      email: "pending@example.com",
+      invitedBy: OWNER,
+    });
+    // Terminal invitations issued *after* the pending one, so they fill
+    // the newest page of a `createdAt DESC` listing.
+    for (let n = 0; n < 60; n += 1) {
+      h.clock.advance(1000);
+      await seedInvitation(h, WORKSPACE, {
+        invitationId: `invitation-revoked-${n}`,
+        email: `revoked-${n}@example.com`,
+        invitedBy: OWNER,
+        state: "revoked",
+      });
+    }
+
+    const view = await list(h);
+
+    expect(view.invitations.map((i) => i.invitationId)).toEqual([
+      "invitation-pending",
+    ]);
+    expect(view.count).toBe(1);
+  });
+
+  it("TC-workspace-304: count is the pending total, not the number of rows this page holds", async () => {
+    const h = createWorkspaceHarness();
+    await seedTeam(h);
+    for (let n = 0; n < 3; n += 1) {
+      h.clock.advance(1000);
+      await seedInvitation(h, WORKSPACE, {
+        invitationId: `invitation-${n}`,
+        email: `pending-${n}@example.com`,
+        invitedBy: OWNER,
+      });
+    }
+
+    const view = await listPendingInvitations({
+      container: h.container,
+      input: { workspaceId: WORKSPACE, userId: OWNER, page: 2, limit: 2 },
+    });
+
+    expect(view.invitations.map((i) => i.invitationId)).toEqual([
+      "invitation-0",
+    ]);
+    expect(view.count).toBe(3);
   });
 
   it("TC-workspace-179: a lapsed invitation stays in the list, flagged expired", async () => {

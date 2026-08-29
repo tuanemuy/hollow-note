@@ -74,7 +74,7 @@ export function describeWorkspaceDirectoryProjectionWriterContract(
         retryAfterSeconds: null,
       });
 
-      expect(await writer().applySnapshotIfNewer(snapshot(1, 1))).toBe(true);
+      await writer().applySnapshotIfNewer(snapshot(1, 1));
       expect(await resolve(1)).toEqual({
         state: "active",
         entry: {
@@ -93,23 +93,17 @@ export function describeWorkspaceDirectoryProjectionWriterContract(
     it("ADP-workspace-066: a higher version replaces the row and a lower or equal one is ignored", async () => {
       await writer().applySnapshotIfNewer(snapshot(1, 2));
 
-      expect(
-        await writer().applySnapshotIfNewer(
-          snapshot(1, 5, { name: WorkspaceName.create("Renamed") }),
-        ),
-      ).toBe(true);
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 5, { name: WorkspaceName.create("Renamed") }),
+      );
       // A redelivery of the same event writes nothing...
-      expect(
-        await writer().applySnapshotIfNewer(
-          snapshot(1, 5, { name: WorkspaceName.create("Renamed") }),
-        ),
-      ).toBe(false);
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 5, { name: WorkspaceName.create("Redelivered") }),
+      );
       // ...and neither does an older one that arrives after it.
-      expect(
-        await writer().applySnapshotIfNewer(
-          snapshot(1, 3, { name: WorkspaceName.create("Stale") }),
-        ),
-      ).toBe(false);
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 3, { name: WorkspaceName.create("Stale") }),
+      );
 
       const resolved = await resolve(1);
       expect(resolved).toEqual({
@@ -204,11 +198,9 @@ export function describeWorkspaceDirectoryProjectionWriterContract(
         operationId: "deletion-1",
       });
 
-      expect(
-        await writer().applySnapshotIfNewer(
-          snapshot(1, 99, { publication: "published" }),
-        ),
-      ).toBe(false);
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 99, { publication: "published" }),
+      );
       expect(await resolve(1)).toEqual({ state: "deleted" });
       expect(await published()).toEqual([]);
     });

@@ -7,7 +7,11 @@ import { NotFoundError } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
-import { ensureRemovable, settleRemovalEdge } from "./membershipMutation";
+import {
+  ensureRemovable,
+  restoreRemovalEdge,
+  settleRemovalEdge,
+} from "./membershipMutation";
 
 export type LeaveWorkspaceInput = Readonly<{
   workspaceId: string;
@@ -26,8 +30,9 @@ export type LeaveWorkspaceInput = Readonly<{
  * ownership over first.
  *
  * The global edge is announced `removing` between the read that proves
- * the departure is allowed and the write that performs it, for the reason
- * `removeMember` records.
+ * the departure is allowed and the write that performs it, and taken back
+ * when the write refuses after all, for the reasons `removeMember`
+ * records.
  *
  * Leaving does not delete the member's notes, and rejoining takes a fresh
  * invitation — the removal here leaves no route behind.
@@ -46,26 +51,41 @@ export async function leaveWorkspace({
   const target = (ctx: ScopeUnitOfWorkContext) =>
     requireRemovableMembership(ctx, workspaceId, userId);
 
-  await container.scopeUnitOfWorkProvider.run(scope, target);
+  await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    await ctx.cleanupAdmission.assertWritable();
+    await ctx.cleanupAdmission.assertActorWritable(userId);
+    await target(ctx);
+  });
 
   await container.membershipDirectoryReservationStore.beginRemoval(
     userId,
     workspaceId,
   );
 
-  await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
-    await ctx.cleanupAdmission.assertWritable();
-    await ctx.cleanupAdmission.assertActorWritable(userId);
+  try {
+    await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(userId);
 
-    const membership = await target(ctx);
-    await ctx.membershipRepository.delete(
-      membership.entity.id,
-      membership.expectedVersion,
+      const membership = await target(ctx);
+      await ctx.membershipRepository.delete(
+        membership.entity.id,
+        membership.expectedVersion,
+      );
+      ctx.collectEvents([
+        WorkspaceEvents.membershipRemoved(workspaceId, userId, now),
+      ]);
+    });
+  } catch (error) {
+    await restoreRemovalEdge(
+      container,
+      "[leaveWorkspace]",
+      error,
+      userId,
+      workspaceId,
     );
-    ctx.collectEvents([
-      WorkspaceEvents.membershipRemoved(workspaceId, userId, now),
-    ]);
-  });
+    throw error;
+  }
 
   await settleRemovalEdge(container, "[leaveWorkspace]", userId, workspaceId);
 }

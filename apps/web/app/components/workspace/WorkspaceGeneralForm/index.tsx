@@ -1,5 +1,6 @@
-import { loadWorkspaceSettings } from "@/components/workspace/settingsRead";
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
+import { serializeError } from "@/presentation/errorResponse";
+import { loadWorkspaceGeneral } from "./action";
 import { WorkspaceGeneralEditor } from "./editor";
 
 /**
@@ -16,14 +17,24 @@ export async function WorkspaceGeneralForm({
   workspaceId: string;
   userId: string;
 }) {
-  const settings = await loadWorkspaceSettings(workspaceId, userId);
-  if (settings === null) {
-    return <WorkspaceUnavailable />;
+  // 非メンバー（`InsufficientRole`）と削除済み（`WORKSPACE_NOT_FOUND`）は
+  // 同じ終端表示に畳む。断片の中で `throw` すると `kind` タグを失って
+  // ルート境界に届くので、ここで描き切る（`WorkspaceMembersPanel` と同じ）。
+  let general: Awaited<ReturnType<typeof loadWorkspaceGeneral>>;
+  try {
+    general = await loadWorkspaceGeneral(workspaceId, userId);
+  } catch (error) {
+    const { kind } = serializeError(error);
+    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+      return <WorkspaceUnavailable />;
+    }
+    throw error;
   }
+
   return (
     <WorkspaceGeneralEditor
-      workspace={settings}
-      slugPrefix={slugPrefix(settings.appUrl)}
+      workspace={general.settings}
+      slugPrefix={slugPrefix(general.appUrl)}
     />
   );
 }

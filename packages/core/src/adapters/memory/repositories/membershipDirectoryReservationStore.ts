@@ -253,26 +253,25 @@ export function createMemoryMembershipDirectoryReservationStore(
         }));
     },
 
-    async applyRoleIfNewer(input): Promise<boolean> {
+    async applyRoleIfNewer(input): Promise<void> {
       const found = byPair(input.userId, input.workspaceId);
       // An absent edge is never inserted: a removal already freed the
       // pair, and reviving it would put the workspace back in the list.
       if (found === null) {
-        return false;
+        return;
       }
       const [key, row] = found;
       if (
         row.roleSourceVersion !== null &&
         row.roleSourceVersion >= input.sourceVersion
       ) {
-        return false;
+        return;
       }
       table.set(key, {
         ...row,
         role: input.role,
         roleSourceVersion: input.sourceVersion,
       });
-      return true;
     },
 
     async beginRemoval(
@@ -288,12 +287,43 @@ export function createMemoryMembershipDirectoryReservationStore(
       if (row.edgeState === "removing") {
         return;
       }
-      if (row.edgeState !== "active") {
+      // `activating` is taken too: the scope, not the join's claim, is the
+      // authority on whether the membership exists.
+      if (row.edgeState !== "active" && row.edgeState !== "activating") {
         throw edgeConflict(
           `Edge of user ${userId} in workspace ${workspaceId} is ${row.edgeState} and cannot be removed`,
         );
       }
-      table.set(key, { ...row, edgeState: "removing" });
+      table.set(key, {
+        ...row,
+        edgeState: "removing",
+        reservationExpiresAt: null,
+      });
+    },
+
+    async abandonRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const found = byPair(userId, workspaceId);
+      // Nothing announced, or nothing left to restore.
+      if (found === null) {
+        return;
+      }
+      const [key, row] = found;
+      if (row.edgeState === "active") {
+        return;
+      }
+      if (row.edgeState !== "removing") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${row.edgeState}, not removing`,
+        );
+      }
+      table.set(key, {
+        ...row,
+        edgeState: "active",
+        reservationExpiresAt: null,
+      });
     },
 
     async completeRemoval(

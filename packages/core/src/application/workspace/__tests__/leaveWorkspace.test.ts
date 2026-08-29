@@ -123,6 +123,57 @@ describe("leaveWorkspace", () => {
     );
   });
 
+  /**
+   * The last-owner rule is evaluated twice, and only the second
+   * evaluation sees the other owner's departure. The announcement is
+   * already made by then, so it has to be taken back — the refused
+   * departure leaves a member who still holds the workspace, and nothing
+   * else walks an edge out of `removing`.
+   */
+  it("TC-workspace-149: an owner who became the last one after the announcement keeps their edge", async () => {
+    const h = createWorkspaceHarness();
+    await seedWorkspace(h, {
+      workspaceId: WORKSPACE,
+      members: [
+        { userId: OWNER, role: "owner", membershipId: "m-owner" },
+        { userId: SECOND_OWNER, role: "owner", membershipId: "m-owner-2" },
+      ],
+    });
+
+    const store = h.container.membershipDirectoryReservationStore;
+    const container = {
+      ...h.container,
+      membershipDirectoryReservationStore: {
+        ...store,
+        beginRemoval: async (userId: UserId, workspaceId: WorkspaceId) => {
+          await store.beginRemoval(userId, workspaceId);
+          // The other owner leaves in the window the announcement opens.
+          await leave(h, OWNER);
+        },
+      },
+    };
+
+    await expectBusinessRule(
+      leaveWorkspace({
+        container,
+        input: { workspaceId: WORKSPACE, userId: SECOND_OWNER },
+      }),
+      "WORKSPACE_LAST_OWNER_CANNOT_LEAVE",
+    );
+
+    expect(storedMembership(h, WORKSPACE, "m-owner-2")).not.toBeNull();
+    // The workspace is back in the list of the owner who never left.
+    expect(edgeOf(h, SECOND_OWNER)?.edgeState).toBe("active");
+    await expect(
+      listUserWorkspaces({
+        container: h.container,
+        input: { userId: SECOND_OWNER },
+      }),
+    ).resolves.toMatchObject({
+      workspaces: [{ workspaceId: WORKSPACE, role: "owner" }],
+    });
+  });
+
   it("TC-workspace-150: someone who never joined gets MEMBERSHIP_NOT_FOUND", async () => {
     const h = createWorkspaceHarness();
     await seed(h);

@@ -48,10 +48,11 @@ export const loadWorkspaceCreatePage = createServerFn({ method: "GET" })
 /**
  * P-30 / P-31 のスラッグ欄の目安表示（WS-01「入力中に検出して代替候補を
  * 示す」）。可否を確定させるのは作成・変更時の予約なので、ここでの
- * 「使用できます」は送信可否を左右しない。
+ * 「使用できます」は送信可否を左右しない。副作用を持たない読みなので
+ * GET で宣言する。
  */
 export const checkWorkspaceSlugAvailabilityFn = createServerFn({
-  method: "POST",
+  method: "GET",
 })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(workspaceSlugAvailabilitySchema))

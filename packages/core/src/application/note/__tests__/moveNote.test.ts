@@ -97,7 +97,8 @@ type MoveInput = Readonly<{
   noteId: string;
   workspaceId?: string;
   userId?: string;
-  expectedVersion?: number;
+  /** `null` is the transport's own shape: a caller with no version. */
+  expectedVersion?: number | null;
   container?: RequestContainer;
 }>;
 
@@ -109,7 +110,8 @@ const move = (h: TestHarness, input: MoveInput): Promise<MovedNoteView> =>
       userId: input.userId ?? ACTOR,
       targetOwnerType: input.workspaceId === undefined ? "user" : "workspace",
       targetWorkspaceId: input.workspaceId ?? null,
-      expectedVersion: input.expectedVersion ?? 0,
+      expectedVersion:
+        input.expectedVersion === undefined ? 0 : input.expectedVersion,
     },
   });
 
@@ -267,6 +269,22 @@ async function seedQuota(
   await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
     ctx.storageQuotaRepository.insert(quota),
   );
+}
+
+/** Drops a note row the way a half-applied retire would leave the scope. */
+async function deleteNoteRow(
+  h: TestHarness,
+  scope: ScopeKey,
+  noteId: string,
+): Promise<void> {
+  await h.container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    const id = NoteId.create(noteId);
+    const stored = await ctx.noteRepository.findById(id);
+    if (stored === null) {
+      throw new Error(`no note ${noteId}`);
+    }
+    await ctx.noteRepository.delete(id, stored.expectedVersion);
+  });
 }
 
 /** Removes a membership the way a mid-move removal would. */
@@ -614,8 +632,10 @@ describe("moveNote", () => {
       consumedBytes: 40,
       noteCount: 1,
     });
-    // The target scope's projection generation is prepared in the same
-    // transaction, so the read model is built in the new owner's scope.
+    // The target scope's projection *generation counter* is prepared in
+    // the same transaction. The projection rows themselves are not
+    // rebuilt in this slice — nothing subscribes to `note.moved` yet — so
+    // this asserts the counter, not a read model.
     expect(h.backend.scope(targetScope).projectionRevisions.get(noteId)).toBe(
       1,
     );
@@ -1129,6 +1149,9 @@ describe("moveNote", () => {
     expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
       "[moveNote] rollback failed before route switch",
     );
+    // Settled even though the compensation failed: an operation nobody
+    // can drive would refuse every later move of this note.
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
 
     expect(await routeOf(h, noteId)).toMatchObject({
       state: "active",
@@ -1390,6 +1413,213 @@ describe("moveNote", () => {
       }),
       "STALE_SCOPE_ROUTE",
     );
+  });
+
+  it("TC-note-263: a move stranded after the switch refuses a different move instead of unwinding it", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    await seedSource(h, "editor");
+    const noteId = await createNote(h);
+    await seedRevision(h, personalScope, noteId, "revision-1");
+    // The retire commits and the settle never lands, so the operation is
+    // left `running` over a note that already lives in the target.
+    const container = withScopeRunHooks(h, {
+      after: (_scope, index) => {
+        if (index === 3) {
+          throw failure("settle response lost");
+        }
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("settle response lost");
+    expect(operations(h)[0]).toMatchObject({ state: "running" });
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+
+    await expectConflict(
+      move(h, { noteId, workspaceId: SOURCE_WS, expectedVersion: null }),
+      "NOTE_MOVE_IN_PROGRESS",
+    );
+
+    // Joining the stranded operation would run its plan: freeze a source
+    // that is already retired, fail, and abort the *target* it switched
+    // to — deleting the only copy of the note and its revisions.
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(revisionsIn(h, targetScope)).toHaveLength(1);
+    expect(notesIn(h, sourceWsScope)).toHaveLength(0);
+    expect(notesIn(h, personalScope)).toHaveLength(0);
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: targetScope,
+      routeVersion: 2,
+    });
+  });
+
+  it("TC-note-261: a move that never claimed the route settles its operation instead of holding the note hostage", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    await seedSource(h, "editor");
+    const noteId = await createNote(h);
+    let claimAttempted = false;
+    const container = withRouteStore(h, {
+      beginMove: (input) => {
+        if (!claimAttempted) {
+          claimAttempted = true;
+          return Promise.reject(failure("claim failed"));
+        }
+        return h.container.noteRouteStore.beginMove(input);
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("claim failed");
+
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+
+    // A `running` leftover would make the store join this request to it,
+    // and the guard would then refuse a move nothing is in the way of.
+    const view = await move(h, { noteId, workspaceId: SOURCE_WS });
+    expect(view.ownerId).toBe(SOURCE_WS);
+  });
+
+  it("TC-note-254: a retry completes across a membership change made after the first attempt failed", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "owner");
+    const noteId = await createNote(h);
+    let stageAttempted = false;
+    const container = withScopeRunHooks(h, {
+      before: (_scope, index) => {
+        if (index === 1 && !stageAttempted) {
+          stageAttempted = true;
+          throw failure("staging response lost");
+        }
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("staging response lost");
+
+    // The actor is demoted to editor — still allowed to move a note in,
+    // but the Membership version the first attempt pinned is now stale.
+    await changeMemberRole({
+      container: h.container,
+      input: {
+        workspaceId: TARGET_WS,
+        actorUserId: BOSS,
+        membershipId: "membership-actor",
+        role: "editor",
+      },
+    });
+
+    const view = await move(h, { noteId, workspaceId: TARGET_WS });
+
+    // The pin is this attempt's, so the operation is not stuck on a
+    // version that only the first attempt ever saw.
+    expect(view.ownerId).toBe(TARGET_WS);
+    expect(operations(h)).toHaveLength(1);
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(notesIn(h, personalScope)).toHaveLength(0);
+  });
+
+  it("TC-note-260: an abort reverses staged rows the failing attempt never observed", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    await seedFile(h, personalScope, StorageOwner.user(actorId), {
+      id: "file-source",
+      noteId,
+      purpose: "source",
+      size: 120,
+    });
+    await seedQuota(h, personalScope, StorageOwner.user(actorId), {
+      bytes: 120,
+      notes: 1,
+    });
+    // The first attempt stages the target and then dies before its own
+    // compensation reaches that scope: the staged note, its file row and
+    // its credit outlive the attempt that made them.
+    let runs = 0;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("switch failed")),
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          runs += 1;
+          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
+          return runs === 3
+            ? Promise.reject(failure("rollback died"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container: stranded }),
+    ).rejects.toThrow("switch failed");
+    expect(filesIn(h, targetScope)).toHaveLength(1);
+    expect(quotaOf(h, targetScope)).toMatchObject({ consumedBytes: 120 });
+
+    // The next attempt loses the source before it can freeze it, so it
+    // reaches the abort holding no snapshot of its own.
+    const container = withScopeRunHooks(h, {
+      before: async (_scope, index) => {
+        if (index === 0) {
+          await deleteNoteRow(h, personalScope, noteId);
+        }
+      },
+    });
+
+    await expectNotFound(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+      "NOTE_NOT_FOUND",
+    );
+
+    // "Complete" is a property of the target, not of the attempt: the
+    // rows are found by enumerating the scope that holds them.
+    expect(notesIn(h, targetScope)).toHaveLength(0);
+    expect(filesIn(h, targetScope)).toHaveLength(0);
+    expect(quotaOf(h, targetScope)).toMatchObject({
+      consumedBytes: 0,
+      noteCount: 0,
+    });
+  });
+
+  it("TC-note-257: a caller that holds no version moves the note without an optimistic check", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    await h.container.scopeUnitOfWorkProvider.run(
+      personalScope,
+      async (ctx) => {
+        const stored = await ctx.noteRepository.findById(NoteId.create(noteId));
+        if (stored === null || !Note.isActive(stored.entity)) {
+          throw new Error("seed missing");
+        }
+        const renamed = Note.rename(stored.entity, "先に更新", h.clock.now());
+        await ctx.noteRepository.save(renamed.entity, stored.expectedVersion);
+      },
+    );
+
+    const view = await move(h, {
+      noteId,
+      workspaceId: TARGET_WS,
+      expectedVersion: null,
+    });
+
+    // The version answered is the staged copy's, not the requester's
+    // arithmetic on a version it may never have seen.
+    expect(view).toMatchObject({ ownerId: TARGET_WS, version: 2 });
+    expect(notesIn(h, targetScope)[0]?.version).toBe(2);
   });
 
   it("TC-note-268: a public projection event issued before the move cannot overwrite the target owner's row", async () => {

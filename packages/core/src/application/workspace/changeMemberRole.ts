@@ -10,6 +10,7 @@ import { NotFoundError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import {
+  ensureActorCan,
   ensureMembershipMutable,
   requireManageMembers,
 } from "./membershipMutation";
@@ -34,6 +35,11 @@ const membershipNotFound = (): NotFoundError =>
  * check and the save and let the final owner be demoted. `MembershipPolicy`
  * owns both refusals — self-change and last-owner — so the rule has a
  * single statement and this usecase only supplies the count it judges.
+ *
+ * The actor's own permission is decided twice — once before the
+ * transaction, so a request with no role is refused at once, and once
+ * inside it, so an owner demoted while this request was in flight cannot
+ * land a change with a role they no longer hold (`ensureActorCan`).
  *
  * A membership id from another workspace resolves to not-found rather
  * than a permission error: the repository is bound to this scope, so a
@@ -87,6 +93,7 @@ export async function changeMemberRole({
         "owner",
       );
       MembershipPolicy.ensureOwnerRemains(ownerCount, target.entity, nextRole);
+      await ensureActorCan(ctx, workspaceId, actorUserId, "manageMembers");
 
       const changed = Membership.changeRole(target.entity, nextRole, now);
       if (changed.eventDrafts.length > 0) {

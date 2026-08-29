@@ -96,7 +96,9 @@ export async function continueWorkspaceDeletionGlobalCleanup(
     if (item.kind === "membership") {
       // `removing` first, then gone: the edge is the last pointer the
       // member's own shard has to this scope, and dropping it without
-      // the announced phase is what the store refuses.
+      // the announced phase is what the store refuses. An edge a join
+      // never settled is taken by the announcement as well, so a lost
+      // `activate` cannot park this turn on an item no retry clears.
       await container.membershipDirectoryReservationStore.beginRemoval(
         item.userId,
         workspaceId,

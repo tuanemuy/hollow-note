@@ -25,6 +25,11 @@ import { listMoveTargetsFn } from "@/routes/notes/-action";
  * 現在の所有者はここで落とす — 同じ所有者への移動は `moveNote` が何も
  * せずに返す no-op で、選択肢として並べる意味が無い。落とすときにその
  * 名前だけ覚えておき、確認の文面で「誰が読めなくなるか」に使う。
+ *
+ * ページは 1 枚では終わらない。`listUserWorkspaces` の 1 ページを引いてから
+ * ロールで絞る後段の形なので、1 ページぶんが全部 viewer なら候補は 0 件でも
+ * 続きがある。`nextCursor` が残るあいだは「さらに読み込む」を出し、21 件目
+ * 以降のワークスペースへも移せるようにする。
  */
 export type MoveTarget = Readonly<{
   ownerType: "user" | "workspace";
@@ -32,16 +37,63 @@ export type MoveTarget = Readonly<{
   label: string;
 }>;
 
+type Loaded = Readonly<{
+  kind: "loaded";
+  targets: readonly MoveTarget[];
+  currentLabel: string | null;
+  nextCursor: string | null;
+  pending: boolean;
+  error: string | null;
+}>;
+
 type Listing =
   | Readonly<{ kind: "loading" }>
-  | Readonly<{
-      kind: "loaded";
-      targets: readonly MoveTarget[];
-      currentLabel: string | null;
-    }>
+  | Loaded
   | Readonly<{ kind: "failed"; message: string }>;
 
+type TargetPage = Readonly<{
+  targets: readonly Readonly<{ workspaceId: string; name: string }>[];
+  nextCursor: string | null;
+}>;
+
 const PERSONAL_LABEL = "個人";
+
+function appendPage(
+  loaded: Loaded | null,
+  page: TargetPage,
+  currentOwnerType: "user" | "workspace",
+  currentOwnerId: string,
+): Loaded {
+  const targets: MoveTarget[] =
+    loaded !== null
+      ? [...loaded.targets]
+      : currentOwnerType === "user"
+        ? []
+        : [{ ownerType: "user", workspaceId: null, label: PERSONAL_LABEL }];
+  let currentLabel = loaded?.currentLabel ?? null;
+  for (const target of page.targets) {
+    if (
+      currentOwnerType === "workspace" &&
+      currentOwnerId === target.workspaceId
+    ) {
+      currentLabel = target.name;
+      continue;
+    }
+    targets.push({
+      ownerType: "workspace",
+      workspaceId: target.workspaceId,
+      label: target.name,
+    });
+  }
+  return {
+    kind: "loaded",
+    targets,
+    currentLabel,
+    nextCursor: page.nextCursor,
+    pending: false,
+    error: null,
+  };
+}
 
 export function NoteMovePicker({
   currentOwnerType,
@@ -65,30 +117,7 @@ export function NoteMovePicker({
     listTargets({ data: { cursor: null } })
       .then((page) => {
         if (!live) return;
-        const targets: MoveTarget[] = [];
-        let currentLabel: string | null = null;
-        if (currentOwnerType !== "user") {
-          targets.push({
-            ownerType: "user",
-            workspaceId: null,
-            label: PERSONAL_LABEL,
-          });
-        }
-        for (const target of page.targets) {
-          if (
-            currentOwnerType === "workspace" &&
-            currentOwnerId === target.workspaceId
-          ) {
-            currentLabel = target.name;
-            continue;
-          }
-          targets.push({
-            ownerType: "workspace",
-            workspaceId: target.workspaceId,
-            label: target.name,
-          });
-        }
-        setListing({ kind: "loaded", targets, currentLabel });
+        setListing(appendPage(null, page, currentOwnerType, currentOwnerId));
       })
       .catch((error: unknown) => {
         if (!live) return;
@@ -98,6 +127,30 @@ export function NoteMovePicker({
       live = false;
     };
   }, [listTargets, currentOwnerType, currentOwnerId]);
+
+  const loadMore = (cursor: string) => {
+    setListing((current) =>
+      current.kind === "loaded"
+        ? { ...current, pending: true, error: null }
+        : current,
+    );
+    listTargets({ data: { cursor } })
+      .then((page) => {
+        setListing((current) =>
+          current.kind === "loaded"
+            ? appendPage(current, page, currentOwnerType, currentOwnerId)
+            : current,
+        );
+      })
+      .catch((error: unknown) => {
+        const message = displayError(error);
+        setListing((current) =>
+          current.kind === "loaded"
+            ? { ...current, pending: false, error: message }
+            : current,
+        );
+      });
+  };
 
   const currentLabel =
     currentOwnerType === "user"
@@ -159,7 +212,9 @@ export function NoteMovePicker({
           {listing.message}
         </p>
       ) : null}
-      {listing.kind === "loaded" && listing.targets.length === 0 ? (
+      {listing.kind === "loaded" &&
+      listing.targets.length === 0 &&
+      listing.nextCursor === null ? (
         <p className="px-2 py-1.5 text-sm text-ink-tertiary">
           移動できる先がありません。editor 以上のワークスペースが必要です。
         </p>
@@ -177,6 +232,20 @@ export function NoteMovePicker({
             </button>
           ))
         : null}
+      {listing.kind === "loaded" && listing.error !== null ? (
+        <p className="px-2 py-1.5 text-xs text-error" role="status">
+          {listing.error}
+        </p>
+      ) : null}
+      {listing.kind === "loaded" && listing.nextCursor !== null ? (
+        <LoadMoreTargets
+          cursor={listing.nextCursor}
+          pending={listing.pending}
+          retry={listing.error !== null}
+          busy={busy}
+          onSelect={loadMore}
+        />
+      ) : null}
       <div className="mt-1 px-1">
         <button
           type="button"
@@ -188,5 +257,35 @@ export function NoteMovePicker({
         </button>
       </div>
     </div>
+  );
+}
+
+function LoadMoreTargets({
+  cursor,
+  pending,
+  retry,
+  busy,
+  onSelect,
+}: {
+  cursor: string;
+  pending: boolean;
+  retry: boolean;
+  busy: boolean;
+  onSelect: (cursor: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={busy || pending}
+      aria-busy={pending}
+      onClick={() => onSelect(cursor)}
+      className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
+    >
+      {pending
+        ? "読み込み中..."
+        : retry
+          ? "もう一度読み込む"
+          : "さらに読み込む"}
+    </button>
   );
 }

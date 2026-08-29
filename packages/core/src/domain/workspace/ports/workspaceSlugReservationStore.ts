@@ -22,9 +22,11 @@ import type { WorkspaceId, WorkspaceSlug } from "../valueObject";
  * old public URL keeps working until the new one is live.
  *
  * `release` is the standalone teardown, used where a slug is given up
- * without a replacement: workspace deletion frees the key after the
- * directory tombstone is acknowledged, so the tombstone does not block
- * re-use of the same slug.
+ * without a replacement. Two callers reach it: workspace deletion frees
+ * the key after the directory tombstone is acknowledged, so the tombstone
+ * does not block re-use of the same slug, and `changeWorkspaceSlug` frees
+ * it when the slug is cleared to `null` — there is no successor to hand
+ * the key to, so the `activate(releasing)` exchange does not apply.
  *
  * Idempotency is keyed on `(slug, operationId)` throughout: every method
  * may be re-issued any number of times for the same operation and
@@ -122,7 +124,8 @@ export interface WorkspaceSlugReservationStore {
   ): Promise<void>;
   /**
    * Frees the slug a workspace gives up without taking another —
-   * workspace deletion, after the directory tombstone is acknowledged.
+   * workspace deletion after the directory tombstone is acknowledged, and
+   * `changeWorkspaceSlug` clearing the slug to `null`.
    *
    * Conditional on `workspaceId`, not on an operation id: the operation
    * that reserved the slug is long past and its id cannot be re-derived

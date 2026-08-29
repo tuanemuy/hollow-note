@@ -12,6 +12,7 @@ import {
   invitationNotPending,
   retryOnce,
 } from "./invitation";
+import { ensureActorCan } from "./membershipMutation";
 import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
 
 export type RevokeInvitationInput = Readonly<{
@@ -57,6 +58,7 @@ export async function revokeInvitation({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(actorId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      await ensureActorCan(ctx, workspaceId, actorId, "manageMembers");
       const stored = await ctx.invitationRepository.findById(invitationId);
       if (stored === null || stored.entity.workspaceId !== workspaceId) {
         throw invitationNotFound();

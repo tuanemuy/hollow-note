@@ -37,10 +37,9 @@ import type { ScopeKey } from "../scope";
 export const WORKSPACE_DELETION_LOCAL_TASK_KIND =
   "workspace.deletionLocalContinued";
 /**
- * 手順 7's global orchestrator. The spec names no transport for it; it is
- * driven as a scope task because the manifest it walks is scope-local and
- * a task row is the only durable, leased driver this runtime has that is
- * keyed by the deletion operation.
+ * 手順 7's global orchestrator. It is driven as a scope task because the
+ * manifest it walks is scope-local and a task row is the only durable,
+ * leased driver this runtime has that is keyed by the deletion operation.
  */
 export const WORKSPACE_DELETION_GLOBAL_TASK_KIND =
   "workspace.deletionGlobalCleanupContinued";

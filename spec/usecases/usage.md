@@ -53,7 +53,7 @@ type WorkspaceUsageItem =
 3. このページに含まれる最大20個の workspace scope object だけへ問い合わせる。同時RPCは6以下とし、1 scopeの失敗はそのworkspaceを `unavailable` として返し、personalや他workspaceを失敗させない。続きがあれば最後のworkspace IDから `nextWorkspaceCursor` を返す
 4. personal scope の `LlmUsageRepository.find(userId, BillingPeriod.of(now))` を引く。不在なら初期値を返す
 5. `QuotaEnforcement.describe` で表示用の値を組み立てる
-6. `updatedAt` は各レコードの最終更新時刻のうち最も新しいもの
+6. `updatedAt` は personal scope の `StorageQuota` と `LlmUsage` の最終更新時刻のうち新しいほう。**workspace 行は畳み込まない** — workspace の一覧はページの持ち物なので、畳み込むと画面が示す基準時刻がページを繰るたびに動く
 
 ### エラーケース
 

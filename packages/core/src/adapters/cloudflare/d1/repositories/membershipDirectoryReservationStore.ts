@@ -523,18 +523,18 @@ export function createD1MembershipDirectoryReservationStore(
       }));
     },
 
-    async applyRoleIfNewer(input): Promise<boolean> {
+    async applyRoleIfNewer(input): Promise<void> {
       const edge = await readByPair(input.userId, input.workspaceId);
       // An absent edge is never inserted: a removal already freed the
       // pair, and reviving it would put the workspace back in the list.
       if (edge === null) {
-        return false;
+        return;
       }
       if (
         edge.roleSourceVersion !== null &&
         edge.roleSourceVersion >= input.sourceVersion
       ) {
-        return false;
+        return;
       }
       const now = toTimestamp(clock.now());
       await write([
@@ -562,7 +562,6 @@ export function createD1MembershipDirectoryReservationStore(
           ),
         }),
       ]);
-      return true;
     },
 
     async beginRemoval(
@@ -574,7 +573,9 @@ export function createD1MembershipDirectoryReservationStore(
       if (edge === null || edge.state === "removing") {
         return;
       }
-      if (edge.state !== "active") {
+      // `activating` is taken too: the scope, not the join's claim, is the
+      // authority on whether the membership exists.
+      if (edge.state !== "active" && edge.state !== "activating") {
         throw edgeConflict(
           `Edge of user ${userId} in workspace ${workspaceId} is ${edge.state} and cannot be removed`,
         );
@@ -584,7 +585,8 @@ export function createD1MembershipDirectoryReservationStore(
         opaque(
           occGuard(
             statement(
-              `SELECT 1 FROM ${TABLE} WHERE operation_id = ? AND state = 'active'`,
+              `SELECT 1 FROM ${TABLE}
+                WHERE operation_id = ? AND state IN ('active', 'activating')`,
               edge.operationId,
             ),
           ),
@@ -592,9 +594,60 @@ export function createD1MembershipDirectoryReservationStore(
         upsert({
           table: TABLE,
           key: edge.operationId,
-          row: { ...edge.raw, state: "removing", updated_at: now },
+          row: {
+            ...edge.raw,
+            state: "removing",
+            reservation_expires_at: null,
+            updated_at: now,
+          },
           statement: statement(
-            `UPDATE ${TABLE} SET state = 'removing', updated_at = ? WHERE operation_id = ? AND state = 'active'`,
+            `UPDATE ${TABLE}
+                SET state = 'removing', reservation_expires_at = NULL, updated_at = ?
+              WHERE operation_id = ? AND state IN ('active', 'activating')`,
+            now,
+            edge.operationId,
+          ),
+        }),
+      ]);
+    },
+
+    async abandonRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const edge = await readByPair(userId, workspaceId);
+      // Nothing announced, or nothing left to restore.
+      if (edge === null || edge.state === "active") {
+        return;
+      }
+      if (edge.state !== "removing") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${edge.state}, not removing`,
+        );
+      }
+      const now = toTimestamp(clock.now());
+      await write([
+        opaque(
+          occGuard(
+            statement(
+              `SELECT 1 FROM ${TABLE} WHERE operation_id = ? AND state = 'removing'`,
+              edge.operationId,
+            ),
+          ),
+        ),
+        upsert({
+          table: TABLE,
+          key: edge.operationId,
+          row: {
+            ...edge.raw,
+            state: "active",
+            reservation_expires_at: null,
+            updated_at: now,
+          },
+          statement: statement(
+            `UPDATE ${TABLE}
+                SET state = 'active', reservation_expires_at = NULL, updated_at = ?
+              WHERE operation_id = ? AND state = 'removing'`,
             now,
             edge.operationId,
           ),

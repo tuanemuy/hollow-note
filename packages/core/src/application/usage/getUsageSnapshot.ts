@@ -7,11 +7,14 @@ import {
   QuotaSubject,
 } from "@repo/core/domain/usage/valueObject";
 import type { UserWorkspaceEdge } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
-import type { WorkspaceDirectoryResolution } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
-import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type {
+  WorkspaceId,
+  WorkspaceRole,
+} from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { resolveWorkspaceEdges } from "../workspace/directoryResolution";
 import {
   toLlmUsageView,
   type UsageSnapshotView,
@@ -46,17 +49,10 @@ const MAX_CONCURRENT_SCOPE_READS = 6;
  * fewer than `workspaceLimit` items while `nextWorkspaceCursor` still
  * advances past the whole page.
  */
-const SHOWN_ROLES: ReadonlySet<string> = new Set(["owner", "editor"]);
-
-/**
- * The directory contracts for one resolution per distinct input id, so a
- * missing key is a backend defect; degrading it keeps the screen
- * renderable (same reading as `listUserWorkspaces`).
- */
-const UNRESOLVED: WorkspaceDirectoryResolution = {
-  state: "unavailable",
-  retryAfterSeconds: null,
-};
+const SHOWN_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>([
+  "owner",
+  "editor",
+]);
 
 async function mapBounded<T, R>(
   items: readonly T[],
@@ -119,51 +115,32 @@ async function readWorkspaceUsage(
   }
 }
 
+/**
+ * Projects one page of membership edges, in edge order. A row the
+ * directory could not resolve carries no name (ADR 048): the display name
+ * comes from the directory, so a shard that cannot answer leaves the edge
+ * nameless rather than absent.
+ */
 async function listWorkspaceUsage(
   container: RequestContainer,
   edges: readonly UserWorkspaceEdge[],
 ): Promise<readonly WorkspaceUsageView[]> {
-  if (edges.length === 0) {
-    return [];
-  }
-  const resolved = await container.workspaceDirectoryBatchReader.resolveMany([
-    ...new Set(edges.map((edge) => edge.workspaceId)),
-  ]);
-
-  const targets: { workspaceId: WorkspaceId; workspaceName: string }[] = [];
-  const degraded: WorkspaceUsageView[] = [];
-  for (const edge of edges) {
-    const resolution = resolved.get(edge.workspaceId) ?? UNRESOLVED;
-    switch (resolution.state) {
-      case "deleted":
-        break;
-      case "unavailable":
-        degraded.push({
-          state: "unavailable",
-          workspaceId: edge.workspaceId,
-          workspaceName: null,
-        });
-        break;
-      case "active":
-        targets.push({
-          workspaceId: edge.workspaceId,
-          workspaceName: resolution.entry.entity.name,
-        });
-        break;
-    }
-  }
-
-  const read = await mapBounded(targets, MAX_CONCURRENT_SCOPE_READS, (target) =>
-    readWorkspaceUsage(container, target.workspaceId, target.workspaceName),
+  const rows = await resolveWorkspaceEdges(
+    container.workspaceDirectoryBatchReader,
+    edges,
   );
-
-  const byId = new Map<string, WorkspaceUsageView>(
-    [...read, ...degraded].map((item) => [item.workspaceId, item]),
+  return mapBounded(
+    rows,
+    MAX_CONCURRENT_SCOPE_READS,
+    (row): Promise<WorkspaceUsageView> =>
+      row.state === "active"
+        ? readWorkspaceUsage(container, row.edge.workspaceId, row.entry.name)
+        : Promise.resolve({
+            state: "unavailable",
+            workspaceId: row.edge.workspaceId,
+            workspaceName: null,
+          }),
   );
-  return edges.flatMap((edge) => {
-    const item = byId.get(edge.workspaceId);
-    return item === undefined ? [] : [item];
-  });
 }
 
 /**

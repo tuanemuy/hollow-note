@@ -104,14 +104,14 @@ export function createD1WorkspaceDirectoryProjectionWriter(
   return {
     async applySnapshotIfNewer(
       snapshot: WorkspaceDirectorySnapshot,
-    ): Promise<boolean> {
+    ): Promise<void> {
       const stored = await read(snapshot.workspaceId);
       if (
         stored !== null &&
         (stored.lifecycle === "deleting" ||
           stored.sourceVersion >= snapshot.sourceVersion)
       ) {
-        return false;
+        return;
       }
       const now = toTimestamp(clock.now());
       const row: SqlRow = {
@@ -159,7 +159,6 @@ export function createD1WorkspaceDirectoryProjectionWriter(
         }),
       );
       await write(mutations);
-      return true;
     },
 
     async tombstone(input): Promise<void> {

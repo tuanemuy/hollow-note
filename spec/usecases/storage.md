@@ -191,6 +191,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 | --- | --- |
 | 形式・サイズの違反 | `BusinessRuleError` |
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
+| ワークスペースが存在しない | `NotFoundError("WORKSPACE_NOT_FOUND")` |
 | 容量の上限到達 | 検査しない（上記） |
 
 ## issueDownloadUrl

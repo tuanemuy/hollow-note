@@ -384,39 +384,23 @@ export const Note = {
     };
   },
 
-  // `routeVersion` rides on `note.moved` for the projection consumers;
-  // it is resolved by the move orchestration (NoteRouteStore), not the
-  // aggregate, so it arrives as an argument.
-  moveTo: (
-    note: ActiveNote,
-    owner: NoteOwner,
-    routeVersion: number,
-    now: Date,
-  ): WithEventDrafts<ActiveNote, NoteEvent> => {
-    if (NoteOwner.equals(note.owner, owner)) {
-      return { entity: note, eventDrafts: [] };
-    }
-    const next: ActiveNote = {
-      ...note,
-      owner,
-      version: Version.next(note.version),
-      updatedAt: now,
-    };
-    return {
-      entity: next,
-      eventDrafts: [
-        NoteEvents.moved(
-          {
-            noteId: next.id,
-            previousOwner: note.owner,
-            currentOwner: owner,
-            routeVersion,
-          },
-          now,
-        ),
-      ],
-    };
-  },
+  /**
+   * Re-owns the note and returns the entity alone: `note.moved` is
+   * **not** a draft of this call. A move commits across two scopes, and
+   * the instant ownership becomes true for a reader is the route switch —
+   * which happens after the write this produces. The saga that owns that
+   * ordering therefore owns the event too (`application/note/moveNote.ts`
+   * `retireSource`), and the missing drafts are what says so in the type.
+   */
+  withOwner: (note: ActiveNote, owner: NoteOwner, now: Date): ActiveNote =>
+    NoteOwner.equals(note.owner, owner)
+      ? note
+      : {
+          ...note,
+          owner,
+          version: Version.next(note.version),
+          updatedAt: now,
+        },
 
   makePrivate: (
     note: ActiveNote,

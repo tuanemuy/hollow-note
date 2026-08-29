@@ -109,30 +109,23 @@ const moveNoteSchema = z.object({
  *
  * `expectedVersion` を転送境界で受け取らないのは、`getNote` の DTO が
  * ノートの版を持たないため（`spec/usecases/note.md#getnote` の出力 DTO に
- * `version` が無い）。版を持たない呼び出し元は「呼ぶ直前に自分で対象を
- * 引いてそのときの版を渡す」のが規約なので（`spec/usecases/identity.md`
- * の共通規約）、ここで route → scope → ノートの順に 1 回だけ引いて渡す。
- * `getNote` が版を返すようになったら、画面が見た版をそのまま送る形へ
- * 戻すこと（そのときだけ「読んでから移動するまでの間の編集」を弾ける）。
- *
- * 経路の解決に失敗すれば `ScopeRouter` が `NOTE_NOT_FOUND` を投げるので、
- * 不在・他人のノートは `moveNote` 本体と同じ 1 つの応答に収斂する。
+ * `version` が無い）。画面が見た版が無い以上ここでも作れないので、`null`
+ * を渡して「版を持たない呼び出し元」であることを `moveNote` に伝える。
+ * サーバー側で引き直した版を渡すと、`moveNote` が自分で読んだ値と突き
+ * 合わせるだけの恒真な検査になり、楽観ロックが**あるように見えて無い**
+ * 状態になる。`getNote` が版を返すようになったら、画面が見た版をここで
+ * 受け取る形にする（そのときだけ「読んでから移動するまでの間の編集」を
+ * 弾ける）。
  */
 export const moveNoteFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(moveNoteSchema))
   .handler(async ({ data }) => {
-    const [{ container, module }, { requireSession }, { NoteId }] =
-      await Promise.all([
-        loadServerDeps(() => import("@repo/core/application/note/moveNote")),
-        import("@/presentation/session"),
-        import("@repo/core/domain/note/valueObject"),
-      ]);
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/note/moveNote")),
+      import("@/presentation/session"),
+    ]);
     const user = await requireSession();
-
-    const noteId = NoteId.create(data.noteId);
-    const { scope } = await container.scopeRouter.resolveNote(noteId);
-    const stored = await container.noteReaderFor(scope).findById(noteId);
 
     return module.moveNote({
       container,
@@ -141,8 +134,7 @@ export const moveNoteFn = createServerFn({ method: "POST" })
         userId: user.userId,
         targetOwnerType: data.targetOwnerType,
         targetWorkspaceId: data.targetWorkspaceId,
-        expectedVersion:
-          stored === null ? 0 : (stored.expectedVersion as number),
+        expectedVersion: null,
       },
     });
   });

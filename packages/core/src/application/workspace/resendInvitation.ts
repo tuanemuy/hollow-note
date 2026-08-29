@@ -15,6 +15,7 @@ import {
   retryOnce,
   sendInvitationMail,
 } from "./invitation";
+import { ensureActorCan } from "./membershipMutation";
 import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
 import type { ResentInvitationView } from "./view";
 
@@ -106,6 +107,7 @@ export async function resendInvitation({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(actorId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      await ensureActorCan(ctx, workspaceId, actorId, "manageMembers");
       await ctx.invitationRepository.save(
         pending.resent.entity,
         pending.expectedVersion,

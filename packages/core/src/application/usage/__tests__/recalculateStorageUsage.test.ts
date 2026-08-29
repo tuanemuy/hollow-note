@@ -321,7 +321,7 @@ describe("recalculateStorageUsage", () => {
     ).toHaveLength(0);
   });
 
-  it("a workspace subject the actor is not a member of is refused", async () => {
+  it("TC-usage-074: a workspace subject the actor is not a member of is refused", async () => {
     const h = createTestHarness();
     const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
     await seedWorkspaceMember(h, null);
@@ -343,7 +343,7 @@ describe("recalculateStorageUsage", () => {
     );
   });
 
-  it("an unknown workspace subject resolves to WORKSPACE_NOT_FOUND", async () => {
+  it("TC-usage-075: an unknown workspace subject resolves to WORKSPACE_NOT_FOUND", async () => {
     const h = createTestHarness();
 
     await expect(

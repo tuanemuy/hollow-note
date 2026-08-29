@@ -183,6 +183,7 @@ export type WorkspaceReader = Readonly<{
     | "findByTokenHash"
     | "findPendingByWorkspaceAndEmail"
     | "listByWorkspace"
+    | "listPendingByWorkspace"
     | "countPendingIssuedSince"
   >;
 }>;

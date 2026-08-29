@@ -2,6 +2,7 @@ import type { ScopeKey } from "@repo/core/application/scope";
 import { describe, expect, it } from "vitest";
 import type { RequestContainer } from "../../di/types";
 import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
+import { changeMemberRole } from "../changeMemberRole";
 import { updateWorkspaceProfile } from "../updateWorkspaceProfile";
 import {
   createWorkspaceHarness,
@@ -22,6 +23,7 @@ import {
 
 const WORKSPACE = "workspace-1";
 const OWNER = "owner-1";
+const SECOND_OWNER = "owner-2";
 const INSUFFICIENT_ROLE = "WORKSPACE_INSUFFICIENT_ROLE";
 
 const update = (
@@ -95,6 +97,40 @@ const withCompetingUpdateBeforeCommit = (
 };
 
 describe("updateWorkspaceProfile", () => {
+  it("an owner demoted after the request was authorized cannot land the write", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, {
+      members: [
+        { userId: OWNER, role: "owner", membershipId: "m-owner" },
+        { userId: SECOND_OWNER, role: "owner", membershipId: "m-owner-2" },
+      ],
+    });
+
+    // The role is resolved before the transaction, so the demotion lands
+    // in between; only a check inside the transaction catches it.
+    const container = withCompetingUpdateBeforeCommit(h, () =>
+      changeMemberRole({
+        container: h.container,
+        input: {
+          workspaceId: WORKSPACE,
+          actorUserId: SECOND_OWNER,
+          membershipId: "m-owner",
+          role: "editor",
+        },
+      }),
+    );
+
+    await expectBusinessRule(
+      update(h, { name: "Team Beta" }, container),
+      INSUFFICIENT_ROLE,
+    );
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      name: "Team Alpha",
+      version: 0,
+    });
+    expect(outboxTypes(h)).toEqual(["workspace.membership.roleChanged"]);
+  });
+
   it("TC-workspace-266: an owner updates name and description, in the scope and in the directory", async () => {
     const h = createWorkspaceHarness();
     await seed(h);

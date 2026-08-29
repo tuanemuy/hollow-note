@@ -38,6 +38,14 @@ export type ActivatingMembershipEdge = Readonly<{
  * are torn down by `beginRemoval` / `completeRemoval`, or removed through
  * the deletion manifest and its cleanup acknowledgements.
  *
+ * Removal is the third saga and it is reversible: `beginRemoval` →
+ * (workspace-local delete) → `completeRemoval`, with `abandonRemoval`
+ * putting the edge back when the local delete is refused. Without that
+ * last transition a removal whose second transaction lost a business rule
+ * would leave the edge `removing` with no way back, and the member's
+ * workspace would be gone from their list while their membership still
+ * stood.
+ *
  * The edge also carries the role the workspace list renders, which
  * `applyRoleIfNewer` keeps current. That one write is the port's only
  * out-of-band projection, and it is ordered by the Membership version
@@ -193,7 +201,13 @@ export interface MembershipDirectoryReservationStore {
    * is the whole ordering: the write happens only when it is **greater**
    * than the version stored on the edge, and an edge that has never been
    * projected (its role came from the reservation) is older than any of
-   * them. `true` says the row was written.
+   * them.
+   *
+   * Nothing is answered. Whether this particular call was the one that
+   * wrote is not knowable to every backend — a guarded UPDATE that
+   * affected no row is indistinguishable from one that did where the
+   * driver reports no row count — and no caller needs it: the projection
+   * converges on the highest version regardless of who applied it.
    *
    * That single rule covers all three arrivals delivery can produce.
    * A redelivery of the same change repeats a version that is no longer
@@ -211,10 +225,10 @@ export interface MembershipDirectoryReservationStore {
    * until its join settles, and `activate` never revisits it, so the
    * projection has to reach it too.
    *
-   * An **absent** edge is a no-op answering `false`, never an insert: a
-   * role change delivered after the member was removed must not resurrect
-   * the edge, and the removal is what freed the `(userId, workspaceId)`
-   * pair for a future join.
+   * An **absent** edge is a no-op, never an insert: a role change
+   * delivered after the member was removed must not resurrect the edge,
+   * and the removal is what freed the `(userId, workspaceId)` pair for a
+   * future join.
    */
   applyRoleIfNewer(
     input: Readonly<{
@@ -223,7 +237,7 @@ export interface MembershipDirectoryReservationStore {
       role: WorkspaceRole;
       sourceVersion: number;
     }>,
-  ): Promise<boolean>;
+  ): Promise<void>;
   /**
    * Opens the tear-down of a settled edge: `active → removing`, before
    * the workspace-local Membership is deleted
@@ -245,11 +259,45 @@ export interface MembershipDirectoryReservationStore {
    *
    * An **absent** edge succeeds too: the outcome the caller wants (no
    * active edge) already holds, and the workspace-local Membership is the
-   * record of what happened. A `pending` / `activating` edge is a
-   * `ConflictError` — that pair is a join in flight, not a settled
-   * membership, and stealing it would strand the join saga.
+   * record of what happened.
+   *
+   * An `activating` edge is taken as well. That state is what a join
+   * leaves behind when its `activate` never landed, and the workspace
+   * scope — which the caller has already consulted — is the authority on
+   * whether the membership exists. Refusing it would strand the removal
+   * instead: a member whose edge never settled could never be removed,
+   * and a workspace deletion walking its manifest would park on that item
+   * forever with no operator move that clears it. The join loses its
+   * `activate`, which is the lesser failure, and its own compensation
+   * (`abandon`) is confined to `pending` / `activating` so it cannot undo
+   * the removal in turn.
+   *
+   * A `pending` edge is still a `ConflictError`: that is the state an
+   * account deletion's prepare lock owns, and taking it would decide
+   * against a deletion that has already decided about this edge.
    */
   beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
+  /**
+   * Puts a `removing` edge back to `active` — the compensation for a
+   * removal whose workspace-local delete never landed
+   * (`application/workspace/removeMember.ts` / `leaveWorkspace.ts`).
+   *
+   * The guards a removal runs are evaluated twice, once before the
+   * announcement and once inside the transaction that deletes the row,
+   * and the second evaluation can still refuse: two concurrent removals
+   * of two owners both pass the first, and only one may pass the second.
+   * Without this transition the loser's edge would stay `removing`, so a
+   * member who is still an owner would have lost the workspace from their
+   * list with no call able to give it back.
+   *
+   * Idempotent by target state, like the two transitions it undoes: an
+   * edge already `active` succeeds, and an **absent** one succeeds too —
+   * a removal that got as far as `completeRemoval` has nothing to
+   * restore. A `pending` / `activating` edge is a `ConflictError`: no
+   * removal announced those, so restoring one would settle a join the
+   * store never saw activate.
+   */
+  abandonRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
   /**
    * Drops the `removing` edge, after the residue cleanup of the removed
    * member has been acknowledged.

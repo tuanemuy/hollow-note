@@ -530,7 +530,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 入力DTO
 
-`noteId`, `userId`, `targetOwnerType: "user" | "workspace"`, `targetWorkspaceId: string | null`, `expectedVersion: number`
+`noteId`, `userId`, `targetOwnerType: "user" | "workspace"`, `targetWorkspaceId: string | null`, `expectedVersion: number | null`（版を持たない呼び出し元は `null` を渡し、版の検査を省く）
 
 ### 出力DTO
 
@@ -541,7 +541,9 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 1. `NoteRouteStore.resolve(noteId)` で source scope / routeVersion を解決し、source object で閲覧者コンテキストと `canEdit` を確認してactorとMembership versionを得る
 2. target ScopeKey を組み立てる。workspace なら target object で実在と `createNote` 権限を確認し、Membership versionを得る
 3. source object で `NoteOwnershipPolicy.ensureMovable` を呼び、`TagRelocationPolicy.plan` で外れるタグ名を確定する
-4. `migrationId` を採番し、NoteId hashのnote coordination shardで `distributed_operations` と `note_routes.state = moving` を expected routeVersion のcompare-and-swap transactionで作る。同じnoteにoperationがあれば再開する。routeとoperationを別shardへ分けない
+4. `migrationId` を採番し、NoteId hashのnote coordination shardで operation 行と route の claim を 2 段で作る。まず global 面の unit of work で `distributed_operations` を開き、次に `note_routes.state = moving` を expected routeVersion の compare-and-swap で取る。同じnoteにoperationがあれば再開する。routeとoperationを別shardへ分けない
+
+route の claim が operation と同じ transaction に入らないのは、route store が UoW の外に置かれた atomic store だからである（[ADR 023](../adr/023-two-plane-unit-of-work.md)。ノートの現在地は所有 scope をまたいで解決される鍵であり、どちらの面の UoW にも属さない）。したがって「operation は `running` だが route は掴めていない」中間状態が存在しうる。この状態は次の同一要求が再開する — `requestKey` は「ノート・移動先・出発点の routeVersion」から決まり、失敗した試行は routeVersion を動かさないので、同じ移動の再試行は必ず同じ operation を replay する（一方、かつて住んでいた scope へ戻す移動は別の鍵になり、完了済みの operation の receipt を引き継いで staging を空振りさせない）。返ってきた operation が自分の `requestKey` と違えば別の移動が進行中なので、前進せず `ConflictError("NOTE_MOVE_IN_PROGRESS")` を返す。route の claim に失敗した operation はその場で `rejected` へ落とす — `running` のまま残すと、このノートの以後の移動がすべて止まるためである
 5. actorとsource Membership versionを渡して`freezeSource`を呼ぶ。再認可し、source move lockを保存して、active Jobを終端し、Note・tags・projectionRevisionをsnapshotへ固定する。この時点ではsource Usageを減らさない
 6. actorとtarget Membership versionを渡してtargetへstaged importする。snapshot revisionを復元してowner変更分を1増やし、move authorization lock保存とtargetCreditを同じlocal transactionで行う
 7. D1 route を source → target へ1文で切り替える。これが利用者から見える所属変更の唯一の切替点である
@@ -564,6 +566,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | 変換処理中 | `BusinessRuleError(CannotMoveWhileProcessing)` |
 | 移動先が同じ | 変更もイベントもなく成功として返す |
 | 同じノートの移動が進行中 | 既存 operation を再開し、その結果を返す |
+| 同じノートで**別の**移動が進行中（要求が進行中 operation のものと一致しない） | `ConflictError("NOTE_MOVE_IN_PROGRESS")`。走行中 operation の plan は自分の要求ではないため、合流して前進させない |
 | route が途中で変わった | route を1回引き直して既存 operation を再開。再度競合したら `ConflictError("STALE_SCOPE_ROUTE")` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 

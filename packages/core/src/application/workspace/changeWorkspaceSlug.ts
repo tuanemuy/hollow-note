@@ -7,11 +7,13 @@ import {
   WorkspaceSlug,
 } from "@repo/core/domain/workspace/valueObject";
 import { Workspace } from "@repo/core/domain/workspace/workspace";
+import type { RequestContainer } from "../di/types";
 import { ConflictError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { WORKSPACE_RESERVATION_TTL_MS } from "./createWorkspace";
 import { projectWorkspaceDirectory } from "./directoryProjection";
+import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -36,6 +38,50 @@ const slugOperationId = (
   workspaceId: WorkspaceId,
   slug: WorkspaceSlug,
 ): string => `workspace.changeSlug:${workspaceId}:${slug}`;
+
+/**
+ * Gives the new slug's reservation back — but only when **this** attempt
+ * is the one that failed.
+ *
+ * The operation id is derived from `(workspaceId, slug)`, so every
+ * attempt at the same rename shares one reservation row and `abandon`
+ * cannot tell whose it is. Two attempts that both reserved and then raced
+ * the scope commit therefore need the loser to keep its hands off: it
+ * would otherwise drop the row the winner is about to activate, leaving
+ * the scope holding a slug the global plane has no reservation for — and
+ * that state is beyond repair from the API, since re-sending the slug the
+ * workspace already holds returns early without reserving anything.
+ *
+ * The scope is what decides: a workspace already carrying the new slug
+ * means another attempt's commit landed, and the reservation is that
+ * attempt's to settle. A failing compensation is logged and swallowed, so
+ * the caller still sees the original error; the row it could not drop is
+ * reclaimed by expiry recovery.
+ */
+async function abandonSlugReservation(
+  container: RequestContainer,
+  cause: unknown,
+  params: Readonly<{
+    scope: ScopeKey;
+    workspaceId: WorkspaceId;
+    reservation: Readonly<{ slug: WorkspaceSlug; operationId: string }>;
+  }>,
+): Promise<void> {
+  try {
+    const fresh = await container
+      .workspaceReaderFor(params.scope)
+      .workspace.findById(params.workspaceId);
+    if (fresh !== null && fresh.entity.slug === params.reservation.slug) {
+      return;
+    }
+    await container.workspaceSlugReservationStore.abandon(params.reservation);
+  } catch (abandonError) {
+    container.logger.error("[changeWorkspaceSlug] slug abandon failed", {
+      cause,
+      abandonError,
+    });
+  }
+}
 
 /**
  * Changes the public slug of a workspace (UC-workspace-004,
@@ -120,6 +166,7 @@ export async function changeWorkspaceSlug({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      await ensureActorCan(ctx, workspaceId, userId, "manageWorkspace");
 
       const fresh = await ctx.workspaceRepository.findById(workspaceId);
       if (fresh === null) {
@@ -138,14 +185,11 @@ export async function changeWorkspaceSlug({
     });
   } catch (error) {
     if (reservation !== null) {
-      try {
-        await workspaceSlugReservationStore.abandon(reservation);
-      } catch (abandonError) {
-        logger.error("[changeWorkspaceSlug] slug abandon failed", {
-          cause: error,
-          abandonError,
-        });
-      }
+      await abandonSlugReservation(container, error, {
+        scope,
+        workspaceId,
+        reservation,
+      });
     }
     throw error;
   }

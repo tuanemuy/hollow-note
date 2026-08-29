@@ -1,4 +1,7 @@
-import type { UsageReader } from "@repo/core/application/di/types";
+import type {
+  RequestContainer,
+  UsageReader,
+} from "@repo/core/application/di/types";
 import { ScopeKey } from "@repo/core/application/scope";
 import { User } from "@repo/core/domain/identity/user";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -10,6 +13,7 @@ import {
   BillingPeriod,
   QuotaSubject,
 } from "@repo/core/domain/usage/valueObject";
+import type { WorkspaceDirectoryResolution } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
 import {
   MembershipId,
   WorkspaceId,
@@ -105,6 +109,34 @@ async function seedWorkspaceQuota(
         ),
       ),
   );
+}
+
+/**
+ * Substitutes the directory verdict for one workspace and leaves the rest
+ * of the page as the backend resolved it — the directory read is the only
+ * source of the `deleted` / `unavailable` branches, and the reference
+ * backend has no way to seed either alongside a healthy row.
+ */
+function withResolution(
+  h: TestHarness,
+  rawWorkspaceId: string,
+  resolution: WorkspaceDirectoryResolution,
+): RequestContainer {
+  const target = WorkspaceId.create(rawWorkspaceId);
+  return {
+    ...h.container,
+    workspaceDirectoryBatchReader: {
+      resolveMany: async (ids) => {
+        const resolved =
+          await h.container.workspaceDirectoryBatchReader.resolveMany(ids);
+        const overridden = new Map(resolved);
+        if (overridden.has(target)) {
+          overridden.set(target, resolution);
+        }
+        return overridden;
+      },
+    },
+  };
 }
 
 const quotaRows = (h: TestHarness) => h.backend.scope(scope).storageQuotas;
@@ -361,6 +393,81 @@ describe("getUsageSnapshot", () => {
       },
     ]);
     expect(view.personal.limitBytes).toBe(USER_LIMIT_BYTES);
+  });
+
+  it("a workspace the directory reports deleted is dropped from the list", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await joinWorkspace(h, "ws-01", "owner");
+    await joinWorkspace(h, "ws-02", "owner");
+    await seedWorkspaceQuota(h, "ws-02", { consumedBytes: 20, noteCount: 2 });
+
+    const view = await getUsageSnapshot({
+      container: withResolution(h, "ws-01", { state: "deleted" }),
+      input: { userId: USER_ID },
+    });
+
+    expect(view.workspaces).toEqual([
+      {
+        state: "available",
+        workspaceId: "ws-02",
+        workspaceName: "Workspace ws-02",
+        consumedBytes: 20,
+        limitBytes: WORKSPACE_LIMIT_BYTES,
+        noteCount: 2,
+        level: "none",
+      },
+    ]);
+  });
+
+  it("a workspace the directory cannot resolve is kept without a name", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await joinWorkspace(h, "ws-01", "owner");
+    await joinWorkspace(h, "ws-02", "owner");
+    await seedWorkspaceQuota(h, "ws-02", { consumedBytes: 20, noteCount: 2 });
+
+    const view = await getUsageSnapshot({
+      container: withResolution(h, "ws-01", {
+        state: "unavailable",
+        retryAfterSeconds: null,
+      }),
+      input: { userId: USER_ID },
+    });
+
+    expect(view.workspaces).toEqual([
+      {
+        state: "unavailable",
+        workspaceId: "ws-01",
+        workspaceName: null,
+      },
+      {
+        state: "available",
+        workspaceId: "ws-02",
+        workspaceName: "Workspace ws-02",
+        consumedBytes: 20,
+        limitBytes: WORKSPACE_LIMIT_BYTES,
+        noteCount: 2,
+        level: "none",
+      },
+    ]);
+  });
+
+  it("a workspace updated later than the viewer's own records leaves updatedAt alone", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await seedQuota(h, { consumedBytes: GIB, noteCount: 1 });
+    await seedLlmUsage(h, 3);
+    const personalAt = h.clock.now();
+    await joinWorkspace(h, "ws-01", "owner");
+
+    h.clock.advance(60_000);
+    await seedWorkspaceQuota(h, "ws-01", { consumedBytes: 20, noteCount: 2 });
+
+    const view = await snapshot(h);
+
+    expect(view.workspaces).toHaveLength(1);
+    expect(view.updatedAt).toEqual(personalAt);
   });
 
   it("TC-usage-053: the next page continues without repeating the first", async () => {

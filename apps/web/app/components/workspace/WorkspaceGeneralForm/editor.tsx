@@ -1,5 +1,6 @@
 "use client";
 
+import type { WorkspaceSettingsView } from "@repo/core/application/workspace/view";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import {
   AVATAR_ALLOWED_MIME_TYPES,
@@ -36,7 +37,6 @@ import {
   WORKSPACE_NAME_MAX_LENGTH,
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
-import type { WorkspaceSettingsView } from "@/components/workspace/settingsRead";
 import { useSlugAvailability } from "@/components/workspace/slugAvailability";
 import { slugSuggestionsFor } from "@/components/workspace/slugSuggestions";
 import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";

@@ -165,7 +165,7 @@ describe("storeAvatar", () => {
     expect(h.backend.objects.size).toBe(0);
   });
 
-  it("a non-member is refused a workspace icon", async () => {
+  it("TC-storage-247: a non-member is refused a workspace icon", async () => {
     const h = createTestHarness();
     await seedWorkspaceMember(h, null);
 
@@ -176,7 +176,7 @@ describe("storeAvatar", () => {
     expect(workspaceFiles(h)).toHaveLength(0);
   });
 
-  it("an unknown workspace id resolves to WORKSPACE_NOT_FOUND", async () => {
+  it("TC-storage-248: an unknown workspace id resolves to WORKSPACE_NOT_FOUND", async () => {
     const h = createTestHarness();
 
     await expect(

@@ -1,5 +1,6 @@
 "use client";
 
+import type { WorkspaceSettingsView } from "@repo/core/application/workspace/view";
 import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
@@ -18,7 +19,6 @@ import {
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { WORKSPACE_NAME_MAX_LENGTH } from "@/components/workspace/schema";
-import type { WorkspaceSettingsView } from "@/components/workspace/settingsRead";
 import { renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { deleteWorkspaceFn } from "@/routes/workspaces/$workspaceId/settings/-action";
@@ -27,8 +27,10 @@ import { deleteWorkspaceFn } from "@/routes/workspaces/$workspaceId/settings/-ac
  * P-34 の削除を持つ島（PAGE-p34-001..003）。
  *
  * 要求経路の答えは受理（202）までで、実際の掃除はワーカー面が続ける。
- * 受理と同時にこの文脈は開けなくなるので、受理後は個人の文脈への導線
- * だけを出す（引き継ぎ Cookie はサーバー側の応答が個人へ戻している）。
+ * 受理と同時にこの文脈は開けなくなるので、受理を描いたうえで個人の文脈へ
+ * 送り直す（WS-10 手順 4。引き継ぎ Cookie はサーバー側の応答が個人へ
+ * 戻している）。再訪時の「実行中」も同じ表示で、違うのは見出しだけ
+ * である。
  *
  * 確認の不一致だけは専用の欄に出す。`CONFIRMATION_MISMATCH` は
  * アカウント削除（メールアドレス）と共有のコードで、辞書の文言はそちら
@@ -52,8 +54,10 @@ function submitError(error: unknown): SubmitError {
 
 export function WorkspaceDeletionForm({
   workspace,
+  inProgress,
 }: {
   workspace: WorkspaceSettingsView;
+  inProgress: boolean;
 }) {
   const router = useRouter();
   const requestDeletion = useServerFn(deleteWorkspaceFn);
@@ -63,7 +67,7 @@ export function WorkspaceDeletionForm({
   const acceptedRef = useRef<HTMLElement | null>(null);
 
   const [confirmation, setConfirmation] = useState("");
-  const readOnly = !workspace.canManage;
+  const readOnly = !workspace.canDelete;
   const matches = confirmation.trim() === workspace.name;
 
   const [state, submit, isSubmitting] = useActionState(
@@ -93,12 +97,17 @@ export function WorkspaceDeletionForm({
   );
 
   // パネルがフォームごと差し替わるので、live region への挿入だけでは
-  // 読み上げが落ちる支援技術がある。焦点を移して見出しを確実に読ませる。
+  // 読み上げが落ちる支援技術がある。焦点を移して見出しを確実に読ませてから、
+  // 個人の文脈へ送り直す（遷移が終わるまで受理の表示が残る）。
   useEffect(() => {
-    if (state.accepted) acceptedRef.current?.focus();
-  }, [state.accepted]);
+    if (!state.accepted) return;
+    acceptedRef.current?.focus();
+    router.navigate({ to: "/notes", search: {} }).catch(() => {
+      console.error("Workspace deletion navigation failed");
+    });
+  }, [state.accepted, router]);
 
-  if (state.accepted) {
+  if (state.accepted || inProgress) {
     return (
       <section
         ref={acceptedRef}
@@ -106,7 +115,9 @@ export function WorkspaceDeletionForm({
         className={`${dangerPanelClass} focus-visible:shadow-none`}
       >
         <h2 className={dangerPanelTitleClass}>
-          ワークスペースの削除を受け付けました
+          {state.accepted
+            ? "ワークスペースの削除を受け付けました"
+            : "ワークスペースを削除しています"}
         </h2>
         <p className={panelNoteClass}>
           メンバー全員がアクセスできなくなりました。ノート・タグ・公開ページの削除は続いています。この画面を閉じても処理は進みます。

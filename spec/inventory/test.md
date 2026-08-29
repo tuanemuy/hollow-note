@@ -1969,6 +1969,8 @@
 | TC-storage-244 | storeUpload: scope-local file / Note / Job commit後にactivation応答を失う — recoveryを実行する | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 同じoperation IDでrouteをactiveにし、file・Note・Jobを二重登録しない |
 | TC-storage-245 | storeUpload: scope SQLite使用率が60%以上 — bulk uploadする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | sharding完了まで新規bulkを抑制し、削除・export・security cleanupは継続する |
 | TC-storage-246 | storeUpload: scope SQLite使用率が70%以上 — 新規uploadする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 容量エラーで拒否し、hard limit到達前に書込みを止める |
+| TC-storage-247 | storeAvatar: ワークスペースの非メンバー — ワークスペースのアイコンをアップロードする | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-storage-248 | storeAvatar: 存在しないワークスペース — ワークスペースのアイコンをアップロードする | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
 | TC-tag-001 | assignTag: 編集できるノート、同名タグなし — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | タグが新規作成され付与され、`created: true` が返る |
 | TC-tag-002 | assignTag: 同じスコープに同名タグがある — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 既存のタグが使われ、`created: false` が返る |
 | TC-tag-003 | assignTag: 既に同じタグが付いている — 再度付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 重複した付与は作られず成功する |
@@ -2186,6 +2188,8 @@
 | TC-usage-071 | recalculateStorageUsage: 2 回続けて実行する — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | 結果が変わらない |
 | TC-usage-072 | recalculateStorageUsage: ワークスペースを対象にする — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | そのワークスペースの分だけが計算される |
 | TC-usage-073 | recalculateStorageUsage: user 主体が実行者と一致しない — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
+| TC-usage-074 | recalculateStorageUsage: workspace 主体の非メンバー — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
+| TC-usage-075 | recalculateStorageUsage: 存在しない workspace 主体 — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |
@@ -2363,7 +2367,7 @@
 | TC-workspace-175 | listMembers: 削除済みの利用者がメンバーに残っている — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | その行は表示名を解決できない旨を示して返る（エラーにしない） |
 | TC-workspace-176 | listMembers: 1pageの100メンバーが32 User shardへ分散する — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | UserIdでgroupingし、最大6接続のwaveで現在の利用者表示を解決する |
 | TC-workspace-177 | listPendingInvitations: owner で保留中の招待が 2 件ある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 2 件が返る |
-| TC-workspace-178 | listPendingInvitations: 受諾済み・取り消し済みの招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | それらは含まれない |
+| TC-workspace-178 | listPendingInvitations: 受諾済み・取り消し済みの招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | それらは含まれず、`count` は保留中の総数になる |
 | TC-workspace-179 | listPendingInvitations: 期限切れの保留中の招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 含まれ、`expired: true` になる |
 | TC-workspace-180 | listPendingInvitations: editor である — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-181 | listPendingInvitations: 保留中の招待が 0 件 — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 空配列と `count: 0` が返る |
@@ -2488,4 +2492,6 @@
 | TC-workspace-300 | getWorkspaceDeletionStatus: `deleteWorkspace` が受理済みで Workspace はまだ残っている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "inProgress"` と受理時の `operationId` が返る |
 | TC-workspace-301 | getWorkspaceDeletionStatus: 削除サガが Workspace 行を消し終えている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "completed"` / `operationId: null` / `canDelete: false` が返る |
 | TC-workspace-302 | getWorkspaceDeletionStatus: ワークスペースは存在するが非メンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-303 | listPendingInvitations: 終端状態の招待が 1 ページ分より多くある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 保留中の招待が隠れず、1 ページ目に返る |
+| TC-workspace-304 | listPendingInvitations: 保留中の招待が 3 件あり 2 件目のページを引く — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | そのページの行数ではなく保留中の総数が `count` になる |
 

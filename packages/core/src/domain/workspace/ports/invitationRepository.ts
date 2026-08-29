@@ -16,8 +16,8 @@ import type { InvitationId, WorkspaceId } from "../valueObject";
  * `workspaceId` parameter names the bound scope rather than selecting
  * across scopes, and a foreign id matches nothing.
  *
- * The store applies no status or expiry predicate of its own beyond the
- * one method that says so in its name: `Invitation.isExpired` is the
+ * The store applies a status predicate only in the methods that say so
+ * in their name, and never an expiry one: `Invitation.isExpired` is the
  * domain's answer, evaluated against the caller's `now`, so a lapsed
  * invitation is still returned and still visible in listings (it shows as
  * `expired`, and only accepting one fails).
@@ -73,11 +73,29 @@ export interface InvitationRepository
    * manifest enumerates through this listing.
    *
    * No status filter is applied here, so `count` is the number of
-   * invitations in the workspace, not the number of pending ones — the
-   * caller narrows to `status === "pending"`
-   * (spec/usecases/workspace.md `listPendingInvitations` step 2).
+   * invitations in the workspace, not the number of pending ones. This is
+   * the enumeration the deletion manifest walks; a screen that wants only
+   * the outstanding ones calls `listPendingByWorkspace` instead, because
+   * narrowing after the page is drawn would hide pending invitations
+   * behind a page's worth of terminal ones.
    */
   listByWorkspace(
+    workspaceId: WorkspaceId,
+    pagination: Pagination,
+  ): Promise<PaginationResult<Invitation>>;
+  /**
+   * The `pending` invitations of the workspace, in the same total
+   * `createdAt DESC, id DESC` order as `listByWorkspace`. The narrowing
+   * happens in the store, so `count` is the number of pending invitations
+   * in the workspace — a page's worth of `accepted` / `revoked` rows can
+   * neither empty a page nor shrink the count.
+   *
+   * Expiry is not a status: a lapsed invitation is still `pending` and is
+   * still returned, since `Invitation.isExpired` is the domain's answer
+   * against the caller's `now` and resending it is the action the screen
+   * offers.
+   */
+  listPendingByWorkspace(
     workspaceId: WorkspaceId,
     pagination: Pagination,
   ): Promise<PaginationResult<Invitation>>;

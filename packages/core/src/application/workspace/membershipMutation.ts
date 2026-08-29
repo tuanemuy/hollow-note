@@ -3,10 +3,13 @@ import type { UserId } from "@repo/core/domain/identity/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import type { Membership } from "@repo/core/domain/workspace/membership";
 import { MembershipPolicy } from "@repo/core/domain/workspace/services/membershipPolicy";
-import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import {
+  type WorkspaceAction,
+  WorkspaceAuthorization,
+} from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
-import { ConflictError } from "../errors";
+import { ConflictError, isNotFoundError } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
 
@@ -58,6 +61,51 @@ export async function requireManageMembers(
 }
 
 /**
+ * Re-decides the actor's permission **inside** the transaction that is
+ * about to write (spec/usecases/workspace.md 冒頭: the local permission
+ * check taken immediately before a mutation is what makes a lagging
+ * `membership_directory` projection a display gap rather than a
+ * privilege).
+ *
+ * Every workspace write also resolves the actor outside the transaction,
+ * which is what answers a request with no permission before any global
+ * reservation is taken. That decision is not enough on its own: the
+ * Workspace's own version does not move when a Membership changes, so an
+ * owner demoted or removed while a request is in flight would otherwise
+ * land a write with a role they no longer hold.
+ *
+ * A non-member is `InsufficientRole` rather than a not-found, for the
+ * reason {@link requireManageMembers} gives.
+ *
+ * Where in the transaction it is called changes no outcome — nothing may
+ * be written before it — only which refusal is reported when more than
+ * one applies. The two membership mutations therefore call it **after**
+ * the rules that belong to the target (`ensureNotSelfRemoval`,
+ * `ensureRemovable`): "this workspace would be left without an owner" is
+ * true of the workspace whoever is asking, and answering it first is what
+ * keeps that refusal reachable at all, since an actor who still holds
+ * `manageMembers` can never be the last owner of the same workspace.
+ */
+export async function ensureActorCan(
+  ctx: ScopeUnitOfWorkContext,
+  workspaceId: WorkspaceId,
+  actorUserId: UserId,
+  action: WorkspaceAction,
+): Promise<void> {
+  const membership = await ctx.membershipRepository.findByWorkspaceAndUser(
+    workspaceId,
+    actorUserId,
+  );
+  if (membership === null) {
+    throw new BusinessRuleError(
+      WorkspaceErrorCode.InsufficientRole,
+      `User ${actorUserId} is not a member of workspace ${workspaceId}`,
+    );
+  }
+  WorkspaceAuthorization.ensureCan(membership.entity.role, action);
+}
+
+/**
  * Refuses a membership mutation the scope no longer admits, or one that
  * would invalidate a decision another in-flight operation already took
  * about the same user.
@@ -100,10 +148,15 @@ export async function ensureMembershipMutable(
  *
  * Both removals run it twice: once before the global edge is announced
  * `removing`, and once inside the transaction that deletes the row.
- * Neither position alone is enough — nothing walks an edge back from
- * `removing`, so a refusal raised only inside the transaction would hide
- * the workspace from a member who still holds it, while a check made only
- * before it could be invalidated by a concurrent role change.
+ * Neither position alone is enough — a check made only before the
+ * announcement could be invalidated by a concurrent role change, and one
+ * made only inside the transaction would let a refusal arrive after the
+ * workspace already left the member's list.
+ *
+ * The second evaluation can still refuse: two concurrent removals of two
+ * owners both pass the first, and only one may pass the second. That is
+ * what {@link restoreRemovalEdge} exists for — the announcement is taken
+ * back rather than left standing over a membership that survived.
  */
 export async function ensureRemovable(
   ctx: ScopeUnitOfWorkContext,
@@ -115,6 +168,48 @@ export async function ensureRemovable(
     "owner",
   );
   MembershipPolicy.ensureOwnerRemains(ownerCount, target, null);
+}
+
+/**
+ * Takes back the `removing` announcement when the transaction that was to
+ * delete the membership refused it (`removeMember` / `leaveWorkspace`).
+ *
+ * The refusal is terminal for this attempt — the last-owner rule, the
+ * deletion barrier and a lost role are not conditions a retry clears — so
+ * leaving the edge announced would hide the workspace from a member who
+ * still holds it, with no call able to give it back.
+ *
+ * A membership that is **gone** is the one refusal that must not be
+ * compensated: a concurrent removal of the same membership landed, and
+ * putting its edge back would resurrect the workspace in the list of
+ * someone who is no longer a member. That edge belongs to the removal
+ * that won, which drops it on its own.
+ *
+ * The original error is the one the caller must see, so a failing restore
+ * is logged and swallowed; the edge it could not move is still reachable
+ * by repeating the removal.
+ */
+export async function restoreRemovalEdge(
+  container: RequestContainer,
+  label: string,
+  cause: unknown,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  if (isNotFoundError(cause) && cause.code === "MEMBERSHIP_NOT_FOUND") {
+    return;
+  }
+  try {
+    await container.membershipDirectoryReservationStore.abandonRemoval(
+      userId,
+      workspaceId,
+    );
+  } catch (restoreError) {
+    container.logger.error(`${label} directory edge restore failed`, {
+      cause,
+      restoreError,
+    });
+  }
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   workspaceAvatarUploadSchema,
   workspaceRefSchema,
 } from "@/components/workspace/schema";
+import { serializeError } from "@/presentation/errorResponse";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
 import { loadServerDeps } from "@/presentation/serverAction";
@@ -38,37 +39,50 @@ const shellInputSchema = z.object({
  * シェルがルートの `component` 側に留まる必要があるため — RSC ペイロード
  * に含めると子ルートを跨ぐたびに作り直され、メニューの開閉が飛ぶ。
  *
- * 非メンバー・削除済みは `workspace: null` として返し、画面側が個人の
- * 文脈への導線を出す（WS-02）。
+ * 非メンバー（`InsufficientRole`）・削除済み（`WORKSPACE_NOT_FOUND`）は
+ * `workspace: null` に畳んで返す。判定は `getWorkspaceSettings` が持ち、
+ * ここでやっているのは表示への写像だけ — シェルごと落とすと閲覧者名も
+ * 失われ、個人の文脈への導線（WS-02）が出せなくなる。
  */
 export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(shellInputSchema))
   .handler(async ({ data }) => {
     const [
-      { loadWorkspaceSettings },
+      { container, module },
       { requireSessionOrRedirect },
       { toViewerView },
     ] = await Promise.all([
-      import("@/components/workspace/settingsRead"),
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/getWorkspaceSettings"),
+      ),
       import("@/presentation/sessionGuard"),
       import("@/presentation/auth"),
     ]);
     const user = await requireSessionOrRedirect(data.redirect);
-    const settings = await loadWorkspaceSettings(data.workspaceId, user.userId);
-    return {
-      user: toViewerView(user),
-      workspace:
-        settings === null
-          ? null
-          : {
-              workspaceId: settings.workspaceId,
-              name: settings.name,
-              slug: settings.slug,
-              publication: settings.publication,
-              role: settings.role,
-            },
-    };
+    const viewer = toViewerView(user);
+    try {
+      const settings = await module.getWorkspaceSettings({
+        container,
+        input: { workspaceId: data.workspaceId, userId: user.userId },
+      });
+      return {
+        user: viewer,
+        workspace: {
+          workspaceId: settings.workspaceId,
+          name: settings.name,
+          slug: settings.slug,
+          publication: settings.publication,
+          role: settings.role,
+        },
+      };
+    } catch (error) {
+      const { kind } = serializeError(error);
+      if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+        return { user: viewer, workspace: null };
+      }
+      throw error;
+    }
   });
 
 /** P-31 の一般設定フラグメント。 */
@@ -238,7 +252,10 @@ export const uploadWorkspaceAvatarFn = createServerFn({ method: "POST" })
     return { fileId: view.fileId, url: view.url };
   });
 
-/** PAGE-p33-002。公開ノート件数は応答からしか得られない。 */
+/**
+ * PAGE-p33-002。応答の公開ノート件数は切り替え直後の確定値で、初期表示の
+ * 件数は `getWorkspacePublication` が持つ。
+ */
 export const publishWorkspaceFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(workspaceRefSchema))

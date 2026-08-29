@@ -34,6 +34,27 @@ export function createMemoryInvitationRepository(
       invitation.version as number as ExpectedVersion<Invitation>,
   });
 
+  const matching = (workspaceId: WorkspaceId): Invitation[] =>
+    table
+      .values()
+      .filter((row) => row.workspaceId === workspaceId)
+      .sort(
+        (a, b) =>
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          compareStrings(b.id, a.id),
+      );
+
+  const page = (
+    pagination: Pagination,
+    matched: readonly Invitation[],
+  ): PaginationResult<Invitation> => {
+    const start = (pagination.page - 1) * pagination.limit;
+    return {
+      items: matched.slice(start, start + pagination.limit).map(clone),
+      count: matched.length,
+    };
+  };
+
   return {
     ...base,
 
@@ -63,19 +84,17 @@ export function createMemoryInvitationRepository(
       workspaceId: WorkspaceId,
       pagination: Pagination,
     ): Promise<PaginationResult<Invitation>> {
-      const matched = table
-        .values()
-        .filter((row) => row.workspaceId === workspaceId)
-        .sort(
-          (a, b) =>
-            b.createdAt.getTime() - a.createdAt.getTime() ||
-            compareStrings(b.id, a.id),
-        );
-      const start = (pagination.page - 1) * pagination.limit;
-      return {
-        items: matched.slice(start, start + pagination.limit).map(clone),
-        count: matched.length,
-      };
+      return page(pagination, matching(workspaceId));
+    },
+
+    async listPendingByWorkspace(
+      workspaceId: WorkspaceId,
+      pagination: Pagination,
+    ): Promise<PaginationResult<Invitation>> {
+      return page(
+        pagination,
+        matching(workspaceId).filter(Invitation.isPending),
+      );
     },
 
     async countPendingIssuedSince(

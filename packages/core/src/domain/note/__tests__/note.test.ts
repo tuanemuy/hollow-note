@@ -411,24 +411,19 @@ describe("Note.trash / restore", () => {
   });
 });
 
-describe("Note.moveTo", () => {
-  it("is a no-op without events for the same owner", () => {
+describe("Note.withOwner", () => {
+  it("is a no-op for the same owner", () => {
     const note = blank();
-    const { entity, eventDrafts } = Note.moveTo(note, owner, 3, at(1));
-    expect(entity).toBe(note);
-    expect(eventDrafts).toHaveLength(0);
+    expect(Note.withOwner(note, owner, at(1))).toBe(note);
   });
 
-  it("emits note.moved with the previous owner on a real move", () => {
+  it("re-owns the note and bumps its version on a real move", () => {
     const other = NoteOwner.user(UserId.create("u2"));
-    const { entity, eventDrafts } = Note.moveTo(blank(), other, 3, at(1));
-    expect(entity.owner).toEqual(other);
-    expect(eventDrafts[0]?.type).toBe("note.moved");
-    expect(eventDrafts[0]?.payload).toMatchObject({
-      previousOwner: owner,
-      currentOwner: other,
-      routeVersion: 3,
-    });
+    const note = blank();
+    const moved = Note.withOwner(note, other, at(1));
+    expect(moved.owner).toEqual(other);
+    expect(moved.version).toBe(note.version + 1);
+    expect(moved.updatedAt).toEqual(at(1));
   });
 });
 

@@ -1,5 +1,6 @@
 "use client";
 
+import type { WorkspacePublicationStatusView } from "@repo/core/application/workspace/view";
 import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useOptimistic, useState, useTransition } from "react";
@@ -13,7 +14,6 @@ import {
   subtleButtonClass,
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
-import type { WorkspaceSettingsView } from "@/components/workspace/settingsRead";
 import { displayError } from "@/presentation/errorDisplay";
 import {
   publishWorkspaceFn,
@@ -28,36 +28,48 @@ import {
  * サーバー truth に戻す。破壊的ではないが後戻りに手間がかかる操作なので、
  * 切り替えは 1 段の確認を挟む（P-33「切り替え確認」）。
  *
- * 公開ノート件数は `publishWorkspace` の応答からしか得られないため、
- * 公開した直後だけ「0 件なら空のまま」の注意を出せる。件数を読み出す
- * ユースケースが入ったら初期表示にも出す。
+ * 公開 URL と公開ノート件数を同じ楽観状態に束ねてあるのは、3 つが 1 回の
+ * 切り替えで一緒に動くため。`publishWorkspace` の応答が確定値を持つので、
+ * 再取得を待たずに書き戻す。
  */
 
 type Confirming = "publish" | "unpublish" | null;
 
-export function WorkspacePublishBoard({
-  workspace,
-  publicUrl,
-}: {
-  workspace: WorkspaceSettingsView;
+type PublicationState = Readonly<{
+  published: boolean;
   publicUrl: string | null;
+  publicNoteCount: number;
+}>;
+
+export function WorkspacePublishBoard({
+  publication,
+}: {
+  publication: WorkspacePublicationStatusView;
 }) {
   const router = useRouter();
   const publish = useServerFn(publishWorkspaceFn);
   const unpublish = useServerFn(unpublishWorkspaceFn);
 
-  const [published, setPublished] = useOptimistic(
-    workspace.publication === "published",
-    (_current: boolean, next: boolean) => next,
+  const [state, applyPublication] = useOptimistic<
+    PublicationState,
+    Partial<PublicationState>
+  >(
+    {
+      published: publication.publication === "published",
+      publicUrl: publication.publicUrl,
+      publicNoteCount: publication.publicNoteCount,
+    },
+    (current, patch) => ({ ...current, ...patch }),
   );
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [publicNoteCount, setPublicNoteCount] = useState<number | null>(null);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
 
-  const readOnly = !workspace.canManage;
-  const slugMissing = workspace.slug === null;
+  const workspaceId = publication.workspaceId;
+  const readOnly = !publication.canPublish;
+  const slugMissing = publication.slug === null;
+  const { published, publicUrl, publicNoteCount } = state;
 
   const reconcile = () =>
     router.invalidate().catch(() => {
@@ -68,16 +80,17 @@ export function WorkspacePublishBoard({
     setConfirming(null);
     startTransition(async () => {
       // 楽観的な反映。失敗すればトランジションの終了で元の値へ戻る。
-      setPublished(next === "publish");
+      applyPublication({ published: next === "publish" });
       try {
         if (next === "publish") {
-          const view = await publish({
-            data: { workspaceId: workspace.workspaceId },
+          const view = await publish({ data: { workspaceId } });
+          applyPublication({
+            publicUrl: view.publicUrl,
+            publicNoteCount: view.publicNoteCount,
           });
-          setPublicNoteCount(view.publicNoteCount);
         } else {
-          await unpublish({ data: { workspaceId: workspace.workspaceId } });
-          setPublicNoteCount(null);
+          await unpublish({ data: { workspaceId } });
+          applyPublication({ publicUrl: null });
         }
       } catch (failure) {
         setError(displayError(failure));
@@ -116,7 +129,7 @@ export function WorkspacePublishBoard({
           actions={
             <Link
               to="/workspaces/$workspaceId/settings/general"
-              params={{ workspaceId: workspace.workspaceId }}
+              params={{ workspaceId }}
               className={subtleButtonClass}
             >
               一般設定へ
@@ -186,22 +199,31 @@ export function WorkspacePublishBoard({
           {copyNotice}
         </p>
 
-        {publicNoteCount !== null ? (
-          publicNoteCount === 0 ? (
-            <Alert
-              tone="warning"
-              role="status"
-              title="公開ページは空のままです"
-            >
-              公開ステータスが「公開」のノートがまだありません。ノート一覧から公開したいものを選んでください。
-            </Alert>
-          ) : (
-            <p className="mb-5 text-sm text-ink-secondary">
-              <b className="font-semibold text-ink">{publicNoteCount}</b>{" "}
-              件のノートが公開されています
-            </p>
-          )
-        ) : null}
+        {publicNoteCount === 0 ? (
+          <Alert
+            tone="warning"
+            role="status"
+            title="公開ページは空のままです"
+            actions={
+              <Link
+                to="/workspaces/$workspaceId/notes"
+                params={{ workspaceId }}
+                className={subtleButtonClass}
+              >
+                ノート一覧を開く
+              </Link>
+            }
+          >
+            公開ステータスが「公開」のノートがまだありません。ノート一覧から公開したいものを選んでください。
+          </Alert>
+        ) : (
+          <p className="mb-5 text-sm text-ink-secondary">
+            <b className="font-semibold text-ink">{publicNoteCount}</b>{" "}
+            {published
+              ? "件のノートが公開されています"
+              : "件のノートが公開ページに並びます"}
+          </p>
+        )}
 
         {readOnly ? null : confirming !== null ? (
           <div className="rounded-md border border-hairline p-4">

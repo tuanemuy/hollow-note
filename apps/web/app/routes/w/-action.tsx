@@ -25,16 +25,42 @@ const publicWorkspaceInputSchema = z.object({
     .max(PUBLIC_TAG_MAX_COUNT),
 });
 
+/**
+ * 名前と説明だけは断片とは別に素の値で返す（設定レイアウトと同じ形）。
+ * ルートの `head` は断片の解決を待てないので、これが無いとすべての公開
+ * ページが同じタイトルになり、共有カードも検索結果も区別が付かない
+ * （PAGE-p43-001 の metadata）。
+ *
+ * 見つからないスラッグは断片側が終端表示に畳むので、ここでは `null` を
+ * 返して `head` を既定へ倒すだけにする。
+ */
 export const renderPublicWorkspace = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(publicWorkspaceInputSchema))
   .handler(async ({ data }) => {
-    const [{ PublicWorkspacePage }, { sessionUserOrNull }] = await Promise.all([
+    const [
+      { PublicWorkspacePage },
+      { sessionUserOrNull },
+      { loadPublicWorkspace },
+      { serializeError },
+    ] = await Promise.all([
       import("@/components/workspace/PublicWorkspacePage"),
       import("@/presentation/session"),
+      import("@/components/workspace/PublicWorkspacePage/action"),
+      import("@/presentation/errorResponse"),
     ]);
-    const user = await sessionUserOrNull();
+    const [user, workspace] = await Promise.all([
+      sessionUserOrNull(),
+      loadPublicWorkspace(data.slug).then(
+        (view) => ({ name: view.name, description: view.description }),
+        (error: unknown) => {
+          if (serializeError(error).kind === "notFound") return null;
+          throw error;
+        },
+      ),
+    ]);
     return {
+      workspace,
       PublicWorkspacePage: renderServerFragment(() =>
         PublicWorkspacePage({
           slug: data.slug,

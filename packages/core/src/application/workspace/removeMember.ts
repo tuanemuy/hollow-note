@@ -12,8 +12,10 @@ import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import {
+  ensureActorCan,
   ensureRemovable,
   requireManageMembers,
+  restoreRemovalEdge,
   settleRemovalEdge,
 } from "./membershipMutation";
 
@@ -38,7 +40,10 @@ export type RemoveMemberInput = Readonly<{
  * performs it. The announcement takes the workspace out of the member's
  * list at once while account deletion and integration cleanup can still
  * reach this scope through the edge, and it happens outside both
- * transactions because the two planes never share a unit of work.
+ * transactions because the two planes never share a unit of work. Both
+ * transactions run the same guards, so the second may still refuse what
+ * the first allowed; the announcement is then taken back rather than left
+ * standing over a membership that survived.
  *
  * Notes the removed member created stay with the workspace — they belong
  * to the workspace, not to their author — so nothing here touches them.
@@ -68,7 +73,13 @@ export async function removeMember({
 
   const memberUserId = await container.scopeUnitOfWorkProvider.run(
     scope,
-    async (ctx) => (await target(ctx)).entity.userId,
+    async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(actorUserId);
+      const found = await target(ctx);
+      await ensureActorCan(ctx, workspaceId, actorUserId, "manageMembers");
+      return found.entity.userId;
+    },
   );
 
   await container.membershipDirectoryReservationStore.beginRemoval(
@@ -76,23 +87,35 @@ export async function removeMember({
     workspaceId,
   );
 
-  await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
-    await ctx.cleanupAdmission.assertWritable();
-    await ctx.cleanupAdmission.assertActorWritable(actorUserId);
+  try {
+    await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(actorUserId);
 
-    const removed = await target(ctx);
-    await ctx.membershipRepository.delete(
-      removed.entity.id,
-      removed.expectedVersion,
+      const removed = await target(ctx);
+      await ensureActorCan(ctx, workspaceId, actorUserId, "manageMembers");
+      await ctx.membershipRepository.delete(
+        removed.entity.id,
+        removed.expectedVersion,
+      );
+      ctx.collectEvents([
+        WorkspaceEvents.membershipRemoved(
+          workspaceId,
+          removed.entity.userId,
+          now,
+        ),
+      ]);
+    });
+  } catch (error) {
+    await restoreRemovalEdge(
+      container,
+      "[removeMember]",
+      error,
+      memberUserId,
+      workspaceId,
     );
-    ctx.collectEvents([
-      WorkspaceEvents.membershipRemoved(
-        workspaceId,
-        removed.entity.userId,
-        now,
-      ),
-    ]);
-  });
+    throw error;
+  }
 
   await settleRemovalEdge(
     container,

@@ -10,6 +10,7 @@ import {
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { projectWorkspaceDirectory } from "./directoryProjection";
+import { ensureActorCan } from "./membershipMutation";
 import { countPublicNotes } from "./publicNoteCount";
 import {
   resolveWorkspaceAccess,
@@ -65,6 +66,7 @@ export async function publishWorkspace({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      await ensureActorCan(ctx, workspaceId, userId, "publishWorkspace");
 
       const fresh = await ctx.workspaceRepository.findById(workspaceId);
       if (fresh === null) {
