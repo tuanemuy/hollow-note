@@ -46,6 +46,9 @@ const seedMembershipEdges = (
       edgeState: "active",
       membershipId: `membership-${i}`,
       role: "viewer",
+      deletionPrepareOperationId: null,
+      deletionPrepareExpiresAt: null,
+      reservationExpiresAt: null,
       createdAt: h.backend.clock.now(),
     });
   }

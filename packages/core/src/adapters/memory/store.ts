@@ -4,7 +4,7 @@ import type { AuthToken } from "@repo/core/domain/identity/authToken";
 import type { Identity } from "@repo/core/domain/identity/identity";
 import type { Session } from "@repo/core/domain/identity/session";
 import type { User } from "@repo/core/domain/identity/user";
-import type { UserId } from "@repo/core/domain/identity/valueObject";
+import type { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 import type { Note } from "@repo/core/domain/note/note";
 import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type {
@@ -17,6 +17,8 @@ import type { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import type { Invitation } from "@repo/core/domain/workspace/invitation";
 import type { Membership } from "@repo/core/domain/workspace/membership";
 import type {
+  InvitationId,
+  MembershipId,
   WorkspaceId,
   WorkspaceName,
   WorkspaceRole,
@@ -291,16 +293,120 @@ export type ManifestItemRow =
  * order. The table key is opaque — the page scan filters on the `userId`
  * field and orders by `edgeKey`, so a writer may key rows however it
  * likes as long as keys stay unique.
+ *
+ * `activating` is the join saga's claim, held between
+ * `reserveAndClaimActivation` and the workspace-local commit. Account
+ * deletion drains those to zero before it fixes its manifest, which is
+ * why the manifest's own item type knows only the three settled states.
  */
 export type MembershipDirectoryRow = Readonly<{
   userId: UserId;
   edgeKey: string;
   workspaceId: WorkspaceId;
-  edgeState: "active" | "removing" | "pending";
+  edgeState: "pending" | "activating" | "active" | "removing";
   membershipId: string | null;
   role: WorkspaceRole;
+  /** Account-deletion prepare lock owner of a `pending` edge. */
+  deletionPrepareOperationId: string | null;
+  deletionPrepareExpiresAt: Date | null;
+  /** Set while the edge is `pending` / `activating`; null once settled. */
+  reservationExpiresAt: Date | null;
   createdAt: Date;
 }>;
+
+/**
+ * One row of the global `invitation_routes`. The token hash is the row's
+ * primary key, so the table doubles as the token's uniqueness
+ * reservation; `revoked` is the single terminal state both `revoke` and
+ * `consume` reach.
+ */
+export type InvitationRouteRow = Readonly<{
+  tokenHash: TokenHash;
+  workspaceId: WorkspaceId;
+  invitationId: InvitationId;
+  operationId: string;
+  state: "reserved" | "active" | "revoked";
+  expiresAt: Date;
+}>;
+
+/**
+ * One row of the global `workspace_slug_reservations`. Only a `reserved`
+ * row carries an expiry — an `active` claim is freed by its owner, never
+ * by the clock.
+ */
+export type SlugReservationRow = Readonly<{
+  slug: WorkspaceSlug;
+  workspaceId: WorkspaceId;
+  operationId: string;
+  state: "reserved" | "active";
+  expiresAt: Date | null;
+}>;
+
+/**
+ * One row of a workspace scope's `membership_removal_locks`. A
+ * `committed` lock carries no expiry: it is past the point of no return
+ * and only `release` removes it.
+ */
+export type MembershipRemovalLockRow = Readonly<{
+  operationId: string;
+  userId: UserId;
+  membershipId: MembershipId;
+  expectedMembershipVersion: number;
+  state: "prepared" | "committed";
+  expiresAt: Date | null;
+}>;
+
+/**
+ * One row of a scope's `move_authorization_locks`. The row's existence
+ * *is* the lock — there is no `activated` state and no expiry, so a move
+ * that died mid-flight keeps blocking until it is settled.
+ */
+export type MoveAuthorizationLockRow = Readonly<{
+  migrationId: string;
+  actorUserId: UserId;
+}>;
+
+/**
+ * Header of a workspace scope's `workspace_deletion_manifests`.
+ *
+ * Only three of the spec's header states are reachable through
+ * `WorkspaceDeletionManifestStore`, because those are the only
+ * transitions it exposes: `beginDeletion` creates `building`, `markReady`
+ * moves to `ready`, and `markCompleted` stamps the tombstone. The phases
+ * in between are told apart by the items' two acknowledgement columns,
+ * not by the header.
+ */
+export type WorkspaceDeletionManifestHeaderRow = Readonly<{
+  operationId: string;
+  workspaceId: WorkspaceId;
+  state: "building" | "ready" | "completed";
+  membershipCursor: MembershipId | null;
+  invitationCursor: InvitationId | null;
+}>;
+
+export type WorkspaceDeletionManifestMembershipItemRow = Readonly<{
+  operationId: string;
+  key: string;
+  kind: "membership";
+  userId: UserId;
+  membershipId: MembershipId;
+  localDeletedAt: Date | null;
+  globalAckedAt: Date | null;
+}>;
+
+export type WorkspaceDeletionManifestInvitationItemRow = Readonly<{
+  operationId: string;
+  key: string;
+  kind: "invitation";
+  tokenHash: TokenHash;
+  invitationId: InvitationId;
+  localDeletedAt: Date | null;
+  globalAckedAt: Date | null;
+}>;
+
+export type WorkspaceDeletionManifestItemRow =
+  | WorkspaceDeletionManifestMembershipItemRow
+  | WorkspaceDeletionManifestInvitationItemRow;
 
 /**
  * One row of the global `workspace_directory` projection. `avatarUrl`
@@ -392,6 +498,10 @@ export type ScopeStore = Readonly<{
   notes: MemTable<Note>;
   noteRevisions: MemTable<NoteRevision>;
   cleanupReceipts: MemTable<CleanupReceiptRow>;
+  membershipRemovalLocks: MemTable<MembershipRemovalLockRow>;
+  moveAuthorizationLocks: MemTable<MoveAuthorizationLockRow>;
+  deletionManifestHeaders: MemTable<WorkspaceDeletionManifestHeaderRow>;
+  deletionManifestItems: MemTable<WorkspaceDeletionManifestItemRow>;
   actorLocks: MemTable<true>;
   localProjection: MemTable<LocalProjectionRow>;
   projectionRevisions: MemTable<number>;
@@ -455,6 +565,8 @@ export class MemoryBackend {
   readonly manifestHeaders = this.table<ManifestHeaderRow>();
   readonly manifestItems = this.table<ManifestItemRow>();
   readonly membershipEdges = this.table<MembershipDirectoryRow>();
+  readonly invitationRoutes = this.table<InvitationRouteRow>();
+  readonly slugReservations = this.table<SlugReservationRow>();
   readonly workspaceDirectory = this.table<WorkspaceDirectoryRow>();
   /**
    * WorkspaceIds whose directory shard is currently unreadable. This
@@ -497,6 +609,10 @@ export class MemoryBackend {
       notes: this.table<Note>(),
       noteRevisions: this.table<NoteRevision>(),
       cleanupReceipts: this.table<CleanupReceiptRow>(),
+      membershipRemovalLocks: this.table<MembershipRemovalLockRow>(),
+      moveAuthorizationLocks: this.table<MoveAuthorizationLockRow>(),
+      deletionManifestHeaders: this.table<WorkspaceDeletionManifestHeaderRow>(),
+      deletionManifestItems: this.table<WorkspaceDeletionManifestItemRow>(),
       actorLocks: this.table<true>(),
       localProjection: this.table<LocalProjectionRow>(),
       projectionRevisions: this.table<number>(),

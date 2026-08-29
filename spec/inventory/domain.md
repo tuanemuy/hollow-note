@@ -186,6 +186,11 @@
 | DOM-workspace-070 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する |
 | DOM-workspace-071 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する |
 | DOM-workspace-072 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする |
+| DOM-workspace-073 | `WorkspaceSlugReservationStore.resolveActive` | `spec/domains/workspace.md#ポート` | active な slug 予約から WorkspaceId を解決する |
+| DOM-workspace-074 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約する |
+| DOM-workspace-075 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
+| DOM-workspace-076 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する |
+| DOM-workspace-077 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
 | DOM-storage-001 | `StoredFileId` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-storage-002 | `ObjectKey` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜1024 文字で traversal と先頭 slash を拒否し owner・purpose から構築する |
 | DOM-storage-003 | `FileName` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜255 文字へ安全化し path separator・制御文字を除く |

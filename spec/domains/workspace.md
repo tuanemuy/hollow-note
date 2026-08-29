@@ -227,7 +227,19 @@ type WorkspaceDirectoryResolution =
 interface PublicWorkspaceDirectoryReader {
   listPublished(cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; slug: WorkspaceSlug; updatedAt: Date }[]; nextCursor: string | null }>>;
 }
+
+interface WorkspaceSlugReservationStore {
+  resolveActive(slug: WorkspaceSlug): Promise<WorkspaceId | null>;
+  reserve(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; expiresAt: Date }): Promise<void>;
+  activate(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; releasing: WorkspaceSlug | null }): Promise<void>;
+  abandon(input: { slug: WorkspaceSlug; operationId: string }): Promise<void>;
+  release(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId }): Promise<void>;
+}
 ```
+
+`WorkspaceRepository` は current workspace scope に束縛されて自 scope の 1 行しか見えないので、slug の global uniqueness は `WorkspaceSlugReservationStore` が global D1 の `workspace_slug_reservations` で担う。`ConflictError("SLUG_ALREADY_USED")` を返すのはこのポートであり、`WorkspaceRepository` ではない。`WorkspaceSlug` は自身の構築時に小文字化されるので、渡す値がそのまま `normalized_slug` である。
+
+予約は operation ID ごとの 2 相で、`reserve` → workspace-local commit → `activate`。local commit が着地しなかった場合は `abandon` で補償する。slug 変更では `activate` の `releasing` に手放す側の slug を渡し、新旧の切替を 1 transaction で行う — 新しい公開 URL が有効になるまで旧 URL が解決し続け、両方が解決する窓も両方が解決しない窓も生じない。`release` は代わりを取らずに手放す唯一の経路で、ワークスペース削除が directory tombstone の ack 後に呼ぶ（同じ slug の再利用を tombstone が妨げないため）。期限を持つのは `reserved` 行だけであり、`active` な予約は所有者の `activate(releasing)` / `release` でしか解放されない。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("SLUG_ALREADY_USED")`、`SystemError(DatabaseError)`
 

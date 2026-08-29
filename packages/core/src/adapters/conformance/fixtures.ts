@@ -158,6 +158,10 @@ export const membershipId = (n: number): MembershipId =>
 export const invitationId = (n: number): InvitationId =>
   InvitationId.create(`invitation-${String(n).padStart(3, "0")}`);
 
+/** The token hash `makeInvitation(n, …)` issues its invitation with. */
+export const invitationTokenHash = (n: number): TokenHash =>
+  TokenHash.create(`invitation-hash-${n}`);
+
 export const workspaceScopeOf = (n: number): ScopeKey =>
   ScopeKey.workspace(workspaceId(n));
 
@@ -211,7 +215,7 @@ export function makeInvitation(
       email: overrides.email ?? `invitee-${n}@example.com`,
       role: overrides.role ?? "editor",
       invitedBy,
-      tokenHash: TokenHash.create(`invitation-hash-${n}`),
+      tokenHash: invitationTokenHash(n),
     },
     now,
   ).entity;

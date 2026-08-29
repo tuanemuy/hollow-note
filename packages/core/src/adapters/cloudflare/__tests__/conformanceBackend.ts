@@ -229,6 +229,71 @@ export async function makeCloudflareConformanceBackend(
           "PublicWorkspaceDirectoryReader.listPublished",
         ),
     },
+    invitationRouteStore: {
+      resolveActive: () =>
+        unimplementedWorkspacePort("InvitationRouteStore.resolveActive"),
+      reserve: () => unimplementedWorkspacePort("InvitationRouteStore.reserve"),
+      activate: () =>
+        unimplementedWorkspacePort("InvitationRouteStore.activate"),
+      reserveReplacement: () =>
+        unimplementedWorkspacePort("InvitationRouteStore.reserveReplacement"),
+      activateReplacement: () =>
+        unimplementedWorkspacePort("InvitationRouteStore.activateReplacement"),
+      abandon: () => unimplementedWorkspacePort("InvitationRouteStore.abandon"),
+      revoke: () => unimplementedWorkspacePort("InvitationRouteStore.revoke"),
+      consume: () => unimplementedWorkspacePort("InvitationRouteStore.consume"),
+    },
+    membershipDirectoryReservationStore: {
+      reserveAndClaimActivation: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.reserveAndClaimActivation",
+        ),
+      activate: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.activate",
+        ),
+      abandon: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.abandon",
+        ),
+      prepareAccountDeletion: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.prepareAccountDeletion",
+        ),
+      renewAccountDeletion: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.renewAccountDeletion",
+        ),
+      commitAccountDeletion: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.commitAccountDeletion",
+        ),
+      releaseAccountDeletion: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.releaseAccountDeletion",
+        ),
+      listActivatingByUser: () =>
+        unimplementedWorkspacePort(
+          "MembershipDirectoryReservationStore.listActivatingByUser",
+        ),
+    },
+    workspaceSlugReservationStore: {
+      resolveActive: () =>
+        unimplementedWorkspacePort(
+          "WorkspaceSlugReservationStore.resolveActive",
+        ),
+      reserve: () =>
+        unimplementedWorkspacePort("WorkspaceSlugReservationStore.reserve"),
+      activate: () =>
+        unimplementedWorkspacePort("WorkspaceSlugReservationStore.activate"),
+      abandon: () =>
+        unimplementedWorkspacePort("WorkspaceSlugReservationStore.abandon"),
+      release: () =>
+        unimplementedWorkspacePort("WorkspaceSlugReservationStore.release"),
+    },
+    async seedMoveAuthorizationLocks(): Promise<void> {
+      unimplementedWorkspacePort("seedMoveAuthorizationLocks");
+    },
     forScope(scope: ScopeKey): ScopedConformancePorts {
       return scopePortsOver(
         createAutocommitSession(scopeExecutorFor(scope)),
@@ -318,8 +383,77 @@ const unimplementedWorkspacePort = (name: string): never => {
 
 const pendingWorkspaceScopePorts = (): Pick<
   ScopedConformancePorts,
-  "workspaceRepository" | "membershipRepository" | "invitationRepository"
+  | "workspaceRepository"
+  | "membershipRepository"
+  | "invitationRepository"
+  | "membershipRemovalPreparationStore"
+  | "workspaceOperationLockStore"
+  | "workspaceDeletionManifestStore"
 > => ({
+  membershipRemovalPreparationStore: {
+    prepare: () =>
+      unimplementedWorkspacePort("MembershipRemovalPreparationStore.prepare"),
+    renew: () =>
+      unimplementedWorkspacePort("MembershipRemovalPreparationStore.renew"),
+    commit: () =>
+      unimplementedWorkspacePort("MembershipRemovalPreparationStore.commit"),
+    release: () =>
+      unimplementedWorkspacePort("MembershipRemovalPreparationStore.release"),
+    hasConflict: () =>
+      unimplementedWorkspacePort(
+        "MembershipRemovalPreparationStore.hasConflict",
+      ),
+  },
+  workspaceOperationLockStore: {
+    hasActiveMove: () =>
+      unimplementedWorkspacePort("WorkspaceOperationLockStore.hasActiveMove"),
+    hasMoveConflict: () =>
+      unimplementedWorkspacePort("WorkspaceOperationLockStore.hasMoveConflict"),
+    beginDeletion: () =>
+      unimplementedWorkspacePort("WorkspaceOperationLockStore.beginDeletion"),
+    assertWritable: () =>
+      unimplementedWorkspacePort("WorkspaceOperationLockStore.assertWritable"),
+    assertDeletionOwner: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceOperationLockStore.assertDeletionOwner",
+      ),
+    assertMaintenanceAllowed: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceOperationLockStore.assertMaintenanceAllowed",
+      ),
+  },
+  workspaceDeletionManifestStore: {
+    appendMembershipPage: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.appendMembershipPage",
+      ),
+    appendInvitationPage: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.appendInvitationPage",
+      ),
+    markReady: () =>
+      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.markReady"),
+    listLocalPending: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.listLocalPending",
+      ),
+    acknowledgeLocal: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.acknowledgeLocal",
+      ),
+    listItems: () =>
+      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.listItems"),
+    acknowledge: () =>
+      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.acknowledge"),
+    compactAcknowledged: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.compactAcknowledged",
+      ),
+    markCompleted: () =>
+      unimplementedWorkspacePort(
+        "WorkspaceDeletionManifestStore.markCompleted",
+      ),
+  },
   workspaceRepository: {
     insert: () => unimplementedWorkspacePort("WorkspaceRepository.insert"),
     findById: () => unimplementedWorkspacePort("WorkspaceRepository.findById"),

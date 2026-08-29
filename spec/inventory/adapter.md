@@ -149,6 +149,11 @@
 | ADP-workspace-058 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する |
 | ADP-workspace-059 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する |
 | ADP-workspace-060 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする |
+| ADP-workspace-061 | `WorkspaceSlugReservationStore.resolveActive` | `spec/domains/workspace.md#ポート` | active な slug 予約から WorkspaceId を解決する |
+| ADP-workspace-062 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約する |
+| ADP-workspace-063 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
+| ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する |
+| ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
 | ADP-storage-001 | `StoredFileRepository.insert` | `spec/domains/storage.md#ポート` | 新規 StoredFile を保存する |
 | ADP-storage-002 | `StoredFileRepository.findById` | `spec/domains/storage.md#ポート` | StoredFileId で OCC token 付き集約を取得する |
 | ADP-storage-003 | `StoredFileRepository.save` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を更新する |

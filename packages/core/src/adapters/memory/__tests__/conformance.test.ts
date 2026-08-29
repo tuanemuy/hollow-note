@@ -8,9 +8,12 @@ import { describeIdentityRemovalReceiptStoreContract } from "../../conformance/i
 import { describeIdentityRepositoryContract } from "../../conformance/identityRepository";
 import { describeIdentityUniqueDirectoryContract } from "../../conformance/identityUniqueDirectory";
 import { describeInvitationRepositoryContract } from "../../conformance/invitationRepository";
+import { describeInvitationRouteStoreContract } from "../../conformance/invitationRouteStore";
 import { describeLlmUsageRepositoryContract } from "../../conformance/llmUsageRepository";
 import { describeLocalNoteQueryServiceContract } from "../../conformance/localNoteQueryService";
 import { describeLoginAttemptStoreContract } from "../../conformance/loginAttemptStore";
+import { describeMembershipDirectoryReservationStoreContract } from "../../conformance/membershipDirectoryReservationStore";
+import { describeMembershipRemovalPreparationStoreContract } from "../../conformance/membershipRemovalPreparationStore";
 import { describeMembershipRepositoryContract } from "../../conformance/membershipRepository";
 import { describeNoteProjectionContract } from "../../conformance/noteProjection";
 import { describeNoteRepositoryContract } from "../../conformance/noteRepository";
@@ -32,8 +35,11 @@ import { describeUnitOfWorkContract } from "../../conformance/unitOfWork";
 import { describeUserBatchReaderContract } from "../../conformance/userBatchReader";
 import { describeUserRepositoryContract } from "../../conformance/userRepository";
 import { describeUserWorkspaceDirectoryContract } from "../../conformance/userWorkspaceDirectory";
+import { describeWorkspaceDeletionManifestStoreContract } from "../../conformance/workspaceDeletionManifestStore";
 import { describeWorkspaceDirectoryBatchReaderContract } from "../../conformance/workspaceDirectoryBatchReader";
+import { describeWorkspaceOperationLockStoreContract } from "../../conformance/workspaceOperationLockStore";
 import { describeWorkspaceRepositoryContract } from "../../conformance/workspaceRepository";
+import { describeWorkspaceSlugReservationStoreContract } from "../../conformance/workspaceSlugReservationStore";
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
 
 // The full shared port-conformance suite run against the in-memory
@@ -94,6 +100,27 @@ describeWorkspaceDirectoryBatchReaderContract(
   makeMemoryConformanceBackend,
 );
 describePublicWorkspaceDirectoryReaderContract(
+  BACKEND,
+  makeMemoryConformanceBackend,
+);
+describeInvitationRouteStoreContract(BACKEND, makeMemoryConformanceBackend);
+describeMembershipDirectoryReservationStoreContract(
+  BACKEND,
+  makeMemoryConformanceBackend,
+);
+describeMembershipRemovalPreparationStoreContract(
+  BACKEND,
+  makeMemoryConformanceBackend,
+);
+describeWorkspaceOperationLockStoreContract(
+  BACKEND,
+  makeMemoryConformanceBackend,
+);
+describeWorkspaceDeletionManifestStoreContract(
+  BACKEND,
+  makeMemoryConformanceBackend,
+);
+describeWorkspaceSlugReservationStoreContract(
   BACKEND,
   makeMemoryConformanceBackend,
 );

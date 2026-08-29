@@ -6,6 +6,7 @@ import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
+  MoveAuthorizationLockSeedInput,
   WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
@@ -21,9 +22,12 @@ import { createMemoryIdentityRemovalReceiptStore } from "../repositories/identit
 import { createMemoryIdentityRepository } from "../repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "../repositories/identityUniqueDirectory";
 import { createMemoryInvitationRepository } from "../repositories/invitationRepository";
+import { createMemoryInvitationRouteStore } from "../repositories/invitationRouteStore";
 import { createMemoryLlmUsageRepository } from "../repositories/llmUsageRepository";
 import { createMemoryLocalNoteQueryService } from "../repositories/localNoteQueryService";
 import { createMemoryLoginAttemptStore } from "../repositories/loginAttemptStore";
+import { createMemoryMembershipDirectoryReservationStore } from "../repositories/membershipDirectoryReservationStore";
+import { createMemoryMembershipRemovalPreparationStore } from "../repositories/membershipRemovalPreparationStore";
 import { createMemoryMembershipRepository } from "../repositories/membershipRepository";
 import {
   createMemoryLocalNoteProjectionWriter,
@@ -47,12 +51,17 @@ import { createMemoryStoredFileRepository } from "../repositories/storedFileRepo
 import { createMemoryUserBatchReader } from "../repositories/userBatchReader";
 import { createMemoryUserRepository } from "../repositories/userRepository";
 import { createMemoryUserWorkspaceDirectory } from "../repositories/userWorkspaceDirectory";
+import { createMemoryWorkspaceDeletionManifestStore } from "../repositories/workspaceDeletionManifestStore";
 import { createMemoryWorkspaceDirectoryBatchReader } from "../repositories/workspaceDirectoryBatchReader";
+import { createMemoryWorkspaceOperationLockStore } from "../repositories/workspaceOperationLockStore";
 import { createMemoryWorkspaceRepository } from "../repositories/workspaceRepository";
+import { createMemoryWorkspaceSlugReservationStore } from "../repositories/workspaceSlugReservationStore";
 import { createMemoryScopeRouter } from "../scopeRouter";
 import { createMemoryScopeTaskQueue } from "../scopeTaskQueue";
 import { createMemoryScopeUnitOfWorkProvider } from "../scopeUnitOfWork";
 import { MemoryBackend } from "../store";
+
+const HOUR_MS = 60 * 60 * 1000;
 
 /** Conformance-backend factory over a fresh `MemoryBackend` per call. */
 export function makeMemoryConformanceBackend(
@@ -131,12 +140,27 @@ export function makeMemoryConformanceBackend(
       createMemoryWorkspaceDirectoryBatchReader(backend),
     publicWorkspaceDirectoryReader:
       createMemoryPublicWorkspaceDirectoryReader(backend),
+    invitationRouteStore: createMemoryInvitationRouteStore(backend),
+    membershipDirectoryReservationStore:
+      createMemoryMembershipDirectoryReservationStore(backend),
+    workspaceSlugReservationStore:
+      createMemoryWorkspaceSlugReservationStore(backend),
     forScope(scope: ScopeKey) {
       const scopeStore = backend.scope(scope);
       return {
         workspaceRepository: createMemoryWorkspaceRepository(scopeStore),
         membershipRepository: createMemoryMembershipRepository(scopeStore),
         invitationRepository: createMemoryInvitationRepository(scopeStore),
+        membershipRemovalPreparationStore:
+          createMemoryMembershipRemovalPreparationStore(scopeStore),
+        workspaceOperationLockStore: createMemoryWorkspaceOperationLockStore(
+          backend,
+          scopeStore,
+        ),
+        workspaceDeletionManifestStore:
+          createMemoryWorkspaceDeletionManifestStore(scopeStore, () =>
+            clock.now(),
+          ),
         noteRepository: createMemoryNoteRepository(scopeStore),
         noteRevisionRepository: createMemoryNoteRevisionRepository(scopeStore),
         scopeCleanupAdmissionStore: createMemoryScopeCleanupAdmissionStore(
@@ -169,7 +193,25 @@ export function makeMemoryConformanceBackend(
           edgeState: edge.edgeState,
           membershipId: edge.membershipId,
           role: edge.role ?? "viewer",
+          deletionPrepareOperationId: null,
+          deletionPrepareExpiresAt: null,
+          reservationExpiresAt:
+            edge.edgeState === "pending"
+              ? new Date(clock.now().getTime() + HOUR_MS)
+              : null,
           createdAt: edge.createdAt ?? clock.now(),
+        });
+      }
+    },
+    async seedMoveAuthorizationLocks(
+      scope: ScopeKey,
+      locks: readonly MoveAuthorizationLockSeedInput[],
+    ): Promise<void> {
+      const scopeStore = backend.scope(scope);
+      for (const lock of locks) {
+        scopeStore.moveAuthorizationLocks.set(lock.migrationId, {
+          migrationId: lock.migrationId,
+          actorUserId: lock.actorUserId,
         });
       }
     },

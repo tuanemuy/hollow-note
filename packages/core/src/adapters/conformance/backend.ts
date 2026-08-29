@@ -47,11 +47,17 @@ import type { StoredFileRepository } from "../../domain/storage/ports/storedFile
 import type { LlmUsageRepository } from "../../domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "../../domain/usage/ports/storageQuotaRepository";
 import type { InvitationRepository } from "../../domain/workspace/ports/invitationRepository";
+import type { InvitationRouteStore } from "../../domain/workspace/ports/invitationRouteStore";
+import type { MembershipDirectoryReservationStore } from "../../domain/workspace/ports/membershipDirectoryReservationStore";
+import type { MembershipRemovalPreparationStore } from "../../domain/workspace/ports/membershipRemovalPreparationStore";
 import type { MembershipRepository } from "../../domain/workspace/ports/membershipRepository";
 import type { PublicWorkspaceDirectoryReader } from "../../domain/workspace/ports/publicWorkspaceDirectoryReader";
 import type { UserWorkspaceDirectory } from "../../domain/workspace/ports/userWorkspaceDirectory";
+import type { WorkspaceDeletionManifestStore } from "../../domain/workspace/ports/workspaceDeletionManifestStore";
 import type { WorkspaceDirectoryBatchReader } from "../../domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceOperationLockStore } from "../../domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceRepository } from "../../domain/workspace/ports/workspaceRepository";
+import type { WorkspaceSlugReservationStore } from "../../domain/workspace/ports/workspaceSlugReservationStore";
 import type {
   WorkspaceId,
   WorkspaceName,
@@ -85,6 +91,9 @@ export type ScopedConformancePorts = Readonly<{
   workspaceRepository: WorkspaceRepository;
   membershipRepository: MembershipRepository;
   invitationRepository: InvitationRepository;
+  membershipRemovalPreparationStore: MembershipRemovalPreparationStore;
+  workspaceOperationLockStore: WorkspaceOperationLockStore;
+  workspaceDeletionManifestStore: WorkspaceDeletionManifestStore;
   scopeTaskScheduler: ScopeTaskScheduler;
   appliedOperationStore: AppliedOperationStore;
   storageQuotaRepository: StorageQuotaRepository;
@@ -105,6 +114,16 @@ export type MembershipEdgeSeedInput = Readonly<{
    * only order — seed it explicitly to pin the primary key.
    */
   createdAt?: Date;
+}>;
+
+/**
+ * One staged `move_authorization_locks` row. Only the two fields the
+ * workspace reads discriminate on: the lock's own identity, and the
+ * member whose Membership version it pinned.
+ */
+export type MoveAuthorizationLockSeedInput = Readonly<{
+  migrationId: string;
+  actorUserId: UserId;
 }>;
 
 /**
@@ -166,7 +185,24 @@ export type ConformanceBackend = Readonly<{
   userWorkspaceDirectory: UserWorkspaceDirectory;
   workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
   publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+  invitationRouteStore: InvitationRouteStore;
+  membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
+  workspaceSlugReservationStore: WorkspaceSlugReservationStore;
   forScope(scope: ScopeKey): ScopedConformancePorts;
+  /**
+   * Seeds staged move authorization locks in one scope, for the two
+   * `WorkspaceOperationLockStore` reads that answer from them. The move
+   * slice owns the writer (`NoteMovePort.stageTarget`), which is not part
+   * of the workspace port set, so — as with `seedWorkspaceDirectory` —
+   * the contract's branch has no executable form without this hook.
+   *
+   * It must really take effect: the suite reads through the port after
+   * the call, so a stub that swallows its argument fails it.
+   */
+  seedMoveAuthorizationLocks(
+    scope: ScopeKey,
+    locks: readonly MoveAuthorizationLockSeedInput[],
+  ): Promise<void>;
   /** Seeds `workspace_directory` rows for the two directory readers. */
   seedWorkspaceDirectory(
     entries: readonly WorkspaceDirectorySeedInput[],
