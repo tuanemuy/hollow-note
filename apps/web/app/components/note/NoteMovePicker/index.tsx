@@ -8,6 +8,14 @@ import {
 } from "@/components/settings/panelStyles";
 import { displayError } from "@/presentation/errorDisplay";
 import { listMoveTargetsFn } from "@/routes/notes/-action";
+import {
+  appendPage,
+  type Listing,
+  type MoveTarget,
+  PERSONAL_LABEL,
+} from "./listing";
+
+export type { MoveTarget } from "./listing";
 
 /**
  * ノート移動の移動先セレクター（PAGE-p11-009 / PAGE-p10-007）。
@@ -31,70 +39,6 @@ import { listMoveTargetsFn } from "@/routes/notes/-action";
  * 続きがある。`nextCursor` が残るあいだは「さらに読み込む」を出し、21 件目
  * 以降のワークスペースへも移せるようにする。
  */
-export type MoveTarget = Readonly<{
-  ownerType: "user" | "workspace";
-  workspaceId: string | null;
-  label: string;
-}>;
-
-type Loaded = Readonly<{
-  kind: "loaded";
-  targets: readonly MoveTarget[];
-  currentLabel: string | null;
-  nextCursor: string | null;
-  pending: boolean;
-  error: string | null;
-}>;
-
-type Listing =
-  | Readonly<{ kind: "loading" }>
-  | Loaded
-  | Readonly<{ kind: "failed"; message: string }>;
-
-type TargetPage = Readonly<{
-  targets: readonly Readonly<{ workspaceId: string; name: string }>[];
-  nextCursor: string | null;
-}>;
-
-const PERSONAL_LABEL = "個人";
-
-function appendPage(
-  loaded: Loaded | null,
-  page: TargetPage,
-  currentOwnerType: "user" | "workspace",
-  currentOwnerId: string,
-): Loaded {
-  const targets: MoveTarget[] =
-    loaded !== null
-      ? [...loaded.targets]
-      : currentOwnerType === "user"
-        ? []
-        : [{ ownerType: "user", workspaceId: null, label: PERSONAL_LABEL }];
-  let currentLabel = loaded?.currentLabel ?? null;
-  for (const target of page.targets) {
-    if (
-      currentOwnerType === "workspace" &&
-      currentOwnerId === target.workspaceId
-    ) {
-      currentLabel = target.name;
-      continue;
-    }
-    targets.push({
-      ownerType: "workspace",
-      workspaceId: target.workspaceId,
-      label: target.name,
-    });
-  }
-  return {
-    kind: "loaded",
-    targets,
-    currentLabel,
-    nextCursor: page.nextCursor,
-    pending: false,
-    error: null,
-  };
-}
-
 export function NoteMovePicker({
   currentOwnerType,
   currentOwnerId,

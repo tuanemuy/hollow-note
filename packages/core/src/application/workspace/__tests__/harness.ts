@@ -293,6 +293,7 @@ export async function seedWorkspace(
       slug,
       workspaceId,
       operationId,
+      attemptId: operationId,
       expiresAt: new Date(now.getTime() + SEED_RESERVATION_TTL_MS),
     });
     await h.container.workspaceSlugReservationStore.activate({

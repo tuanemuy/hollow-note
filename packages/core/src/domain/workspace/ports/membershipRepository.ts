@@ -58,6 +58,13 @@ export interface MembershipRepository
    * `PaginationResult` (not a bare array) because `count` is the
    * workspace's member total — the member-count display and the manifest's
    * progress both read it from here rather than counting a page.
+   *
+   * The one read of this contract that does **not** observe its own
+   * transaction: an offset page cannot be recomputed from uncommitted
+   * changes without re-reading the whole set, so a backend that buffers
+   * its writes answers from the last committed state. Call it before the
+   * transaction writes, or in a later one — the deletion sweep does the
+   * latter, probing for leftovers in a turn that deletes nothing.
    */
   listByWorkspace(
     workspaceId: WorkspaceId,

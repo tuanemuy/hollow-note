@@ -149,6 +149,53 @@ export function describeWorkspaceDeletionManifestStoreContract(
       await store().markReady(OPERATION);
     });
 
+    it("ADP-workspace-054: the turn that fixes the last page readies the manifest", async () => {
+      // The saga never gets a commit between the two: `markReady` follows
+      // the walk that ended inside the same unit of work. A backend that
+      // does not read its own writes sees the targets as unfixed, refuses,
+      // and rolls the whole turn back — deletion then never leaves the
+      // invitations phase.
+      await backend.scopeUnitOfWork.run(workspaceScopeOf(1), async (ctx) => {
+        const store = ctx.workspaceDeletionManifestStore;
+        await store.appendMembershipPage(OPERATION, null, 100);
+        await store.appendInvitationPage(OPERATION, null, 100);
+        await store.markReady(OPERATION);
+      });
+
+      expect(await allItems()).toHaveLength(5);
+      await store().markReady(OPERATION);
+    });
+
+    it("ADP-workspace-059/060: the turn that reclaims the last page completes the manifest", async () => {
+      await fixEverything();
+      const everything = keysOf(await allItems());
+      await store().acknowledgeLocal(OPERATION, everything);
+      await store().acknowledge(OPERATION, everything);
+
+      // Same shape at the other end of the saga: the compaction that
+      // empties the manifest and the transition that completes it share a
+      // transaction, so `markCompleted` has to count what this unit has
+      // already reclaimed rather than what storage still holds.
+      const page = await backend.scopeUnitOfWork.run(
+        workspaceScopeOf(1),
+        async (ctx) => {
+          const compacted =
+            await ctx.workspaceDeletionManifestStore.compactAcknowledged(
+              OPERATION,
+              100,
+            );
+          await ctx.workspaceDeletionManifestStore.markCompleted(OPERATION);
+          return compacted;
+        },
+      );
+
+      expect(page).toEqual({ removed: 5, remaining: false });
+      expect(await allItems()).toEqual([]);
+      // The tombstone landed with the compaction, not before it.
+      await store().markCompleted(OPERATION);
+      await expectConflict(store().markReady(OPERATION));
+    });
+
     it("ADP-workspace-054/060: a completed manifest is terminal", async () => {
       const other = backend.forScope(workspaceScopeOf(2));
       await other.workspaceRepository.insert(

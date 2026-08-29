@@ -40,12 +40,11 @@ CREATE TABLE invitation_routes (
   expires_at integer NOT NULL,
   updated_at integer NOT NULL
 );
-
--- A resend closes the old route by `(token_hash, invitation_id)` and the
--- deletion manifest walks an invitation's routes by id, so the invitation
--- is the second access path into the table.
-CREATE INDEX invitation_routes_invitation_idx
-  ON invitation_routes (invitation_id, token_hash);
+-- No index on `invitation_id`: every predicate that mentions it also
+-- fixes `token_hash`, which is the primary key, so the column is only
+-- ever a check on a row already located. Deletion reaches its routes the
+-- same way — the manifest fixed each `tokenHash` next to the invitation
+-- id precisely so cleanup never has to search by invitation.
 
 -- `membership_directory` is rebuilt to drop one CHECK of
 -- `0001_global_schema.sql`:

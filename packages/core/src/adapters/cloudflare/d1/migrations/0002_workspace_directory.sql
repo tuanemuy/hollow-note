@@ -5,8 +5,9 @@
 -- and `PublicWorkspaceDirectoryReader` enumerates it for the sitemap.
 -- The rows the readers see are written by the `workspace.*` projection,
 -- which has no port yet, so nothing in this schema version writes the
--- table; the conformance harness seeds it directly (ADR 011 of the
--- slice's work log, mirrored by `seedWorkspaceDirectory`).
+-- table. With no writer to drive them, the conformance suites seed rows
+-- straight into it (`seedWorkspaceDirectory`), which is also the only way
+-- to pin the column combinations a writer would never produce together.
 --
 -- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
 -- as UNIX milliseconds, enumerations as `text` with a `CHECK`.

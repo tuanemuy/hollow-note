@@ -15,11 +15,20 @@ import type { SqlRow, SqlStatement } from "../sql/statement";
  * the image from the same whole-row helper the table's inserts use is
  * what keeps this true as projections come and go.
  *
- * `opaque` is the escape hatch for a statement with no single-row
- * meaning: an OCC guard, a counter increment, a bulk `DELETE … WHERE`.
- * It applies like the others but contributes nothing to the overlay, so
- * a read issued later in the same unit will not see it. Use `upsert` /
- * `remove` whenever the affected row can be read back before commit.
+ * A multi-row statement — the `json_each` insert or delete
+ * `spec/database/index.md` の「共通の規約」 requires instead of one
+ * statement per id — still names the rows it touches: `upsertMany` and
+ * `removeMany` apply as a single statement while contributing the same
+ * overlay entries the per-row kinds would. One statement, full
+ * read-your-writes.
+ *
+ * `opaque` is the escape hatch for a statement with genuinely no
+ * single-row meaning: an OCC guard, a counter increment, a
+ * `DELETE … WHERE` whose victims are not enumerated. It applies like the
+ * others but contributes nothing to the overlay, so a read issued later
+ * in the same unit will not see it — which is a divergence from the
+ * memory backend, not a licence. Reach for it only when the affected
+ * keys are unknown at staging time.
  *
  * An `opaque` that writes a table carrying commit-time bookkeeping —
  * `scheduled_tasks`, whose write-set membership drives the due-index
@@ -41,6 +50,18 @@ export type RowMutation =
       key: string;
       statement: SqlStatement;
     }>
+  | Readonly<{
+      kind: "upsertMany";
+      table: string;
+      rows: readonly (readonly [string, SqlRow])[];
+      statement: SqlStatement;
+    }>
+  | Readonly<{
+      kind: "removeMany";
+      table: string;
+      keys: readonly string[];
+      statement: SqlStatement;
+    }>
   | Readonly<{ kind: "opaque"; table?: string; statement: SqlStatement }>;
 
 export const upsert = (
@@ -55,6 +76,30 @@ export const upsert = (
 export const remove = (
   input: Readonly<{ table: string; key: string; statement: SqlStatement }>,
 ): RowMutation => ({ kind: "remove", ...input });
+
+/**
+ * One multi-row insert or update, paired with the row image each key
+ * ends up with. The images must be whole rows for the reason `upsert`
+ * gives, and must agree with what the statement writes — a page that
+ * inserts `ON CONFLICT DO NOTHING` therefore stages images only for the
+ * keys it actually creates.
+ */
+export const upsertMany = (
+  input: Readonly<{
+    table: string;
+    rows: readonly (readonly [string, SqlRow])[];
+    statement: SqlStatement;
+  }>,
+): RowMutation => ({ kind: "upsertMany", ...input });
+
+/** One multi-row delete, paired with the keys it removes. */
+export const removeMany = (
+  input: Readonly<{
+    table: string;
+    keys: readonly string[];
+    statement: SqlStatement;
+  }>,
+): RowMutation => ({ kind: "removeMany", ...input });
 
 export const opaque = (
   input: SqlStatement | Readonly<{ table: string; statement: SqlStatement }>,
@@ -92,7 +137,24 @@ export class WriteSet {
       }
       this.touched.add(mutation.table);
       const table = this.overlayOf(mutation.table);
-      table.set(mutation.key, mutation.kind === "upsert" ? mutation.row : null);
+      switch (mutation.kind) {
+        case "upsert":
+          table.set(mutation.key, mutation.row);
+          break;
+        case "remove":
+          table.set(mutation.key, null);
+          break;
+        case "upsertMany":
+          for (const [key, row] of mutation.rows) {
+            table.set(key, row);
+          }
+          break;
+        case "removeMany":
+          for (const key of mutation.keys) {
+            table.set(key, null);
+          }
+          break;
+      }
     }
   }
 

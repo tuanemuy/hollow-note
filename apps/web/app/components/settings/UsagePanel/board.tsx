@@ -10,10 +10,9 @@ import { formatBytes, ratioOf, ScopeBadge, UsageSection } from "./section";
 /**
  * P-24 のワークスペース別使用量（PAGE-p24-001 / PAGE-p24-002）。
  *
- * 追加読み込みは**一覧メンバーシップの変更**なので、行ではなく一覧を
- * 所有するこの島が server function を持つ（CLAUDE.md「Frontend」の
- * 所有権）。先頭ページはサーバーコンポーネントが渡し、以降は
- * `useTransition` の pending がボタン上で三層目を担う。
+ * 先頭ページはサーバーコンポーネントが渡し、以降の継ぎ足しはこの島が
+ * 所有する。追加読み込みはミューテーションではないので楽観的更新は要らず、
+ * `useTransition` の pending 表示がボタン上で三層目を担う。
  *
  * 一覧が空でも `cursor` が残ることがある — `getUsageSnapshot` は
  * ページを引いたあとで owner / editor に絞るため、1 ページ全部が viewer

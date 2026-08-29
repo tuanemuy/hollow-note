@@ -13,6 +13,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { ensureActorCan } from "../workspace/membershipMutation";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { deleteStoredFiles } from "./deleteFiles";
 import type { StoreAvatarView } from "./view";
@@ -49,6 +50,11 @@ const insufficientRole = () =>
  * not set it (spec/usecases/storage.md#storeavatar 手順 1): a user
  * subject must be the actor themselves, a workspace subject needs
  * `manageWorkspace`.
+ *
+ * For a workspace subject this is the early refusal only, taken before
+ * any byte is written. The decision that admits the write is re-taken
+ * inside the unit of work, because a Membership change does not move the
+ * Workspace's version and would otherwise not be seen at all.
  */
 async function resolveAvatarOwner(
   container: RequestContainer,
@@ -124,6 +130,9 @@ export async function storeAvatar({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      if (owner.type === "workspace") {
+        await ensureActorCan(ctx, owner.workspaceId, userId, "manageWorkspace");
+      }
 
       // Read the icons to replace *before* inserting the new row, or the
       // replacement would be in its own list of things to delete.

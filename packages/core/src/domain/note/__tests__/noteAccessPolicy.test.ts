@@ -210,22 +210,21 @@ describe("NoteOwnershipPolicy.ensureMovable", () => {
     canDelete: true,
     canChangeVisibility: true,
   } as const;
-  const target = { owner, canCreate: true };
 
-  it("passes when editable, creatable, and not processing", () => {
+  it("passes when editable and not processing", () => {
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), granted, target),
+      NoteOwnershipPolicy.ensureMovable(blank(), granted),
     ).not.toThrow();
   });
 
-  it("rejects when the source access lacks edit or the target lacks create", () => {
+  it("rejects when the source access lacks edit", () => {
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), { kind: "denied" }, target),
+      NoteOwnershipPolicy.ensureMovable(blank(), { kind: "denied" }),
     ).toThrowError();
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), granted, {
-        owner,
-        canCreate: false,
+      NoteOwnershipPolicy.ensureMovable(blank(), {
+        ...granted,
+        canEdit: false,
       }),
     ).toThrowError();
   });
@@ -236,7 +235,7 @@ describe("NoteOwnershipPolicy.ensureMovable", () => {
       content: { status: "processing" } as const,
     };
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(processing, granted, target),
+      NoteOwnershipPolicy.ensureMovable(processing, granted),
     ).toThrowError(/processing/i);
   });
 });

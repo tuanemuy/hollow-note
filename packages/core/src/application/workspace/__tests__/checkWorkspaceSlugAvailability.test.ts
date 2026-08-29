@@ -100,6 +100,7 @@ describe("checkWorkspaceSlugAvailability", () => {
       slug: WorkspaceSlug.create(SLUG),
       workspaceId: WorkspaceId.create(THEIRS),
       operationId: "in-flight",
+      attemptId: "in-flight",
       expiresAt: new Date(h.clock.now().getTime() + 60_000),
     });
 

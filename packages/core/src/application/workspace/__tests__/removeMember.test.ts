@@ -27,11 +27,11 @@ import {
  * executable form in this slice — the Job aggregate does not exist, so
  * the sweep, `Job.cancel` and the `job.terminationContinued` continuation
  * are recorded as absent rather than emitted (`membershipMutation.ts`).
- * The residue those rows describe is also what TC-workspace-218 waits for,
- * so the acknowledgement is already given here and `completeRemoval` runs
- * straight after the local commit (ADR 041 of this slice); the `removing`
- * phase is still observable, and this file pins it by failing that one
- * call.
+ * The residue those rows describe is also what TC-workspace-218 waits for:
+ * with neither a Job aggregate nor a BackupRecord to leave any, the
+ * acknowledgement is given from the start and `completeRemoval` runs
+ * straight after the local commit. The `removing` phase is still
+ * observable, and this file pins it by failing that one call.
  */
 
 const WORKSPACE = "workspace-1";

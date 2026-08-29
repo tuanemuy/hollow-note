@@ -43,14 +43,19 @@ export const renderPublicWorkspace = createServerFn({ method: "GET" })
       { sessionUserOrNull },
       { loadPublicWorkspace },
       { serializeError },
+      { getContainer },
     ] = await Promise.all([
       import("@/components/workspace/PublicWorkspacePage"),
       import("@/presentation/session"),
       import("@/components/workspace/PublicWorkspacePage/action"),
       import("@/presentation/errorResponse"),
+      import("@repo/core/application/di/containerStore"),
     ]);
-    const [user, workspace] = await Promise.all([
+    // 公開 URL の接頭辞に要る配備のオリジンは、どのユースケースの DTO にも
+    // 無い設定値なので、名前・説明と同じくここで解決して断片へ渡す。
+    const [user, container, workspace] = await Promise.all([
       sessionUserOrNull(),
+      getContainer(),
       loadPublicWorkspace(data.slug).then(
         (view) => ({ name: view.name, description: view.description }),
         (error: unknown) => {
@@ -65,6 +70,7 @@ export const renderPublicWorkspace = createServerFn({ method: "GET" })
         PublicWorkspacePage({
           slug: data.slug,
           userId: user?.userId ?? null,
+          appUrl: container.config.appUrl,
           keyword: data.keyword,
           tags: data.tags,
         }),

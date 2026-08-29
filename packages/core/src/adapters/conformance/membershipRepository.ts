@@ -221,6 +221,46 @@ export function describeMembershipRepositoryContract(
       ).toBe(3);
     });
 
+    it("ADP-workspace-014: countByRole sees the role change of its own unit of work", async () => {
+      const now = backend.clock.now();
+      await seed(1, 1, "owner", now);
+      await seed(2, 2, "owner", now);
+
+      // The last-owner invariant is decided on this number inside the
+      // transaction that demotes an owner. A backend answering it from an
+      // aggregate over committed rows would still see two owners and let
+      // the second demotion through, leaving the workspace ownerless.
+      const counts = await backend.scopeUnitOfWork.run(
+        workspaceScopeOf(1),
+        async (ctx) => {
+          const owner = await ctx.membershipRepository.findById(
+            membershipId(1),
+          );
+          if (owner === null) {
+            throw new Error("seeded membership missing");
+          }
+          await ctx.membershipRepository.save(
+            Membership.changeRole(owner.entity, "editor", now).entity,
+            owner.expectedVersion,
+          );
+          const afterDemotion = await ctx.membershipRepository.countByRole(
+            workspaceId(1),
+            "owner",
+          );
+          await ctx.membershipRepository.deleteByIds([membershipId(2)]);
+          return {
+            afterDemotion,
+            afterDelete: await ctx.membershipRepository.countByRole(
+              workspaceId(1),
+              "owner",
+            ),
+          };
+        },
+      );
+
+      expect(counts).toEqual({ afterDemotion: 1, afterDelete: 0 });
+    });
+
     it("ADP-workspace-015: deleteByIds is idempotent per page and answers how many rows it removed", async () => {
       const now = backend.clock.now();
       await seed(1, 1, "owner", now);

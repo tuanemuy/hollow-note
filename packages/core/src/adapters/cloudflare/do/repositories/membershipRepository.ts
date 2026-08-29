@@ -97,17 +97,30 @@ export function createCloudflareMembershipRepository(
     return rows[0] ?? null;
   };
 
-  const count = async (
-    where: string,
-    ...params: readonly string[]
+  /**
+   * The last-owner invariant is decided on this number inside the
+   * transaction that changes a role, so it materialises the rows instead
+   * of asking for a `COUNT(*)`: an aggregate is computed over storage and
+   * would miss the role change, insert or delete the same unit of work
+   * has already staged. The sets it counts are one workspace's members
+   * holding one role.
+   */
+  const countByRoleIn = async (
+    workspaceId: WorkspaceId,
+    role: WorkspaceRole,
   ): Promise<number> => {
-    const rows = await session.query(
-      statement(
-        `SELECT COUNT(*) AS total FROM ${TABLE} WHERE ${where}`,
-        ...params,
+    const rows = await session.readRows({
+      table: TABLE,
+      statement: statement(
+        `SELECT ${base.selection} FROM ${TABLE} WHERE workspace_id = ? AND role = ?`,
+        workspaceId,
+        role,
       ),
-    );
-    return rows[0] === undefined ? 0 : int(rows[0], "total");
+      keyOf: (row) => text(row, "id"),
+      matches: (row) =>
+        text(row, "workspace_id") === workspaceId && text(row, "role") === role,
+    });
+    return rows.length;
   };
 
   return {
@@ -141,7 +154,11 @@ export function createCloudflareMembershipRepository(
       try {
         // Straight to storage rather than overlay-aware, for the reason
         // `noteRepository.listByOwner` gives: an offset page cannot be
-        // merged with staged rows without re-reading the whole set.
+        // merged with staged rows without re-reading the whole set. The
+        // port says so too — this is the one read of the contract that
+        // does not observe its own unit of work, which is why the
+        // deletion sweep probes for leftovers in a turn that stages no
+        // delete of its own.
         const [items, totals] = await Promise.all([
           session.query(
             statement(
@@ -173,7 +190,7 @@ export function createCloudflareMembershipRepository(
       role: WorkspaceRole,
     ): Promise<number> {
       try {
-        return await count("workspace_id = ? AND role = ?", workspaceId, role);
+        return await countByRoleIn(workspaceId, role);
       } catch (cause) {
         throwTranslated(`${TABLE} role count`, cause);
       }

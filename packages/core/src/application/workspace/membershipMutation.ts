@@ -213,6 +213,37 @@ export async function restoreRemovalEdge(
 }
 
 /**
+ * Re-issues the edge drop for a removal whose local commit landed and
+ * whose `completeRemoval` did not (`leaveWorkspace`).
+ *
+ * That failure is only logged, so the edge stays `removing`: absent from
+ * the member's list, which is what the removal wanted, but still holding
+ * the `(userId, workspaceId)` pair — so the removed user cannot be
+ * invited back. Repeating the removal is the natural move and the only
+ * one available, and it stops at `MEMBERSHIP_NOT_FOUND` because the
+ * membership is exactly what is already gone. Answering that refusal by
+ * settling the edge first is what gives the state an owner.
+ *
+ * Only that refusal drives it: any other means the membership still
+ * exists and the removal has to run properly. The refusal itself is still
+ * the caller's answer — there is no membership to remove — so this runs
+ * before it is re-raised, and {@link settleRemovalEdge} swallows a
+ * `completeRemoval` that finds an `active` edge instead.
+ */
+export async function settleStrandedRemovalEdge(
+  container: RequestContainer,
+  label: string,
+  cause: unknown,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  if (!isNotFoundError(cause) || cause.code !== "MEMBERSHIP_NOT_FOUND") {
+    return;
+  }
+  await settleRemovalEdge(container, label, userId, workspaceId);
+}
+
+/**
  * Drops the global directory edge once the removal's residue is settled
  * (`removeMember` 手順 5 / `leaveWorkspace` 手順 4).
  *
@@ -221,10 +252,12 @@ export async function restoreRemovalEdge(
  * for do not exist yet, so the acknowledgement the deletion waits on is
  * already given. When they land, this call moves behind their cleanup.
  *
- * A failure is logged, not raised. The membership is already gone, so the
- * caller has nothing to retry — a re-run would answer `MEMBERSHIP_NOT_FOUND`
- * — and an edge left `removing` is absent from the member's list anyway,
- * which is the outcome the removal wanted.
+ * A failure is logged, not raised: the membership is already gone, so the
+ * removal itself succeeded, and an edge left `removing` is absent from the
+ * member's list anyway — the outcome the removal wanted. What it is not is
+ * final, since the pair stays claimed against a future join, which is why
+ * {@link settleStrandedRemovalEdge} re-issues it from the request that
+ * finds the membership already gone.
  */
 export async function settleRemovalEdge(
   container: RequestContainer,

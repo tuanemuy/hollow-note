@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EMAIL_MAX_LENGTH, EMAIL_PATTERN } from "@/components/auth/schema";
+import { WORKSPACE_ID_MAX_LENGTH } from "@/presentation/scope";
 
 /**
  * ワークスペース画面の転送境界スキーマ（P-30 / P-31 / P-32 / P-33 / P-34
@@ -13,7 +14,10 @@ import { EMAIL_MAX_LENGTH, EMAIL_PATTERN } from "@/components/auth/schema";
  * クライアントからも import されるモジュールなので、`@repo/core/domain/*`
  * / `@repo/core/application/*` を持ち込まない（定数を除く）。
  */
-export const WORKSPACE_ID_MAX_LENGTH = 128;
+// ワークスペース ID の上限は Cookie 経路と共通の正本（`presentation/scope.ts`）
+// から引く。2 つ置くと本文経路と Cookie 経路で受け付ける長さが割れる。
+export { WORKSPACE_ID_MAX_LENGTH };
+
 export const WORKSPACE_NAME_MAX_LENGTH = 80;
 export const WORKSPACE_DESCRIPTION_MAX_LENGTH = 500;
 export const WORKSPACE_SLUG_MAX_LENGTH = 30;

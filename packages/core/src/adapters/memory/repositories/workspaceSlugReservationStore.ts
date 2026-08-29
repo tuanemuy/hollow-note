@@ -48,7 +48,11 @@ export function createMemoryWorkspaceSlugReservationStore(
       if (existing !== undefined) {
         if (existing.operationId === input.operationId) {
           if (existing.state === "reserved") {
-            table.set(input.slug, { ...existing, expiresAt: input.expiresAt });
+            table.set(input.slug, {
+              ...existing,
+              attemptId: input.attemptId,
+              expiresAt: input.expiresAt,
+            });
           }
           return;
         }
@@ -62,6 +66,7 @@ export function createMemoryWorkspaceSlugReservationStore(
           table.set(input.slug, {
             ...existing,
             operationId: input.operationId,
+            attemptId: input.attemptId,
           });
           return;
         }
@@ -77,6 +82,7 @@ export function createMemoryWorkspaceSlugReservationStore(
         slug: input.slug,
         workspaceId: input.workspaceId,
         operationId: input.operationId,
+        attemptId: input.attemptId,
         state: "reserved",
         expiresAt: input.expiresAt,
       });
@@ -108,6 +114,7 @@ export function createMemoryWorkspaceSlugReservationStore(
       if (
         row === undefined ||
         row.operationId !== input.operationId ||
+        row.attemptId !== input.attemptId ||
         row.state !== "reserved"
       ) {
         return;

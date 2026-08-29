@@ -13,7 +13,7 @@ import type { Clock } from "../../../../application/ports/clock";
 import { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import { WorkspaceId } from "../../../../domain/workspace/valueObject";
-import { opaque, upsert } from "../../execution/writeSet";
+import { opaque, removeMany, upsert } from "../../execution/writeSet";
 import { classifySqlError, databaseError } from "../../sql/errors";
 import {
   deleteRowsFromJson,
@@ -24,6 +24,7 @@ import {
 } from "../../sql/json";
 import { occGuard } from "../../sql/occGuard";
 import {
+  compositeKey,
   dateOrNull,
   enumOf,
   int,
@@ -171,8 +172,14 @@ export function createD1AccountDeletionManifestStore(
   };
 
   // Item pages are read through `query`, not `readRows`: every item write
-  // is a multi-row `json_each` statement with no single-row image, so the
-  // write-set overlay has nothing to contribute here.
+  // is a multi-row `json_each` statement, and only the compaction names
+  // the keys it touches, so the overlay cannot answer a page. Compaction
+  // is the one place a read follows a write of this table inside a unit of
+  // work (`markCompleted` re-checks the acks after `compactItems`), and it
+  // agrees only because compaction runs on items that are already fully
+  // acknowledged and therefore counted by none of the open-item
+  // predicates. Any predicate added here that a compacted item could
+  // satisfy has to move to an overlay-aware read first.
   const itemRows = (
     operationId: string,
     where: string,
@@ -683,13 +690,17 @@ export function createD1AccountDeletionManifestStore(
       if (rows.length > 0) {
         try {
           await session.write([
-            opaque(
-              statement(
+            removeMany({
+              table: ITEMS,
+              keys: rows.map((row) =>
+                compositeKey(operationId, text(row, "key")),
+              ),
+              statement: statement(
                 `DELETE FROM ${ITEMS} WHERE operation_id = ? AND ${inJsonList("key")}`,
                 operationId,
                 jsonList(rows.map((row) => text(row, "key"))),
               ),
-            ),
+            }),
           ]);
         } catch (cause) {
           throw databaseError("the account deletion manifest store", cause);

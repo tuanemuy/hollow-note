@@ -10,17 +10,30 @@ import {
   MembershipId,
   WorkspaceId,
 } from "../../../../domain/workspace/valueObject";
-import { opaque, type RowMutation, upsert } from "../../execution/writeSet";
+import {
+  type RowMutation,
+  removeMany,
+  upsert,
+  upsertMany,
+} from "../../execution/writeSet";
 import { databaseError } from "../../sql/errors";
 import {
   inJsonList,
   insertRowsFromJson,
   jsonList,
   jsonRows,
+  notInJsonList,
 } from "../../sql/json";
-import { dateOrNull, enumOf, int, text, toTimestamp } from "../../sql/row";
+import {
+  compositeKey,
+  dateOrNull,
+  enumOf,
+  intOrNull,
+  text,
+  toTimestamp,
+} from "../../sql/row";
 import { ALL_ROWS, type SqlSession } from "../../sql/session";
-import { type SqlRow, statement } from "../../sql/statement";
+import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
 import { SCOPE_TABLES } from "../schema";
 
 const HEADERS = SCOPE_TABLES.workspaceDeletionManifests;
@@ -78,6 +91,16 @@ export async function readManifestHeader(
 const membershipKey = (id: string): string => `membership:${id}`;
 const invitationKey = (id: string): string => `invitation:${id}`;
 
+/** The write-set key of an item row: its `(operation_id, key)` primary key. */
+const itemOverlayKey = (row: SqlRow): string =>
+  compositeKey(text(row, "operation_id"), text(row, "key"));
+
+const byItemKey = (a: SqlRow, b: SqlRow): number => {
+  const left = text(a, "key");
+  const right = text(b, "key");
+  return left < right ? -1 : left > right ? 1 : 0;
+};
+
 const stateViolation = (operationId: string, detail: string): ConflictError =>
   new ConflictError(
     "WORKSPACE_DELETION_MANIFEST_STATE_VIOLATION",
@@ -118,13 +141,18 @@ export type CloudflareWorkspaceDeletionManifestDeps = Readonly<{
  * Every page — the two target walks, the acknowledgements, the compaction
  * — is one multi-row statement built with `json_each` rather than a
  * statement per row, since a page is up to 100 items and both planes cap
- * a statement at 100 bound parameters. Those writes therefore carry no
- * single-row image and are staged `opaque`, which is why the item reads
- * below go through `query` rather than the overlay-aware `readRows`.
+ * a statement at 100 bound parameters. Each of those statements still
+ * names the item keys it touches (`upsertMany` / `removeMany`), so a unit
+ * of work reads its own page back exactly as the memory backend does:
+ * `markReady` sees the targets the same turn fixed, and `markCompleted`
+ * sees the items the same turn reclaimed. Both state guards would
+ * otherwise read a pre-transaction storage image, refuse, and strand the
+ * deletion saga.
  *
- * The header is the exception: it is one row per operation, so its cursor
- * and state transitions stage a full image and a turn that appends a page
- * and advances the cursor still reads its own header back.
+ * The one read the overlay cannot repair is a `LIMIT`-ed page whose rows
+ * this unit already wrote — the session refuses it rather than returning
+ * a short page — which is no constraint on the saga: every turn reads its
+ * page at the head and writes last.
  */
 export function createCloudflareWorkspaceDeletionManifestStore(
   deps: CloudflareWorkspaceDeletionManifestDeps,
@@ -173,32 +201,55 @@ export function createCloudflareWorkspaceDeletionManifestStore(
     return header;
   };
 
-  const itemRows = (
-    operationId: string,
-    where: string,
-    limit?: number,
+  /**
+   * Every item read goes through here so the staged page is merged in.
+   * `matches` repeats the `WHERE` over a staged row image, which is why
+   * the images the writers stage carry every item column.
+   */
+  const readItems = (
+    input: Readonly<{
+      where: string;
+      params: readonly SqlValue[];
+      matches: (row: SqlRow) => boolean;
+      ordered?: true;
+      limit?: number;
+    }>,
   ): Promise<readonly SqlRow[]> =>
-    session.query(
-      statement(
-        `SELECT * FROM ${ITEMS} WHERE operation_id = ? ${where} ORDER BY key${
-          limit === undefined ? "" : ` LIMIT ${limit}`
-        }`,
-        operationId,
-      ),
-    );
+    session.readRows({
+      table: ITEMS,
+      statement: {
+        sql: `SELECT * FROM ${ITEMS} WHERE ${input.where}${
+          input.ordered === true ? " ORDER BY key" : ""
+        }${input.limit === undefined ? "" : ` LIMIT ${input.limit}`}`,
+        params: [...input.params],
+      },
+      keyOf: itemOverlayKey,
+      matches: input.matches,
+      ...(input.ordered === true ? { compare: byItemKey } : {}),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+    });
 
-  const countItems = async (
+  const itemsOf =
+    (operationId: string) =>
+    (row: SqlRow): boolean =>
+      text(row, "operation_id") === operationId;
+
+  /** Which of `keys` this manifest already holds, staged pages included. */
+  const fixedAmong = async (
     operationId: string,
-    where: string,
-  ): Promise<number> => {
-    const rows = await session.query(
-      statement(
-        `SELECT COUNT(*) AS item_count FROM ${ITEMS} WHERE operation_id = ? ${where}`,
-        operationId,
-      ),
-    );
-    const row = rows[0];
-    return row === undefined ? 0 : int(row, "item_count");
+    keys: readonly string[],
+  ): Promise<ReadonlySet<string>> => {
+    if (keys.length === 0) {
+      return new Set();
+    }
+    const wanted = new Set(keys);
+    const belongs = itemsOf(operationId);
+    const rows = await readItems({
+      where: `operation_id = ? AND ${inJsonList("key")}`,
+      params: [operationId, jsonList([...wanted])],
+      matches: (row) => belongs(row) && wanted.has(text(row, "key")),
+    });
+    return new Set(rows.map((row) => text(row, "key")));
   };
 
   const cursorUpdate = (
@@ -231,19 +282,32 @@ export function createCloudflareWorkspaceDeletionManifestStore(
     if (itemKeys.length === 0) {
       return;
     }
+    const wanted = new Set(itemKeys);
+    const belongs = itemsOf(operationId);
+    const at = toTimestamp(clock.now());
+    const rows = await readItems({
+      where: `operation_id = ? AND ${inJsonList("key")}`,
+      params: [operationId, jsonList([...wanted])],
+      matches: (row) => belongs(row) && wanted.has(text(row, "key")),
+    });
     // `IS NULL` keeps the first timestamp, and a key that no longer
     // exists — compacted away, or never part of this manifest — simply
-    // matches nothing rather than being resurrected.
+    // matches nothing rather than being resurrected. The staged images
+    // repeat both rules so the overlay agrees with the statement.
     await write([
-      opaque(
-        statement(
+      upsertMany({
+        table: ITEMS,
+        rows: rows
+          .filter((row) => intOrNull(row, column) === null)
+          .map((row) => [itemOverlayKey(row), { ...row, [column]: at }]),
+        statement: statement(
           `UPDATE ${ITEMS} SET ${column} = ?
             WHERE operation_id = ? AND ${column} IS NULL AND ${inJsonList("key")}`,
-          toTimestamp(clock.now()),
+          at,
           operationId,
-          jsonList([...itemKeys]),
+          jsonList([...wanted]),
         ),
-      ),
+      }),
     ]);
   };
 
@@ -261,7 +325,7 @@ export function createCloudflareWorkspaceDeletionManifestStore(
       cursorColumn: "membership_cursor" | "invitation_cursor";
       selection: string;
       itemColumns: readonly string[];
-      itemRow: (row: SqlRow) => Readonly<Record<string, string>>;
+      itemRow: (row: SqlRow) => SqlRow;
     }>,
   ): Promise<Readonly<{ next: string | null; count: number }>> => {
     const header = await requireOpenHeader(input.operationId);
@@ -281,9 +345,20 @@ export function createCloudflareWorkspaceDeletionManifestStore(
 
     const mutations: RowMutation[] = [];
     if (page.length > 0) {
+      const images = page.map(input.itemRow);
+      // The insert is `DO NOTHING` on conflict, so a replayed page leaves
+      // the existing row — timestamps included — untouched. Only the keys
+      // this call actually creates get an overlay image.
+      const alreadyFixed = await fixedAmong(
+        input.operationId,
+        images.map((image) => text(image, "key")),
+      );
       mutations.push(
-        opaque({
+        upsertMany({
           table: ITEMS,
+          rows: images
+            .filter((image) => !alreadyFixed.has(text(image, "key")))
+            .map((image) => [itemOverlayKey(image), image]),
           statement: statement(
             insertRowsFromJson({
               table: ITEMS,
@@ -291,7 +366,7 @@ export function createCloudflareWorkspaceDeletionManifestStore(
               conflictKey: ["operation_id", "key"],
               conflict: "ignore",
             }),
-            jsonRows(page.map(input.itemRow)),
+            jsonRows(images),
           ),
         }),
       );
@@ -301,25 +376,59 @@ export function createCloudflareWorkspaceDeletionManifestStore(
     return { next, count: page.length };
   };
 
+  /**
+   * Targets this manifest has not fixed yet.
+   *
+   * The `NOT EXISTS` half only sees committed items, so it is read as a
+   * candidate list rather than an answer: whatever it returns is checked
+   * against the overlay, which is where the page this very turn appended
+   * lives. In the turn that readies a manifest the candidates are exactly
+   * that page.
+   */
   const unfixedTargets = async (
     operationId: string,
     table: string,
     kind: "membership" | "invitation",
     idColumn: "membership_id" | "invitation_id",
+    keyOf: (id: string) => string,
   ): Promise<boolean> => {
     const rows = await session.query(
       statement(
-        `SELECT 1 AS unfixed FROM ${table} t
+        `SELECT t.id AS id FROM ${table} t
           WHERE NOT EXISTS (
             SELECT 1 FROM ${ITEMS} i
              WHERE i.operation_id = ? AND i.kind = ? AND i.${idColumn} = t.id
-          )
-          LIMIT 1`,
+          )`,
         operationId,
         kind,
       ),
     );
-    return rows.length > 0;
+    if (rows.length === 0) {
+      return false;
+    }
+    const candidates = rows.map((row) => keyOf(text(row, "id")));
+    const fixed = await fixedAmong(operationId, candidates);
+    return candidates.some((key) => !fixed.has(key));
+  };
+
+  const remainingItems = (
+    operationId: string,
+    input: Readonly<{ excluding?: ReadonlySet<string>; limit?: number }> = {},
+  ): Promise<readonly SqlRow[]> => {
+    const excluded = input.excluding ?? new Set<string>();
+    const belongs = itemsOf(operationId);
+    return readItems({
+      where:
+        excluded.size === 0
+          ? "operation_id = ?"
+          : `operation_id = ? AND ${notInJsonList("key")}`,
+      params:
+        excluded.size === 0
+          ? [operationId]
+          : [operationId, jsonList([...excluded])],
+      matches: (row) => belongs(row) && !excluded.has(text(row, "key")),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+    });
   };
 
   return {
@@ -344,6 +453,10 @@ export function createCloudflareWorkspaceDeletionManifestStore(
           kind: "membership",
           user_id: text(row, "user_id"),
           membership_id: text(row, "id"),
+          token_hash: null,
+          invitation_id: null,
+          local_deleted_at: null,
+          global_acked_at: null,
         }),
       });
       return {
@@ -371,8 +484,12 @@ export function createCloudflareWorkspaceDeletionManifestStore(
           operation_id: operationId,
           key: invitationKey(text(row, "id")),
           kind: "invitation",
+          user_id: null,
+          membership_id: null,
           token_hash: text(row, "token_hash"),
           invitation_id: text(row, "id"),
+          local_deleted_at: null,
+          global_acked_at: null,
         }),
       });
       return {
@@ -396,12 +513,14 @@ export function createCloudflareWorkspaceDeletionManifestStore(
           MEMBERSHIPS,
           "membership",
           "membership_id",
+          membershipKey,
         )) ||
         (await unfixedTargets(
           operationId,
           INVITATIONS,
           "invitation",
           "invitation_id",
+          invitationKey,
         ))
       ) {
         throw stateViolation(operationId, "targets are not fixed yet");
@@ -429,11 +548,15 @@ export function createCloudflareWorkspaceDeletionManifestStore(
       limit: number,
     ): Promise<readonly WorkspaceDeletionManifestItem[]> {
       await requireHeader(operationId);
-      const rows = await itemRows(
-        operationId,
-        "AND local_deleted_at IS NULL",
-        boundedLimit(limit),
-      );
+      const belongs = itemsOf(operationId);
+      const rows = await readItems({
+        where: "operation_id = ? AND local_deleted_at IS NULL",
+        params: [operationId],
+        matches: (row) =>
+          belongs(row) && intOrNull(row, "local_deleted_at") === null,
+        ordered: true,
+        limit: boundedLimit(limit),
+      });
       return rows.map(toItem);
     },
 
@@ -444,14 +567,18 @@ export function createCloudflareWorkspaceDeletionManifestStore(
     async listItems(operationId, cursor, limit) {
       await requireHeader(operationId);
       const bounded = boundedLimit(limit);
+      const belongs = itemsOf(operationId);
       // Deliberately unfiltered by acknowledgement: the cursor walks the
       // full key order, and re-sending a delete for an acknowledged item
       // is a no-op on the target shard.
-      const rows = await session.query({
-        sql: `SELECT * FROM ${ITEMS} WHERE operation_id = ?${
-          cursor === null ? "" : " AND key > ?"
-        } ORDER BY key LIMIT ${bounded + 1}`,
+      const rows = await readItems({
+        where:
+          cursor === null ? "operation_id = ?" : "operation_id = ? AND key > ?",
         params: cursor === null ? [operationId] : [operationId, cursor],
+        matches: (row) =>
+          belongs(row) && (cursor === null || text(row, "key") > cursor),
+        ordered: true,
+        limit: bounded + 1,
       });
       const page = rows.slice(0, bounded);
       const last = page[page.length - 1];
@@ -471,32 +598,42 @@ export function createCloudflareWorkspaceDeletionManifestStore(
     async compactAcknowledged(operationId, limit) {
       await requireHeader(operationId);
       const bounded = boundedLimit(limit);
-      const total = await countItems(operationId, "");
+      const belongs = itemsOf(operationId);
       const rows =
         bounded === 0
           ? []
-          : await itemRows(
-              operationId,
-              "AND local_deleted_at IS NOT NULL AND global_acked_at IS NOT NULL",
-              bounded,
-            );
-      if (rows.length > 0) {
+          : await readItems({
+              where:
+                "operation_id = ? AND local_deleted_at IS NOT NULL AND global_acked_at IS NOT NULL",
+              params: [operationId],
+              matches: (row) =>
+                belongs(row) &&
+                intOrNull(row, "local_deleted_at") !== null &&
+                intOrNull(row, "global_acked_at") !== null,
+              ordered: true,
+              limit: bounded,
+            });
+      const doomed = new Set(rows.map((row) => text(row, "key")));
+      if (doomed.size > 0) {
         await write([
-          opaque(
-            statement(
+          removeMany({
+            table: ITEMS,
+            keys: rows.map(itemOverlayKey),
+            statement: statement(
               `DELETE FROM ${ITEMS} WHERE operation_id = ? AND ${inJsonList("key")}`,
               operationId,
-              jsonList(rows.map((row) => text(row, "key"))),
+              jsonList([...doomed]),
             ),
-          ),
+          }),
         ]);
       }
-      return {
-        removed: rows.length,
-        // Any item at all, not just a compactable one: the continuation
-        // must keep re-registering while items await an acknowledgement.
-        remaining: total > rows.length,
-      };
+      // Any item at all, not just a compactable one: the continuation
+      // must keep re-registering while items await an acknowledgement.
+      const rest = await remainingItems(operationId, {
+        excluding: doomed,
+        limit: 1,
+      });
+      return { removed: doomed.size, remaining: rest.length > 0 };
     },
 
     async markCompleted(operationId: string): Promise<void> {
@@ -504,7 +641,10 @@ export function createCloudflareWorkspaceDeletionManifestStore(
       if (header.state === "completed") {
         return;
       }
-      if ((await countItems(operationId, "")) > 0) {
+      // Unbounded on purpose: the compaction that empties the manifest
+      // may share this unit of work, so the count has to come from the
+      // overlay-merged set rather than a `COUNT(*)` over storage.
+      if ((await remainingItems(operationId)).length > 0) {
         throw stateViolation(operationId, "manifest still holds items");
       }
       await write([

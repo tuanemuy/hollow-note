@@ -11,6 +11,7 @@ import {
   ensureRemovable,
   restoreRemovalEdge,
   settleRemovalEdge,
+  settleStrandedRemovalEdge,
 } from "./membershipMutation";
 
 export type LeaveWorkspaceInput = Readonly<{
@@ -37,6 +38,11 @@ export type LeaveWorkspaceInput = Readonly<{
  * Leaving does not delete the member's notes, and rejoining takes a fresh
  * invitation — the removal here leaves no route behind.
  *
+ * Leaving again is how the edge of a departure whose global drop was lost
+ * is settled: the membership is gone by then, so the request answers
+ * `MEMBERSHIP_NOT_FOUND` either way, but the edge it leaves behind would
+ * otherwise hold the `(userId, workspaceId)` pair against a future join.
+ *
  * The job termination this flow shares with `removeMember` is absent in
  * this slice for the reason recorded in `./membershipMutation`.
  */
@@ -51,11 +57,22 @@ export async function leaveWorkspace({
   const target = (ctx: ScopeUnitOfWorkContext) =>
     requireRemovableMembership(ctx, workspaceId, userId);
 
-  await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
-    await ctx.cleanupAdmission.assertWritable();
-    await ctx.cleanupAdmission.assertActorWritable(userId);
-    await target(ctx);
-  });
+  try {
+    await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(userId);
+      await target(ctx);
+    });
+  } catch (error) {
+    await settleStrandedRemovalEdge(
+      container,
+      "[leaveWorkspace]",
+      error,
+      userId,
+      workspaceId,
+    );
+    throw error;
+  }
 
   await container.membershipDirectoryReservationStore.beginRemoval(
     userId,

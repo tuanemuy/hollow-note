@@ -10,8 +10,8 @@ import type {
 } from "../../../../domain/workspace/ports/workspaceDirectoryBatchReader";
 import {
   WorkspaceId,
-  WorkspaceName,
-  WorkspaceSlug,
+  type WorkspaceName,
+  type WorkspaceSlug,
 } from "../../../../domain/workspace/valueObject";
 import { throwTranslated } from "../../sql/errors";
 import { inJsonList, jsonList } from "../../sql/json";
@@ -20,6 +20,8 @@ import { type SqlRow, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
 import {
   isUnreadable,
+  projected,
+  projectedOrNull,
   type WorkspaceDirectoryDeps,
 } from "./workspaceDirectorySupport";
 
@@ -35,12 +37,11 @@ const UNAVAILABLE: WorkspaceDirectoryResolution = {
 };
 
 const toEntry = (row: SqlRow): Versioned<WorkspaceDirectoryEntry> => {
-  const slug = textOrNull(row, "slug");
   return {
     entity: {
       workspaceId: WorkspaceId.create(text(row, "workspace_id")),
-      name: WorkspaceName.create(text(row, "name")),
-      slug: slug === null ? null : WorkspaceSlug.create(slug),
+      name: projected<WorkspaceName>(row, "name"),
+      slug: projectedOrNull<WorkspaceSlug>(row, "slug"),
       avatarUrl: textOrNull(row, "avatar_url"),
       publication: enumOf(row, "publication", ["private", "published"]),
     },

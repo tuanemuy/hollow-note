@@ -1,8 +1,10 @@
 import type { ScopeKey } from "@repo/core/application/scope";
+import { isBusinessRuleError } from "@repo/core/domain/error";
 import { describe, expect, it } from "vitest";
 import type { RequestContainer } from "../../di/types";
 import { isConflictError } from "../../errors";
 import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
+import { changeMemberRole } from "../changeMemberRole";
 import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
 import { getPublicWorkspace } from "../getPublicWorkspace";
 import {
@@ -24,6 +26,7 @@ import {
 
 const WORKSPACE = "workspace-1";
 const OWNER = "owner-1";
+const SECOND_OWNER = "owner-2";
 const INSUFFICIENT_ROLE = "WORKSPACE_INSUFFICIENT_ROLE";
 
 type SlugChangedPayload = Readonly<{
@@ -358,12 +361,84 @@ describe("changeWorkspaceSlug", () => {
   });
 
   /**
+   * The two steps that follow the local commit — the reservation's
+   * activation and the directory snapshot — can both be lost while the
+   * scope has already moved to the new slug. Re-sending that slug is what
+   * repairs them; before it did, the reservation stayed `reserved` and
+   * the new public URL never resolved again.
+   */
+  it("TC-workspace-054: re-sending the slug repairs an activation that was lost for good", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, { publication: "published" });
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      change(h, "team-alpha", OWNER, {
+        ...h.container,
+        workspaceSlugReservationStore: {
+          ...inner,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    // The scope moved, the global plane did not: the new URL resolves
+    // nowhere and the directory still advertises the old slug.
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      slug: "team-alpha",
+      version: 2,
+    });
+    expect(slugReservations(h).map((row) => [row.slug, row.state])).toEqual([
+      ["old-slug", "active"],
+      ["team-alpha", "reserved"],
+    ]);
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+    await expectNotFound(
+      getPublicWorkspace({
+        container: h.container,
+        input: { slug: "team-alpha" },
+      }),
+    );
+
+    await expect(change(h, "team-alpha")).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: "team-alpha",
+      previousSlug: "team-alpha",
+    });
+
+    // The exchange the failed attempt never completed: the old key is
+    // freed by the repair, so one URL resolves, not two.
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-alpha", WORKSPACE, "active"]]);
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      slug: "team-alpha",
+      sourceVersion: 2,
+    });
+    await expectNotFound(
+      getPublicWorkspace({
+        container: h.container,
+        input: { slug: "old-slug" },
+      }),
+    );
+    await expect(
+      getPublicWorkspace({
+        container: h.container,
+        input: { slug: "team-alpha" },
+      }),
+    ).resolves.toMatchObject({ workspaceId: WORKSPACE, slug: "team-alpha" });
+    // The repair emits nothing: the scope was already where it belongs.
+    expect(outboxTypes(h)).toEqual(["workspace.slugChanged"]);
+    expect(storedWorkspace(h, WORKSPACE)?.version).toBe(2);
+  });
+
+  /**
    * Two attempts at the same rename share one reservation row, because
    * the operation id is derived from `(workspaceId, slug)`. The loser
    * must therefore not compensate: dropping the row the winner is about
    * to activate would leave the scope holding a slug the global plane has
-   * no reservation for — and re-sending the slug the workspace already
-   * holds returns early, so nothing repairs it from the API.
+   * no reservation for.
    */
   it("TC-workspace-053: of two concurrent changes to the same slug, the loser abandons nothing", async () => {
     const h = createWorkspaceHarness();
@@ -451,6 +526,111 @@ describe("changeWorkspaceSlug", () => {
       }),
     ]);
     expect(directoryRow(h, WORKSPACE)).toMatchObject({ slug: "team-alpha" });
+  });
+
+  /**
+   * The winner's commit is not what protects the shared row — an attempt
+   * refused before any commit lands has to keep its hands off too. The
+   * refusals that reach here are all of that kind: a role lost between the
+   * two reads, a deletion barrier, an operation lock.
+   */
+  it("TC-workspace-053: an attempt refused for a reason of its own leaves the winner's reservation alone", async () => {
+    const h = createWorkspaceHarness();
+    await seedWorkspace(h, {
+      workspaceId: WORKSPACE,
+      name: "Team Alpha",
+      slug: "old-slug",
+      members: [
+        { userId: OWNER, role: "owner", membershipId: "m-owner" },
+        { userId: SECOND_OWNER, role: "owner", membershipId: "m-owner-2" },
+      ],
+    });
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const innerUnitOfWork = h.container.scopeUnitOfWorkProvider;
+
+    let openGate = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let announceReserved = (): void => {};
+    const reserved = new Promise<void>((resolve) => {
+      announceReserved = resolve;
+    });
+    const refusedContainer: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        reserve: async (input) => {
+          await inner.reserve(input);
+          announceReserved();
+        },
+      },
+      scopeUnitOfWorkProvider: {
+        run: async <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          await gate;
+          return innerUnitOfWork.run(scope, fn);
+        },
+      },
+    };
+    const refused = change(
+      h,
+      "team-alpha",
+      SECOND_OWNER,
+      refusedContainer,
+    ).catch((error: unknown) => error);
+    await reserved;
+
+    // The second owner is demoted while their change is still in flight,
+    // so the in-transaction check refuses it — no OCC conflict involved.
+    await changeMemberRole({
+      container: h.container,
+      input: {
+        workspaceId: WORKSPACE,
+        actorUserId: OWNER,
+        membershipId: "m-owner-2",
+        role: "viewer",
+      },
+    });
+
+    let raced = false;
+    const winnerContainer: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        activate: async (input) => {
+          if (!raced) {
+            raced = true;
+            openGate();
+            await refused;
+          }
+          await inner.activate(input);
+        },
+      },
+    };
+
+    await expect(
+      change(h, "team-alpha", OWNER, winnerContainer),
+    ).resolves.toMatchObject({ slug: "team-alpha" });
+
+    expect(raced).toBe(true);
+    expect(await refused).toSatisfy(
+      (error: unknown) =>
+        isBusinessRuleError(error) && error.code === INSUFFICIENT_ROLE,
+    );
+    expect(slugReservations(h)).toEqual([
+      expect.objectContaining({
+        slug: "team-alpha",
+        workspaceId: WORKSPACE,
+        state: "active",
+      }),
+    ]);
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      slug: "team-alpha",
+    });
   });
 
   it("a workspace whose row the deletion saga removed is WORKSPACE_NOT_FOUND", async () => {

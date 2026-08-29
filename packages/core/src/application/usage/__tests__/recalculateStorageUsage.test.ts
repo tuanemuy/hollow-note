@@ -1,4 +1,8 @@
-import { isNotFoundError } from "@repo/core/application/errors";
+import type { RequestContainer } from "@repo/core/application/di/types";
+import {
+  isConflictError,
+  isNotFoundError,
+} from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { Version } from "@repo/core/domain/common/version";
 import { BusinessRuleError } from "@repo/core/domain/error";
@@ -197,6 +201,60 @@ async function seedWorkspaceMember(
   );
 }
 
+/** Drops the actor's membership from the seeded workspace. */
+async function removeMembership(h: TestHarness): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      const stored = await ctx.membershipRepository.findByWorkspaceAndUser(
+        workspaceId,
+        userId,
+      );
+      if (stored === null) {
+        throw new Error("no membership to remove");
+      }
+      await ctx.membershipRepository.delete(
+        stored.entity.id,
+        stored.expectedVersion,
+      );
+    },
+  );
+}
+
+/** Closes the seeded workspace to ordinary writes, as `deleteWorkspace` does. */
+async function acceptWorkspaceDeletion(h: TestHarness): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      const stored = await ctx.workspaceRepository.findById(workspaceId);
+      await ctx.workspaceOperationLockStore.beginDeletion({
+        workspaceId,
+        operationId: "deletion-op-1",
+        expectedWorkspaceVersion: stored?.expectedVersion ?? 0,
+      });
+    },
+  );
+}
+
+/**
+ * Lands `mutate` between the resolution taken outside the unit of work and
+ * the transaction that writes — the window in which an actor can lose the
+ * membership the resolution reported.
+ */
+function racing(h: TestHarness, mutate: () => Promise<void>): RequestContainer {
+  return {
+    ...h.container,
+    scopeUnitOfWorkProvider: {
+      run: async (target, fn) => {
+        await mutate();
+        return h.container.scopeUnitOfWorkProvider.run(target, fn);
+      },
+    },
+  };
+}
+
 const expectInsufficientRole = (promise: Promise<unknown>) =>
   expect(promise).rejects.toSatisfy(
     (error: unknown) =>
@@ -337,6 +395,49 @@ describe("recalculateStorageUsage", () => {
         subjectType: "workspace",
         subjectId: WORKSPACE_ID,
       }),
+    );
+    expect(h.backend.scope(workspaceScope).storageQuotas.values()).toHaveLength(
+      0,
+    );
+  });
+
+  it("refuses a workspace subject when the actor is removed between the resolution and the write", async () => {
+    const h = createTestHarness();
+    const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
+    await seedWorkspaceMember(h, "editor");
+    await seedFile(h, {
+      id: "file-1",
+      bytes: 40,
+      purpose: "media",
+      target: StorageOwner.workspace(WorkspaceId.create(WORKSPACE_ID)),
+    });
+
+    await expectInsufficientRole(
+      recalculateStorageUsage({
+        container: racing(h, () => removeMembership(h)),
+        input: {
+          userId: USER_ID,
+          subjectType: "workspace",
+          subjectId: WORKSPACE_ID,
+        },
+      }),
+    );
+    expect(h.backend.scope(workspaceScope).storageQuotas.values()).toHaveLength(
+      0,
+    );
+  });
+
+  it("refuses a workspace stocktake once the workspace has accepted its deletion", async () => {
+    const h = createTestHarness();
+    const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
+    await seedWorkspaceMember(h, "owner");
+    await acceptWorkspaceDeletion(h);
+
+    await expect(
+      recalculate(h, { subjectType: "workspace", subjectId: WORKSPACE_ID }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "WORKSPACE_DELETING",
     );
     expect(h.backend.scope(workspaceScope).storageQuotas.values()).toHaveLength(
       0,

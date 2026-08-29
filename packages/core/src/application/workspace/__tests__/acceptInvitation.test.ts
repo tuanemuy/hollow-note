@@ -7,6 +7,7 @@ import type { ScopeUnitOfWorkProvider } from "../../execution/unitOfWork";
 import { markDeleting } from "../../identity/__tests__/authFlowHelpers";
 import { createBlankNote } from "../../note/createBlankNote";
 import { acceptInvitation } from "../acceptInvitation";
+import { listUserWorkspaces } from "../listUserWorkspaces";
 import { resolveWorkspaceAccess } from "../resolveWorkspaceAccess";
 import type { AcceptedInvitationView } from "../view";
 import {
@@ -506,5 +507,52 @@ describe("acceptInvitation", () => {
     expect(h.logger.entries.map((entry) => entry.message)).toContain(
       "[acceptInvitation] activate edge response lost; retrying once",
     );
+  });
+
+  /**
+   * The two steps after the scope commit have no other owner: the
+   * membership exists, so nothing retries the join, and the invitation is
+   * `accepted`, so refusing on that would leave the edge `activating` for
+   * good — the member holding a workspace their own list never shows.
+   * Opening the link again is what settles it.
+   */
+  it("TC-workspace-020: opening the link again settles an edge whose activation was lost for good", async () => {
+    const h = createWorkspaceHarness();
+    const seeded = await seedJoinable(h);
+    const store = h.container.membershipDirectoryReservationStore;
+    const activateFailure = new Error("directory shard unreachable");
+
+    await expect(
+      accept(h, seeded.token, JOINER, {
+        ...h.container,
+        membershipDirectoryReservationStore: {
+          ...store,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    expect(storedMemberships(h, WORKSPACE)).toHaveLength(2);
+    expect(membershipEdges(h, JOINER)[0]?.edgeState).toBe("activating");
+    expect(storedInvitation(h, WORKSPACE, INVITATION)).toMatchObject({
+      status: "accepted",
+    });
+    await expect(
+      listUserWorkspaces({ container: h.container, input: { userId: JOINER } }),
+    ).resolves.toMatchObject({ workspaces: [] });
+
+    await expect(accept(h, seeded.token)).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      role: "editor",
+    });
+
+    expect(membershipEdges(h, JOINER)[0]?.edgeState).toBe("active");
+    expect(storedMemberships(h, WORKSPACE)).toHaveLength(2);
+    expect(invitationRoutes(h).map((row) => row.state)).toEqual(["revoked"]);
+    await expect(
+      listUserWorkspaces({ container: h.container, input: { userId: JOINER } }),
+    ).resolves.toMatchObject({
+      workspaces: [{ workspaceId: WORKSPACE, role: "editor" }],
+    });
   });
 });

@@ -1,4 +1,8 @@
-import { isNotFoundError } from "@repo/core/application/errors";
+import type { RequestContainer } from "@repo/core/application/di/types";
+import {
+  isConflictError,
+  isNotFoundError,
+} from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { isBusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -90,6 +94,64 @@ async function seedWorkspaceMember(
       }
     },
   );
+}
+
+/** Changes the actor's role in the seeded workspace. */
+async function changeMembershipRole(
+  h: TestHarness,
+  role: "editor" | "viewer",
+): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      const stored = await ctx.membershipRepository.findByWorkspaceAndUser(
+        workspaceId,
+        UserId.create(USER_ID),
+      );
+      if (stored === null) {
+        throw new Error("no membership to change");
+      }
+      const changed = Membership.changeRole(stored.entity, role, h.clock.now());
+      await ctx.membershipRepository.save(
+        changed.entity,
+        stored.expectedVersion,
+      );
+    },
+  );
+}
+
+/** Closes the seeded workspace to ordinary writes, as `deleteWorkspace` does. */
+async function acceptWorkspaceDeletion(h: TestHarness): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      const stored = await ctx.workspaceRepository.findById(workspaceId);
+      await ctx.workspaceOperationLockStore.beginDeletion({
+        workspaceId,
+        operationId: "deletion-op-1",
+        expectedWorkspaceVersion: stored?.expectedVersion ?? 0,
+      });
+    },
+  );
+}
+
+/**
+ * Lands `mutate` between the resolution taken outside the unit of work and
+ * the transaction that writes — the window in which an actor can lose the
+ * role the resolution reported.
+ */
+function racing(h: TestHarness, mutate: () => Promise<void>): RequestContainer {
+  return {
+    ...h.container,
+    scopeUnitOfWorkProvider: {
+      run: async (target, fn) => {
+        await mutate();
+        return h.container.scopeUnitOfWorkProvider.run(target, fn);
+      },
+    },
+  };
 }
 
 const deletedEvents = (
@@ -185,6 +247,42 @@ describe("storeAvatar", () => {
       (error: unknown) =>
         isNotFoundError(error) && error.code === "WORKSPACE_NOT_FOUND",
     );
+  });
+
+  it("refuses a workspace icon when the actor is demoted between the resolution and the write", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, "owner");
+
+    await expectBusinessRule(
+      storeAvatar({
+        container: racing(h, () => changeMembershipRole(h, "editor")),
+        input: {
+          userId: USER_ID,
+          subjectType: "workspace",
+          subjectId: WORKSPACE_ID,
+          fileName: "avatar.png",
+          body: png(16),
+        },
+      }),
+      WorkspaceErrorCode.InsufficientRole,
+    );
+    expect(workspaceFiles(h)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("refuses a workspace icon once the workspace has accepted its deletion", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, "owner");
+    await acceptWorkspaceDeletion(h);
+
+    await expect(
+      upload(h, { subjectType: "workspace", subjectId: WORKSPACE_ID }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "WORKSPACE_DELETING",
+    );
+    expect(workspaceFiles(h)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 
   it("TC-storage-171: a 6 MB image is refused", async () => {

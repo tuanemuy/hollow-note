@@ -45,7 +45,7 @@ export function CreateNoteButton({
       // `NoteDetail` が正規化するが、開いてから URL が動く 1 往復を
       // 省ける（呼び出し側は所属先を知っている）。
       const navigation =
-        workspaceId === null || workspaceId === undefined
+        workspaceId === null
           ? router.navigate({ to: "/notes/$noteId", params: { noteId } })
           : router.navigate({
               to: "/workspaces/$workspaceId/notes/$noteId",

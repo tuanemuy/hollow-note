@@ -338,12 +338,14 @@ export type InvitationRouteRow = Readonly<{
 /**
  * One row of the global `workspace_slug_reservations`. Only a `reserved`
  * row carries an expiry — an `active` claim is freed by its owner, never
- * by the clock.
+ * by the clock. `attemptId` names the attempt that reserved the row last,
+ * which is who may abandon it.
  */
 export type SlugReservationRow = Readonly<{
   slug: WorkspaceSlug;
   workspaceId: WorkspaceId;
   operationId: string;
+  attemptId: string;
   state: "reserved" | "active";
   expiresAt: Date | null;
 }>;

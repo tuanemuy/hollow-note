@@ -45,6 +45,10 @@ export const jsonRows = (
 export const inJsonList = (column: string): string =>
   `${column} IN (SELECT value FROM json_each(?))`;
 
+/** The negation of {@link inJsonList}, expanding the same binding shape. */
+export const notInJsonList = (column: string): string =>
+  `${column} NOT IN (SELECT value FROM json_each(?))`;
+
 /**
  * Builds `INSERT INTO table (cols…) SELECT json_extract(…) FROM json_each(?)`.
  * The single binding is a `jsonRows(...)` value whose objects carry one

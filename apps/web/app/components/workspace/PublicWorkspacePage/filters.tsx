@@ -26,7 +26,18 @@ export function PublicWorkspaceFilters({
 }) {
   const navigate = useNavigate();
   const [draft, setDraft] = useState(keyword);
+  const [appliedKeyword, setAppliedKeyword] = useState(keyword);
   const [isPending, startTransition] = useTransition();
+
+  // 検索パラメータだけが変わるナビゲーション（戻る / 進む、`?q=` 付きの
+  // リンク）ではこの島が同じ位置に再利用されるので、`useState` の初期値は
+  // もう読まれない。正本（URL）が動いたことを検知して入力欄を追従させる
+  // — `key` で作り直すと確定のたびに入力欄がアンマウントされ、
+  // `useTransition` 中の焦点が飛ぶ。
+  if (appliedKeyword !== keyword) {
+    setAppliedKeyword(keyword);
+    setDraft(keyword);
+  }
 
   const apply = (next: { keyword?: string; tags?: readonly string[] }) => {
     const nextKeyword = (next.keyword ?? keyword).trim();

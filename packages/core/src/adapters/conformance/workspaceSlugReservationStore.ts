@@ -15,7 +15,8 @@ const slug = (name: string): WorkspaceSlug => WorkspaceSlug.create(name);
  * Shared conformance suite for `WorkspaceSlugReservationStore`
  * (ADP-workspace-061..065): the two-phase claim behind
  * `ConflictError("SLUG_ALREADY_USED")`, the atomic exchange that keeps a
- * public URL live across a slug change, and the teardown a deletion runs.
+ * public URL live across a slug change, which attempt of a shared
+ * operation may compensate, and the teardown a deletion runs.
  */
 export function describeWorkspaceSlugReservationStoreContract(
   backendName: string,
@@ -29,17 +30,31 @@ export function describeWorkspaceSlugReservationStoreContract(
       backend = await makeBackend();
     });
 
+    /**
+     * `attemptId` defaults to the operation id, which is what a caller
+     * that mints a fresh operation per request effectively has. The cases
+     * that make two attempts share one operation pass it explicitly.
+     */
     const reserve = (
       operationId: string,
       name = "alpha",
       owner: WorkspaceId = workspaceId(1),
+      attemptId: string = operationId,
     ): Promise<void> =>
       store().reserve({
         slug: slug(name),
         workspaceId: owner,
         operationId,
+        attemptId,
         expiresAt: new Date(backend.clock.now().getTime() + HOUR_MS),
       });
+
+    const abandon = (
+      operationId: string,
+      name = "alpha",
+      attemptId: string = operationId,
+    ): Promise<void> =>
+      store().abandon({ slug: slug(name), operationId, attemptId });
 
     const activate = (
       operationId: string,
@@ -192,7 +207,7 @@ export function describeWorkspaceSlugReservationStoreContract(
 
     it("ADP-workspace-063: activating a row that abandon already dropped conflicts", async () => {
       await reserve("op-1");
-      await store().abandon({ slug: slug("alpha"), operationId: "op-1" });
+      await abandon("op-1");
 
       await expectConflict(activate("op-1"));
       expect(await store().resolveActive(slug("alpha"))).toBeNull();
@@ -201,20 +216,50 @@ export function describeWorkspaceSlugReservationStoreContract(
     it("ADP-workspace-064: abandon drops only this operation's reserved row", async () => {
       await claim("op-1");
       // An activated claim survives its own operation's compensation.
-      await store().abandon({ slug: slug("alpha"), operationId: "op-1" });
+      await abandon("op-1");
       expect(await store().resolveActive(slug("alpha"))).toBe(workspaceId(1));
 
       await reserve("op-2", "beta");
-      await store().abandon({ slug: slug("beta"), operationId: "op-other" });
+      await abandon("op-other", "beta");
       await expectConflict(
         reserve("op-3", "beta", workspaceId(2)),
         "SLUG_ALREADY_USED",
       );
 
-      await store().abandon({ slug: slug("beta"), operationId: "op-2" });
-      await store().abandon({ slug: slug("beta"), operationId: "op-2" });
+      await abandon("op-2", "beta");
+      await abandon("op-2", "beta");
       await claim("op-3", "beta", workspaceId(2));
       expect(await store().resolveActive(slug("beta"))).toBe(workspaceId(2));
+    });
+
+    /**
+     * An operation id may name a rename rather than a request, so two
+     * attempts can share one row. The row belongs to whichever reserved
+     * it last, and only that attempt may compensate — otherwise the one
+     * that failed for a reason of its own drops the row the other is
+     * about to activate.
+     */
+    it("ADP-workspace-064: a row a later attempt took over is not the earlier attempt's to abandon", async () => {
+      await reserve("op-1", "alpha", workspaceId(1), "attempt-a");
+      await reserve("op-1", "alpha", workspaceId(1), "attempt-b");
+
+      await abandon("op-1", "alpha", "attempt-a");
+
+      // The row is still there and still this operation's, so the attempt
+      // that holds it lands its change.
+      await activate("op-1");
+      expect(await store().resolveActive(slug("alpha"))).toBe(workspaceId(1));
+    });
+
+    it("ADP-workspace-064: the attempt holding the row is the one whose abandon frees the slug", async () => {
+      await reserve("op-1", "alpha", workspaceId(1), "attempt-a");
+      await reserve("op-1", "alpha", workspaceId(1), "attempt-b");
+
+      await abandon("op-1", "alpha", "attempt-b");
+
+      await expectConflict(activate("op-1"));
+      await claim("op-2", "alpha", workspaceId(2));
+      expect(await store().resolveActive(slug("alpha"))).toBe(workspaceId(2));
     });
 
     it("ADP-workspace-065: release frees the workspace's own claim and nobody else's", async () => {

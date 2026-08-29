@@ -1,6 +1,7 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
+import { isConflictError } from "../../errors";
 import { createBlankNote } from "../../note/createBlankNote";
 import { getNote } from "../../note/getNote";
 import { acceptInvitation } from "../acceptInvitation";
@@ -13,6 +14,7 @@ import {
   expectNotFound,
   membershipEdges,
   outboxPayloads,
+  seedInvitation,
   seedWorkspace,
   storedMembership,
   storedMemberships,
@@ -26,9 +28,9 @@ import {
  * the Job aggregate does not exist in this slice, so the sweep is recorded
  * as absent in `membershipMutation.ts` rather than emitted. TC-workspace-167
  * (residue left behind by job history / backup records) has nothing to
- * leave residue, which is why TC-workspace-168's acknowledgement is
- * already given and `completeRemoval` runs straight after the local commit
- * (ADR 041 of this slice).
+ * leave residue: neither the Job aggregate nor the BackupRecord exists
+ * yet, so the acknowledgement TC-workspace-168 waits on is given from the
+ * start and `completeRemoval` runs straight after the local commit.
  */
 
 const WORKSPACE = "workspace-1";
@@ -326,15 +328,56 @@ describe("leaveWorkspace", () => {
       }),
     ).resolves.toMatchObject({ role: null });
 
-    // TC-workspace-168: the drop is keyed on `(userId, workspaceId)`, so
-    // the later attempt settles the same row without an operation id.
-    await container.membershipDirectoryReservationStore.completeRemoval(
-      // biome-ignore lint/style/noNonNullAssertion: seeded above
-      membershipEdges(h, EDITOR)[0]!.userId,
-      // biome-ignore lint/style/noNonNullAssertion: seeded above
-      membershipEdges(h, EDITOR)[0]!.workspaceId,
-    );
+    // TC-workspace-168: leaving again is the request that settles it. The
+    // membership is gone either way, so the answer is unchanged — but the
+    // edge it left behind is what held `(userId, workspaceId)` against a
+    // future join, and it is dropped before the refusal is raised.
+    await expectNotFound(leave(h, EDITOR), "MEMBERSHIP_NOT_FOUND");
     expect(edgeOf(h, EDITOR)).toBeNull();
+  });
+
+  it("TC-workspace-168: the settled edge frees the pair, so the departed member can be invited back", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const store = h.container.membershipDirectoryReservationStore;
+    await leaveWorkspace({
+      container: {
+        ...h.container,
+        membershipDirectoryReservationStore: {
+          ...store,
+          completeRemoval: () =>
+            Promise.reject(new Error("directory shard unreachable")),
+        },
+      },
+      input: { workspaceId: WORKSPACE, userId: EDITOR },
+    });
+    expect(edgeOf(h, EDITOR)?.edgeState).toBe("removing");
+
+    const invite = await seedInvitation(h, WORKSPACE, {
+      invitationId: "invitation-rejoin",
+      invitedBy: OWNER,
+      role: "editor",
+    });
+    const rejoin = () =>
+      acceptInvitation({
+        container: h.container,
+        input: { token: invite.token, userId: EDITOR },
+      });
+
+    // The stranded edge still claims `(userId, workspaceId)`, so the join
+    // it announced is refused on the invitee's own shard.
+    await expect(rejoin()).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "MEMBERSHIP_ALREADY_EXISTS",
+    );
+
+    await expectNotFound(leave(h, EDITOR), "MEMBERSHIP_NOT_FOUND");
+
+    await expect(rejoin()).resolves.toMatchObject({
+      workspaceId: WORKSPACE,
+      role: "editor",
+    });
   });
 
   it("TC-workspace-168: once the edge is dropped, an account deletion no longer enumerates the scope", async () => {

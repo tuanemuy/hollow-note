@@ -8,6 +8,7 @@ import {
   opaque,
   type RowMutation,
   remove,
+  removeMany,
   upsert,
 } from "../../execution/writeSet";
 import { optimisticLockFailure, throwTranslated } from "../../sql/errors";
@@ -206,9 +207,8 @@ export function createAggregateStore<
  * scope object reaches its storage over RPC and reports no affected-row
  * count, and inside the deletion saga's unit of work the write has not
  * run yet at all. The delete itself stays one `json_each` statement
- * (`spec/database/index.md` の「共通の規約」), which is why it is staged
- * opaquely: a bulk `DELETE … WHERE` has no single-row image for the
- * read-your-writes overlay to serve.
+ * (`spec/database/index.md` の「共通の規約」) and names the ids it removes,
+ * so a read later in the same unit no longer sees the rows it deleted.
  */
 export async function deleteAggregatesByIds<TId extends string>(
   session: SqlSession,
@@ -240,8 +240,9 @@ export async function deleteAggregatesByIds<TId extends string>(
     }
     const doomed = present.map((row) => text(row, "id"));
     await session.write([
-      opaque({
+      removeMany({
         table,
+        keys: doomed,
         statement: statement(deleteRowsFromJson(table, "id"), jsonList(doomed)),
       }),
     ]);

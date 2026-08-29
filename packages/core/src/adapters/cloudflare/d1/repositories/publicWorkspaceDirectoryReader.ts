@@ -6,7 +6,7 @@ import type {
 } from "../../../../domain/workspace/ports/publicWorkspaceDirectoryReader";
 import {
   WorkspaceId,
-  WorkspaceSlug,
+  type WorkspaceSlug,
 } from "../../../../domain/workspace/valueObject";
 import { decodeOpaqueCursor, encodeOpaqueCursor } from "../../cursor";
 import { throwTranslated } from "../../sql/errors";
@@ -18,6 +18,7 @@ import {
   encodePosition,
   hasOutage,
   invalidPagination,
+  projected,
   type WorkspaceDirectoryDeps,
 } from "./workspaceDirectorySupport";
 
@@ -98,7 +99,7 @@ export function createD1PublicWorkspaceDirectoryReader(
       return {
         items: page.map((row) => ({
           workspaceId: WorkspaceId.create(text(row, "workspace_id")),
-          slug: WorkspaceSlug.create(text(row, "slug")),
+          slug: projected<WorkspaceSlug>(row, "slug"),
           updatedAt: date(row, "updated_at"),
         })),
         nextCursor:

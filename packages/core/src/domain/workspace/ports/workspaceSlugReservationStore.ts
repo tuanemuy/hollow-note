@@ -37,6 +37,15 @@ import type { WorkspaceId, WorkspaceSlug } from "../valueObject";
  * operation and stays `active`, so a workspace re-reserving a slug it
  * already holds succeeds without the key ever ceasing to resolve.
  *
+ * An operation id may name a *rename* rather than a single request —
+ * `changeWorkspaceSlug` derives its id from `(workspaceId, slug)` so a
+ * retry after a lost response lands on the row its predecessor took — and
+ * then two concurrent attempts share one row. `attemptId` is what tells
+ * them apart, and it exists for `abandon` alone: the row is held by the
+ * attempt that reserved it last, and only that attempt may compensate.
+ * Idempotency is unaffected, since every other method converges on the
+ * row whoever calls it.
+ *
  * Ownership never transfers on expiry alone: only a `reserved` row
  * carries an expiry, and only such a lapsed row may be taken over by
  * another operation. An `active` row has no expiry and is freed only by
@@ -73,12 +82,17 @@ export interface WorkspaceSlugReservationStore {
    * Any other row held by another operation is
    * `ConflictError("SLUG_ALREADY_USED")`, unless it is a `reserved` row
    * whose expiry has lapsed, which this call takes over.
+   *
+   * Whichever of those the call takes, the row comes away held by
+   * `attemptId`: reserving is what claims the right to compensate, and
+   * the latest attempt is the one that holds it.
    */
   reserve(
     input: Readonly<{
       slug: WorkspaceSlug;
       workspaceId: WorkspaceId;
       operationId: string;
+      attemptId: string;
       expiresAt: Date;
     }>,
   ): Promise<void>;
@@ -118,9 +132,20 @@ export interface WorkspaceSlugReservationStore {
    * activation actually succeeded cannot take a live public URL down. A
    * no-op when there is nothing to drop, so it is safe to call blindly on
    * any failure path and safe to repeat.
+   *
+   * `attemptId` narrows it further, and that is the whole point of the
+   * field: a row a later attempt at the same operation has taken over is
+   * left alone. Otherwise an attempt that failed for a reason of its own
+   * — a role lost between two reads, a barrier that refused it — would
+   * drop the row a still-running attempt is about to activate, leaving a
+   * scope holding a slug the global plane has no reservation for.
    */
   abandon(
-    input: Readonly<{ slug: WorkspaceSlug; operationId: string }>,
+    input: Readonly<{
+      slug: WorkspaceSlug;
+      operationId: string;
+      attemptId: string;
+    }>,
   ): Promise<void>;
   /**
    * Frees the slug a workspace gives up without taking another —

@@ -13,6 +13,7 @@ import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { WORKSPACE_RESERVATION_TTL_MS } from "./createWorkspace";
 import { projectWorkspaceDirectory } from "./directoryProjection";
+import { retryOnce } from "./invitation";
 import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
@@ -39,42 +40,121 @@ const slugOperationId = (
   slug: WorkspaceSlug,
 ): string => `workspace.changeSlug:${workspaceId}:${slug}`;
 
+/** The reservation one invocation of this usecase takes. */
+type SlugReservation = Readonly<{
+  slug: WorkspaceSlug;
+  operationId: string;
+  attemptId: string;
+}>;
+
+/**
+ * The slug the directory still advertises for this workspace, when it is
+ * one the scope has already left behind. Anything else — no row, a row
+ * the shard cannot answer for, a row already on the current slug — is
+ * `null`, which asks the exchange to release nothing.
+ */
+async function advertisedSlug(
+  container: RequestContainer,
+  workspaceId: WorkspaceId,
+  current: WorkspaceSlug,
+): Promise<WorkspaceSlug | null> {
+  const resolved = await container.workspaceDirectoryBatchReader.resolveMany([
+    workspaceId,
+  ]);
+  const row = resolved.get(workspaceId);
+  if (row === undefined || row.state !== "active") {
+    return null;
+  }
+  const advertised = row.entry.entity.slug;
+  return advertised === null || advertised === current ? null : advertised;
+}
+
+/**
+ * Re-drives the global half of a change whose scope commit already
+ * landed: the reservation this workspace's slug needs, and the directory
+ * row that advertises it.
+ *
+ * Both steps come after the local commit, so both can be lost while the
+ * scope has already moved. Sending the slug the workspace already holds
+ * is the request that repairs them — without this it answered success
+ * while the reservation stayed `reserved`, which leaves the new public
+ * URL resolving to nothing for good, since no other call reserves it
+ * again.
+ *
+ * The reservation is touched only when it does not already point here, so
+ * an unchanged slug remains a no-op on a healthy workspace. The deletion
+ * barrier is read first for the reason the invitation sagas read it: a
+ * scope that has accepted a deletion must not have a global key claimed
+ * back for it, and the deletion frees exactly this row.
+ *
+ * The slug being left behind is taken from the directory row, which is
+ * the last key this workspace advertised and is stale in exactly the same
+ * window. It is only a hint — `activate` frees `releasing` solely while
+ * that row is still `active` for this workspace — but without it the
+ * exchange would be half-applied and the old public URL would go on
+ * resolving beside the new one.
+ */
+async function repairSettledSlug(
+  container: RequestContainer,
+  params: Readonly<{
+    scope: ScopeKey;
+    workspaceId: WorkspaceId;
+    slug: WorkspaceSlug | null;
+    workspace: Workspace;
+    attemptId: string;
+    expiresAt: Date;
+  }>,
+): Promise<void> {
+  const { workspaceSlugReservationStore: reservations, logger } = container;
+  const { slug, workspaceId } = params;
+  if (
+    slug !== null &&
+    (await reservations.resolveActive(slug)) !== workspaceId
+  ) {
+    await container.workspaceReaderFor(params.scope).admission.assertWritable();
+    const operationId = slugOperationId(workspaceId, slug);
+    const releasing = await advertisedSlug(container, workspaceId, slug);
+    await reservations.reserve({
+      slug,
+      workspaceId,
+      operationId,
+      attemptId: params.attemptId,
+      expiresAt: params.expiresAt,
+    });
+    await retryOnce(logger, "[changeWorkspaceSlug] slug activate", () =>
+      reservations.activate({ slug, workspaceId, operationId, releasing }),
+    );
+  }
+  await projectWorkspaceDirectory(
+    container,
+    "[changeWorkspaceSlug] directory projection",
+    params.workspace,
+  );
+}
+
 /**
  * Gives the new slug's reservation back — but only when **this** attempt
  * is the one that failed.
  *
- * The operation id is derived from `(workspaceId, slug)`, so every
- * attempt at the same rename shares one reservation row and `abandon`
- * cannot tell whose it is. Two attempts that both reserved and then raced
- * the scope commit therefore need the loser to keep its hands off: it
- * would otherwise drop the row the winner is about to activate, leaving
- * the scope holding a slug the global plane has no reservation for — and
- * that state is beyond repair from the API, since re-sending the slug the
- * workspace already holds returns early without reserving anything.
+ * The operation id is derived from `(workspaceId, slug)`, so every attempt
+ * at the same rename shares one reservation row. `attemptId` is what tells
+ * them apart: the row belongs to whichever attempt reserved it last, and
+ * the port refuses a compensation from any other. Without that, an attempt
+ * that failed for a reason of its own — a role lost between two reads, a
+ * barrier that refused it — would drop the row a still-running attempt is
+ * about to activate.
  *
- * The scope is what decides: a workspace already carrying the new slug
- * means another attempt's commit landed, and the reservation is that
- * attempt's to settle. A failing compensation is logged and swallowed, so
- * the caller still sees the original error; the row it could not drop is
- * reclaimed by expiry recovery.
+ * A failing compensation is logged and swallowed, so the caller still sees
+ * the original error; the row it could not drop is reclaimed by expiry
+ * recovery.
  */
 async function abandonSlugReservation(
   container: RequestContainer,
   cause: unknown,
-  params: Readonly<{
-    scope: ScopeKey;
-    workspaceId: WorkspaceId;
-    reservation: Readonly<{ slug: WorkspaceSlug; operationId: string }>;
-  }>,
+  reservation: SlugReservation,
 ): Promise<void> {
   try {
-    const fresh = await container
-      .workspaceReaderFor(params.scope)
-      .workspace.findById(params.workspaceId);
-    if (fresh !== null && fresh.entity.slug === params.reservation.slug) {
-      return;
-    }
-    await container.workspaceSlugReservationStore.abandon(params.reservation);
+    await container.workspaceSlugReservationStore.abandon(reservation);
   } catch (abandonError) {
     container.logger.error("[changeWorkspaceSlug] slug abandon failed", {
       cause,
@@ -99,8 +179,10 @@ async function abandonSlugReservation(
  * public page is served from.
  *
  * Re-sending the slug the workspace already holds changes nothing and
- * emits nothing; it never touches the reservation, whose `active` row
- * already points here.
+ * emits nothing while the global plane agrees with the scope. It is also
+ * the repair path when it does not: a reservation left `reserved` or a
+ * directory row left on the old slug is re-driven there, since the steps
+ * that write them come after a commit that cannot be taken back.
  *
  * The `workspace_directory` snapshot goes out last, once the reservation
  * has settled: the projection follows the authority on the key rather
@@ -142,21 +224,39 @@ export async function changeWorkspaceSlug({
     throw workspaceNotFound();
   }
   const previousSlug = observed.entity.slug;
-  if (nextSlug === previousSlug) {
-    return { workspaceId, slug: nextSlug, previousSlug };
-  }
   const observedVersion = observed.entity.version;
 
   const now = clock.now();
-  const reservation =
+  const expiresAt = new Date(now.getTime() + WORKSPACE_RESERVATION_TTL_MS);
+  const attemptId = container.idGenerator.next();
+
+  if (nextSlug === previousSlug) {
+    await repairSettledSlug(container, {
+      scope,
+      workspaceId,
+      slug: nextSlug,
+      workspace: observed.entity,
+      attemptId,
+      expiresAt,
+    });
+    return { workspaceId, slug: nextSlug, previousSlug };
+  }
+
+  const reservation: SlugReservation | null =
     nextSlug === null
       ? null
-      : { slug: nextSlug, operationId: slugOperationId(workspaceId, nextSlug) };
+      : {
+          slug: nextSlug,
+          operationId: slugOperationId(workspaceId, nextSlug),
+          attemptId,
+        };
   if (reservation !== null) {
     await workspaceSlugReservationStore.reserve({
-      ...reservation,
+      slug: reservation.slug,
       workspaceId,
-      expiresAt: new Date(now.getTime() + WORKSPACE_RESERVATION_TTL_MS),
+      operationId: reservation.operationId,
+      attemptId: reservation.attemptId,
+      expiresAt,
     });
   }
 
@@ -185,18 +285,15 @@ export async function changeWorkspaceSlug({
     });
   } catch (error) {
     if (reservation !== null) {
-      await abandonSlugReservation(container, error, {
-        scope,
-        workspaceId,
-        reservation,
-      });
+      await abandonSlugReservation(container, error, reservation);
     }
     throw error;
   }
 
   if (reservation !== null) {
     const exchange = {
-      ...reservation,
+      slug: reservation.slug,
+      operationId: reservation.operationId,
       workspaceId,
       releasing: previousSlug,
     };

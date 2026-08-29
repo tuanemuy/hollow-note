@@ -41,6 +41,7 @@ async function abandonReservations(
       await container.workspaceSlugReservationStore.abandon({
         slug: params.slug,
         operationId: params.operationId,
+        attemptId: params.operationId,
       });
     } catch (abandonError) {
       container.logger.error("[createWorkspace] slug abandon failed", {
@@ -122,10 +123,14 @@ export async function createWorkspace({
   const expiresAt = new Date(now.getTime() + WORKSPACE_RESERVATION_TTL_MS);
   const slug = workspace.slug;
   if (slug !== null) {
+    // The operation id is minted per request here rather than derived, so
+    // it already names this attempt and doubles as the attempt id no two
+    // creates can share.
     await workspaceSlugReservationStore.reserve({
       slug,
       workspaceId,
       operationId,
+      attemptId: operationId,
       expiresAt,
     });
   }

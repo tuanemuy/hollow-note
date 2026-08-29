@@ -90,6 +90,7 @@ describe("getPublicWorkspace", () => {
       slug: WorkspaceSlug.create(SLUG),
       workspaceId: WorkspaceId.create(WORKSPACE),
       operationId: "in-flight",
+      attemptId: "in-flight",
       expiresAt: new Date(h.clock.now().getTime() + 60_000),
     });
 

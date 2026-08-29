@@ -13,7 +13,13 @@ import {
 } from "../../execution/writeSet";
 import { classifySqlError, databaseError } from "../../sql/errors";
 import { occGuard } from "../../sql/occGuard";
-import { dateOrNull, enumOf, text, toTimestamp } from "../../sql/row";
+import {
+  dateOrNull,
+  enumOf,
+  text,
+  textOrNull,
+  toTimestamp,
+} from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
@@ -36,6 +42,7 @@ const reservationGone = (slug: WorkspaceSlug): ConflictError =>
 type Reservation = Readonly<{
   workspaceId: WorkspaceId;
   operationId: string;
+  attemptId: string | null;
   state: ReservationState;
   expiresAt: Date | null;
   raw: SqlRow;
@@ -44,6 +51,7 @@ type Reservation = Readonly<{
 const toReservation = (row: SqlRow): Reservation => ({
   workspaceId: WorkspaceId.create(text(row, "workspace_id")),
   operationId: text(row, "operation_id"),
+  attemptId: textOrNull(row, "attempt_id"),
   state: enumOf(row, "state", STATES),
   expiresAt: dateOrNull(row, "expires_at"),
   raw: row,
@@ -138,10 +146,12 @@ export function createD1WorkspaceSlugReservationStore(
                 key: input.slug,
                 row: {
                   ...existing.raw,
+                  attempt_id: input.attemptId,
                   expires_at: toTimestamp(input.expiresAt),
                 },
                 statement: statement(
-                  `UPDATE ${TABLE} SET expires_at = ? WHERE normalized_slug = ? AND operation_id = ? AND state = 'reserved'`,
+                  `UPDATE ${TABLE} SET attempt_id = ?, expires_at = ? WHERE normalized_slug = ? AND operation_id = ? AND state = 'reserved'`,
+                  input.attemptId,
                   toTimestamp(input.expiresAt),
                   input.slug,
                   input.operationId,
@@ -171,10 +181,15 @@ export function createD1WorkspaceSlugReservationStore(
             upsert({
               table: TABLE,
               key: input.slug,
-              row: { ...existing.raw, operation_id: input.operationId },
+              row: {
+                ...existing.raw,
+                operation_id: input.operationId,
+                attempt_id: input.attemptId,
+              },
               statement: statement(
-                `UPDATE ${TABLE} SET operation_id = ? WHERE normalized_slug = ? AND state = 'active' AND workspace_id = ?`,
+                `UPDATE ${TABLE} SET operation_id = ?, attempt_id = ? WHERE normalized_slug = ? AND state = 'active' AND workspace_id = ?`,
                 input.operationId,
+                input.attemptId,
                 input.slug,
                 input.workspaceId,
               ),
@@ -194,6 +209,7 @@ export function createD1WorkspaceSlugReservationStore(
         normalized_slug: input.slug,
         workspace_id: input.workspaceId,
         operation_id: input.operationId,
+        attempt_id: input.attemptId,
         state: "reserved",
         expires_at: toTimestamp(input.expiresAt),
       };
@@ -218,16 +234,18 @@ export function createD1WorkspaceSlugReservationStore(
             row,
             statement: statement(
               `INSERT INTO ${TABLE}
-                 (normalized_slug, workspace_id, operation_id, state, expires_at)
-               VALUES (?, ?, ?, 'reserved', ?)
+                 (normalized_slug, workspace_id, operation_id, attempt_id, state, expires_at)
+               VALUES (?, ?, ?, ?, 'reserved', ?)
                ON CONFLICT (normalized_slug) DO UPDATE SET
                  workspace_id = excluded.workspace_id,
                  operation_id = excluded.operation_id,
+                 attempt_id = excluded.attempt_id,
                  state = 'reserved',
                  expires_at = excluded.expires_at`,
               input.slug,
               input.workspaceId,
               input.operationId,
+              input.attemptId,
               toTimestamp(input.expiresAt),
             ),
           }),
@@ -299,6 +317,7 @@ export function createD1WorkspaceSlugReservationStore(
       if (
         row === null ||
         row.operationId !== input.operationId ||
+        row.attemptId !== input.attemptId ||
         row.state !== "reserved"
       ) {
         return;
@@ -308,9 +327,10 @@ export function createD1WorkspaceSlugReservationStore(
           table: TABLE,
           key: input.slug,
           statement: statement(
-            `DELETE FROM ${TABLE} WHERE normalized_slug = ? AND operation_id = ? AND state = 'reserved'`,
+            `DELETE FROM ${TABLE} WHERE normalized_slug = ? AND operation_id = ? AND attempt_id = ? AND state = 'reserved'`,
             input.slug,
             input.operationId,
+            input.attemptId,
           ),
         }),
       ]);

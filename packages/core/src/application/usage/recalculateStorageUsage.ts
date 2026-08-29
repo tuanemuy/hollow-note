@@ -37,6 +37,11 @@ export type RecalculateStorageUsageInput = Readonly<{
  * Membership alone is the bar, with no action from the role table: the
  * stocktake writes nothing a member cannot already see, and it only ever
  * replaces a drifted total with what the scope's own rows add up to.
+ *
+ * That bar is decided twice for a workspace subject. The resolution
+ * outside the unit of work is the early refusal; the membership read
+ * inside it is what admits the write, because a member removed while the
+ * request is in flight moves no version this transaction observes.
  */
 export async function recalculateStorageUsage({
   container,
@@ -82,6 +87,18 @@ export async function recalculateStorageUsage({
     await ctx.cleanupAdmission.assertWritable();
     await ctx.cleanupAdmission.assertActorWritable(actorUserId);
     await ctx.workspaceOperationLockStore.assertWritable();
+    if (owner.type === "workspace") {
+      const membership = await ctx.membershipRepository.findByWorkspaceAndUser(
+        owner.workspaceId,
+        actorUserId,
+      );
+      if (membership === null) {
+        throw new BusinessRuleError(
+          WorkspaceErrorCode.InsufficientRole,
+          "Not allowed to recalculate this subject",
+        );
+      }
+    }
 
     const [consumedBytes, noteCount] = await Promise.all([
       ctx.storedFileRepository.sumSizeByOwner(owner),
@@ -91,8 +108,10 @@ export async function recalculateStorageUsage({
 
     const stored = await ctx.storageQuotaRepository.find(subject);
     if (stored === null) {
-      // No `initializeQuota` subscriber exists yet, so a stocktake is
-      // also the path that first materializes the row.
+      // A subject's first stocktake starts from no row at all: the
+      // aggregate is materialized on first consumption, and a subject
+      // that has never consumed anything is read from its initialized
+      // values rather than persisted (`getUsageSnapshot`).
       await ctx.storageQuotaRepository.insert(
         StorageQuota.replaceTotals(
           StorageQuota.initialize(subject, now),

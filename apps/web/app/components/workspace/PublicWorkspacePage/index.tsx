@@ -25,11 +25,13 @@ import { PublicWorkspaceFilters } from "./filters";
 export async function PublicWorkspacePage({
   slug,
   userId,
+  appUrl,
   keyword,
   tags,
 }: {
   slug: string;
   userId: string | null;
+  appUrl: string;
   keyword: string;
   tags: readonly string[];
 }) {
@@ -75,7 +77,10 @@ export async function PublicWorkspacePage({
           <h1 className="text-2xl font-normal tracking-tightest leading-snug">
             {workspace.name}
           </h1>
-          <p className="mt-1 text-sm text-ink-tertiary">/w/{workspace.slug}</p>
+          <p className="mt-1 text-sm text-ink-tertiary">
+            {slugPrefix(appUrl)}
+            {workspace.slug}
+          </p>
           {workspace.description === "" ? null : (
             <p className="mt-3 text-sm text-ink-secondary">
               {workspace.description}
@@ -95,6 +100,19 @@ export async function PublicWorkspacePage({
       </section>
     </main>
   );
+}
+
+/**
+ * 公開ページの見出しに出すスラッグは P-30 / P-31 のスラッグ欄と同じ整形に
+ * 揃える（モック P43-workspace-public.html も `hollow.app/w/…`）。ここだけ
+ * パスにすると、いちばん共有されやすい画面の表記だけが割れる。
+ */
+function slugPrefix(appUrl: string): string {
+  try {
+    return `${new URL(appUrl).host}/w/`;
+  } catch {
+    return "/w/";
+  }
 }
 
 function MemberBanner() {

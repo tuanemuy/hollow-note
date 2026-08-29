@@ -56,6 +56,16 @@ export type WorkspaceDeletionManifestItem =
  * already deleted. Every method is idempotent for its operation, so a
  * lost response is repaired by repeating the call.
  *
+ * The state guards observe the writes their own transaction has already
+ * made. That is what lets a turn fix its last page and ready the
+ * manifest, or reclaim its last page and complete it, without waiting for
+ * the commit in between. A **paged** read (`listLocalPending`,
+ * `listItems`, the compaction page) is the other way round: it must come
+ * before this transaction writes to the manifest, because a page
+ * recomputed from uncommitted changes can be short or misordered and a
+ * backend is free to refuse it rather than answer. Every turn therefore
+ * reads its page at the head and writes last.
+ *
  * The manifest outlives the Workspace row: it is what
  * `assertWritable` / `assertDeletionOwner` read afterwards, and its
  * completed tombstone is retained at least as long as scope routing so a

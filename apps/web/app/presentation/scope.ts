@@ -14,7 +14,13 @@ export const PERSONAL_SCOPE: ScopeSelection = { kind: "personal" };
 
 const WORKSPACE_PREFIX = "workspace:";
 
-/** 転送境界の上限。ID は生成器由来なので実際はこれよりずっと短い。 */
+/**
+ * ワークスペース ID の転送境界上限の**正本**。ID は生成器由来なので実際は
+ * これよりずっと短い。Cookie 経路（`parseScope`）と本文経路
+ * （`components/workspace/schema.ts` が再 export する）が同じ長さを受け付ける
+ * ように、この層に 1 つだけ置く — 依存は components → presentation の一方向
+ * なので、逆向きに引くと循環しうる。
+ */
 export const WORKSPACE_ID_MAX_LENGTH = 128;
 
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;

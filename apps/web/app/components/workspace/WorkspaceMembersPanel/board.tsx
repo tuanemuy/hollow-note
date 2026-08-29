@@ -41,6 +41,14 @@ import {
   resendInvitationFn,
   revokeInvitationFn,
 } from "@/routes/workspaces/$workspaceId/settings/-action";
+import { loadMoreMembersFn, loadMorePendingInvitationsFn } from "./action";
+import {
+  applyRoster,
+  PENDING_INVITATION_ID,
+  rosterOf,
+  selfIsLastOwner,
+  selfOf,
+} from "./roster";
 
 /**
  * P-32 の操作を持つ島（モック P32-workspace-members.html、
@@ -53,10 +61,15 @@ import {
  * ロール変更と再送は行の中で完結する変更なので、それぞれの葉が自分の
  * `useOptimistic` と失敗表示を持つ。
  *
+ * 2 つの一覧はどちらも 50 件ずつのページで、先頭ページをサーバー
+ * コンポーネントが渡し、以降の継ぎ足しはこの島が持つ。件数と最後の owner
+ * の判定に使う総数は、ページから数え直さずサーバーの `count` /
+ * `ownerCount` に楽観的な差分を足し引きして求める（`roster.ts`）。
+ *
  * 最後の owner の保護はサーバー（`MembershipPolicy`）が正本で、ここでは
- * **楽観的リストから引き直した** owner 数で操作を先に閉じる。サーバーが
- * 返した `ownerCount` は変更前の集合に対する判定なので、1 人降格した直後
- * に「まだ降ろせる」と見えてしまう。
+ * その総数で自分の脱退を先に閉じるだけである。ロール変更は行の中で完結
+ * する楽観状態なので降格はこの数に届かず、降格直後の 1 往復だけ古い数が
+ * 残る。判定の正本はサーバー側にあり、`router.invalidate()` で揃う。
  *
  * この保護が画面に出るのは**自分の脱退だけ**である。ロール変更・除名を
  * 出せるのは `canManage`（= owner）の閲覧者に限られ、その閲覧者自身が
@@ -72,52 +85,29 @@ const ROLE_LABEL: Readonly<Record<WorkspaceRoleView, string>> = {
   viewer: "viewer",
 };
 
-/** 送信中の招待だけが持つ番兵。実 ID とは衝突しない。 */
-const PENDING_INVITATION_ID = "optimistic-invitation";
-
-type Roster = Readonly<{
-  members: readonly WorkspaceMemberView[];
-  invitations: readonly PendingInvitationView[];
-}>;
-
-type RosterAction =
-  | Readonly<{ kind: "removeMember"; membershipId: string }>
-  | Readonly<{ kind: "revokeInvitation"; invitationId: string }>
-  | Readonly<{ kind: "addInvitation"; email: string; role: WorkspaceRoleView }>;
-
-function applyRoster(current: Roster, action: RosterAction): Roster {
-  switch (action.kind) {
-    case "removeMember":
-      return {
-        ...current,
-        members: current.members.filter(
-          (member) => member.membershipId !== action.membershipId,
-        ),
-      };
-    case "revokeInvitation":
-      return {
-        ...current,
-        invitations: current.invitations.filter(
-          (invitation) => invitation.invitationId !== action.invitationId,
-        ),
-      };
-    case "addInvitation":
-      return {
-        ...current,
-        invitations: [
-          ...current.invitations,
-          {
-            invitationId: PENDING_INVITATION_ID,
-            email: action.email,
-            role: action.role,
-            invitedBy: "",
-            createdAt: new Date(0),
-            expiresAt: new Date(0),
-            expired: false,
-          },
-        ],
-      };
+/**
+ * 先頭ページはサーバーコンポーネントが渡し、以降の継ぎ足しだけをこの島が
+ * 持つ。サーバーが先頭ページを配り直したら（各ミューテーションの
+ * `router.invalidate()`）継ぎ足しは古い集合を指すので捨て、1 ページ目へ
+ * 戻す。
+ */
+function useLoadedPages<T>(firstPage: readonly T[]) {
+  const [seed, setSeed] = useState(firstPage);
+  const [extra, setExtra] = useState<readonly T[]>([]);
+  const [page, setPage] = useState(1);
+  if (seed !== firstPage) {
+    setSeed(firstPage);
+    setExtra([]);
+    setPage(1);
   }
+  return {
+    items: extra.length === 0 ? firstPage : [...firstPage, ...extra],
+    page,
+    append: (items: readonly T[], loadedPage: number) => {
+      setExtra((current) => [...current, ...items]);
+      setPage(loadedPage);
+    },
+  };
 }
 
 /**
@@ -167,13 +157,24 @@ export function WorkspaceMembersBoard({
   workspaceId,
   viewerUserId,
   members,
+  memberCount,
+  ownerCount,
   invitations,
+  invitationCount,
   canManage,
 }: {
   workspaceId: string;
   viewerUserId: string;
+  /** メンバー一覧の先頭ページ。 */
   members: readonly WorkspaceMemberView[];
+  /** ワークスペース全体のメンバー数（`listMembers.count`）。 */
+  memberCount: number;
+  /** ワークスペース全体の owner 数（`listMembers.ownerCount`）。 */
+  ownerCount: number;
+  /** 保留中の招待の先頭ページ。 */
   invitations: readonly PendingInvitationView[];
+  /** 保留中の招待の総数（`listPendingInvitations.count`）。 */
+  invitationCount: number;
   canManage: boolean;
 }) {
   const router = useRouter();
@@ -181,12 +182,19 @@ export function WorkspaceMembersBoard({
   const revokeInvitation = useServerFn(revokeInvitationFn);
   const removeMember = useServerFn(removeMemberFn);
   const leaveWorkspace = useServerFn(leaveWorkspaceFn);
+  const loadMoreMembers = useServerFn(loadMoreMembersFn);
+  const loadMoreInvitations = useServerFn(loadMorePendingInvitationsFn);
 
+  const memberPages = useLoadedPages(members);
+  const invitationPages = useLoadedPages(invitations);
   const [roster, dispatchRoster] = useOptimistic(
-    { members, invitations },
+    rosterOf(memberPages.items, invitationPages.items),
     applyRoster,
   );
   const [isMutating, startMutating] = useTransition();
+  const [isLoadingMembers, startLoadingMembers] = useTransition();
+  const [isLoadingInvitations, startLoadingInvitations] = useTransition();
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [rosterError, setRosterError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -200,13 +208,11 @@ export function WorkspaceMembersBoard({
   const membersHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const invitationsHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
-  const ownerCount = roster.members.filter(
-    (member) => member.role === "owner",
-  ).length;
-  const self =
-    roster.members.find((member) => member.userId === viewerUserId) ?? null;
-  const selfIsLastOwner =
-    self !== null && self.role === "owner" && ownerCount <= 1;
+  const totalMembers = memberCount + roster.memberDelta;
+  const totalOwners = ownerCount + roster.ownerDelta;
+  const totalInvitations = invitationCount + roster.invitationDelta;
+  const self = selfOf(roster, viewerUserId);
+  const isLastOwner = selfIsLastOwner(roster, viewerUserId, ownerCount);
 
   const reconcile = () =>
     router.invalidate().catch(() => {
@@ -311,11 +317,12 @@ export function WorkspaceMembersBoard({
     });
   };
 
-  const onRemoveMember = (membershipId: string) => {
+  const onRemoveMember = (member: WorkspaceMemberView) => {
+    const membershipId = member.membershipId;
     setConfirming(null);
     startMutating(async () => {
       setNotice(null);
-      dispatchRoster({ kind: "removeMember", membershipId });
+      dispatchRoster({ kind: "removeMember", membershipId, role: member.role });
       try {
         await removeMember({ data: { workspaceId, membershipId } });
       } catch (error) {
@@ -337,6 +344,7 @@ export function WorkspaceMembersBoard({
         dispatchRoster({
           kind: "removeMember",
           membershipId: self.membershipId,
+          role: self.role,
         });
       }
       try {
@@ -348,6 +356,36 @@ export function WorkspaceMembersBoard({
       setRosterError(null);
       // 脱退した文脈はもう開けない。個人のノートへ戻す（WS-06 手順 4）。
       await router.navigate({ to: "/notes", search: {} });
+    });
+  };
+
+  const onLoadMoreMembers = () => {
+    const next = memberPages.page + 1;
+    startLoadingMembers(async () => {
+      let page: Awaited<ReturnType<typeof loadMoreMembers>>;
+      try {
+        page = await loadMoreMembers({ data: { workspaceId, page: next } });
+      } catch (error) {
+        setLoadError(displayError(error));
+        return;
+      }
+      setLoadError(null);
+      memberPages.append(page.members, next);
+    });
+  };
+
+  const onLoadMoreInvitations = () => {
+    const next = invitationPages.page + 1;
+    startLoadingInvitations(async () => {
+      let page: Awaited<ReturnType<typeof loadMoreInvitations>>;
+      try {
+        page = await loadMoreInvitations({ data: { workspaceId, page: next } });
+      } catch (error) {
+        setLoadError(displayError(error));
+        return;
+      }
+      setLoadError(null);
+      invitationPages.append(page.invitations, next);
     });
   };
 
@@ -518,7 +556,7 @@ export function WorkspaceMembersBoard({
         >
           メンバー{" "}
           <span className="text-sm font-normal text-ink-tertiary">
-            {roster.members.length} 人（owner {ownerCount} 人）
+            {totalMembers} 人（owner {totalOwners} 人）
           </span>
         </h2>
 
@@ -530,7 +568,7 @@ export function WorkspaceMembersBoard({
               member={member}
               isSelf={member.userId === viewerUserId}
               canManage={canManage}
-              isLastOwner={member.userId === viewerUserId && selfIsLastOwner}
+              isLastOwner={member.userId === viewerUserId && isLastOwner}
               busy={isMutating}
               confirming={
                 confirming?.kind === "removeMember" &&
@@ -547,14 +585,22 @@ export function WorkspaceMembersBoard({
               }
               onConfirmLeave={() => setConfirming({ kind: "leave" })}
               onCancel={() => setConfirming(null)}
-              onRemove={() => onRemoveMember(member.membershipId)}
+              onRemove={() => onRemoveMember(member)}
               onLeave={onLeave}
               onChanged={reconcile}
             />
           ))}
         </ul>
 
-        {selfIsLastOwner ? (
+        {roster.members.length < totalMembers ? (
+          <LoadMoreButton
+            busy={isLoadingMembers}
+            label="メンバーをさらに読み込む"
+            onClick={onLoadMoreMembers}
+          />
+        ) : null}
+
+        {isLastOwner ? (
           <p className="mt-3 text-xs text-ink-tertiary" id={LAST_OWNER_HINT_ID}>
             最後の owner は脱退できません。別のメンバーを owner
             にするか、ワークスペースごと必要なくなった場合は{" "}
@@ -579,7 +625,7 @@ export function WorkspaceMembersBoard({
           >
             保留中の招待{" "}
             <span className="text-sm font-normal text-ink-tertiary">
-              {roster.invitations.length} 件
+              {totalInvitations} 件
             </span>
           </h2>
 
@@ -614,6 +660,14 @@ export function WorkspaceMembersBoard({
               ))}
             </ul>
           )}
+
+          {roster.invitations.length < totalInvitations ? (
+            <LoadMoreButton
+              busy={isLoadingInvitations}
+              label="招待をさらに読み込む"
+              onClick={onLoadMoreInvitations}
+            />
+          ) : null}
         </section>
       ) : null}
 
@@ -621,10 +675,35 @@ export function WorkspaceMembersBoard({
       <p className={errorTextClass} role="status" aria-live="polite">
         {rosterError}
       </p>
+      <p className={errorTextClass} role="status" aria-live="polite">
+        {loadError}
+      </p>
       <p className="text-xs text-success not-empty:mt-2" aria-live="polite">
         {notice}
       </p>
     </>
+  );
+}
+
+function LoadMoreButton({
+  busy,
+  label,
+  onClick,
+}: {
+  busy: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-busy={busy}
+      onClick={onClick}
+      className="mt-3 block w-full rounded-md border border-hairline px-4 py-2.5 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
+    >
+      {busy ? "読み込み中..." : label}
+    </button>
   );
 }
 

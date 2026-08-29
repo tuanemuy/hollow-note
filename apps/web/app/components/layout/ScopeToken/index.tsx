@@ -1,11 +1,18 @@
 "use client";
 
-import type { UserWorkspaceView } from "@repo/core/application/workspace/view";
 import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { displayError } from "@/presentation/errorDisplay";
 import { listMyWorkspacesFn, selectScopeFn } from "./action";
+import {
+  appendPage,
+  beginLoad,
+  failLoad,
+  IDLE_LISTING,
+  type Listing,
+  shouldLoadOnOpen,
+} from "./listing";
 
 /**
  * L-01 スコープトークン（spec/pages/index.md#L-01、WS-02）。
@@ -31,22 +38,6 @@ export type ShellScope =
 
 export const PERSONAL_SHELL_SCOPE: ShellScope = { kind: "personal" };
 
-/**
- * 追加読み込みの失敗は `loaded` に添える。差し替えてしまうと、1 回の失敗で
- * すでに表示していた一覧が消えて「今どこにいるか」の唯一の入口が空になる。
- */
-type Listing =
-  | Readonly<{ kind: "idle" }>
-  | Readonly<{ kind: "loading" }>
-  | Readonly<{
-      kind: "loaded";
-      items: readonly UserWorkspaceView[];
-      nextCursor: string | null;
-      pending: boolean;
-      error: string | null;
-    }>
-  | Readonly<{ kind: "failed"; message: string }>;
-
 const initials = (name: string): string => name.trim().slice(0, 2) || "?";
 
 export function ScopeToken({ scope }: { scope: ShellScope }) {
@@ -55,7 +46,7 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
   const listWorkspaces = useServerFn(listMyWorkspacesFn);
 
   const [open, setOpen] = useState(false);
-  const [listing, setListing] = useState<Listing>({ kind: "idle" });
+  const [listing, setListing] = useState<Listing>(IDLE_LISTING);
   const [isSwitching, startSwitching] = useTransition();
   const [switchError, setSwitchError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -77,36 +68,19 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
   }, [open]);
 
   const load = (cursor: string | null) => {
-    setListing((current) =>
-      current.kind === "loaded"
-        ? { ...current, pending: true, error: null }
-        : { kind: "loading" },
-    );
+    setListing(beginLoad);
     listWorkspaces({ data: { cursor } })
       .then((page) => {
-        setListing((current) => ({
-          kind: "loaded",
-          items:
-            current.kind === "loaded" && cursor !== null
-              ? [...current.items, ...page.workspaces]
-              : page.workspaces,
-          nextCursor: page.nextCursor,
-          pending: false,
-          error: null,
-        }));
+        setListing((current) => appendPage(current, page, cursor));
       })
       .catch((error: unknown) => {
         const message = displayError(error);
-        setListing((current) =>
-          current.kind === "loaded"
-            ? { ...current, pending: false, error: message }
-            : { kind: "failed", message },
-        );
+        setListing((current) => failLoad(current, message));
       });
   };
 
   const onToggle = () => {
-    if (!open && listing.kind === "idle") load(null);
+    if (!open && shouldLoadOnOpen(listing)) load(null);
     setOpen((value) => !value);
   };
 
@@ -221,9 +195,16 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
             </div>
           ) : null}
           {listing.kind === "failed" ? (
-            <p className="px-4 py-2 text-xs text-error" role="status">
-              {listing.message}
-            </p>
+            <>
+              <p className="px-4 py-2 text-xs text-error" role="status">
+                {listing.message}
+              </p>
+              <LoadMoreChoice
+                pending={false}
+                retry={true}
+                onSelect={() => load(null)}
+              />
+            </>
           ) : null}
           {listing.kind === "loaded" && listing.error !== null ? (
             <p className="px-4 py-2 text-xs text-error" role="status">

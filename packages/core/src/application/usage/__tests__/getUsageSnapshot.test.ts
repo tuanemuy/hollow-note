@@ -2,6 +2,7 @@ import type {
   RequestContainer,
   UsageReader,
 } from "@repo/core/application/di/types";
+import { isValidationError } from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { User } from "@repo/core/domain/identity/user";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -488,6 +489,24 @@ describe("getUsageSnapshot", () => {
     expect(secondIds).toHaveLength(5);
     expect(firstIds.filter((id) => secondIds.includes(id))).toEqual([]);
     expect(second.nextWorkspaceCursor).toBeNull();
+  });
+
+  it("refuses a workspace page outside 1-20 rather than clamping it", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await joinWorkspace(h, "ws-01", "owner");
+
+    const expectInvalidPagination = (promise: Promise<unknown>) =>
+      expect(promise).rejects.toSatisfy(
+        (error: unknown) =>
+          isValidationError(error) && error.code === "INVALID_PAGINATION",
+      );
+
+    await expectInvalidPagination(snapshot(h, { workspaceLimit: 21 }));
+    await expectInvalidPagination(snapshot(h, { workspaceLimit: 0 }));
+    await expectInvalidPagination(
+      snapshot(h, { workspaceCursor: "not-a-cursor" }),
+    );
   });
 
   it("TC-usage-054: a viewer-only membership is left out", async () => {

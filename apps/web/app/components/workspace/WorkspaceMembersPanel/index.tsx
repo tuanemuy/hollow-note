@@ -1,5 +1,5 @@
 import type {
-  PendingInvitationView,
+  PendingInvitationListView,
   WorkspaceMemberListView,
 } from "@repo/core/application/workspace/view";
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
@@ -36,17 +36,20 @@ export async function WorkspaceMembersPanel({
     throw error;
   }
 
-  const invitations: readonly PendingInvitationView[] = members.canManage
-    ? (await loadPendingInvitations(workspaceId, userId)).invitations
-    : [];
+  const invitations: PendingInvitationListView = members.canManage
+    ? await loadPendingInvitations(workspaceId, userId)
+    : { invitations: [], count: 0 };
 
   return (
     <WorkspaceMembersBoard
       workspaceId={workspaceId}
       viewerUserId={userId}
       members={members.members}
+      memberCount={members.count}
+      ownerCount={members.ownerCount}
       canManage={members.canManage}
-      invitations={invitations}
+      invitations={invitations.invitations}
+      invitationCount={invitations.count}
     />
   );
 }

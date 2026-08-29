@@ -1,6 +1,8 @@
 import { ValidationError } from "../../../../application/errors";
 import type { WorkspaceId } from "../../../../domain/workspace/valueObject";
+import { text, textOrNull } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
+import type { SqlRow } from "../../sql/statement";
 
 /**
  * What the two `workspace_directory` readers are built over.
@@ -32,6 +34,26 @@ export const hasOutage = (deps: WorkspaceDirectoryDeps): boolean =>
 
 export const invalidPagination = (message: string): ValidationError =>
   new ValidationError("INVALID_PAGINATION", message);
+
+/**
+ * Brands a projected column instead of re-running the value object's
+ * constructor, the same trade `Workspace.reconstruct` makes for
+ * `avatarUrl`: the writer validated the value when the aggregate accepted
+ * it, and re-validating on read would make a later tightening of the
+ * rules (one more reserved slug, a shorter name) fail a sitemap page or a
+ * whole 20-workspace batch over a row that is merely old. Neither port's
+ * error contract has a `BusinessRuleError` to carry that.
+ *
+ * `text` still raises `DataIntegrityError` when the column is not text at
+ * all, which is the failure a read path is allowed to report.
+ */
+export const projected = <T extends string>(row: SqlRow, column: string): T =>
+  text(row, column) as T;
+
+export const projectedOrNull = <T extends string>(
+  row: SqlRow,
+  column: string,
+): T | null => textOrNull(row, column) as T | null;
 
 /**
  * Keyset position of an `(instant, id)` order, in the one encoding both
