@@ -15,13 +15,11 @@ import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
-  MoveAuthorizationLockSeedInput,
   ScopedConformancePorts,
   WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
-import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import {
   createGlobalUnitOfWorkProvider,
@@ -246,38 +244,6 @@ export async function makeCloudflareConformanceBackend(
       workspaceReservations.membershipDirectoryReservationStore,
     workspaceSlugReservationStore:
       workspaceReservations.workspaceSlugReservationStore,
-    /**
-     * Writes `move_authorization_locks` rows directly, for the reason
-     * `ConformanceBackend` gives: the writer is `NoteMovePort.stageTarget`,
-     * which is not part of the Workspace port set, so the two reads that
-     * answer from these rows have no executable form without a seed. The
-     * table is real (`do/schema.ts`) and the reads go through it exactly
-     * as they will in production.
-     */
-    async seedMoveAuthorizationLocks(
-      scope: ScopeKey,
-      locks: readonly MoveAuthorizationLockSeedInput[],
-    ): Promise<void> {
-      if (locks.length === 0) {
-        return;
-      }
-      await scopeExecutorFor(scope).apply([
-        statement(
-          insertRowsFromJson({
-            table: SCOPE_TABLES.moveAuthorizationLocks,
-            columns: ["migration_id", "actor_user_id"],
-            conflictKey: ["migration_id"],
-            conflict: ["actor_user_id"],
-          }),
-          jsonRows(
-            locks.map((lock) => ({
-              migration_id: lock.migrationId,
-              actor_user_id: lock.actorUserId,
-            })),
-          ),
-        ),
-      ]);
-    },
     forScope(scope: ScopeKey): ScopedConformancePorts {
       return scopePortsOver(
         createAutocommitSession(scopeExecutorFor(scope)),

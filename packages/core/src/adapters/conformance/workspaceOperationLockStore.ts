@@ -21,9 +21,9 @@ const MAINTENANCE_KINDS: readonly WorkspaceMaintenanceKind[] = [
 
 /**
  * Shared conformance suite for `WorkspaceOperationLockStore`
- * (ADP-workspace-046..051): the move locks a deletion must not race, the
- * one-way admission switch, and the three assertions that divide who may
- * still write.
+ * (ADP-workspace-046..051 / 071..072): the move locks a deletion must not
+ * race, the one-way admission switch, and the three assertions that
+ * divide who may still write.
  */
 export function describeWorkspaceOperationLockStoreContract(
   backendName: string,
@@ -53,13 +53,14 @@ export function describeWorkspaceOperationLockStoreContract(
         expectedWorkspaceVersion,
       });
 
-    it("ADP-workspace-046/047: a staged move locks the scope and its own actor only", async () => {
+    it("ADP-workspace-046/047/071: a staged move locks the scope and its own actor only", async () => {
       expect(await store().hasActiveMove()).toBe(false);
       expect(await store().hasMoveConflict(userId(1))).toBe(false);
 
-      await backend.seedMoveAuthorizationLocks(workspaceScopeOf(1), [
-        { migrationId: "migration-1", actorUserId: userId(1) },
-      ]);
+      await store().stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
 
       expect(await store().hasActiveMove()).toBe(true);
       expect(await store().hasMoveConflict(userId(1))).toBe(true);
@@ -67,10 +68,13 @@ export function describeWorkspaceOperationLockStoreContract(
       expect(await store().hasMoveConflict(userId(2))).toBe(false);
     });
 
-    it("ADP-workspace-046: move locks are read from the scope that holds them", async () => {
-      await backend.seedMoveAuthorizationLocks(workspaceScopeOf(2), [
-        { migrationId: "migration-1", actorUserId: userId(1) },
-      ]);
+    it("ADP-workspace-046/071: move locks are read from the scope that holds them", async () => {
+      await backend
+        .forScope(workspaceScopeOf(2))
+        .workspaceOperationLockStore.stageMove({
+          migrationId: "migration-1",
+          actorUserId: userId(1),
+        });
 
       expect(await store().hasActiveMove()).toBe(false);
       expect(
@@ -78,6 +82,69 @@ export function describeWorkspaceOperationLockStoreContract(
           .forScope(workspaceScopeOf(2))
           .workspaceOperationLockStore.hasActiveMove(),
       ).toBe(true);
+    });
+
+    it("ADP-workspace-071: staging is idempotent for its migration, and never re-points a live lock", async () => {
+      await store().stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
+      // A phase whose response was lost replays under the same id.
+      await store().stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
+      expect(await store().hasMoveConflict(userId(1))).toBe(true);
+
+      await expectConflict(
+        store().stageMove({
+          migrationId: "migration-1",
+          actorUserId: userId(2),
+        }),
+        "MOVE_AUTHORIZATION_LOCK_CONFLICT",
+      );
+      expect(await store().hasMoveConflict(userId(2))).toBe(false);
+    });
+
+    it("ADP-workspace-071/072: locks of different migrations stand independently", async () => {
+      await store().stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
+      await store().stageMove({
+        migrationId: "migration-2",
+        actorUserId: userId(2),
+      });
+
+      await store().releaseMove("migration-1");
+
+      expect(await store().hasActiveMove()).toBe(true);
+      expect(await store().hasMoveConflict(userId(1))).toBe(false);
+      expect(await store().hasMoveConflict(userId(2))).toBe(true);
+    });
+
+    it("ADP-workspace-072: releasing is idempotent and reaches only its own scope", async () => {
+      // Activation and abort are each replayed under the same migration
+      // id, so a release that finds no lock must not fail.
+      await store().releaseMove("migration-1");
+
+      await store().stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
+      const other = backend.forScope(workspaceScopeOf(2));
+      await other.workspaceOperationLockStore.stageMove({
+        migrationId: "migration-1",
+        actorUserId: userId(1),
+      });
+
+      await store().releaseMove("migration-1");
+      await store().releaseMove("migration-1");
+
+      expect(await store().hasActiveMove()).toBe(false);
+      expect(await other.workspaceOperationLockStore.hasActiveMove()).toBe(
+        true,
+      );
     });
 
     it("ADP-workspace-048/049/050: beginDeletion closes the scope to everything but its own continuation", async () => {

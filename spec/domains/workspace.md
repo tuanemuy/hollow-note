@@ -333,6 +333,8 @@ interface MembershipRemovalPreparationStore {
 interface WorkspaceOperationLockStore {
   hasActiveMove(): Promise<boolean>;
   hasMoveConflict(userId: UserId): Promise<boolean>;
+  stageMove(input: { migrationId: string; actorUserId: UserId }): Promise<void>;
+  releaseMove(migrationId: string): Promise<void>;
   beginDeletion(input: { workspaceId: WorkspaceId; operationId: string; expectedWorkspaceVersion: number }): Promise<void>;
   assertWritable(): Promise<void>;
   assertDeletionOwner(operationId: string): Promise<void>;
@@ -363,6 +365,8 @@ type WorkspaceDeletionManifestItem =
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 
 `WorkspaceOperationLockStore`はmove authorization lockと永続的なworkspace deletion admission stateを同じworkspace DOで読む。`beginDeletion`はWorkspaceを`active → deleting(operationId)`へCASし、同じtransactionで`WorkspaceDeletionManifestStore`のheaderを`building`として作る。以後`assertWritable`はWorkspaceの`deleting`、またはWorkspace行削除後も残るmanifest headerを見て`ConflictError("WORKSPACE_DELETING")`を返す。ScopeRouterはworkspace scopeの全write command（Note/Tag/Storage/Job/Usageを含む）の入口でこれを呼ぶ。削除workerだけが`assertDeletionOwner`でWorkspace lifecycleまたはmanifest headerの同じoperation IDを確認して継続できる。`compactAcknowledged`はlocal/global双方のack済みitemだけを最大`limit`件消し、残件有無を返す。`markCompleted`はitemが0件のときだけheaderを完了tombstoneへ移す。対象actorのrole/removalとworkspace deletionはactive move中に拒否する。
+
+move authorization lockの書き手は`stageMove` / `releaseMove`である。`moveNote`はsource freezeとtarget stageのそれぞれのlocal transaction内で`stageMove`を呼び、lockと、それが認可する行を同じtransactionで確定する。`stageMove`は`migrationId`について冪等で、同じactorの再実行は成功し、別のactorを指す再実行は`ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT")`にする（actorはoperation payloadで固定されているため、live lockの指し替えは常に欠陥である）。lockどうしは排他しない — 同じscopeに複数のmigrationのlockが立ちうる。`releaseMove`は無条件かつ冪等で、route switch後のtarget activate、source retire、switch前abortの両scopeがこれを呼ぶ。`stageMove`自身はdeletion admissionを見ない（`beginDeletion`が`hasActiveMove`を見ないのと同じ理由で、呼び出し側が同じtransactionで`assertWritable`を呼ぶ）。lease・expiryは無く、行の存在そのものがlockである。
 
 Workspace削除後も意図的に残すoutbox、Job履歴正データ、compact tombstoneの回収だけは`assertMaintenanceAllowed`で通す。allowlistは`jobRetention` / `outboxRelay` / `tombstonePrune`に閉じ、create/retry/progressなど業務状態を増やす操作は含めない。maintenance taskは利用者commandへ派生せず、削除済み行の縮約だけを行う。
 

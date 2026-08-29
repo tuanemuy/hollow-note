@@ -118,16 +118,6 @@ export type MembershipEdgeSeedInput = Readonly<{
 }>;
 
 /**
- * One staged `move_authorization_locks` row. Only the two fields the
- * workspace reads discriminate on: the lock's own identity, and the
- * member whose Membership version it pinned.
- */
-export type MoveAuthorizationLockSeedInput = Readonly<{
-  migrationId: string;
-  actorUserId: UserId;
-}>;
-
-/**
  * One `workspace_directory` projection row, written straight into the
  * table rather than through `WorkspaceDirectoryProjectionWriter`.
  *
@@ -201,20 +191,6 @@ export type ConformanceBackend = Readonly<{
   membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
   workspaceSlugReservationStore: WorkspaceSlugReservationStore;
   forScope(scope: ScopeKey): ScopedConformancePorts;
-  /**
-   * Seeds staged move authorization locks in one scope, for the two
-   * `WorkspaceOperationLockStore` reads that answer from them. The move
-   * slice owns the writer (`NoteMovePort.stageTarget`), which is not part
-   * of the workspace port set, so — as with `seedWorkspaceDirectory` —
-   * the contract's branch has no executable form without this hook.
-   *
-   * It must really take effect: the suite reads through the port after
-   * the call, so a stub that swallows its argument fails it.
-   */
-  seedMoveAuthorizationLocks(
-    scope: ScopeKey,
-    locks: readonly MoveAuthorizationLockSeedInput[],
-  ): Promise<void>;
   /** Seeds `workspace_directory` rows for the two directory readers. */
   seedWorkspaceDirectory(
     entries: readonly WorkspaceDirectorySeedInput[],

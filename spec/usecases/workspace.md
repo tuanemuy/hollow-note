@@ -105,6 +105,45 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
 | ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
+## getWorkspaceSettings
+
+### 概要
+
+ワークスペース設定 3 画面（P-31 / P-33 / P-34）の初期表示を供給する（WS-07）。`updateWorkspaceProfile` が編集する項目を書き込みなしで読み出す対のユースケース。
+
+### 入力DTO
+
+`workspaceId: string`, `userId: string`
+
+### 出力DTO
+
+| フィールド | 型 |
+| --- | --- |
+| `workspaceId` | `string` |
+| `name` | `string` |
+| `description` | `string` |
+| `avatarUrl` | `string \| null` |
+| `slug` | `string \| null` |
+| `publication` | `"private" \| "published"` |
+| `role` | `"owner" \| "editor" \| "viewer"` |
+| `canManage` | `boolean` |
+| `canPublish` | `boolean` |
+| `canDelete` | `boolean` |
+
+`description` を含むのは、フォームが読めなかった項目を空で描くと保存時に既存の説明を消してしまうためである。可否フラグを 3 つに分けるのは、3 画面の「読み取り専用」が `manageWorkspace` / `publishWorkspace` / `deleteWorkspace` という別の action で決まるためで、最低ロールが今どれも owner であることは権限表の都合にすぎない。
+
+### 処理フロー
+
+1. `resolveWorkspaceAccess` でロールを解決する。`role` が `null` なら `BusinessRuleError(InsufficientRole)`（メンバーであれば owner でなくても読める — 画面は読み取り専用で描く）
+2. `WorkspaceRepository.findById` で引き、射影に `WorkspaceAuthorization.can` の 3 つの判定を添えて返す
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| ワークスペース不在・削除済み | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+| 非メンバー | `BusinessRuleError(InsufficientRole)` |
+
 ## changeWorkspaceSlug
 
 ### 概要
@@ -129,6 +168,33 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 ### エラーケース
 
 `createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`、`ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("ACCOUNT_DELETING")`、`ConflictError("WORKSPACE_DELETING")`。local commit が拒否された場合は確保済みの slug reservation を `abandon` する。
+
+## checkWorkspaceSlugAvailability
+
+### 概要
+
+保存前にスラッグが空いているかを答える（WS-01 の「スラッグが既に使われている場合、入力中に検出して代替候補を示す」）。P-30 のスラッグ重複の即時検出と、P-31 のスラッグ編集に使う。
+
+### 入力DTO
+
+`slug: string`, `workspaceId: string | null`（編集中のワークスペースが既に保持している鍵。作成画面では `null`）
+
+### 出力DTO
+
+`slug: string`, `available: boolean`, `ownedBySelf: boolean`
+
+### 処理フロー
+
+1. `WorkspaceSlug.create(input.slug)` を構築する（形式違反・予約語は `BusinessRuleError`）
+2. `WorkspaceSlugReservationStore.resolveActive(slug)` を引く。`null` または `workspaceId` と一致するなら `available: true` とし、一致した場合は `ownedBySelf: true` を添える
+
+**助言的な読み取りであって claim ではない**。勝者を決めるのは `createWorkspace` / `changeWorkspaceSlug` が取る予約だけなので、空きと答えたスラッグが競合に負けて `ConflictError("SLUG_ALREADY_USED")` として返ることはありうる。`resolveActive` は確定した claim だけを解決し、他の operation が予約しただけの鍵は空きと読める — ヒントとしては保守的な向きである。スラッグは公開 URL の一部なので、これに答えること自体は列挙オラクルには当たらない。呼び出し元は認証済みセッションに限る（転送境界の責務）。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| スラッグの形式違反・予約語 | `BusinessRuleError(InvalidSlug)` / `BusinessRuleError(SlugReserved)` |
 
 ## publishWorkspace
 
@@ -196,6 +262,42 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
 | ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
+## getWorkspacePublication
+
+### 概要
+
+公開設定画面（P-33）の初期表示を供給する（WS-08 / DS-02）。`publishWorkspace` は公開を切り替えた要求にしか公開ページ URL と公開ノート件数を返さないため、画面が最初に描くための書き込みなしの読み取りを別に置く。
+
+### 入力DTO
+
+`workspaceId: string`, `userId: string`
+
+### 出力DTO
+
+| フィールド | 型 |
+| --- | --- |
+| `workspaceId` | `string` |
+| `publication` | `"private" \| "published"` |
+| `slug` | `string \| null` |
+| `publicUrl` | `string \| null` |
+| `publicNoteCount` | `number` |
+| `canPublish` | `boolean` |
+
+`publicUrl` が非 `null` になるのは `published` のときだけである。私有のワークスペースが持つスラッグはまだどのページにも解決しない。
+
+### 処理フロー
+
+1. `resolveWorkspaceAccess` でロールを解決する。`role` が `null` なら `BusinessRuleError(InsufficientRole)`（メンバーであれば読める）
+2. `WorkspaceRepository.findById` で引く
+3. `publishWorkspace` 手順 5 と同じ数え方で公開ノート件数を求める。非公開のときも数えるのは、「公開ページが空になる」という注意が意味を持つのが公開**前**だからである
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| ワークスペース不在・削除済み | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+| 非メンバー | `BusinessRuleError(InsufficientRole)` |
+
 ## deleteWorkspace
 
 ### 概要
@@ -247,6 +349,39 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 要求者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
 
 同じ operation ID の再要求は受理済みの `operationId` を返して何も書かない（`beginDeletion` は operation ID について冪等である）。
+
+## getWorkspaceDeletionStatus
+
+### 概要
+
+削除の進み具合を答える（WS-10）。P-34 の「実行中 / 完了」を描くための読み取りで、`deleteWorkspace` が返す `accepted` の続きにあたる。
+
+### 入力DTO
+
+`workspaceId: string`, `userId: string`
+
+### 出力DTO
+
+| フィールド | 型 |
+| --- | --- |
+| `workspaceId` | `string` |
+| `status` | `"none" \| "inProgress" \| "completed"` |
+| `operationId` | `string \| null` |
+| `canDelete` | `boolean` |
+
+### 処理フロー
+
+1. `WorkspaceRepository.findById` で引く。不在なら `completed` を返す（`operationId: null` / `canDelete: false`）。削除サガは local phase の最後に Workspace 行を消すため、行の不在がそのまま利用者から見た完了である。global cleanup と manifest の縮約はその後に続くが、ワークスペースを失った利用者からは観測できない
+2. `resolveWorkspaceAccess` でロールを解決する。`role` が `null` なら `BusinessRuleError(InsufficientRole)`
+3. `Workspace` の lifecycle が `deleting` なら `inProgress` と `operationId`、`active` なら `none` を返す
+
+行が不在の場合にメンバー判定を行わないのは、その時点で参照できるメンバーシップがどこにも残っていない（manifest が edge を消し終えている）ためである。漏れるのは「そのワークスペースがもう無い」ことだけで、これは `resolveWorkspaceAccess` が `WORKSPACE_NOT_FOUND` で既にすべてのサインイン済み利用者へ答えている。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 非メンバー（ワークスペースは存在する） | `BusinessRuleError(InsufficientRole)` |
 
 ## inviteMember
 

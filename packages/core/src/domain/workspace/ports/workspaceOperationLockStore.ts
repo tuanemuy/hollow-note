@@ -18,8 +18,8 @@ export type WorkspaceMaintenanceKind =
 /**
  * Write admission for the **current workspace scope**: the move
  * authorization locks and the permanent workspace-deletion admission
- * state, read from the same scope object so a single local transaction
- * can decide both.
+ * state, held in the same scope object so a single local transaction can
+ * decide both.
  *
  * Deletion is one-way and has no user-facing abort. `beginDeletion` is
  * the switch that closes the scope to ordinary mutation, and nothing
@@ -41,16 +41,17 @@ export type WorkspaceMaintenanceKind =
  * a write delayed past the deletion is rejected permanently rather than
  * landing in a scope that looks empty.
  *
- * None of the reads here carries a lease. A staged move lock has no
- * expiry — its row's existence *is* the lock, cleared only by the move's
- * activation or by an abort before the route switch — and a deletion
- * never lapses back to writable.
+ * Nothing here carries a lease. A staged move lock has no expiry — its
+ * row's existence *is* the lock, and only `releaseMove` clears it — and a
+ * deletion never lapses back to writable.
  *
  * Error contract: `ConflictError("WORKSPACE_DELETING")` (ordinary write
  * or foreign continuation against a deleting / deleted scope),
  * `ConflictError("OPTIMISTIC_LOCK_FAILURE")` (the observed Workspace
- * version no longer holds), `ConflictError` (deletion already terminal,
- * unknown maintenance kind), `SystemError(DatabaseError)`.
+ * version no longer holds),
+ * `ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT")` (a migration id
+ * already locks a different actor), `ConflictError` (deletion already
+ * terminal, unknown maintenance kind), `SystemError(DatabaseError)`.
  */
 export interface WorkspaceOperationLockStore {
   /**
@@ -77,6 +78,52 @@ export interface WorkspaceOperationLockStore {
    * members do not constrain this one's membership. A pure read.
    */
   hasMoveConflict(userId: UserId): Promise<boolean>;
+  /**
+   * Stages this scope's half of a note move's authorization lock, pinning
+   * the Membership version the phase re-checked against `actorUserId`.
+   *
+   * Called inside the phase's own local transaction — the source's freeze
+   * and the target's staged import each stage one in their own scope — so
+   * the lock and the rows it authorizes commit together. There is no
+   * state and no expiry: the row's existence is the lock, so a move that
+   * dies mid-flight keeps blocking until `releaseMove` settles it.
+   *
+   * Idempotent for `migrationId`: a repeat naming the same actor changes
+   * nothing and succeeds, which is what lets a phase whose response was
+   * lost replay under the same migration id. A repeat naming a
+   * **different** actor is `ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT")`
+   * — the actor is fixed in the move's operation payload, so re-pointing
+   * a live lock is a defect rather than a retry.
+   *
+   * Locks do not exclude each other: several migrations may hold one in
+   * the same scope, and `hasActiveMove` answers for all of them. What
+   * they exclude is deletion and membership mutation, which read
+   * `hasActiveMove` / `hasMoveConflict` inside their own transaction — so
+   * a staging that races one of those is decided by the scope object's
+   * serialization, and the loser sees the winner's outcome rather than a
+   * half-applied one.
+   *
+   * It does not consult the deletion admission itself, for the same
+   * reason `beginDeletion` does not consult `hasActiveMove`: the caller
+   * calls `assertWritable` in this very transaction, and only the caller
+   * knows which error its phase must raise.
+   */
+  stageMove(
+    input: Readonly<{ migrationId: string; actorUserId: UserId }>,
+  ): Promise<void>;
+  /**
+   * Clears the lock `migrationId` staged in this scope — the target's on
+   * activation after the route switch, the source's when it is retired,
+   * and both scopes' on an abort before the switch.
+   *
+   * Unconditional and idempotent: a migration id that holds no lock here,
+   * because it was already released or never staged in this scope,
+   * returns normally. Both callers depend on that — activation and abort
+   * are each replayed under the same migration id, and neither may fail
+   * on a repeat. The id is the key, so a release can only ever reach its
+   * own lock; it never inspects the actor.
+   */
+  releaseMove(migrationId: string): Promise<void>;
   /**
    * The switch that accepts a deletion: compare-and-set the Workspace
    * from `active` to `deleting(operationId)` on

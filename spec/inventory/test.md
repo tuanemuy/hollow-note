@@ -1,6 +1,6 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-26）
+生成元: `spec/testcases/`（最終同期: 2026-08-29）
 
 **1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -2460,4 +2460,32 @@
 | TC-workspace-272 | updateWorkspaceProfile: ワークスペース所有のノートがある — 名前は変えず説明だけを更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `workspace.profileUpdated` は発行されず、読み取りモデルは更新されない |
 | TC-workspace-273 | updateWorkspaceProfile: — — 名前を空文字列にする | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `BusinessRuleError(InvalidName)` が投げられる |
 | TC-workspace-274 | updateWorkspaceProfile: 同時に別の要求が更新した — 更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる |
+| TC-workspace-275 | getWorkspaceSettings: owner のメンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `name` / `description` / `avatarUrl` / `slug` / `publication` / `role` が返り、`canManage` / `canPublish` / `canDelete` がすべて `true` になる |
+| TC-workspace-276 | getWorkspaceSettings: viewer のメンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | 同じ射影が返り、3 つの可否フラグがすべて `false` になる |
+| TC-workspace-277 | getWorkspaceSettings: 説明とアイコンが設定済み — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `description` と `avatarUrl` が保存された値のまま返る |
+| TC-workspace-278 | getWorkspaceSettings: スラッグ未設定 — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `slug: null` が返る |
+| TC-workspace-279 | getWorkspaceSettings: 非メンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-280 | getWorkspaceSettings: ワークスペースが不在・削除済み — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-workspace-281 | checkWorkspaceSlugAvailability: どのワークスペースも使っていないスラッグ — 利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: true` / `ownedBySelf: false` が返る |
+| TC-workspace-282 | checkWorkspaceSlugAvailability: 自分のワークスペースが使っているスラッグ — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: true` / `ownedBySelf: true` が返る |
+| TC-workspace-283 | checkWorkspaceSlugAvailability: 別のワークスペースが使っているスラッグ — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: false` / `ownedBySelf: false` が返る |
+| TC-workspace-284 | checkWorkspaceSlugAvailability: 別のワークスペースが使っているスラッグ — `workspaceId` なしで利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: false` / `ownedBySelf: false` が返る |
+| TC-workspace-285 | checkWorkspaceSlugAvailability: 自分のワークスペースが使っているスラッグを大文字を含む表記で指定する — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | 入力を正規化してから判定し、`available: true` / `ownedBySelf: true` が返る |
+| TC-workspace-286 | checkWorkspaceSlugAvailability: 他の operation が予約しただけで確定していない（`reserved`）スラッグ — 利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | 空きとして返る（勝者は `createWorkspace` / `changeWorkspaceSlug` の予約が決める） |
+| TC-workspace-287 | checkWorkspaceSlugAvailability: — — 形式が不正なスラッグで問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `BusinessRuleError(InvalidSlug)` が投げられる |
+| TC-workspace-288 | checkWorkspaceSlugAvailability: — — 予約語のスラッグで問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `BusinessRuleError(SlugReserved)` が投げられる |
+| TC-workspace-289 | getWorkspacePublication: 非公開・スラッグ未設定 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publication: "private"` / `slug: null` / `publicUrl: null` が返る |
+| TC-workspace-290 | getWorkspacePublication: 非公開・スラッグ設定済み — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `slug` は返るが `publicUrl: null` になる |
+| TC-workspace-291 | getWorkspacePublication: 公開中 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publication: "published"` と、アプリ URL とスラッグから組み立てた `publicUrl` が返る |
+| TC-workspace-292 | getWorkspacePublication: 公開ノートが 3 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 3` が返る |
+| TC-workspace-293 | getWorkspacePublication: 公開ノートが 0 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 0` が返る |
+| TC-workspace-294 | getWorkspacePublication: 非公開で公開ノートが 2 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 2` が返る（非公開でも数える） |
+| TC-workspace-295 | getWorkspacePublication: viewer のメンバー — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | 射影は返り、`canPublish: false` になる |
+| TC-workspace-296 | getWorkspacePublication: 非メンバー — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-297 | getWorkspacePublication: ワークスペースが不在・削除済み — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-workspace-298 | getWorkspaceDeletionStatus: 削除が開始されていない、owner のメンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "none"` / `operationId: null` / `canDelete: true` が返る |
+| TC-workspace-299 | getWorkspaceDeletionStatus: 削除が開始されていない、viewer のメンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "none"` / `canDelete: false` が返る |
+| TC-workspace-300 | getWorkspaceDeletionStatus: `deleteWorkspace` が受理済みで Workspace はまだ残っている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "inProgress"` と受理時の `operationId` が返る |
+| TC-workspace-301 | getWorkspaceDeletionStatus: 削除サガが Workspace 行を消し終えている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "completed"` / `operationId: null` / `canDelete: false` が返る |
+| TC-workspace-302 | getWorkspaceDeletionStatus: ワークスペースは存在するが非メンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `BusinessRuleError(InsufficientRole)` が投げられる |
 

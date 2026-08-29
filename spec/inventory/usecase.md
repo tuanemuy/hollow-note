@@ -1,6 +1,6 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-26）
+生成元: `spec/usecases/`（最終同期: 2026-08-29）
 
 **1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -153,3 +153,7 @@
 | UC-workspace-019 | `listPublicWorkspaces` | `spec/usecases/workspace.md#listPublicWorkspaces` | 全 workspace directory shards の published active entries を署名 cursor で merge・deduplicate し、slug と更新日時を site map 用に page する |
 | UC-workspace-020 | `getPublicWorkspace` | `spec/usecases/workspace.md#getPublicWorkspace` | slug を正規化し、active reservation と published directory から公開 workspace 情報を返す。形式違反・不在・private を同じ not found に畳む |
 | UC-workspace-021 | `deleteMembershipsForUser` | `spec/usecases/workspace.md#deleteMembershipsForUser` | account deletion が指定した current workspace scope で operation を冪等化し、最後の owner を再検査して対象 user の jobs 終端、著者投影置換、membership 削除を完了し、global edge 削除用 ack を返す |
+| UC-workspace-022 | `getWorkspaceSettings` | `spec/usecases/workspace.md#getWorkspaceSettings` | 書き込みを持たない `updateWorkspaceProfile` の対として、メンバーに限り name・description・avatarUrl・slug・publication・role と manageWorkspace / publishWorkspace / deleteWorkspace の可否を設定 3 画面の初期表示へ射影する。非メンバーは `InsufficientRole`、不在・削除済みは `WORKSPACE_NOT_FOUND` |
+| UC-workspace-023 | `checkWorkspaceSlugAvailability` | `spec/usecases/workspace.md#checkWorkspaceSlugAvailability` | 保存前のスラッグの空きを slug reservation の `resolveActive` で答え、`available` と `ownedBySelf` を返す。claim ではなく助言的な読み取りなので、他の operation が予約しただけの鍵は空きと読め、勝者は `createWorkspace` / `changeWorkspaceSlug` の予約が決める。形式違反・予約語は `BusinessRuleError` |
+| UC-workspace-024 | `getWorkspacePublication` | `spec/usecases/workspace.md#getWorkspacePublication` | メンバーに限り publication・slug・公開ページ URL・公開ノート件数と publish 可否を公開設定画面の初期表示へ射影する。件数は非公開でも数え、URL は `published` のときだけ非 `null` にする |
+| UC-workspace-025 | `getWorkspaceDeletionStatus` | `spec/usecases/workspace.md#getWorkspaceDeletionStatus` | Workspace 行の不在を `completed`、lifecycle の `deleting` を `inProgress` と operation ID、`active` を `none` として削除の進行を答える。行が存在する場合だけメンバーであることを要求し、delete 可否を添える |

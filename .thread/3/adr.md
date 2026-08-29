@@ -911,3 +911,103 @@ WS-02 は「選択は URL に反映され、次回の訪問時にも引き継が
 - localStorage だと個人の文脈を一度描いてから飛び直すことになるが、その瞬きが無い。
 - Cookie は利用者に紐づかないので、別の利用者がサインインしても値が残る。権限判定は遷移先が行い、非メンバーは「このワークスペースは開けません」に落ちるので、漏れるのは workspace ID の存在だけ（自分が選んだものに限る）。
 - ワークスペース文脈の入口は今のところ設定画面。`/workspaces/:id/notes` とその読み出し（`listNotes` は個人スコープしか読まない）が後続スライスのため、遷移先は `ScopeToken` と `routes/index.tsx` の 2 か所に閉じてある。
+
+## ADR-056: ワークスペース設定の読み出しは `getWorkspaceSettings` 1 本にし、ADR-054 の暫定を畳む
+
+### Context
+
+ADR-054 は「`getWorkspaceSettings` 相当の読み取りユースケースが入ったら、この関数はその呼び出し 1 本に縮む」を反証条件にして、presentation の `settingsRead.ts` が `resolveWorkspaceAccess` に射影を足す暫定を置いていた。その条件を満たすのが本変更である。P-31 が要る `description` / `avatarUrl` / `slug` はどの既存ユースケースも返さず、`WorkspaceProfileView` を返すのは書き込みの `updateWorkspaceProfile` だけだった。
+
+### Decision
+
+`application/workspace/getWorkspaceSettings.ts`（UC-workspace-022）を置く。identity の `getProfile`（UC-identity-022）と同じ「書き込みを持たない対のユースケース」で、`resolveWorkspaceAccess` で認可し、`WorkspaceReader.workspace.findById` で射影する。可否は `canManage` / `canPublish` / `canDelete` の 3 つに分ける — 3 画面の「読み取り専用」が別の action で決まるためで、最低ロールが今どれも owner であることは権限表の都合にすぎない。
+
+### Consequences
+
+- ADR-054 は解消。`settingsRead.ts` は `getWorkspaceSettings` の呼び出し 1 本に縮み、presentation から `@repo/core/domain/*` の import が 2 つ消える。
+- 非メンバーは `BusinessRuleError(InsufficientRole)`。ADR-054 の `null` を返す形とは違うので、フロントは「このワークスペースは開けません」を例外側で描く（不在は `WORKSPACE_NOT_FOUND` のまま）。
+
+## ADR-057: スラッグの空き確認は `resolveActive` だけを読む助言的な読み取りにする
+
+### Context
+
+WS-01 の「スラッグが既に使われている場合、入力中に検出して代替候補を示す」と P-30 の「スラッグ重複の即時検出」に対応する読み取りが無く、フロントは保存が拒否されてから候補を出す形になっていた。
+
+### Decision
+
+`checkWorkspaceSlugAvailability`（UC-workspace-023）を置き、identity の `checkHandleAvailability`（UC-identity-023）に流儀を合わせる。`WorkspaceSlugReservationStore.resolveActive` 1 回だけを読み、`available` / `ownedBySelf` を返す。入力は `slug` と、編集中のワークスペースが既に鍵を持つ場合の `workspaceId` だけ — `userId` は判定に要らないので受け取らない（呼び出し元を認証済みセッションに限るのは転送境界の責務）。
+
+### Consequences
+
+- `reserved` の行は空きと読める。claim ではないので勝者は予約が決め、空きと答えた鍵が `SLUG_ALREADY_USED` で返ることはありうる。ヒントとしては保守的な向きである。
+- 形式違反・予約語は `WorkspaceSlug.create` が `BusinessRuleError` にする。フォームは同じ 1 回の問い合わせで「使えない文字」と「重複」の両方を得る。
+
+## ADR-058: P-33 の公開ノート件数も scope 走査で数える（ADR-042 を読み取り側へ広げる）
+
+### Context
+
+ADR-042 は `publishWorkspace` の `publicNoteCount` を scope 走査のまま据え置き、反証条件を「ノート公開が public projection に投影される」に狭めた。現状も購読者は無く（`publicNoteProjectionWriter` の呼び出しは `deleteAccount` の著者秘匿だけ）、`PublicNoteQueryService.searchPublic` は全ワークスペースについて 0 を返す。一方 P-33 は初期表示で件数を要求し、`publishWorkspace` の応答は公開を切り替えた要求にしか届かない。
+
+### Decision
+
+`countPublicNotes` を `publishWorkspace.ts` から `application/workspace/publicNoteCount.ts` へ出し、新設の `getWorkspacePublication`（UC-workspace-024）と共有する。非公開のときも数える — 「公開ページが空になる」という注意が意味を持つのは公開**前**だからである。`publicUrl` は `published` のときだけ非 `null` にする。
+
+### Consequences
+
+- ADR-029 / ADR-042 の反証条件は変わらない。差し替え先が 1 か所から 2 か所になったが、両方とも同じ関数を呼ぶので置き換えは 1 ファイルで済む。
+- P-33 の初期表示がワークスペースのノート件数に対して線形になる。件数であってページではないので上限が無く、これが読み取りモデルへ移すべき二つ目の理由になる。
+
+## ADR-059: 削除の進行は Workspace の lifecycle と行の不在で観測し、manifest を読まない
+
+### Context
+
+P-34 の「実行中 / 完了」を追う口が無く、アカウント削除の `getAccountDeletionStatus` に相当するものが workspace に無かった。候補は manifest header と `WorkspaceOperationLockStore` の 2 つだが、前者は scope UoW の中にしか無く、後者の `assertWritable` / `assertDeletionOwner` は例外の有無でしか答えないため、状態の判定に `try / catch` が要る。
+
+### Decision
+
+`getWorkspaceDeletionStatus`（UC-workspace-025）は `WorkspaceReader.workspace.findById` 1 本で答える。`Workspace.lifecycle` は既に `active` / `deleting(operationId)` の判別共用体であり、削除サガは local phase の最後に行そのものを消す。したがって「行が無い = `completed`」「`deleting` = `inProgress`」「`active` = `none`」で 3 状態が揃う。ポートの追加も manifest の読み出しも要らず、例外に頼る分岐も無い。
+
+### Consequences
+
+- global cleanup と manifest の縮約は観測できない。ワークスペースを失った利用者からは区別が付かない段階なので、P-34 が描くものとしてはこれで足りる。
+- 行が不在の場合はメンバー判定をしない（その時点で参照できる Membership がどこにも残っていない）。漏れるのは「そのワークスペースがもう無い」ことだけで、`resolveWorkspaceAccess` が `WORKSPACE_NOT_FOUND` で既に全サインイン済み利用者へ答えている範囲を超えない。
+
+## ADR-060: `listNotes` は `searchNotes` と同じ owner 対を受け、workspace 文脈を `viewNote` で認可する
+
+### Context
+
+`listNotes` は個人スコープ固定だったため、WS-02 の遷移先を本来の P-10 にできず、ADR-055 は「ワークスペース文脈の入口は今のところ設定画面」という暫定を置いていた。
+
+### Decision
+
+`listNotes` の入力に `ownerType` / `ownerWorkspaceId` を足す。`searchNotes`（UC-note-006）の入力 DTO と同じ対にしたのは、正典の一覧が入ったとき呼び出し側が書き換え無しで移れるようにするためである。既定は `"user"` なので既存の呼び出しは変わらない。認可は `searchNotes` 手順 1 のとおり `resolveWorkspaceAccess` → `WorkspaceAuthorization.ensureCan(role, "viewNote")` で、`createBlankNote` の owner 解決と同じ形にする。
+
+### Consequences
+
+- ADR-055 の「遷移先は設定画面」が解消し、スコープ切り替えの遷移先を `/workspaces/:id/notes` にできる。
+- 非メンバーは `InsufficientRole`、削除済みは `resolveWorkspaceAccess` が投げる `WORKSPACE_NOT_FOUND` になる（WS-02 の「除名された・削除済みのワークスペースを URL で直接開いた」の 2 経路）。
+- ユースケース台帳には行を足さない。`listNotes` は `spec/usecases/note.md` に無い walking skeleton の内部リードのままで、正典は `searchNotes` である。
+
+## ADR-061: move authorization lock に `stageMove` / `releaseMove` を足し、ADR-052 の pin 照合は併存させる
+
+### Context
+
+ADR-052 のとおり `WorkspaceOperationLockStore` は `hasActiveMove` / `hasMoveConflict` の読みしか持たず、適合スイートは `ConformanceBackend.seedMoveAuthorizationLocks` で行を直接仕込んでいた。結果として `spec/testcases/note/moveNote.md` の 2 行 —「target stage 後に actor の除名・降格を試みる」「target stage 後に workspace 削除を試みる」— を満たす経路が存在しなかった。ADR-051 の `NoteMovePort` 実体化は据え置きのままなので、書き手は `WorkspaceOperationLockStore` 側に足すしかない。
+
+### Decision
+
+ポートに `stageMove({ migrationId, actorUserId })` / `releaseMove(migrationId)` を足し、memory と Cloudflare DO の両方で実装する。
+
+- 列は `migration_id` / `actor_user_id` の 2 つのまま（ADR-021 を維持）。`membership_id` / `expected_auth_version` / `note_id` を足しても現状は誰も読まないため、読み手が現れたときにポート JSDoc と適合スイートを対で触る（ADR 026）。スキーマ変更・D1 マイグレーションは不要だった。
+- `stageMove` は `migrationId` について冪等。同じ actor の再実行は成功し、別の actor を指す再実行は `ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT")` にする。actor は operation payload で固定されているので、live lock の指し替えは retry ではなく欠陥である。
+- lock どうしは排他しない。lease も expiry も持たず、行の存在そのものが lock である。`stageMove` は deletion admission を見ない — `beginDeletion` が `hasActiveMove` を見ないのと同じ理由で、呼び出し側が同じ transaction で `assertWritable` を呼ぶ。
+- `moveNote` は `snapshotSource`（source scope）と `stageTarget`（target scope）のそれぞれの UoW 内で `stageMove` を呼び、route switch 直後の `activateTarget`（target scope）と `retireSource`（source scope）、および abort の両 scope で `releaseMove` を呼ぶ。stage も release も `AppliedOperationStore` のガードより **前** に置く。ガードの後ろに置くと、replay で「再度張った lock を解放しない」経路ができるためである。両方とも冪等なので繰り返しの代償は無い。
+- ADR-052 の pin した Membership version の再照合は **残す**。lock は「stage 後に来た除名・降格を拒否する」後ろ向きの防護で、「事前確認と phase の間に既にコミットされていた変更を検出する」前向きの防護は pin 照合にしかできない（`spec/testcases/note/moveNote.md` の「事前確認後・source freeze 前に移動元 Membership version が変わる」）。2 つは別の窓を塞いでいる。
+- 適合スイートは `seedMoveAuthorizationLocks` を実メソッド呼び出しへ置き換え、seed ヘルパを `ConformanceBackend` と両ハーネスから削除した。ADR-011 系の「読みの true 側に実行可能形が無い」問題は、書き手ができたことで解消している。
+
+### Consequences
+
+- ADR-052 の「満たされない 2 つ」が閉じた。staged move がある scope では `deleteWorkspace` が `WORKSPACE_MOVE_IN_PROGRESS` を投げ、`ensureMembershipMutable` が同じコードで actor の除名・降格・脱退を拒否する。
+- `moveNote` に `activateTarget` という 5 番目のフェーズが増えた（target lock の解放だけを行う target-local UoW）。spec/usecases/note.md 手順 8 前半そのものである。
+- move が実行中は source workspace も削除できない。spec/database の「全 scope に置く」と手順 5 の「source move lock を保存して」に従った結果で、意図した挙動である。
+- `MOVE_AUTHORIZATION_LOCK_CONFLICT` は `errorDisplay` の文言表に載せていない。`MEMBERSHIP_REMOVAL_LOCK_CONFLICT` と同じく利用者に出る想定が無い内部欠陥コードで、kind 既定の文言に落ちる。

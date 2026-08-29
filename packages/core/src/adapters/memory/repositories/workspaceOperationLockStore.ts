@@ -24,6 +24,9 @@ const deleting = (detail: string): ConflictError =>
 const admissionConflict = (detail: string): ConflictError =>
   new ConflictError("WORKSPACE_DELETION_ADMISSION_CONFLICT", detail);
 
+const moveLockConflict = (detail: string): ConflictError =>
+  new ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT", detail);
+
 export function createMemoryWorkspaceOperationLockStore(
   backend: MemoryBackend,
   scope: ScopeStore,
@@ -49,6 +52,26 @@ export function createMemoryWorkspaceOperationLockStore(
       return scope.moveAuthorizationLocks
         .values()
         .some((row) => row.actorUserId === userId);
+    },
+
+    async stageMove(input): Promise<void> {
+      const existing = scope.moveAuthorizationLocks.get(input.migrationId);
+      if (existing !== undefined) {
+        if (existing.actorUserId !== input.actorUserId) {
+          throw moveLockConflict(
+            `Move ${input.migrationId} already locks the membership of ${existing.actorUserId}`,
+          );
+        }
+        return;
+      }
+      scope.moveAuthorizationLocks.set(input.migrationId, {
+        migrationId: input.migrationId,
+        actorUserId: input.actorUserId,
+      });
+    },
+
+    async releaseMove(migrationId: string): Promise<void> {
+      scope.moveAuthorizationLocks.delete(migrationId);
     },
 
     async beginDeletion(input): Promise<void> {

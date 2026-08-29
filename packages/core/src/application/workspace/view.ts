@@ -46,6 +46,73 @@ export type WorkspaceProfileView = Readonly<{
   updatedAt: Date;
 }>;
 
+/**
+ * What the three settings screens read before they edit anything
+ * (P-31 / P-33 / P-34). It is the read counterpart of
+ * `updateWorkspaceProfile`, so it carries every field that screen writes —
+ * rendering the description empty because the read did not supply it would
+ * erase it on the next save.
+ *
+ * The three capability flags are separate because the three screens gate
+ * on three different actions; that they share a minimum role today is the
+ * authorization table's business, not the caller's. `role` is non-null:
+ * a non-member has no settings screen to render.
+ */
+export type WorkspaceSettingsView = Readonly<{
+  workspaceId: string;
+  name: string;
+  description: string;
+  avatarUrl: string | null;
+  slug: string | null;
+  publication: WorkspacePublicationView;
+  role: WorkspaceRoleView;
+  canManage: boolean;
+  canPublish: boolean;
+  canDelete: boolean;
+}>;
+
+/**
+ * An advisory answer about one slug, shaped like `HandleAvailabilityView`
+ * of the identity plane: the winner is decided by the reservation
+ * `createWorkspace` / `changeWorkspaceSlug` takes, not by this read.
+ */
+export type WorkspaceSlugAvailabilityView = Readonly<{
+  slug: string;
+  available: boolean;
+  ownedBySelf: boolean;
+}>;
+
+/**
+ * The publication screen's initial read (P-33), giving before the fact
+ * what `publishWorkspace` only answers after it. `publicUrl` is non-null
+ * exactly while the workspace is published — a slug held by a private
+ * workspace resolves to no page.
+ */
+export type WorkspacePublicationStatusView = Readonly<{
+  workspaceId: string;
+  publication: WorkspacePublicationView;
+  slug: string | null;
+  publicUrl: string | null;
+  publicNoteCount: number;
+  canPublish: boolean;
+}>;
+
+/**
+ * Progress of a workspace deletion (P-34 の「実行中 / 完了」).
+ *
+ * `completed` is reported from the absence of the Workspace row, which is
+ * what the saga deletes at the end of its local phase; the global cleanup
+ * that follows is invisible to the member, who has already lost the
+ * workspace. `operationId` is present only while the scope is closed under
+ * one, since that is the only state that names it.
+ */
+export type WorkspaceDeletionStatusView = Readonly<{
+  workspaceId: string;
+  status: "none" | "inProgress" | "completed";
+  operationId: string | null;
+  canDelete: boolean;
+}>;
+
 export type WorkspaceSlugChangeView = Readonly<{
   workspaceId: string;
   slug: string | null;

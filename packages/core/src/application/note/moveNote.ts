@@ -313,12 +313,17 @@ async function applyStorageDelta(
 }
 
 /**
- * 手順 5 — freezes the source side into a transferable snapshot.
+ * 手順 5 — freezes the source side into a transferable snapshot and
+ * stages the source half of the move authorization lock.
  *
  * Nothing is deleted here: the route still points at the source, so a
  * reader that arrives before the switch must still find the whole note.
  * `reauthorize` is false only on the forward-only leg after the switch,
  * where a refusal would strand a note that has already changed hands.
+ *
+ * The lock is staged inside this transaction, so from the moment the
+ * freeze commits a workspace deletion and a mutation of the actor's own
+ * membership both lose to the move rather than the other way round.
  */
 async function snapshotSource(
   container: RequestContainer,
@@ -340,6 +345,10 @@ async function snapshotSource(
         noteNotFound,
       );
     }
+    await ctx.workspaceOperationLockStore.stageMove({
+      migrationId: plan.migrationId,
+      actorUserId: plan.actorUserId,
+    });
 
     const versioned = await ctx.noteRepository.findById(plan.noteId);
     if (versioned === null) {
@@ -376,8 +385,9 @@ async function snapshotSource(
  * 手順 6 — stages the note in the target scope and credits its usage.
  *
  * The whole phase is one target-local transaction, which is what makes
- * "the target admits this actor" and "the target now holds the data"
- * inseparable. `note.moved` is *not* emitted here: nothing has changed
+ * "the target admits this actor", "the target's move lock stands" and
+ * "the target now holds the data" inseparable. `note.moved` is *not*
+ * emitted here: nothing has changed
  * hands until the route switch, and a consumer that saw the event first
  * would resolve the note back to the source.
  */
@@ -400,6 +410,13 @@ async function stageTarget(
       plan.targetMembershipVersion,
       insufficientTargetRole,
     );
+    // Ahead of the idempotence guard, so a replay re-states the lock the
+    // activation below is going to release. Staging is itself idempotent
+    // on the migration id, so the repeat costs nothing.
+    await ctx.workspaceOperationLockStore.stageMove({
+      migrationId: plan.migrationId,
+      actorUserId: plan.actorUserId,
+    });
 
     if (
       !(await ctx.appliedOperationStore.markApplied({
@@ -440,12 +457,34 @@ async function stageTarget(
 }
 
 /**
- * 手順 8 / 9 — retires the source rows and publishes `note.moved`.
+ * 手順 8 前半 — activates the target by releasing its move lock.
+ *
+ * It runs after the switch because the lock's whole purpose is to keep
+ * the target from being deleted, and its actor from being demoted, while
+ * the staged copy is the only one that exists but is not yet reachable.
+ * Once the route points at the target that window is closed.
+ *
+ * Unguarded by `AppliedOperationStore`: releasing is idempotent by
+ * contract, and a guard would make a replayed activation skip the
+ * release that its own replayed staging just re-applied.
+ */
+async function activateTarget(
+  container: RequestContainer,
+  plan: MovePlan,
+): Promise<void> {
+  await container.scopeUnitOfWorkProvider.run(plan.target, (ctx) =>
+    ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
+  );
+}
+
+/**
+ * 手順 8 後半 / 9 — retires the source rows and publishes `note.moved`.
  *
  * Forward-only: the route already points at the target, so this phase
  * asks no admission question it could be refused on. It is deduplicated
  * on the migration id instead, which is what lets a lost response replay
- * without debiting the source twice.
+ * without debiting the source twice. Releasing the source's move lock
+ * sits ahead of that guard for the same reason activation is unguarded.
  *
  * The event is collected here rather than in the staging transaction
  * because this is the first transaction that runs *after* the switch —
@@ -460,6 +499,7 @@ async function retireSource(
 ): Promise<void> {
   const now = container.clock.now();
   await container.scopeUnitOfWorkProvider.run(plan.source, async (ctx) => {
+    await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
     if (
       !(await ctx.appliedOperationStore.markApplied({
         operationId: plan.migrationId,
@@ -511,7 +551,9 @@ async function retireSource(
  *
  * The target undo is guarded by its own applied-operation key so a second
  * abort of the same migration cannot debit the target twice, and it
- * returns before touching usage when nothing was staged.
+ * returns before touching usage when nothing was staged. Both scopes'
+ * move locks are released outside that guard, since an abort may follow a
+ * failure that never reached the staging it is undoing.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
@@ -521,6 +563,7 @@ async function abortBeforeSwitch(
 ): Promise<void> {
   const now = container.clock.now();
   await container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
+    await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
     if (
       !(await ctx.appliedOperationStore.markApplied({
         operationId: plan.migrationId,
@@ -549,6 +592,10 @@ async function abortBeforeSwitch(
     });
     await applyStorageDelta(ctx, plan.target, -(snapshot?.bytes ?? 0), -1, now);
   });
+
+  await container.scopeUnitOfWorkProvider.run(plan.source, (ctx) =>
+    ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
+  );
 
   await container.noteRouteStore.abortMove({
     noteId: plan.noteId,
@@ -602,10 +649,11 @@ async function claimRoute(
  * spec/usecases/note.md#movenote, OR-12).
  *
  * Four phases, each idempotent under one migration id:
- * `snapshotSource` (read-only freeze) → `stageTarget` (target-local
- * insert + credit) → the route switch, which is the single instant the
- * change is visible → `retireSource` (source rows, debit, `note.moved`).
- * Before the switch a failure aborts and the route thaws back to the
+ * `snapshotSource` (freeze + source lock) → `stageTarget` (target-local
+ * insert + credit + target lock) → the route switch, which is the single
+ * instant the change is visible → `activateTarget` / `retireSource`
+ * (locks released, source rows, debit, `note.moved`). Before the switch a
+ * failure aborts, both locks are released and the route thaws back to the
  * source; after it, recovery is forward-only.
  *
  * The migration id is the `distributed_operations` row's id, so the same
@@ -614,24 +662,21 @@ async function claimRoute(
  * makes a lost response converge instead of duplicating the note, the
  * revisions, the file metadata or the usage delta.
  *
- * Authorization is taken twice on each side. The pre-flight pass decides
- * the request (and answers `NOTE_NOT_FOUND` / `WORKSPACE_NOT_FOUND` /
- * `InsufficientRole`); each phase then re-checks the *pinned Membership
- * version* inside its own transaction, so a member removed or demoted
- * while the move was in flight cannot have it complete.
+ * Authorization is guarded from two directions, and neither replaces the
+ * other. Forwards: the pre-flight pass decides the request (and answers
+ * `NOTE_NOT_FOUND` / `WORKSPACE_NOT_FOUND` / `InsufficientRole`), then
+ * each phase re-checks the *pinned Membership version* inside its own
+ * transaction, which is what catches a change that committed before the
+ * phase began. Backwards: each phase stages the move authorization lock
+ * in its own scope, which is what makes a workspace deletion or a
+ * mutation of the actor's membership attempted *after* that phase lose to
+ * the move (`WORKSPACE_MOVE_IN_PROGRESS`) instead of racing it.
  *
- * Two pieces of 手順 5 / 6 are **absent in this slice**. The move
- * authorization lock the spec stores in the two scopes has no writer —
- * `WorkspaceOperationLockStore` exposes `hasActiveMove` / `hasMoveConflict`
- * as reads only, and the port that would write the row
- * (`application/ports/noteMovePort.ts`) has no backend yet — so a staged
- * move does not currently block a concurrent workspace deletion or a
- * demotion of its actor; the pinned-version re-check above is what still
- * catches the demotion, one phase later than the lock would. Terminating
- * the source's unfinished jobs is likewise absent because the Job
- * aggregate does not exist (Issue #5). Both gaps are recorded rather than
- * papered over, the same way `application/cleanup/participants.ts` records
- * the Job gap for account deletion.
+ * One piece of 手順 5 is **absent in this slice**: terminating the
+ * source's unfinished jobs, because the Job aggregate does not exist
+ * (Issue #5). The gap is recorded rather than papered over, the same way
+ * `application/cleanup/participants.ts` records the Job gap for account
+ * deletion.
  */
 export async function moveNote({
   container,
@@ -748,6 +793,7 @@ export async function moveNote({
     throw cause;
   }
 
+  await activateTarget(container, plan);
   await retireSource(container, plan, snapshot, routeVersion, tagRelocation);
   await settle(container, plan.migrationId, "completed");
 

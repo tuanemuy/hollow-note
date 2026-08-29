@@ -1,6 +1,5 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
-import { NoteOwner } from "@repo/core/domain/note/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
@@ -8,10 +7,10 @@ import {
   type PublishedWorkspace,
   Workspace,
 } from "@repo/core/domain/workspace/workspace";
-import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { projectWorkspaceDirectory } from "./directoryProjection";
+import { countPublicNotes } from "./publicNoteCount";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -22,42 +21,6 @@ export type PublishWorkspaceInput = Readonly<{
   workspaceId: string;
   userId: string;
 }>;
-
-const COUNT_PAGE_LIMIT = 100;
-
-/**
- * Public notes the workspace owns, for the "your page is empty" hint.
- *
- * Read from the workspace scope rather than the global public projection:
- * the search read model is not wired into the request container yet, and
- * the scope holds the authoritative visibility of every note it owns, so
- * the number is exact. Swap it for `PublicNoteQueryService.searchPublic`
- * (spec/usecases/workspace.md#publishworkspace 手順4) once that port
- * reaches the container — the projection is what the public page renders
- * from, and only it stays right once notes are searched across shards.
- */
-async function countPublicNotes(
-  container: RequestContainer,
-  workspaceId: WorkspaceId,
-): Promise<number> {
-  const reader = container.noteReaderFor(ScopeKey.workspace(workspaceId));
-  const owner = NoteOwner.workspace(workspaceId);
-  let publicNotes = 0;
-  let page = 1;
-  for (;;) {
-    const result = await reader.listByOwner(owner, "active", {
-      page,
-      limit: COUNT_PAGE_LIMIT,
-    });
-    publicNotes += result.items.filter(
-      (note) => note.visibility.status === "public",
-    ).length;
-    if (page * COUNT_PAGE_LIMIT >= result.count) {
-      return publicNotes;
-    }
-    page += 1;
-  }
-}
 
 /**
  * Publishes a workspace's public page (UC-workspace-005,

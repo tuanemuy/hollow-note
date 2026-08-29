@@ -6,7 +6,6 @@ import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
-  MoveAuthorizationLockSeedInput,
   WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
@@ -203,18 +202,6 @@ export function makeMemoryConformanceBackend(
               ? new Date(clock.now().getTime() + HOUR_MS)
               : null,
           createdAt: edge.createdAt ?? clock.now(),
-        });
-      }
-    },
-    async seedMoveAuthorizationLocks(
-      scope: ScopeKey,
-      locks: readonly MoveAuthorizationLockSeedInput[],
-    ): Promise<void> {
-      const scopeStore = backend.scope(scope);
-      for (const lock of locks) {
-        scopeStore.moveAuthorizationLocks.set(lock.migrationId, {
-          migrationId: lock.migrationId,
-          actorUserId: lock.actorUserId,
         });
       }
     },

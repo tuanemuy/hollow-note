@@ -6,7 +6,7 @@ import type {
   WorkspaceOperationLockStore,
 } from "../../../../domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceId } from "../../../../domain/workspace/valueObject";
-import { opaque, upsert } from "../../execution/writeSet";
+import { opaque, remove, upsert } from "../../execution/writeSet";
 import { databaseError } from "../../sql/errors";
 import { occGuard } from "../../sql/occGuard";
 import { int, text, toTimestamp } from "../../sql/row";
@@ -31,6 +31,9 @@ const deleting = (detail: string): ConflictError =>
 
 const admissionConflict = (detail: string): ConflictError =>
   new ConflictError("WORKSPACE_DELETION_ADMISSION_CONFLICT", detail);
+
+const moveLockConflict = (detail: string): ConflictError =>
+  new ConflictError("MOVE_AUTHORIZATION_LOCK_CONFLICT", detail);
 
 export type CloudflareWorkspaceOperationLockDeps = Readonly<{
   session: SqlSession;
@@ -74,6 +77,16 @@ export function createCloudflareWorkspaceOperationLockStore(
       matches: (row) => row.actor_user_id === actorUserId,
     });
 
+  const readMoveLock = (migrationId: string): Promise<SqlRow | null> =>
+    session.readRow({
+      table: MOVE_LOCKS,
+      key: migrationId,
+      statement: statement(
+        `SELECT migration_id, actor_user_id FROM ${MOVE_LOCKS} WHERE migration_id = ?`,
+        migrationId,
+      ),
+    });
+
   const readWorkspace = async (
     workspaceId: WorkspaceId,
   ): Promise<SqlRow | null> =>
@@ -110,6 +123,57 @@ export function createCloudflareWorkspaceOperationLockStore(
 
     async hasMoveConflict(userId: UserId): Promise<boolean> {
       return (await stagedMovesBy(userId)).length > 0;
+    },
+
+    async stageMove(input): Promise<void> {
+      const existing = await readMoveLock(input.migrationId);
+      if (existing !== null) {
+        const owner = text(existing, "actor_user_id");
+        if (owner !== input.actorUserId) {
+          throw moveLockConflict(
+            `Move ${input.migrationId} already locks the membership of ${owner}`,
+          );
+        }
+        return;
+      }
+      try {
+        await session.write([
+          upsert({
+            table: MOVE_LOCKS,
+            key: input.migrationId,
+            row: {
+              migration_id: input.migrationId,
+              actor_user_id: input.actorUserId,
+            },
+            statement: statement(
+              `INSERT INTO ${MOVE_LOCKS} (migration_id, actor_user_id)
+               VALUES (?, ?)
+               ON CONFLICT (migration_id) DO NOTHING`,
+              input.migrationId,
+              input.actorUserId,
+            ),
+          }),
+        ]);
+      } catch (cause) {
+        throw databaseError(CONTEXT, cause);
+      }
+    },
+
+    async releaseMove(migrationId: string): Promise<void> {
+      try {
+        await session.write([
+          remove({
+            table: MOVE_LOCKS,
+            key: migrationId,
+            statement: statement(
+              `DELETE FROM ${MOVE_LOCKS} WHERE migration_id = ?`,
+              migrationId,
+            ),
+          }),
+        ]);
+      } catch (cause) {
+        throw databaseError(CONTEXT, cause);
+      }
     },
 
     async beginDeletion(input): Promise<void> {
