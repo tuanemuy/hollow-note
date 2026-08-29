@@ -10,11 +10,13 @@ import type { RelayTrigger } from "../../../application/ports/relayTrigger";
 import type { ScopeKey } from "../../../application/scope";
 import { type DomainEvent, EventId } from "../../../domain/common/event";
 import type { UserId } from "../../../domain/identity/valueObject";
+import type { WorkspaceId } from "../../../domain/workspace/valueObject";
 import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
   ScopedConformancePorts,
+  WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
@@ -41,6 +43,10 @@ import {
 import { createRoutePorts } from "./ports/route";
 import { createScopeBusinessPorts } from "./ports/scopeBusiness";
 import { createScopeInfraPorts } from "./ports/scopeInfra";
+import {
+  createWorkspaceDirectoryPorts,
+  createWorkspaceScopePorts,
+} from "./ports/workspace";
 
 /**
  * `MakeConformanceBackend` for the Cloudflare adapters, running against
@@ -99,6 +105,7 @@ export async function makeCloudflareConformanceBackend(
       ...DEFAULT_MAINTENANCE_TABLES,
       ...options.maintenanceTablesByKind,
     },
+    workspaceDirectoryOutages: new Set<string>(),
     requiredCleanupComponents: options.requiredCleanupComponents,
     requiredFinalizeReceipts: options.requiredFinalizeReceipts,
   };
@@ -109,6 +116,7 @@ export async function makeCloudflareConformanceBackend(
   const directory = createDirectoryPorts(globalDeps);
   const route = createRoutePorts(globalDeps);
   const projection = createGlobalProjectionPorts(globalDeps);
+  const workspaceDirectory = createWorkspaceDirectoryPorts(globalDeps);
 
   const scopeExecutorFor = (scope: ScopeKey) =>
     createScopeStubExecutor(env.SCOPE_OBJECT, scope, namespace);
@@ -122,6 +130,7 @@ export async function makeCloudflareConformanceBackend(
       ...createScopeBusinessPorts(scopeDeps),
       ...createScopeInfraPorts(scopeDeps),
       ...createScopeProjectionPorts(scopeDeps),
+      ...createWorkspaceScopePorts(scopeDeps),
       ...pendingWorkspaceScopePorts(),
     };
   };
@@ -215,20 +224,11 @@ export async function makeCloudflareConformanceBackend(
     publicNoteProjectionWriter: projection.publicNoteProjectionWriter,
     publicNoteQueryService: projection.publicNoteQueryService,
     objectStorage: projection.objectStorage,
-    userWorkspaceDirectory: {
-      listActiveByUser: () =>
-        unimplementedWorkspacePort("UserWorkspaceDirectory.listActiveByUser"),
-    },
-    workspaceDirectoryBatchReader: {
-      resolveMany: () =>
-        unimplementedWorkspacePort("WorkspaceDirectoryBatchReader.resolveMany"),
-    },
-    publicWorkspaceDirectoryReader: {
-      listPublished: () =>
-        unimplementedWorkspacePort(
-          "PublicWorkspaceDirectoryReader.listPublished",
-        ),
-    },
+    userWorkspaceDirectory: workspaceDirectory.userWorkspaceDirectory,
+    workspaceDirectoryBatchReader:
+      workspaceDirectory.workspaceDirectoryBatchReader,
+    publicWorkspaceDirectoryReader:
+      workspaceDirectory.publicWorkspaceDirectoryReader,
     invitationRouteStore: {
       resolveActive: () =>
         unimplementedWorkspacePort("InvitationRouteStore.resolveActive"),
@@ -300,18 +300,75 @@ export async function makeCloudflareConformanceBackend(
         scope,
       );
     },
-    async seedWorkspaceDirectory(): Promise<void> {
-      unimplementedWorkspacePort("seedWorkspaceDirectory");
+    /**
+     * Writes `workspace_directory` rows directly, for the reason
+     * `ConformanceBackend` gives: the projection's writer is not part of
+     * the Workspace port set, so the three readers' contracts have no
+     * executable form without a seed. The table itself is real
+     * (`d1/migrations/0002_workspace_directory.sql`) and the readers go
+     * through it exactly as they will in production.
+     */
+    async seedWorkspaceDirectory(
+      entries: readonly WorkspaceDirectorySeedInput[],
+    ): Promise<void> {
+      if (entries.length === 0) {
+        return;
+      }
+      await globalExecutor.apply([
+        statement(
+          insertRowsFromJson({
+            table: GLOBAL_TABLES.workspaceDirectory,
+            columns: [
+              "workspace_id",
+              "name",
+              "slug",
+              "publication",
+              "lifecycle",
+              "avatar_url",
+              "source_version",
+              "updated_at",
+            ],
+            conflictKey: ["workspace_id"],
+            conflict: [
+              "name",
+              "slug",
+              "publication",
+              "lifecycle",
+              "avatar_url",
+              "source_version",
+              "updated_at",
+            ],
+          }),
+          jsonRows(
+            entries.map((entry) => ({
+              workspace_id: entry.workspaceId,
+              name: entry.name,
+              slug: entry.slug,
+              publication: entry.publication,
+              lifecycle: entry.lifecycle,
+              avatar_url: entry.avatarUrl,
+              source_version: entry.sourceVersion,
+              updated_at: entry.updatedAt.getTime(),
+            })),
+          ),
+        ),
+      ]);
     },
-    async makeWorkspaceDirectoryUnreadable(): Promise<void> {
-      unimplementedWorkspacePort("makeWorkspaceDirectoryUnreadable");
+    async makeWorkspaceDirectoryUnreadable(
+      ids: readonly WorkspaceId[],
+    ): Promise<void> {
+      for (const id of ids) {
+        deps.workspaceDirectoryOutages.add(id);
+      }
     },
     /**
-     * Writes `membership_directory` rows directly: the Workspace domain
-     * has no ports yet, so there is no repository to go through, but the
-     * table is real (`d1/migrations/0001_global_schema.sql`) and
-     * `AccountDeletionManifestStore.appendMembershipPage` reads it exactly
-     * as it will in production. The seed's `edgeKey` is the row's
+     * Writes `membership_directory` rows directly: the writer is
+     * `MembershipDirectoryReservationStore`, which is not part of the two
+     * contracts that read these rows, but the table is real
+     * (`d1/migrations/0001_global_schema.sql`) and both
+     * `AccountDeletionManifestStore.appendMembershipPage` and
+     * `UserWorkspaceDirectory.listActiveByUser` read it exactly as they
+     * will in production. The seed's `edgeKey` is the row's
      * `operation_id`, which is the key that page walks.
      */
     async seedMembershipEdges(
@@ -346,11 +403,11 @@ export async function makeCloudflareConformanceBackend(
               user_id: userId,
               workspace_id: edge.workspaceId,
               membership_id: edge.membershipId,
-              role: "member",
+              role: edge.role ?? "viewer",
               state: edge.edgeState,
               reservation_expires_at:
                 edge.edgeState === "pending" ? now + HOUR_MS : null,
-              created_at: now,
+              created_at: edge.createdAt?.getTime() ?? now,
               updated_at: now,
             })),
           ),
@@ -372,10 +429,10 @@ export async function makeCloudflareConformanceBackend(
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * The workspace ports have no D1 / Durable Object implementation yet.
- * They are declared so this harness still satisfies
- * `ConformanceBackend`; every entry throws, so the workspace suites fail
- * loudly here instead of passing against a silent stub.
+ * The workspace saga / lock / manifest ports have no D1 / Durable Object
+ * implementation yet. They are declared so this harness still satisfies
+ * `ConformanceBackend`; every entry throws, so their suites fail loudly
+ * here instead of passing against a silent stub.
  */
 const unimplementedWorkspacePort = (name: string): never => {
   throw new Error(`The Cloudflare backend does not implement ${name} yet`);
@@ -383,9 +440,6 @@ const unimplementedWorkspacePort = (name: string): never => {
 
 const pendingWorkspaceScopePorts = (): Pick<
   ScopedConformancePorts,
-  | "workspaceRepository"
-  | "membershipRepository"
-  | "invitationRepository"
   | "membershipRemovalPreparationStore"
   | "workspaceOperationLockStore"
   | "workspaceDeletionManifestStore"
@@ -453,46 +507,6 @@ const pendingWorkspaceScopePorts = (): Pick<
       unimplementedWorkspacePort(
         "WorkspaceDeletionManifestStore.markCompleted",
       ),
-  },
-  workspaceRepository: {
-    insert: () => unimplementedWorkspacePort("WorkspaceRepository.insert"),
-    findById: () => unimplementedWorkspacePort("WorkspaceRepository.findById"),
-    save: () => unimplementedWorkspacePort("WorkspaceRepository.save"),
-    delete: () => unimplementedWorkspacePort("WorkspaceRepository.delete"),
-  },
-  membershipRepository: {
-    insert: () => unimplementedWorkspacePort("MembershipRepository.insert"),
-    findById: () => unimplementedWorkspacePort("MembershipRepository.findById"),
-    save: () => unimplementedWorkspacePort("MembershipRepository.save"),
-    delete: () => unimplementedWorkspacePort("MembershipRepository.delete"),
-    findByWorkspaceAndUser: () =>
-      unimplementedWorkspacePort("MembershipRepository.findByWorkspaceAndUser"),
-    listByWorkspace: () =>
-      unimplementedWorkspacePort("MembershipRepository.listByWorkspace"),
-    countByRole: () =>
-      unimplementedWorkspacePort("MembershipRepository.countByRole"),
-    deleteByIds: () =>
-      unimplementedWorkspacePort("MembershipRepository.deleteByIds"),
-  },
-  invitationRepository: {
-    insert: () => unimplementedWorkspacePort("InvitationRepository.insert"),
-    findById: () => unimplementedWorkspacePort("InvitationRepository.findById"),
-    save: () => unimplementedWorkspacePort("InvitationRepository.save"),
-    delete: () => unimplementedWorkspacePort("InvitationRepository.delete"),
-    findByTokenHash: () =>
-      unimplementedWorkspacePort("InvitationRepository.findByTokenHash"),
-    findPendingByWorkspaceAndEmail: () =>
-      unimplementedWorkspacePort(
-        "InvitationRepository.findPendingByWorkspaceAndEmail",
-      ),
-    listByWorkspace: () =>
-      unimplementedWorkspacePort("InvitationRepository.listByWorkspace"),
-    countPendingIssuedSince: () =>
-      unimplementedWorkspacePort(
-        "InvitationRepository.countPendingIssuedSince",
-      ),
-    deleteByIds: () =>
-      unimplementedWorkspacePort("InvitationRepository.deleteByIds"),
   },
 });
 

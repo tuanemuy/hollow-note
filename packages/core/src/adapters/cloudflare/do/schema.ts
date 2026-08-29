@@ -16,6 +16,9 @@ export const SCHEDULED_TASKS_TABLE = "scheduled_tasks";
 export const SCOPE_TABLES = {
   scopeIdentity: "_scope_identity",
   occGuard: "_occ_guard",
+  workspaces: "workspaces",
+  memberships: "memberships",
+  invitations: "invitations",
   notes: "notes",
   noteProjectionRevisions: "note_projection_revisions",
   noteRevisions: "note_revisions",
@@ -53,6 +56,75 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
    )`,
 
   OCC_GUARD_DDL.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"),
+
+  // The Workspace group lives only in a workspace scope object, but the
+  // DDL is one bundle every object runs, so the tables also exist —
+  // empty and unread — in a user scope.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.workspaces} (
+     id text PRIMARY KEY,
+     name text NOT NULL,
+     description text NOT NULL DEFAULT '',
+     avatar_url text,
+     slug text,
+     publication text NOT NULL CHECK (publication IN ('private', 'published')),
+     published_at integer,
+     lifecycle text NOT NULL CHECK (lifecycle IN ('active', 'deleting')),
+     deletion_operation_id text UNIQUE,
+     version integer NOT NULL DEFAULT 0,
+     created_at integer NOT NULL,
+     updated_at integer NOT NULL,
+     CHECK ((publication = 'published') = (published_at IS NOT NULL)),
+     CHECK (publication <> 'published' OR slug IS NOT NULL),
+     CHECK ((lifecycle = 'deleting') = (deletion_operation_id IS NOT NULL))
+   )`,
+
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.memberships} (
+     id text PRIMARY KEY,
+     workspace_id text NOT NULL,
+     user_id text NOT NULL,
+     role text NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+     version integer NOT NULL DEFAULT 0,
+     joined_at integer NOT NULL,
+     updated_at integer NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS memberships_workspace_user_uq
+     ON ${SCOPE_TABLES.memberships} (workspace_id, user_id)`,
+  `CREATE INDEX IF NOT EXISTS memberships_user_idx
+     ON ${SCOPE_TABLES.memberships} (user_id)`,
+  `CREATE INDEX IF NOT EXISTS memberships_workspace_role_idx
+     ON ${SCOPE_TABLES.memberships} (workspace_id, role)`,
+  `CREATE INDEX IF NOT EXISTS memberships_workspace_joined_idx
+     ON ${SCOPE_TABLES.memberships} (workspace_id, joined_at, id)`,
+
+  // No `(workspace_id, email) WHERE status = 'pending'` unique index,
+  // unlike `spec/database/index.md#invitations`: the port contract states
+  // the invariant is not enforced by the store and gives `insert` no
+  // conflict code for it, so a schema that rejected the second pending
+  // invitation would diverge from the reference backend (ADR 046).
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.invitations} (
+     id text PRIMARY KEY,
+     workspace_id text NOT NULL,
+     email text NOT NULL,
+     role text NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
+     invited_by text NOT NULL,
+     token_hash text NOT NULL,
+     status text NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
+     accepted_at integer,
+     accepted_by text,
+     revoked_at integer,
+     version integer NOT NULL DEFAULT 0,
+     created_at integer NOT NULL,
+     expires_at integer NOT NULL,
+     CHECK ((status = 'accepted') = (accepted_at IS NOT NULL)),
+     CHECK ((status = 'accepted') = (accepted_by IS NOT NULL)),
+     CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+   )`,
+  `CREATE INDEX IF NOT EXISTS invitations_workspace_created_idx
+     ON ${SCOPE_TABLES.invitations} (workspace_id, created_at DESC, id DESC)`,
+  `CREATE INDEX IF NOT EXISTS invitations_token_idx
+     ON ${SCOPE_TABLES.invitations} (token_hash)`,
+  `CREATE INDEX IF NOT EXISTS invitations_workspace_email_idx
+     ON ${SCOPE_TABLES.invitations} (workspace_id, email, status)`,
 
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.notes} (
      id text PRIMARY KEY,

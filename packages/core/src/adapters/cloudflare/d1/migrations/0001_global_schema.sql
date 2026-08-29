@@ -4,9 +4,9 @@
 -- port today, plus `membership_directory`, which has no port of its own
 -- but is read by `AccountDeletionManifestStore.appendMembershipPage`.
 -- `workspace_slug_reservations`, `invitation_routes`, `job_slots`,
--- `workspace_directory`, `job_history*` and `external_connections` are
--- deliberately absent — the domains that own them have no ports yet, and
--- a later slice adds them as its own migration file.
+-- `job_history*` and `external_connections` are deliberately absent — the
+-- domains that own them have no ports yet, and a later slice adds them as
+-- its own migration file, the way `0002_workspace_directory.sql` does.
 --
 -- No FOREIGN KEY declarations. The port contract is the canon of a
 -- persistence port (ADR 026) and it nowhere requires referential

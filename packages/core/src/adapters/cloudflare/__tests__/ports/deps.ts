@@ -35,6 +35,14 @@ export type CloudflareBackendDeps = Readonly<{
    * *after* the call may see it (ADR 061).
    */
   maintenanceTablesByKind: Record<MaintenanceKind, readonly string[]>;
+  /**
+   * WorkspaceIds `ConformanceBackend.makeWorkspaceDirectoryUnreadable`
+   * has put out of reach. Mutable for the same reason
+   * `maintenanceTablesByKind` is: the suites induce the outage *after*
+   * the ports were built, and the directory readers hold this very set.
+   * Production wires an empty one and never adds to it.
+   */
+  workspaceDirectoryOutages: Set<string>;
   requiredCleanupComponents: readonly PersonalCleanupComponent[] | undefined;
   requiredFinalizeReceipts: readonly AccountDeletionReceipt[] | undefined;
 }>;

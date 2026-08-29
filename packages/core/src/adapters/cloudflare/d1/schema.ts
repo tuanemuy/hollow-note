@@ -30,6 +30,7 @@ export const GLOBAL_TABLES = {
   accountDeletionManifestItems: "account_deletion_manifest_items",
   globalMaintenanceRuns: "global_maintenance_runs",
   globalMaintenanceRunLanes: "global_maintenance_run_lanes",
+  workspaceDirectory: "workspace_directory",
   publicNoteSearch: "public_note_search",
   publicNoteSearchTags: "public_note_search_tags",
   publicNoteSearchFts: "public_note_search_fts",
