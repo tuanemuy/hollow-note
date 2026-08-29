@@ -9,6 +9,8 @@ import { Workspace } from "@repo/core/domain/workspace/workspace";
 import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { projectWorkspaceDirectory } from "./directoryProjection";
+import { retryOnce } from "./invitation";
 import type { CreatedWorkspaceView } from "./view";
 
 export type CreateWorkspaceInput = Readonly<{
@@ -20,50 +22,6 @@ export type CreateWorkspaceInput = Readonly<{
 
 /** How long the global reservations hold while the scope commit runs. */
 export const WORKSPACE_RESERVATION_TTL_MS = 10 * 60 * 1000;
-
-/** One directory page; also the port's maximum. */
-const EDGE_PAGE_LIMIT = 20;
-
-/**
- * Owner edges the user holds in the global membership directory, counted
- * over the whole shard rather than one page.
- *
- * The count stops as soon as the quota is reached: the only question the
- * policy asks is "at least 20?", so paging past that would read rows no
- * decision depends on.
- *
- * `activating` edges are added because the quota is spec'd over active
- * **and** pending edges — a create whose scope commit never landed must
- * not free a slot for the next attempt. The reservation store cannot say
- * which role such an edge carries, so an in-flight join is counted as
- * owned; it settles within the reservation TTL and only ever errs towards
- * refusing, never towards letting a 21st workspace through.
- */
-async function countOwnedWorkspaces(
-  container: RequestContainer,
-  userId: UserId,
-): Promise<number> {
-  const inFlight =
-    await container.membershipDirectoryReservationStore.listActivatingByUser(
-      userId,
-      MembershipPolicy.maxOwnedWorkspaces,
-    );
-  let owned = inFlight.length;
-  let cursor: string | null = null;
-  do {
-    if (owned >= MembershipPolicy.maxOwnedWorkspaces) {
-      return owned;
-    }
-    const page = await container.userWorkspaceDirectory.listActiveByUser(
-      userId,
-      cursor,
-      EDGE_PAGE_LIMIT,
-    );
-    owned += page.items.filter((edge) => edge.role === "owner").length;
-    cursor = page.nextCursor;
-  } while (cursor !== null);
-  return owned;
-}
 
 /**
  * Frees both global reservations of a create that did not commit. Never
@@ -110,18 +68,15 @@ async function abandonReservations(
  * Saga: quota check → reserve the slug and the owner's directory edge on
  * the global plane → the workspace scope's unit of work (`Workspace` +
  * owner `Membership` + `workspace.created` / `membership.added`) →
- * activate both reservations under the same operation id. A commit that
- * did not land abandons both, so a failed create leaves neither a live
- * slug nor a directory edge; a lost activation response is retried once,
- * since every step is idempotent for its operation id.
+ * activate both reservations under the same operation id and project the
+ * new row into `workspace_directory`. A commit that did not land abandons
+ * both reservations, so a failed create leaves neither a live slug nor a
+ * directory edge; a lost activation response is retried once, since every
+ * step is idempotent for its operation id.
  *
  * Every value object is constructed before the first reservation, so an
  * invalid name, description or slug can never leave global saga state
  * behind.
- *
- * The `workspace_directory` projection is not written here — no port
- * exposes it yet, and the directory is a projection of `workspace.created`
- * rather than a third leg of this saga.
  */
 export async function createWorkspace({
   container,
@@ -138,7 +93,10 @@ export async function createWorkspace({
 
   const userId = UserId.create(input.userId);
   MembershipPolicy.ensureWorkspaceQuota(
-    await countOwnedWorkspaces(container, userId),
+    await container.userWorkspaceDirectory.countOwnedByUser(
+      userId,
+      MembershipPolicy.maxOwnedWorkspaces,
+    ),
   );
 
   const now = clock.now();
@@ -200,33 +158,23 @@ export async function createWorkspace({
   }
 
   if (slug !== null) {
-    try {
-      await workspaceSlugReservationStore.activate({
+    await retryOnce(logger, "[createWorkspace] slug activate", () =>
+      workspaceSlugReservationStore.activate({
         slug,
         workspaceId,
         operationId,
         releasing: null,
-      });
-    } catch (cause) {
-      logger.error("[createWorkspace] slug activate lost; retrying once", {
-        cause,
-      });
-      await workspaceSlugReservationStore.activate({
-        slug,
-        workspaceId,
-        operationId,
-        releasing: null,
-      });
-    }
+      }),
+    );
   }
-  try {
-    await membershipDirectoryReservationStore.activate(operationId);
-  } catch (cause) {
-    logger.error("[createWorkspace] edge activate lost; retrying once", {
-      cause,
-    });
-    await membershipDirectoryReservationStore.activate(operationId);
-  }
+  await retryOnce(logger, "[createWorkspace] edge activate", () =>
+    membershipDirectoryReservationStore.activate(operationId),
+  );
+  await projectWorkspaceDirectory(
+    container,
+    "[createWorkspace] directory projection",
+    workspace,
+  );
 
   return {
     workspaceId,

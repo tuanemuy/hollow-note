@@ -6,6 +6,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { projectWorkspaceDirectory } from "./directoryProjection";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -24,8 +25,9 @@ export type UnpublishWorkspaceInput = Readonly<{
  * The slug survives, and so does its global reservation: re-publishing has
  * to land on the same public URL, and giving the key up is
  * `changeWorkspaceSlug`'s job. The public page stops resolving anyway,
- * because `getPublicWorkspace` gates on the aggregate's publication rather
- * than on the reservation.
+ * because `getPublicWorkspace` gates on publication — on the
+ * `workspace_directory` snapshot written here and on the aggregate behind
+ * it — rather than on the reservation.
  *
  * Notes that are public in their own right stay readable at their own
  * URLs — workspace publication never governed them.
@@ -52,7 +54,7 @@ export async function unpublishWorkspace({
   const userId = UserId.create(input.userId);
   const now = clock.now();
 
-  await scopeUnitOfWorkProvider.run(
+  const stored = await scopeUnitOfWorkProvider.run(
     ScopeKey.workspace(workspaceId),
     async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
@@ -63,12 +65,19 @@ export async function unpublishWorkspace({
         throw workspaceNotFound();
       }
       if (!Workspace.isPublished(fresh.entity)) {
-        return;
+        return fresh.entity;
       }
       const next = Workspace.unpublish(fresh.entity, now);
       await ctx.workspaceRepository.save(next.entity, fresh.expectedVersion);
       ctx.collectEvents(next.eventDrafts);
+      return next.entity;
     },
+  );
+
+  await projectWorkspaceDirectory(
+    container,
+    "[unpublishWorkspace] directory projection",
+    stored,
   );
 
   return { workspaceId, publication: "private" };

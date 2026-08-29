@@ -1,48 +1,39 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { NoteViewer } from "@repo/core/domain/note/services/noteAccessPolicy";
 import { createNoteAccessPolicy } from "@repo/core/domain/note/services/noteAccessPolicy";
-import type {
-  WorkspaceAction,
-  WorkspaceAuthorization,
-} from "@repo/core/domain/workspace/services/workspaceAuthorization";
-import type { WorkspaceRole } from "@repo/core/domain/workspace/valueObject";
-import { SystemError, SystemErrorCode } from "../errors";
+import type { NoteOwner } from "@repo/core/domain/note/valueObject";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import type { RequestContainer } from "../di/types";
+import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
+
+export const noteAccessPolicy = createNoteAccessPolicy(WorkspaceAuthorization);
 
 /**
- * Placeholder `WorkspaceAuthorization` for the walking-skeleton slice:
- * every note is personally owned and every viewer's `workspaceRole` is
- * `null`, so no policy evaluation can reach these methods. Reaching one
- * anyway means workspace state leaked in ahead of slice #3 — surfaced as
- * a data-integrity fault rather than a silent allow/deny.
+ * Builds the viewer context a note is evaluated against
+ * (spec/usecases/note.md 共通: 閲覧者コンテキストの解決 手順 4).
+ *
+ * The role is read from the note's own workspace scope, never from the
+ * global membership directory: the directory's role is a projection, and
+ * an access decision may only rest on the `Membership` the scope holds
+ * (`UserWorkspaceDirectory`). A non-member resolves to `null`, which the
+ * policy reads as "no workspace path" and falls through to the public /
+ * unlisted routes.
  */
-const unimplemented = (method: string): never => {
-  throw new SystemError(
-    SystemErrorCode.DataIntegrityError,
-    `WorkspaceAuthorization.${method} is not implemented in this slice`,
-  );
+export const viewerFor = async (
+  container: RequestContainer,
+  owner: NoteOwner,
+  userId: string | null,
+): Promise<NoteViewer> => {
+  if (userId === null) {
+    return { kind: "anonymous" };
+  }
+  const viewerId = UserId.create(userId);
+  if (owner.type === "user") {
+    return { kind: "user", userId: viewerId, workspaceRole: null };
+  }
+  const access = await resolveWorkspaceAccess({
+    container,
+    input: { workspaceId: owner.workspaceId, userId },
+  });
+  return { kind: "user", userId: viewerId, workspaceRole: access.role };
 };
-
-const placeholderWorkspaceAuthorization: WorkspaceAuthorization = {
-  minimumRoleFor(action: WorkspaceAction): WorkspaceRole {
-    return unimplemented(`minimumRoleFor(${action})`);
-  },
-  can(): boolean {
-    return unimplemented("can");
-  },
-  ensureCan(): void {
-    unimplemented("ensureCan");
-  },
-};
-
-export const noteAccessPolicy = createNoteAccessPolicy(
-  placeholderWorkspaceAuthorization,
-);
-
-/**
- * Builds the viewer for the walking-skeleton slice: personal viewers
- * only — the workspace role resolution arrives with slice #3.
- */
-export const viewerFor = (userId: string | null): NoteViewer =>
-  userId === null
-    ? { kind: "anonymous" }
-    : { kind: "user", userId: UserId.create(userId), workspaceRole: null };

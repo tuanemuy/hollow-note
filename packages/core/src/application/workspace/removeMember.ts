@@ -1,16 +1,20 @@
+import type { Versioned } from "@repo/core/domain/common/transactionalRepository";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { WorkspaceEvents } from "@repo/core/domain/workspace/events";
+import type { Membership } from "@repo/core/domain/workspace/membership";
 import { MembershipPolicy } from "@repo/core/domain/workspace/services/membershipPolicy";
 import {
   MembershipId,
   WorkspaceId,
 } from "@repo/core/domain/workspace/valueObject";
 import { NotFoundError } from "../errors";
+import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import {
-  ensureMembershipMutable,
+  ensureRemovable,
   requireManageMembers,
+  settleRemovalEdge,
 } from "./membershipMutation";
 
 export type RemoveMemberInput = Readonly<{
@@ -29,21 +33,20 @@ export type RemoveMemberInput = Readonly<{
  * is the same one `changeMemberRole` applies, read and enforced inside
  * the transaction that deletes the row.
  *
+ * The global edge is announced `removing` between two scope transactions
+ * — a read that proves the removal will be allowed, then the write that
+ * performs it. The announcement takes the workspace out of the member's
+ * list at once while account deletion and integration cleanup can still
+ * reach this scope through the edge, and it happens outside both
+ * transactions because the two planes never share a unit of work.
+ *
  * Notes the removed member created stay with the workspace — they belong
  * to the workspace, not to their author — so nothing here touches them.
  *
- * Two steps of the spec'd flow are absent in this slice. The forced
+ * One step of the spec'd flow is absent in this slice: the forced
  * termination of the member's jobs and the security cleanup of their job
  * and backup residue have no aggregates to act on yet (see
- * `./membershipMutation`); and marking the global directory edge
- * `removing` before the local commit, then deleting it once that cleanup
- * acknowledges, has no port to call — `MembershipDirectoryReservationStore`
- * exposes only the join saga and the account-deletion transitions
- * (spec/domains/workspace.md#ポート). Until both land, the edge is
- * reconciled by the same source-version rule that already keeps a stale
- * role from resurrecting, and a lingering edge grants nothing: every
- * permission decision re-reads `Membership` in this scope, which this
- * transaction has already removed.
+ * `./membershipMutation`).
  */
 export async function removeMember({
   container,
@@ -58,39 +61,61 @@ export async function removeMember({
     actorUserId: input.actorUserId,
   });
 
+  const scope = ScopeKey.workspace(workspaceId);
   const now = container.clock.now();
+  const target = (ctx: ScopeUnitOfWorkContext) =>
+    requireRemovableTarget(ctx, { workspaceId, membershipId, actorUserId });
 
-  await container.scopeUnitOfWorkProvider.run(
-    ScopeKey.workspace(workspaceId),
-    async (ctx) => {
-      await ctx.cleanupAdmission.assertWritable();
-      await ctx.cleanupAdmission.assertActorWritable(actorUserId);
-
-      const target = await ctx.membershipRepository.findById(membershipId);
-      if (target === null || target.entity.workspaceId !== workspaceId) {
-        throw new NotFoundError("MEMBERSHIP_NOT_FOUND", "Membership not found");
-      }
-
-      MembershipPolicy.ensureNotSelfRemoval(actorUserId, target.entity);
-      await ensureMembershipMutable(ctx, target.entity.userId);
-
-      const ownerCount = await ctx.membershipRepository.countByRole(
-        workspaceId,
-        "owner",
-      );
-      MembershipPolicy.ensureOwnerRemains(ownerCount, target.entity, null);
-
-      await ctx.membershipRepository.delete(
-        target.entity.id,
-        target.expectedVersion,
-      );
-      ctx.collectEvents([
-        WorkspaceEvents.membershipRemoved(
-          workspaceId,
-          target.entity.userId,
-          now,
-        ),
-      ]);
-    },
+  const memberUserId = await container.scopeUnitOfWorkProvider.run(
+    scope,
+    async (ctx) => (await target(ctx)).entity.userId,
   );
+
+  await container.membershipDirectoryReservationStore.beginRemoval(
+    memberUserId,
+    workspaceId,
+  );
+
+  await container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    await ctx.cleanupAdmission.assertWritable();
+    await ctx.cleanupAdmission.assertActorWritable(actorUserId);
+
+    const removed = await target(ctx);
+    await ctx.membershipRepository.delete(
+      removed.entity.id,
+      removed.expectedVersion,
+    );
+    ctx.collectEvents([
+      WorkspaceEvents.membershipRemoved(
+        workspaceId,
+        removed.entity.userId,
+        now,
+      ),
+    ]);
+  });
+
+  await settleRemovalEdge(
+    container,
+    "[removeMember]",
+    memberUserId,
+    workspaceId,
+  );
+}
+
+/** 手順 2〜4: the target of the removal, once it is known to be allowed. */
+async function requireRemovableTarget(
+  ctx: ScopeUnitOfWorkContext,
+  params: Readonly<{
+    workspaceId: WorkspaceId;
+    membershipId: MembershipId;
+    actorUserId: UserId;
+  }>,
+): Promise<Versioned<Membership>> {
+  const target = await ctx.membershipRepository.findById(params.membershipId);
+  if (target === null || target.entity.workspaceId !== params.workspaceId) {
+    throw new NotFoundError("MEMBERSHIP_NOT_FOUND", "Membership not found");
+  }
+  MembershipPolicy.ensureNotSelfRemoval(params.actorUserId, target.entity);
+  await ensureRemovable(ctx, target.entity);
+  return target;
 }

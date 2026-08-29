@@ -1,3 +1,4 @@
+import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { type ActiveNote, Note } from "@repo/core/domain/note/note";
 import {
@@ -5,9 +6,13 @@ import {
   NoteOwner,
   NoteTitle,
 } from "@repo/core/domain/note/valueObject";
-import { NotFoundError } from "../errors";
+import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { type CreatedNoteView, ownerOf } from "./view";
 
 export type CreateBlankNoteInput = Readonly<{
@@ -31,10 +36,11 @@ const CREATE_RESERVATION_TTL_MS = 10 * 60 * 1000;
  * per operation). An expired `reserved` route is reconciled by
  * {@link recoverBlankNoteCreation}.
  *
- * Workspace ownership is a stub in this slice: no workspace exists, so
- * every workspace-owned request resolves to
- * `NotFoundError("WORKSPACE_NOT_FOUND")`; role evaluation arrives with
- * slice #3.
+ * A workspace-owned request is authorized before any saga state exists:
+ * an absent workspace is `NotFoundError("WORKSPACE_NOT_FOUND")`, and a
+ * non-member or a `viewer` is `BusinessRuleError(InsufficientRole)` —
+ * the workspace was already proven to exist, so collapsing the two would
+ * mislead a member who lost their role mid-session.
  */
 export async function createBlankNote({
   container,
@@ -44,7 +50,7 @@ export async function createBlankNote({
     container;
 
   const userId = UserId.create(input.userId);
-  const owner = resolveOwner(input);
+  const owner = await resolveOwner(container, input);
   const scope = scopeOf(owner);
   const rawTitle = input.title ?? "";
   // Validate before reserving the route so an invalid title never
@@ -145,12 +151,7 @@ export async function recoverBlankNoteCreation({
   const owner =
     input.ownerType === "user"
       ? NoteOwner.user(UserId.create(input.ownerId))
-      : (() => {
-          throw new NotFoundError(
-            "WORKSPACE_NOT_FOUND",
-            "Workspaces are not available in this slice",
-          );
-        })();
+      : NoteOwner.workspace(WorkspaceId.create(input.ownerId));
   const scope = scopeOf(owner);
 
   const stored = await container
@@ -171,13 +172,28 @@ export async function recoverBlankNoteCreation({
   return { outcome: "abandoned" };
 }
 
-function resolveOwner(input: CreateBlankNoteInput): NoteOwner {
+async function resolveOwner(
+  container: RequestContainer,
+  input: CreateBlankNoteInput,
+): Promise<NoteOwner> {
   if (input.ownerType === "user") {
     return NoteOwner.user(UserId.create(input.userId));
   }
-  // No workspace exists in the walking-skeleton slice, so any workspace
-  // id — present or missing — resolves to not-found.
-  throw new NotFoundError("WORKSPACE_NOT_FOUND", "Workspace not found");
+  const access = await resolveWorkspaceAccess({
+    container,
+    input: {
+      workspaceId: input.ownerWorkspaceId ?? "",
+      userId: input.userId,
+    },
+  });
+  if (access.role === null) {
+    throw new BusinessRuleError(
+      WorkspaceErrorCode.InsufficientRole,
+      "Only a member can create a note in this workspace",
+    );
+  }
+  WorkspaceAuthorization.ensureCan(access.role, "createNote");
+  return NoteOwner.workspace(WorkspaceId.create(access.workspaceId));
 }
 
 function scopeOf(owner: NoteOwner): ScopeKey {

@@ -21,16 +21,42 @@ export type LlmUsageView = Readonly<{
   level: UsageLevelView;
 }>;
 
+export type AvailableWorkspaceUsageView = Readonly<{
+  state: "available";
+  workspaceId: string;
+  workspaceName: string;
+  consumedBytes: number;
+  limitBytes: number;
+  noteCount: number;
+  level: UsageLevelView;
+}>;
+
+/**
+ * A workspace whose figures could not be read for this request. Kept in
+ * the list rather than dropped: one unreachable scope object must degrade
+ * a single row, not the whole screen
+ * (spec/usecases/usage.md#getusagesnapshot 手順 3).
+ *
+ * `workspaceName` is nullable because the display name comes from the
+ * global `workspace_directory`, and that read degrades per row too — a
+ * directory shard that cannot answer leaves the membership edge without
+ * a name to show.
+ */
+export type UnavailableWorkspaceUsageView = Readonly<{
+  state: "unavailable";
+  workspaceId: string;
+  workspaceName: string | null;
+}>;
+
+export type WorkspaceUsageView =
+  | AvailableWorkspaceUsageView
+  | UnavailableWorkspaceUsageView;
+
 export type UsageSnapshotView = Readonly<{
   personal: PersonalUsageView;
   llm: LlmUsageView;
-  /**
-   * Workspace usage. This slice has no port that enumerates the viewer's
-   * memberships and resolves workspace names, so the list is always
-   * empty and carries no element type; the slice that adds the keyset
-   * paging widens it along with the cursor field it needs.
-   */
-  workspaces: readonly never[];
+  workspaces: readonly WorkspaceUsageView[];
+  nextWorkspaceCursor: string | null;
   updatedAt: Date;
 }>;
 

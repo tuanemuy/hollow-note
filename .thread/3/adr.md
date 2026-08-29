@@ -611,3 +611,165 @@ ADR-031 は、`InvitationRouteStore.resolveActive` が期限切れ行を `null` 
 - ユースケース 2 本を触らずに `expired` / `InvitationExpired` が到達可能になる（ADR-031 が予告したとおり）。
 - 「期限切れは読めるが書けない」が 2 ケースで固定され、変異チェックでも両方向が red になる。
 - 期限切れ token を持つ相手は preview で「期限切れ」を見て `resendInvitation` に誘導される。`reserveReplacement` は旧 route の期限を見ないので、期限切れ招待の再送は従来どおり通る。
+
+## ADR-039: 所有上限の判定を `countOwnedByUser` 1 回の読みに置き換える（ADR-028 を解消）
+
+### Context
+
+ADR-028 は所有数を `listActiveByUser` の keyset 走査 ＋ `listActivatingByUser` の件数で近似し、「`role = owner` の active + pending 件数を返すポートメソッドが足されたら合成をやめる」を反証条件に挙げていた。ADR-036 がそのメソッド（`UserWorkspaceDirectory.countOwnedByUser`）を足した。
+
+### Decision
+
+`createWorkspace` 手順 1 を `userWorkspaceDirectory.countOwnedByUser(userId, MembershipPolicy.maxOwnedWorkspaces)` の 1 回の読みにし、`countOwnedWorkspaces` ヘルパーを削除する。ADR-028 は反証条件が満たされたため以後有効ではない。
+
+### Consequences
+
+- 走査が消え、`activating` edge を一律 owner として数える近似も消えた。受諾サガ中の viewer 参加が所有数を押し上げない。
+- 上限（20）をそのまま `limit` に渡すので、読みは 20 行で打ち切られたまま。
+
+## ADR-040: `workspace_directory` の投影はユースケース内で local commit 後に同期で書く
+
+### Context
+
+ADR-035 が `WorkspaceDirectoryProjectionWriter` を足したが、誰が呼ぶかは決めていなかった。ポートの JSDoc は「scope-local commit の後、out of band かつ at-least-once」と書くので、outbox 購読者（relay）で書く選択肢もある。しかし `workspace.*` の購読者は現状 1 つも登録されておらず、`getPublicWorkspace` は directory の `publication` で公開ページを閉じるため、投影が書かれないと公開・スラッグ変更・取り下げのテストケースがどれも成立しない。
+
+### Decision
+
+`createWorkspace` / `changeWorkspaceSlug` / `updateWorkspaceProfile` / `publishWorkspace` / `unpublishWorkspace` の 5 本が、自分の local commit 後に `applySnapshotIfNewer` を呼ぶ。共通処理は `application/workspace/directoryProjection.ts` に置き、`retryOnce` で 1 回だけ再試行する。`changeWorkspaceSlug` では reservation の切替が終わったあとに呼ぶ（鍵の正典は予約側で、投影はそれに従う）。
+
+### Consequences
+
+- `sourceVersion` 順序付けがあるので、後から `workspace.*` の購読者を足しても二重適用にならない。同期呼び出しは「最初の適用」にすぎず、購読者が来たら重複しても 0 行更新になる。
+- 投影の書き込み失敗はユースケースの失敗として表面化する。local commit は既に着地しているので、呼び出し側の再実行は「同じ版の再投影」で収束する（`createWorkspace` だけは workspace ID が変わるため再実行が別の作成になる — その場合の残骸は他の 2 予約と同じく TTL / recovery の担当）。
+- `deleteWorkspace` の `tombstone` は本 ADR の対象外（ステップ 11）。
+
+## ADR-041: 除名・脱退はガードを 2 度走らせ、scope transaction を 2 本に割る
+
+### Context
+
+ADR-037 の `beginRemoval` は local UoW の**前**に呼ぶ（spec `removeMember` 手順 5 / `leaveWorkspace` 手順 4）。しかし `removing` から `active` へ戻す遷移は契約に無く、宣言後にガード（`ensureNotSelfRemoval` / `ensureOwnerRemains` / account deletion・move ロック）が拒否すると、まだメンバーである利用者の workspace が `listActiveByUser` から消えたまま戻らない。一方ガードを宣言前だけに置くと、並行する role 変更が最後の owner を滑り込ませられる。`removeMember` は対象の `UserId` を membershipId からしか引けず、その読みは UoW の中でしかできない（`WorkspaceReader.membership` に `findById` が無い）。
+
+### Decision
+
+読み取り専用の `run` でガードを通し（`removeMember` はここで対象の `UserId` を得る）→ `beginRemoval` → 書き込みの `run` で同じガードを再実行して削除する、の 3 段にする。ガードは `membershipMutation.ensureRemovable` に畳み、2 か所から呼ぶ。`run` の入れ子は生じない（ADR-033 と同じ手口）。
+
+### Consequences
+
+- 「拒否されるのに edge だけ `removing` になる」窓が閉じ、「宣言後に最後の owner になった」も書き込み側のガードが捕まえる。
+- 招待の読みと同じく、除名・脱退が scope transaction を 2 本使う。scope object 内の往復なので実害は小さい。
+- `completeRemoval` は local commit 直後に呼ぶ。本スライスには residue（Job 正データ・BackupRecord）が存在しないため、spec が待つ ack は既に与えられている。失敗はログに落として握る — メンバーシップは既に消えており呼び出し側に再実行の手立てが無い（再実行は `MEMBERSHIP_NOT_FOUND`）一方、`removing` のまま残った edge は一覧から外れており利用者から見た結果は正しいため。
+
+## ADR-042: `publishWorkspace` の `publicNoteCount` は scope 走査のまま据え置く（ADR-029 は未解消）
+
+### Context
+
+ADR-029 は `PublicNoteQueryService` が `RequestContainer` に無いことを理由に workspace scope の `listByOwner` を辿る暫定を採り、「request container に載ったら差し替える」を反証条件にしていた。載せること自体は memory / D1 の両アダプターが揃っているので可能である。
+
+### Decision
+
+載せない。正典経路 `searchPublic` が読む global public projection（`note_search`）に、ノートの公開を投影する購読者が 1 つも無いためである（`publicNoteProjectionWriter` の呼び出しは `deleteAccount` の著者秘匿だけ）。差し替えると `publicNoteCount` は常に 0 を返し、`spec/testcases/workspace/publishWorkspace.md` の「公開ノートが 3 件 → 3」が落ちる。
+
+### Consequences
+
+- ADR-029 の反証条件を「`PublicNoteQueryService` が request container に載る」から「**ノート公開が public projection に投影される**」へ狭める。ポートを DI に載せるだけでは足りない。
+- それまで `publicNoteCount` は scope の可視性を数える。数自体は正確で、ずれるのは「公開ページが実際に描画する投影との一致」だけである。
+
+## ADR-043: 削除サガの継続要求は scope-local `scheduled_tasks` に載せ、global orchestrator も同じ transport で駆動する
+
+### Context
+
+`deleteWorkspace` の手順 3 / 5 / 7 は `workspace.deletionLocalContinued` と `workspace.deletionManifestCompactContinued` を `scheduled_tasks` へ保存すると明記する一方、手順 7 の「global orchestrator」がどの transport で駆動されるかは述べていない。global outbox に載せる選択肢もあるが、`AllDomainEvents` に `WorkspaceEvent` が入っておらず decoder registry も無いため、outbox 経由の継続要求は現状 relay で decode できない。また manifest・admission 状態・削除対象はすべて workspace scope にあり、outbox の consumer から読むにも結局 scope UoW を開くことになる。
+
+### Decision
+
+3 つの kind をすべて `ScopeTaskScheduler` に載せる（`workspace.deletionLocalContinued` / 新設の `workspace.deletionGlobalCleanupContinued` / `workspace.deletionManifestCompactContinued`）。行の鍵は `(kind, operationId)` で `schedule` が upsert するため、これが ADR 041 の「決定的な継続要求 ID」に相当し、応答喪失後の再実行は同じ行を書き直す。各 turn は自分の仕事・cursor・次の行を 1 つの scope transaction で着地させ、`assertDeletionOwner(operationId)` を入口で必ず通す。global cleanup も同じ transport にするのは、durable かつ lease 付きで operation ID を鍵に持つ driver が本ランタイムには他に無いためである。
+
+### Consequences
+
+- workspace event の decoder / subscriber が無くてもサガ全体が閉じる。`workspace.deleted` は outbox へ発行するが、その消費者は Issue #8 が足す。
+- `scopeTaskHandlers` に 3 kind が増える。行は turn 自身が `schedule` で再武装するか `complete` で畳むので、runner 側の後始末は不要。
+- turn が throw した場合は runner が backoff し、8 回で `failed` に駐車する。可視の停止であり、黙って完了する経路は無い。
+
+## ADR-044: 子行の 0 件確認と Workspace 削除を、削除ページとは別の turn に分ける
+
+### Context
+
+手順 6 は「local pending が 0 件になった最後の UoW でだけ、子行が 0 件であることを確認して Workspace を削除する」と述べる。しかし ADR-019 / ADR-022 のとおり、Cloudflare の `deleteByIds` は bulk DELETE を `opaque` で stage するため、**同一 UoW 内では削除が読み戻せない**。同じ transaction で `deleteByIds` の直後に `listByWorkspace` を呼ぶと、memory は 0 件・Cloudflare は削除前の件数を返し、Workspace 削除が永久に進まない。
+
+### Decision
+
+`localDelete` phase の turn は「`listLocalPending` を 1 回読む → 消す → ack → 自分の行を再武装」だけを行い、読み戻しをしない。0 件を観測した turn（＝前の turn の削除が commit 済みである turn）が、子行 0 件の確認・Workspace 削除・`workspace.deleted` 発行・global cleanup の登録・自行の `complete` を 1 つの UoW で行う。子行が残っていた場合は manifest 走査を cursor `null` から再武装する（append は対象ごとに冪等なので再走は安全＝ADR-010）。
+
+### Consequences
+
+- ADR-019 / ADR-022 が予告した「UoW 内で読み戻す呼び出し」を削除サガは 1 つも持たない。per-id `remove` への切り替えは不要のまま。
+- turn が 1 つ増える（最終ページの後に必ず 0 件 turn が回る）。その turn は読み 2 本と削除 1 本で bounded。
+- 「Workspace 削除前に停止 → manifest の local ack から再開して 1 回だけ保存する」（TC-workspace）が自然に満たされる。削除と行の `complete` が同一 commit なので再配送も起きない。
+
+## ADR-045: 削除サガの global cleanup 用に worker container へ 4 ポートを載せる
+
+### Context
+
+手順 7 は `workspace_directory` の tombstone、slug reservation の release、`membership_directory` edge の削除、`invitation_routes` の削除を要求する。これらは control plane の書き込みで、ADR-023 は「global の 6 ポートは `RequestContainer`」と決めていた。しかし global cleanup は worker plane の継続 turn であり、`WorkerContainer` にはこの 4 つが載っていなかった（ADR-023 の Consequences が「削除サガの worker が必要とするものはステップ 11 で判断する」と送っていた）。
+
+### Decision
+
+`WorkerContainer` に `workspaceDirectoryProjectionWriter` / `workspaceSlugReservationStore` / `invitationRouteStore` / `membershipDirectoryReservationStore` を足し、memory / Cloudflare 両ランタイムで request 側と同じアダプターを渡す。UoW の外の書き込みなので専用 store ポートを直接叩く形は変わらない。membership edge は `beginRemoval` → `completeRemoval` の 2 段（ADR-037）で消す。`removing` を経ない削除はポートが拒否するためで、両方とも目標状態で冪等なので再送は無害。
+
+### Consequences
+
+- `runtimeComposition.test.ts` の `WORKER_PORTS` に 4 件追加。型レベルの網羅検査があるので漏れはコンパイルエラーになる。
+- global の 3 書き込み（tombstone → slug release → item ごとの edge / route 削除）は cursor が `null` の最初の turn でのみ tombstone と slug release を行う。どちらも operation ID / 目標状態で冪等なので、最初の turn の再実行は無害で、後続 turn は飛ばす。
+- join saga の `activate` 応答が失われて edge が `activating` のまま残った稀な状態では `beginRemoval` が `ConflictError` になり、その turn が backoff → 駐車する。握り潰して ack すると directory に stale edge が残るので、可視の停止を選んだ。
+
+## ADR-046: 縮退解除の認可はすべて `resolveWorkspaceAccess` を通す
+
+### Context
+
+ステップ 13 で解除する 5 箇所のうち 4 箇所（`accessControl.viewerFor` / `storeAvatar` / `recalculateStorageUsage` / `createBlankNote`）は「実行者の workspace ロールを引く」という同じ前段を必要とする。`MembershipRepository.findByWorkspaceAndUser` を直接叩く経路も書けるが、そうすると「workspace が存在しないときの応答」と「global directory の role を認可に使わない」という 2 つの規則が呼び出し箇所ごとに再実装される。
+
+### Decision
+
+note / storage / usage のどのユースケースからも `application/workspace/resolveWorkspaceAccess` を呼び、その `role`（`null` は非メンバー）に対して `WorkspaceAuthorization.ensureCan` を適用する。非メンバーは `BusinessRuleError(InsufficientRole)`、workspace 不在は `resolveWorkspaceAccess` が投げる `NotFoundError("WORKSPACE_NOT_FOUND")` をそのまま通す（`membershipMutation.requireManageMembers` と同じ向き）。action は spec の割り当てに従う — `createBlankNote` は `createNote`、`storeAvatar` は `manageWorkspace`、`getNote` は `NoteAccessPolicy` が `viewTrash` / `editNote` / `deleteNote` / `changeNoteVisibility` を引く。
+
+`recalculateStorageUsage` だけは action を課さずメンバーシップのみを要求する。ロール表に棚卸しに対応する action がなく、この操作は「メンバーが既に見られる値を実データの合計へ置き換える」だけで新しい情報も能力も生まないため。spec/usecases/usage.md の手順 1 とエラー表をこの判断に合わせて明文化した。
+
+`viewerFor` は `(container, NoteOwner, userId | null)` を取る非同期関数になった。所有者を渡さなければどの workspace のロールを引くべきか決まらず、匿名（`userId === null`）では引く必要すらないため、この 3 引数が最小である。
+
+### Consequences
+
+- `application/note` / `application/storage` / `application/usage` が `application/workspace` に依存する。いずれも同じ application 層で、workspace 側は note / storage / usage を import しないので循環しない。
+- workspace 所有ノートの `getNote` は D1 1 点参照 + scope 2 点参照（Note と Workspace/Membership）になる。同一 scope object 内の 2 リクエストであり、`resolveWorkspaceAccess` の JSDoc が言う「認可の正本は scope の Membership」を守るための必要コストとみなす。
+- fail-open だった `recalculateStorageUsage` の workspace 主体が閉じた。
+
+## ADR-047: `getUsageSnapshot` のロール絞り込みはページ取得の後段に置く
+
+### Context
+
+spec/usecases/usage.md 手順 2 は「`membership_directory` から `owner` / `editor` の active edge を keyset で最大 `workspaceLimit` 件引く」と書くが、`UserWorkspaceDirectory.listActiveByUser` はロール述語を取らない（ポート契約は「その user の active edge を `created_at DESC, workspace_id` で返す」だけ）。ポートに述語を足すか、ユースケース側で絞るかの選択になる。
+
+### Decision
+
+ポートは触らず、1 ページを引いたあとに `owner` / `editor` だけを残す。`nextWorkspaceCursor` はポートが返した値をそのまま返す。結果として 1 ページの `workspaces` は `workspaceLimit` 件を下回りうるが、カーソルはページ全体の末尾まで進むので、繰り返せば重複も欠落もなく全件を辿れる。
+
+述語をポートへ足さない理由は 2 つ。`listActiveByUser` は workspace switcher（`listUserWorkspaces`）と共有する読みで、そちらは viewer も表示する必要がある。そして述語付きの keyset はシャード側にロール別インデックスを要求するが、`spec/database/index.md` の `membership_directory` はそれを持たない。
+
+### Consequences
+
+- 「viewer だけの workspace が多いユーザー」では 1 ページの表示件数が減る。表示の密度が落ちるだけで、正しさとページングの全体性は保たれる。
+- spec/usecases/usage.md 手順 2 に、絞り込みが後段であることと、それが `nextWorkspaceCursor` に与える影響を書き足した。
+
+## ADR-048: scope が答えられない workspace は表示名なしの `unavailable` で返す
+
+### Context
+
+`getUsageSnapshot` の `WorkspaceUsageItem` は spec 上 `unavailable` にも `workspaceName: string` を持つ。これは「表示名は手順 2 の `workspace_directory` で解決済みで、失敗するのは手順 3 の scope RPC だけ」という前提に立っている。しかし `WorkspaceDirectoryBatchReader` の契約は id ごとに `unavailable` を返しうる（1 シャードが読めなくても呼び出し全体は成功する）ので、「edge はあるが表示名がない」状態が実際に起こる。
+
+### Decision
+
+`unavailable` の `workspaceName` を `string | null` にする。null は「directory 側も答えられなかった」を意味し、scope だけが落ちた通常の縮退では名前が入る。`deleted` と判定された workspace は `listUserWorkspaces` と同じく行ごと落とす。spec/usecases/usage.md の DTO をこれに合わせた。
+
+### Consequences
+
+- 画面は `workspaceName === null` のときの表示（ID か既定文言）を決める必要がある。P-24 の実装時に決める。
+- 空文字で埋めて型を守る案は採らない。「名前が空の workspace」は存在しない状態であり、型が嘘をつく。

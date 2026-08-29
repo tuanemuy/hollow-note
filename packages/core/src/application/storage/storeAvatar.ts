@@ -8,8 +8,12 @@ import {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { deleteStoredFiles } from "./deleteFiles";
 import type { StoreAvatarView } from "./view";
 
@@ -41,6 +45,34 @@ const insufficientRole = () =>
   );
 
 /**
+ * Resolves the subject the icon belongs to and refuses an actor who may
+ * not set it (spec/usecases/storage.md#storeavatar 手順 1): a user
+ * subject must be the actor themselves, a workspace subject needs
+ * `manageWorkspace`.
+ */
+async function resolveAvatarOwner(
+  container: RequestContainer,
+  input: StoreAvatarInput,
+  userId: UserId,
+): Promise<StorageOwner> {
+  if (input.subjectType === "user") {
+    if (input.subjectId !== userId) {
+      throw insufficientRole();
+    }
+    return StorageOwner.user(userId);
+  }
+  const access = await resolveWorkspaceAccess({
+    container,
+    input: { workspaceId: input.subjectId, userId: input.userId },
+  });
+  if (access.role === null) {
+    throw insufficientRole();
+  }
+  WorkspaceAuthorization.ensureCan(access.role, "manageWorkspace");
+  return StorageOwner.workspace(WorkspaceId.create(access.workspaceId));
+}
+
+/**
  * Stores a profile / workspace icon (UC-storage-004,
  * spec/usecases/storage.md#storeavatar).
  *
@@ -54,10 +86,6 @@ const insufficientRole = () =>
  * Size and content type are both measured from the body rather than
  * declared by the caller: the policy has to bind the bytes actually
  * stored, and a declaration can disagree with them.
- *
- * Workspace subjects are refused outright until `WorkspaceAuthorization`
- * exists — "cannot evaluate the permission" is answered as "does not have
- * it", with the same error the real check will raise.
  */
 export async function storeAvatar({
   container,
@@ -67,12 +95,11 @@ export async function storeAvatar({
     container;
 
   const userId = UserId.create(input.userId);
-  if (input.subjectType === "workspace" || input.subjectId !== userId) {
-    throw insufficientRole();
-  }
-
-  const owner = StorageOwner.user(userId);
-  const scope = ScopeKey.user(userId);
+  const owner = await resolveAvatarOwner(container, input, userId);
+  const scope =
+    owner.type === "user"
+      ? ScopeKey.user(owner.userId)
+      : ScopeKey.workspace(owner.workspaceId);
   const { mimeType, size } = UploadValidationPolicy.ensureAcceptable({
     purpose: "avatar",
     body: input.body,

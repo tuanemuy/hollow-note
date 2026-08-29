@@ -459,6 +459,15 @@ export function createCloudflareRuntime(
         publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         scopeTaskQueue: createCloudflareScopeTaskQueue({ session }),
         objectStorage,
+        workspaceDirectoryProjectionWriter:
+          createD1WorkspaceDirectoryProjectionWriter({ session, clock }),
+        workspaceSlugReservationStore: createD1WorkspaceSlugReservationStore({
+          session,
+          clock,
+        }),
+        invitationRouteStore: createD1InvitationRouteStore({ session, clock }),
+        membershipDirectoryReservationStore:
+          createD1MembershipDirectoryReservationStore({ session, clock }),
         routingGenerations: options.routingGenerations ?? ["gen-1"],
         authStateSweeps: {
           sessions,

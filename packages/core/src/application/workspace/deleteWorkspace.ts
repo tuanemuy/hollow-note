@@ -1,0 +1,139 @@
+import { BusinessRuleError } from "@repo/core/domain/error";
+import { UserId } from "@repo/core/domain/identity/valueObject";
+import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import { ConflictError, ValidationError } from "../errors";
+import { ScopeKey } from "../scope";
+import type { ServiceArgs } from "../types";
+import {
+  resolveWorkspaceAccess,
+  workspaceNotFound,
+} from "./resolveWorkspaceAccess";
+import { scheduleLocalTurn } from "./workspaceDeletion";
+
+export type DeleteWorkspaceInput = Readonly<{
+  workspaceId: string;
+  userId: string;
+  confirmationName: string;
+}>;
+
+/**
+ * The request path's whole answer: the deletion continues on the worker
+ * plane, and the caller follows the workspace disappearing rather than
+ * this response.
+ */
+export type WorkspaceDeletionAcceptedView = Readonly<{
+  operationId: string;
+  status: "accepted";
+}>;
+
+const confirmationMismatch = (): ValidationError =>
+  new ValidationError(
+    "CONFIRMATION_MISMATCH",
+    "The confirmation name does not match the workspace",
+  );
+
+/**
+ * Accepts a workspace deletion (UC-workspace-007,
+ * spec/usecases/workspace.md#deleteworkspace, WS-10).
+ *
+ * The request path stops at "accepted" (手順 3): one workspace-local
+ * transaction confirms the name, refuses a staged note move, flips the
+ * scope to `deleting` under a fresh operation id, and stores the first
+ * `workspace.deletionLocalContinued` turn. Those land together, which is
+ * what makes "the scope is closed" and "something is driving the cleanup"
+ * inseparable — and why accepted is only returned after that commit.
+ *
+ * Everything after is a continuation on the scope plane
+ * (`application/workspace/workspaceDeletion.ts`): manifest build, local
+ * edge deletion, the Workspace row and `workspace.deleted`, then global
+ * cleanup and the ack compaction that ends in `markCompleted`.
+ *
+ * Re-requesting is safe: a scope already `deleting` answers with the
+ * operation that owns it and stores nothing, so a double submit joins the
+ * running deletion instead of opening a second one. Its driver is the task
+ * row the first request armed, which no turn removes until the phase it
+ * belongs to is finished.
+ *
+ * One step of 手順 4 is **absent in this slice**: the forced termination of
+ * the workspace's unfinished jobs, collected 100 at a time through
+ * `JobRepository.listActiveByScope`. The Job aggregate does not exist yet
+ * (Issue #5), so there is no repository to sweep and no `Job.cancel` to
+ * apply; the gap is recorded rather than papered over, the same way
+ * `application/cleanup/participants.ts` records it for account deletion.
+ * When the Job slice lands, the sweep belongs in the local turns below —
+ * ahead of the manifest build, so no job outlives the scope it ran in.
+ */
+export async function deleteWorkspace({
+  container,
+  input,
+}: ServiceArgs<DeleteWorkspaceInput>): Promise<WorkspaceDeletionAcceptedView> {
+  const access = await resolveWorkspaceAccess({
+    container,
+    input: { workspaceId: input.workspaceId, userId: input.userId },
+  });
+  if (access.role === null) {
+    throw new BusinessRuleError(
+      WorkspaceErrorCode.InsufficientRole,
+      "Only a member can delete the workspace",
+    );
+  }
+  WorkspaceAuthorization.ensureCan(access.role, "deleteWorkspace");
+
+  const workspaceId = WorkspaceId.create(input.workspaceId);
+  const userId = UserId.create(input.userId);
+  const scope = ScopeKey.workspace(workspaceId);
+  const operationId = container.idGenerator.next();
+  const now = container.clock.now();
+
+  return container.scopeUnitOfWorkProvider.run<WorkspaceDeletionAcceptedView>(
+    scope,
+    async (ctx) => {
+      await ctx.cleanupAdmission.assertWritable();
+      await ctx.cleanupAdmission.assertActorWritable(userId);
+
+      const versioned = await ctx.workspaceRepository.findById(workspaceId);
+      if (versioned === null) {
+        throw workspaceNotFound();
+      }
+      const workspace = versioned.entity;
+      if (input.confirmationName.trim() !== workspace.name) {
+        throw confirmationMismatch();
+      }
+      if (workspace.lifecycle.state === "deleting") {
+        return {
+          operationId: workspace.lifecycle.operationId,
+          status: "accepted",
+        };
+      }
+
+      // Retiring the source of a move whose target is already staged
+      // would strand the staged copy, so the deletion loses to the move
+      // rather than the other way round (`hasActiveMove`).
+      if (await ctx.workspaceOperationLockStore.hasActiveMove()) {
+        throw new ConflictError(
+          "WORKSPACE_MOVE_IN_PROGRESS",
+          `A staged note move is in flight in workspace ${workspaceId}`,
+        );
+      }
+
+      await ctx.workspaceOperationLockStore.beginDeletion({
+        workspaceId,
+        operationId,
+        expectedWorkspaceVersion: versioned.expectedVersion,
+      });
+      await scheduleLocalTurn(
+        ctx,
+        {
+          operationId,
+          phase: "memberships",
+          cursor: null,
+          slug: workspace.slug,
+        },
+        now,
+      );
+      return { operationId, status: "accepted" };
+    },
+  );
+}

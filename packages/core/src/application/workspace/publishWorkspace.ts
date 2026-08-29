@@ -11,6 +11,7 @@ import {
 import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { projectWorkspaceDirectory } from "./directoryProjection";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -63,9 +64,11 @@ async function countPublicNotes(
  * spec/usecases/workspace.md#publishworkspace, WS-08).
  *
  * The slug is already claimed globally by the time this runs — publishing
- * flips the aggregate only, and the aggregate refuses to publish without
- * one. An already published workspace is a success with no write and no
- * event, so a double submit is harmless.
+ * flips the aggregate, and the aggregate refuses to publish without one —
+ * and the committed state is projected into `workspace_directory`, which
+ * is what gates the public page and feeds the sitemap. An already
+ * published workspace is a success with no write and no event, so a double
+ * submit is harmless.
  *
  * Publishing a workspace does not touch the visibility of its notes: the
  * public page lists only notes that are public in their own right.
@@ -111,6 +114,12 @@ export async function publishWorkspace({
       ctx.collectEvents(next.eventDrafts);
       return next.entity;
     },
+  );
+
+  await projectWorkspaceDirectory(
+    container,
+    "[publishWorkspace] directory projection",
+    published,
   );
 
   return {

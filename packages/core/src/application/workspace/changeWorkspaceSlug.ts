@@ -11,6 +11,7 @@ import { ConflictError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { WORKSPACE_RESERVATION_TTL_MS } from "./createWorkspace";
+import { projectWorkspaceDirectory } from "./directoryProjection";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -54,6 +55,10 @@ const slugOperationId = (
  * Re-sending the slug the workspace already holds changes nothing and
  * emits nothing; it never touches the reservation, whose `active` row
  * already points here.
+ *
+ * The `workspace_directory` snapshot goes out last, once the reservation
+ * has settled: the projection follows the authority on the key rather
+ * than announcing a URL the reservation might still refuse.
  */
 export async function changeWorkspaceSlug({
   container,
@@ -109,8 +114,9 @@ export async function changeWorkspaceSlug({
     });
   }
 
+  let saved: Workspace;
   try {
-    await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    saved = await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
 
@@ -127,6 +133,7 @@ export async function changeWorkspaceSlug({
       const changed = Workspace.changeSlug(fresh.entity, input.slug, now);
       await ctx.workspaceRepository.save(changed.entity, fresh.expectedVersion);
       ctx.collectEvents(changed.eventDrafts);
+      return changed.entity;
     });
   } catch (error) {
     if (reservation !== null) {
@@ -164,6 +171,12 @@ export async function changeWorkspaceSlug({
       workspaceId,
     });
   }
+
+  await projectWorkspaceDirectory(
+    container,
+    "[changeWorkspaceSlug] directory projection",
+    saved,
+  );
 
   return { workspaceId, slug: nextSlug, previousSlug };
 }

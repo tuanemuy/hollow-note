@@ -1,7 +1,10 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import type { UserId } from "@repo/core/domain/identity/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import type { Membership } from "@repo/core/domain/workspace/membership";
+import { MembershipPolicy } from "@repo/core/domain/workspace/services/membershipPolicy";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
 import { ConflictError } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
@@ -80,5 +83,58 @@ export async function ensureMembershipMutable(
       "WORKSPACE_MOVE_IN_PROGRESS",
       `A staged note move pins the membership of ${userId}`,
     );
+  }
+}
+
+/**
+ * Everything that has to hold before a membership is torn down
+ * (`removeMember` 手順 3–4 / `leaveWorkspace` 手順 2).
+ *
+ * Both removals run it twice: once before the global edge is announced
+ * `removing`, and once inside the transaction that deletes the row.
+ * Neither position alone is enough — nothing walks an edge back from
+ * `removing`, so a refusal raised only inside the transaction would hide
+ * the workspace from a member who still holds it, while a check made only
+ * before it could be invalidated by a concurrent role change.
+ */
+export async function ensureRemovable(
+  ctx: ScopeUnitOfWorkContext,
+  target: Membership,
+): Promise<void> {
+  await ensureMembershipMutable(ctx, target.userId);
+  const ownerCount = await ctx.membershipRepository.countByRole(
+    target.workspaceId,
+    "owner",
+  );
+  MembershipPolicy.ensureOwnerRemains(ownerCount, target, null);
+}
+
+/**
+ * Drops the global directory edge once the removal's residue is settled
+ * (`removeMember` 手順 5 / `leaveWorkspace` 手順 4).
+ *
+ * Called straight after the local commit because this slice leaves no
+ * residue behind: the Job aggregate and the BackupRecord the spec waits
+ * for do not exist yet, so the acknowledgement the deletion waits on is
+ * already given. When they land, this call moves behind their cleanup.
+ *
+ * A failure is logged, not raised. The membership is already gone, so the
+ * caller has nothing to retry — a re-run would answer `MEMBERSHIP_NOT_FOUND`
+ * — and an edge left `removing` is absent from the member's list anyway,
+ * which is the outcome the removal wanted.
+ */
+export async function settleRemovalEdge(
+  container: RequestContainer,
+  label: string,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  try {
+    await container.membershipDirectoryReservationStore.completeRemoval(
+      userId,
+      workspaceId,
+    );
+  } catch (cause) {
+    container.logger.error(`${label} directory edge removal failed`, { cause });
   }
 }

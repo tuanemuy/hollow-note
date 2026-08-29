@@ -1,3 +1,4 @@
+import { isNotFoundError } from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { Version } from "@repo/core/domain/common/version";
 import { BusinessRuleError } from "@repo/core/domain/error";
@@ -18,7 +19,9 @@ import {
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import { QuotaSubject } from "@repo/core/domain/usage/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { Membership } from "@repo/core/domain/workspace/membership";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import {
@@ -160,6 +163,47 @@ async function seedNote(
   });
 }
 
+/** Seeds the workspace and, optionally, the actor's membership in it. */
+async function seedWorkspaceMember(
+  h: TestHarness,
+  role: "owner" | "editor" | "viewer" | null,
+): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  const now = h.clock.now();
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      await ctx.workspaceRepository.insert(
+        Workspace.create(
+          {
+            id: WORKSPACE_ID,
+            ownerId: UserId.create("founder-1"),
+            name: "Workspace",
+            description: "",
+            slug: null,
+          },
+          now,
+        ).entity,
+      );
+      if (role !== null) {
+        await ctx.membershipRepository.insert(
+          Membership.create(
+            { id: "membership-1", workspaceId, userId, role },
+            now,
+          ).entity,
+        );
+      }
+    },
+  );
+}
+
+const expectInsufficientRole = (promise: Promise<unknown>) =>
+  expect(promise).rejects.toSatisfy(
+    (error: unknown) =>
+      error instanceof BusinessRuleError &&
+      error.code === WorkspaceErrorCode.InsufficientRole,
+  );
+
 describe("recalculateStorageUsage", () => {
   it("TC-usage-065: a drifted total is replaced by the real one", async () => {
     const h = createTestHarness();
@@ -241,6 +285,7 @@ describe("recalculateStorageUsage", () => {
     const workspaceId = WorkspaceId.create(WORKSPACE_ID);
     const workspaceOwner = StorageOwner.workspace(workspaceId);
     const workspaceScope = ScopeKey.workspace(workspaceId);
+    await seedWorkspaceMember(h, "viewer");
     await seedFile(h, { id: "file-1", bytes: 500, purpose: "media" });
     await seedFile(h, {
       id: "file-2",
@@ -264,20 +309,52 @@ describe("recalculateStorageUsage", () => {
     expect(h.backend.scope(scope).storageQuotas.values()).toHaveLength(0);
   });
 
-  it("a user subject other than the actor is refused", async () => {
+  it("TC-usage-073: a user subject other than the actor is refused", async () => {
     const h = createTestHarness();
     await seedFile(h, { id: "file-1", bytes: 120, purpose: "media" });
 
-    await expect(recalculate(h, { subjectId: "user-2" })).rejects.toSatisfy(
-      (error: unknown) =>
-        error instanceof BusinessRuleError &&
-        error.code === WorkspaceErrorCode.InsufficientRole,
-    );
+    await expectInsufficientRole(recalculate(h, { subjectId: "user-2" }));
     expect(
       h.backend
         .scope(ScopeKey.user(UserId.create("user-2")))
         .storageQuotas.values(),
     ).toHaveLength(0);
+  });
+
+  it("a workspace subject the actor is not a member of is refused", async () => {
+    const h = createTestHarness();
+    const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
+    await seedWorkspaceMember(h, null);
+    await seedFile(h, {
+      id: "file-1",
+      bytes: 40,
+      purpose: "media",
+      target: StorageOwner.workspace(WorkspaceId.create(WORKSPACE_ID)),
+    });
+
+    await expectInsufficientRole(
+      recalculate(h, {
+        subjectType: "workspace",
+        subjectId: WORKSPACE_ID,
+      }),
+    );
+    expect(h.backend.scope(workspaceScope).storageQuotas.values()).toHaveLength(
+      0,
+    );
+  });
+
+  it("an unknown workspace subject resolves to WORKSPACE_NOT_FOUND", async () => {
+    const h = createTestHarness();
+
+    await expect(
+      recalculate(h, {
+        subjectType: "workspace",
+        subjectId: "no-such-workspace",
+      }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isNotFoundError(error) && error.code === "WORKSPACE_NOT_FOUND",
+    );
   });
 
   it("TC-identity-045: a recalculation after the deletion barrier is refused", async () => {

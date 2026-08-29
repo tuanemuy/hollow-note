@@ -8,6 +8,7 @@ import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import type { RecalculatedStorageUsageView } from "./view";
 
 export type RecalculateStorageUsageInput = Readonly<{
@@ -30,19 +31,36 @@ export type RecalculateStorageUsageInput = Readonly<{
  * whoever asked for the stocktake, and a workspace subject is recomputed
  * by a member. A user subject is therefore bound to the actor
  * — the two are the same person or the actor has no standing over that
- * scope at all. Workspace membership itself stays unchecked until
- * `WorkspaceAuthorization` exists.
+ * scope at all — and a workspace subject is bound to a membership in it
+ * (spec/usecases/usage.md#recalculatestorageusage 手順 1).
+ *
+ * Membership alone is the bar, with no action from the role table: the
+ * stocktake writes nothing a member cannot already see, and it only ever
+ * replaces a drifted total with what the scope's own rows add up to.
  */
 export async function recalculateStorageUsage({
   container,
   input,
 }: ServiceArgs<RecalculateStorageUsageInput>): Promise<RecalculatedStorageUsageView> {
   const actorUserId = UserId.create(input.userId);
-  if (input.subjectType === "user" && input.subjectId !== actorUserId) {
-    throw new BusinessRuleError(
-      WorkspaceErrorCode.InsufficientRole,
-      "Not allowed to recalculate this subject",
-    );
+  if (input.subjectType === "user") {
+    if (input.subjectId !== actorUserId) {
+      throw new BusinessRuleError(
+        WorkspaceErrorCode.InsufficientRole,
+        "Not allowed to recalculate this subject",
+      );
+    }
+  } else {
+    const access = await resolveWorkspaceAccess({
+      container,
+      input: { workspaceId: input.subjectId, userId: input.userId },
+    });
+    if (access.role === null) {
+      throw new BusinessRuleError(
+        WorkspaceErrorCode.InsufficientRole,
+        "Not allowed to recalculate this subject",
+      );
+    }
   }
 
   const owner =

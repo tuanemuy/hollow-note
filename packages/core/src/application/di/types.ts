@@ -318,6 +318,14 @@ export type ExpirySweep = Readonly<{
  * each scope's unit of work. `objectStorage` is here because reclaiming
  * an object is the subscriber's job, after the metadata row it belonged
  * to is already gone.
+ *
+ * The four workspace ports are the global half of the workspace-deletion
+ * saga (spec/usecases/workspace.md `deleteWorkspace` 手順 7): its cleanup
+ * turns run on the worker plane, and the directory tombstone, the slug
+ * release, the membership edges and the invitation routes they delete all
+ * live on the control plane, outside any scope's unit of work. The request
+ * container carries the same ports for the reservation sagas; a deletion
+ * reaches them from the worker side instead.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{
@@ -334,6 +342,10 @@ export type WorkerContainer = SharedDeps &
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
+    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
+    workspaceSlugReservationStore: WorkspaceSlugReservationStore;
+    invitationRouteStore: InvitationRouteStore;
+    membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
     routingGenerations: readonly string[];
     authStateSweeps: Readonly<Record<AuthStateTable, ExpirySweep>>;
   }>;

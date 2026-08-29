@@ -1,3 +1,4 @@
+import { isNotFoundError } from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { isBusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -5,11 +6,15 @@ import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import type { FileDeletedEvent } from "@repo/core/domain/storage/events";
 import { ObjectKey } from "@repo/core/domain/storage/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { Membership } from "@repo/core/domain/workspace/membership";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { type StoreAvatarInput, storeAvatar } from "../storeAvatar";
 
 const USER_ID = "user-1";
+const WORKSPACE_ID = "workspace-1";
 const MB = 1024 * 1024;
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -42,6 +47,50 @@ const upload = (h: TestHarness, overrides: Partial<StoreAvatarInput> = {}) =>
 
 const storedFiles = (h: TestHarness) =>
   h.backend.scope(ScopeKey.user(UserId.create(USER_ID))).storedFiles.values();
+
+const workspaceFiles = (h: TestHarness) =>
+  h.backend
+    .scope(ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID)))
+    .storedFiles.values();
+
+/** Seeds a workspace holding one membership, without its saga. */
+async function seedWorkspaceMember(
+  h: TestHarness,
+  role: "owner" | "editor" | "viewer" | null,
+): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE_ID);
+  const now = h.clock.now();
+  await h.container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    async (ctx) => {
+      await ctx.workspaceRepository.insert(
+        Workspace.create(
+          {
+            id: WORKSPACE_ID,
+            ownerId: UserId.create("founder-1"),
+            name: "Workspace",
+            description: "",
+            slug: null,
+          },
+          now,
+        ).entity,
+      );
+      if (role !== null) {
+        await ctx.membershipRepository.insert(
+          Membership.create(
+            {
+              id: "membership-1",
+              workspaceId,
+              userId: UserId.create(USER_ID),
+              role,
+            },
+            now,
+          ).entity,
+        );
+      }
+    },
+  );
+}
 
 const deletedEvents = (
   h: TestHarness,
@@ -86,12 +135,55 @@ describe("storeAvatar", () => {
     expect(storedFiles(h)).toHaveLength(0);
   });
 
-  it("workspace subjects are refused until workspace authorization exists", async () => {
+  it("TC-storage-168: a workspace owner stores the workspace icon in its own scope", async () => {
     const h = createTestHarness();
+    await seedWorkspaceMember(h, "owner");
+
+    const view = await upload(h, {
+      subjectType: "workspace",
+      subjectId: WORKSPACE_ID,
+    });
+
+    const files = workspaceFiles(h);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.purpose).toBe("avatar");
+    expect(files[0]?.objectKey).toBe(
+      `workspaces/${WORKSPACE_ID}/avatar/${view.fileId}.png`,
+    );
+    expect(storedFiles(h)).toHaveLength(0);
+  });
+
+  it("TC-storage-169: a workspace editor is refused", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, "editor");
 
     await expectBusinessRule(
-      upload(h, { subjectType: "workspace", subjectId: "workspace-1" }),
+      upload(h, { subjectType: "workspace", subjectId: WORKSPACE_ID }),
       WorkspaceErrorCode.InsufficientRole,
+    );
+    expect(workspaceFiles(h)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("a non-member is refused a workspace icon", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, null);
+
+    await expectBusinessRule(
+      upload(h, { subjectType: "workspace", subjectId: WORKSPACE_ID }),
+      WorkspaceErrorCode.InsufficientRole,
+    );
+    expect(workspaceFiles(h)).toHaveLength(0);
+  });
+
+  it("an unknown workspace id resolves to WORKSPACE_NOT_FOUND", async () => {
+    const h = createTestHarness();
+
+    await expect(
+      upload(h, { subjectType: "workspace", subjectId: "no-such-workspace" }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        isNotFoundError(error) && error.code === "WORKSPACE_NOT_FOUND",
     );
   });
 

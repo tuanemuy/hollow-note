@@ -44,7 +44,7 @@ export async function getNote({
   }
   const note = versioned.entity;
 
-  const viewer = viewerFor(input.userId);
+  const viewer = await viewerFor(container, note.owner, input.userId);
   const access = noteAccessPolicy.evaluate(
     note,
     viewer,

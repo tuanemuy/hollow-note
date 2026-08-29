@@ -7,6 +7,9 @@ import {
   NoteOwner,
   ShareLink,
 } from "@repo/core/domain/note/valueObject";
+import { Membership } from "@repo/core/domain/workspace/membership";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { describe, expect, it } from "vitest";
 import {
   createTestHarness,
@@ -19,7 +22,9 @@ import { emptyReferenceReport } from "../view";
 
 const OWNER = "owner-1";
 const OTHER = "other-1";
+const WORKSPACE = "workspace-1";
 const ownerScope = ScopeKey.user(UserId.create(OWNER));
+const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE));
 
 const expectNoteNotFound = (promise: Promise<unknown>) =>
   expect(promise).rejects.toSatisfy(
@@ -77,6 +82,90 @@ async function seedNote(
 const get = (h: TestHarness, noteId: string, userId: string | null) =>
   getNote({ container: h.container, input: { noteId, userId } });
 
+/**
+ * Routes + inserts a workspace-owned note, together with the workspace
+ * and the viewer's membership the access decision is read from.
+ */
+async function seedWorkspaceNote(
+  h: TestHarness,
+  params: Readonly<{
+    role: "owner" | "editor" | "viewer" | null;
+    trashed?: boolean;
+  }>,
+): Promise<NoteId> {
+  seedCounter += 1;
+  const id = `workspace-note-${seedCounter}`;
+  const now = h.clock.now();
+  const workspaceId = WorkspaceId.create(WORKSPACE);
+  const noteId = NoteId.create(id);
+  const trashed = params.trashed ?? false;
+  const note = Note.reconstruct({
+    id,
+    ownerType: "workspace",
+    ownerId: WORKSPACE,
+    createdBy: OWNER,
+    title: "Workspace note",
+    titleOrigin: "manual",
+    contentStatus: "ready",
+    html: "<p>Hello</p>",
+    text: "Hello",
+    excerpt: "Hello",
+    headings: [],
+    visibilityStatus: "private",
+    styleMode: "default",
+    lifecycle: trashed ? "trashed" : "active",
+    ...(trashed
+      ? {
+          trashedAt: now,
+          purgeAfter: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+        }
+      : {}),
+    version: 3,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await h.container.noteRouteStore.reserveCreate({
+    noteId,
+    scope: workspaceScope,
+    createdBy: UserId.create(OWNER),
+    operationId: `seed-op-${seedCounter}`,
+    expiresAt: new Date(now.getTime() + 60_000),
+  });
+  await h.container.scopeUnitOfWorkProvider.run(workspaceScope, async (ctx) => {
+    await ctx.noteRepository.insert(note);
+    await ctx.workspaceRepository.insert(
+      Workspace.create(
+        {
+          id: WORKSPACE,
+          ownerId: UserId.create(OWNER),
+          name: "Workspace",
+          description: "",
+          slug: null,
+        },
+        now,
+      ).entity,
+    );
+    if (params.role !== null) {
+      await ctx.membershipRepository.insert(
+        Membership.create(
+          {
+            id: `membership-${seedCounter}`,
+            workspaceId,
+            userId: UserId.create(OTHER),
+            role: params.role,
+          },
+          now,
+        ).entity,
+      );
+    }
+  });
+  await h.container.noteRouteStore.activateCreate({
+    noteId,
+    operationId: `seed-op-${seedCounter}`,
+  });
+  return noteId;
+}
+
 describe("getNote", () => {
   it("TC-note-165: the owner's note returns body, headings, visibility, and full permissions", async () => {
     const h = createTestHarness();
@@ -100,6 +189,60 @@ describe("getNote", () => {
     });
     // Deliberately no assertion on `references` content here: the report
     // is structurally empty in this slice.
+  });
+
+  it("TC-note-166: a workspace viewer reads the body with no permissions", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, { role: "viewer" });
+
+    const view = await get(h, noteId, OTHER);
+
+    expect(view.content.html).toBe("<p>Hello</p>");
+    expect(view.permissions).toEqual({
+      canEdit: false,
+      canDelete: false,
+      canChangeVisibility: false,
+    });
+  });
+
+  it("TC-note-167: a workspace editor can edit and delete", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, { role: "editor" });
+
+    const view = await get(h, noteId, OTHER);
+
+    expect(view.permissions).toEqual({
+      canEdit: true,
+      canDelete: true,
+      canChangeVisibility: true,
+    });
+  });
+
+  it("a non-member cannot reach a private workspace note", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, { role: null });
+
+    await expectNoteNotFound(get(h, noteId, OTHER));
+  });
+
+  it("TC-note-174: a workspace viewer cannot reach a trashed workspace note", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, {
+      role: "viewer",
+      trashed: true,
+    });
+
+    await expectNoteNotFound(get(h, noteId, OTHER));
+  });
+
+  it("TC-note-175: a workspace editor reaches a trashed workspace note", async () => {
+    const h = createTestHarness();
+    const noteId = await seedWorkspaceNote(h, {
+      role: "editor",
+      trashed: true,
+    });
+
+    expect((await get(h, noteId, OTHER)).noteId).toBe(noteId);
   });
 
   it("TC-note-168: someone else's private note collapses to NOTE_NOT_FOUND", async () => {

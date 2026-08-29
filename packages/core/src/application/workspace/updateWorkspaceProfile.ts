@@ -7,6 +7,7 @@ import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { ConflictError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { projectWorkspaceDirectory } from "./directoryProjection";
 import {
   resolveWorkspaceAccess,
   workspaceNotFound,
@@ -25,8 +26,10 @@ export type UpdateWorkspaceProfileInput = Readonly<{
  * Updates a workspace's name, description and icon (UC-workspace-003,
  * spec/usecases/workspace.md#updateworkspaceprofile, WS-07).
  *
- * The whole write is scope-local: the profile names nothing the global
- * plane owns, so no reservation saga is involved. `workspace.profileUpdated`
+ * The write is scope-local — the profile names nothing the global plane
+ * owns, so no reservation saga is involved — and the committed state is
+ * then projected into `workspace_directory`, which is what the member's
+ * workspace list renders. `workspace.profileUpdated`
  * is emitted by the aggregate only when the **name** actually changed, so
  * a description-only edit leaves the note read model alone.
  *
@@ -102,6 +105,12 @@ export async function updateWorkspaceProfile({
     ctx.collectEvents(updated.eventDrafts);
     return updated.entity;
   });
+
+  await projectWorkspaceDirectory(
+    container,
+    "[updateWorkspaceProfile] directory projection",
+    saved,
+  );
 
   return toWorkspaceProfileView(saved);
 }

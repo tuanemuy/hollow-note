@@ -300,6 +300,13 @@ export function createMemoryRuntime(
           createMemoryPublicNoteProjectionWriter(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),
         objectStorage,
+        workspaceDirectoryProjectionWriter:
+          createMemoryWorkspaceDirectoryProjectionWriter(backend),
+        workspaceSlugReservationStore:
+          createMemoryWorkspaceSlugReservationStore(backend),
+        invitationRouteStore: createMemoryInvitationRouteStore(backend),
+        membershipDirectoryReservationStore:
+          createMemoryMembershipDirectoryReservationStore(backend),
         routingGenerations: routingGenerations ?? ["gen-1"],
         authStateSweeps: {
           sessions: sessionRepository,

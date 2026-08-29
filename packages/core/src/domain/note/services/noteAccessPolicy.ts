@@ -74,8 +74,8 @@ const READ_ONLY_ACCESS: NoteAccess = {
  * Decides what a viewer may do with a note. Evaluation order
  * (spec/domains/note.md): ownership → trash barrier → public → unlisted
  * with a matching token → denied. Only the ownership path can reach a
- * trashed note. `WorkspaceAuthorization` is injected as a domain service;
- * in the walking-skeleton slice every call takes the personal path.
+ * trashed note. `WorkspaceAuthorization` is injected as a domain service
+ * so the role table stays the single source of truth for every action.
  */
 export function createNoteAccessPolicy(
   authorization: WorkspaceAuthorization,

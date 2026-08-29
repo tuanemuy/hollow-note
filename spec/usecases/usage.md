@@ -41,13 +41,15 @@
 ```ts
 type WorkspaceUsageItem =
   | { state: "available"; workspaceId: string; workspaceName: string; consumedBytes: number; limitBytes: number; noteCount: number; level: UsageLevel }
-  | { state: "unavailable"; workspaceId: string; workspaceName: string };
+  | { state: "unavailable"; workspaceId: string; workspaceName: string | null };
 ```
+
+`unavailable` の `workspaceName` が null になるのは、名前を供給する `workspace_directory` の側が答えられなかった場合である。手順 2 の解決は id ごとに縮退するため（`WorkspaceDirectoryBatchReader` の `unavailable`）、edge はあるが表示名がない状態が起こりうる。`deleted` と判定された workspace は行ごと落とす。
 
 ### 処理フロー
 
 1. personal scope object から `StorageQuotaRepository.find({ type: "user", userId })` を引く。不在なら初期値を返す
-2. global D1 の `membership_directory` から `owner` / `editor` の active workspace edge を `(workspace_id > cursor)` のキーセットで最大 `workspaceLimit` 件だけ引き、`workspace_directory` で名前を解決する。editor 参加数には上限がないため、所有上限を fan-out 上限には使わない
+2. global D1 の `membership_directory` から active workspace edge を `(workspace_id > cursor)` のキーセットで最大 `workspaceLimit` 件だけ引き、`owner` / `editor` だけを残して `workspace_directory` で名前を解決する。editor 参加数には上限がないため、所有上限を fan-out 上限には使わない。ロールの絞り込みはページを引いたあとに行う — `UserWorkspaceDirectory.listActiveByUser` はロール述語を取らないため、1 ページの結果が `workspaceLimit` 件を下回っても `nextWorkspaceCursor` はページ全体の末尾まで進む
 3. このページに含まれる最大20個の workspace scope object だけへ問い合わせる。同時RPCは6以下とし、1 scopeの失敗はそのworkspaceを `unavailable` として返し、personalや他workspaceを失敗させない。続きがあれば最後のworkspace IDから `nextWorkspaceCursor` を返す
 4. personal scope の `LlmUsageRepository.find(userId, BillingPeriod.of(now))` を引く。不在なら初期値を返す
 5. `QuotaEnforcement.describe` で表示用の値を組み立てる
@@ -178,7 +180,7 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 
 ### 処理フロー
 
-1. 実行者と主体の対応を検査する。user 主体なら `subjectId` が実行者（`userId`）と一致していなければ `BusinessRuleError(InsufficientRole)`。workspace 主体では、実行者がその主体のメンバーであることの検査を `WorkspaceAuthorization`（[domains/workspace.md](../domains/workspace.md)）が担う
+1. 実行者と主体の対応を検査する。user 主体なら `subjectId` が実行者（`userId`）と一致していなければ `BusinessRuleError(InsufficientRole)`。workspace 主体なら `resolveWorkspaceAccess`（[usecases/workspace.md](./workspace.md)）でロールを引き、メンバーでなければ `BusinessRuleError(InsufficientRole)`。求めるのはメンバーシップだけで、ロール表の action は課さない — 棚卸しはメンバーが既に見られる値を実データの合計へ置き換えるだけで、新しい情報も新しい能力も生まないため
 2. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
 3. `NoteRepository.countByOwner(owner, "all")` を引く
 4. `StorageQuota` の値を置き換えて保存する
@@ -188,6 +190,8 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 | 条件 | 種類 |
 | --- | --- |
 | user 主体が実行者と一致しない | `BusinessRuleError(InsufficientRole)` |
+| workspace 主体に実行者のメンバーシップがない | `BusinessRuleError(InsufficientRole)` |
+| workspace 主体が存在しない | `NotFoundError("WORKSPACE_NOT_FOUND")` |
 | 書き込みの失敗 | `SystemError(DatabaseError)` |
 
 ## initializeQuota

@@ -101,6 +101,10 @@ const WORKER_PORTS = [
   "publicNoteProjectionWriter",
   "scopeTaskQueue",
   "objectStorage",
+  "workspaceDirectoryProjectionWriter",
+  "workspaceSlugReservationStore",
+  "invitationRouteStore",
+  "membershipDirectoryReservationStore",
   "routingGenerations",
   "authStateSweeps",
 ] as const satisfies readonly (keyof WorkerContainer)[];
