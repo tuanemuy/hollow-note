@@ -9,7 +9,8 @@ import {
   WorkspaceName,
 } from "../../../../domain/workspace/valueObject";
 import { opaque, type RowMutation, upsert } from "../../execution/writeSet";
-import { databaseError } from "../../sql/errors";
+import { classifySqlError, databaseError } from "../../sql/errors";
+import { occGuard } from "../../sql/occGuard";
 import { int, text, textOrNull, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, statement } from "../../sql/statement";
@@ -25,6 +26,12 @@ const CONTEXT = "the workspace directory projection";
  * (spec/database/index.md `workspace_directory`).
  */
 const REDACTED_NAME = WorkspaceName.create("(deleted)");
+
+const tombstonedByAnother = (workspaceId: WorkspaceId): ConflictError =>
+  new ConflictError(
+    "WORKSPACE_DIRECTORY_CONFLICT",
+    `Workspace ${workspaceId} is already tombstoned by another deletion`,
+  );
 
 type DirectoryRow = Readonly<{
   lifecycle: string;
@@ -198,15 +205,30 @@ export function createD1WorkspaceDirectoryProjectionWriter(
         stored.deletionOperationId !== null &&
         stored.deletionOperationId !== input.operationId
       ) {
-        throw new ConflictError(
-          "WORKSPACE_DIRECTORY_CONFLICT",
-          `Workspace ${input.workspaceId} is already tombstoned by another deletion`,
-        );
+        throw tombstonedByAnother(input.workspaceId);
       }
       const now = toTimestamp(clock.now());
       const publication = stored?.publication ?? "private";
       const sourceVersion = stored?.sourceVersion ?? 0;
-      await write([
+      const mutations: RowMutation[] = [
+        // The branch above was decided from a `read` issued a round trip
+        // earlier, and the upsert's `ON CONFLICT … WHERE` merely leaves
+        // the row alone when a foreign tombstone lands in between; the
+        // guard turns that silence into the refusal the port promises.
+        opaque(
+          occGuard(
+            statement(
+              `SELECT 1 WHERE NOT EXISTS (
+                 SELECT 1 FROM ${TABLE}
+                  WHERE workspace_id = ?
+                    AND deletion_operation_id IS NOT NULL
+                    AND deletion_operation_id <> ?
+               )`,
+              input.workspaceId,
+              input.operationId,
+            ),
+          ),
+        ),
         upsert({
           table: TABLE,
           key: input.workspaceId,
@@ -243,7 +265,14 @@ export function createD1WorkspaceDirectoryProjectionWriter(
             now,
           ),
         }),
-      ]);
+      ];
+      try {
+        await session.write(mutations);
+      } catch (cause) {
+        throw classifySqlError(cause) === "occGuard"
+          ? tombstonedByAnother(input.workspaceId)
+          : databaseError(CONTEXT, cause);
+      }
     },
   };
 }

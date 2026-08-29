@@ -349,6 +349,38 @@ export function createD1InvitationRouteStore(
       }
       const old = await read(input.oldTokenHash);
       if (replacement.state === "revoked") {
+        // The replacement can no longer open, but an old route left
+        // `active` would keep resolving to a cancelled invitation with
+        // neither an expiry nor a call able to take it back.
+        if (
+          old !== null &&
+          old.state === "active" &&
+          old.invitationId === input.invitationId
+        ) {
+          const closedAt = toTimestamp(clock.now());
+          await write([
+            opaque(
+              occGuard(
+                statement(
+                  `SELECT 1 FROM ${TABLE} WHERE token_hash = ? AND state = 'active' AND invitation_id = ?`,
+                  input.oldTokenHash,
+                  input.invitationId,
+                ),
+              ),
+            ),
+            upsert({
+              table: TABLE,
+              key: input.oldTokenHash,
+              row: { ...old.raw, state: "revoked", updated_at: closedAt },
+              statement: statement(
+                `UPDATE ${TABLE} SET state = 'revoked', updated_at = ? WHERE token_hash = ? AND state = 'active' AND invitation_id = ?`,
+                closedAt,
+                input.oldTokenHash,
+                input.invitationId,
+              ),
+            }),
+          ]);
+        }
         return;
       }
       if (

@@ -1,6 +1,6 @@
 # Inventory — frontend
 
-生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-29）
+生成元: `spec/pages/`、`spec/presentation/`（最終同期: 2026-08-30）
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -119,7 +119,7 @@
 | PAGE-p25-001 | P-25 アカウント削除ページ | `spec/pages/index.md#P-25: アカウント削除` | 削除対象・workspace 所有 note の残存を説明し、email 確認、参加中のワークスペースがある場合の実行不可、即時 sign-out 後の multi-scope progress、完了を表示する。**この 1 画面だけが認証ガードの明示的な例外**で、受理と同時にセッションが消えるため到達性をセッションに依存させず、セッションが無い状態では他の導線を描かない |
 | PAGE-p25-002 | アカウント削除を開始 | `spec/pages/index.md#P-25: アカウント削除` | confirmation email と新 UUID request ID を JSON POST し、202 operation ID と signed 30 分 status ticket を受け、session Cookie を破棄して progress へ移る |
 | PAGE-p25-003 | 削除 operation を照会 | `spec/pages/index.md#P-25: アカウント削除` | session なしで status ticket を明示送信し、accepted・running・completed・rejected・failed を表示する（running・completed・rejected は `distributed_operations.state` の 3 値そのもの、accepted は 202 応答の転送 status、failed は再試行不能と確定した場合の表示語彙で、そこへ移す遷移を定めた箇所は設計に無い）。読み取り権限は ticket が持ち、ticket が名指す 1 件しか返らない。ticket は当該 operation 読取以外に使わない。ticket の失効（発行から 30 分。削除が長引けば正常系でも到達する）と無効では進捗を追えず、ticket を捨ててトップページへの導線だけを出す。進捗取得の一時障害では ticket を保ち、同じ ticket で追い直す導線を出す |
-| PAGE-p25-004 | 参加中のワークスペースを解消 | `spec/pages/index.md#P-25: アカウント削除` | 拒否（P-25 の状態直和では「実行不可」）のあと、脱退・譲渡・削除のために該当 workspace の P-32 または P-34 へ誘導する |
+| PAGE-p25-004 | 参加中のワークスペースを解消 | `spec/pages/index.md#P-25: アカウント削除` | 拒否（P-25 の状態直和では「実行不可」）のあと、脱退・譲渡・削除のために該当 workspace の P-32 または P-34 へ誘導する。owner の行だけが 2 本の行き先を持ち、それ以外は脱退（P-32）だけを出す。一覧が 0 件のとき（拒否の根拠は未確定の参加も数えるため起こりうる）は反映待ちであること、一覧を引けないときはその旨を、拒否の事実と理由を残したまま別々に伝える |
 | PAGE-p30-001 | P-30 ワークスペース作成ページ | `spec/pages/index.md#P-30: ワークスペース作成` | name、description、slug を入力し、slug 重複候補、不正、owner 上限、作成中、完了、failure を表示する |
 | PAGE-p30-002 | ワークスペースを作成 | `spec/pages/index.md#P-30: ワークスペース作成` | 入力を送信し、作成成功時は新 workspace context と P-32 の invitation 導線を表示する |
 | PAGE-p31-001 | P-31 ワークスペース一般設定ページ | `spec/pages/index.md#P-31: ワークスペース一般設定` | name、description、avatar、slug を表示し、owner 以外の read-only、slug 重複・不正、変更 warning、saving、failure を表現する |

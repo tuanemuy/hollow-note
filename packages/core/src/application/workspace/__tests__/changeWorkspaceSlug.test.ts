@@ -6,6 +6,7 @@ import { isConflictError } from "../../errors";
 import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
 import { changeMemberRole } from "../changeMemberRole";
 import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
+import { checkWorkspaceSlugAvailability } from "../checkWorkspaceSlugAvailability";
 import { getPublicWorkspace } from "../getPublicWorkspace";
 import {
   createWorkspaceHarness,
@@ -44,6 +45,12 @@ const change = (
   changeWorkspaceSlug({
     container,
     input: { workspaceId: WORKSPACE, userId, slug },
+  });
+
+const availability = (h: TestHarness, slug: string) =>
+  checkWorkspaceSlugAvailability({
+    container: h.container,
+    input: { slug },
   });
 
 const seed = (
@@ -152,6 +159,124 @@ describe("changeWorkspaceSlug", () => {
     ).toEqual([
       { workspaceId: WORKSPACE, previousSlug: "old-slug", currentSlug: null },
     ]);
+  });
+
+  /**
+   * Clearing the slug hands the key to nobody, so `release` is the step
+   * that frees it — and an `active` reservation carries no expiry, which
+   * makes a lost response the one failure that would keep the key from
+   * every workspace in the service for good.
+   */
+  it("TC-workspace-048: a lost release response is retried once and the key is freed within the request", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    let attempts = 0;
+    const container: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        release: async (input) => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("release response lost");
+          }
+          await inner.release(input);
+        },
+      },
+    };
+
+    await expect(change(h, null, OWNER, container)).resolves.toMatchObject({
+      slug: null,
+      previousSlug: "old-slug",
+    });
+
+    expect(attempts).toBe(2);
+    expect(slugReservations(h)).toEqual([]);
+    expect(directoryRow(h, WORKSPACE)?.slug).toBeNull();
+  });
+
+  it("TC-workspace-048: a release lost for good is reclaimed by re-sending the cleared slug", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const releaseFailure = new Error("reservation shard unreachable");
+    const failingRelease: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        release: () => Promise.reject(releaseFailure),
+      },
+    };
+
+    await expect(change(h, null, OWNER, failingRelease)).rejects.toBe(
+      releaseFailure,
+    );
+
+    // The scope gave the slug up, the global plane did not: the key is
+    // still `active` for this workspace and no expiry will collect it.
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBeNull();
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["old-slug", WORKSPACE, "active"]]);
+    await expect(availability(h, "old-slug")).resolves.toMatchObject({
+      available: false,
+    });
+
+    await expect(change(h, null)).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: null,
+      previousSlug: null,
+    });
+
+    expect(slugReservations(h)).toEqual([]);
+    expect(directoryRow(h, WORKSPACE)?.slug).toBeNull();
+    await expect(availability(h, "old-slug")).resolves.toEqual({
+      slug: "old-slug",
+      available: true,
+      ownedBySelf: false,
+    });
+    // The repair writes nothing to the scope, so it emits nothing either.
+    expect(outboxTypes(h)).toEqual(["workspace.slugChanged"]);
+    expect(storedWorkspace(h, WORKSPACE)?.version).toBe(1);
+  });
+
+  /**
+   * The directory row is the only record of the key the scope has left
+   * behind, so the repair has to free the key before it overwrites that
+   * row — a projection landing first would erase the trail while the
+   * reservation is still held.
+   */
+  it("TC-workspace-048: a repair that fails again keeps the trail to the stranded key", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const releaseFailure = new Error("reservation shard unreachable");
+    const failingRelease: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        release: () => Promise.reject(releaseFailure),
+      },
+    };
+
+    await expect(change(h, null, OWNER, failingRelease)).rejects.toBe(
+      releaseFailure,
+    );
+    await expect(change(h, null, OWNER, failingRelease)).rejects.toBe(
+      releaseFailure,
+    );
+
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+
+    await expect(change(h, null)).resolves.toMatchObject({ slug: null });
+    expect(slugReservations(h)).toEqual([]);
+    await expect(availability(h, "old-slug")).resolves.toMatchObject({
+      available: true,
+    });
   });
 
   it("TC-workspace-049: a slug another workspace holds is SLUG_ALREADY_USED and nothing local moves", async () => {

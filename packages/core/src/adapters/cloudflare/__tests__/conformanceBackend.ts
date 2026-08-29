@@ -159,6 +159,9 @@ export async function makeCloudflareConformanceBackend(
         const staged = { ...deps, session };
         const stagedIdentity = createIdentityPorts(staged);
         const stagedDirectory = createDirectoryPorts(staged);
+        const stagedWorkspaceDirectory = createWorkspaceDirectoryPorts(staged);
+        const stagedWorkspaceReservations =
+          createWorkspaceReservationPorts(staged);
         return {
           userRepository: stagedIdentity.userRepository,
           identityRepository: stagedIdentity.identityRepository,
@@ -170,6 +173,10 @@ export async function makeCloudflareConformanceBackend(
           distributedOperationStore: stagedDirectory.distributedOperationStore,
           accountDeletionManifestStore:
             stagedDirectory.accountDeletionManifestStore,
+          settledMembershipReader:
+            stagedWorkspaceDirectory.userWorkspaceDirectory,
+          activatingMembershipReader:
+            stagedWorkspaceReservations.membershipDirectoryReservationStore,
         };
       },
       stageOutbox,

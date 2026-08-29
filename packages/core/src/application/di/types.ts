@@ -189,6 +189,22 @@ export type WorkspaceReader = Readonly<{
 }>;
 
 /**
+ * Request-path half of the workspace directory projection: the snapshot
+ * publish that the profile / slug / publication usecases run after their
+ * scope-local commit.
+ *
+ * `tombstone` is dropped for the same reason the readers above drop their
+ * writes. It is terminal — a second operation's tombstone is a
+ * `ConflictError` and no later snapshot ever resumes the row — and its
+ * only caller is the worker-plane deletion cleanup, so the request path
+ * is given no way to reach it.
+ */
+export type WorkspaceDirectoryProjector = Pick<
+  WorkspaceDirectoryProjectionWriter,
+  "applySnapshotIfNewer"
+>;
+
+/**
  * Request-path container. Provided to usecases (mutations must run
  * inside one of the unit-of-work providers) and to the presentation
  * layer for SSR head/meta via `config`.
@@ -248,7 +264,7 @@ export type RequestContainer = SharedDeps &
     userWorkspaceDirectory: UserWorkspaceDirectory;
     workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
     publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
-    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
+    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjector;
     workspaceSlugReservationStore: WorkspaceSlugReservationStore;
     invitationRouteStore: InvitationRouteStore;
     membershipDirectoryReservationStore: MembershipDirectoryReservationStore;

@@ -283,6 +283,10 @@ export function createCloudflareRuntime(
           clock,
           requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
         }),
+        settledMembershipReader: createD1UserWorkspaceDirectory({ session }),
+        activatingMembershipReader: createD1MembershipDirectoryReservationStore(
+          { session, clock },
+        ),
       }),
       stageOutbox,
       relayTrigger,

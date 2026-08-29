@@ -148,6 +148,15 @@ export interface InvitationRouteStore {
    * Idempotent: once applied, a repeat observes the new row `active` and
    * the old one closed under the same operation and succeeds.
    *
+   * A replacement this operation reserved but a `revoke` has since closed
+   * can no longer be opened — nothing moves a closed route back. The
+   * exchange still closes `oldTokenHash` while it is `active` for the
+   * same invitation, and only then succeeds: an `active` row carries
+   * neither an expiry nor a reclaimer, so leaving it open would keep a
+   * live token resolving to an invitation that was cancelled, with no
+   * call able to take it back. An old route bound to another invitation
+   * is left alone.
+   *
    * Concurrent resends of one invitation each reserve their own new
    * token; the first exchange wins, and the loser finds its
    * `oldTokenHash` no longer `active` and gets a `ConflictError`. The

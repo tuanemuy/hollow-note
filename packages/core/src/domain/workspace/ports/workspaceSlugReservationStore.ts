@@ -75,17 +75,20 @@ export interface WorkspaceSlugReservationStore {
    * by repeating the call.
    *
    * A row already `active` for the same `workspaceId` is re-keyed to
-   * this operation and left `active` — the workspace already owns the
-   * key, and dropping it back to `reserved` would make its own public URL
-   * stop resolving mid-saga.
+   * this operation and attempt and left `active` — the workspace already
+   * owns the key, and dropping it back to `reserved` would make its own
+   * public URL stop resolving mid-saga.
    *
    * Any other row held by another operation is
    * `ConflictError("SLUG_ALREADY_USED")`, unless it is a `reserved` row
    * whose expiry has lapsed, which this call takes over.
    *
-   * Whichever of those the call takes, the row comes away held by
-   * `attemptId`: reserving is what claims the right to compensate, and
-   * the latest attempt is the one that holds it.
+   * Every `reserved` row the call comes away with is held by `attemptId`:
+   * reserving is what claims the right to compensate, and the latest
+   * attempt is the one that holds it. A row this operation has already
+   * activated is the exception and is left exactly as it stands — nothing
+   * compensates an `active` row, so there is no claim for a later attempt
+   * to take.
    */
   reserve(
     input: Readonly<{

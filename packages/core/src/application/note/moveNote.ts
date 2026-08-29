@@ -465,7 +465,10 @@ async function snapshotSource(
  * given. The two differ whenever the receipt already stands: an earlier
  * attempt staged a set that an upload to the source has since grown past,
  * and retiring the source on this attempt's snapshot would then delete
- * metadata that never crossed, leaving an R2 object no row names.
+ * metadata that never crossed, leaving an R2 object no row names. The
+ * note itself is the one thing that cannot be left behind that way — the
+ * route names a single scope — so a stale staged copy is brought forward
+ * instead (`adoptStagedCopy`).
  */
 async function stageTarget(
   container: RequestContainer,
@@ -499,10 +502,7 @@ async function stageTarget(
         commandKey: STAGE_TARGET_COMMAND,
       }))
     ) {
-      const staged = await ctx.noteRepository.findById(plan.noteId);
-      if (staged === null) {
-        throw corrupt("the staged note is gone but its receipt stands");
-      }
+      const version = await adoptStagedCopy(ctx, plan, snapshot, now);
       const { files } = await relocateFilesForNote(ctx, {
         migrationId: plan.migrationId,
         phase: "snapshotSource",
@@ -511,11 +511,7 @@ async function stageTarget(
         targetOwner: storageOwnerOf(plan.target),
         now,
       });
-      return {
-        version: staged.entity.version,
-        files,
-        bytes: totalBytes(files),
-      };
+      return { version, files, bytes: totalBytes(files) };
     }
 
     const moved = Note.withOwner(snapshot.note, noteOwnerOf(plan.target), now);
@@ -545,6 +541,54 @@ async function stageTarget(
       bytes: snapshot.bytes,
     };
   });
+}
+
+/**
+ * Takes over the copy an earlier attempt staged, bringing it up to the
+ * version *this* attempt froze, and answers the version the target ends
+ * up holding.
+ *
+ * The receipt makes the staging a no-op, but the source stayed writable
+ * the whole time the route was `moving` — the move lock stops membership
+ * changes and scope deletion, not edits — so an edit that landed between
+ * the two attempts is in the snapshot and not in the staged copy. Since
+ * `retireSource` deletes the source note and every revision it holds, a
+ * copy left at the older version turns that edit into a silent loss the
+ * instant the switch commits.
+ *
+ * Staleness is decidable without asking the source twice: the staged copy
+ * is `Note.withOwner` of what was frozen, so its version is exactly one
+ * past the frozen one, and an equal version means nothing has been
+ * written to the source since. File metadata is deliberately *not*
+ * brought forward — a row that never crossed stays with the source and is
+ * not retired either, which the note cannot do because the route names a
+ * single scope.
+ */
+async function adoptStagedCopy(
+  ctx: ScopeUnitOfWorkContext,
+  plan: MovePlan,
+  snapshot: MoveSnapshot,
+  now: Date,
+): Promise<number> {
+  const staged = await ctx.noteRepository.findById(plan.noteId);
+  if (staged === null) {
+    throw corrupt("the staged note is gone but its receipt stands");
+  }
+  const refreshed = Note.withOwner(
+    snapshot.note,
+    noteOwnerOf(plan.target),
+    now,
+  );
+  if (staged.entity.version === refreshed.version) {
+    return staged.entity.version;
+  }
+  await ctx.noteRepository.save(refreshed, staged.expectedVersion);
+  await ctx.noteRevisionRepository.deleteByNote(plan.noteId);
+  for (const revision of snapshot.revisions) {
+    await ctx.noteRevisionRepository.insert(revision);
+  }
+  await ctx.noteProjectionRevisionStore.bump(plan.noteId);
+  return refreshed.version;
 }
 
 /**
@@ -579,7 +623,10 @@ async function activateTarget(
  *
  * `retired` is the set the target actually took, so a row the source
  * gained after the staging keeps both its metadata and its object; the
- * debit is computed from the same set for the same reason.
+ * debit is computed from the same set for the same reason. The note row
+ * and its revisions go unconditionally instead, which is only safe
+ * because `adoptStagedCopy` has already brought the staged copy up to the
+ * version this attempt froze.
  *
  * The event is collected here rather than in the staging transaction
  * because this is the first transaction that runs *after* the switch —
@@ -975,10 +1022,10 @@ export async function moveNote({
     }
     routeVersion = (await claimRoute(container, plan)).routeVersion;
   } catch (cause) {
-    // Nothing is staged yet, so there is nothing to compensate — but a
-    // claim whose response was lost, or an operation left `running`,
-    // would block every later move of this note.
-    await releaseUnusedClaim(container, plan);
+    // This attempt staged nothing, but an earlier one under the same
+    // migration may have — and a claim whose response was lost, or an
+    // operation left `running`, would block every later move of this note.
+    await releaseUnusedClaim(container, plan, tagRelocation);
     await settleQuietly(container, plan, "rejected", cause);
     throw cause;
   }
@@ -1117,9 +1164,20 @@ async function rollBack(
  * `beginMove` can commit and lose its response, and the operation is
  * about to be settled `rejected`, so nobody would ever drive that claim
  * again — every later move of the note would be refused
- * (`NOTE_ROUTE_STATE_VIOLATION`) even though nothing was ever staged.
- * The claim is identified by the migration id, so a route claimed by
- * somebody else is left alone.
+ * (`NOTE_ROUTE_STATE_VIOLATION`). The claim is identified by the
+ * migration id, so a route claimed by somebody else is left alone.
+ *
+ * On a *first* attempt nothing is staged and giving the route back is the
+ * whole repair. A resumed attempt is why that cannot be the whole of it:
+ * it inherits the staged copy, its credit, its receipts and both scopes'
+ * move locks from the attempt before, and those locks carry no lease and
+ * no owner but this saga. Handing the route back while they stand is a
+ * permanent stop, not a leftover — the user's next choice of destination
+ * advances `routeVersion`, the `requestKey` that could resume this
+ * migration stops being derivable, and both workspaces lose deletion and
+ * membership management for good. So the release runs the same
+ * compensation the pre-switch abort does, which reverses what the target
+ * actually holds rather than what this attempt observed.
  *
  * Releasing is a repair, and the read that decides whether to release is
  * part of it: the route store is the very thing that just failed, so both
@@ -1131,6 +1189,7 @@ async function rollBack(
 async function releaseUnusedClaim(
   container: RequestContainer,
   plan: MovePlan,
+  tagRelocation: NoteMoveTagRelocation,
 ): Promise<void> {
   try {
     const route = await container.noteRouteStore.resolve(plan.noteId);
@@ -1141,11 +1200,7 @@ async function releaseUnusedClaim(
     ) {
       return;
     }
-    await container.noteRouteStore.abortMove({
-      noteId: plan.noteId,
-      migrationId: plan.migrationId,
-      expectedRouteVersion: route.routeVersion,
-    });
+    await abortBeforeSwitch(container, plan, route.routeVersion, tagRelocation);
   } catch (releaseError) {
     container.logger.error("[moveNote] the claimed route was left moving", {
       releaseError,

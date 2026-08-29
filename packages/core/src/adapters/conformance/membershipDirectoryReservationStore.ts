@@ -22,7 +22,7 @@ const HOUR_MS = 60 * MINUTE_MS;
  * A `pending` edge is the deletion half's only subject, and no method of
  * this port leaves one behind (`reserveAndClaimActivation` inserts and
  * claims in one transaction), so those cases seed the edge through
- * `seedMembershipEdges` and skip themselves on a backend that cannot.
+ * `seedMembershipEdges`.
  */
 export function describeMembershipDirectoryReservationStoreContract(
   backendName: string,
@@ -57,17 +57,16 @@ export function describeMembershipDirectoryReservationStoreContract(
         expiresAt: new Date(backend.clock.now().getTime() + HOUR_MS),
       });
 
-    /** Answers `false` when the backend cannot seed a `pending` edge. */
-    const seedPendingEdge = async (
+    /**
+     * The one state the port itself never leaves behind, so the deletion
+     * half's cases start from a seeded row.
+     */
+    const seedPendingEdge = (
       edgeKey: string,
       owner: UserId = userId(2),
       workspace: WorkspaceId = workspaceId(3),
-    ): Promise<boolean> => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        return false;
-      }
-      await seed(owner, [
+    ): Promise<void> =>
+      backend.seedMembershipEdges(owner, [
         {
           edgeKey,
           workspaceId: workspace,
@@ -75,8 +74,6 @@ export function describeMembershipDirectoryReservationStoreContract(
           membershipId: null,
         },
       ]);
-      return true;
-    };
 
     const activeWorkspaces = async (
       owner: UserId = userId(1),
@@ -218,26 +215,34 @@ export function describeMembershipDirectoryReservationStoreContract(
       expect(await activatingKeys(userId(2))).toEqual([]);
     });
 
-    it("ADP-workspace-036: only a pending edge can be prepared, and a prepared edge refuses activation", async (ctx) => {
+    it("ADP-workspace-036: only a pending edge can be prepared, and a prepared edge refuses activation", async () => {
       await claim("op-1");
       // An edge a join still holds is not the deletion's business.
       await expectConflict(prepare("op-1", "deletion-1"));
 
-      if (!(await seedPendingEdge("edge-pending"))) {
-        // Report as skipped, not passed: a backend that cannot seed a
-        // pending edge has not verified this contract.
-        ctx.skip();
-        return;
-      }
+      await seedPendingEdge("edge-pending");
       await prepare("edge-pending", "deletion-1");
       await expectConflict(store().activate("edge-pending"));
     });
 
-    it("ADP-workspace-036/037: the prepare lock is idempotent for its deletion and never transfers on expiry", async (ctx) => {
-      if (!(await seedPendingEdge("edge-pending"))) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-035/036: a join's compensation cannot cancel an edge a deletion has prepared", async () => {
+      await seedPendingEdge("edge-pending");
+      await prepare("edge-pending", "deletion-1");
+
+      // The join lost its `activate` to the lock and compensates blindly.
+      // Dropping the row here would take the deletion's subject out from
+      // under it and free the pair for a join behind its cursor.
+      await store().abandon("edge-pending");
+
+      await expectConflict(store().activate("edge-pending"));
+      await store().releaseAccountDeletion("edge-pending", "deletion-1");
+      // Still there, and still the edge the join reserved.
+      await store().activate("edge-pending");
+      expect(await activeWorkspaces(userId(2))).toEqual([workspaceId(3)]);
+    });
+
+    it("ADP-workspace-036/037: the prepare lock is idempotent for its deletion and never transfers on expiry", async () => {
+      await seedPendingEdge("edge-pending");
       await prepare("edge-pending", "deletion-1");
       await prepare("edge-pending", "deletion-1");
       await expectConflict(prepare("edge-pending", "deletion-2"));
@@ -257,11 +262,8 @@ export function describeMembershipDirectoryReservationStoreContract(
       await expectConflict(renew("edge-missing", "deletion-1"));
     });
 
-    it("ADP-workspace-038: commit cancels the prepared edge and is idempotent", async (ctx) => {
-      if (!(await seedPendingEdge("edge-pending"))) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-038: commit cancels the prepared edge and is idempotent", async () => {
+      await seedPendingEdge("edge-pending");
       await prepare("edge-pending", "deletion-1");
       await expectConflict(
         store().commitAccountDeletion("edge-pending", "deletion-2"),
@@ -273,11 +275,21 @@ export function describeMembershipDirectoryReservationStoreContract(
       await expectConflict(store().activate("edge-pending"));
     });
 
-    it("ADP-workspace-039: release hands the edge back so the join may activate again", async (ctx) => {
-      if (!(await seedPendingEdge("edge-pending"))) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-038: commit removes the edge, so the pair is free to join again", async () => {
+      await seedPendingEdge("edge-pending");
+      await prepare("edge-pending", "deletion-1");
+      await store().commitAccountDeletion("edge-pending", "deletion-1");
+
+      // The only transition that *removes* an edge. Marking the row and
+      // leaving it would hold `(userId, workspaceId)` forever, so the
+      // deleted account's workspace could never take the user back.
+      await claim("op-rejoin", userId(2), workspaceId(3), 5);
+      await store().activate("op-rejoin");
+      expect(await activeWorkspaces(userId(2))).toEqual([workspaceId(3)]);
+    });
+
+    it("ADP-workspace-039: release hands the edge back so the join may activate again", async () => {
+      await seedPendingEdge("edge-pending");
       await prepare("edge-pending", "deletion-1");
       await expectConflict(store().activate("edge-pending"));
 
@@ -365,11 +377,8 @@ export function describeMembershipDirectoryReservationStoreContract(
       expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
     });
 
-    it("ADP-workspace-069: an edge a deletion may still prepare is not a removal's to take", async (ctx) => {
-      if (!(await seedPendingEdge("edge-pending"))) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-069: an edge a deletion may still prepare is not a removal's to take", async () => {
+      await seedPendingEdge("edge-pending");
       await expectConflict(store().beginRemoval(userId(2), workspaceId(3)));
       // The edge is untouched, so the deletion half still decides it.
       await prepare("edge-pending", "deletion-1");
@@ -450,6 +459,27 @@ export function describeMembershipDirectoryReservationStoreContract(
       expect(await listedRole()).toBe("owner");
     });
 
+    it("ADP-workspace-073: an edge that names no membership takes no projection", async () => {
+      await backend.seedMembershipEdges(userId(2), [
+        {
+          edgeKey: "edge-pending",
+          workspaceId: workspaceId(3),
+          edgeState: "pending",
+          membershipId: null,
+          role: "viewer",
+        },
+      ]);
+
+      // Every reservation writes its `membershipId`, so an edge naming
+      // none is not the generation this change belongs to and the match
+      // fails closed. Writing anyway would give the row a version and
+      // then refuse the first change of whatever membership settles it.
+      await applyRole("owner", 1, userId(2), workspaceId(3), 1);
+
+      await store().activate("edge-pending");
+      expect(await listedRole(userId(2), workspaceId(3))).toBe("viewer");
+    });
+
     it("ADP-workspace-073: an absent or removed edge is never resurrected", async () => {
       // Nothing was ever reserved for this pair.
       await applyRole("owner", 1);
@@ -492,6 +522,27 @@ export function describeMembershipDirectoryReservationStoreContract(
 
       await expectConflict(store().completeRemoval(userId(1), workspaceId(1)));
       expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+    });
+
+    it("ADP-workspace-070/074: neither tear-down transition takes an edge a join or a deletion still holds", async () => {
+      // `activating` is the join's claim: no removal announced it, so
+      // dropping it would lose the pair while the join still expects to
+      // settle, and restoring it would settle a join nobody activated.
+      await claim("op-1");
+      await expectConflict(store().completeRemoval(userId(1), workspaceId(1)));
+      await expectConflict(store().abandonRemoval(userId(1), workspaceId(1)));
+
+      // `pending` is the state a deletion's prepare lock owns, so either
+      // call would decide against a deletion that has already decided.
+      await seedPendingEdge("edge-pending");
+      await expectConflict(store().completeRemoval(userId(2), workspaceId(3)));
+      await expectConflict(store().abandonRemoval(userId(2), workspaceId(3)));
+
+      // Both edges are untouched, so each half still settles its own.
+      await store().activate("op-1");
+      expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+      await prepare("edge-pending", "deletion-1");
+      await store().commitAccountDeletion("edge-pending", "deletion-1");
     });
   });
 }

@@ -609,7 +609,7 @@ export async function tombstoneDirectory(
   workspaceId: string,
   operationId = "deletion-op-1",
 ): Promise<void> {
-  await h.container.workspaceDirectoryProjectionWriter.tombstone({
+  await h.workerContainer.workspaceDirectoryProjectionWriter.tombstone({
     workspaceId: WorkspaceId.create(workspaceId),
     operationId,
   });

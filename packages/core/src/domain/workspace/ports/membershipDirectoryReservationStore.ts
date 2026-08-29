@@ -82,9 +82,12 @@ export interface MembershipDirectoryReservationStore {
    * must lose.
    *
    * `membershipId` is carried from here even though the workspace-local
-   * Membership does not exist yet, so that `activate` needs no argument
-   * beyond the operation id and a settled edge always names its
-   * membership.
+   * Membership does not exist yet, and it is written whatever state the
+   * edge comes to rest in — a `pending` reservation names its membership
+   * no less than an `active` edge does. That is what lets `activate` need
+   * no argument beyond the operation id, and what lets `applyRoleIfNewer`
+   * read an edge naming no membership as one that cannot be the
+   * generation a role change belongs to.
    */
   reserveAndClaimActivation(
     input: Readonly<{
@@ -114,6 +117,11 @@ export interface MembershipDirectoryReservationStore {
    *
    * Never touches an `active` or `removing` edge, so abandoning a join
    * whose activation actually succeeded cannot revoke a real membership.
+   * An edge an account deletion has prepared is left alone too: the
+   * deletion has decided about that edge, and only `commitAccountDeletion`
+   * cancels a locked one. The join has already lost its `activate` there,
+   * so dropping the row would take the deletion's subject out from under
+   * it and let a later join re-take the pair behind the manifest cursor.
    * A no-op when there is nothing to drop, hence safe to call blindly on
    * any failure path and safe to repeat.
    */
@@ -240,9 +248,12 @@ export interface MembershipDirectoryReservationStore {
    * An **absent** edge is a no-op, never an insert: a role change
    * delivered after the member was removed must not resurrect the edge,
    * and the removal is what freed the `(userId, workspaceId)` pair for a
-   * future join. An edge that names another membership — or none yet,
-   * which is what a `pending` reservation carries — is the same no-op,
-   * for the same reason: the membership this change belongs to is gone.
+   * future join. An edge that names **another** membership is the same
+   * no-op, for the same reason: the membership this change belongs to is
+   * gone. So is an edge that names none at all — every reservation writes
+   * its `membershipId`, so a nameless edge cannot be the generation this
+   * change belongs to, and the match fails closed rather than projecting
+   * onto a row it cannot identify.
    */
   applyRoleIfNewer(
     input: Readonly<{

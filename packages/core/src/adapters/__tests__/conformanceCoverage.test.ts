@@ -107,27 +107,37 @@ describe("port-conformance suite coverage", () => {
   });
 
   /**
-   * An optional member is the third way to lose a contract silently: the
-   * suites that need one skip themselves when a backend does not offer
-   * it, so a harness that drops it stays green with fewer cases. The
-   * option exists for backends that genuinely cannot answer, and today
-   * both do — pinning that here is what makes dropping one a decision
-   * rather than an accident.
+   * An optional member is the third way to lose a contract silently: a
+   * suite that needs one has to skip itself when a backend does not offer
+   * it, so a harness that drops it stays green with fewer cases —
+   * "identically" (ADR 026) then means whatever each backend chose to
+   * answer. Every member is therefore required, and the type system is
+   * what holds the harnesses to them; reintroducing an optional one has
+   * to be a decision that fails here first.
    */
-  it("has every harness offer every optional backend member", () => {
-    const optional = sorted(
-      namesIn([join(CONFORMANCE_DIR, "backend.ts")], OPTIONAL_MEMBERS),
-    );
-    expect(optional).not.toEqual([]);
+  it("declares no optional backend member", () => {
+    expect(
+      sorted(namesIn([join(CONFORMANCE_DIR, "backend.ts")], OPTIONAL_MEMBERS)),
+    ).toEqual([]);
+    // The harnesses are still the reason it matters, so they stay named.
     for (const harness of HARNESSES) {
-      const source = readFileSync(harness.path, "utf8");
-      for (const member of optional) {
-        expect(
-          new RegExp(`^\\s+(async\\s+)?${member}\\(`, "m").test(source),
-          `${harness.backend} must implement ${member}`,
-        ).toBe(true);
-      }
+      expect(readFileSync(harness.path, "utf8")).toContain(
+        "seedMembershipEdges(",
+      );
     }
+  });
+
+  /**
+   * The other half of the same rule: a case may not opt itself out at
+   * runtime either. A `ctx.skip()` inside a suite reports green while a
+   * contract clause goes unverified on that backend, which is the state
+   * the required members above exist to prevent.
+   */
+  it("lets no conformance case skip itself", () => {
+    const skipping = walk(CONFORMANCE_DIR).filter((path) =>
+      /\.skip\s*\(/.test(readFileSync(path, "utf8")),
+    );
+    expect(skipping).toEqual([]);
   });
 
   it("leaves no suite unwired to a backend", () => {

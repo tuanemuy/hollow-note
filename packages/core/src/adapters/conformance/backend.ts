@@ -208,11 +208,17 @@ export type ConformanceBackend = Readonly<{
    */
   makeWorkspaceDirectoryUnreadable(ids: readonly WorkspaceId[]): Promise<void>;
   /**
-   * Seeds workspace membership edges for `appendMembershipPage` until the
-   * Workspace domain exists. Optional — suites skip the page-content
-   * cases when a backend cannot seed.
+   * Seeds workspace membership edges straight into the directory table.
+   *
+   * Required, because the states it reaches are ones no port method
+   * leaves behind: `reserveAndClaimActivation` inserts and claims in one
+   * transaction, so a `pending` edge — the account deletion half's only
+   * subject — and an edge naming no membership exist for a suite only if
+   * the backend can write one. A backend that could not would take the
+   * prepare / commit / release lock clauses, the removal state machine's
+   * refusals and both directory counts out of its run and stay green.
    */
-  seedMembershipEdges?(
+  seedMembershipEdges(
     userId: UserId,
     edges: readonly MembershipEdgeSeedInput[],
   ): Promise<void>;

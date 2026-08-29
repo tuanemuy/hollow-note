@@ -380,7 +380,10 @@ export function createD1MembershipDirectoryReservationStore(
       const edge = await readByOperation(operationId);
       if (
         edge === null ||
-        (edge.state !== "pending" && edge.state !== "activating")
+        (edge.state !== "pending" && edge.state !== "activating") ||
+        // A prepared edge belongs to the deletion that locked it; only
+        // `commitAccountDeletion` cancels one.
+        edge.deletionPrepareOperationId !== null
       ) {
         return;
       }
@@ -389,7 +392,10 @@ export function createD1MembershipDirectoryReservationStore(
           table: TABLE,
           key: operationId,
           statement: statement(
-            `DELETE FROM ${TABLE} WHERE operation_id = ? AND state IN ('pending', 'activating')`,
+            `DELETE FROM ${TABLE}
+               WHERE operation_id = ?
+                 AND state IN ('pending', 'activating')
+                 AND deletion_prepare_operation_id IS NULL`,
             operationId,
           ),
         }),

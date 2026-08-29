@@ -9,10 +9,11 @@ import {
   inputClass,
   inputInvalidClass,
 } from "@/components/auth/formStyles";
+import { listRemainingWorkspacesFn } from "@/components/settings/DeleteAccountPanel/action";
 import {
-  listRemainingWorkspacesFn,
-  type RemainingWorkspace,
-} from "@/components/settings/DeleteAccountPanel/action";
+  type RemainingListing,
+  remainingListing,
+} from "@/components/settings/DeleteAccountPanel/remaining";
 import {
   type SubmitFailure,
   submitFailure,
@@ -79,8 +80,7 @@ type Phase =
 type BlockedFailure = Readonly<{
   target: "blocked";
   message: string;
-  workspaces: readonly RemainingWorkspace[];
-  hasMore: boolean;
+  listing: RemainingListing;
 }>;
 
 type Failure = Exclude<SubmitFailure, { target: "blocked" }> | BlockedFailure;
@@ -156,13 +156,7 @@ export function DeleteAccountPanel() {
         // 一覧が引けなくても実行不可の事実と理由は伝える。導線が消えるだけ
         // で、拒否そのものを「一時的な障害」に見せ替えない。
         const remaining = await listRemaining({}).catch(() => null);
-        return {
-          error: {
-            ...failure,
-            workspaces: remaining?.workspaces ?? [],
-            hasMore: remaining?.hasMore ?? false,
-          },
-        };
+        return { error: { ...failure, listing: remainingListing(remaining) } };
       }
       return IDLE_SUBMIT_STATE;
     },
@@ -340,14 +334,33 @@ export function DeleteAccountPanel() {
  * 譲渡も脱退もメンバー管理（P-32）で行い、ワークスペースごと消すのは
  * P-34。どちらも owner 限定なので、owner でない行には脱退しか出さない
  * （L-01 と同じく、使えない行き先は並べずに消す）。
+ *
+ * ただし `isOwner` の元になる `UserWorkspaceEdge.role` は購読者が書く
+ * 射影であって認可の事実ではないので、昇格・降格から 1 往復ぶん遅れうる
+ * （`domain/workspace/ports/userWorkspaceDirectory.ts`）。遅れても片づけ
+ * 手段は消えない — どちらの行も P-32 へは行けて、その設定タブが P-34 を
+ * 常に並べ、可否は行き先の画面が workspace scope の `Membership` で
+ * 判定し直す。
+ *
+ * 一覧が空・取得不能のときに何も出さないと、拒否の根拠（settled な edge
+ * の数）と一覧の出所（`active` な edge）が別集合であることが「片づける先
+ * が無いのに拒否された」に化ける。3 つの状態を別の文言で出し分ける
+ * （`remaining.ts`）。
  */
 function BlockedByWorkspaces({ blocked }: { blocked: BlockedFailure }) {
+  const listing = blocked.listing;
   return (
     <Alert tone="error" title="参加中のワークスペースがあります">
       {blocked.message}
-      {blocked.workspaces.length === 0 ? null : (
+      {listing.kind !== "listed" ? (
+        <p className="mt-2 text-xs text-ink-tertiary">
+          {listing.kind === "settling"
+            ? "反映待ちのワークスペースがあります。少し待ってからもう一度お試しください。"
+            : "参加中のワークスペースの一覧を取得できませんでした。時間をおいてからもう一度お試しください。"}
+        </p>
+      ) : (
         <ul className="mt-3 grid gap-2">
-          {blocked.workspaces.map((workspace) => (
+          {listing.workspaces.map((workspace) => (
             <li
               key={workspace.workspaceId}
               className="flex flex-wrap items-center gap-2"
@@ -385,7 +398,7 @@ function BlockedByWorkspaces({ blocked }: { blocked: BlockedFailure }) {
           ))}
         </ul>
       )}
-      {blocked.hasMore ? (
+      {listing.kind === "listed" && listing.hasMore ? (
         <p className="mt-2 text-xs text-ink-tertiary">
           参加中のワークスペースはこれ以外にもあります。ここに並ぶものを片づけてから、もう一度お試しください。
         </p>

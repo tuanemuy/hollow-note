@@ -1,4 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
+import type {
+  RemainingPage,
+  RemainingWorkspace,
+} from "@/components/settings/DeleteAccountPanel/remaining";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { loadServerDeps } from "@/presentation/serverAction";
 
@@ -14,20 +18,18 @@ import { loadServerDeps } from "@/presentation/serverAction";
  * 引き直されるので、ページを繰る導線は残りを見せる役に立たない。続きが
  * あることだけは `hasMore` で伝える。
  *
+ * **この一覧は拒否の根拠と同じ集合ではない。** `listUserWorkspaces` は
+ * `UserWorkspaceDirectory.listActiveByUser` の `active` な edge だけを
+ * 返すのに対し、受理を拒む `admitAccountDeletion` は settled な edge
+ * （`active` / `pending` / `removing`）を数える。ポートの JSDoc が
+ * 「`listActiveByUser` は代用にならない」と定めているとおりで、脱退直後
+ * （`removing`）・受諾が未確定（`pending`）の利用者は拒否されたまま 0 件
+ * になりうる。その窓の表示は `remaining.ts` の `settling` が持つ。
+ *
  * `owner` かどうかだけを返すのは、譲渡（P-32）とワークスペース削除
  * （P-34）がどちらも owner 限定で、それ以外の行に出せる片づけ方は脱退
  * （P-32）しか無いためである。
  */
-export type RemainingWorkspace =
-  | Readonly<{
-      status: "active";
-      workspaceId: string;
-      name: string;
-      isOwner: boolean;
-    }>
-  /** ディレクトリの shard が答えられなかった行。名前も権限も出せない。 */
-  | Readonly<{ status: "unavailable"; workspaceId: string }>;
-
 export const listRemainingWorkspacesFn = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .handler(async () => {
@@ -55,5 +57,5 @@ export const listRemainingWorkspacesFn = createServerFn({ method: "GET" })
             : { status: "unavailable", workspaceId: workspace.workspaceId },
       ),
       hasMore: page.hasMore,
-    };
+    } satisfies RemainingPage;
   });

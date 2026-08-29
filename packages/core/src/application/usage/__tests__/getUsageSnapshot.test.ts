@@ -277,6 +277,29 @@ describe("getUsageSnapshot", () => {
     expect(view.nextWorkspaceCursor).toBeNull();
   });
 
+  it("TC-usage-081: a workspace row reports the level the quota service derives", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await joinWorkspace(h, "ws-01", "owner");
+    await joinWorkspace(h, "ws-02", "owner");
+    await seedWorkspaceQuota(h, "ws-01", {
+      consumedBytes: WORKSPACE_LIMIT_BYTES * 0.8,
+      noteCount: 1,
+    });
+    await seedWorkspaceQuota(h, "ws-02", {
+      consumedBytes: WORKSPACE_LIMIT_BYTES + 1,
+      noteCount: 2,
+    });
+
+    const view = await snapshot(h);
+
+    expect(
+      view.workspaces.map((row) =>
+        row.state === "available" ? row.level : row.state,
+      ),
+    ).toEqual(["warning", "exceeded"]);
+  });
+
   it("TC-usage-049: an editor membership is included", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);

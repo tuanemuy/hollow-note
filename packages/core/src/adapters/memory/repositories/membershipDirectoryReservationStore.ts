@@ -145,6 +145,11 @@ export function createMemoryMembershipDirectoryReservationStore(
       if (row.edgeState !== "pending" && row.edgeState !== "activating") {
         return;
       }
+      // A prepared edge belongs to the deletion that locked it; only
+      // `commitAccountDeletion` cancels one.
+      if (row.deletionPrepareOperationId !== null) {
+        return;
+      }
       table.delete(key);
     },
 

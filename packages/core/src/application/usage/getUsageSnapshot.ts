@@ -101,10 +101,7 @@ async function readWorkspaceUsage(
       state: "available",
       workspaceId,
       workspaceName,
-      consumedBytes: quota.consumedBytes,
-      limitBytes: quota.quota.limit,
-      noteCount: quota.noteCount,
-      level: StorageQuota.warningLevel(quota),
+      ...QuotaEnforcement.describe({ storage: quota, llm: null }).storage,
     };
   } catch (cause) {
     container.logger.error("[getUsageSnapshot] workspace scope unreadable", {

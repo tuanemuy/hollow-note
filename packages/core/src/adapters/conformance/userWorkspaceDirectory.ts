@@ -22,14 +22,10 @@ export function describeUserWorkspaceDirectoryContract(
      * orders them; edge 1 is newer, so a WorkspaceId-only order would put
      * it last instead of first.
      */
-    const seedEdges = async (): Promise<boolean> => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        return false;
-      }
+    const seedEdges = async (): Promise<void> => {
       const now = backend.clock.now();
       const tied = new Date(now.getTime() - MINUTE_MS);
-      await seed.call(backend, userId(1), [
+      await backend.seedMembershipEdges(userId(1), [
         {
           edgeKey: "edge-1",
           workspaceId: workspaceId(1),
@@ -71,7 +67,7 @@ export function describeUserWorkspaceDirectoryContract(
           createdAt: now,
         },
       ]);
-      await seed.call(backend, userId(2), [
+      await backend.seedMembershipEdges(userId(2), [
         {
           edgeKey: "edge-6",
           workspaceId: workspaceId(6),
@@ -81,7 +77,6 @@ export function describeUserWorkspaceDirectoryContract(
           createdAt: now,
         },
       ]);
-      return true;
     };
 
     /**
@@ -90,12 +85,9 @@ export function describeUserWorkspaceDirectoryContract(
      * owner edge, one `removing` owner edge that the count concedes, and
      * two active edges in other roles.
      */
-    const seedOwnerEdges = async (): Promise<boolean> => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined || !(await seedEdges())) {
-        return false;
-      }
-      await seed.call(backend, userId(1), [
+    const seedOwnerEdges = async (): Promise<void> => {
+      await seedEdges();
+      await backend.seedMembershipEdges(userId(1), [
         {
           edgeKey: "edge-7",
           workspaceId: workspaceId(7),
@@ -118,16 +110,10 @@ export function describeUserWorkspaceDirectoryContract(
           role: "owner",
         },
       ]);
-      return true;
     };
 
-    it("ADP-workspace-005: returns only the user's active edges with their projected roles (seeded backend)", async (ctx) => {
-      if (!(await seedEdges())) {
-        // Report as skipped, not passed: a backend that cannot seed
-        // directory edges has not verified this contract.
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-005: returns only the user's active edges with their projected roles", async () => {
+      await seedEdges();
 
       const page = await backend.userWorkspaceDirectory.listActiveByUser(
         userId(1),
@@ -160,11 +146,8 @@ export function describeUserWorkspaceDirectoryContract(
       ).toEqual([]);
     });
 
-    it("ADP-workspace-005: pages a total createdAt DESC, workspaceId order and resumes from the cursor (seeded backend)", async (ctx) => {
-      if (!(await seedEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-005: pages a total createdAt DESC, workspaceId order and resumes from the cursor", async () => {
+      await seedEdges();
 
       const first = await backend.userWorkspaceDirectory.listActiveByUser(
         userId(1),
@@ -209,11 +192,8 @@ export function describeUserWorkspaceDirectoryContract(
       ).toEqual([]);
     });
 
-    it("ADP-workspace-005: an unreadable cursor is rejected, and one minted for another user is never honoured (seeded backend)", async (ctx) => {
-      if (!(await seedEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-005: an unreadable cursor is rejected, and one minted for another user is never honoured", async () => {
+      await seedEdges();
       await expectValidation(
         backend.userWorkspaceDirectory.listActiveByUser(
           userId(1),
@@ -241,11 +221,8 @@ export function describeUserWorkspaceDirectoryContract(
       expect(replayed).not.toContain(workspaceId(3));
     });
 
-    it("ADP-workspace-068: counts owner edges that are active or still reserved, per user (seeded backend)", async (ctx) => {
-      if (!(await seedOwnerEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-068: counts owner edges that are active or still reserved, per user", async () => {
+      await seedOwnerEdges();
       // A quota that ignored the unsettled joins would read 1 here, and a
       // seat the removal already conceded would push it to 4.
       expect(
@@ -259,11 +236,8 @@ export function describeUserWorkspaceDirectoryContract(
       ).toBe(0);
     });
 
-    it("ADP-workspace-068: the count stops at the limit and rejects one outside 1..100 (seeded backend)", async (ctx) => {
-      if (!(await seedOwnerEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-068: the count stops at the limit and rejects one outside 1..100", async () => {
+      await seedOwnerEdges();
       expect(
         await backend.userWorkspaceDirectory.countOwnedByUser(userId(1), 2),
       ).toBe(2);
@@ -278,11 +252,8 @@ export function describeUserWorkspaceDirectoryContract(
       );
     });
 
-    it("ADP-workspace-076: counts every settled edge in any role and leaves out the one a join still holds (seeded backend)", async (ctx) => {
-      if (!(await seedOwnerEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-076: counts every settled edge in any role and leaves out the one a join still holds", async () => {
+      await seedOwnerEdges();
       // User 1 holds three active, two pending and two removing edges,
       // plus the `activating` one. A count that reused the active-only
       // enumeration would read 3, and one that copied the ownership
@@ -299,11 +270,8 @@ export function describeUserWorkspaceDirectoryContract(
       ).toBe(0);
     });
 
-    it("ADP-workspace-076: the settled count stops at the limit and rejects one outside 1..100 (seeded backend)", async (ctx) => {
-      if (!(await seedOwnerEdges())) {
-        ctx.skip();
-        return;
-      }
+    it("ADP-workspace-076: the settled count stops at the limit and rejects one outside 1..100", async () => {
+      await seedOwnerEdges();
       expect(
         await backend.userWorkspaceDirectory.countSettledByUser(userId(1), 1),
       ).toBe(1);

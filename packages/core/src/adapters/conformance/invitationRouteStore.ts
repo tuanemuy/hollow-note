@@ -389,6 +389,35 @@ export function describeInvitationRouteStoreContract(
       ).not.toBeNull();
     });
 
+    it("ADP-workspace-029: an exchange whose replacement was revoked still closes the old route", async () => {
+      await issue("op-1");
+      await reserveReplacement("op-resend");
+      // The invitation is cancelled between the local commit and the
+      // exchange, so the revoke lands on the token the resend minted.
+      await backend.invitationRouteStore.revoke({
+        tokenHash: hash(2),
+        invitationId: invitationId(1),
+        operationId: "op-revoke",
+      });
+
+      await activateReplacement("op-resend");
+
+      // Nothing reopens the replacement, and leaving the old token live
+      // would keep a route resolving to a cancelled invitation with no
+      // expiry and no call able to take it back.
+      expect(
+        await backend.invitationRouteStore.resolveActive(hash(2)),
+      ).toBeNull();
+      expect(
+        await backend.invitationRouteStore.resolveActive(hash(1)),
+      ).toBeNull();
+      // A repeat of the whole exchange stays converged.
+      await activateReplacement("op-resend");
+      expect(
+        await backend.invitationRouteStore.resolveActive(hash(1)),
+      ).toBeNull();
+    });
+
     it("ADP-workspace-029: an exchange whose replacement was abandoned conflicts", async () => {
       await issue("op-1");
       await reserveReplacement("op-resend");

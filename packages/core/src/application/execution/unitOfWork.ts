@@ -12,8 +12,10 @@ import type { StoredFileRepository } from "@repo/core/domain/storage/ports/store
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
 import type { InvitationRepository } from "@repo/core/domain/workspace/ports/invitationRepository";
+import type { MembershipDirectoryReservationStore } from "@repo/core/domain/workspace/ports/membershipDirectoryReservationStore";
 import type { MembershipRemovalPreparationStore } from "@repo/core/domain/workspace/ports/membershipRemovalPreparationStore";
 import type { MembershipRepository } from "@repo/core/domain/workspace/ports/membershipRepository";
+import type { UserWorkspaceDirectory } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
 import type { WorkspaceDeletionManifestStore } from "@repo/core/domain/workspace/ports/workspaceDeletionManifestStore";
 import type { WorkspaceOperationLockStore } from "@repo/core/domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
@@ -39,6 +41,25 @@ export interface UnitOfWorkContextBase {
 }
 
 /**
+ * The membership half of the global directory, narrowed to the two reads
+ * an account deletion's admission decides on.
+ *
+ * Both `Pick`s are read-only on purpose, in the discipline
+ * `application/di/types.ts` states for its own reader views: the
+ * directories are written by the join, removal and role-projection sagas,
+ * and admission has no business reaching a transition — least of all a
+ * terminal one — from inside the transaction that judges them.
+ */
+export type SettledMembershipReader = Pick<
+  UserWorkspaceDirectory,
+  "countSettledByUser"
+>;
+export type ActivatingMembershipReader = Pick<
+  MembershipDirectoryReservationStore,
+  "listActivatingByUser"
+>;
+
+/**
  * Global-plane transaction context: the identity aggregates and the
  * uniqueness directory that live in global storage.
  *
@@ -49,6 +70,16 @@ export interface UnitOfWorkContextBase {
  * admission creates the operation in the transaction that moves the user
  * to `deleting`, and the terminal prune drops the manifest header and
  * the operation together.
+ *
+ * The two membership readers are the exception to "the directories sit
+ * outside any unit of work" (`application/di/types.ts`). They are reads,
+ * not writes, and account-deletion admission has to take them **inside**
+ * the transaction that moves the user to `deleting`: judged from outside,
+ * a join that lands between the read and the transition is admitted, its
+ * edge settles, and the manifest fixes a membership item nothing in this
+ * deployment can acknowledge — the account is then stuck `deleting` with
+ * no way forward or back. The write-side halves of both ports stay off
+ * this context.
  */
 export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly userRepository: UserRepository;
@@ -59,6 +90,8 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly identityRemovalReceiptStore: IdentityRemovalReceiptStore;
   readonly distributedOperationStore: DistributedOperationStore;
   readonly accountDeletionManifestStore: AccountDeletionManifestStore;
+  readonly settledMembershipReader: SettledMembershipReader;
+  readonly activatingMembershipReader: ActivatingMembershipReader;
 }
 
 /**

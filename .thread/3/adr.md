@@ -2560,3 +2560,358 @@ ADR-136 で LLM 行の表示値と level が `QuotaEnforcement.describe` 由来�
 - 提出の失敗の割り当ては `DeleteAccountPanel/submit.ts` に切り出して単体テストを持つ（`__tests__/submit.test.ts`、3 本）。変異スポットチェック: `WORKSPACE_MEMBERSHIPS_REMAIN` を `panel` へ落とすと red、`errorDisplay.ts` の辞書エントリを外すと red。
 - `spec/adr/` 側の canon 化は不要。ここでの判断はすべて既存の canon（P-25 の状態直和と PAGE-p25-004、ADR 047）の実装形に留まる。
 - wave を足すスライスが `WORKSPACE_MEMBERSHIPS_REMAIN` を外すとき、辞書の 1 行と `submit.ts` の 1 分岐、`action.ts` ごと落とせばこの状態は消える。
+
+## ADR-143: slug を手放す経路も「同じ要求の再入」で回収する（ADR-118 を `null` 側へ広げる）
+
+### Context
+
+ADR-118 は「local commit 後の global ステップは、同じ要求をもう一度出すことで前進させる」を決め、`changeWorkspaceSlug` では `repairSettledSlug` としてそれを実装した。ただし修復は `slug !== null` のときだけ走る。slug を `null` にする経路は commit 後に `release` を素の 1 回呼び出しで打っており、応答を失うと scope は `slug = null`、global には旧 slug の `active` 行が残る。`active` 行は期限を持たない（`ports/workspaceSlugReservationStore.ts` の「Ownership never transfers on expiry alone」）ので、その slug は**他のどのワークスペースからも二度と取得できない**。ADR-030 が導出 operation ID で塞いだ「再送が自分の予約行と衝突する」窓の、鏡像にあたる穴である。
+
+### Decision
+
+`null` 側を、非 `null` 側とまったく同じ形にする。
+
+1. `release` を `retryOnce` で包む（`activate` と directory 投影は既に持っている）。呼び出しを `releaseSlug` に切り出し、要求パスと修復パスで同じものを使う。
+2. `repairSettledSlug` に `slug === null` の枝を足す。手掛かりは `advertisedSlug` — directory 行が広告している slug は「scope が最後に手放した鍵」であり、投影も `release` と同じ窓で失われるので、失敗していれば旧 slug がそこに残っている。`release` はもともと `workspaceId` 条件つきなので、行を後継者から奪うことはない。
+3. **鍵の解放は投影より先**に置く。投影が先に走ると directory 行の slug が `null` に落ち、次の要求から手掛かりが消えて回収経路が永久に閉じる。
+4. **`null` 枝では削除 barrier を確認しない。** 非 `null` 枝の `assertWritable` は「削除を受理した scope に global の鍵を**取り戻させない**」ためのもの（ADR-118）で、鍵を**手放す**のは削除自身が進む向きと同じである。
+
+### Consequences
+
+- 応答喪失 2 回（＝ `retryOnce` も落ちる）でも、利用者が同じ操作をもう一度出せば鍵が戻る。ADR-117 が「復旧不能ではなくなった」と述べた性質が、`null` 側にも揃った。
+- 健全なワークスペースへの `changeWorkspaceSlug(null)` の再送は、directory 行が既に `null` なので `resolveMany` 1 回ぶんの読みだけで no-op のまま。
+- 変異スポットチェック: (a) `null` 枝の `release` を落とすと「a release lost for good is reclaimed by re-sending the cleared slug」と「a repair that fails again keeps the trail to the stranded key」が red、(b) 投影を解放より前へ動かすと同 2 本＋ `TC-workspace-307` が red、(c) `releaseSlug` の `retryOnce` を外すと「a lost release response is retried once」が red。
+- ポート契約は変えていない（`release` の冪等性と `workspaceId` 条件は既存の JSDoc のまま）。適合スイートに追加すべき節も無い。
+
+## ADR-144: storage 半分の表示値導出も `describe` へ寄せ、workspace 行に非 `none` の水準を 1 本置く
+
+### Context
+
+ADR-136 は LLM 半分の導出を `QuotaEnforcement.describe` へ戻したが、`readWorkspaceUsage` は `consumedBytes` / `limitBytes` / `noteCount` / `level` を今も usecase 内で組み立てていた。`DescribedStorageUsage` はこの 4 つそのものなので、導出の第 2 の住処が storage 側に残っていたことになる。`spec/domains/usage.md` が本ラウンドで足した「表示する数値と警告レベルを導出する場所はこのサービスだけである」と `view.ts` の JSDoc（「a second home to drift from」）が、実装について偽だった。
+
+検出力の側も同じ形で欠けていた。workspace 行のテストは 6 本すべて `level: "none"` しか見ておらず、`level` の導出を壊しても personal 行の TC-usage-045 / 047 しか落ちない。「1 箇所に戻した」が観測できるのは、workspace 行が非 `none` の水準を要求したときだけである。
+
+### Decision
+
+`readWorkspaceUsage` の 4 フィールドを `QuotaEnforcement.describe({ storage: quota, llm: null }).storage` の展開に置き換える。`AvailableWorkspaceUsageView` は `DescribedStorageUsage` に `state` / `workspaceId` / `workspaceName` を足した形なので、スプレッドがそのまま載る。
+
+あわせて **TC-usage-081**（workspace 行が 80 % 境界で `warning`、上限超過で `exceeded` を報告する）を採る。番号は本グループで確保し、台帳への登録は G9 の持ち分。
+
+`AvailableWorkspaceUsageView` を `DescribedStorageUsage` との交差型に組み替える案は採らない。`PersonalUsageView` を含む view の型はどれも primitive だけで独立に書かれており（`view.ts` 冒頭の規約）、1 件だけドメイン型へ結ぶと射影層の一貫性が崩れる。
+
+### Consequences
+
+- ドメイン側の storage 表示規則を変えると personal 行・workspace 行の両方が自動的に追随する。変異スポットチェック: `describe` の storage `level` を `"none"` に固定すると TC-usage-045 / 047 に加えて **TC-usage-081 も red**。同じ変異を入れたまま `readWorkspaceUsage` を旧形（usecase 内導出）へ戻すと TC-usage-081 は **green に戻る** — 落としたのがまさにこの第 2 の住処であることを実測で確認した。
+- `spec/domains/usage.md` の断言は実装が canon へ寄る向きなので、spec の改訂は不要（G9 は TC-usage-081 の台帳登録だけを持つ）。
+
+## ADR-145: `WorkspaceDirectoryProjectionWriter` は要求パスに `applySnapshotIfNewer` だけを渡す
+
+### Context
+
+`RequestContainer` は `WorkspaceDirectoryProjectionWriter` をポートごと露出していた。同ファイルは「`Pick`s deliberately drop every OCC write method, so a usecase that wants to mutate is forced through `globalUnitOfWorkProvider.run`」という規律を明文で持ち、`UserReader` / `SessionReader` / `WorkspaceReader` などをすべて `Pick` で絞っている。要求パスがこのポートに対して呼ぶのは `applySnapshotIfNewer` だけ（ADR-040 の 5 本、いずれも `application/workspace/directoryProjection.ts` 経由）で、`tombstone` の呼び出しは `application/workspace/workspaceDeletionGlobal.ts` のワーカー面 1 箇所のみである。`tombstone` は終端操作で、別 operation の tombstone は `ConflictError`、以後どの版の snapshot も行を再開させない。
+
+### Decision
+
+`WorkspaceDirectoryProjector = Pick<WorkspaceDirectoryProjectionWriter, "applySnapshotIfNewer">` を置き、`RequestContainer` のフィールドの型だけをこれに差し替える。`WorkerContainer` はポート全体のまま（ワーカー面が両方を使う）。フィールド名は据え置く — 合成ルートは全体を渡し続けられるので、両ランタイムの配線は 1 行も変わらない。
+
+`ADR-137` の `email?: never` に相当する「広い型を代入不能にする」細工は**採らない**。同ファイルの他の `Pick` はどれも合成ルートからリポジトリ全体を受けており、1 件だけ合成ルートに明示的な絞り込みを強いると規律の形が割れる。
+
+テストハーネスの `tombstoneDirectory` は `h.container` ではなく `h.workerContainer` を通す。「終端操作はワーカー面から来る」という決定を、テストの側も同じ面から踏むようにする。
+
+### Consequences
+
+- 変異スポットチェック: `directoryProjection.ts` に `tombstone` の呼び出しを足すと `TS2339: Property 'tombstone' does not exist on type 'WorkspaceDirectoryProjector'` で落ちる。要求パスから終端操作へ届く経路は型で閉じた。
+- 逆向き（別名を再びポート全体へ広げる）はコンパイルエラーにならない — 構造的部分型なので、絞りを外した瞬間に元へ戻る。締めているのは呼び出し側であって定義側ではない、という点は同ファイルの他の `Pick` と同じ性質である。
+- ポート契約・アダプター・適合スイートは変えていない。spec 側の改訂も不要（`WorkspaceDirectoryProjectionWriter` の契約そのものは動いていない）。
+
+## ADR-146: 契約が「拒否する」と書いた分岐は `occGuard` まで持たせ、guard 敗北はそのポートのコードへ写す
+
+### Context
+
+Cloudflare の条件付き書き込みのうち 2 本だけが `occGuard` を持たず、JS の先読みと SQL 述語の 2 段だけで分岐を決めていた（review-005-backend-workspace W-003）。
+
+- `workspaceDirectoryProjectionWriter.tombstone`: 「別 operation の tombstone は `ConflictError`」をポート JSDoc が名指しで要求しているのに、SQL 側は `ON CONFLICT … WHERE deletion_operation_id IS NULL OR = excluded` で黙って 0 行にしていた。read と commit のあいだに別 operation の tombstone が着地すると、契約が要求する例外が**成功へ化ける**。
+- `workspaceOperationLockStore.stageMove`: `ON CONFLICT (migration_id) DO NOTHING` に guard が無いまま `upsert` の行イメージを overlay へ積むので、別 actor の行が先に着地しても呼び出し側は**自分の actor が pin された**と読み、同じ UoW の後続読みも自分の actor を返す。move authorization lock の目的（actor の Membership 版を pin する）が取り違えられる。
+
+同ファイル群の他の条件付き書き込み（`beginDeletion`、`invitationRouteStore` の交換、`workspaceSlugReservationStore` の `activate` / `reserve`）はすべて `occGuard` を張っており、この 2 か所だけが非対称だった。
+
+### Decision
+
+**`ADR-130` の分割線をもう一段はっきりさせる。** ADR-130 は `applySnapshotIfNewer` について「投影が `ConflictError` で詰まる経路を作らない」ことを理由に `occGuard` を採らず、述語一致で `0 行なら 0 行` を成立させた。裏返すと、**ポートが名指しで例外を要求している分岐は逆で、`occGuard` で write-set ごと落とすのが正しい形になる**。`tombstone` も `stageMove` もそちら側なので、guard を先頭に積む。
+
+- guard 敗北は `classifySqlError` で拾い、`throwTranslated` の既定（`OPTIMISTIC_LOCK_FAILURE`）ではなく**ポート契約が宣言しているコード**へ写す（`WORKSPACE_DIRECTORY_CONFLICT` / `MOVE_AUTHORIZATION_LOCK_CONFLICT`）。先読みで投げる分岐と guard 敗北で投げる分岐が同じ 1 つの契約なので、呼び出し側から 2 つに見えてはならない。`tombstone` は例外の構築を `tombstonedByAnother` へ括り出して 2 経路で共有した。
+- `stageMove` の guard 述語は `migration_id = ? AND actor_user_id <> ?` の `NOT EXISTS`。`migration_id` の存在そのものではない — 応答喪失の再送（同じ actor の再実行）は成功しなければならず（ADR-061）、`NOT EXISTS (migration_id = ?)` まで締めるとその冪等性を壊す。
+- ポート JSDoc は触っていない。どちらも既存の契約文（「別 operation の tombstone は `ConflictError`」「別 actor を指す再実行は `MOVE_AUTHORIZATION_LOCK_CONFLICT`」）を実装が満たしていなかっただけで、新しい契約の追加ではない。
+
+### Consequences
+
+- レース自体は適合スイートでは作れない（memory は read と write が不可分）。ADR-130 と同じ層分けで、インターリーブは Cloudflare 側に置いた: `tombstone` は既存の `cloudflare/__tests__/projectionConcurrency.test.ts` の workspace directory ブロックへ 1 ケース、`stageMove` は scope 面の並行観測がまだ無かったので `cloudflare/__tests__/scopeConcurrency.test.ts` を新設して 2 ケース（敗北時の `MOVE_AUTHORIZATION_LOCK_CONFLICT` と、同じ actor の交差再送が成功すること）。後者は `globalConcurrency.test.ts` の scope 面版という位置づけ。
+- どのケースも `createAutocommitSession` で組む。staged session では `write` が buffer するだけなので、guard 敗北はリポジトリまで届かず commit 時に既定の翻訳へ落ちる（`globalConcurrency.test.ts` が既に述べている性質）。本番の `stageMove` は UoW 内なので、実際に利用者へ届くのは `OPTIMISTIC_LOCK_FAILURE` 側になる — ここで固定したのは「黙って成功しない」ことであり、コードの写しは autocommit 経路の契約である。
+- 変異スポットチェック: `tombstone` の `occGuard` を外すと `refuses a tombstone whose row a rival deletion claimed after it was read` が red、`stageMove` の `occGuard` を外すと `refuses a staging whose migration a rival actor locked after it was read` が red。どちらも「`ConflictError` が来ない」として出る。
+- spec 側の改訂は不要。ポート契約は動いておらず、変わったのは Cloudflare アダプターがその契約を守るようになったことだけ。
+
+## ADR-147: claim を返すときは、前の attempt が staged した分もまとめて畳む
+
+### Context
+
+`releaseUnusedClaim`（ADR-128 / ADR-133）は「まだ何も staged されていない」を前提に `noteRouteStore.abortMove` だけを打っていた。この前提が成り立つのは**初回 attempt だけ**である。
+
+resume された attempt は前の attempt の staged target（Note・Revision・ファイル metadata・credit・receipt）と**両 scope の move lock**を引き継いだまま走る。その attempt の `claimRoute` が一過性の store 障害で落ちると、catch は route だけを active source へ戻し、operation を `rejected` で終端する。`WorkspaceOperationLockStore` の lock には lease も expiry も無く、`releaseMove(M)` を打つ主体は M を駆動するサガだけなので、残った lock を外せるのは「同じ `requestKey` の再送」しかない。ところが route が active に戻っているため、利用者が**別の移動先**を選んだ瞬間に `routeVersion` が進み、`requestKey`（`noteId:actor:target:routeVersion`）が二度と導出できなくなる。以後、両 workspace の削除（`hasActiveMove`）と actor の membership 変更・除名・脱退（`hasMoveConflict`）が**永久に拒否される**（レビュー ラウンド 5 backend-note W-001）。
+
+`rollBack` の target UoW が落ちた場合にも同型の残骸は残るが、そちらは route が `moving` のまま残る（＝同じ `requestKey` が導出でき続ける）ので恒久停止にはならない。claim 経路だけが「route を返す」と「lock を残す」を同時にやってしまう。
+
+### Decision
+
+`releaseUnusedClaim` が「route はこの migration の下で `moving`」と判定した時点で、裸の `abortMove` ではなく `abortBeforeSwitch(container, plan, route.routeVersion, tagRelocation)` を通す。
+
+- `abortBeforeSwitch` は先頭で `thawRoute`（route の CAS）を打ってから target を解体し、最後に source の lock を外す（ADR-111）。消すのは「attempt の snapshot ではなく target を列挙した結果」なので（ADR-114）、**手順 5 に到達しなかった attempt が前の attempt の staging を戻す**のは既にこの関数の契約そのものである。差分は `tagRelocation` を引数へ足すことと、呼び出しを 1 行差し替えることだけ。
+- 初回 attempt では target に何も無いので、`findById` が `null` を返して即 return し、lock の解放は no-op になる。挙動は ADR-128 以前と同じで、増えるのは scope transaction 2 本だけ。
+- 補償の失敗の扱いは ADR-133 のまま。本体全体が 1 つの try に包まれ、失敗は `[moveNote] the claimed route was left moving` に落ちて `void` を返す。`settleQuietly` への到達性は変わらない。
+
+### Consequences
+
+- claim の応答喪失は「route も staged も両 lock も戻る」に揃った。`rollBack` 経路との非対称（前者は route だけ返していた）が消えた。
+- 検出力: `TC-note-765` を 1 本足した。attempt 1 が stage 後に route store ごと落ちて route を `moving` のまま残し、resume が claim の応答を失う経路で、両 scope の lock が 0 件・target が空・`deleteWorkspace(TARGET_WS)` が `accepted` になることを固定する。変異（`abortBeforeSwitch` を裸の `abortMove` に戻す）で red を確認して戻した。
+
+## ADR-148: receipt で staging を飛ばす attempt は、staged 複製を「今回 freeze した版」へ引き上げる
+
+### Context
+
+`retireSource` は source の Note 行と Revision を**全件無条件**に削除する一方、`stageTarget` は前の attempt の receipt（`markApplied` が `false`）で丸ごと飛ばされうる。route が `moving` のあいだ source は書き込み可能である（move lock が止めるのは membership 変更と scope 削除だけで、`assertWritable` は書き込みを通す）ため、attempt 1 の staging と再送のあいだに入った source への編集は、target へ渡らないまま `retireSource` に消される（レビュー ラウンド 5 backend-note W-002）。
+
+ファイル側は同じ窓を意図的に塞いでいる — 「retire するのは実際に target へ渡った集合」（ADR-114）なので、渡らなかった行は metadata ごと source に残る。しかし **Note 本体だけはその規則を適用できない**: route が名指す scope は 1 つで、「渡らなかったぶんを source に残す」という選択肢が無い。
+
+本デプロイでは `updateNoteBody` / `applyTextNodeEdits` / アップロードのユースケースが無いため到達不能だが、#6 / #7 が入った瞬間にデータ消失として生きる。
+
+### Decision
+
+fix-plan の**第一候補**を採る。`stageTarget` の receipt-stands 分岐を `adoptStagedCopy` に切り出し、staged 複製が古ければ**今回 freeze した snapshot で置き換える**。
+
+- 判定は **target scope をまたぐ読みを必要としない**。staged 複製は `Note.withOwner(frozen)` なので、その版は freeze した版のちょうど 1 つ先である。したがって `staged.version === Version.next(snapshot.note.version)` が「あれから source に何も書かれていない」と同値になり、突き合わせは `stageTarget` が既に持っている 2 つの値だけで閉じる（source を読み直さない）。
+- 食い違ったら `noteRepository.save(refreshed, staged.expectedVersion)`、`noteRevisionRepository.deleteByNote` → snapshot の Revision を再 insert、`noteProjectionRevisionStore.bump` を同じ target transaction で打つ。receipt を clear して再 stage する形は採らない — staged 行が既に在るので `insert` が重複キーで落ち、credit の打ち直しまで巻き込む。**置き換えのほうが変更点が少なく、credit（bytes）は動かないので触らずに済む。**
+- ファイル metadata は**引き上げない**。ADR-114 の「渡らなかった行は source に残り、retire もされない」がそのまま成立するので、規則を二重化しない。
+
+### Consequences
+
+- `retireSource` の無条件削除が安全である理由が「`adoptStagedCopy` が staged 複製を今回の版へ引き上げているから」になった。両方の JSDoc にその依存を書いた。
+- 編集が無い再送では版が一致するので追加の書き込みはゼロ。`TC-note-763`（ファイルだけが増えた再送）は Note の版が動かないため影響を受けない。
+- 検出力: `TC-note-766` を 1 本足した。attempt 1 の staging が残った状態で source を rename し Revision を 1 件足してから再送すると、target が編集後のタイトルと 2 件の Revision を持ち、source が空になることを固定する。変異（版の比較を反転して引き上げを常に飛ばす）で red を確認して戻した。
+
+## ADR-149: `"use client"` からしか呼べないサーバー関数の登録は、一覧ではなく import グラフから導く
+
+### Context
+
+`"use client"` の島からしか到達しないサーバー関数は、クライアントビルド前に凍結される RSC マニフェストに載らないので、`routes/__root.tsx` から素の `import "…/action";` で引き込む規律がある（`docs/frontend_implementation_example.md`）。本 PR はこの規律を理解して 5 行を足したが、`DeleteAccountPanel/action`・`WorkspaceMembersPanel/action`・`routes/notes/-action` の 3 モジュールを落としていた（レビュー 005 frontend B-001）。落ちても型は通り、島は import でき、失敗するのは実行時だけで、呼び出し側の `catch`（P-25 は `.catch(() => null)`）がそれを握り潰す。
+
+実測（`pnpm build:node` の出力 `dist/server/rsc/index.js` に載るサーバー関数マニフェストを、3 行の有無で差分を取った）では、**実際に落ちていたのは `WorkspaceMembersPanel/action` の 2 本だけ**だった（`loadMoreMembersFn` / `loadMorePendingInvitationsFn`）。残る 2 モジュールは、島を描く route ファイルからの静的 import 経由でマニフェストに載っていた。ただしそれは今の import グラフの副産物であって規律の成立ではない — 島を別の route に付け替えた瞬間に、同じように黙って落ちる。
+
+### Decision
+
+- 3 行とも足す。マニフェストに載るかどうかを import グラフの偶然に委ねない（`routes/settings/-action` が route から静的 import されているのに登録行を持つのと同じ理由）。
+- 登録漏れを**列挙ではなく導出**で拘束する。`app/__tests__/serverFunctionRegistration.test.ts` が `apps/web/app` を走査し、`createServerFn(` を宣言するモジュールのうち **`"use client"` のファイルが値として import しているもの**を求め、それが `__root.tsx` の bare import に含まれることを要求する。型注釈だけの import（`import type`）は消えるので数えない。
+- 逆向き（`__root.tsx` の登録行がサーバー関数を宣言しないモジュールを指していないこと）も同じテストで見る。登録一覧が陳腐化して意味を失う側も塞ぐ。
+
+### Consequences
+
+- 新しい島が新しい `action.ts` を持った時点で、登録を忘れるとテストが red になる。手動テストの Phase 4 に頼らずに済む（レビューが「単体テストでは拘束できない」と書いた穴）。
+- ホワイトリストを持たないので、「例外として登録しない」を書く場所も無い。登録が不要なモジュール（route からしか呼ばれない `routes/w/-action` など）はそもそも要求集合に入らない。
+- 変異スポットチェック: `import "@/routes/notes/-action";` を落とすと red。戻して緑。
+
+## ADR-150: P-25 の「片づける先」は、拒否の根拠と一覧の出所が別集合であることを表示で認める
+
+### Context
+
+受理を拒む `admitAccountDeletion` は settled な edge（`active` / `pending` / `removing`）を数え、実行不可が並べる一覧は `listUserWorkspaces` → `listActiveByUser` の `active` だけを返す。`domain/workspace/ports/userWorkspaceDirectory.ts` が「`listActiveByUser` は代用にならない」と名指しで警告しているとおりで、最後のワークスペースを脱退した直後（`removing`）・招待の受諾が未確定（`pending`）の利用者は、**拒否されながら 1 件も並ばない**。しかも `hasMore` も偽になるので続きの示唆も出ない。一覧の取得が落ちた場合も同じ「空」に潰れていた（レビュー 005 frontend W-001）。
+
+settled な edge を列挙するポートを足すのは Issue #3 のスコープ外（ADR-135 / ADR-142 が置いた「拒否の権威は受理側」の形を越える）。
+
+### Decision
+
+- 画面が持つのは 3 状態の直和にする（`DeleteAccountPanel/remaining.ts`）。`listed`（1 件以上と `hasMore`）/ `settling`（拒否されたのに 0 件）/ `unavailable`（一覧を引けなかった）。`listed` の `workspaces` を非空タプル型にしてあるので、「並べる行があるのに反映待ちと言う」表示は型の上で作れない。
+- `settling` は「反映待ちのワークスペースがあります。少し待ってからもう一度お試しください。」、`unavailable` は「一覧を取得できませんでした」を出す。拒否の事実と理由（`errorDisplay` の専用文言）はどちらでも残り、消えるのは導線だけ（ADR-142 の「拒否を一時的な障害に見せ替えない」を保つ）。
+- 畳み込みは島から出した純関数に置き、`__tests__/remaining.test.ts` が 3 分岐を固定する（`submit.ts` と同じ理由・同じ置き場）。
+- `action.ts` の JSDoc に、この一覧が `active` 限定であることと拒否の根拠との差を書く。
+
+### Consequences
+
+- 前進側（settled edge の列挙ポート、あるいは受理側が拒否の応答に対象を載せる）は別スライスの持ち分として残る。今回の変更はその窓を**隠さない**ようにしただけである。
+- 検出力: `remaining.test.ts` を 3 本。変異スポットチェックとして `settling` を `unavailable` に潰すと red、戻して緑。
+
+## ADR-151: P-25 の owner 導線は投影値のままにし、遅れても片づけ手段が消えないことを根拠として書く
+
+### Context
+
+実行不可の行ごとの導線は `UserWorkspaceEdge.role === "owner"` で 2 本 / 1 本に切り替わる。この `role` はポートが「レンダリングしてよいが認可の事実ではない」と定める射影で、昇格・降格から 1 往復ぶん遅れうる。レビュー 005 frontend W-002 は「昇格直後の owner に P-34 が出ない＝唯一の片づけ手段が消える」として、`isOwner` を落として全行に両方出す案を挙げた。
+
+### Decision
+
+実装は変えない（ADR-142 の「行ごとの導線は owner だけ 2 本」＝ L-01 の「使えない行き先は並べずに消す」を維持）。**遅れても片づけ手段は消えない**ためである — どちらの行も P-32 へは行けて、`WorkspaceSettingsTabs` は 4 タブすべてを無条件に並べるので、そこから P-34 へ到達できる。可否は行き先の画面が workspace scope の `Membership` を読み直して判定する。断定していた JSDoc に、射影であること・遅れうること・行き先が再判定することを書き足す。
+
+### Consequences
+
+- タブ列がロールで出し分けを始めたら、この根拠は崩れる。そのときは `isOwner` を落として両方出す側へ倒す（判断の前提はここに書いてある）。
+
+## ADR-152: アカウント削除の受理は「遷移してから判定する」を同一 global transaction で行う（ADR-135 を置き換える）
+
+### Context
+
+ADR-135 は `admitAccountDeletion` に受理ガードを置いたが、2 点で fail closed になっていなかった（レビュー `backend-usage B-001`）。
+
+1. 数える集合が settled（`active` / `pending` / `removing`）だけで、`activating` が抜けていた。`activating` は `reserveAndClaimActivation` が edge を作った瞬間から `activate` が返るまで、参加サガの**全区間**で置かれる状態である。
+2. 読みがトランザクションの**外**にあり、しかも判定が `beginOrResume` より前だった。ADR-135 は「ディレクトリはどの UoW にも属さない global 面のポートなので、判断だけをトランザクションの中で下す」としてこれを意図した形と書いていた。
+
+どちらの窓も結末は同じである。受理してしまうと参加側は止まらず（`activate` を拒むのは prepare lock 付きの `pending` edge だけで、本デプロイは prepare wave を持たない）、edge は `active` へ settle し、`appendMembershipPage` が membership item を固定して `prepareAckedAt` が永久に埋まらない。**User は `deleting` のまま復旧不能** — ADR-135 のガードが防ぐために存在していた退行そのものである。
+
+fix-plan-005 の G1 は既定として「1. だけを入れ、残る窓を JSDoc に規定として書き残す」を提案していたが、**復旧不能状態に至る窓を JSDoc に書いて残すのはこのガードを置いた意味を消す**ため、メインの判断で「隙間ごと閉じる」に差し替えた。
+
+### Decision
+
+**`GlobalUnitOfWorkContext` に読み専用の 2 本を露出し、判定を transaction の最後に置く。**
+
+- `settledMembershipReader: Pick<UserWorkspaceDirectory, "countSettledByUser">` と `activatingMembershipReader: Pick<MembershipDirectoryReservationStore, "listActivatingByUser">` を `application/execution/unitOfWork.ts` に足す。`Pick` は `application/di/types.ts` の reader ビューと同じ規律で、**書き込み遷移（とりわけ `commitAccountDeletion` のような終端操作）を 1 本も渡さない**。別名を `di/types.ts` ではなく `execution/unitOfWork.ts` に置いたのは、`di/types.ts` が `execution/unitOfWork` を import する側で、逆向きの import が循環になるためである。
+- 判定は `activating` も含める（`settled > 0 || activating.length > 0`）。
+- **判定の位置を `User.beginDeletion` の save の直後**、つまり transaction の最後に移す。参加サガ側の関門は `reserveAndClaimActivation` の中の Active-User チェックなので、`deleting` への遷移を**先に publish してから**ディレクトリを読むと、並行する join は「読みより前に edge を書いた（＝判定が見る）」か「あとで書く（＝自分のチェックが落ちる）」のどちらかにしかならない。判定を先に置くと — transaction の中に入れても — その隙間がそのまま残る。
+- 受理を拒む場合は transaction ごと rollback するので、operation 行も `deleting` も残らない。ADR-135 の「operation を作る前に投げるので terminal 行が残らない」は、rollback が同じ結果を与えるので満たされ続ける。
+
+### Consequences
+
+- **ADR-135 を置き換える。** ADR-135 の Decision のうち「数える集合は manifest と同一の述語」「読みは UoW の外」「位置は `beginOrResume` の前」の 3 点は無効。残る 2 点（`resume` は判定しない／`ensureRetryable` を先に置く）はそのまま生きている。解除条件（wave を足すスライスがこのガードごと落とす）も変わらない。
+- 振る舞いの差は 1 点だけ増えた。**すでに終端した operation の replay**（`operation.state !== "running"`）は、判定より前に返るようになったので拒否されなくなる。これは `admitAccountDeletion` の JSDoc が元から掲げていた「新しい operation を作りうる要求だけを判定する」に沿う向きで、membership item を 1 件も増やさないので fail closed を崩さない。
+- リファレンスランタイム（Node + memory）では窓が閉じる。memory backend は transaction を直列化し、書き込みは undo log 付きで即時可視なので、上の 2 分岐がそのまま成り立つ。
+- **D1 バックエンドには残差がある。** D1 の write-set は commit まで不可視なので、「join の batch が deletion の読みの後・apply の前に着地する」順序だけは、この並べ替えでは落とせない。閉じるには deletion 側の batch に `occGuard`（`NOT EXISTS (… membership_directory WHERE user_id = ? AND state IN (…))`）を積む必要があり、それは `d1/repositories/userWorkspaceDirectory.ts` に commit 時ガードを足す変更＝本ラウンドで別グループが持つアダプター層に入る。**次の口として名指しする**（本デプロイの唯一のランタイムは memory であり、D1 のこの経路は今日は動かない）。
+- 変異スポットチェック（3 点、いずれも一時的に入れて戻した）:
+  - `activating` の枝を無効化 → `TC-identity-352` と `TC-identity-353`（afterOperation）が赤。
+  - 判定を save の**前**へ移す → `TC-identity-353`（afterAdmissionRead）が赤（受理されたのに edge が残る）。
+  - 判定を `beginOrResume` の**前**（ADR-135 の位置）へ移す → `TC-identity-353` の 2 本が赤。
+- `domain/workspace/ports/userWorkspaceDirectory.ts` の `countSettledByUser` JSDoc に「この述語は受理条件の全体ではない」を書き足した。数える集合そのものは変えていないので、適合スイートは無改訂。
+
+## ADR-153: 適合ハーネスの任意メンバーを廃し、`ctx.skip()` を契約から締め出す
+
+### Context
+
+`ConformanceBackend.seedMembershipEdges?` は optional のまま残り、JSDoc は理由を「Workspace ドメインができるまで」と述べていた（review-005-backend-workspace W-005）。本 PR で Workspace ドメインは存在し、memory / cloudflare の両ハーネスは既に実装済みなので、5 スイート 16 か所の `ctx.skip()` 分岐は**今日 1 件も発火しない**。にもかかわらず optional のままだと、将来のバックエンドが実装を省いた瞬間に `beginRemoval(pending)`・prepare / commit / release lock の全節・`countOwnedByUser` / `countSettledByUser` の述語が**失敗ではなく skip として静かに外れる**。ADR-026 の「両バックエンドが同一に通す」が破れていることが緑のまま隠れる。
+
+### Decision
+
+`seedMembershipEdges` を必須メンバーへ昇格し、16 か所の `ctx.skip()` 分岐を落とした。JSDoc の理由も「消えた前提」から「**このポートのどのメソッドも作らない状態**（`pending` edge と membership を名指さない edge）を書けるのはハーネスだけだから」へ書き換えた。
+
+執行は `adapters/__tests__/conformanceCoverage.test.ts` の 2 本で行う。
+
+- 「`ConformanceBackend` は任意メンバーを 1 つも宣言しない」— 従来の「両ハーネスが任意メンバーを実装している」を置き換える。必須メンバーは型が強制するので、optional の再導入だけがこの穴を開け直せる。
+- 「`conformance/` のどのケースも自分を skip しない」— `.skip(` の textual 検査。任意メンバー経由でなくても、実行時に契約節を落とす形は同じ害を持つ。
+
+### Consequences
+
+- `seedPendingEdge` / `seedEdges` / `seedOwnerEdges` は `boolean` を返すヘルパーから素の `Promise<void>` になった。呼び出し側の `if (!(await …)) { ctx.skip(); return; }` が消えたぶん、ケース本体が契約そのものだけを述べる形になる。
+- `cloudflare/__tests__/harness.test.ts` の「任意 seed を提供している」ケースは、**seed が実ストレージに届く**ことをポート越しに読み返して確かめる形へ差し替えた（`toBeDefined()` はスタブでも通る）。
+- 環境で落ちる skip（`adapters/oauth/` の資格情報未設定）は `conformance/` の外なので対象外。1 実行あたりの skip はこの 3 件だけになった。
+
+## ADR-154: 予約は全状態で membership を名指す（`pending` は「まだ名指さない」ではない）
+
+### Context
+
+`applyRoleIfNewer` の JSDoc は `:236-238` で「Every state takes the write — `pending` / `activating` の edge も予約のロールを運ぶ」と述べた 7 行あとで、「another membership を名指す edge — **または `pending` 予約が持つ「まだ無い」** — は同じ no-op」と述べていた。同じメソッドの JSDoc に `pending` について正反対の 2 文が並んでいる（review-005-backend-workspace W-002）。`spec/database/index.md` と D1 の `0001_global_schema.sql:156` も NULL 許容の理由を「`pending` edge は Membership の存在に先立つ予約だから」と説明していた。
+
+実装は逆で、`reserveAndClaimActivation` は `membershipId` を**必須引数**として受け（呼び出し側は予約より前に ID を採番している）、両アダプターとも常に値を書く。`membership_id IS NULL` の行は適合スイートのシードでしか作れない。
+
+放置すると、第 3 のバックエンドが素直に `membership_id` を NULL で予約し、その edge にはロール投影が**恒久的に届かない**（ADR-138 が `null` を fail closed に倒したため）形が canon 公認になる。
+
+### Decision
+
+**記述を実装へ寄せる。** ポート JSDoc から「or none yet, which is what a `pending` reservation carries」を落とし、`reserveAndClaimActivation` の側に「`membershipId` は edge がどの状態に落ち着くかに関わらず書かれる」を明記した。`applyRoleIfNewer` 側は「名指さない edge も no-op」を**理由ごと**書き直した — 一致しないからではなく、**どの世代の行かを識別できないから** fail closed に倒す。
+
+D1 の CHECK（`state NOT IN ('active','removing') OR membership_id IS NOT NULL`）と NULL 許容はそのまま残す。列を `NOT NULL` にすると「membership を名指さない edge」が D1 で表現不能になり、その fail closed 規則を**適合スイートが両バックエンドで固定できなくなる**（＝ ADR-026 が要求する「同一に通す」から 1 節が落ちる）。マイグレーションのコメントは、NULL 許容の理由を「書き手は常に値を入れる／要求は CHECK が持つ」へ直した。
+
+### Consequences
+
+- 適合ケースを 1 本追加（ADP-workspace-073「an edge that names no membership takes no projection」）。membership を名指さない `pending` edge にロール変更を当てても書かれず、`activate` 後も予約のロールが残ることを固定する。
+- 変異スポットチェック: memory は世代ガードを `!== null &&` 付きへ緩めると red。Cloudflare は JS ガードと `AND membership_id = ?` の**両方**を緩めないと red にならない（ADR-138 と同じ理由：SQL 述語単独の検出力は read/write のインターリーブを要する）。
+- canon への申し送りは G9: `spec/domains/workspace.md:340` と `spec/database/index.md:69,79` の同文。
+
+## ADR-155: 除去状態機械の未検証セルと「除去する唯一の遷移」を適合スイートで締める
+
+### Context
+
+ADR-026 は「ポート契約の正本は JSDoc、適合スイートはその実行可能形」であり、締めていない節はバックエンド間で割れても緑のまま通る。ラウンド 5 のレビュー W-004 は 4 つの節が未検証であることを挙げた。いずれも本ラウンドが触った 2 領域（除去状態機械・世代照合）そのものである。
+
+- 除去 3 遷移 × 5 状態のうち 3 セル: `abandonRemoval(pending)` / `completeRemoval(activating)` / `completeRemoval(pending)` → Conflict。
+- `commitAccountDeletion` の「edge を**除去する**唯一の遷移」。既存ケースは後続で `activate` の Conflict しか見ておらず、**行を残して印を付けるだけの実装が通る**（残すと `(userId, workspaceId)` が恒久占有され、除名済み利用者が再参加できない）。
+- global 側 `acknowledge` の「初回タイムスタンプ勝ち・未知キー無視」。`acknowledgeLocal` 側だけがあった。
+- `applyRoleIfNewer` × membership を名指さない edge → no-op（ADR-154）。
+
+### Decision
+
+4 節を適合ケース 4 本で締める（ADR-154 のぶんを含めて計 4 本 + W-006 由来 2 本 = 6 本）。ADP の採番は ADR-140 の「ポートのメソッド 1 本 = 1 ID」に従い**既存 ID を共有**する（新規メソッドが無いので新しい ADP 行は起こさない）。
+
+- ADP-workspace-070/074: `activating` / `pending` の 4 セルを 1 ケースにまとめ、末尾で「どちらの edge も無傷で、それぞれの saga が自分のものを settle できる」まで見る。
+- ADP-workspace-038: commit のあと `(userId, workspaceId)` へ**新しい join が通る**ことを見る。行を残す実装はここで落ちる。
+- ADP-workspace-058: 初回の `globalAckedAt` が 2 度目の ack で動かないこと、未知キーが item を増やさないこと。
+- ADP-workspace-073: ADR-154 のケース。
+
+### Consequences
+
+- 変異スポットチェックは 4 節 × 2 バックエンドの 8 点すべてで red を確認して戻した。`completeRemoval` は「`active` だけを拒む」へ緩める、`abandonRemoval` は `pending` を通す、`commitAccountDeletion` は削除を `state='removing'` の印付けに替える、`acknowledge` は `global_acked_at` 側だけ「初回勝ち」を外す、という 1 点変異で、いずれも該当ケースだけ（Cloudflare の commit 変異のみ近傍 3 ケースも巻き込む）が落ちる。
+- canon への申し送りは G9: `spec/inventory/adapter.md` の ADP-workspace-029 / 035 / 038 / 058 / 070 / 073 / 074 の「内容」欄。**新しい ADP 行は起こさない。**
+
+## ADR-156: `abandon` は prepare 済み edge に触れない／`activateReplacement` は閉じた replacement でも旧 route を閉じる
+
+### Context
+
+ポート JSDoc が述べる契約と実装がずれている箇所が 3 件あった（review-005-backend-workspace W-006）。いずれも両バックエンドで同じ挙動なので退行ではなく、契約側の未整理である。
+
+- (a) `MembershipDirectoryReservationStore` の JSDoc は「prepare lock 済み edge は `commitAccountDeletion` だけが取り消す」と書くが、`abandon` は `deletion_prepare_operation_id` を見ずに `pending` / `activating` を消す。
+- (b) `WorkspaceSlugReservationStore.reserve` の JSDoc は「どの枝を通っても行は `attemptId` に握られて返る」と書くが、既に `active` な**同一 operation** の行には `attempt_id` を書かずに return する。
+- (c) `InvitationRouteStore.activateReplacement` は replacement 行が既に `revoked` だと**旧行を一切見ずに成功を返す**。resend の local commit 後・交換前に `revokeInvitation` が新トークンを閉じた場合がこれで、旧 route が `active` のまま恒久的に残る（`active` 行には期限も回収経路も無い）。
+
+### Decision
+
+**害の向きで寄せ先を決める。**
+
+- (a) **実装を契約へ寄せる。** 両アダプターの `abandon` に「prepare 済みは触らない」を足した（D1 は JS ガードと `AND deletion_prepare_operation_id IS NULL` の両方）。JSDoc 側にも理由を書いた: 落とすと削除の対象が足元から消え、後続の join が manifest cursor の裏で pair を取り直せる。
+- (b) **JSDoc を実装へ寄せる。** 結果状態が同じで、`abandon` が `active` 行に触れない以上、`active` 行に握り替える試行が存在しない。「`reserved` 行だけが `attemptId` に握られる／`active` はそのまま」と書き直した。
+- (c) **契約が黙認する形にしない。** replacement が閉じていても `oldTokenHash` が `active`（かつ同一 invitation）なら閉じる形にし、JSDoc にその分岐を書いた。実害は小さい（scope の Invitation が権威なので preview は `revoked`、accept は `INVITATION_NOT_PENDING`）が、**状態としては修復不能**であり、live route が残ることそのものを契約が許してはならない。別 invitation に紐づく旧 route は触らない。
+
+### Consequences
+
+- (a) と (c) は挙動が変わるので、ADR-026 に従い JSDoc・両アダプター・適合スイートを対で動かした。適合ケースを 2 本追加（ADP-workspace-035/036「a join's compensation cannot cancel an edge a deletion has prepared」、ADP-workspace-029「an exchange whose replacement was revoked still closes the old route」）。
+- 変異スポットチェック: 4 点（両バックエンド × 2 件）すべてで該当ケースが red。特に (c) は追加した close 分岐を落とすと `resolveActive(旧トークン)` が非 null になり、**live route が残ること**が直接赤で出る。
+- (b) は契約側だけの改訂なので適合スイート無改訂。
+- canon への申し送りは G9: `spec/domains/workspace.md` の `abandon` と `activateReplacement` の記述。
+
+## ADR-157: `workspace_directory` の投影は「要求パスの同期 best-effort」と canon に書く（配送保証を名乗らない）
+
+### Context
+
+`spec/domains/workspace.md` は `workspace_directory` の snapshot 投影を「out-of-band かつ at-least-once」と述べていた（review-005-general B-002）。実装は逆で、`applySnapshotIfNewer` の呼び出し元は `application/workspace/directoryProjection.ts` だけであり、`createWorkspace` / `updateWorkspaceProfile` / `changeWorkspaceSlug`（2 箇所）/ `publishWorkspace` / `unpublishWorkspace` がいずれも**要求パスから同期的に**呼ぶ。`workers/subscribers.ts` に登録された workspace の購読者は `workspace.membership.roleChanged` の 1 件だけで、この 5 つのイベントの購読者は存在しない。実体は `retryOnce` の 1 回再試行で終わる best-effort である。
+
+### Decision
+
+**canon を実装へ寄せる。購読者を新設して本当に out-of-band にする案は採らない。**
+
+1. 5 イベントの購読者を置いて要求パスの同期呼び出しを外す変更は、ADR-051 / 076 が「本スライスに recovery / 再駆動の口を作らない」と決めた範囲そのものに入る。
+2. 実装（`retryOnce` 付き同期 best-effort）は誤りではない。失った snapshot は利用者の次の保存で打ち直せる**復旧可能**な窓である。
+3. canon は実装について真でなければならない（`CLAUDE.md`「Design canon」）。偽の配送保証を残すほうが、窓を隠すぶん害が大きい。
+
+`spec/domains/workspace.md` の当該段落を「呼び出し口は 2 つ（要求パスの `applySnapshotIfNewer` とワーカー面の `tombstone`）／修復する購読者は今日いない／順序は `sourceVersion` だけ／同じ snapshot の再送は無害」に書き換え、**投影をイベント名で語る書き方をやめた**。
+
+### Consequences
+
+- 「修復口が無い」という事実が canon に現れる。前進側（修復購読者の新設）は新規 Issue へ defer 済み（`triage-keys.md`）。次ラウンドで再指摘しない。
+- ドメインイベント表と 256 行の食い違いが解消する。表は `workspace.created` を「投影は購読しない」、残り 4 件を `projectNoteChanges` の購読としか書いておらず、そちらが実装どおりだった。
+- 実装は 1 行も変えていない。
+
+## ADR-158: 退役した TC ID は欠番のまま残し、再利用しない（規約を台帳の冒頭に置く）
+
+### Context
+
+`spec/inventory/test.md` の TC-usage 群は 001〜080 のうち 006 / 008〜012 が欠番で、これは `moveNote` のサガ化に伴って退役させた ID を再利用しないための意図的な措置である。しかし台帳冒頭の採番規約は「新規は各群の末尾に採番する」としか述べておらず、退役 ID を残す規則が無かった（review-005-general W-003）。理由は `.thread/3/adr.md` にしかなく、`CLAUDE.md` はそこを canon から引くことを禁じている。他の 8 群はすべて連番なので、読み手はこの 6 件が意図か採番ミスかを判別できない。
+
+### Decision
+
+台帳冒頭の採番規約に**理由そのもの**を 1 文足す: 「退役した ID は欠番のまま残し、別の内容に再利用しない — ID は識別子であり、再利用すると過去の参照（レビュー・コミット・コード中の `it` 名）が別のケースを指すことになる。群の中に飛びがあっても採番ミスではなく、次に採番する者はその番号を埋めずに末尾へ足す」。`.thread/` は引かない。
+
+### Consequences
+
+- ADR-140（「台帳の採番は連番へ揃える」）と併せて、「連番へ揃える」が**退役分の穴埋めを含まない**ことが明示される。
+- 次ラウンド以降の機械的検証は、TC-usage の 6 件の飛びを欠陥として数えない。
+- 他の 4 台帳（domain / adapter / usecase / frontend）は今日 1 件も退役 ID を持たないので、規約は test 台帳にだけ置く。

@@ -153,9 +153,11 @@ CREATE TABLE identity_unique_reservations (
   CHECK (state <> 'reserved' OR expires_at IS NOT NULL)
 );
 
--- `membership_id` is nullable because a `pending` edge is a reservation
--- taken before the workspace-local Membership exists, so it has no id to
--- carry yet; the CHECK still demands one from every settled edge.
+-- `membership_id` is left nullable because the CHECK below is where the
+-- requirement lives and it binds settled edges only. No writer takes that
+-- latitude: `reserveAndClaimActivation` supplies the id, so an edge names
+-- its membership from the state it is first inserted in, and a row that
+-- names none is refused by the role projection rather than projected onto.
 -- `(user_id, operation_id)` exists because `operation_id` is the edge key
 -- an account-deletion manifest pages by, and neither of the other two
 -- indexes can walk that order.

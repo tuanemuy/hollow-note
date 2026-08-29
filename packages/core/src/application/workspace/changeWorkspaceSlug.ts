@@ -56,7 +56,7 @@ type SlugReservation = Readonly<{
 async function advertisedSlug(
   container: RequestContainer,
   workspaceId: WorkspaceId,
-  current: WorkspaceSlug,
+  current: WorkspaceSlug | null,
 ): Promise<WorkspaceSlug | null> {
   const resolved = await container.workspaceDirectoryBatchReader.resolveMany([
     workspaceId,
@@ -70,29 +70,58 @@ async function advertisedSlug(
 }
 
 /**
+ * Frees the key a workspace gave up without taking another.
+ *
+ * Retried for the reason the activation is: it runs after the commit that
+ * dropped the slug, and an `active` reservation has no expiry, so a lost
+ * response strands the key against every workspace in the service. The
+ * repair path re-drives it, but only while the directory row still names
+ * the key, so the retry is what keeps that hint from being the only way
+ * back.
+ */
+async function releaseSlug(
+  container: RequestContainer,
+  workspaceId: WorkspaceId,
+  slug: WorkspaceSlug,
+): Promise<void> {
+  await retryOnce(container.logger, "[changeWorkspaceSlug] slug release", () =>
+    container.workspaceSlugReservationStore.release({ slug, workspaceId }),
+  );
+}
+
+/**
  * Re-drives the global half of a change whose scope commit already
- * landed: the reservation this workspace's slug needs, and the directory
- * row that advertises it.
+ * landed: the key this workspace's slug needs — taken or given up — and
+ * the directory row that advertises it.
  *
- * Both steps come after the local commit, so both can be lost while the
- * scope has already moved. Sending the slug the workspace already holds
- * is the request that repairs them — without this it answered success
- * while the reservation stayed `reserved`, which leaves the new public
- * URL resolving to nothing for good, since no other call reserves it
- * again.
+ * Those steps come after the local commit, so all of them can be lost
+ * while the scope has already moved. Sending the slug the workspace
+ * already holds is the request that repairs them — without this it
+ * answered success while the reservation stayed `reserved`, which leaves
+ * the new public URL resolving to nothing for good, since no other call
+ * reserves it again.
  *
- * The reservation is touched only when it does not already point here, so
- * an unchanged slug remains a no-op on a healthy workspace. The deletion
- * barrier is read first for the reason the invitation sagas read it: a
- * scope that has accepted a deletion must not have a global key claimed
- * back for it, and the deletion frees exactly this row.
+ * Clearing to `null` has the mirrored failure: the scope holds no slug
+ * while the global plane still holds an `active` row for the one it left,
+ * and an `active` row carries no expiry, so that key would be
+ * unobtainable by *any* workspace forever. Re-sending `null` releases it.
+ *
+ * Either half is touched only when the global plane disagrees with the
+ * scope, so an unchanged slug remains a no-op on a healthy workspace. The
+ * deletion barrier is read before taking a key, for the reason the
+ * invitation sagas read it: a scope that has accepted a deletion must not
+ * have a global key claimed back for it, and the deletion frees exactly
+ * this row. Giving a key up does not ask that question — it is the same
+ * direction the deletion moves in.
  *
  * The slug being left behind is taken from the directory row, which is
  * the last key this workspace advertised and is stale in exactly the same
- * window. It is only a hint — `activate` frees `releasing` solely while
- * that row is still `active` for this workspace — but without it the
+ * window. It is only a hint — `activate` and `release` both free a key
+ * solely while it is `active` for this workspace — but without it the
  * exchange would be half-applied and the old public URL would go on
- * resolving beside the new one.
+ * resolving beside the new one. That is also why the key is freed
+ * *before* the projection: a snapshot landing first overwrites the hint
+ * and no later request could find the stranded key.
  */
 async function repairSettledSlug(
   container: RequestContainer,
@@ -107,10 +136,12 @@ async function repairSettledSlug(
 ): Promise<void> {
   const { workspaceSlugReservationStore: reservations, logger } = container;
   const { slug, workspaceId } = params;
-  if (
-    slug !== null &&
-    (await reservations.resolveActive(slug)) !== workspaceId
-  ) {
+  if (slug === null) {
+    const stranded = await advertisedSlug(container, workspaceId, null);
+    if (stranded !== null) {
+      await releaseSlug(container, workspaceId, stranded);
+    }
+  } else if ((await reservations.resolveActive(slug)) !== workspaceId) {
     await container.workspaceReaderFor(params.scope).admission.assertWritable();
     const operationId = slugOperationId(workspaceId, slug);
     const releasing = await advertisedSlug(container, workspaceId, slug);
@@ -178,11 +209,12 @@ async function abandonSlugReservation(
  * workspace cannot get there — the aggregate refuses to drop the slug its
  * public page is served from.
  *
- * Re-sending the slug the workspace already holds changes nothing and
- * emits nothing while the global plane agrees with the scope. It is also
- * the repair path when it does not: a reservation left `reserved` or a
- * directory row left on the old slug is re-driven there, since the steps
- * that write them come after a commit that cannot be taken back.
+ * Re-sending the slug the workspace already holds — `null` included —
+ * changes nothing and emits nothing while the global plane agrees with
+ * the scope. It is also the repair path when it does not: a reservation
+ * left `reserved`, a key left `active` for a slug the scope has dropped,
+ * or a directory row left on the old slug is re-driven there, since the
+ * steps that write them come after a commit that cannot be taken back.
  *
  * The `workspace_directory` snapshot goes out last, once the reservation
  * has settled: the projection follows the authority on the key rather
@@ -308,10 +340,7 @@ export async function changeWorkspaceSlug({
   } else if (previousSlug !== null) {
     // No successor to hand the key to, so the standalone teardown frees
     // it; `release` is conditional on this workspace still holding it.
-    await workspaceSlugReservationStore.release({
-      slug: previousSlug,
-      workspaceId,
-    });
+    await releaseSlug(container, workspaceId, previousSlug);
   }
 
   await projectWorkspaceDirectory(

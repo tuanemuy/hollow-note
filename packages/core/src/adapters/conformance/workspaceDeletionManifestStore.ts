@@ -257,6 +257,31 @@ export function describeWorkspaceDeletionManifestStoreContract(
       ).toEqual(stamped);
     });
 
+    it("ADP-workspace-058: the first global timestamp wins and unknown keys are ignored", async () => {
+      await fixEverything();
+      const [first] = await allItems();
+      if (first === undefined) {
+        throw new Error("an item is fixed");
+      }
+      await store().acknowledge(OPERATION, [first.key]);
+      const stamped = (await allItems()).find(
+        (item) => item.key === first.key,
+      )?.globalAckedAt;
+      expect(stamped).not.toBeNull();
+
+      // The global lane walks the full key order and re-sends deletes for
+      // items it already acknowledged, so a second ack must not move the
+      // record of when the shard actually reported the row gone.
+      backend.clock.advance(60_000);
+      await store().acknowledge(OPERATION, [first.key, "no-such-key"]);
+      expect(
+        (await allItems()).find((item) => item.key === first.key)
+          ?.globalAckedAt,
+      ).toEqual(stamped);
+      // The unknown key is ignored, not resurrected as an item.
+      expect(await allItems()).toHaveLength(5);
+    });
+
     it("ADP-workspace-057: listItems walks the whole key order, acknowledged items included", async () => {
       await fixEverything();
       const everything = keysOf(await allItems());

@@ -304,6 +304,23 @@ async function deleteNoteRow(
   });
 }
 
+/** Edits a note in place; the editing usecases land with Issue #6 / #7. */
+async function renameNoteRow(
+  h: TestHarness,
+  scope: ScopeKey,
+  noteId: string,
+  title: string,
+): Promise<void> {
+  await h.container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    const stored = await ctx.noteRepository.findById(NoteId.create(noteId));
+    if (stored === null || !Note.isActive(stored.entity)) {
+      throw new Error(`no active note ${noteId}`);
+    }
+    const renamed = Note.rename(stored.entity, title, h.clock.now());
+    await ctx.noteRepository.save(renamed.entity, stored.expectedVersion);
+  });
+}
+
 /** Removes a membership the way a mid-move removal would. */
 async function dropMembership(
   h: TestHarness,
@@ -2446,5 +2463,145 @@ describe("moveNote", () => {
     });
     expect(notesIn(h, targetScope)).toHaveLength(1);
     expect(notesIn(h, personalScope)).toHaveLength(0);
+  });
+
+  it("TC-note-765: a resumed attempt that loses its claim gives back the staging the earlier attempt left, not just the route", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // The first attempt stages the target and then loses the route store
+    // itself, so the route stays `moving` under this migration while the
+    // staged copy, its credit and both move locks outlive the attempt.
+    let switchTried = false;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => {
+          switchTried = true;
+          return Promise.reject(failure("switch failed"));
+        },
+        abortMove: () => Promise.reject(failure("route store down")),
+        resolve: (id) =>
+          switchTried
+            ? Promise.reject(failure("route store down"))
+            : h.container.noteRouteStore.resolve(id),
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "moving",
+      routeVersion: 1,
+    });
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+
+    // The resume loses its own claim. Handing the route back on its own
+    // would strand those locks: nothing but this migration can release
+    // them, and the next destination the user picks makes the request key
+    // that could resume it underivable.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withLostResponseAt(h, "claimRoute"),
+      }),
+    ).rejects.toThrow("claimRoute response lost");
+
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+      routeVersion: 1,
+    });
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(0);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(0);
+    expect(notesIn(h, targetScope)).toHaveLength(0);
+    expect(revisionsIn(h, targetScope)).toHaveLength(0);
+    expect(filesIn(h, targetScope)).toHaveLength(0);
+    expect(quotaOf(h, targetScope)).toMatchObject({
+      consumedBytes: 0,
+      noteCount: 0,
+    });
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    await expectWholeAndReachable(h, noteId);
+
+    // What a leftover lock refuses for good, now that nothing holds one.
+    const deleted = await deleteWorkspace({
+      container: h.container,
+      input: {
+        workspaceId: TARGET_WS,
+        userId: BOSS,
+        confirmationName: WORKSPACE_NAME,
+      },
+    });
+    expect(deleted.status).toBe("accepted");
+  });
+
+  it("TC-note-766: a resume whose staging was already applied carries the edit the source took in between", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    await seedRevision(h, personalScope, noteId, "revision-1");
+    // The staging commits, the switch fails, and the abort dies before it
+    // reaches the target: the staged copy and its receipts both stand.
+    let runs = 0;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("switch failed")),
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          runs += 1;
+          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
+          return runs === 3
+            ? Promise.reject(failure("rollback died"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container: stranded }),
+    ).rejects.toThrow("switch failed");
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+
+    // The route names the source again, so the note is editable — the
+    // move lock stops membership changes and deletion, not writes.
+    await renameNoteRow(h, personalScope, noteId, "編集後");
+    await seedRevision(h, personalScope, noteId, "revision-late");
+
+    await move(h, { noteId, workspaceId: TARGET_WS, expectedVersion: null });
+
+    // The staging is skipped on its receipt, and `retireSource` deletes
+    // the source note and every revision it holds — so the copy the
+    // target keeps has to be the one this attempt froze.
+    expect(notesIn(h, targetScope)[0]?.title.value).toBe("編集後");
+    expect(
+      revisionsIn(h, targetScope)
+        .map((revision) => revision.id)
+        .sort(),
+    ).toEqual(["revision-1", "revision-late"]);
+    expect(await read(h, noteId)).toMatchObject({
+      title: "編集後",
+      ownerId: TARGET_WS,
+    });
+    expect(notesIn(h, personalScope)).toHaveLength(0);
+    expect(revisionsIn(h, personalScope)).toHaveLength(0);
   });
 });

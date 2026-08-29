@@ -26,8 +26,9 @@ const UNDECLARED_RECEIPT: AccountDeletionReceipt = "jobHistory";
  * (ADP-common-012..025, ADP-common-041): header state machine, idempotent target fixing,
  * command-key claiming, and terminal retention.
  *
- * Membership-page content cases run only when the backend provides
- * `seedMembershipEdges`; the Workspace domain does not exist yet.
+ * Membership-page content is seeded through `seedMembershipEdges`: the
+ * page walks `membership_directory` rows, which this port only ever
+ * reads.
  */
 export function describeAccountDeletionManifestStoreContract(
   backendName: string,
@@ -472,14 +473,8 @@ export function describeAccountDeletionManifestStoreContract(
       expect(second).toEqual({ operationIds: ["op-100"], nextCursor: null });
     });
 
-    it("ADP-common-013: appendMembershipPage caps a page at 100 edges (seeded backend)", async (ctx) => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        ctx.skip();
-        return;
-      }
-      await seed.call(
-        backend,
+    it("ADP-common-013: appendMembershipPage caps a page at 100 edges", async () => {
+      await backend.seedMembershipEdges(
         userId(1),
         Array.from({ length: 101 }, (_, i) => ({
           edgeKey: `edge-${String(i).padStart(3, "0")}`,
@@ -501,15 +496,8 @@ export function describeAccountDeletionManifestStoreContract(
       expect(second).toEqual({ count: 1, nextCursor: null });
     });
 
-    it("ADP-common-013/017/020: membership pages fix edges and drive prepare/release (seeded backend)", async (ctx) => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        // Report as skipped, not passed: a backend that cannot seed
-        // membership edges has not verified this contract.
-        ctx.skip();
-        return;
-      }
-      await seed.call(backend, userId(1), [
+    it("ADP-common-013/017/020: membership pages fix edges and drive prepare/release", async () => {
+      await backend.seedMembershipEdges(userId(1), [
         {
           edgeKey: "edge-a",
           workspaceId: WorkspaceId.create("ws-1"),
@@ -571,13 +559,8 @@ export function describeAccountDeletionManifestStoreContract(
       expect(await store().allRollbackReleased("op-1")).toBe(true);
     });
 
-    it("ADP-common-017/020: a rollback releases what its own transaction dispatched (seeded backend)", async (ctx) => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        ctx.skip();
-        return;
-      }
-      await seed.call(backend, userId(1), [
+    it("ADP-common-017/020: a rollback releases what its own transaction dispatched", async () => {
+      await backend.seedMembershipEdges(userId(1), [
         {
           edgeKey: "edge-a",
           workspaceId: WorkspaceId.create("ws-1"),
@@ -606,13 +589,8 @@ export function describeAccountDeletionManifestStoreContract(
       expect(await store().allRollbackReleased("op-1")).toBe(false);
     });
 
-    it("ADP-common-017/019/021: the cleanup lane is what finalizes membership items (seeded backend)", async (ctx) => {
-      const seed = backend.seedMembershipEdges;
-      if (seed === undefined) {
-        ctx.skip();
-        return;
-      }
-      await seed.call(backend, userId(1), [
+    it("ADP-common-017/019/021: the cleanup lane is what finalizes membership items", async () => {
+      await backend.seedMembershipEdges(userId(1), [
         {
           edgeKey: "edge-a",
           workspaceId: WorkspaceId.create("ws-1"),

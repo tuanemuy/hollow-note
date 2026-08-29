@@ -85,6 +85,14 @@ export interface UserWorkspaceDirectory {
    * asked it instead would read zero for a user whose edges are merely
    * mid-flight.
    *
+   * This count is therefore **not** the whole of any admission
+   * predicate. A caller asking "may this user be torn down at all"
+   * pairs it with `MembershipDirectoryReservationStore
+   * .listActivatingByUser`, because an `activating` edge settles into a
+   * membership item moments later; account-deletion admission
+   * (`application/identity/deleteAccount/admission.ts`) is the one that
+   * does.
+   *
    * Counting stops at `limit`, so the answer is `min(actual, limit)` and
    * the read stays bounded whatever a shard holds; a caller that only
    * needs "any at all" passes 1. `limit` is 1–100; anything outside that

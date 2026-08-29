@@ -65,6 +65,18 @@ const interposeOnce = (
   };
 };
 
+const conflictCode = async (call: Promise<unknown>): Promise<string> => {
+  try {
+    await call;
+  } catch (error) {
+    if (error instanceof ConflictError) {
+      return error.code;
+    }
+    throw error;
+  }
+  throw new Error("expected a ConflictError");
+};
+
 const snapshotOf = (body: string) =>
   makeProjectionEntry(1, userId(1), AT, {
     visibility: "public",
@@ -242,6 +254,11 @@ describe("cloudflare public projection concurrency", () => {
  * leaves a third workspace with no slug and no one holding it, silently
  * out of the sitemap until its own next event.
  *
+ * `tombstone` reads over the same window, and its branch is one the port
+ * promises to refuse rather than to absorb: a row a *different* deletion
+ * owns is a `ConflictError`, so the guard has to make the loser say so
+ * instead of reporting the silent no-op its `ON CONFLICT … WHERE` leaves.
+ *
  * The memory backend decides and writes in one synchronous step, so the
  * shared suite can only reach the serial half of this (a stale snapshot
  * releasing nothing); the interleaving lives here.
@@ -330,6 +347,49 @@ describe("cloudflare workspace directory projection concurrency", () => {
     expect(await slugOf(1)).toBe("notActive");
     expect(await slugOf(3)).toBe(WorkspaceSlug.create("shared-slug"));
     expect(await published()).toEqual([workspaceId(3)]);
+  });
+
+  it("refuses a tombstone whose row a rival deletion claimed after it was read", async () => {
+    await writer.applySnapshotIfNewer(snapshot(1, 1, "alpha", "published"));
+
+    // Reads a row no deletion owns, so the foreign-tombstone branch is
+    // decided against — then the rival's tombstone lands before the
+    // write-set does.
+    expect(
+      await conflictCode(
+        racing(() =>
+          writer.tombstone({
+            workspaceId: workspaceId(1),
+            operationId: "deletion-rival",
+          }),
+        ).tombstone({
+          workspaceId: workspaceId(1),
+          operationId: "deletion-observed",
+        }),
+      ),
+    ).toBe("WORKSPACE_DIRECTORY_CONFLICT");
+
+    // Deletion is single-owner: the rival's operation is the one the
+    // tombstone carries, and the loser's redelivery keeps being refused
+    // rather than taking the row over.
+    const rows = await executor.query(
+      statement(
+        `SELECT deletion_operation_id FROM ${GLOBAL_TABLES.workspaceDirectory}
+          WHERE workspace_id = ?`,
+        workspaceId(1),
+      ),
+    );
+    expect(rows).toEqual([{ deletion_operation_id: "deletion-rival" }]);
+    expect(
+      await conflictCode(
+        writer.tombstone({
+          workspaceId: workspaceId(1),
+          operationId: "deletion-observed",
+        }),
+      ),
+    ).toBe("WORKSPACE_DIRECTORY_CONFLICT");
+    expect(await slugOf(1)).toBe("notActive");
+    expect(await published()).toEqual([]);
   });
 });
 

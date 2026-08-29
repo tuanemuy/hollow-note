@@ -19,6 +19,8 @@
 | running中に別`requestId`で再要求する | 実行する | running operationは1件に保ち、そのoperation IDを返す | |
 | `requestId`がUUID形式でない | userRequestを送る | `ValidationError("INVALID_REQUEST_ID")`でoperationを作らない | |
 | 参加中のワークスペースがある | 削除を要求する | `ConflictError("WORKSPACE_MEMBERSHIPS_REMAIN")`で受理されず、Userは`active`のまま、operation行もbarrierもmanifestも作られない | |
+| 参加サガがedgeをclaim済みでまだsettleしていない（`activating`） | 削除を要求する | 同じく`WORKSPACE_MEMBERSHIPS_REMAIN`で受理されず、edgeはそのまま残り、operation行もbarrierもmanifestも作られない | |
+| 受理のtransactionの最中に同じ利用者のjoinが着地する | 並行して実行する | 判定より前に着地したjoinは判定に捕まって受理がtransactionごと巻き戻り（joinのedgeは残る）、判定より後に着地したjoinは公開済みの`deleting`遷移を見て自分で拒否される。受理された削除の後ろにedgeが残らない | |
 | 全ワークスペースを脱退したあと | 同じ利用者が削除を要求する | 受理され、finalizeまで完走してUserがtombstone（`deleted`・PIIなし）になり、manifestが`completed`になる | |
 | 唯一のownerであるworkspaceがある | prepareする | 全prepare lock/barrierをreleaseしてUserは`active`へ戻り、manifest item縮約後にoperationが`rejected`になる。scope cleanupは始まらない | |
 | 全scopeのprepare前 | 別ownerが脱退・降格する | local owner集合とlock取得が直列化され、prepareかowner変更の片方だけが成功する | |

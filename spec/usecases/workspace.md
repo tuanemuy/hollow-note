@@ -167,10 +167,10 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 ### 処理フロー
 
 1. 権限を `manageWorkspace` で確認する
-2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ予約と `workspace_directory` を打ち直して返す（`resolveActive` がこの workspace を指していなければ予約し直し、投影は毎回送る）。commit のあとに来る 2 つの手順はどちらも応答を失いうるので、同じ slug の再送がその修復要求になる。これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる
+2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ鍵と `workspace_directory` を打ち直して返す（投影は毎回送る）。commit のあとに来る手順はどれも応答を失いうるので、同じ要求の再送がその修復要求になる。非 `null` の側は `resolveActive` がこの workspace を指していなければ予約し直す — これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる。`null` の側は同型で、`workspace_directory` がまだ広告している旧 slug を拾って `release` する — `active` な予約には期限が無いので、解放の応答を失うとその slug は**どのワークスペースからも二度と取得できない**。**鍵の解放は投影より先に置く**（投影が先に走ると directory 行の slug が消え、次の要求から旧 slug を辿る手掛かりが無くなる）
 3. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID と試行 ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
 4. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
-5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
+5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す（`activate` と同じく 1 度だけ再試行し、恒久的に失った分は手順 2 の修復が回収する）。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
 
 ### エラーケース
 
@@ -463,7 +463,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 5. `activateReplacement`を呼び、D1 1 transactionで旧routeを`revoked`、新routeを`active`にする。local失敗時は新reservationを`abandon`し、応答喪失は同じoperation IDで再開する
 6. 新routeのactive化後にメールを送る
 
-このユースケースは**メール送信を伴うため転送境界のレート制限の対象である**（[presentation/index.md](../presentation/index.md)）。`inviteMember` 経由で呼ばれる場合は手前の手順 4 が在庫の上限で守るが、直接呼ばれる経路にはその検査がない — 同じ招待に対する再送を繰り返しても `pending` の件数は増えないため、在庫の上限では止まらない。しきい値は `inviteMember` と同じ**ワークスペース × 発行者で 10 回 / 60 秒**（既定値。正典は [presentation/index.md](../presentation/index.md) の「レート制限」）で、Workers の Rate Limiting binding で数える。
+このユースケースは**メール送信を伴うため転送境界のレート制限の対象である**（[presentation/index.md](../presentation/index.md)）。**`inviteMember` 経由でも在庫の上限は再送を止めない** — 在庫の判定は畳み込みより後（発行の transaction の中）にあり、同じ招待に対する再送を繰り返しても `pending` の件数は増えないためである。したがって**両経路とも**歯止めは転送境界のレート制限だけである。しきい値は `inviteMember` と同じ**ワークスペース × 発行者で 10 回 / 60 秒**（既定値。正典は [presentation/index.md](../presentation/index.md) の「レート制限」）で、Workers の Rate Limiting binding で数える。
 
 ### エラーケース
 

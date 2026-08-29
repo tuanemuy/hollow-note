@@ -39,3 +39,5 @@
 | route切替の応答だけを失い、プロセスは生きている | abortが走る | routeのCASが拒否するので何も補償せず停止する。targetのNote・Revision・staged file metadata・creditはどれも消えない | |
 | 同じワークスペースの別のeditorが、失敗した移動と同じ移動を要求する | 移動する | 走行中operationに合流せず、そのメンバー自身のMembershipで認可される（`requestKey` がactorを含むため） | |
 | 前の試行のstagingがreceiptで飛ばされ、その間にsourceへファイルが増えた | 同じmigration IDで再開する | retireするのはtargetが実際に受け取った集合だけで、増えた metadata はsourceに残る | |
+| 前の試行がstagingを残しており、再開した試行がrouteのclaimに失敗する | 同じmigration IDで再開する | routeをactive sourceへ戻すだけでなく、前の試行のstaged複製・credit・両scopeのmove lockも同じ補償で戻す（恒久的に残るlockを作らない） | |
+| 前の試行のstagingがreceiptで飛ばされ、その間にsourceのノートが編集された | 同じmigration IDで再開する | staged複製が今回freezeした版へ引き上げられ、switch後にsourceのNoteとRevisionを消しても編集が失われない | |

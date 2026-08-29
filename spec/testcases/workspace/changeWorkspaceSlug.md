@@ -4,7 +4,7 @@
 |---|---|---|---|
 | owner で非公開のワークスペース | 未使用のスラッグに変更する | スラッグが更新され、`workspace.slugChanged` が旧スラッグつきで発行される | |
 | 公開中のワークスペース | スラッグを `null` にする | `BusinessRuleError(PublishedWorkspaceRequiresSlug)` が投げられる | |
-| 非公開のワークスペース | スラッグを `null` にする | 成功する | |
+| 非公開のワークスペース | スラッグを `null` にする | 成功する。旧slugの `release` は応答喪失に備えて 1 度だけ再試行され、恒久的に失った場合も同じ要求（`null`）の再送が `workspace_directory` の広告から旧slugを拾って回収するので、そのslugは再び取得できるようになる（**解放は投影より先**に行うため手掛かりが消えない） | |
 | 他のワークスペースが使用中のスラッグ | 変更する | `ConflictError("SLUG_ALREADY_USED")` が投げられる | |
 | 自分と同じスラッグ | 同じ値に変更する | 変更もイベントも起きず成功する | |
 | owner でない | 変更する | `BusinessRuleError(InsufficientRole)` が投げられる | |

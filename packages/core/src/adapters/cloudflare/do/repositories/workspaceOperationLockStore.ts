@@ -7,7 +7,7 @@ import type {
 } from "../../../../domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceId } from "../../../../domain/workspace/valueObject";
 import { opaque, remove, upsert } from "../../execution/writeSet";
-import { databaseError } from "../../sql/errors";
+import { classifySqlError, databaseError } from "../../sql/errors";
 import { occGuard } from "../../sql/occGuard";
 import { int, text, toTimestamp } from "../../sql/row";
 import { ALL_ROWS, type SqlSession } from "../../sql/session";
@@ -138,6 +138,21 @@ export function createCloudflareWorkspaceOperationLockStore(
       }
       try {
         await session.write([
+          // `DO NOTHING` would leave a rival actor's row standing while
+          // the staged row image tells this unit of work — and every read
+          // it makes afterwards — that its own actor is pinned.
+          opaque(
+            occGuard(
+              statement(
+                `SELECT 1 WHERE NOT EXISTS (
+                   SELECT 1 FROM ${MOVE_LOCKS}
+                    WHERE migration_id = ? AND actor_user_id <> ?
+                 )`,
+                input.migrationId,
+                input.actorUserId,
+              ),
+            ),
+          ),
           upsert({
             table: MOVE_LOCKS,
             key: input.migrationId,
@@ -155,7 +170,11 @@ export function createCloudflareWorkspaceOperationLockStore(
           }),
         ]);
       } catch (cause) {
-        throw databaseError(CONTEXT, cause);
+        throw classifySqlError(cause) === "occGuard"
+          ? moveLockConflict(
+              `Move ${input.migrationId} already locks the membership of another member`,
+            )
+          : databaseError(CONTEXT, cause);
       }
     },
 

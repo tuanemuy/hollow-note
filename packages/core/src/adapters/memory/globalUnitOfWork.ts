@@ -15,9 +15,11 @@ import { createMemoryDistributedOperationStore } from "./repositories/distribute
 import { createMemoryIdentityRemovalReceiptStore } from "./repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "./repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "./repositories/identityUniqueDirectory";
+import { createMemoryMembershipDirectoryReservationStore } from "./repositories/membershipDirectoryReservationStore";
 import { createMemoryOutboxRepository } from "./repositories/outboxRepository";
 import { createMemorySessionRepository } from "./repositories/sessionRepository";
 import { createMemoryUserRepository } from "./repositories/userRepository";
+import { createMemoryUserWorkspaceDirectory } from "./repositories/userWorkspaceDirectory";
 import type { MemoryBackend } from "./store";
 
 export type MemoryUnitOfWorkOptions = Readonly<{
@@ -70,6 +72,9 @@ export function createMemoryGlobalUnitOfWorkProvider(
                 ? { requiredFinalizeReceipts: options.requiredFinalizeReceipts }
                 : {}),
             }),
+          settledMembershipReader: createMemoryUserWorkspaceDirectory(backend),
+          activatingMembershipReader:
+            createMemoryMembershipDirectoryReservationStore(backend),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, (draft) =>

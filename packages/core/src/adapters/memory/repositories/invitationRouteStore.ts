@@ -153,6 +153,16 @@ export function createMemoryInvitationRouteStore(
       }
       const old = table.get(input.oldTokenHash);
       if (replacement.state === "revoked") {
+        // The replacement can no longer open, but an old route left
+        // `active` would keep resolving to a cancelled invitation with
+        // neither an expiry nor a call able to take it back.
+        if (
+          old !== undefined &&
+          old.state === "active" &&
+          old.invitationId === input.invitationId
+        ) {
+          table.set(input.oldTokenHash, { ...old, state: "revoked" });
+        }
         return;
       }
       if (
