@@ -1,19 +1,33 @@
 import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { PublicShell } from "@/components/layout/PublicShell";
+import { lastScopeFn } from "@/components/layout/ScopeToken/action";
 import { sessionUserFn } from "@/presentation/auth";
 import { buildHead } from "@/presentation/head";
 
 /**
- * P-40 トップ（最小形）。サインイン済みはノート一覧へリダイレクト
+ * P-40 トップ（最小形）。サインイン済みは表示中のスコープへリダイレクト
  * （spec/pages/index.md の URL 割り当て）。公開検索・特徴セクションは
  * 本スライス外のため hero と導線だけを出す。
+ *
+ * 引き継ぎ（WS-02「選択は次回の訪問時にも引き継がれる」）を読むのは
+ * ここだけ。権限は遷移先が判定するので、ここでは記録された選択を信じる
+ * — 除名済み・削除済みのワークスペースはその画面が個人へ誘導する。
+ * ワークスペースの行き先が設定画面なのは、その文脈のノート一覧が後続
+ * スライスであるため（`components/layout/ScopeToken` と同じ理由）。
  */
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
     const user = await sessionUserFn();
-    if (user !== null) {
-      throw redirect({ to: "/notes" });
+    if (user === null) {
+      return;
     }
+    const scope = await lastScopeFn();
+    throw scope.kind === "workspace"
+      ? redirect({
+          to: "/workspaces/$workspaceId/settings/general",
+          params: { workspaceId: scope.workspaceId },
+        })
+      : redirect({ to: "/notes" });
   },
   head: ({ match }) => {
     const config = match.context?.config;

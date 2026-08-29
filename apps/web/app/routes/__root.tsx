@@ -21,10 +21,13 @@ import "@/components/auth/VerifyEmailPanel/action";
 import "@/components/auth/ResendVerificationForm/action";
 import "@/components/auth/ResetPasswordPanel/action";
 import "@/components/layout/AccountMenu/action";
+import "@/components/layout/ScopeToken/action";
 import "@/components/note/CreateNoteButton/action";
 import "@/routes/auth/-action";
 import "@/routes/dev/-action";
 import "@/routes/settings/-action";
+import "@/routes/workspaces/-action";
+import "@/routes/workspaces/$workspaceId/settings/-action";
 
 const SITE_ASSET_LINKS = [
   { rel: "icon", href: "/favicon.ico", sizes: "any" },

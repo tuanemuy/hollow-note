@@ -114,6 +114,28 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
   STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
+  WORKSPACE_NOT_FOUND:
+    "このワークスペースは開けません。削除されたか、メンバーから外れた可能性があります。",
+  WORKSPACE_INVALID_NAME:
+    "ワークスペース名は 1〜80 文字です。入力内容を確認してもう一度お試しください。",
+  WORKSPACE_INVALID_DESCRIPTION:
+    "説明は 500 文字までです。短くしてからもう一度お試しください。",
+  WORKSPACE_INVALID_SLUG:
+    "スラッグは英小文字・数字・ハイフン・アンダースコアの 3〜30 文字です。入力内容を確認してもう一度お試しください。",
+  WORKSPACE_SLUG_RESERVED:
+    "このスラッグは予約されていて使えません。別のスラッグでお試しください。",
+  SLUG_ALREADY_USED:
+    "このスラッグは使われています。別のスラッグでお試しください。",
+  WORKSPACE_SLUG_REQUIRED_TO_PUBLISH:
+    "公開するにはスラッグの設定が必要です。一般設定でスラッグを決めてからお試しください。",
+  WORKSPACE_PUBLISHED_REQUIRES_SLUG:
+    "公開中はスラッグを解除できません。先に非公開に戻してからお試しください。",
+  WORKSPACE_QUOTA_EXCEEDED:
+    "作成できるワークスペースは 20 件までです。使っていないワークスペースを削除してからお試しください。",
+  WORKSPACE_DELETING:
+    "このワークスペースは削除処理中です。操作は受け付けられません。",
+  WORKSPACE_MOVE_IN_PROGRESS:
+    "ノートの移動が進行中です。完了してからもう一度お試しください。",
 
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 

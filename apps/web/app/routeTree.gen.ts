@@ -25,8 +25,13 @@ import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsUsageRouteImport } from './routes/settings/usage'
 import { Route as StorageSplatRouteImport } from './routes/storage.$'
+import { Route as WorkspacesNewRouteImport } from './routes/workspaces/new'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
+import { Route as WorkspacesWorkspaceIdSettingsRouteRouteImport } from './routes/workspaces/$workspaceId/settings/route'
+import { Route as WorkspacesWorkspaceIdSettingsDangerRouteImport } from './routes/workspaces/$workspaceId/settings/danger'
+import { Route as WorkspacesWorkspaceIdSettingsGeneralRouteImport } from './routes/workspaces/$workspaceId/settings/general'
+import { Route as WorkspacesWorkspaceIdSettingsPublishRouteImport } from './routes/workspaces/$workspaceId/settings/publish'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -108,6 +113,11 @@ const StorageSplatRoute = StorageSplatRouteImport.update({
   path: '/storage/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorkspacesNewRoute = WorkspacesNewRouteImport.update({
+  id: '/workspaces/new',
+  path: '/workspaces/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthCallbackProviderRoute = AuthCallbackProviderRouteImport.update({
   id: '/auth/callback/$provider',
   path: '/auth/callback/$provider',
@@ -118,6 +128,30 @@ const DevOauthAuthorizeRoute = DevOauthAuthorizeRouteImport.update({
   path: '/dev/oauth/authorize',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorkspacesWorkspaceIdSettingsRouteRoute =
+  WorkspacesWorkspaceIdSettingsRouteRouteImport.update({
+    id: '/workspaces/$workspaceId/settings',
+    path: '/workspaces/$workspaceId/settings',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const WorkspacesWorkspaceIdSettingsDangerRoute =
+  WorkspacesWorkspaceIdSettingsDangerRouteImport.update({
+    id: '/danger',
+    path: '/danger',
+    getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
+  } as any)
+const WorkspacesWorkspaceIdSettingsGeneralRoute =
+  WorkspacesWorkspaceIdSettingsGeneralRouteImport.update({
+    id: '/general',
+    path: '/general',
+    getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
+  } as any)
+const WorkspacesWorkspaceIdSettingsPublishRoute =
+  WorkspacesWorkspaceIdSettingsPublishRouteImport.update({
+    id: '/publish',
+    path: '/publish',
+    getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -134,10 +168,15 @@ export interface FileRoutesByFullPath {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/workspaces/new': typeof WorkspacesNewRoute
   '/notes/': typeof NotesIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
+  '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -153,10 +192,15 @@ export interface FileRoutesByTo {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/workspaces/new': typeof WorkspacesNewRoute
   '/notes': typeof NotesIndexRoute
   '/settings': typeof SettingsIndexRoute
+  '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
+  '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -174,10 +218,15 @@ export interface FileRoutesById {
   '/settings/profile': typeof SettingsProfileRoute
   '/settings/usage': typeof SettingsUsageRoute
   '/storage/$': typeof StorageSplatRoute
+  '/workspaces/new': typeof WorkspacesNewRoute
   '/notes/': typeof NotesIndexRoute
   '/settings/': typeof SettingsIndexRoute
+  '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
+  '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -196,10 +245,15 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/workspaces/new'
     | '/notes/'
     | '/settings/'
+    | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/workspaces/$workspaceId/settings/danger'
+    | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/publish'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -215,10 +269,15 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/workspaces/new'
     | '/notes'
     | '/settings'
+    | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/workspaces/$workspaceId/settings/danger'
+    | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/publish'
   id:
     | '__root__'
     | '/'
@@ -235,10 +294,15 @@ export interface FileRouteTypes {
     | '/settings/profile'
     | '/settings/usage'
     | '/storage/$'
+    | '/workspaces/new'
     | '/notes/'
     | '/settings/'
+    | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/workspaces/$workspaceId/settings/danger'
+    | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/publish'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -252,7 +316,9 @@ export interface RootRouteChildren {
   VerifyEmailRoute: typeof VerifyEmailRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
   StorageSplatRoute: typeof StorageSplatRoute
+  WorkspacesNewRoute: typeof WorkspacesNewRoute
   NotesIndexRoute: typeof NotesIndexRoute
+  WorkspacesWorkspaceIdSettingsRouteRoute: typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   AuthCallbackProviderRoute: typeof AuthCallbackProviderRoute
   DevOauthAuthorizeRoute: typeof DevOauthAuthorizeRoute
 }
@@ -371,6 +437,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StorageSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/workspaces/new': {
+      id: '/workspaces/new'
+      path: '/workspaces/new'
+      fullPath: '/workspaces/new'
+      preLoaderRoute: typeof WorkspacesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth/callback/$provider': {
       id: '/auth/callback/$provider'
       path: '/auth/callback/$provider'
@@ -384,6 +457,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/dev/oauth/authorize'
       preLoaderRoute: typeof DevOauthAuthorizeRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId/settings': {
+      id: '/workspaces/$workspaceId/settings'
+      path: '/workspaces/$workspaceId/settings'
+      fullPath: '/workspaces/$workspaceId/settings'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId/settings/danger': {
+      id: '/workspaces/$workspaceId/settings/danger'
+      path: '/danger'
+      fullPath: '/workspaces/$workspaceId/settings/danger'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsDangerRouteImport
+      parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
+    }
+    '/workspaces/$workspaceId/settings/general': {
+      id: '/workspaces/$workspaceId/settings/general'
+      path: '/general'
+      fullPath: '/workspaces/$workspaceId/settings/general'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsGeneralRouteImport
+      parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
+    }
+    '/workspaces/$workspaceId/settings/publish': {
+      id: '/workspaces/$workspaceId/settings/publish'
+      path: '/publish'
+      fullPath: '/workspaces/$workspaceId/settings/publish'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsPublishRouteImport
+      parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
     }
   }
 }
@@ -408,6 +509,27 @@ const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
   SettingsRouteRouteChildren,
 )
 
+interface WorkspacesWorkspaceIdSettingsRouteRouteChildren {
+  WorkspacesWorkspaceIdSettingsDangerRoute: typeof WorkspacesWorkspaceIdSettingsDangerRoute
+  WorkspacesWorkspaceIdSettingsGeneralRoute: typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  WorkspacesWorkspaceIdSettingsPublishRoute: typeof WorkspacesWorkspaceIdSettingsPublishRoute
+}
+
+const WorkspacesWorkspaceIdSettingsRouteRouteChildren: WorkspacesWorkspaceIdSettingsRouteRouteChildren =
+  {
+    WorkspacesWorkspaceIdSettingsDangerRoute:
+      WorkspacesWorkspaceIdSettingsDangerRoute,
+    WorkspacesWorkspaceIdSettingsGeneralRoute:
+      WorkspacesWorkspaceIdSettingsGeneralRoute,
+    WorkspacesWorkspaceIdSettingsPublishRoute:
+      WorkspacesWorkspaceIdSettingsPublishRoute,
+  }
+
+const WorkspacesWorkspaceIdSettingsRouteRouteWithChildren =
+  WorkspacesWorkspaceIdSettingsRouteRoute._addFileChildren(
+    WorkspacesWorkspaceIdSettingsRouteRouteChildren,
+  )
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SettingsRouteRoute: SettingsRouteRouteWithChildren,
@@ -419,7 +541,10 @@ const rootRouteChildren: RootRouteChildren = {
   VerifyEmailRoute: VerifyEmailRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
   StorageSplatRoute: StorageSplatRoute,
+  WorkspacesNewRoute: WorkspacesNewRoute,
   NotesIndexRoute: NotesIndexRoute,
+  WorkspacesWorkspaceIdSettingsRouteRoute:
+    WorkspacesWorkspaceIdSettingsRouteRouteWithChildren,
   AuthCallbackProviderRoute: AuthCallbackProviderRoute,
   DevOauthAuthorizeRoute: DevOauthAuthorizeRoute,
 }

@@ -812,3 +812,102 @@ ScopeRouter にミドルウェアを置かず、各 write 入口が自分の UoW
 - workspace scope に書く入口が増えるたびに 1 行足す必要がある。忘れても型は助けない — テストが唯一の網である（`application/workspace/__tests__/deletionAdmission.test.ts`）。
 - user scope の入口も同じ 1 行を持つ（`createBlankNote` / `storeAvatar` / `recalculateStorageUsage` は scope が実行時に決まる）。user scope では header も deleting workspace も無いので素通りする。
 - spec の「ScopeRouter 入口の共通検査」という記述と、実装の「各 write 入口」はまだ言い回しが揃っていない。ScopeRouter に共通検査を持たせるかどうかは Cloudflare 実行系の入口設計と一緒に決める。
+
+## ADR-051: ノート移動の 4 フェーズはアプリケーション層のサガとして書き、`NoteMovePort` は据え置く
+
+### Context
+
+`spec/usecases/note.md#moveNote` の 4 フェーズ（`snapshotSource` → `stageTarget` → route switch → `retireSource`）は 2 つの scope をまたぐ。契約としては `application/ports/noteMovePort.ts` が `freezeSource` / `stageTarget` / `activateTarget` / `retireSource` / `abortBeforeSwitch` の 5 メソッドで先に置かれているが、実装は memory / Cloudflare いずれにも無く、`NoteMoveSnapshot` の中身も «opaque» のまま（「the concrete field layout is fixed by the move slice together with its adapter」）。この port を実体化するには両バックエンドのアダプターと適合スイートを同時に足す必要があり、本 Issue のステップ 12 の担当範囲（アプリケーション層 3 ファイル）を大きく超える。
+
+一方、フェーズが必要とする書き込み先はすべて `ScopeUnitOfWorkContext` に既に載っている（`noteRepository` / `noteRevisionRepository` / `storedFileRepository` / `storageQuotaRepository` / `localNoteProjectionWriter` / `noteProjectionRevisionStore` / `appliedOperationStore`）。route の状態機械も `NoteRouteStore.beginMove` / `switchMove` / `abortMove` が両バックエンドで実装済み・適合スイート済み。
+
+### Decision
+
+`moveNote` は各フェーズを「1 scope につき 1 つの UoW」として自分で回す。`NoteMovePort` には手を触れず、未実装のまま残す（将来バックエンド側で 1 トランザクションに畳みたくなったときの契約として有効）。
+
+- 冪等化は `AppliedOperationStore.markApplied({ operationId: migrationId, commandKey })`。commandKey は `note.moveStageTarget` / `note.moveRetireSource` / `note.moveAbortTarget`、ファイル側は `storage.relocateFilesForNote:{phase}` と名前空間を分ける。
+- `migrationId` は `DistributedOperationStore.beginOrResume` が返す operation id。同じ requestKey（`noteId:target:expectedVersion`）は同じ operation を replay し、別 requestKey は進行中のものに合流するので、応答喪失後の再要求が同じ commandKey に落ちる。
+- operation payload に固定するのは source / target / actor / 両 Membership version / droppedTagNames。`routeVersion` だけは固定しない — route は競合相手が動かす唯一の値で、resume 時に読み直す必要がある。
+- UoW のネストは無い。`beginOrResume` / `markState` は global UoW を単独で開き、フェーズの scope UoW とは前後に並ぶだけ。
+
+### Consequences
+
+- 参照実行系（Node + memory）で移動が実際に動く。ステップ 18 のテストはフェイクなしで memory アダプター越しに書ける。
+- route switch 後は forward-only。`retireSource` は `assertWritable` も再認可も行わず、`markApplied` だけで守る。switch と retire の間で落ちた場合を拾う recovery cron はこのスライスには無い（`recoverBlankNoteCreation` に cron が無いのと同じ状態）。
+- `NoteMovePort` は未使用のまま残る。実体化するときは、この 4 フェーズが port の 5 メソッドへそのまま畳める形になっている。
+
+## ADR-052: move authorization lock は書き手が無いので張らず、pin した Membership version で代替する
+
+### Context
+
+`WorkspaceOperationLockStore` が move について公開しているのは `hasActiveMove` / `hasMoveConflict` の **読みだけ**で、`move_authorization_locks` に行を書く口はどのポートにも無い（適合スイートは `ConformanceBackend.seedMoveAuthorizationLocks` で行を直接仕込んで読みを検証している）。書き手は `NoteMovePort` の JSDoc が担うと述べている側（"target prepare holds the move authorization lock … `activateTarget` / `abortBeforeSwitch` release"）だが、ADR-051 のとおりその port は未実装。`packages/core/src/domain/` はステップ 12 の担当外。
+
+### Decision
+
+lock は張らない。代わりに、事前認可で読んだ **Membership の version を operation payload に pin** し、`snapshotSource` / `stageTarget` の各ローカルトランザクション内で `findByWorkspaceAndUser` を読み直して照合する。
+
+- 行が消えていた → 移動元なら `NotFoundError("NOTE_NOT_FOUND")`、移動先なら `BusinessRuleError(InsufficientRole)`。
+- version が動いていた → `ConflictError("STALE_MEMBERSHIP")` で中止し、abort する。
+
+除名は行の消滅、降格は version の増加として現れるので、role を再度引き直す必要はない。
+
+### Consequences
+
+- 「確定時点で除名・降格されていた actor の移動は完了しない」は満たされる（`TC-note-238` 系の 019 / 020 / 021 相当）。
+- 満たされないのは lock の**逆向き**の効果 2 つ:
+  - stage 済みの move が進行中の workspace 削除を `WORKSPACE_MOVE_IN_PROGRESS` で止められない（`deleteWorkspace` の `hasActiveMove()` が常に false）。
+  - stage 済みの move が actor の除名・降格を `ensureMembershipMutable` で止められない（`hasMoveConflict()` が常に false）。降格自体は 1 フェーズ遅れて move 側が検出するので、壊れるのではなく「move が失敗する」方に倒れる。
+- 塞ぐには `WorkspaceOperationLockStore` に `stageMove` / `releaseMove` を足す（＋両アダプター＋適合スイート）か、`NoteMovePort` を実体化するかのどちらか。ADR 026 のとおり、どちらもポート JSDoc と適合スイートを対で触る作業になる。
+
+## ADR-053: タグ再配置は `NoteMoveTagRelocation` という 3 メソッドの seam だけ置く
+
+### Context
+
+`UC-tag-012 relocateAssignmentsForNote` は D-001 / ADR-002 で本 Issue の見送り対象。tag ドメイン自体が存在しない（Issue #8）。一方 `moveNote` の出力 DTO は `droppedTagNames` を持ち、spec 手順 3 は「外れるタグ名は operation payload に固定し、再開時に計算し直さない」と定めている。
+
+### Decision
+
+`moveNote.ts` に `NoteMoveTagRelocation` interface（`plan` / `stageTarget` / `retireSource`）と、`[]` と no-op だけを返す `noTagRelocation` を置く。`moveNote` の引数は `ServiceArgs<MoveNoteInput> & { tagRelocation?: NoteMoveTagRelocation }` とし、既定値を `noTagRelocation` にする。
+
+`plan` だけ `RequestContainer` を、残り 2 つは `ScopeUnitOfWorkContext` を受け取る。これは spec の手順配置そのまま — `plan` は operation 作成前（＝どの UoW にも属さない）、他 2 つは自分が属するフェーズのトランザクションを共有する必要がある。
+
+### Consequences
+
+- Issue #8 は interface を実装して `moveNote` に渡すだけで済み、`moveNote` 側の手順は動かない。
+- 現状 `droppedTagNames` は常に `[]`。`TC-note-246` / `-247` は判定対象外のまま。
+
+## ADR-054: ワークスペース設定の読み出しは `resolveWorkspaceAccess` + `WorkspaceReader` の合成で作る
+
+### Context
+
+P-31 / P-33 / P-34 は名前・説明・アイコン・スラッグ・公開状態・自分のロールを一度に要る。ところが `application/workspace/` に**ワークスペース自身の設定を読むユースケースが無い**（`spec/usecases/workspace.md` の 20 節にも無い）。`resolveWorkspaceAccess` は `role` / `workspaceName` / `publication` だけ、`WorkspaceProfileView` を返すのは書き込みの `updateWorkspaceProfile` だけで、`listUserWorkspaces` は `description` を持たない。説明欄を空で描くと、保存した瞬間に既存の説明を消す罠になる。
+
+Issue #3 の分担上 `packages/core/` は触れない（並列のサブエージェントが `moveNote` を実装中）。
+
+### Decision
+
+`apps/web/app/components/workspace/settingsRead.ts` に `loadWorkspaceSettings` を 1 つ置き、**認可と存在判定は `resolveWorkspaceAccess`（ユースケース）に任せたまま**、表示に要る射影だけ `container.workspaceReaderFor(scope).workspace.findById` から足す。非メンバー・不在は `null` を返し、断片が「このワークスペースは開けません」を描く（WS-02）。
+
+### Consequences
+
+- 判断（誰が何を見てよいか）はアプリケーション層に残り、presentation が増やしたのは射影だけ。
+- `getWorkspaceSettings` 相当の読み取りユースケースが入ったら、この関数はその呼び出し 1 本に縮む。読み出し口が 1 か所なので差し替えは 1 ファイルで済む。
+- 同じ理由で P-33 の公開ノート件数は初期表示に出せない（`publishWorkspace` の応答にしか無い）。公開直後だけ「0 件なら空のまま」の注意を出す。
+
+## ADR-055: 表示中のスコープは URL が正本、引き継ぎだけ HttpOnly Cookie に置く
+
+### Context
+
+WS-02 は「選択は URL に反映され、次回の訪問時にも引き継がれる」を要求する。引き継ぎが要るのは入口（`/`）のリダイレクト判定の瞬間で、そこはサーバー側にしかない。
+
+### Decision
+
+文脈の正本は URL（`/workspaces/:workspaceId/...`）。`hollow_scope` Cookie（HttpOnly / Lax / 1 年）は切り替え時と作成時の応答で書き、**`routes/index.tsx` の `beforeLoad` だけが読む**。削除の応答は個人へ戻す。純関数（`presentation/scope.ts`）と Cookie 運搬（`presentation/scopeCookie.ts`）を分け、読めない値はすべて個人へ倒す。
+
+切り替えの遷移は検索パラメータを空にして渡す（WS-02「切り替え時に絞り込み条件は解除する」— タグは文脈ごとに独立しているため）。
+
+### Consequences
+
+- localStorage だと個人の文脈を一度描いてから飛び直すことになるが、その瞬きが無い。
+- Cookie は利用者に紐づかないので、別の利用者がサインインしても値が残る。権限判定は遷移先が行い、非メンバーは「このワークスペースは開けません」に落ちるので、漏れるのは workspace ID の存在だけ（自分が選んだものに限る）。
+- ワークスペース文脈の入口は今のところ設定画面。`/workspaces/:id/notes` とその読み出し（`listNotes` は個人スコープしか読まない）が後続スライスのため、遷移先は `ScopeToken` と `routes/index.tsx` の 2 か所に閉じてある。
