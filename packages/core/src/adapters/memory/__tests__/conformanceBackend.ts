@@ -195,6 +195,7 @@ export function makeMemoryConformanceBackend(
           edgeState: edge.edgeState,
           membershipId: edge.membershipId,
           role: edge.role ?? "viewer",
+          roleSourceVersion: null,
           deletionPrepareOperationId: null,
           deletionPrepareExpiresAt: null,
           reservationExpiresAt:

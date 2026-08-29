@@ -1,3 +1,4 @@
+import { Version } from "@repo/core/domain/common/version";
 import { Email, UserId } from "@repo/core/domain/identity/valueObject";
 import type {
   InvitationAcceptedEvent,
@@ -29,8 +30,9 @@ import { buildEventDecoder } from "../events/buildDecoder";
  * with extra keys — a schema-skewed row — fails as
  * `SystemError(DataIntegrityError)` instead of passing silently.
  *
- * Every one of the twelve is registered even though the audit-only events
- * (`spec/domains/workspace.md` ドメインイベント) have no subscriber: the
+ * Every one of the twelve is registered even though all but
+ * `membership.roleChanged` are audit-only
+ * (`spec/domains/workspace.md` ドメインイベント) and have no subscriber: the
  * relay decodes before it dispatches, so an unregistered type is
  * quarantined at `maxAttempts` rather than acknowledged with a warning.
  */
@@ -162,6 +164,7 @@ export const workspaceEventDecoders = {
       userId: string;
       previousRole: WorkspaceRole;
       currentRole: WorkspaceRole;
+      sourceVersion: number;
     }
   >(
     "workspace.membership.roleChanged",
@@ -171,6 +174,7 @@ export const workspaceEventDecoders = {
         userId: z.string().min(1),
         previousRole: roleSchema,
         currentRole: roleSchema,
+        sourceVersion: z.number(),
       })
       .strict(),
     (parsed) => ({
@@ -178,6 +182,7 @@ export const workspaceEventDecoders = {
       userId: UserId.create(parsed.userId),
       previousRole: parsed.previousRole,
       currentRole: parsed.currentRole,
+      sourceVersion: Version.create(parsed.sourceVersion),
     }),
   ),
 

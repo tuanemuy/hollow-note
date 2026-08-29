@@ -39,6 +39,13 @@ const membershipNotFound = (): NotFoundError =>
  * than a permission error: the repository is bound to this scope, so a
  * foreign id simply matches nothing.
  *
+ * The global directory edge is not written here. The role it projects is
+ * updated out of band by the `workspace.membership.roleChanged`
+ * subscriber (`./membershipRoleProjection`), which is what keeps the two
+ * planes out of one unit of work; until it runs, the workspace switcher
+ * shows the previous role while every decision still re-reads
+ * `Membership`.
+ *
  * Naming the same role is a success with no write and no event, which is
  * what makes a double-submitted form harmless — and, once the Job slice
  * lands, what keeps it from cancelling jobs a member never lost the right

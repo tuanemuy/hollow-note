@@ -72,9 +72,11 @@ const SCAN_PAGE_SIZE = 100;
 
 /**
  * Command key namespace, so the storage half of a phase is deduplicated
- * independently of the move phase that encloses it.
+ * independently of the move phase that encloses it. Exported because the
+ * enclosing saga's compensation has to clear the keys of the phases it
+ * reverses (`AppliedOperationStore.clearApplied`).
  */
-const commandKeyFor = (phase: RelocateFilesPhase): string =>
+export const relocateFilesCommandKey = (phase: RelocateFilesPhase): string =>
   `storage.relocateFilesForNote:${phase}`;
 
 type RelocatableFile = StoredFile &
@@ -185,6 +187,11 @@ async function listNoteFiles(
  * `AppliedOperationStore`, so a lost response replays into the same
  * outcome instead of a second set of rows or a second deletion. A note
  * with no relocatable file succeeds with `relocatedCount: 0`.
+ *
+ * The key asserts that the phase's rows are in place, so a caller that
+ * *undoes* a phase owes `clearApplied(relocateFilesCommandKey(phase))` in
+ * the same transaction — otherwise a resume on the same migration id
+ * skips the staging it has just been given back.
  */
 export async function relocateFilesForNote(
   ctx: ScopeUnitOfWorkContext,
@@ -204,7 +211,7 @@ export async function relocateFilesForNote(
   if (
     !(await ctx.appliedOperationStore.markApplied({
       operationId: input.migrationId,
-      commandKey: commandKeyFor(input.phase),
+      commandKey: relocateFilesCommandKey(input.phase),
     }))
   ) {
     return { relocatedCount: 0, files: [] };

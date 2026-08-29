@@ -81,6 +81,7 @@ export const Membership = {
             userId: next.userId,
             previousRole: membership.role,
             currentRole: nextRole,
+            sourceVersion: next.version,
           },
           now,
         ),

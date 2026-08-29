@@ -1,11 +1,19 @@
+import { EventId } from "@repo/core/domain/common/event";
+import type { WorkspaceRole } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createBlankNote } from "../../note/createBlankNote";
+import { dispatchDomainEvent } from "../../workers/subscribers";
 import { changeMemberRole } from "../changeMemberRole";
+import { listUserWorkspaces } from "../listUserWorkspaces";
+import { removeMember } from "../removeMember";
 import {
   createWorkspaceHarness,
+  drainOutbox,
   expectBusinessRule,
   expectNotFound,
+  membershipEdges,
   outboxPayloads,
+  outboxRows,
   outboxTypes,
   scheduledTasks,
   seedWorkspace,
@@ -25,10 +33,10 @@ import {
  * continuation is enqueued at all — an implementation that started
  * emitting one without a subscriber would stop the chain silently.
  *
- * TC-workspace-045 (a role change reaching the `membership_directory` out
- * of order) has no consumer either: no subscriber projects
- * `workspace.membership.roleChanged` onto the edge and the edge carries no
- * source version, so there is nothing an ordering test could discriminate.
+ * TC-workspace-045 runs end to end through the real relay and the real
+ * subscriber registry: `drainOutbox` reorders each claimed batch, which is
+ * the only place the "no ordering guarantee" of delivery is observable
+ * from a usecase test.
  */
 
 const WORKSPACE = "workspace-1";
@@ -49,6 +57,25 @@ const change = (
     container: h.container,
     input: { workspaceId, ...input },
   });
+
+/** The role the global directory edge projects for one member. */
+const edgeRole = (h: TestHarness, userId: string): WorkspaceRole | null =>
+  membershipEdges(h, userId)[0]?.role ?? null;
+
+/** What the workspace switcher renders, edge role included. */
+const listed = async (
+  h: TestHarness,
+  userId: string,
+): Promise<readonly { workspaceId: string; role: WorkspaceRole }[]> => {
+  const view = await listUserWorkspaces({
+    container: h.container,
+    input: { userId },
+  });
+  return view.workspaces.map((entry) => ({
+    workspaceId: entry.workspaceId,
+    role: entry.role,
+  }));
+};
 
 /** owner-1 (owner), editor-1 (editor), viewer-1 (viewer). */
 const seed = (h: TestHarness) =>
@@ -81,6 +108,7 @@ describe("changeMemberRole", () => {
         userId: EDITOR,
         previousRole: "editor",
         currentRole: "viewer",
+        sourceVersion: 1,
       },
     ]);
   });
@@ -380,7 +408,114 @@ describe("changeMemberRole", () => {
         userId: VIEWER,
         previousRole: "viewer",
         currentRole: "editor",
+        sourceVersion: 1,
       },
     ]);
+  });
+
+  it("TC-workspace-045: the demotion the relay delivered is the role the workspace list shows", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "viewer",
+    });
+    // Before the relay runs the edge still carries the role the join was
+    // created with — the projection is out-of-band by design.
+    expect(edgeRole(h, EDITOR)).toBe("editor");
+
+    await drainOutbox(h);
+
+    expect(edgeRole(h, EDITOR)).toBe("viewer");
+    await expect(listed(h, EDITOR)).resolves.toEqual([
+      { workspaceId: WORKSPACE, role: "viewer" },
+    ]);
+  });
+
+  it("TC-workspace-045: out of order, the highest source version is the role that remains", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "viewer",
+    });
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "owner",
+    });
+
+    // Delivery carries no ordering guarantee: the promotion is dispatched
+    // first and the demotion that preceded it arrives late.
+    await drainOutbox(h, { order: (events) => [...events].reverse() });
+
+    expect(edgeRole(h, EDITOR)).toBe("owner");
+    await expect(listed(h, EDITOR)).resolves.toEqual([
+      { workspaceId: WORKSPACE, role: "owner" },
+    ]);
+  });
+
+  it("TC-workspace-045: redelivering a superseded change does not roll the role back", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "viewer",
+    });
+    const [event] = outboxRows(h, ROLE_CHANGED);
+    if (event === undefined) {
+      throw new Error("no roleChanged row was enqueued");
+    }
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "owner",
+    });
+    await drainOutbox(h);
+    expect(edgeRole(h, EDITOR)).toBe("owner");
+
+    // At-least-once: the same row reaches the subscriber twice.
+    await dispatchDomainEvent(
+      {
+        id: EventId.create(event.id),
+        type: event.type,
+        payload: event.payload as Record<string, unknown>,
+        occurredAt: event.occurredAt,
+        aggregateId: event.aggregateId,
+      },
+      h.workerContainer,
+    );
+    expect(edgeRole(h, EDITOR)).toBe("owner");
+  });
+
+  it("TC-workspace-235: a change delivered after the member was removed does not revive the edge", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "viewer",
+    });
+    await removeMember({
+      container: h.container,
+      input: {
+        workspaceId: WORKSPACE,
+        actorUserId: OWNER,
+        membershipId: "m-editor",
+      },
+    });
+    expect(membershipEdges(h, EDITOR)).toEqual([]);
+
+    await drainOutbox(h);
+
+    expect(membershipEdges(h, EDITOR)).toEqual([]);
+    await expect(listed(h, EDITOR)).resolves.toEqual([]);
   });
 });

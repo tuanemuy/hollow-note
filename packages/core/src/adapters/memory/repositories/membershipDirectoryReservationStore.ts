@@ -99,6 +99,7 @@ export function createMemoryMembershipDirectoryReservationStore(
         edgeState: "activating",
         membershipId: input.membershipId,
         role: input.role,
+        roleSourceVersion: null,
         deletionPrepareOperationId: null,
         deletionPrepareExpiresAt: null,
         reservationExpiresAt: input.expiresAt,
@@ -250,6 +251,28 @@ export function createMemoryMembershipDirectoryReservationStore(
           operationId: row.edgeKey,
           workspaceId: row.workspaceId,
         }));
+    },
+
+    async applyRoleIfNewer(input): Promise<boolean> {
+      const found = byPair(input.userId, input.workspaceId);
+      // An absent edge is never inserted: a removal already freed the
+      // pair, and reviving it would put the workspace back in the list.
+      if (found === null) {
+        return false;
+      }
+      const [key, row] = found;
+      if (
+        row.roleSourceVersion !== null &&
+        row.roleSourceVersion >= input.sourceVersion
+      ) {
+        return false;
+      }
+      table.set(key, {
+        ...row,
+        role: input.role,
+        roleSourceVersion: input.sourceVersion,
+      });
+      return true;
     },
 
     async beginRemoval(

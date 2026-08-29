@@ -107,7 +107,7 @@ Membership = {
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `create` | `params: { id: string; workspaceId: WorkspaceId; userId: UserId; role: string }, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 生成し `membership.added` を発行 |
-| `changeRole` | `membership: Membership, role: string, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 同じロールなら変更せずイベントも出さない。異なれば更新し `membership.roleChanged`（旧ロールを含む）を発行 |
+| `changeRole` | `membership: Membership, role: string, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 同じロールなら変更せずイベントも出さない。異なれば更新し `membership.roleChanged`（旧ロールと、変更後の `version` を `sourceVersion` として含む）を発行 |
 
 削除はユースケースが `WorkspaceEvents.membershipRemoved` を直接発行する。
 
@@ -316,11 +316,14 @@ interface MembershipDirectoryReservationStore {
   commitAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   releaseAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   listActivatingByUser(userId: UserId, limit: number): Promise<readonly { operationId: string; workspaceId: WorkspaceId }[]>;
+  applyRoleIfNewer(input: { userId: UserId; workspaceId: WorkspaceId; role: WorkspaceRole; sourceVersion: number }): Promise<boolean>; // 書いたらtrue
   beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
   completeRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
 }
 
 `MembershipDirectoryReservationStore`はcurrent UserId shardに束縛する。`reserveAndClaimActivation`はpending row insert、同shardのcurrent UserがActiveであることの検査、`activating`へのclaimを1 transactionで行う。Userがdeletingならrowを一切insertしない。account deletion開始前にclaim済みの`activating` edgeはaccept Sagaがactive/abandonedへ収束するまで削除manifest構築を待たせる。pending edgeのprepare/release/commitはedge operation IDとdeletion operation IDの組で冪等にする。
+
+`applyRoleIfNewer`は`workspace.membership.roleChanged`をedgeの`role`へ投影する唯一の書き手で、`listActiveByUser`が返すroleはこのedgeからしか来ない。順序は`sourceVersion`（変更後のMembershipの版）だけで決め、保存済みの版**より大きい**ときだけ書いて`true`を返す。予約が運んだ初期roleはどの版よりも古いものとして扱う。この1つの規則が再配送・後着・同時適用の3つを兼ねる — 同じ変更の再配送は版が大きくならないので何も書かず、後から届いた古い変更はroleを巻き戻さず、同時適用は保存済み行との比較なので版が大きい方が勝つ。鍵は`beginRemoval`と同じ`(userId, workspaceId)`で、行の`operation_id`はjoinのものであり role 変更側が導出できない。`pending` / `activating` edgeにも適用する（`activate`はroleを触らないため、未確定のまま届いた変更を落とすとroleが取り残される）。**edgeが不在なら何もせず`false`を返し、決してinsertしない** — 除名後に届いた古い変更が削除済みedgeを復活させないため。
 
 interface MembershipRemovalPreparationStore {
   prepare(input: { operationId: string; userId: UserId; expectedMembershipVersion: number; expiresAt: Date }): Promise<void>;
@@ -389,8 +392,8 @@ Workspace / Membership / Invitation の正データは workspace scope DO に置
 | `workspace.unpublished` | `{ workspaceId }` | 読み取りモデルの投影（`projectNoteChanges` の公開状態） |
 | `workspace.deleted` | `{ workspaceId, operationId }` | Note / Tag / Storage / Usage の後始末。global directory cleanupは削除前manifestのroute keyを使う |
 | `workspace.membership.added` | `{ workspaceId, userId, role }` | 監査 |
-| `workspace.membership.roleChanged` | `{ workspaceId, userId, previousRole, currentRole }` | 監査（購読者なし。降格に伴う実行中ジョブの取り消しは `changeMemberRole` が同じ手順の中で行う） |
-| `workspace.membership.removed` | `{ workspaceId, userId }` | 監査（購読者なし。実行中ジョブの取り消しは `removeMember` / `leaveWorkspace` が同じ手順の中で行う） |
+| `workspace.membership.roleChanged` | `{ workspaceId, userId, previousRole, currentRole, sourceVersion }` | `membership_directory` edge の `role` の投影（`MembershipDirectoryReservationStore.applyRoleIfNewer`）。降格に伴う実行中ジョブの取り消しは購読ではなく `changeMemberRole` が同じ手順の中で行う |
+| `workspace.membership.removed` | `{ workspaceId, userId }` | 監査（購読者なし。実行中ジョブの取り消しは `removeMember` / `leaveWorkspace` が同じ手順の中で行う。directory edge の撤去も同様で、`beginRemoval` → local commit → `completeRemoval` の 2 相を購読者が二重に消しにいくと、後始末の ack を待つ `removing` edge を落としうる） |
 | `workspace.invitation.created` | `{ invitationId, workspaceId, email, role }` | 監査（購読者なし。招待メールの送信は `inviteMember` / `resendInvitation` が同じ手順の中で `MailSender.send` を呼んで行う） |
 | `workspace.invitation.accepted` | `{ invitationId, workspaceId, userId }` | 監査 |
 | `workspace.invitation.revoked` | `{ invitationId, workspaceId }` | 監査 |

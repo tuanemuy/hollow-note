@@ -1,5 +1,6 @@
 import type { EventDraft } from "@repo/core/domain/common/event";
 import { EventId } from "@repo/core/domain/common/event";
+import { Version } from "@repo/core/domain/common/version";
 import { Email, UserId } from "@repo/core/domain/identity/valueObject";
 import {
   type WorkspaceEvent,
@@ -94,6 +95,7 @@ describe("defaultEventDecoderRegistry", () => {
           userId,
           previousRole: "editor",
           currentRole: "viewer",
+          sourceVersion: Version.create(1),
         },
         now,
       ),

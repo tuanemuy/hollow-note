@@ -1,6 +1,6 @@
 import type { AppliedOperationStore } from "../../../../application/ports/appliedOperationStore";
 import type { Clock } from "../../../../application/ports/clock";
-import { type RowMutation, upsert } from "../../execution/writeSet";
+import { type RowMutation, remove, upsert } from "../../execution/writeSet";
 import { throwTranslated } from "../../sql/errors";
 import { toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
@@ -100,6 +100,28 @@ export function createCloudflareAppliedOperationStore(
         throwTranslated(`${TABLE} row ${key}`, cause);
       }
       return true;
+    },
+
+    async clearApplied(
+      input: Readonly<{ operationId: string; commandKey: string }>,
+    ): Promise<void> {
+      const key = await appliedOperationId(input.operationId, input.commandKey);
+      // The `kind` predicate keeps a compensation from ever reaching a
+      // barrier receipt, which shares this table under a key of its own.
+      const mutation: RowMutation = remove({
+        table: TABLE,
+        key,
+        statement: statement(
+          `DELETE FROM ${TABLE} WHERE operation_id = ? AND kind = ?`,
+          key,
+          KIND,
+        ),
+      });
+      try {
+        await session.write([mutation]);
+      } catch (cause) {
+        throwTranslated(`${TABLE} row ${key}`, cause);
+      }
     },
   };
 }

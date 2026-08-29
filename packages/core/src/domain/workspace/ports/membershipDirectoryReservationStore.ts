@@ -38,6 +38,11 @@ export type ActivatingMembershipEdge = Readonly<{
  * are torn down by `beginRemoval` / `completeRemoval`, or removed through
  * the deletion manifest and its cleanup acknowledgements.
  *
+ * The edge also carries the role the workspace list renders, which
+ * `applyRoleIfNewer` keeps current. That one write is the port's only
+ * out-of-band projection, and it is ordered by the Membership version
+ * rather than by arrival.
+ *
  * Leases here are fail-safe, matching `MembershipRemovalPreparationStore`:
  * a lapsed prepare lease does **not** free the edge for another deletion.
  * Only the holder's `renewAccountDeletion` / `releaseAccountDeletion` /
@@ -177,6 +182,48 @@ export interface MembershipDirectoryReservationStore {
     userId: UserId,
     limit: number,
   ): Promise<readonly ActivatingMembershipEdge[]>;
+  /**
+   * Projects a role change onto the edge, so the workspace list shows the
+   * role the scope actually holds
+   * (spec/usecases/workspace.md `changeMemberRole`). The edge is the only
+   * place `listActiveByUser` reads a role from, so without this the list
+   * keeps rendering the role the join was created with.
+   *
+   * `sourceVersion` is the Membership version the change produced, and it
+   * is the whole ordering: the write happens only when it is **greater**
+   * than the version stored on the edge, and an edge that has never been
+   * projected (its role came from the reservation) is older than any of
+   * them. `true` says the row was written.
+   *
+   * That single rule covers all three arrivals delivery can produce.
+   * A redelivery of the same change repeats a version that is no longer
+   * greater and writes nothing, so at-least-once costs nothing. A change
+   * that arrives **after** a later one — the order the outbox never
+   * promises — is refused rather than rolling the role back to the value
+   * it named. Of two concurrent applies the higher version wins whichever
+   * arrives second, because the comparison is against the stored row
+   * rather than against what the caller last read.
+   *
+   * Keyed on `(userId, workspaceId)` for the reason `beginRemoval` gives:
+   * the row's operation id belongs to the join that created it, and a
+   * role change cannot re-derive it. Every state takes the write — an
+   * edge still `pending` / `activating` carries the reservation's role
+   * until its join settles, and `activate` never revisits it, so the
+   * projection has to reach it too.
+   *
+   * An **absent** edge is a no-op answering `false`, never an insert: a
+   * role change delivered after the member was removed must not resurrect
+   * the edge, and the removal is what freed the `(userId, workspaceId)`
+   * pair for a future join.
+   */
+  applyRoleIfNewer(
+    input: Readonly<{
+      userId: UserId;
+      workspaceId: WorkspaceId;
+      role: WorkspaceRole;
+      sourceVersion: number;
+    }>,
+  ): Promise<boolean>;
   /**
    * Opens the tear-down of a settled edge: `active → removing`, before
    * the workspace-local Membership is deleted

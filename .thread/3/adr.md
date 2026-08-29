@@ -1321,3 +1321,64 @@ ADR-063 は当時の 2 つの欠落（`InvitationPreviewView` に `workspaceId` 
 
 - `harness.ts` は workspace テスト専用ではなくなった。破壊的に変えるときは note 側も見ること。
 - `withScopeRunHooks` は移動の固定した順序（0 `snapshotSource` / 1 `stageTarget` / 2 `activateTarget` / 3 `retireSource`）に index で割り込む。フェーズを増減したらテスト側の index も動く。
+
+## ADR-078: `membership_directory` edge の role は event が運ぶ source version で投影する
+
+### Context
+
+`changeMemberRole` は scope の Membership だけを書き、global の `membership_directory` edge は触らない。`listUserWorkspaces` が返す role はその edge からしか来ないので、降格しても切替 UI は古い role を出し続けていた（`TC-workspace-045` / `TC-workspace-235` が執行形を持てなかった原因でもある）。
+
+投影の入力の取り方は 2 案あった。(a) 購読者が workspace scope の Membership を読み直す（`projectWorkspaceDirectory` が Workspace の current snapshot を使うのと同じ形）。(b) event の payload に値と版を載せる。
+
+(a) は「event は変化の通知にとどめる」という `spec/domains/workspace.md` の言い回しに沿う一方で、後着 event を受けても常に最新を読むため「古い値が巻き戻さない」ことをテストが区別できない（壊れた実装でも緑になる）。加えて worker 側に scope の membership reader が無く、読むためだけに scope UoW を開くことになる。
+
+### Decision
+
+(b) を採る。`workspace.membership.roleChanged` の payload に `sourceVersion`（変更後の Membership 版）を足し、`MembershipDirectoryReservationStore.applyRoleIfNewer(userId, workspaceId, role, sourceVersion)` が保存済み `role_source_version` より**大きい**ときだけ書く。edge が不在なら insert せず `false` を返す。購読者 `application/workspace/membershipRoleProjection.ts` は port を 1 回呼ぶだけで、`IdempotencyStore` は使わない（版比較そのものが冪等性）。
+
+`roleChanged` の payload は既に `previousRole` / `currentRole` という値を運んでおり、通知だけの `workspace.*` event とは元から性格が違う。ここに版を足すのは新しい種類の結合ではない。
+
+### Consequences
+
+- event payload に版が乗るので、`eventDecoders` の strict schema と `Membership.changeRole` のテストが連動して変わる。
+- 再入会（除名 → 再 join）で edge が作り直されると `role_source_version` は NULL に戻る。同じ pair の**前の** Membership の古い event が届けば理屈上は当たるが、`membershipId` を payload へ足さない限り区別できず、次の role 変更で必ず上書きされる。現状の配送保持期間では実害が無いとみなし、追わない。
+- `removed` event には購読者を置かない。edge の撤去は `removeMember` / `leaveWorkspace` が `beginRemoval` → local commit → `completeRemoval` の 2 相で行っており、購読者が二重に消すと後始末の ack を待つ `removing` edge を落としうる。
+
+## ADR-079: role 投影の順序テストは relay の `drainOutbox({ order })` で行う
+
+### Context
+
+「後着 event が新しい値を巻き戻さない」は port の適合スイート（`ADP-workspace-073`）でも固定できるが、それだけだと購読者が port を正しい引数で呼んでいるかは分からない。
+
+### Decision
+
+`application/workspace/__tests__/harness.ts` の `drainOutbox` が持つ `order` フックで claim 済み batch を逆順にし、`changeMemberRole` を 2 回呼んだ後の最終 role を `listUserWorkspaces` まで通して確認する（`TC-workspace-045`）。再配送は outbox 行を `dispatchDomainEvent` へ直接もう一度渡す（`removeIdentity.test.ts` と同じ形）。
+
+### Consequences
+
+- 配送順の入れ替えはこのフックでしか観測できないので、`drainOutbox` の `order` を消すと順序テストが静かに無力化する。
+
+## ADR-080: 補償トランザクションは `AppliedOperationStore` の記録も消す（`clearApplied` を足す）
+
+### Context
+
+`moveNote` の各フェーズは ADR-051 のとおり `markApplied(migrationId, commandKey)` で冪等化していた。ところが `abortBeforeSwitch` は staged 行・credit・lock を消す一方で `note.moveStageTarget` と `storage.relocateFilesForNote:stageTarget` の記録を残していた。`spec/usecases/note.md#moveNote` は「各応答喪失は同じ migration ID で再試行する」と定めるので、abort 後の再要求は同じ migration ID に落ちる。すると `stageTarget` が丸ごと skip され、空の target へ `switchMove` が route を切り替え、続く `retireSource` が source の Note・Revision・ファイル・使用量を消す。**移動元・移動先とも 0 件**になり `note.moved` だけが出る、fault injection 不要のデータ消失だった（`TC-note-258` の再現テスト）。
+
+`markApplied` は単調で、記録を消す口がどのポートにも無かった。一方 abort 自身は `note.moveAbortTarget` で守られていたため、再 stage 後の 2 度目の abort が un-stage を skip する対称の穴も持っていた。
+
+### Decision
+
+記録の意味を「そのコマンドの効果が**今そこにある**」と定め、効果を打ち消す補償トランザクションは同じ UoW で記録も消す。
+
+- `AppliedOperationStore` に `clearApplied({ operationId, commandKey })` を足す。存在しない記録の消去は no-op。memory と Cloudflare DO の両方で実装し、適合スイート（`adapters/conformance/appliedOperationStore.ts`）に 3 ケースを足して両バックエンドへ同一に課す。鍵は `markApplied` と同じ `sha256(operationId + ":" + commandKey)` の 1 行 DELETE なので、`applied_operations` の 1 列 PK（ADR 045 / spec/database）を崩さない。Cloudflare 側は `kind = 'command'` を条件に加え、同居する barrier receipt へ届かないようにする。
+- `abortBeforeSwitch` は target scope でこの migration が書きうる 3 つの記録（`note.moveStageTarget` / `storage.relocateFilesForNote:stageTarget` / `storage.relocateFilesForNote:retireSource`）を transaction 冒頭でまとめて消す。「完全 abort」は target に migration の痕跡を残さないことであり、記録もその痕跡である。
+- abort 自身の `note.moveAbortTarget` は**廃止**する。abort の冪等性は staged Note の存在で足りる — Note の insert と credit は同じ transaction、Note の delete と逆仕訳も同じ transaction なので、Note の存在が credit の正確な証人である。記録で守ると再 stage 後の 2 度目の abort が un-stage を skip する。
+- `RETIRE_SOURCE_COMMAND` は据え置く。switch 後は forward-only で補償が存在せず、記録を消す相手がいない。
+
+`relocateFilesForNote` の `commandKeyFor` を `relocateFilesCommandKey` として公開した。フェーズを打ち消す呼び出し側が鍵を知る必要があるためで、その義務はポートの JSDoc に書いた。
+
+### Consequences
+
+- 冪等性（同じ migration ID の再開が重複 target Note を作らない）とデータ保全（abort 後の再要求がノートを失わない）が両立する。前者は `TC-note-258`（freeze 直後の失敗）・`TC-note-263` / `-265` で、後者は `TC-note-258`（abort 後の再要求）で固定した。
+- 変異スポットチェックで `TARGET_SCOPE_COMMANDS` からファイル側の鍵を落としても既存テストが全部通ってしまったので、`TC-note-258` に「abort 後の再開が Revision・ファイル・credit も張り直す」ケースを 1 本足した。3 つの鍵それぞれに検出力がある。
+- 今後 `applied_operations` で守るコマンドを足すときは「補償があるか」を必ず問うこと。あるなら `clearApplied` が対になる。`deleteFilesByOwner` / `deleteQuota` の cleanup コマンドには補償が無いので現状の単調な記録のままでよい。

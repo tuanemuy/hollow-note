@@ -68,6 +68,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `workspace_id` | text | NOT NULL |
 | `membership_id` | text | `active` / `removing` ではNOT NULL。`pending` / `activating` ではNULL可 |
 | `role` | text | NOT NULL |
+| `role_source_version` | integer | NULL可。`role` の投影元Membership版。NULLは予約が運んだ初期role |
 | `state` | text | NOT NULL, CHECK IN ('pending','activating','active','removing') |
 | `deletion_prepare_operation_id` | text | NULL可。pending edgeのaccount deletion lock owner |
 | `deletion_prepare_expires_at` | integer | prepare ownerがあるときNOT NULL |
@@ -78,6 +79,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 - `membership_id` を settled state にだけ要求するのは、`pending` edge が workspace-local Membership の**存在に先立つ**予約だからである。運ぶべき ID がまだ無い時点で行が要るので、制約は `CHECK (state NOT IN ('active','removing') OR membership_id IS NOT NULL)` として置く
 - UNIQUE (`user_id`, `workspace_id`)。`pending` / `activating` は所有 / 参加workspace数とaccount deletionに、`removing`は後始末完了待ちのaccount deletion / integration cleanup列挙に含める。`reserveAndClaimActivation`はpending INSERT、同じUserId shardのActive User検査、`activating`化を1 transactionで行い、DeletingならINSERTごとrollbackする。account deletionは先行`activating`を最大100件ずつ解決待ちし、0件確認後にpending edgeへdeletion prepare ownerを設定する。owner設定後のactivationは拒否し、rollback releaseはpendingを保ち、commitだけがedgeを取消す
 - indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用、(`user_id`, `operation_id`) は account deletion manifest の edge key 昇順ページング用。edge key は `operation_id` であり、前 2 本はどちらもその順序を走れないので専用の索引を持つ。UserId物理shard後のworkspace削除は 2 本目をscatterせずmanifest route keyを使う
+- `role`は`workspace.membership.roleChanged`の投影で、`applyRoleIfNewer`が`(user_id, workspace_id)`で引いた行を`role_source_version`より大きい版でだけ更新する。配送はat-least-once・順不同なので、再配送は書かず、後着の古い変更はroleを巻き戻さない。行が無いときはinsertせず、除名済みedgeを復活させない
 - pending/activating recoveryは`(reservation_expires_at, operation_id) WHERE state IN ('pending','activating')`を最大100件ずつ読む。期限切れactivatingはworkspace scopeのInvitation/Membershipをoperation IDで照合し、local commit済みならactive、未commitならabandonedへ収束させる。account deletionはこのrecoveryを起動し、先行activatingが0件になるまでscanを待つ
 
 ### workspace_slug_reservations
@@ -1216,7 +1218,7 @@ target stageと同じtransactionで保存し、対象Membershipの降格・除�
 | `applied_at` | integer | NOT NULL |
 | `expires_at` | integer | NULL可。進行中account deletion barrierと`kind = 'command'`はNULL |
 
-この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`kind = 'command'`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。
+この1表は実装では2つのポートに分かれる。barrier receiptを扱う`ScopeCleanupAdmissionStore`（`kind = 'accountDeletionBarrier'`）と、コマンドの重複排除を担う`AppliedOperationStore.markApplied`（`kind = 'command'`）で、**鍵の意味でポートを分ける**（[ADR 045](../adr/045-idempotency-by-commutativity.md)。ポートの位置づけは [domains/index.md](../domains/index.md) の `ScopeKey と永続化境界`）。`markApplied` の 2 部鍵は列を増やさず、`operation_id` 1 列へ決定的に畳む（`sha256(operationId + ":" + commandKey)`）。同じ operation の 2 つ目のコマンドが PK 衝突しないのはこの導出によるもので、列を足さないのは barrier receipt と同居する表だからである。補償トランザクション用の `clearApplied` も同じ導出鍵の 1 行 DELETE で、`kind = 'command'` を条件に加えて barrier receipt へ届かないようにする。
 
 `kind = 'command'` の行は `expires_at IS NULL` で、Alarm pruner（`expires_at <= asOf`）の対象外である。**再配送されうる限り残さなければならない**のが理由で、コマンドの再配送は outbox の attempt 上限で有界になるが壁時計では有界でない — quarantine された行の手動再駆動と、継続要求が同じ key で再駆動される回復経路（[ADR 040](../adr/040-continuation-transport.md)）のどちらも期限を持たない。期限を切れば「期限後の再配送が二重適用になる」ので、切らないほうが安全側である。したがってこの行は当該 scope の寿命ぶん積み上がる。値を返すコマンドを足すスライスが `result` を使い始める時点で、そのコマンドの再駆動窓を根拠にした保持期間をここに定めること。
 

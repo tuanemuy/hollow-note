@@ -25,5 +25,8 @@ export function createMemoryAppliedOperationStore(
       table.set(key, true);
       return true;
     },
+    async clearApplied(input): Promise<void> {
+      table.delete(appliedOperationId(input.operationId, input.commandKey));
+    },
   };
 }

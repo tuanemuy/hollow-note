@@ -2,6 +2,7 @@ import type {
   DomainEventBase,
   EventDraft,
 } from "@repo/core/domain/common/event";
+import type { Version } from "@repo/core/domain/common/version";
 import type { Email, UserId } from "@repo/core/domain/identity/valueObject";
 import type {
   InvitationId,
@@ -59,6 +60,13 @@ export type MembershipAddedEvent = DomainEventBase<
   }>
 >;
 
+/**
+ * `sourceVersion` is the Membership version the change produced, and it
+ * is what orders the projection onto the global `membership_directory`
+ * edge: delivery is at-least-once with no ordering guarantee, so the
+ * consumer needs the payload itself to say which of two role changes is
+ * the later one (spec/domains/workspace.md `ドメインイベント`).
+ */
 export type MembershipRoleChangedEvent = DomainEventBase<
   "workspace.membership.roleChanged",
   Readonly<{
@@ -66,6 +74,7 @@ export type MembershipRoleChangedEvent = DomainEventBase<
     userId: UserId;
     previousRole: WorkspaceRole;
     currentRole: WorkspaceRole;
+    sourceVersion: Version;
   }>
 >;
 
@@ -205,6 +214,7 @@ export const WorkspaceEvents = {
       userId: UserId;
       previousRole: WorkspaceRole;
       currentRole: WorkspaceRole;
+      sourceVersion: Version;
     }>,
     occurredAt: Date,
   ): EventDraft<MembershipRoleChangedEvent> => ({

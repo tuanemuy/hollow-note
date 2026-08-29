@@ -632,7 +632,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 ### 処理フロー
 
-1. `UserWorkspaceDirectory.listActiveByUser(userId, cursor, limit)`でUserId shardのactive edgeを`createdAt DESC, workspaceId`のkeysetから最大20件だけ引く
+1. `UserWorkspaceDirectory.listActiveByUser(userId, cursor, limit)`でUserId shardのactive edgeを`createdAt DESC, workspaceId`のkeysetから最大20件だけ引く。roleはこのedgeから来る投影で、[changeMemberRole](#changememberrole)のrole変更が`applyRoleIfNewer`で反映される
 2. page内WorkspaceIdだけを`WorkspaceDirectoryBatchReader.resolveMany`でshard別に最大6接続で解決する。`deleted` tombstoneは落とし、projection未到着・当該shard障害は`unavailable` variantとして返す。全件join・名前sortは行わない。個々の操作時の権限はこの投影を信用せず workspace scope の Membership を読み直す
 3. directoryが返したopaque cursorと`hasMore`を返す
 
@@ -662,6 +662,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 4. `MembershipRemovalPreparationStore.hasConflict`と`WorkspaceOperationLockStore.hasMoveConflict(target.userId)`を確認してからowner数を引く。account deletionまたはmove lockと競合すれば拒否する
 5. 降格の場合、下表から許可されなくなるkindを作り、`JobRepository.listActiveByRequesterAndKinds(target.userId, disallowedKinds, 100)`で最終述語にlimitを適用する。100件なら同じlocal UoWでcontinuationを積む。kind配列はpayloadへ焼き付けず`nextRole`から毎回導く
 6. `UnitOfWorkProvider.run` の中で、5 で集めたジョブに `Job.cancel` を適用して保存し、`Membership.changeRole` を保存してイベントを収集する。**これらの保存はすべて同一 UoW で行う** — ロールだけが下がってジョブが走り続ける中間状態を作らないため。ジョブを取り消したときは [usecases/job.md](./job.md) の「共通: 強制終端の後始末」に従う（`kind: "conversion"` の対象ノートが `processing` なら `Note.markConversionFailed("canceled")`、生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles` で回収。いずれも同一 UoW。取り消しが起きない昇格・同ロールの指定では後始末も起きない）
+
+`membership_directory` edge の `role` は本ユースケースが同期的に書かず、`workspace.membership.roleChanged` の購読者が `MembershipDirectoryReservationStore.applyRoleIfNewer` で投影する（[domains/workspace.md](../domains/workspace.md) のドメインイベント）。edge は `listUserWorkspaces` が返す role の唯一の出どころなので、投影しなければ切替 UI が古い role を出し続ける。順序は event が運ぶ `sourceVersion`（変更後の Membership の版）だけで決め、後着の古い変更は role を巻き戻さない。表示だけの投影であり、操作時の権限は必ず workspace scope の Membership を読み直す（[listUserWorkspaces](#listuserworkspaces) 手順 2）ので、投影の遅れは表示の遅れであって権限の昇格にはならない。
 
 | `kind` | 実行に要するロール | editor → viewer で取り消す |
 | --- | --- | --- |

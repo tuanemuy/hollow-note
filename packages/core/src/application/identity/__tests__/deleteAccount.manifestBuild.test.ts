@@ -46,6 +46,7 @@ const seedMembershipEdges = (
       edgeState: "active",
       membershipId: `membership-${i}`,
       role: "viewer",
+      roleSourceVersion: null,
       deletionPrepareOperationId: null,
       deletionPrepareExpiresAt: null,
       reservationExpiresAt: null,

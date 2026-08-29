@@ -306,6 +306,12 @@ export type MembershipDirectoryRow = Readonly<{
   edgeState: "pending" | "activating" | "active" | "removing";
   membershipId: string | null;
   role: WorkspaceRole;
+  /**
+   * Membership version `role` was projected from, `null` while it is
+   * still the role the reservation carried. Orders the role projection
+   * against out-of-order delivery.
+   */
+  roleSourceVersion: number | null;
   /** Account-deletion prepare lock owner of a `pending` edge. */
   deletionPrepareOperationId: string | null;
   deletionPrepareExpiresAt: Date | null;

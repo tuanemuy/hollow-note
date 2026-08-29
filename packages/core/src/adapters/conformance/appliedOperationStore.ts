@@ -58,6 +58,57 @@ export function describeAppliedOperationStoreContract(
       ).toBe(true);
     });
 
+    it("lets a cleared command be applied again", async () => {
+      await store.markApplied({
+        operationId: "op-1",
+        commandKey: "cleanup:storage",
+      });
+
+      await store.clearApplied({
+        operationId: "op-1",
+        commandKey: "cleanup:storage",
+      });
+
+      expect(
+        await store.markApplied({
+          operationId: "op-1",
+          commandKey: "cleanup:storage",
+        }),
+      ).toBe(true);
+    });
+
+    it("clears only the named command of the operation", async () => {
+      await store.markApplied({
+        operationId: "op-1",
+        commandKey: "cleanup:storage",
+      });
+      await store.markApplied({
+        operationId: "op-1",
+        commandKey: "cleanup:usage",
+      });
+
+      await store.clearApplied({
+        operationId: "op-1",
+        commandKey: "cleanup:storage",
+      });
+
+      expect(
+        await store.markApplied({
+          operationId: "op-1",
+          commandKey: "cleanup:usage",
+        }),
+      ).toBe(false);
+    });
+
+    it("clears a record that was never written without failing", async () => {
+      await expect(
+        store.clearApplied({
+          operationId: "op-missing",
+          commandKey: "cleanup:storage",
+        }),
+      ).resolves.toBeUndefined();
+    });
+
     it("keeps the record inside the scope that applied it", async () => {
       await store.markApplied({
         operationId: "op-1",

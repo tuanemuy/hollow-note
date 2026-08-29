@@ -74,6 +74,7 @@ describe("Membership.changeRole", () => {
           userId: MEMBER,
           previousRole: "editor",
           currentRole: "owner",
+          sourceVersion: 1,
         },
         occurredAt: T1,
         aggregateId: WORKSPACE,

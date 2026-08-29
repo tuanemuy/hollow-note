@@ -36,8 +36,11 @@ const UNRESOLVED: WorkspaceDirectoryResolution = {
  *
  * The three directory verdicts are kept apart: `deleted` drops the row,
  * `unavailable` keeps it in degraded form, and `active` renders it. The
- * role comes from the directory edge and is a projection — every
- * mutation re-reads `Membership` in the workspace scope.
+ * role comes from the directory edge and is a projection, written by the
+ * `workspace.membership.roleChanged` subscriber
+ * (`./membershipRoleProjection`) — every mutation re-reads `Membership`
+ * in the workspace scope, so an edge that lags is a display gap and
+ * never a privilege.
  *
  * `limit` is validated by the directory port, which raises
  * `ValidationError("INVALID_PAGINATION")` for a value outside 1–20, an

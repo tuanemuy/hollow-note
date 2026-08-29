@@ -17,6 +17,7 @@ import { occGuard } from "../../sql/occGuard";
 import {
   dateOrNull,
   enumOf,
+  intOrNull,
   text,
   textOrNull,
   toTimestamp,
@@ -50,6 +51,7 @@ type Edge = Readonly<{
   operationId: string;
   workspaceId: WorkspaceId;
   state: EdgeState;
+  roleSourceVersion: number | null;
   deletionPrepareOperationId: string | null;
   deletionPrepareExpiresAt: Date | null;
   raw: SqlRow;
@@ -59,6 +61,7 @@ const toEdge = (row: SqlRow): Edge => ({
   operationId: text(row, "operation_id"),
   workspaceId: WorkspaceId.create(text(row, "workspace_id")),
   state: enumOf(row, "state", STATES),
+  roleSourceVersion: intOrNull(row, "role_source_version"),
   deletionPrepareOperationId: textOrNull(row, "deletion_prepare_operation_id"),
   deletionPrepareExpiresAt: dateOrNull(row, "deletion_prepare_expires_at"),
   raw: row,
@@ -80,6 +83,11 @@ export type D1MembershipDirectoryReservationStoreDeps = Readonly<{
  * is what lets a single transaction decide between them: `activate`
  * refuses while `deletion_prepare_operation_id` is set, and only
  * `commitAccountDeletion` removes the edge.
+ *
+ * The role projection is the one write keyed by `(user_id, workspace_id)`
+ * instead, and `role_source_version` is its whole ordering — the update
+ * repeats that predicate in SQL, so a newer role landing between the read
+ * and the commit keeps its value.
  *
  * Leases are fail-safe. Expiry is never part of a lock's predicate, so a
  * lapsed prepare lease still belongs to its deletion; only the holder's
@@ -254,6 +262,7 @@ export function createD1MembershipDirectoryReservationStore(
         membership_id: input.membershipId,
         role: input.role,
         state: "activating",
+        role_source_version: null,
         deletion_prepare_operation_id: null,
         deletion_prepare_expires_at: null,
         reservation_expires_at: toTimestamp(input.expiresAt),
@@ -286,9 +295,10 @@ export function createD1MembershipDirectoryReservationStore(
             statement: statement(
               `INSERT INTO ${TABLE}
                  (operation_id, user_id, workspace_id, membership_id, role, state,
-                  deletion_prepare_operation_id, deletion_prepare_expires_at,
-                  reservation_expires_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'activating', NULL, NULL, ?, ?, ?)`,
+                  role_source_version, deletion_prepare_operation_id,
+                  deletion_prepare_expires_at, reservation_expires_at,
+                  created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'activating', NULL, NULL, NULL, ?, ?, ?)`,
               input.operationId,
               input.userId,
               input.workspaceId,
@@ -511,6 +521,48 @@ export function createD1MembershipDirectoryReservationStore(
         operationId: text(row, "operation_id"),
         workspaceId: WorkspaceId.create(text(row, "workspace_id")),
       }));
+    },
+
+    async applyRoleIfNewer(input): Promise<boolean> {
+      const edge = await readByPair(input.userId, input.workspaceId);
+      // An absent edge is never inserted: a removal already freed the
+      // pair, and reviving it would put the workspace back in the list.
+      if (edge === null) {
+        return false;
+      }
+      if (
+        edge.roleSourceVersion !== null &&
+        edge.roleSourceVersion >= input.sourceVersion
+      ) {
+        return false;
+      }
+      const now = toTimestamp(clock.now());
+      await write([
+        upsert({
+          table: TABLE,
+          key: edge.operationId,
+          row: {
+            ...edge.raw,
+            role: input.role,
+            role_source_version: input.sourceVersion,
+            updated_at: now,
+          },
+          // The predicate is repeated in the statement so a newer role
+          // that lands between the read and the commit keeps its value.
+          statement: statement(
+            `UPDATE ${TABLE}
+                SET role = ?, role_source_version = ?, updated_at = ?
+              WHERE operation_id = ?
+                AND (role_source_version IS NULL OR role_source_version < ?)`,
+            input.role,
+            input.sourceVersion,
+            now,
+            edge.operationId,
+            input.sourceVersion,
+          ),
+        }),
+      ]);
+      return true;
     },
 
     async beginRemoval(

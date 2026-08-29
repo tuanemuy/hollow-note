@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { User } from "../../domain/identity/user";
 import type { UserId } from "../../domain/identity/valueObject";
-import type { WorkspaceId } from "../../domain/workspace/valueObject";
+import type {
+  WorkspaceId,
+  WorkspaceRole,
+} from "../../domain/workspace/valueObject";
 import { expectConflict } from "./asserts";
 import type { ConformanceBackend, MakeConformanceBackend } from "./backend";
 import { makeActiveUser, membershipId, userId, workspaceId } from "./fixtures";
@@ -11,8 +14,9 @@ const HOUR_MS = 60 * MINUTE_MS;
 
 /**
  * Shared conformance suite for `MembershipDirectoryReservationStore`
- * (ADP-workspace-033..040): the join saga's claim, and the
- * account-deletion prepare lock that serializes against it.
+ * (ADP-workspace-033..040 / 069 / 070 / 073): the join saga's claim, the
+ * account-deletion prepare lock that serializes against it, the two-phase
+ * removal, and the role projection ordered by Membership version.
  *
  * A `pending` edge is the deletion half's only subject, and no method of
  * this port leaves one behind (`reserveAndClaimActivation` inserts and
@@ -83,6 +87,34 @@ export function describeMembershipDirectoryReservationStoreContract(
       );
       return page.items.map((item) => item.workspaceId);
     };
+
+    /** The role the workspace list renders for one edge. */
+    const listedRole = async (
+      owner: UserId = userId(1),
+      workspace: WorkspaceId = workspaceId(1),
+    ): Promise<WorkspaceRole | null> => {
+      const page = await backend.userWorkspaceDirectory.listActiveByUser(
+        owner,
+        null,
+        20,
+      );
+      return (
+        page.items.find((item) => item.workspaceId === workspace)?.role ?? null
+      );
+    };
+
+    const applyRole = (
+      role: WorkspaceRole,
+      sourceVersion: number,
+      owner: UserId = userId(1),
+      workspace: WorkspaceId = workspaceId(1),
+    ): Promise<boolean> =>
+      store().applyRoleIfNewer({
+        userId: owner,
+        workspaceId: workspace,
+        role,
+        sourceVersion,
+      });
 
     const activatingKeys = async (
       owner: UserId = userId(1),
@@ -313,6 +345,54 @@ export function describeMembershipDirectoryReservationStoreContract(
       // The join saga is untouched and still settles.
       await store().activate("op-1");
       expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+    });
+
+    it("ADP-workspace-073: a role change projects onto the settled edge", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+      expect(await listedRole()).toBe("editor");
+
+      expect(await applyRole("viewer", 1)).toBe(true);
+      expect(await listedRole()).toBe("viewer");
+      // The role the reservation carried is older than any Membership
+      // version, so the first change always lands.
+      expect(await listedRole(userId(1), workspaceId(2))).toBeNull();
+    });
+
+    it("ADP-workspace-073: a redelivered or late change never rolls the role back", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+
+      expect(await applyRole("viewer", 1)).toBe(true);
+      expect(await applyRole("owner", 2)).toBe(true);
+      // Redelivery of the change that won writes nothing.
+      expect(await applyRole("owner", 2)).toBe(false);
+      // The demotion arrives after the promotion that followed it.
+      expect(await applyRole("viewer", 1)).toBe(false);
+      expect(await listedRole()).toBe("owner");
+    });
+
+    it("ADP-workspace-073: an edge a join has not settled still takes the role", async () => {
+      await claim("op-1");
+      expect(await applyRole("owner", 1)).toBe(true);
+
+      await store().activate("op-1");
+      expect(await listedRole()).toBe("owner");
+    });
+
+    it("ADP-workspace-073: an absent or removed edge is never resurrected", async () => {
+      // Nothing was ever reserved for this pair.
+      expect(await applyRole("owner", 1)).toBe(false);
+      expect(await activeWorkspaces()).toEqual([]);
+
+      await claim("op-1");
+      await store().activate("op-1");
+      await store().beginRemoval(userId(1), workspaceId(1));
+      await store().completeRemoval(userId(1), workspaceId(1));
+
+      expect(await applyRole("owner", 5)).toBe(false);
+      expect(await activeWorkspaces()).toEqual([]);
+      expect(await listedRole()).toBeNull();
     });
 
     it("ADP-workspace-070: an edge that never entered removing is not dropped", async () => {

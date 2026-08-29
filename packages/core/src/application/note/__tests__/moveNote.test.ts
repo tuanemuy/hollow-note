@@ -955,6 +955,55 @@ describe("moveNote", () => {
     expect(notesIn(h, targetScope)).toHaveLength(1);
   });
 
+  it("TC-note-258: the resume after an abort re-stages the revisions, the file metadata and the credit too", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    await seedRevision(h, personalScope, noteId, "revision-1");
+    await seedFile(h, personalScope, StorageOwner.user(actorId), {
+      id: "file-source",
+      noteId,
+      purpose: "source",
+      size: 120,
+    });
+    await seedQuota(h, personalScope, StorageOwner.user(actorId), {
+      bytes: 120,
+      notes: 1,
+    });
+    let switchAttempted = false;
+    const container = withRouteStore(h, {
+      switchMove: (input) => {
+        if (!switchAttempted) {
+          switchAttempted = true;
+          return Promise.reject(failure("switch failed"));
+        }
+        return h.container.noteRouteStore.switchMove(input);
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("switch failed");
+
+    await move(h, { noteId, workspaceId: TARGET_WS });
+
+    // Everything the abort gave back is staged again, not skipped as
+    // "already applied" on the strength of the first attempt's receipts.
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(revisionsIn(h, targetScope)).toHaveLength(1);
+    expect(filesIn(h, targetScope)).toHaveLength(1);
+    expect(quotaOf(h, targetScope)).toMatchObject({
+      consumedBytes: 120,
+      noteCount: 1,
+    });
+    expect(notesIn(h, personalScope)).toHaveLength(0);
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(quotaOf(h, personalScope)).toMatchObject({
+      consumedBytes: 0,
+      noteCount: 0,
+    });
+  });
+
   it("TC-note-259: while the target is staged the route still names the source, and the abort clears the staged copy", async () => {
     const h = createTestHarness();
     await seedTarget(h, "editor");

@@ -403,6 +403,7 @@ describe("acceptInvitation", () => {
       edgeState: "pending",
       membershipId: null,
       role: "viewer",
+      roleSourceVersion: null,
       deletionPrepareOperationId: "deletion-1",
       deletionPrepareExpiresAt: new Date(h.clock.now().getTime() + 600_000),
       reservationExpiresAt: new Date(h.clock.now().getTime() + 600_000),

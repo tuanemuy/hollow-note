@@ -24,6 +24,7 @@ import type { DistributedOperationPayload } from "../ports/distributedOperationS
 import { ScopeKey } from "../scope";
 import {
   type MovedFileMetadata,
+  relocateFilesCommandKey,
   relocateFilesForNote,
 } from "../storage/relocateFilesForNote";
 import type { ServiceArgs } from "../types";
@@ -92,7 +93,17 @@ const REVISION_RETENTION = 20;
 
 const STAGE_TARGET_COMMAND = "note.moveStageTarget";
 const RETIRE_SOURCE_COMMAND = "note.moveRetireSource";
-const ABORT_TARGET_COMMAND = "note.moveAbortTarget";
+
+/**
+ * Every applied-operation key this migration can write in the *target*
+ * scope. An abort clears the whole set, because each key asserts that
+ * rows the abort is deleting are in place — see `abortBeforeSwitch`.
+ */
+const TARGET_SCOPE_COMMANDS: readonly string[] = [
+  STAGE_TARGET_COMMAND,
+  relocateFilesCommandKey("stageTarget"),
+  relocateFilesCommandKey("retireSource"),
+];
 
 const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
@@ -547,13 +558,22 @@ async function retireSource(
 
 /**
  * Reverses everything the pre-switch legs may have left behind, then
- * thaws the route (spec/usecases/note.md#movenote 手順 4〜6 の中止).
+ * thaws the route (spec/usecases/note.md#movenote 手順 4〜6 の中止：
+ * 「完全abortする」).
  *
- * The target undo is guarded by its own applied-operation key so a second
- * abort of the same migration cannot debit the target twice, and it
- * returns before touching usage when nothing was staged. Both scopes'
- * move locks are released outside that guard, since an abort may follow a
- * failure that never reached the staging it is undoing.
+ * Complete means the target keeps no trace of the migration — not the
+ * staged rows, not the credit, not the lock, and **not the
+ * applied-operation keys that assert those rows exist**. Clearing them is
+ * what makes the abort survivable: the spec retries a lost response under
+ * the same migration id, so a key left behind would make the resumed
+ * `stageTarget` skip into an empty target and the route switch onto
+ * nothing, after which `retireSource` deletes the last copy.
+ *
+ * The abort is therefore idempotent on the staged note's presence rather
+ * than on a key of its own: the note is the witness that the credit was
+ * ever applied, and it is deleted in the same transaction that reverses
+ * it. Both scopes' move locks are released outside that check, since an
+ * abort may follow a failure that never reached the staging it undoes.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
@@ -564,13 +584,11 @@ async function abortBeforeSwitch(
   const now = container.clock.now();
   await container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
     await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
-    if (
-      !(await ctx.appliedOperationStore.markApplied({
+    for (const commandKey of TARGET_SCOPE_COMMANDS) {
+      await ctx.appliedOperationStore.clearApplied({
         operationId: plan.migrationId,
-        commandKey: ABORT_TARGET_COMMAND,
-      }))
-    ) {
-      return;
+        commandKey,
+      });
     }
     const staged = await ctx.noteRepository.findById(plan.noteId);
     if (staged === null) {

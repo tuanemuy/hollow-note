@@ -548,7 +548,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 8. target を有効化してauthorization lockを解放し、その後sourceをtombstoneにしてUsageの`sourceDebit`を適用する。停止中は最大でsource/targetへ二重計上され、過少計上にはならない。local projection、tag assignment、file metadata、backup recordはroute switch前に準備済みである
 9. `note.moved` を global projection Queue に送り、public projection を current route から再構築する。手順7以降の失敗は operation recovery Cron / scope Alarm が再開し、API は route switch 完了後なら成功を返してよい
 
-手順4〜6で失敗しrouteがsourceの`moving`なら完全abortする。target creditを逆仕訳し、stageと両scopeのmove lockを削除し、sourceをthawしてから`abortMove`でactive sourceへ戻す。各応答喪失は同じmigration IDで再試行する。switch後はabortせず必ず前進する。
+手順4〜6で失敗しrouteがsourceの`moving`なら完全abortする。target creditを逆仕訳し、stageと両scopeのmove lockを削除し、sourceをthawしてから`abortMove`でactive sourceへ戻す。**完全**とは target scope にこの migration の痕跡を残さないことで、消した行を「適用済み」と主張する `applied_operations` の記録も同じ transaction で消す（`clearApplied`）。各応答喪失は同じmigration IDで再試行するため、記録が残っていると再開した手順6が空のtargetへ素通りし、手順7がそこへrouteを切り替えてしまう。abort自体はstaged Noteの存在で冪等にし、自前のcommand keyは持たない。switch後はabortせず必ず前進する。
 
 外れるタグ名は手順3で固定した operation payload から返し、再開時に計算し直さない。
 
