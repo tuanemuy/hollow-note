@@ -488,6 +488,8 @@
 | TC-identity-347 | pruneExpiredAuthState: runの表集合がこの配備の既定の表集合と順序も内容も違う（表構成を変えたデプロイをまたいでresumeする） — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | runのスナップショットの順に最後まで進み、順序ずれで停滞しない |
 | TC-identity-348 | pruneExpiredAuthState: shard数が同時claim上限（6）を超える — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | ackが返す次laneをそのまま処理し、解放して取り直す往復をしない |
 | TC-identity-349 | pruneExpiredAuthState: runの表集合にこの配備がsweepを持たない表が含まれる — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | その表を飛ばしてrunを完走させ、飛ばした事実をrun / laneを特定できる形でログに残し、失敗には数えない |
+| TC-identity-350 | deleteAccount: 参加中のワークスペースがある — 削除を要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `ConflictError("WORKSPACE_MEMBERSHIPS_REMAIN")`で受理されず、Userは`active`のまま、operation行もbarrierもmanifestも作られない |
+| TC-identity-351 | deleteAccount: 全ワークスペースを脱退したあと — 同じ利用者が削除を要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 受理され、finalizeまで完走してUserがtombstone（`deleted`・PIIなし）になり、manifestが`completed`になる |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |
@@ -1214,7 +1216,7 @@
 | TC-note-248 | moveNote: 元ファイルとメディアを持つノート — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 保管ファイルの所有者も移動先に移り、使用量が付け替わる |
 | TC-note-249 | moveNote: 移動が成功した — snapshotを確認する | spec/testcases/note/moveNote.md#テストケース-movenote | Note・Revision・Tag assignment・StoredFile metadata・Backup・Usage deltaを1つのmigration snapshotとしてtarget scopeへ取り込み、target local projectionも同じscopeで作る |
 | TC-note-250 | moveNote: 移動先の使用量が既に容量クォータを超えている — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功する（移動時に容量クォータを検査しないのは意図的な設計。クォータの強制は取り込み時のみ） |
-| TC-note-251 | moveNote: 移動によって移動先がクォータを超える — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功し、以後の新規アップロードが拒否されるだけになる（`applyStorageDelta` は消費量を付け替えるが判定はしない） |
+| TC-note-251 | moveNote: 移動によって移動先がクォータを超える — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功し、以後の新規アップロードが拒否されるだけになる（サガは消費量を付け替えるが判定はしない） |
 | TC-note-252 | moveNote: 移動の確定時点で移動元のワークスペースから除名されていた — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`ensureMovable` の `AccessDenied` には到達しない） |
 | TC-note-253 | moveNote: 移動の確定時点で移動先のワークスペースから除名されていた — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-note-254 | moveNote: 事前確認後・source freeze前に移動元Membership versionが変わる — freezeする | spec/testcases/note/moveNote.md#テストケース-movenote | actorと期待Membership versionをlocal transactionで再検査し、移動を中止する |
@@ -2194,6 +2196,8 @@
 | TC-usage-076 | getUsageSnapshot: `workspaceLimit: 21` — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `ValidationError("INVALID_PAGINATION")` が投げられる（20 にクランプしない） |
 | TC-usage-077 | recalculateStorageUsage: workspace 主体のメンバーが、解決のあと書き込みの前に除名される — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
 | TC-usage-078 | recalculateStorageUsage: workspace 主体が削除を受理済み — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `ConflictError("WORKSPACE_DELETING")` が投げられる |
+| TC-usage-079 | getUsageSnapshot: ページの後段で行が削られる（viewer のみ / directory が deleted） — 次ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 削られた行を読み直さず、ページ全体の末尾の次から返る（表示が 0 件のページでも `nextWorkspaceCursor` は進む） |
+| TC-usage-080 | getUsageSnapshot: 当月の LLM 実行回数が上限の 80 % — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | LLM 側に `level: "warning"` と消費・上限・期間が返る（境界値） |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |
@@ -2328,7 +2332,7 @@
 | TC-workspace-132 | inviteMember: owner である — owner ロールで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | 招待が作られる |
 | TC-workspace-133 | inviteMember: editor である — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-134 | inviteMember: 既にメンバーのメールアドレス — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ConflictError("ALREADY_MEMBER")` が投げられる |
-| TC-workspace-135 | inviteMember: 同じメールアドレスに保留中の招待がある — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `resendInvitation` を呼ぶ末尾呼び出しになり、トークンと期限が更新される。`inviteMember` は手順 5 までに書き込みを行わないため `run` の入れ子は生じず、新しい招待行は作られない |
+| TC-workspace-135 | inviteMember: 同じメールアドレスに保留中の招待がある — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `resendInvitation` を呼ぶ末尾呼び出しになり、トークンと期限が更新される。`inviteMember` は手順 4 までに書き込みを行わないため `run` の入れ子は生じず、新しい招待行は作られない |
 | TC-workspace-136 | inviteMember: 保留中の招待が editor で、owner を指定して再度招待する — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | ロールは editor のまま変わらない（変えたい場合は取り消してから招待し直す）。返る `role` も既存の招待の値 |
 | TC-workspace-137 | inviteMember: — — 形式が不正なメールアドレスで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InvalidEmail)` が投げられる |
 | TC-workspace-138 | inviteMember: — — 未知のロールで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InvalidRole)` が投げられる |
@@ -2505,4 +2509,6 @@
 | TC-workspace-309 | resendInvitation: メール送信基盤が失敗する — 再送する | spec/testcases/workspace/resendInvitation.md#テストケース-resendinvitation | 再送は成立し、送信失敗が記録され、`mailSent: false` が返る |
 | TC-workspace-310 | listMembers: 閲覧者自身の行がページに載らない — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` に閲覧者自身のロールが返る |
 | TC-workspace-311 | listMembers: 閲覧者と先頭行のロールが異なる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` は先頭行ではなく閲覧者自身のロールになる |
+| TC-workspace-312 | changeMemberRole: 除名して再入会した利用者に、前の membership のロール変更が後から届く — 更新する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 消えた membership の変更は新しい edge を汚さず、新しい membership の最初の変更（版 1）はそのまま届く |
+| TC-workspace-313 | inviteMember: 直近 24 時間に 49 件招待済みで、事前検査のあと発行の transaction に入るまでに別の招待が 1 件着地する — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ValidationError("INVITATION_LIMIT_REACHED")` が投げられ、未処理は 50 件を超えず、token route もメールも残らない |
 

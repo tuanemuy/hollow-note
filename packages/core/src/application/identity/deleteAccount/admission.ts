@@ -34,6 +34,12 @@ const operationMismatch = (operationId: string): ConflictError =>
     `Another deletion operation than ${operationId} owns this account`,
   );
 
+const workspaceMembershipsRemain = (): ConflictError =>
+  new ConflictError(
+    "WORKSPACE_MEMBERSHIPS_REMAIN",
+    "Leave or hand over every workspace before deleting the account",
+  );
+
 const uniquenessKeysOf = (
   user: Readonly<{ email: string; handle: string | null }>,
   identities: readonly Identity[],
@@ -71,6 +77,26 @@ const uniquenessKeysOf = (
  * The barrier is taken after the commit, in the personal scope's own
  * transaction: writes that committed before it stay visible to the
  * cleanup scan, and everything after is refused with `ACCOUNT_DELETING`.
+ *
+ * A user who still belongs to a workspace is refused outright with
+ * `WORKSPACE_MEMBERSHIPS_REMAIN`. This deployment has no workspace
+ * prepare / cleanup wave, so nothing would ever acknowledge the
+ * membership items the manifest fixes from those edges, and the
+ * operation would wait forever with the account stuck in `deleting`.
+ * Refusing at admission is the closed direction of that gap: no
+ * operation is created, so the account stays `active` and recoverable,
+ * and the caller is pointed at leaving or handing over the workspaces.
+ * **The slice that adds the wave deletes this check** (and its settled
+ * count, if nothing else reads it) — that is the single condition under
+ * which it may go.
+ *
+ * Only a request that would create a new operation is judged. A resume
+ * is not: refusing one would leave an account already `deleting` unable
+ * to move forward or back.
+ *
+ * The count is read before the transaction opens, like every other
+ * directory read: the transaction decides on the answer, it does not
+ * enclose the read.
  */
 export async function admitAccountDeletion(
   container: RequestContainer,
@@ -79,6 +105,8 @@ export async function admitAccountDeletion(
   const userId = UserId.create(input.userId);
   const requestId = requireRequestId(input.requestId);
   const now = container.clock.now();
+  const settledMemberships =
+    await container.userWorkspaceDirectory.countSettledByUser(userId, 1);
 
   const admitted = await container.globalUnitOfWorkProvider.run(
     async (ctx): Promise<AdmittedAccountDeletion> => {
@@ -104,6 +132,9 @@ export async function admitAccountDeletion(
             AccountDeletionRetryPolicy.windowStart(now),
           ),
         );
+        if (settledMemberships > 0) {
+          throw workspaceMembershipsRemain();
+        }
       }
 
       const identities = await ctx.identityRepository.listByUserId(userId);

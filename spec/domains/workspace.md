@@ -107,7 +107,7 @@ Membership = {
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `create` | `params: { id: string; workspaceId: WorkspaceId; userId: UserId; role: string }, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 生成し `membership.added` を発行 |
-| `changeRole` | `membership: Membership, role: string, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 同じロールなら変更せずイベントも出さない。異なれば更新し `membership.roleChanged`（旧ロールと、変更後の `version` を `sourceVersion` として含む）を発行 |
+| `changeRole` | `membership: Membership, role: string, now: Date` | `WithEventDrafts<Membership, WorkspaceEvent>` | 同じロールなら変更せずイベントも出さない。異なれば更新し `membership.roleChanged`（旧ロールと、自身の `membershipId`、変更後の `version` を `sourceVersion` として含む）を発行 |
 
 削除はユースケースが `WorkspaceEvents.membershipRemoved` を直接発行する。
 
@@ -206,6 +206,7 @@ interface WorkspaceRepository extends TransactionalRepository<Workspace, Workspa
 interface UserWorkspaceDirectory {
   listActiveByUser(userId: UserId, cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; role: WorkspaceRole }[]; nextCursor: string | null }>>;
   countOwnedByUser(userId: UserId, limit: number): Promise<number>; // limitで打ち切る
+  countSettledByUser(userId: UserId, limit: number): Promise<number>; // limitで打ち切る
 }
 
 type WorkspaceDirectoryEntry = Readonly<{
@@ -279,6 +280,8 @@ repository は current workspace scope に束縛される。slug検索、公開w
 
 `UserWorkspaceDirectory.countOwnedByUser`は所有上限（[usecases/workspace.md](../usecases/workspace.md) の `createWorkspace`）の判定に使い、`role = owner`の`active` / `pending` / `activating` edgeを数える。未確定の join を含めるのは、自分の activation と競争すれば 21 件目を開けてしまうためである。`removing` edgeは席を明け渡し済みなので数えない。`limit`（1〜100）で打ち切るので戻り値は `min(実数, limit)` であり、呼び出し側は判定したい上限を渡す。
 
+`UserWorkspaceDirectory.countSettledByUser`はロールを問わず**確定した** edge（`active` / `pending` / `removing`）を数える。これは account deletion の manifest が membership item として固定する集合（`AccountDeletionManifestStore.appendMembershipPage`）と同じ述語であり、`activating` を除くのも同じ理由 — まだ確定していない join のものなので、働きかけられる確定状態を持たない。`listActiveByUser`は`pending` / `removing`を隠すので代用にならない。打ち切りは`countOwnedByUser`と同じ契約で、`limit`は1〜100、戻り値は`min(実数, limit)`、範囲外は`ValidationError("INVALID_PAGINATION")`とする。「1件でもあるか」だけを問う呼び出し側は`limit: 1`を渡す（[usecases/identity.md](../usecases/identity.md) の `deleteAccount`）。
+
 `PublicWorkspaceDirectoryReader.listPublished`はWorkspaceId hashの最大32 shardを同時6接続のwaveで読み、各shardの`(updated_at DESC, workspace_id)` keysetを署名opaque cursorへ保持して全体最大200件へmergeする。reshard中は旧新generationを読み、WorkspaceId/sourceVersionで重複排除する。総件数は数えず、サイトマップ生成側が`nextCursor`を末尾まで反復する。
 
 directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。除名・脱退はこの2相を`MembershipDirectoryReservationStore.beginRemoval` / `completeRemoval`で回す。`removing` edgeは`listActiveByUser`から即座に外れるので、宣言した瞬間に一覧から消える。`(userId, workspaceId)`で鍵を引くのは、行の`operation_id`が作成した join のものであり除名側が導出できないためで、冪等性は目標状態で取る — `removing`への再実行も、消えた edge の`completeRemoval`も成功する。edgeが不在の`beginRemoval`も成功し、`removing`を経ていない`completeRemoval`は`ConflictError`にする。
@@ -325,7 +328,7 @@ interface MembershipDirectoryReservationStore {
   commitAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   releaseAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   listActivatingByUser(userId: UserId, limit: number): Promise<readonly { operationId: string; workspaceId: WorkspaceId }[]>;
-  applyRoleIfNewer(input: { userId: UserId; workspaceId: WorkspaceId; role: WorkspaceRole; sourceVersion: number }): Promise<void>;
+  applyRoleIfNewer(input: { userId: UserId; workspaceId: WorkspaceId; membershipId: MembershipId; role: WorkspaceRole; sourceVersion: number }): Promise<void>;
   beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
   abandonRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
   completeRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
@@ -334,7 +337,7 @@ interface MembershipDirectoryReservationStore {
 
 `MembershipDirectoryReservationStore`はcurrent UserId shardに束縛する。`reserveAndClaimActivation`はpending row insert、同shardのcurrent UserがActiveであることの検査、`activating`へのclaimを1 transactionで行う。Userがdeletingならrowを一切insertしない。account deletion開始前にclaim済みの`activating` edgeはaccept Sagaがactive/abandonedへ収束するまで削除manifest構築を待たせる。pending edgeのprepare/release/commitはedge operation IDとdeletion operation IDの組で冪等にする。
 
-`applyRoleIfNewer`は`workspace.membership.roleChanged`をedgeの`role`へ投影する唯一の書き手で、`listActiveByUser`が返すroleはこのedgeからしか来ない。順序は`sourceVersion`（変更後のMembershipの版）だけで決め、保存済みの版**より大きい**ときだけ書く。予約が運んだ初期roleはどの版よりも古いものとして扱う。この1つの規則が再配送・後着・同時適用の3つを兼ねる — 同じ変更の再配送は版が大きくならないので何も書かず、後から届いた古い変更はroleを巻き戻さず、同時適用は保存済み行との比較なので版が大きい方が勝つ。鍵は`beginRemoval`と同じ`(userId, workspaceId)`で、行の`operation_id`はjoinのものであり role 変更側が導出できない。`pending` / `activating` edgeにも適用する（`activate`はroleを触らないため、未確定のまま届いた変更を落とすとroleが取り残される）。**edgeが不在なら何もせず、決してinsertしない** — 除名後に届いた古い変更が削除済みedgeを復活させないため。この呼び出しが書き手だったかどうかは`applySnapshotIfNewer`と同じ理由で答えない。
+`applyRoleIfNewer`は`workspace.membership.roleChanged`をedgeの`role`へ投影する唯一の書き手で、`listActiveByUser`が返すroleはこのedgeからしか来ない。書くのは**その`membershipId`を名指ししているedge**に限り、そのうえで順序を`sourceVersion`（変更後のMembershipの版）だけで決め、保存済みの版**より大きい**ときだけ書く。予約が運んだ初期roleはどの版よりも古いものとして扱う。版の規則が兼ねるのは**同じ世代の中の3つ**（再配送・後着・同時適用）である — 同じ変更の再配送は版が大きくならないので何も書かず、後から届いた古い変更はroleを巻き戻さず、同時適用は保存済み行との比較なので版が大きい方が勝つ。世代をまたぐ4つ目は`membershipId`の照合が持つ: 版が並べるのは1つのMembershipの中の変更だけなので、照合を欠くと除名→再入会で作り直されたedge（`role_source_version`が`null`に戻る）へ前の世代の後着が通り、続けて新しいMembershipの最初の変更が版比較で落ちる。鍵は`beginRemoval`と同じ`(userId, workspaceId)`で、行の`operation_id`はjoinのものであり role 変更側が導出できない。そのmembershipを名指しする`activating` edgeにも適用する（`activate`はroleを触らないため、未確定のまま届いた変更を落とすとroleが取り残される）。**edgeが不在なら何もせず、決してinsertしない** — 除名後に届いた古い変更が削除済みedgeを復活させないため。別のmembershipを名指しするedgeも、まだ何も名指していない`pending`予約も、同じ理由で何も書かない。この呼び出しが書き手だったかどうかは`applySnapshotIfNewer`と同じ理由で答えない。
 
 ```ts
 interface MembershipRemovalPreparationStore {
@@ -408,7 +411,7 @@ Workspace / Membership / Invitation の正データは workspace scope DO に置
 | `workspace.unpublished` | `{ workspaceId }` | 読み取りモデルの投影（`projectNoteChanges` の公開状態） |
 | `workspace.deleted` | `{ workspaceId, operationId }` | Note / Tag / Storage / Usage の後始末。global directory cleanupは削除前manifestのroute keyを使う |
 | `workspace.membership.added` | `{ workspaceId, userId, role }` | 監査 |
-| `workspace.membership.roleChanged` | `{ workspaceId, userId, previousRole, currentRole, sourceVersion }` | `membership_directory` edge の `role` の投影（`MembershipDirectoryReservationStore.applyRoleIfNewer`）。降格に伴う実行中ジョブの取り消しは購読ではなく `changeMemberRole` が同じ手順の中で行う |
+| `workspace.membership.roleChanged` | `{ workspaceId, userId, membershipId, previousRole, currentRole, sourceVersion }` | `membership_directory` edge の `role` の投影（`MembershipDirectoryReservationStore.applyRoleIfNewer`）。`membershipId` は `sourceVersion` がどの世代を数えた版かを名指しする（版は 1 つの Membership の中でしか比較できず、除名と再入会は 0 から数え直す）。降格に伴う実行中ジョブの取り消しは購読ではなく `changeMemberRole` が同じ手順の中で行う |
 | `workspace.membership.removed` | `{ workspaceId, userId }` | 監査（購読者なし。実行中ジョブの取り消しは `removeMember` / `leaveWorkspace` が同じ手順の中で行う。directory edge の撤去も同様で、`beginRemoval` → local commit → `completeRemoval` の 2 相を購読者が二重に消しにいくと、後始末の ack を待つ `removing` edge を落としうる） |
 | `workspace.invitation.created` | `{ invitationId, workspaceId, email, role }` | 監査（購読者なし。招待メールの送信は `inviteMember` / `resendInvitation` が同じ手順の中で `MailSender.send` を呼んで行う） |
 | `workspace.invitation.accepted` | `{ invitationId, workspaceId, userId }` | 監査 |

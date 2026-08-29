@@ -12,11 +12,13 @@ import type { WorkerContainer } from "../di/types";
  * workspace scope, which is why a lagging edge is a display gap and never
  * a privilege.
  *
- * Ordering is the event's own `sourceVersion`, applied by the store: a
- * redelivery repeats a version that is no longer newer, and a change
- * that arrives after a later one is refused rather than rolling the role
- * back. That is what makes the handler safe under the at-least-once,
- * unordered delivery the relay gives it, with no `IdempotencyStore`.
+ * Ordering is the event's own `membershipId` and `sourceVersion`, applied
+ * by the store: a change of a membership the edge no longer names writes
+ * nothing, a redelivery repeats a version that is no longer newer, and a
+ * change that arrives after a later one is refused rather than rolling
+ * the role back. That is what makes the handler safe under the
+ * at-least-once, unordered delivery the relay gives it, with no
+ * `IdempotencyStore`.
  *
  * Removal is deliberately not projected here. `removeMember` /
  * `leaveWorkspace` tear the edge down in band, `removing` first and then
@@ -30,6 +32,7 @@ export async function projectMembershipRole(
   await deps.membershipDirectoryReservationStore.applyRoleIfNewer({
     userId: event.payload.userId,
     workspaceId: event.payload.workspaceId,
+    membershipId: event.payload.membershipId,
     role: event.payload.currentRole,
     sourceVersion: event.payload.sourceVersion,
   });

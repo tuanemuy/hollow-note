@@ -418,14 +418,13 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 1. 権限を `manageMembers` で確認する
 2. `Email.create` と `WorkspaceRole.create` を構築する
 3. 招待先が既にメンバーなら `ConflictError("ALREADY_MEMBER")`
-4. `InvitationRepository.countPendingIssuedSince(workspaceId, now - 24 時間)` が上限（50 件）以上なら `ValidationError("INVITATION_LIMIT_REACHED")`。**これはレート制限ではなくクォータである** — 上限に掛かるのは「直近 24 時間に発行した未処理の招待」の在庫であり、招待が 1 件受諾されるか取り消されればその場で枠が空く。待てば必ず解けるとは限らず、解除の時刻も出せない（`countPendingIssuedSince` は件数しか返さない。[domains/workspace.md](../domains/workspace.md)）。`THROTTLED` / `RATE_LIMITED` と別のコードにするのはこの違いによる（[presentation/index.md](../presentation/index.md)）
-5. `InvitationRepository.findPendingByWorkspaceAndEmail` を引き、既に `pending` の招待があれば `resendInvitation` を**呼ぶ**（`workspaceId` / `userId` はそのまま、`invitationId` は引いた招待の ID）。その結果の `invitationId` / `expiresAt` / `invitationUrl` をそのまま返し、`email` / `role` は既存の招待の値を写して手順 6・7 には進まない
-6. invitation ID / operation ID / tokenを採番し、global D1の `InvitationRouteStore.reserve` でtoken hashを`reserved`にする
-7. workspace scopeのlocal transactionで `Invitation.issue` を保存する
-8. commit後に `InvitationRouteStore.activate` を同じoperation IDで呼ぶ。local失敗時は`abandon`し、応答喪失時は再試行する
-9. active化後に `MailSender.send({ kind: "workspaceInvitation" })` を送る
+4. `InvitationRepository.findPendingByWorkspaceAndEmail` を引き、既に `pending` の招待があれば `resendInvitation` を**呼ぶ**（`workspaceId` / `userId` はそのまま、`invitationId` は引いた招待の ID）。その結果の `invitationId` / `expiresAt` / `invitationUrl` をそのまま返し、`email` / `role` は既存の招待の値を写して手順 5・6 には進まない
+5. invitation ID / operation ID / tokenを採番し、global D1の `InvitationRouteStore.reserve` でtoken hashを`reserved`にする
+6. workspace scopeのlocal transactionで、`InvitationRepository.countPendingIssuedSince(workspaceId, now - 24 時間)` が上限（50 件）以上なら `ValidationError("INVITATION_LIMIT_REACHED")` とし、そうでなければ `Invitation.issue` を保存する。判定を発行と同じ transaction に置くのは、外で数えると検査と insert の間に枠が変わり、49 件を同時に読んだ 2 件がどちらも通って 51 件になるためである（この count だけが自 UoW の書き込みを観測する理由でもある。[domains/workspace.md](../domains/workspace.md)）。したがって判定は手順 4 の畳み込みより**後**にある — 再送は行を増やさないので、在庫の上限で止める理由が無い。**これはレート制限ではなくクォータである** — 上限に掛かるのは「直近 24 時間に発行した未処理の招待」の在庫であり、招待が 1 件受諾されるか取り消されればその場で枠が空く。待てば必ず解けるとは限らず、解除の時刻も出せない（`countPendingIssuedSince` は件数しか返さない）。`THROTTLED` / `RATE_LIMITED` と別のコードにするのはこの違いによる（[presentation/index.md](../presentation/index.md)）
+7. commit後に `InvitationRouteStore.activate` を同じoperation IDで呼ぶ。local失敗時は`abandon`し、応答喪失時は再試行する
+8. active化後に `MailSender.send({ kind: "workspaceInvitation" })` を送る
 
-手順 5 はユースケースの**呼び出し**であり、手順の複製ではない（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。このユースケースは手順 5 までに 1 件も書き込みを行わないため末尾呼び出しになり、`resendInvitation` が自分の UoW で確定した結果だけが残る。`resendInvitation` は `expectedVersion` を要求しないため渡す版もなく、その手順 1・2（権限の確認と `pending` の再確認）が重複するだけである。既存招待のロールを入力の `role` で書き換えないのは意図で、ロールを変えたい場合は取り消してから招待し直す（WS-03）。
+手順 4 はユースケースの**呼び出し**であり、手順の複製ではない（[usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」）。このユースケースは手順 4 までに 1 件も書き込みを行わないため末尾呼び出しになり、`resendInvitation` が自分の UoW で確定した結果だけが残る。`resendInvitation` は `expectedVersion` を要求しないため渡す版もなく、その手順 1・2（権限の確認と `pending` の再確認）が重複するだけである。既存招待のロールを入力の `role` で書き換えないのは意図で、ロールを変えたい場合は取り消してから招待し直す（WS-03）。
 
 ### エラーケース
 
@@ -678,7 +677,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 5. 降格の場合、下表から許可されなくなるkindを作り、`JobRepository.listActiveByRequesterAndKinds(target.userId, disallowedKinds, 100)`で最終述語にlimitを適用する。100件なら同じlocal UoWでcontinuationを積む。kind配列はpayloadへ焼き付けず`nextRole`から毎回導く
 6. `UnitOfWorkProvider.run` の中で、5 で集めたジョブに `Job.cancel` を適用して保存し、`Membership.changeRole` を保存してイベントを収集する。**これらの保存はすべて同一 UoW で行う** — ロールだけが下がってジョブが走り続ける中間状態を作らないため。ジョブを取り消したときは [usecases/job.md](./job.md) の「共通: 強制終端の後始末」に従う（`kind: "conversion"` の対象ノートが `processing` なら `Note.markConversionFailed("canceled")`、生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles` で回収。いずれも同一 UoW。取り消しが起きない昇格・同ロールの指定では後始末も起きない）
 
-`membership_directory` edge の `role` は本ユースケースが同期的に書かず、`workspace.membership.roleChanged` の購読者が `MembershipDirectoryReservationStore.applyRoleIfNewer` で投影する（[domains/workspace.md](../domains/workspace.md) のドメインイベント）。edge は `listUserWorkspaces` が返す role の唯一の出どころなので、投影しなければ切替 UI が古い role を出し続ける。順序は event が運ぶ `sourceVersion`（変更後の Membership の版）だけで決め、後着の古い変更は role を巻き戻さない。表示だけの投影であり、操作時の権限は必ず workspace scope の Membership を読み直す（[listUserWorkspaces](#listuserworkspaces) 手順 2）ので、投影の遅れは表示の遅れであって権限の昇格にはならない。
+`membership_directory` edge の `role` は本ユースケースが同期的に書かず、`workspace.membership.roleChanged` の購読者が `MembershipDirectoryReservationStore.applyRoleIfNewer` で投影する（[domains/workspace.md](../domains/workspace.md) のドメインイベント）。edge は `listUserWorkspaces` が返す role の唯一の出どころなので、投影しなければ切替 UI が古い role を出し続ける。順序は event が運ぶ `membershipId` と `sourceVersion`（変更後の Membership の版）で決め、edge が別の世代を名指していれば何も書かず、同じ世代の中では後着の古い変更が role を巻き戻さない。表示だけの投影であり、操作時の権限は必ず workspace scope の Membership を読み直す（[listUserWorkspaces](#listuserworkspaces) 手順 2）ので、投影の遅れは表示の遅れであって権限の昇格にはならない。
 
 | `kind` | 実行に要するロール | editor → viewer で取り消す |
 | --- | --- | --- |

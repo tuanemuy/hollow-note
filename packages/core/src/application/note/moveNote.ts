@@ -64,11 +64,13 @@ export type MovedNoteView = Readonly<{
  * The tag domain does not exist yet — it lands with Issue #8 — so this
  * slice ships the call sites and no implementation. The three members are
  * the same phases the note itself moves through: `plan` runs before the
- * operation is created, because the dropped names are fixed into the
- * operation payload and must not be recomputed on a resume
- * (spec/usecases/note.md#movenote 手順 3); `stageTarget` and
- * `retireSource` receive the unit of work of the phase they belong to, so
- * an assignment change commits with the note write that caused it.
+ * operation is created, so its answer can be fixed into the operation
+ * payload, and the names the move reports are read back from that payload
+ * on every attempt (spec/usecases/note.md#movenote 手順 3) — `plan` itself
+ * is called once per *attempt*, and a resume discards what it returns, so
+ * an implementation must be a pure read; `stageTarget` and `retireSource`
+ * receive the unit of work of the phase they belong to, so an assignment
+ * change commits with the note write that caused it.
  */
 export interface NoteMoveTagRelocation {
   /**
@@ -829,13 +831,15 @@ async function claimRoute(
  * it.
  *
  * Two things this slice deliberately does not do. A failure after the
- * route switch leaves the source's move lock standing and the operation
- * `running`, which blocks that scope's membership management, its
- * deletion, and every later move of this note until a recovery entry
- * point exists (Issue #28) — the failure is logged with the migration id
- * and both scopes so an operator can find it. And the local / public note
- * projections are not rebuilt for the new owner: the target's generation
- * counter is prepared, but no `note.moved` subscriber exists yet.
+ * route switch leaves both scopes' move locks standing — the target's is
+ * released only once the activation lands, the source's only once the
+ * retirement does — and the operation `running`, which blocks either
+ * scope's membership management, its deletion, and every later move of
+ * this note until a recovery entry point exists (Issue #28) — the failure
+ * is logged with the migration id and both scopes so an operator can find
+ * it. And the local / public note projections are not rebuilt for the new
+ * owner: the target's generation counter is prepared, but no `note.moved`
+ * subscriber exists yet.
  *
  * One piece of 手順 5 is **absent in this slice**: terminating the
  * source's unfinished jobs, because the Job aggregate does not exist
@@ -1116,20 +1120,27 @@ async function rollBack(
  * (`NOTE_ROUTE_STATE_VIOLATION`) even though nothing was ever staged.
  * The claim is identified by the migration id, so a route claimed by
  * somebody else is left alone.
+ *
+ * Releasing is a repair, and the read that decides whether to release is
+ * part of it: the route store is the very thing that just failed, so both
+ * halves are expected to fail together. Neither may replace the caller's
+ * diagnosis, and neither may keep the operation from being settled — left
+ * `running`, it would refuse every later move of this note instead of
+ * merely leaving a route parked.
  */
 async function releaseUnusedClaim(
   container: RequestContainer,
   plan: MovePlan,
 ): Promise<void> {
-  const route = await container.noteRouteStore.resolve(plan.noteId);
-  if (
-    route === null ||
-    route.state !== "moving" ||
-    route.migrationId !== plan.migrationId
-  ) {
-    return;
-  }
   try {
+    const route = await container.noteRouteStore.resolve(plan.noteId);
+    if (
+      route === null ||
+      route.state !== "moving" ||
+      route.migrationId !== plan.migrationId
+    ) {
+      return;
+    }
     await container.noteRouteStore.abortMove({
       noteId: plan.noteId,
       migrationId: plan.migrationId,

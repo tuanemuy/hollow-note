@@ -277,5 +277,48 @@ export function describeUserWorkspaceDirectoryContract(
         "INVALID_PAGINATION",
       );
     });
+
+    it("ADP-workspace-076: counts every settled edge in any role and leaves out the one a join still holds (seeded backend)", async (ctx) => {
+      if (!(await seedOwnerEdges())) {
+        ctx.skip();
+        return;
+      }
+      // User 1 holds three active, two pending and two removing edges,
+      // plus the `activating` one. A count that reused the active-only
+      // enumeration would read 3, and one that copied the ownership
+      // predicate would count the `activating` edge and drop the
+      // `removing` ones.
+      expect(
+        await backend.userWorkspaceDirectory.countSettledByUser(userId(1), 100),
+      ).toBe(7);
+      expect(
+        await backend.userWorkspaceDirectory.countSettledByUser(userId(2), 100),
+      ).toBe(1);
+      expect(
+        await backend.userWorkspaceDirectory.countSettledByUser(userId(3), 100),
+      ).toBe(0);
+    });
+
+    it("ADP-workspace-076: the settled count stops at the limit and rejects one outside 1..100 (seeded backend)", async (ctx) => {
+      if (!(await seedOwnerEdges())) {
+        ctx.skip();
+        return;
+      }
+      expect(
+        await backend.userWorkspaceDirectory.countSettledByUser(userId(1), 1),
+      ).toBe(1);
+      expect(
+        await backend.userWorkspaceDirectory.countSettledByUser(userId(1), 3),
+      ).toBe(3);
+
+      await expectValidation(
+        backend.userWorkspaceDirectory.countSettledByUser(userId(1), 0),
+        "INVALID_PAGINATION",
+      );
+      await expectValidation(
+        backend.userWorkspaceDirectory.countSettledByUser(userId(1), 101),
+        "INVALID_PAGINATION",
+      );
+    });
   });
 }

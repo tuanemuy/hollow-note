@@ -4,7 +4,6 @@ import { AppShell } from "@/components/layout/AppShell";
 import { WorkspaceSettingsTabs } from "@/components/layout/WorkspaceSettingsTabs";
 import { ServerErrorState } from "@/components/ui/ErrorState";
 import { WorkspaceUnavailableState } from "@/components/workspace/WorkspaceUnavailable";
-import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
 import { boundedRedirectSource } from "@/presentation/redirect";
 import { loadWorkspaceSettingsShell } from "./-action";
@@ -42,14 +41,7 @@ export const Route = createFileRoute("/workspaces/$workspaceId/settings")({
     return { meta, links };
   },
   component: WorkspaceSettingsLayout,
-  // 削除済み・存在しないワークスペースは `WORKSPACE_NOT_FOUND` で来る。
-  // 非メンバーと同じ表示に畳む（存在の有無を漏らさない）。
-  errorComponent: ({ error }) =>
-    extractSerializedError(error).kind === "notFound" ? (
-      <WorkspaceUnavailableState />
-    ) : (
-      <ServerErrorState />
-    ),
+  errorComponent: () => <ServerErrorState />,
 });
 
 function WorkspaceSettingsLayout() {

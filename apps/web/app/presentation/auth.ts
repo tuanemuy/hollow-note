@@ -7,8 +7,15 @@ import { errorResponseMiddleware } from "./errorResponseMiddleware";
  * the viewer's own e-mail address; the shell (name, avatar, handle) never
  * needs it, so the address stops at the server and only the code that
  * compares it with an invited address reads it there.
+ *
+ * `email?: never` is what makes that a type rule rather than a habit: a
+ * plain `Omit` is structurally satisfied by the wide session view, so
+ * handing `AuthenticatedUserView` straight to a client payload typed this
+ * way would compile. Declaring the field absent rejects it instead, and
+ * `toViewerView` is the only way to produce the narrow shape.
  */
-export type ViewerView = Omit<AuthenticatedUserView, "email">;
+export type ViewerView = Omit<AuthenticatedUserView, "email"> &
+  Readonly<{ email?: never }>;
 
 export const toViewerView = (user: AuthenticatedUserView): ViewerView => ({
   userId: user.userId,

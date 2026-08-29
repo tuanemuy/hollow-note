@@ -501,7 +501,7 @@ describe("getUsageSnapshot", () => {
     expect(second.nextWorkspaceCursor).toBeNull();
   });
 
-  it("a page the role filter trims still advances the cursor past the whole page", async () => {
+  it("TC-usage-079: a page the role filter trims still advances the cursor past the whole page", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     for (let index = 1; index <= 25; index += 1) {
@@ -532,7 +532,7 @@ describe("getUsageSnapshot", () => {
     );
   });
 
-  it("a page a deleted row trims still advances the cursor past the whole page", async () => {
+  it("TC-usage-079: a page a deleted row trims still advances the cursor past the whole page", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     for (let index = 1; index <= 25; index += 1) {
@@ -564,7 +564,7 @@ describe("getUsageSnapshot", () => {
     ]);
   });
 
-  it("a page made entirely of viewer memberships still hands back a cursor", async () => {
+  it("TC-usage-079: a page made entirely of viewer memberships still hands back a cursor", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     for (let index = 1; index <= 25; index += 1) {
@@ -679,6 +679,18 @@ describe("getUsageSnapshot", () => {
     expect(view.llm.consumedCalls).toBe(0);
     expect(view.llm.period).toEqual(BillingPeriod.of(h.clock.now()));
     expect(llmRows(h).values()).toHaveLength(0);
+  });
+
+  it("TC-usage-080: the LLM row reports the figures and level the quota service derives", async () => {
+    const h = createTestHarness();
+    await seedLlmUsage(h, 240);
+
+    expect((await snapshot(h)).llm).toEqual({
+      consumedCalls: 240,
+      limitCalls: 300,
+      period: BillingPeriod.of(h.clock.now()),
+      level: "warning",
+    });
   });
 
   it("TC-usage-059: trashed notes are counted in the reported usage", async () => {

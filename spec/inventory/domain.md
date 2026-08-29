@@ -198,9 +198,10 @@
 | DOM-workspace-082 | `MembershipDirectoryReservationStore.completeRemoval` | `spec/domains/workspace.md#ポート` | 後始末の ack 後に removing edge を削除する |
 | DOM-workspace-083 | `WorkspaceOperationLockStore.stageMove` | `spec/domains/workspace.md#ポート` | move authorization lock を actor 付きで冪等に張る |
 | DOM-workspace-084 | `WorkspaceOperationLockStore.releaseMove` | `spec/domains/workspace.md#ポート` | move authorization lock を無条件・冪等に解放する |
-| DOM-workspace-085 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | source version が大きい role 変更だけを directory edge へ投影し、不在の edge は復活させない |
+| DOM-workspace-085 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | edge が名指す membership と一致し、かつ source version が大きい role 変更だけを directory edge へ投影し、不在の edge も別世代の edge も復活・汚染させない |
 | DOM-workspace-086 | `MembershipDirectoryReservationStore.abandonRemoval` | `spec/domains/workspace.md#ポート` | 拒否された除名の `removing` edge を `active` へ戻し、`pending` / `activating` は拒否する |
 | DOM-workspace-087 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする。最後にコミットされた状態から答える |
+| DOM-workspace-088 | `UserWorkspaceDirectory.countSettledByUser` | `spec/domains/workspace.md#ポート` | ロールを問わず settled な edge（`active` / `pending` / `removing`）を limit まで数える |
 | DOM-storage-001 | `StoredFileId` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-storage-002 | `ObjectKey` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜1024 文字で traversal と先頭 slash を拒否し owner・purpose から構築する |
 | DOM-storage-003 | `FileName` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜255 文字へ安全化し path separator・制御文字を除く |

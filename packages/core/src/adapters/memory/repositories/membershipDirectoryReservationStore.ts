@@ -261,6 +261,11 @@ export function createMemoryMembershipDirectoryReservationStore(
         return;
       }
       const [key, row] = found;
+      // A version only orders changes inside one membership, so an edge
+      // belonging to another generation is left alone.
+      if (row.membershipId !== input.membershipId) {
+        return;
+      }
       if (
         row.roleSourceVersion !== null &&
         row.roleSourceVersion >= input.sourceVersion

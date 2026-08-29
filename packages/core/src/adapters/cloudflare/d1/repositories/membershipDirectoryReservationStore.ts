@@ -50,6 +50,7 @@ const laterOf = (stored: Date | null, next: Date): Date =>
 type Edge = Readonly<{
   operationId: string;
   workspaceId: WorkspaceId;
+  membershipId: string | null;
   state: EdgeState;
   roleSourceVersion: number | null;
   deletionPrepareOperationId: string | null;
@@ -60,6 +61,7 @@ type Edge = Readonly<{
 const toEdge = (row: SqlRow): Edge => ({
   operationId: text(row, "operation_id"),
   workspaceId: WorkspaceId.create(text(row, "workspace_id")),
+  membershipId: textOrNull(row, "membership_id"),
   state: enumOf(row, "state", STATES),
   roleSourceVersion: intOrNull(row, "role_source_version"),
   deletionPrepareOperationId: textOrNull(row, "deletion_prepare_operation_id"),
@@ -85,9 +87,10 @@ export type D1MembershipDirectoryReservationStoreDeps = Readonly<{
  * `commitAccountDeletion` removes the edge.
  *
  * The role projection is the one write keyed by `(user_id, workspace_id)`
- * instead, and `role_source_version` is its whole ordering — the update
- * repeats that predicate in SQL, so a newer role landing between the read
- * and the commit keeps its value.
+ * instead, and `membership_id` plus `role_source_version` is its whole
+ * ordering — the update repeats both predicates in SQL, so neither a
+ * newer role nor an edge re-created for another membership between the
+ * read and the commit loses to a stale write.
  *
  * Leases are fail-safe. Expiry is never part of a lock's predicate, so a
  * lapsed prepare lease still belongs to its deletion; only the holder's
@@ -530,6 +533,11 @@ export function createD1MembershipDirectoryReservationStore(
       if (edge === null) {
         return;
       }
+      // A version only orders changes inside one membership, so an edge
+      // belonging to another generation is left alone.
+      if (edge.membershipId !== input.membershipId) {
+        return;
+      }
       if (
         edge.roleSourceVersion !== null &&
         edge.roleSourceVersion >= input.sourceVersion
@@ -548,16 +556,20 @@ export function createD1MembershipDirectoryReservationStore(
             updated_at: now,
           },
           // The predicate is repeated in the statement so a newer role
-          // that lands between the read and the commit keeps its value.
+          // that lands between the read and the commit keeps its value,
+          // and so an edge re-created for another membership between the
+          // read and the commit is not written either.
           statement: statement(
             `UPDATE ${TABLE}
                 SET role = ?, role_source_version = ?, updated_at = ?
               WHERE operation_id = ?
+                AND membership_id = ?
                 AND (role_source_version IS NULL OR role_source_version < ?)`,
             input.role,
             input.sourceVersion,
             now,
             edge.operationId,
+            input.membershipId,
             input.sourceVersion,
           ),
         }),

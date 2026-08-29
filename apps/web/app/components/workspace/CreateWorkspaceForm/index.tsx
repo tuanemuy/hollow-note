@@ -171,6 +171,9 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
             aria-describedby={nameErrorId}
             onChange={(event) => setName(event.target.value)}
           />
+          <p className="mt-2 text-xs text-ink-tertiary">
+            {WORKSPACE_NAME_MAX_LENGTH} 文字まで
+          </p>
           <p className={fieldErrorClass} id={nameErrorId} aria-live="polite">
             {nameError}
           </p>
@@ -245,7 +248,8 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
             </div>
           ) : null}
           <p className="mt-2 text-xs text-ink-tertiary">
-            半角英小文字・数字・ハイフン。あとから設定できます。ノートを公開するときに必要になります。
+            半角英小文字・数字・ハイフン · 3〜30
+            文字。あとから設定できます。ノートを公開するときに必要になります。
           </p>
         </div>
 

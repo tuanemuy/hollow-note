@@ -22,10 +22,13 @@ export const MANIFEST_PAGE_LIMIT = 100;
 const PHASE_AFTER_MEMBERSHIPS: AccountDeletionBuildPhase = "authorRoutes";
 
 /**
- * Dispatch phase the built manifest hands over to. `prepare` is empty in
- * this deployment (no membership items exist), so the chain starts at
- * the personal cleanup wave; the slice that adds membership prepare
- * moves the entry point back to `prepare`.
+ * Dispatch phase the built manifest hands over to. Membership edges do
+ * exist, but admission refuses a user who still holds one
+ * (`WORKSPACE_MEMBERSHIPS_REMAIN`), so no manifest ever fixes a
+ * membership item and `prepare` stays empty: the chain starts at the
+ * personal cleanup wave. The slice that adds the membership prepare /
+ * cleanup wave drops that refusal and moves the entry point back to
+ * `prepare`.
  */
 const FIRST_DISPATCH_PHASE: AccountDeletionDispatchPhase = "cleanup";
 

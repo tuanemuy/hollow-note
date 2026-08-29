@@ -6,6 +6,7 @@ import type { Version } from "@repo/core/domain/common/version";
 import type { Email, UserId } from "@repo/core/domain/identity/valueObject";
 import type {
   InvitationId,
+  MembershipId,
   WorkspaceId,
   WorkspaceName,
   WorkspaceRole,
@@ -66,12 +67,19 @@ export type MembershipAddedEvent = DomainEventBase<
  * edge: delivery is at-least-once with no ordering guarantee, so the
  * consumer needs the payload itself to say which of two role changes is
  * the later one (spec/domains/workspace.md `ドメインイベント`).
+ *
+ * `membershipId` names the generation that version counts in. A version
+ * is only comparable within one Membership — a removal and a rejoin of
+ * the same `(workspaceId, userId)` restart it at zero — so the projection
+ * needs the id to tell "an older change of this membership" from "a
+ * change of the membership that came before this one".
  */
 export type MembershipRoleChangedEvent = DomainEventBase<
   "workspace.membership.roleChanged",
   Readonly<{
     workspaceId: WorkspaceId;
     userId: UserId;
+    membershipId: MembershipId;
     previousRole: WorkspaceRole;
     currentRole: WorkspaceRole;
     sourceVersion: Version;
@@ -212,6 +220,7 @@ export const WorkspaceEvents = {
     params: Readonly<{
       workspaceId: WorkspaceId;
       userId: UserId;
+      membershipId: MembershipId;
       previousRole: WorkspaceRole;
       currentRole: WorkspaceRole;
       sourceVersion: Version;

@@ -19,3 +19,5 @@
 | LLM を一度も使っておらず当月の記録がない | 引く | `LlmUsage.initialize` の値（`consumedCalls: 0`）が返り、レコードは作られない | |
 | ゴミ箱にノートがある | 引く | 使用量に数えられている | |
 | `workspaceLimit: 21` | 引く | `ValidationError("INVALID_PAGINATION")` が投げられる（20 にクランプしない） | |
+| ページの後段で行が削られる（viewer のみ / directory が deleted） | 次ページを引く | 削られた行を読み直さず、ページ全体の末尾の次から返る（表示が 0 件のページでも `nextWorkspaceCursor` は進む） | |
+| 当月の LLM 実行回数が上限の 80 % | 引く | LLM 側に `level: "warning"` と消費・上限・期間が返る（境界値） | |

@@ -8,6 +8,7 @@ import {
 } from "@repo/core/domain/workspace/events";
 import {
   InvitationId,
+  MembershipId,
   WorkspaceId,
   WorkspaceName,
   WorkspaceSlug,
@@ -93,6 +94,7 @@ describe("defaultEventDecoderRegistry", () => {
         {
           workspaceId,
           userId,
+          membershipId: MembershipId.create("m-1"),
           previousRole: "editor",
           currentRole: "viewer",
           sourceVersion: Version.create(1),

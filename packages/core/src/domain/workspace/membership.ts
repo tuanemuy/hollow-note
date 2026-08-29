@@ -79,6 +79,7 @@ export const Membership = {
           {
             workspaceId: next.workspaceId,
             userId: next.userId,
+            membershipId: next.id,
             previousRole: membership.role,
             currentRole: nextRole,
             sourceVersion: next.version,

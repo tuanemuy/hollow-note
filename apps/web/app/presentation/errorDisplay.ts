@@ -163,6 +163,8 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
 
   CONFIRMATION_MISMATCH:
     "メールアドレスが一致しません。アカウントのメールアドレスをそのまま入力してください。",
+  WORKSPACE_MEMBERSHIPS_REMAIN:
+    "参加中のワークスペースがあるため、アカウントを削除できません。ワークスペースから脱退するか、owner を他のメンバーに譲るか、ワークスペースを削除してからもう一度お試しください。",
   INVALID_REQUEST_ID:
     "削除の要求を組み立てられませんでした。画面を再読み込みしてもう一度お試しください。",
   IDENTITY_ACCOUNT_DELETION_RETRY_LIMIT_EXCEEDED:

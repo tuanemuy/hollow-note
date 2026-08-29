@@ -126,14 +126,19 @@ LlmUsage = {
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `ensureUploadAllowed` | `params: { storage: StorageQuota; llm: LlmUsage \| null; totalBytes: number; llmCalls: number }` | `void` | `storage.ensureCanStore` を呼び、`llmCalls > 0` なら `llm.ensureCanCall` も呼ぶ。`llm` が `null`（当月の記録がまだない）なら `LlmUsage.initialize` と同じ初期値（消費 0）で判定する |
-| `describe` | `params: { storage: StorageQuota; llm: LlmUsage \| null }` | `UsageSnapshot` | 表示用の値をまとめる |
+| `describe` | `params: { storage: StorageQuota; llm: LlmUsage \| null }` | `UsageSnapshot` | 表示用の値をまとめる。`llm` に非 null を渡した呼び出しには LLM 半分が非 null で返る |
 
 ```
-UsageSnapshot = Readonly<{
-  storage: { consumedBytes: number; limitBytes: number; noteCount: number; level: UsageWarningLevel };
-  llm: { consumedCalls: number; limitCalls: number; period: BillingPeriod; level: UsageWarningLevel } | null;
+DescribedStorageUsage = Readonly<{ consumedBytes: number; limitBytes: number; noteCount: number; level: UsageWarningLevel }>;
+DescribedLlmUsage = Readonly<{ consumedCalls: number; limitCalls: number; period: BillingPeriod; level: UsageWarningLevel }>;
+
+UsageSnapshot<TLlm = DescribedLlmUsage | null> = Readonly<{
+  storage: DescribedStorageUsage;
+  llm: TLlm;
 }>;
 ```
+
+表示する数値と警告レベルを導出する場所はこのサービスだけである。記録の不在を初期値へ解決済みの呼び出し側が LLM 半分を非 null で受け取れるのはそのためで、null を外すために同じ 4 つの値を導出し直す必要がない。
 
 `ensureUploadAllowed` が `llm: null` を初期値として扱うのは、`LlmUsage` が当月最初の消費（`consumeLlmCall`）で初めて作られるためで、`initializeQuota` は `StorageQuota` しか作らない。記録の不在を上限到達と読むと、新規利用者と各月の初回で LLM 必須のアップロードが必ず弾かれる。`getUsageSnapshot` が不在の記録を `LlmUsage.initialize` の値で埋めるのと同じ扱いに揃える。
 

@@ -72,4 +72,24 @@ export interface UserWorkspaceDirectory {
    * the same bounded-read contract `listActiveByUser` states for its own.
    */
   countOwnedByUser(userId: UserId, limit: number): Promise<number>;
+  /**
+   * How many workspaces the user still belongs to, in any role.
+   *
+   * Counts the **settled** edges — `active`, `pending` or `removing` —
+   * which is exactly the set an account deletion fixes as membership
+   * items (`AccountDeletionManifestStore.appendMembershipPage`). An
+   * `activating` edge is left out for the same reason it is left out
+   * there: it is still claimed by a join that has not settled, so it has
+   * no settled state anything could act on. `listActiveByUser` is not a
+   * substitute — it hides `pending` and `removing`, and a caller that
+   * asked it instead would read zero for a user whose edges are merely
+   * mid-flight.
+   *
+   * Counting stops at `limit`, so the answer is `min(actual, limit)` and
+   * the read stays bounded whatever a shard holds; a caller that only
+   * needs "any at all" passes 1. `limit` is 1–100; anything outside that
+   * range raises `ValidationError("INVALID_PAGINATION")`, the same
+   * bounded-read contract the other two methods state.
+   */
+  countSettledByUser(userId: UserId, limit: number): Promise<number>;
 }

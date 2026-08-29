@@ -16,6 +16,7 @@ import type {
 } from "@repo/core/domain/workspace/events";
 import {
   InvitationId,
+  MembershipId,
   WorkspaceId,
   WorkspaceName,
   type WorkspaceRole,
@@ -162,6 +163,7 @@ export const workspaceEventDecoders = {
     {
       workspaceId: string;
       userId: string;
+      membershipId: string;
       previousRole: WorkspaceRole;
       currentRole: WorkspaceRole;
       sourceVersion: number;
@@ -172,6 +174,7 @@ export const workspaceEventDecoders = {
       .object({
         workspaceId: z.string().min(1),
         userId: z.string().min(1),
+        membershipId: z.string().min(1),
         previousRole: roleSchema,
         currentRole: roleSchema,
         sourceVersion: z.number(),
@@ -180,6 +183,7 @@ export const workspaceEventDecoders = {
     (parsed) => ({
       workspaceId: WorkspaceId.create(parsed.workspaceId),
       userId: UserId.create(parsed.userId),
+      membershipId: MembershipId.create(parsed.membershipId),
       previousRole: parsed.previousRole,
       currentRole: parsed.currentRole,
       sourceVersion: Version.create(parsed.sourceVersion),

@@ -72,6 +72,7 @@ describe("Membership.changeRole", () => {
         payload: {
           workspaceId: WORKSPACE,
           userId: MEMBER,
+          membershipId: "m-1",
           previousRole: "editor",
           currentRole: "owner",
           sourceVersion: 1,

@@ -198,11 +198,7 @@ export async function getUsageSnapshot({
 
   return {
     personal: described.storage,
-    // `describe` encodes "no LLM record" as `llm: null`, but absence is
-    // already resolved above into the initialized period, so the DTO
-    // projects that entity instead of carrying a null the screen has no
-    // meaning for.
-    llm: toLlmUsageView(llm),
+    llm: toLlmUsageView(described.llm),
     workspaces,
     nextWorkspaceCursor: edgePage.nextCursor,
     updatedAt:

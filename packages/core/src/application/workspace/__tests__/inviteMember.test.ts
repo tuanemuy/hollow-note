@@ -328,6 +328,44 @@ describe("inviteMember", () => {
     ).toMatchObject({ status: "pending" });
   });
 
+  it("TC-workspace-313: an invitation that lands after the pre-checks still fills the last slot", async () => {
+    const h = createWorkspaceHarness();
+    await seedOwnedWorkspace(h);
+    await seedOutstanding(h, QUOTA - 1);
+
+    // A concurrent issue commits between this request's reads and the
+    // transaction that writes its invitation, which is why the quota has
+    // to be decided inside that transaction.
+    const inner = h.container.scopeUnitOfWorkProvider;
+    let interfered = false;
+    const racing: ScopeUnitOfWorkProvider = {
+      run: async (scope, callback) => {
+        if (!interfered) {
+          interfered = true;
+          await seedOutstanding(h, 1, "concurrent");
+        }
+        return inner.run(scope, callback);
+      },
+    };
+    const container: RequestContainer = {
+      ...h.container,
+      scopeUnitOfWorkProvider: racing,
+    };
+
+    await expectValidation(
+      invite(h, {}, container),
+      "INVITATION_LIMIT_REACHED",
+    );
+    expect(interfered).toBe(true);
+    expect(storedInvitations(h)).toHaveLength(QUOTA);
+    // The refused attempt leaves neither a token route nor a mail behind:
+    // every route still standing belongs to one of the seeded stock.
+    expect(invitationRoutes(h).map((row) => row.state)).toEqual(
+      new Array(QUOTA).fill("active"),
+    );
+    expect(h.mailSender.sent()).toHaveLength(0);
+  });
+
   it("TC-workspace-141: accepting one frees its slot at once, without waiting for the window", async () => {
     const h = createWorkspaceHarness();
     await seedOwnedWorkspace(h);

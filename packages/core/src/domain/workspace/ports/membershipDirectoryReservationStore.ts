@@ -197,11 +197,20 @@ export interface MembershipDirectoryReservationStore {
    * place `listActiveByUser` reads a role from, so without this the list
    * keeps rendering the role the join was created with.
    *
+   * `membershipId` names the generation the change belongs to and is
+   * matched before anything else: the write happens only on an edge that
+   * names **this** membership. A version orders changes within one
+   * Membership and says nothing across two, so without the match a change
+   * of a membership that was since removed would be applied to the edge a
+   * rejoin created — where `sourceVersion` is `null` again, so the
+   * "never projected is oldest" rule below would let it through and then
+   * refuse the new membership's own first change.
+   *
    * `sourceVersion` is the Membership version the change produced, and it
-   * is the whole ordering: the write happens only when it is **greater**
-   * than the version stored on the edge, and an edge that has never been
-   * projected (its role came from the reservation) is older than any of
-   * them.
+   * is the whole ordering within that generation: the write happens only
+   * when it is **greater** than the version stored on the edge, and an
+   * edge that has never been projected (its role came from the
+   * reservation) is older than any of them.
    *
    * Nothing is answered. Whether this particular call was the one that
    * wrote is not knowable to every backend — a guarded UPDATE that
@@ -209,14 +218,17 @@ export interface MembershipDirectoryReservationStore {
    * driver reports no row count — and no caller needs it: the projection
    * converges on the highest version regardless of who applied it.
    *
-   * That single rule covers all three arrivals delivery can produce.
-   * A redelivery of the same change repeats a version that is no longer
-   * greater and writes nothing, so at-least-once costs nothing. A change
-   * that arrives **after** a later one — the order the outbox never
-   * promises — is refused rather than rolling the role back to the value
-   * it named. Of two concurrent applies the higher version wins whichever
-   * arrives second, because the comparison is against the stored row
-   * rather than against what the caller last read.
+   * The version rule covers all three arrivals delivery can produce
+   * within one generation. A redelivery of the same change repeats a
+   * version that is no longer greater and writes nothing, so
+   * at-least-once costs nothing. A change that arrives **after** a later
+   * one — the order the outbox never promises — is refused rather than
+   * rolling the role back to the value it named. Of two concurrent
+   * applies the higher version wins whichever arrives second, because the
+   * comparison is against the stored row rather than against what the
+   * caller last read. The fourth arrival — a change that outlives the
+   * membership it belongs to — is the `membershipId` match's, not this
+   * rule's.
    *
    * Keyed on `(userId, workspaceId)` for the reason `beginRemoval` gives:
    * the row's operation id belongs to the join that created it, and a
@@ -228,12 +240,15 @@ export interface MembershipDirectoryReservationStore {
    * An **absent** edge is a no-op, never an insert: a role change
    * delivered after the member was removed must not resurrect the edge,
    * and the removal is what freed the `(userId, workspaceId)` pair for a
-   * future join.
+   * future join. An edge that names another membership — or none yet,
+   * which is what a `pending` reservation carries — is the same no-op,
+   * for the same reason: the membership this change belongs to is gone.
    */
   applyRoleIfNewer(
     input: Readonly<{
       userId: UserId;
       workspaceId: WorkspaceId;
+      membershipId: MembershipId;
       role: WorkspaceRole;
       sourceVersion: number;
     }>,

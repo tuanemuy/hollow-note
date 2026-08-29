@@ -1825,6 +1825,38 @@ describe("moveNote", () => {
     expect(view.ownerId).toBe(SOURCE_WS);
   });
 
+  it("TC-note-261: a route store that also fails the release neither replaces the claim's diagnosis nor leaves the operation running", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    await seedSource(h, "editor");
+    const noteId = await createNote(h);
+    let claimAttempted = false;
+    const container = withRouteStore(h, {
+      beginMove: () => {
+        claimAttempted = true;
+        return Promise.reject(failure("claim failed"));
+      },
+      // The release reads the route through the same store the claim just
+      // failed on, so the correlated failure is the expected one.
+      resolve: (id) =>
+        claimAttempted
+          ? Promise.reject(failure("route read failed"))
+          : h.container.noteRouteStore.resolve(id),
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("claim failed");
+
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+
+    // Left `running`, the store would join this request to it and refuse a
+    // move nothing is in the way of.
+    const view = await move(h, { noteId, workspaceId: SOURCE_WS });
+    expect(view.ownerId).toBe(SOURCE_WS);
+  });
+
   it("TC-note-261: a claim whose response was lost gives the route back instead of parking it", async () => {
     const h = createTestHarness();
     await seedMovePair(h);

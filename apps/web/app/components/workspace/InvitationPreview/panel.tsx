@@ -63,8 +63,10 @@ export function InvitationActions({
         return;
       }
       setError(null);
-      // 参加はもう成立しているので、遷移の失敗を「参加できなかった」と
-      // 見せない（try の外に置く）。
+      // 参加はもう成立しているので、再取得と遷移の失敗を「参加できなかった」と
+      // 見せない（try の外に置く）。この match は `staleTime` が無限なので、
+      // invalidate しないと履歴の戻るで消費済みの招待に「参加する」が甦る。
+      await router.invalidate();
       await router.navigate({
         to: "/workspaces/$workspaceId/notes",
         params: { workspaceId },

@@ -1,4 +1,4 @@
-import { LlmUsage } from "@repo/core/domain/usage/llmUsage";
+import type { DescribedLlmUsage } from "@repo/core/domain/usage/services/quotaEnforcement";
 
 /**
  * DTO projections for the usage usecases. Fields are primitives only;
@@ -60,11 +60,17 @@ export type UsageSnapshotView = Readonly<{
   updatedAt: Date;
 }>;
 
-export const toLlmUsageView = (usage: LlmUsage): LlmUsageView => ({
-  consumedCalls: usage.consumedCalls,
-  limitCalls: usage.quota.limit,
-  period: { year: usage.period.year, month: usage.period.month },
-  level: LlmUsage.warningLevel(usage),
+/**
+ * Takes the half `QuotaEnforcement.describe` already derived rather than
+ * the entity: the display figures and the warning level are the domain
+ * service's to decide, and re-reading them off `LlmUsage` here would give
+ * that rule a second home to drift from.
+ */
+export const toLlmUsageView = (described: DescribedLlmUsage): LlmUsageView => ({
+  consumedCalls: described.consumedCalls,
+  limitCalls: described.limitCalls,
+  period: { year: described.period.year, month: described.period.month },
+  level: described.level,
 });
 
 export type RecalculatedStorageUsageView = Readonly<{

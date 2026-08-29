@@ -5,14 +5,25 @@ import { Session } from "@repo/core/domain/identity/session";
 import { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import {
+  expectConflict,
+  membershipEdges,
+  seedInvitation,
+  seedWorkspace,
+} from "../../workspace/__tests__/harness";
+import { acceptInvitation } from "../../workspace/acceptInvitation";
+import { leaveWorkspace } from "../../workspace/leaveWorkspace";
 import { authenticateSession } from "../authenticateSession";
 import { deleteAccount } from "../deleteAccount";
 import { readUniquenessKeys } from "../deleteAccount/input";
 import { signUpVerified, signUpWithGoogle } from "./authFlowHelpers";
+import { drainDeletion } from "./deletionHarness";
 
 const EMAIL = "user@example.com";
 const REQUEST_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_REQUEST_ID = "22222222-2222-4222-8222-222222222222";
+const WORKSPACE = "workspace-1";
+const OWNER = "owner-1";
 
 const request = (
   h: TestHarness,
@@ -80,6 +91,23 @@ const plantCredentials = (
       ),
     );
   }
+};
+
+/**
+ * Joins the user to a workspace through the real invitation flow, so the
+ * global `membership_directory` edge is the one a join actually leaves.
+ */
+const joinWorkspace = async (h: TestHarness, userId: string): Promise<void> => {
+  await seedWorkspace(h, {
+    workspaceId: WORKSPACE,
+    members: [{ userId: OWNER, role: "owner" }],
+  });
+  const { token } = await seedInvitation(h, WORKSPACE, {
+    invitedBy: OWNER,
+    email: EMAIL,
+    role: "editor",
+  });
+  await acceptInvitation({ container: h.container, input: { token, userId } });
 };
 
 /**
@@ -191,6 +219,47 @@ describe("deleteAccount admission", () => {
 
     expect(second.operationId).toBe(first.operationId);
     expect(h.backend.distributedOperations.values()).toHaveLength(1);
+  });
+
+  it("TC-identity-350: a request from a workspace member is refused and leaves the account untouched", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h, EMAIL);
+    await joinWorkspace(h, userId);
+
+    await expectConflict(request(h, userId), "WORKSPACE_MEMBERSHIPS_REMAIN");
+
+    // The refusal has to be free of residue: an operation row would burn
+    // one of the retry window's attempts, and a `deleting` user would be
+    // exactly the stuck state the refusal exists to prevent.
+    expect(h.backend.distributedOperations.values()).toHaveLength(0);
+    expect(storedUser(h, userId).status).toBe("active");
+    expect(barrier(h, userId)).toBeUndefined();
+    expect(h.backend.manifestHeaders.values()).toHaveLength(0);
+  });
+
+  it("TC-identity-351: the same request runs through to the tombstone once the workspace is left", async () => {
+    const h = createTestHarness();
+    const { userId } = await signUpVerified(h, EMAIL);
+    await joinWorkspace(h, userId);
+
+    await leaveWorkspace({
+      container: h.container,
+      input: { workspaceId: WORKSPACE, userId },
+    });
+    expect(membershipEdges(h, userId)).toEqual([]);
+
+    const view = await request(h, userId);
+    expect(view.status).toBe("accepted");
+    await drainDeletion(h);
+
+    expect(h.backend.users.get(userId)).toMatchObject({
+      status: "deleted",
+      id: userId,
+    });
+    expect(h.backend.users.get(userId)).not.toHaveProperty("email");
+    expect(h.backend.manifestHeaders.get(view.operationId)?.status).toBe(
+      "completed",
+    );
   });
 
   it("freezes the uniqueness keys into the operation payload while the PII is alive", async () => {

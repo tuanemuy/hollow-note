@@ -17,7 +17,7 @@ const HOUR_MS = 60 * MINUTE_MS;
  * (ADP-workspace-033..040 / 069 / 070 / 073 / 074): the join saga's
  * claim, the account-deletion prepare lock that serializes against it,
  * the removal and its compensation, and the role projection ordered by
- * Membership version.
+ * membership generation and Membership version.
  *
  * A `pending` edge is the deletion half's only subject, and no method of
  * this port leaves one behind (`reserveAndClaimActivation` inserts and
@@ -109,10 +109,12 @@ export function describeMembershipDirectoryReservationStoreContract(
       sourceVersion: number,
       owner: UserId = userId(1),
       workspace: WorkspaceId = workspaceId(1),
+      membership = 1,
     ): Promise<void> =>
       store().applyRoleIfNewer({
         userId: owner,
         workspaceId: workspace,
+        membershipId: membershipId(membership),
         role,
         sourceVersion,
       });
@@ -461,6 +463,27 @@ export function describeMembershipDirectoryReservationStoreContract(
       await applyRole("owner", 5);
       expect(await activeWorkspaces()).toEqual([]);
       expect(await listedRole()).toBeNull();
+    });
+
+    it("ADP-workspace-073: a change of the membership a rejoin replaced leaves the new edge alone", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+      // The member is removed while a change of membership 1 is still in
+      // flight, and rejoins under a second membership.
+      await store().beginRemoval(userId(1), workspaceId(1));
+      await store().completeRemoval(userId(1), workspaceId(1));
+      await claim("op-2", userId(1), workspaceId(1), 2);
+      await store().activate("op-2");
+
+      // The late change names the membership that is gone. Its version
+      // would otherwise win, since the new edge has never been projected.
+      await applyRole("owner", 1);
+      expect(await listedRole()).toBe("editor");
+
+      // And the new membership's own first change still lands, which the
+      // stale write would have blocked by claiming version 1 first.
+      await applyRole("viewer", 1, userId(1), workspaceId(1), 2);
+      expect(await listedRole()).toBe("viewer");
     });
 
     it("ADP-workspace-070: an edge that never entered removing is not dropped", async () => {

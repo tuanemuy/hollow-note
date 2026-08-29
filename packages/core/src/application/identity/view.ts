@@ -41,8 +41,10 @@ export type SignInView = Readonly<{
  * one structural reason: the only input this view is reachable through is
  * a session token, so the address it carries is always the caller's own.
  * It is projected because the invitation screen has to tell "the invited
- * address" from "the signed-in account" (WS-04); consumers that only need
- * the shell should narrow the object before it crosses to a client.
+ * address" from "the signed-in account" (WS-04). The transport boundary
+ * owns a shell type that declares `email` absent, so any payload typed as
+ * that shell rejects this view rather than quietly carrying the address:
+ * narrowing is checked, not remembered.
  */
 export type AuthenticatedUserView = Readonly<{
   userId: string;

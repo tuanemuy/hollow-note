@@ -20,6 +20,13 @@ const OWNED_STATES: ReadonlySet<string> = new Set([
   "activating",
 ]);
 
+/** Edges with a settled state — the set a deletion manifest fixes. */
+const SETTLED_STATES: ReadonlySet<string> = new Set([
+  "active",
+  "pending",
+  "removing",
+]);
+
 /** `${createdAt}:${workspaceId}` — the trailing key of the page. */
 type KeysetPosition = Readonly<{ createdAt: number; workspaceId: string }>;
 
@@ -125,6 +132,29 @@ export function createMemoryUserWorkspaceDirectory(
         }
       }
       return owned;
+    },
+
+    async countSettledByUser(userId: UserId, limit: number): Promise<number> {
+      if (
+        !Number.isInteger(limit) ||
+        limit < MIN_LIMIT ||
+        limit > MAX_COUNT_LIMIT
+      ) {
+        throw new ValidationError(
+          "INVALID_PAGINATION",
+          `limit must be between ${MIN_LIMIT} and ${MAX_COUNT_LIMIT}`,
+        );
+      }
+      let settled = 0;
+      for (const row of backend.membershipEdges.values()) {
+        if (row.userId === userId && SETTLED_STATES.has(row.edgeState)) {
+          settled += 1;
+          if (settled === limit) {
+            break;
+          }
+        }
+      }
+      return settled;
     },
   };
 }

@@ -16,6 +16,7 @@ import {
   outboxRows,
   outboxTypes,
   scheduledTasks,
+  seedMember,
   seedWorkspace,
   storedMembership,
   type TestHarness,
@@ -106,6 +107,7 @@ describe("changeMemberRole", () => {
       {
         workspaceId: WORKSPACE,
         userId: EDITOR,
+        membershipId: "m-editor",
         previousRole: "editor",
         currentRole: "viewer",
         sourceVersion: 1,
@@ -406,6 +408,7 @@ describe("changeMemberRole", () => {
       {
         workspaceId: WORKSPACE,
         userId: VIEWER,
+        membershipId: "m-viewer",
         previousRole: "viewer",
         currentRole: "editor",
         sourceVersion: 1,
@@ -517,5 +520,49 @@ describe("changeMemberRole", () => {
 
     expect(membershipEdges(h, EDITOR)).toEqual([]);
     await expect(listed(h, EDITOR)).resolves.toEqual([]);
+  });
+
+  it("TC-workspace-312: a change delivered after the member rejoined belongs to the membership that is gone", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor",
+      role: "viewer",
+    });
+    await removeMember({
+      container: h.container,
+      input: {
+        workspaceId: WORKSPACE,
+        actorUserId: OWNER,
+        membershipId: "m-editor",
+      },
+    });
+    // The rejoin builds a second membership, and with it an edge whose
+    // role has never been projected.
+    await seedMember(h, WORKSPACE, {
+      userId: EDITOR,
+      role: "editor",
+      membershipId: "m-editor-2",
+    });
+    expect(edgeRole(h, EDITOR)).toBe("editor");
+
+    await drainOutbox(h);
+
+    expect(edgeRole(h, EDITOR)).toBe("editor");
+    // The first change of the new membership repeats version 1, so a stale
+    // write that claimed it would also swallow this one.
+    await change(h, {
+      actorUserId: OWNER,
+      membershipId: "m-editor-2",
+      role: "owner",
+    });
+    await drainOutbox(h);
+
+    expect(edgeRole(h, EDITOR)).toBe("owner");
+    await expect(listed(h, EDITOR)).resolves.toEqual([
+      { workspaceId: WORKSPACE, role: "owner" },
+    ]);
   });
 });

@@ -161,9 +161,10 @@
 | ADP-workspace-070 | `MembershipDirectoryReservationStore.completeRemoval` | `spec/domains/workspace.md#ポート` | 後始末の ack 後に removing edge を削除する |
 | ADP-workspace-071 | `WorkspaceOperationLockStore.stageMove` | `spec/domains/workspace.md#ポート` | move authorization lock を actor 付きで冪等に張る |
 | ADP-workspace-072 | `WorkspaceOperationLockStore.releaseMove` | `spec/domains/workspace.md#ポート` | move authorization lock を無条件・冪等に解放する |
-| ADP-workspace-073 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | source version が大きい role 変更だけを directory edge へ投影し、不在の edge は復活させない |
+| ADP-workspace-073 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | edge が名指す membership と一致し、かつ source version が大きい role 変更だけを directory edge へ投影する。不在の edge は復活させず、再入会が置き換えた membership の変更は新しい edge に届かないまま、新 membership の最初の変更は通る |
 | ADP-workspace-074 | `MembershipDirectoryReservationStore.abandonRemoval` | `spec/domains/workspace.md#ポート` | 拒否された除名の `removing` edge を `active` へ戻し、`pending` / `activating` は拒否する |
 | ADP-workspace-075 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする。自 UoW の書き込みは観測しない |
+| ADP-workspace-076 | `UserWorkspaceDirectory.countSettledByUser` | `spec/domains/workspace.md#ポート` | ロールを問わず settled な edge（`active` / `pending` / `removing`）を limit まで数え、`activating` は数えず、範囲外の limit を拒否する |
 | ADP-storage-001 | `StoredFileRepository.insert` | `spec/domains/storage.md#ポート` | 新規 StoredFile を保存する |
 | ADP-storage-002 | `StoredFileRepository.findById` | `spec/domains/storage.md#ポート` | StoredFileId で OCC token 付き集約を取得する |
 | ADP-storage-003 | `StoredFileRepository.save` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を更新する |

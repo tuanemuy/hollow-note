@@ -133,5 +133,37 @@ export function createD1UserWorkspaceDirectory(
         throwTranslated(`${TABLE} ownership count`, cause);
       }
     },
+
+    async countSettledByUser(userId: UserId, limit: number): Promise<number> {
+      if (
+        !Number.isInteger(limit) ||
+        limit < MIN_LIMIT ||
+        limit > MAX_COUNT_LIMIT
+      ) {
+        throw invalidPagination(
+          `limit must be between ${MIN_LIMIT} and ${MAX_COUNT_LIMIT}`,
+        );
+      }
+      try {
+        // Bounded the same way as the ownership count: the subquery caps
+        // the index walk at `limit` rows whatever the shard holds.
+        const rows = await deps.session.query(
+          statement(
+            `SELECT COUNT(*) AS settled FROM (
+               SELECT 1 FROM ${TABLE}
+                 WHERE user_id = ?
+                   AND state IN ('active', 'pending', 'removing')
+                 LIMIT ?
+             )`,
+            userId,
+            limit,
+          ),
+        );
+        const row = rows[0];
+        return row === undefined ? 0 : int(row, "settled");
+      } catch (cause) {
+        throwTranslated(`${TABLE} membership count`, cause);
+      }
+    },
   };
 }

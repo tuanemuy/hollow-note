@@ -45,6 +45,14 @@ const PENDING_INVITATION_QUOTA = 50;
  * `activate` → mail. A failed commit abandons the reservation, so neither
  * the invitation nor the mail survives a half-issued attempt.
  *
+ * The outstanding-invitation quota is decided inside that scope commit,
+ * next to the write it bounds: a count read before the transaction can go
+ * stale between the check and the insert, and two concurrent issues that
+ * both read 49 would leave 51 outstanding
+ * (`domain/workspace/ports/invitationRepository.ts`). It therefore sits
+ * after the resend fold below rather than before it — a resend writes no
+ * new row and so cannot exceed a quota on stock.
+ *
  * A second invitation to an address that already holds a pending one is a
  * **tail call** to {@link resendInvitation} rather than a second row: it
  * keeps one live token per address, and nothing has been written here
@@ -100,16 +108,7 @@ export async function inviteMember({
   }
 
   const now = clock.now();
-  const outstanding = await reader.invitation.countPendingIssuedSince(
-    workspaceId,
-    new Date(now.getTime() - QUOTA_WINDOW_MS),
-  );
-  if (outstanding >= PENDING_INVITATION_QUOTA) {
-    throw new ValidationError(
-      "INVITATION_LIMIT_REACHED",
-      `The workspace already holds ${PENDING_INVITATION_QUOTA} outstanding invitations`,
-    );
-  }
+  const quotaWindowStart = new Date(now.getTime() - QUOTA_WINDOW_MS);
 
   const live = await reader.invitation.findPendingByWorkspaceAndEmail(
     workspaceId,
@@ -171,6 +170,17 @@ export async function inviteMember({
       await ctx.cleanupAdmission.assertActorWritable(inviterId);
       await ctx.workspaceOperationLockStore.assertWritable();
       await ensureActorCan(ctx, workspaceId, inviterId, "manageMembers");
+      const outstanding =
+        await ctx.invitationRepository.countPendingIssuedSince(
+          workspaceId,
+          quotaWindowStart,
+        );
+      if (outstanding >= PENDING_INVITATION_QUOTA) {
+        throw new ValidationError(
+          "INVITATION_LIMIT_REACHED",
+          `The workspace already holds ${PENDING_INVITATION_QUOTA} outstanding invitations`,
+        );
+      }
       await ctx.invitationRepository.insert(issued.entity);
       ctx.collectEvents(issued.eventDrafts);
     });

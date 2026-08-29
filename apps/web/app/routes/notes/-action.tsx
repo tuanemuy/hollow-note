@@ -85,16 +85,12 @@ export const listMoveTargetsFn = createServerFn({ method: "GET" })
       input: { userId: user.userId, cursor: data.cursor },
     });
     return {
-      targets: page.workspaces
-        .filter(
-          (workspace) =>
-            workspace.status === "active" &&
-            WorkspaceRole.atLeast(workspace.role, "editor"),
-        )
-        .map((workspace) => ({
-          workspaceId: workspace.workspaceId,
-          name: workspace.status === "active" ? workspace.name : "",
-        })),
+      targets: page.workspaces.flatMap((workspace) =>
+        workspace.status === "active" &&
+        WorkspaceRole.atLeast(workspace.role, "editor")
+          ? [{ workspaceId: workspace.workspaceId, name: workspace.name }]
+          : [],
+      ),
       nextCursor: page.nextCursor,
     };
   });
