@@ -47,6 +47,13 @@ import {
  * block the next workspace that takes the same slug. Both are idempotent
  * for this operation, so a replayed first turn repeats them harmlessly and
  * later turns skip them entirely.
+ *
+ * *Both* candidate keys the turn carries are freed, not the one the scope
+ * named. The workspace is disappearing, so this is the last call that
+ * could free either, and an `active` reservation has no expiry behind it;
+ * `advertisedSlug` in `application/workspace/changeWorkspaceSlug.ts`
+ * states why neither candidate is reliable on its own and why freeing the
+ * wrong one writes nothing.
  */
 export async function continueWorkspaceDeletionGlobalCleanup(
   container: WorkerContainer,
@@ -84,9 +91,14 @@ export async function continueWorkspaceDeletionGlobalCleanup(
       workspaceId,
       operationId: turn.operationId,
     });
-    if (turn.slug !== null) {
+    const freed = new Set<string>();
+    for (const candidate of [turn.slug, turn.advertisedSlug]) {
+      if (candidate === null || freed.has(candidate)) {
+        continue;
+      }
+      freed.add(candidate);
       await container.workspaceSlugReservationStore.release({
-        slug: WorkspaceSlug.create(turn.slug),
+        slug: WorkspaceSlug.create(candidate),
         workspaceId,
       });
     }

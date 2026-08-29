@@ -19,6 +19,7 @@ import {
   slugReservations,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryProjection,
   workspaceScope,
 } from "./harness";
 
@@ -102,6 +103,47 @@ describe("unpublishWorkspace", () => {
       publication: "private",
       sourceVersion: seeded.workspace.version + 1,
     });
+  });
+
+  /**
+   * The mirror of the publish case, and the one that matters more: the
+   * scope has taken the page down while the directory still advertises it
+   * as published, and every read served from the projection — the
+   * sitemap, the public enumeration — goes on showing it that way until
+   * the request is sent again.
+   */
+  it("TC-workspace-322: a projection lost for good keeps the directory advertising a page the scope has taken down", async () => {
+    const h = createWorkspaceHarness();
+    const seeded = await seed(h);
+
+    await expect(
+      unpublishWorkspace({
+        container: withFailingDirectoryProjection(h),
+        input: { workspaceId: WORKSPACE, userId: OWNER },
+      }),
+    ).rejects.toThrow("directory shard unreachable");
+
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      publication: "private",
+      version: seeded.workspace.version + 1,
+    });
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      publication: "published",
+      sourceVersion: seeded.workspace.version,
+    });
+
+    await expect(unpublish(h)).resolves.toMatchObject({
+      publication: "private",
+    });
+
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      publication: "private",
+      sourceVersion: seeded.workspace.version + 1,
+    });
+    expect(storedWorkspace(h, WORKSPACE)?.version).toBe(
+      seeded.workspace.version + 1,
+    );
+    expect(outboxTypes(h)).toEqual(["workspace.unpublished"]);
   });
 
   it("TC-workspace-260: the answer carries only the id and the publication", async () => {

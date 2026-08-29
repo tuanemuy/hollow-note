@@ -3258,3 +3258,298 @@ ADR-148 の Consequences「編集が無い再送では追加の書き込みは�
 
 - 対称性の確認は「直した文の要旨」で行い、文字列一致では行わない。今回の網羅は 5 本の grep（`workspace_directory` / `workspace.\*` / `out-of-band|at-least-once|購読|subscriber` / `脱退` / `moveTo`）で、`spec/` `docs/` `packages/` `apps/` `.thread/3/testing.md` を横断した。残った 1 件は `packages/core/src/adapters/cloudflare/d1/migrations/0002_workspace_directory.sql:6`（「rows are written by the `workspace.*` projection, which has no port yet」）で、**移行ファイルはその schema 版時点の記録**として残す。誤読の入口ではあるので、新規 Issue の候補として送る。
 - モックと実装の食い違いは他に見つからなかった（`3〜32` / `半角英数字とハイフン` の全文検索が 0 件になった）。
+
+## ADR-179: 停止した移動の「駆動できる」は状態名ではなく駆動の形跡で決め、投影の恒久喪失を注入口として持つ
+
+### Context
+
+ADR-159 は移動サガの 24 経路（8 seam × 3 後続要求）に 3 つの強い述語を足したが、分岐条件を `operations(h).every(row => row.state !== "running")` の 1 本にしていた。`running` には性質の異なる 2 種がある — (a) switch 済みで前進待ち（canon が明示的に認めた停止。`spec/usecases/note.md#movenote` の終端表 3 行目）と (b) 何も掴んでいないのに `running`（`beginOrResume` の応答喪失）— のに、判定はどちらも「まだ前進しうる」と読んで強い述語を全部降ろす。結果 `beginOperation` × 3 と `settle` × 3 の 6 経路が実質無検査になり、review-007-backend-note B-001（switch 前なのに誰も駆動できない `running`）がそのまま緑で通った。`route.state` を一度も見ていない点（terminal な operation ＋ `moving` の route）も同じ穴の別側面である。
+
+workspace 側は対称な穴だった。`applySnapshotIfNewer` は 5 ユースケースすべてで commit の**後**に走る best-effort なのに、**恒久喪失を注入するテストが 1 件も無い**（唯一の注入は `createWorkspace.test.ts:465-476` の一過性喪失で、retry が成功する形）。「commit は着地したが投影は着地しなかった」状態を誰も作れないので、ADR-160 が広告値を鍵の唯一の根拠に据えた結果として開いた反対側の窓（review-007-backend-workspace B-001）に、どのテストも触れなかった。
+
+### Decision
+
+**実装は 1 行も変えず、検証軸だけを強くする。**
+
+1. **`undrivable` を「駆動できる形跡があるか」で定義し直す**（`stillDrivable(row, route)`）。`running` な行が生きていると認めるのは、(a) `route.state === "moving" && route.migrationId === row.id`（claim を保持している）か、(b) `route.scope` が payload の target と一致する（switch が着地している）かのどちらかだけ。どちらでもない `running` は canon が禁じている到達点なので、強い分岐で `expect(operations(h).filter(row => row.state === "running")).toEqual([])` として失格にする。**旧条件は分岐の条件から表明そのものへ移した**のが本質で、これが B-001 を赤にする。
+   - (b) を「source に retire 待ちの行が残っている」まで狭めない。`retireSource` の応答喪失は source を空にしたうえで `running` を残す設計どおりの停止であり（終端表 3 行目）、狭めるとその 3 経路が誤って赤くなる。
+2. **`route.state` を強い分岐で検査する。** terminal な operation ＋ `moving` route は全チェックを通るが、`beginMove` が他 migration の `moving` を claim できないので以後どの移動要求も受け付けない（`thawRoute` の fallback → `abortBeforeSwitch` が `"switched"` → `rollBack` が `rejected` で実在する）。
+3. **弱い分岐と共通部に 3 つ足す。** `note.moved` ≤ 1 件（共通部。`retireSource` の receipt は source scope にあり abort が消さないので、成否によらず 1 件以下が canon）、quota の上限（弱い分岐。手順 8「最大でも二重計上」＝ route 側と反対側の `noteCount` 合計が 2 以下）、反対側 scope の receipt（強い分岐。`beginOrResume` は terminal 行も同じ `requestKey` で返すので、staging の receipt が生き残ると次の attempt が空の target へ素通りする）。
+4. **`acrossFrom` の 2 scope 決め打ちは直さず、helper の JSDoc に前提として書く**（ADR-159 Consequences の申し送りを、移動先を増やしたときに何が壊れるかまで書く形へ）。
+5. **workspace の harness に `withFailingDirectoryProjection` を新設する。** `applySnapshotIfNewer` を常に拒否する容器で、`retryOnce` が 2 回とも落ちるため「scope は進み、`workspace_directory` は前の版のまま、要求はエラー」という**恒久的な**状態が作れる。5 ユースケースそれぞれにその窓のケースを置き、そこから後続の要求（改名 / clear / 削除）の不変条件を書いた。
+
+### Consequences
+
+- **本グループ単体で 6 本が赤になる。** 内訳は `TC-note-266` の `beginOperation` seam × 3 後続要求（述語 1 = 駆動できない `running`。backend-note B-001 の再現）と、`TC-workspace-317`（投影喪失後の別 slug への改名）/ `TC-workspace-318`（同・clear）/ `TC-workspace-319`（同型の状態からの削除）（backend-workspace B-001 の 3 経路）。**赤は G2 / G3 の修正対象であり、述語を緩めて消してはならない。**
+- **`settle` seam × 3 は緑のまま**で、これは正しい。注入は commit の後に応答を落とすので `markState("completed")` は着地しており、行は terminal になる。ADR-175 が決めた「成功として返す」と矛盾しない。`switchMove` / `activateTarget` / `retireSource` の 3 seam は (b) で弱い分岐に落ち、こちらも緑のまま（switch 後の `running` は canon が認めた停止）。
+- 反対側 receipt の上限は **0 ではなく 1**。abort の teardown 自身が `relocateFilesForNote(phase: "retireSource")` の receipt を `clearApplied` の**後**に書くためで、この 1 件は後続の abort が使用前に必ず消すので害が無い（`stageTarget` seam と `TC-note-765` で実測）。staging の receipt が生き残れば 2〜3 件になるので、上限 1 は「素通り」を検出する幅を保っている。
+- workspace 側の窓のケース 5 本（`TC-workspace-316` / `320` / `321` / `322` / `323`）は緑。投影の恒久喪失そのものは canon どおりの挙動（購読者も修復口も無く、次の保存まで残る）であり、赤にすべきものではない。修復可能性の側だけを表明にした — 再送で収束すること（publish / unpublish）、次の保存が両方の変更を運ぶこと（updateWorkspaceProfile）、`?? previousSlug` のフォールバックが効くこと（createWorkspace）。
+- 網羅の宣言:
+  - `grep -n "expectWholeAndReachable\|undrivable\|stillDrivable" packages/core/src/application/note/__tests__/moveNote.test.ts` — 7 件（定義 2・呼び出し 3・JSDoc 1・分岐 1）。`undrivable` は 0 件になった（`stillDrivable` へ置換）。
+  - `grep -rn 'state !== "running"\|state === "running"' packages/core/src apps/web/app` — 8 件。移動サガの判定はうち 2 件（どちらも `moveNote.test.ts`。1 つは新しい分岐、1 つは新しい表明）。残る 6 件は別サガ（`deleteAccount` の admission / driver）とアダプター内部（`distributedOperationStore` の合流判定 memory / cloudflare、`scopeTaskScheduler`、`scopeCleanupAdmissionStore`）で、移動の不変条件とは無関係のため対象外。
+  - `grep -rn "projectWorkspaceDirectory\|applySnapshotIfNewer" packages/core/src/application/workspace/` — 18 件。呼び出し口は 5 ユースケース + `directoryProjection.ts` の定義 + harness の seed。フォールト注入は本ラウンド前は `createWorkspace.test.ts:465-476` の 1 件だけで、しかも**一過性**（2 回目が成功する）。恒久喪失の注入は 0 件だった。今回 harness に 1 本足し、5 ユースケースすべてから使った。
+  - `grep -rn "const withFailing\|function withFailing" packages/core/src/application` — 5 件。workspace 系は `withFailingScopeCommit` が 2 ファイルに重複していた（`createWorkspace` / `changeWorkspaceSlug`）が、これは各ファイルのローカル定義であり本グループの対象外として残した。新規の `withFailingDirectoryProjection` だけは 5 ファイルから使うので harness に置いた。
+- 24 経路の落ち先（実測。分岐を計測する一時計装を入れて 1 回走らせ、外した）:
+
+| seam | 分岐 | operation の状態 | route | 判定 |
+| --- | --- | --- | --- | --- |
+| `beginOperation` × 3 | **強** | `running` | `active` / source | **red**（backend-note B-001） |
+| `claimRoute` × 3 | 強 | `rejected`（後続で `completed` が増える経路あり） | `active` | 緑 |
+| `snapshotSource` × 3 | 強 | 同上 | `active` | 緑 |
+| `stageTarget` × 3 | 強 | 同上 | `active` | 緑 |
+| `switchMove` × 3 | 弱 | `running`（switch 済み） | `active` / target | 緑 |
+| `activateTarget` × 3 | 弱 | `running`（switch 済み） | `active` / target | 緑 |
+| `retireSource` × 3 | 弱 | `running`（switch 済み） | `active` / target | 緑 |
+| `settle` × 3 | 強 | `completed` | `active` / target | 緑 |
+
+  強い分岐は 15 経路・弱い分岐は 9 経路。**変更前は `beginOperation` × 3 と `settle` × 3 の 6 経路が弱い分岐に落ちていた**（`running` を無条件に「前進しうる」と読んでいたため）。今回そこが強い分岐へ移り、片方が red、もう片方が緑という予測どおりの結果になった。
+
+- 5 ユースケース × 投影の恒久喪失（新設した `withFailingDirectoryProjection`）:
+
+| ユースケース | 喪失直後の状態 | 後続の要求 | 判定 |
+| --- | --- | --- | --- |
+| `createWorkspace` | workspace と鍵は commit 済み・directory 行なし | `changeWorkspaceSlug` が行を作り旧鍵を解放 | 緑（`?? previousSlug` のフォールバックが効く） |
+| `changeWorkspaceSlug` | scope と鍵は新 slug・directory は旧 slug | 別 slug への改名 / clear | **red × 2**（TC-workspace-317 / 318。backend-workspace B-001 経路 1） |
+| `publishWorkspace` | scope は published・directory は private | 同じ要求の再送で収束 | 緑 |
+| `unpublishWorkspace` | scope は private・directory は published | 同じ要求の再送で収束 | 緑 |
+| `updateWorkspaceProfile` | scope は新 name・directory は旧 name | 次の保存が両方を運ぶ | 緑 |
+
+  削除経路（backend-workspace B-001 経路 3）は投影喪失ではなく `activate` の恒久喪失から作る（scope=新 slug / 予約=旧 slug active / 広告=旧 slug）ので `deleteWorkspace.test.ts` に置いた（TC-workspace-319、**red**）。投影喪失の状態から削除を受理しても `turn.slug` が実際に保持している鍵と一致するため取り残しは起きず、赤にならない。
+- 新規ケースの TC 採番は G8 の持ち分。本グループでは連番の空きに寄せて `TC-workspace-316〜323` を仮に振ってある（note 側は既存の `TC-note-266` matrix の内側なので新 ID 無し）。
+
+## ADR-180: 制御行を開く呼び出しも補償の内側に置き、失われた `id` は `requestKey` から引き直す
+
+### Context
+
+`moveNote` の `beginOrResume` は補償の `try` の**外**にあった。行が commit したうえで応答だけ失われると、`running` な `distributed_operations` 行が残るのに、その `id` を知る主体がプロセス上に一人も居ない — claim も move lock も staged 複製も無い。`DistributedOperationStore` は partition（noteId）に `running` が 1 つでもあれば以後の要求をそこへ合流させるので、このノートの移動は**別の actor・別の移動先からのものを含めて恒久的に `NOTE_MOVE_IN_PROGRESS` で拒否**される。回復できるのは同じ `requestKey`（同じ actor・同じ移動先・同じ `routeVersion`）の再送だけで、利用者が移動先を選び直した瞬間にその唯一の鍵も導出不能になる（review-007-backend-note B-001）。
+
+canon の終端表（`spec/usecases/note.md#movenote`）は switch 前の到達点をすべて `rejected` と定めており、`releaseUnusedClaim` / `rollBack` の JSDoc も同じことを二度述べている。ADR-133 が claim 経路について閉じた窓と同型で、その 1 つ手前の seam だけが例外として残っていた。ADR-173 が認めた `running` は switch **後**の停止だけである。
+
+### Decision
+
+`beginOrResume` を `beginOperation` に包み、失敗時に `rejectLostOperation` を通す。
+
+- **同じ入力でもう一度 `beginOrResume` を打つ。** 呼び出しは `requestKey` に対して冪等なので、commit 済みならその行が、未 commit なら新しい行が返る。**応答喪失が奪うのは `id` だけで、`requestKey` がそれを引き直せる**ことがこの修復を成立させている。
+- 返った行が `requestKey` 一致かつ `running` のときだけ `markState(id, "rejected")` で閉じる。**別の `requestKey`** は store が他人の operation へ合流させた印で、それは相手が駆動するもの。**terminal** な行は既に閉じている。
+- 修復の**判定の読み（再発行）ごと** 1 つの `try` に入れ、失敗は 1 行のログに落として原因の例外は差し替えない。ADR-133 の「補償の可否を決める読みも補償の一部」をそのまま適用した形で、CLAUDE.md の「広い `try / catch` は境界だけ」の例外にあたる理由は関数の JSDoc に置いた。
+- 未 commit だった場合に新しい行を作って即 `rejected` にするのは無害である。同じ `requestKey` の再送はその terminal 行を replay するだけで、これは claim 失敗後の再送が既に踏んでいる経路と同じ（ADR-171 Context）。
+
+### Consequences
+
+- switch 前の到達点が**実装でも例外なく terminal** になった。`settle` の応答喪失が残す `running` は switch 後の停止（ADR-175 / ADR-173）で、これは canon が認めたまま変わらない。
+- 制御面の呼び出し口を機械的に洗った結果、`moveNote.ts` の外部コミット点 12 か所のうち補償の外にあったのはこの 1 件だけで、修正後は 0 件（後述の網羅の宣言）。
+- 検出力: ADR-179 が赤にした `TC-note-266` の `beginOperation` seam × 3 が緑になり、あわせて `TC-note-771`（応答喪失のあと**別の編集者**の移動要求が通る）を 1 本足した。matrix の後続要求は結果を問わない形なので、「拒否されない」ことは新ケースだけが拘束する。変異 2 件を red で確認して戻した — (1) `rejectLostOperation` の呼び出しを落とすと 4 本 red、(2) settle する id を `operation.id` から `request.partitionKey` へ差し替える（＝ `requestKey` から引き直せていない形）と 4 本 red。
+- 網羅の宣言:
+  - **構文で洗う**: 「外部にコミットする呼び出しが補償の `try` の外にある箇所」を、文言ではなく**コミット点の構文**で機械的に列挙した。`grep -n "UnitOfWorkProvider\.run(\|noteRouteStore\.\(beginMove\|switchMove\|abortMove\)(" packages/core/src/application/note/moveNote.ts` で拾い、使い捨てスクリプトで各ヒットの字句的な `try` 深さを添えた。`moveNote.ts` で **12 件**。字句だけでは helper 内の呼び出しが「外」と出るので、`moveNote` からの呼び出し経路まで辿って分類した結果、補償の外にあったのは **`beginOrResume` の 1 件のみ**（修正後 0 件）。内訳: 432 `snapshotSource` / 500 `stageTarget` / 1086 `switchMove` → `rollBack`、634 `activateTarget` / 668 `retireSource` → post-switch catch、747 / 798 / 845 → 補償自身（`rollBack` と `releaseUnusedClaim` の両 try の内側）、885 `beginMove` → claim catch、1302 `beginOrResume` → **本 ADR で新設**、1318 再発行 / 1367 `markState` → 修復と `settleQuietly` の try の内側。
+  - `grep -n "globalUnitOfWorkProvider.run\|settleQuietly\|markState" packages/core/src/application/note/moveNote.ts` — **8 件**（`settleQuietly` の呼び出し 3・定義 1、`globalUnitOfWorkProvider.run` 3、`markState` 1）。制御面の書き込み口は `settle` 1 本に集約されており、補償の外に残っているものは無い。
+  - `grep -rn "globalUnitOfWorkProvider.run" packages/core/src/application/`（`__tests__` 除く）— **35 件**。うち移動サガは 3 件。残る 32 件は identity（`deleteAccount` の各相ほか）と DI の JSDoc 1 行で、別サガの担当範囲のため対象外（本 ADR の判断は「合流する control plane を持つサガ」に効くので、`deleteAccount` の `globalCleanup.ts:72` は同型の検査対象として G8 経由で申し送る）。
+  - `grep -rn "NoteMovePort\|NoteMoveSnapshot\|noteMovePort" packages/ spec/` — **20 件 / 5 ファイル**。直したのは `application/ports/noteMovePort.ts`（4 件）を囲む JSDoc 2 段落だけで、シンボルそのものは 1 つも動かしていない（ADR-181）。直さなかった 16 件: `domain/job/valueObject.ts:7` 1 件（ポートを残す以上いまも真）、`spec/inventory/domain.md` 5 件・`spec/inventory/adapter.md` 5 件（台帳の撤去は ADR-051 の蒸し返し）、`spec/domains/note.md` 5 件（canon は G8 の持ち分で、`:688` の snapshot 内容と「相のオーケストレーションはユースケースが持つ」を寄せる先）。
+
+## ADR-181: `NoteMovePort` は据え置くが、JSDoc は「実装が無い」ことを述べる（ADR-051 の記述側の追随）
+
+### Context
+
+ADR-051 は移動サガをアプリケーション層に書き、`NoteMovePort` を「将来 1 トランザクションへ畳むときの契約」として据え置くと決めた。ところがポートの JSDoc は「Port definition only in the walking-skeleton slice — **implementation ships with the move slice**」と書いたままで、その move スライスが本 PR で着地した以上、**実装について偽**を述べる文になった。`NoteMoveSnapshot`（`{migrationId}`）も実物（`moveNote.ts` の `MoveSnapshot`）と別物で、JSDoc が数える中身（tag・BackupRecord）は本スライスに存在しない（review-007-backend-note W-003）。
+
+レビューは (a) ポートと台帳 10 行（DOM-note-066〜070 / ADP-note-050〜054）の撤去も選択肢に挙げているが、それは ADR-051 の蒸し返しである。
+
+### Decision
+
+**ポートも台帳も残し、記述だけを実態へ寄せる（ADR-046 の向き）。**
+
+- 「実装ゼロ・呼び出しゼロ」を明示し、理由を書く: 各相の UoW をユースケースが握ることが、その相の `AppliedOperationStore` receipt を**効果を主張する当の transaction の中**に置く根拠であり、アダプターへ移すと「1 相 = 1 transaction」を型で言えなくなる。
+- 「適合スイートが無いので、この 5 署名は設計意図であって誰かが縛られる契約ではない」を書き添える。ADR 026 は「ポート JSDoc が契約の正典・適合スイートがその執行形」と定めているので、執行形が無いことを言わないままだと空手形が契約に見える。
+- `NoteMoveSnapshot` の段落に、実物が `MoveSnapshot` であること、tag と BackupRecord は未着地のスライスの持ち分であることを明記する。
+
+### Consequences
+
+- `domain/job/valueObject.ts:7` の「`NoteMovePort` contract references `JobId`」は**今も真**なので触らない（ポートを残す判断の直接の帰結）。
+- canon 側（`spec/domains/note.md:622,659-665,688` / `spec/inventory/domain.md:330-334` / `spec/inventory/adapter.md:254-258`）の追随は G8 の持ち分。台帳行は残し、`spec/domains/note.md:688` の snapshot 内容と「相のオーケストレーションはユースケースが持つ」の 2 点だけを寄せればよい。
+
+## ADR-182: 引き継ぎ Cookie は「文脈を開こうとした読み出しが失敗した時点」で畳む
+
+### Context
+
+ADR-167 は「引き継ぎを畳むのは、それがその ID を名指していたときだけ」に絞ったが、**畳む位置は自分が実行した脱退・削除の応答のまま**だった。除名（WS-05）とワークスペースごとの削除（WS-10）は**他の owner も起こせる**ので、その経路では誰も畳まない。結果、`hollow_scope` は開けない文脈を指したまま残り、`routes/index.tsx` の `beforeLoad` が毎回そこへ `redirect` して `WorkspaceUnavailableState` に着く。誘導先の `/notes`（素の `<a href>`）も `renderWorkspaceNoteList` の失敗経路も Cookie を書かず、着いた先ではスコープトークンが既に「個人」を `aria-current` で示すため、**画面上に直す手段が存在しない**（レビュー 007 frontend B-001）。
+
+### Decision
+
+畳む位置を**応答側から読み出し側へ移す**。判定は「誰が起こした変化か」に依らないので、文脈を開こうとした読み出しが「もう開けない」で落ちた時点が正しい置き場になる。
+
+- 判定は純関数 `presentation/scope.ts:workspaceUnavailability(failure)` に置き、`kind` から `"gone"`（行が消えている）/ `"denied"`（メンバーでない）/ `null` へ写す。ADR-055 / ADR-167 の「判定と運搬を分ける」をそのまま踏襲。
+- 運搬は `scopeCookie.ts:foldScopeSelectionForUnavailable(workspaceId, error)` の 1 本にまとめ、**文脈を開く 2 つの読み出しが両方これを呼ぶ** — `renderWorkspaceNoteList`（`/` の redirect 先）と `loadWorkspaceSettingsShell`。片側だけに置くともう一方の入口で腐った引き継ぎが残る。
+- 畳む条件は `clearScopeSelectionFor` を通すので ADR-167 の「名指しのときだけ」は不変。無関係なワークスペースの P-32 / P-34 を開いて失敗しても引き継ぎは壊れない。
+- `/` の `beforeLoad` で権限を判定し直す案は採らない。権限判定を入口へ戻すことになり ADR-055 と衝突する。
+
+### Consequences
+
+- ブックマークした `/` は次の 1 往復で自己修復する（開けない → Cookie が畳まれる → 以降は `/notes`）。表示は従来どおり「このワークスペースは開けません」のままで、文言は変えていない。
+- `business` を丸ごと `denied` に寄せたのは、設定シェルと 4 つの断片が同じ 3 kind を 1 つの終端表示に畳んでいるためで、**畳む広さと Cookie を畳む広さを一致させる**ことを優先した。狭めると「表示は開けませんなのに Cookie は残る」が復活する。
+- 検出力: `presentation/__tests__/scopeCookie.test.ts` に 5 本（除名後 / 削除後 / forbidden / 別ワークスペース / 開ける失敗）。いずれも**閲覧者が何も操作していない**状態を作る。`scope.test.ts` に写像 2 本。変異スポットチェックは 3 件 — (a) `foldScopeSelectionForUnavailable` の `clearScopeSelectionFor` を落とすと 3 本 red、(b) `notFound → "gone"` を `"denied"` にすると 3 本 red、(c) `business` の枝を落とすと 2 本 red。すべて戻して緑。
+
+## ADR-183: 設定レイアウトは「行が消えている」ときだけ子を描き、P-34 の完了を断片へ委ねる
+
+### Context
+
+`loadWorkspaceSettingsShell` は非メンバーと削除済みを同じ `workspace: null` に畳み、レイアウトはその枝で `<Outlet/>` を描かなかった。削除の local 相が Workspace 行を消した瞬間に `getWorkspaceSettings` が `WORKSPACE_NOT_FOUND` を投げるので、`WorkspaceDangerPanel` の `WorkspaceDeletionCompleted` は「レイアウトの読みは成功し、断片の読みでは行が消えていた」という**完了直前の競合窓でしか出ない**。削除完了後に URL を開き直した利用者に出るのは汎用の「削除されたか、メンバーから外れた可能性があります」で、`spec/pages/index.md#P-34` が状態直和に挙げる「完了」に到達できない（レビュー 007 frontend W-001）。原因は B-001 と同じ「畳んだ理由を捨てている」ことなので同単位で直す。
+
+### Decision
+
+シェルの応答に `unavailable: "gone" | "denied" | null` を足し（ADR-182 の写像をそのまま運ぶ）、レイアウトは `"gone"` のときだけ `<Outlet/>` を描く。
+
+- `"gone"` = 行が残っていない。**削除の「完了」を読めるのは `getWorkspaceDeletionStatus` を呼ぶ P-34 の断片だけ**なので、レイアウトは判断せず子へ委ねる。他の 3 タブの断片も同じ失敗を `WorkspaceUnavailable`（Alert 版）に畳むので、タブごとの分岐は要らない。
+- `"denied"` = 非メンバー。どの断片も答えを持たないので従来どおりレイアウトが `WorkspaceUnavailableState` で畳む。**非メンバーに削除の進行を見せない**線もここで引かれる。
+- `<Outlet/>` は `SettingsColumn` の中から呼び出し側へ出した。器（`main`）は 2 つの枝で共有し、置き場だけを枝ごとに決める。
+
+### Consequences
+
+- 削除完了後に P-34 を開き直すと「このワークスペースは削除されました」に着く。他の 3 タブを開き直すと断片の Alert（同じ文言）に着き、タブ列は出ない — レイアウトが workspace を持たないため。`spec/` 側の改訂は要らない（台帳の状態が実装されただけ）。
+- 到達には `getWorkspaceDeletionStatus` が完了後も答え続けることが要る。この前提は ADR-093（「P-34 は進行を先に読む」）が既に置いている。
+
+## ADR-184: 適合検査のガードは「走らせないための API」を全数で見る — `only` を含め、バックエンドのファイル選択は 1 本の規則から導く
+
+### Context
+
+ラウンド 5 で入れ、ラウンド 6（ADR-177）で 1 度広げた `conformanceCoverage.test.ts` のガードが、3 ラウンド続けて同じ形で「ケース名の主張 > 実際に見ている幅」だった（review-007-backend-workspace W-001）。今回の取りこぼしは 3 つ。
+
+- 自己 opt-out の走査 `/\.(skip|skipIf|runIf|todo)\b/` と `/\b(xit|xdescribe)\s*\(/` に **`only` が無い**。vitest の `only` は収集ファイル単位で解決されるので、共有スイートの中に 1 つ紛れると **それを呼んだエントリファイルの残り 42 スイートが丸ごと走らない**。「契約節が未検証のまま緑」というガードの目的そのもので、被害は `skip` より広い。
+- 任意メンバーの名前クラス `[a-z][A-Za-z]*` が**数字を含む名前を取りこぼす**（`seedV2?:`）。ADR-177 は構文（`?(` と `?:`）は両方見るようにしたが、名前の幅は letters のままだった。
+- `memoryFiles` は `memory/__tests__` 全体、`cloudflareFiles` は `cloudflare/__tests__/conformance` 配下だけという**非対称な 2 本の手書きフィルタ**。`hands each backend's suites that backend's own factory` は cloudflare 側の適合ディレクトリ外（`harness.test.ts` / `support.test.ts` / `searchEdges.test.ts`）を 1 行も見ていない。
+
+### Decision
+
+**ガードが述べる性質は「実行から外す API の全種」と「両バックエンドに同じ規則」で書く。**
+
+- 自己 opt-out を `/\.(only|skip|skipIf|runIf|todo)\b/` と `/\b(xit|xdescribe|xtest|fit|fdescribe|ftest)\s*\(/` へ広げ、ケース名を `lets no persistence conformance suite opt out of its backend's run` に改めた。`only` は opt-**in** だが「他を落とす」ので同じ集合に入る。**入れなかった修飾子とその理由も JSDoc に書いた** — `.each` / `.for`（パラメタ化）、`.concurrent` / `.sequential`（順序）、`.fails`（期待の反転）、`.extend`（fixture）はどれもケースを run から外さない。境界を書いておかないと、次のラウンドでまた「全種か」を数え直すことになる。
+- 任意メンバーの名前クラスを `[A-Za-z_$][\w$]*`（言語が許す識別子の全幅）へ。
+- ファイル選択を `backendFiles(backend)` の 1 関数にし、`memory` / `cloudflare` を名前で渡すだけにした。**選択規則を 2 本持つこと自体が欠陥**で、非対称なペアは集合比較を双方向に嘘にする（狭いほうが見えない呼び出し口は「そのバックエンドが走らせていないスイート」に、広いほうだけが見る呼び出し口は「相手が欠いているスイート」に見える）。今日の集合は 43 / 43 のまま動かない。
+
+### Consequences
+
+- 変異スポットチェック（3 件同時に注入して確認し、すべて戻した）: (a) `conformance/appliedOperationStore.ts` を `describe.only(...)` に、(b) `ConformanceBackend` に `probe2?: (id: string) => Promise<void>;` を、(c) `cloudflare/__tests__/harness.test.ts` に `makeMemoryConformanceBackend` の語を足す。新ガードは 3 件とも赤（順に self-opt-out / 任意メンバー / factory 検査）。**同じ 3 件を注入したままラウンド 6 のガードへ戻すと 5 ケースすべて緑**で、取りこぼしが 3 つとも実在したことが実測で残る。
+- 網羅の根拠を件数で残す。ファイル内の正規表現は 6 本（名前付き 4 本 ＋ `SELF_SKIPS` の 2 本）で、1 本ずつ「ケース名が主張する幅」と「実際に見る幅」を突き合わせた。`CALL_SITES` / `EXPORTS` / `FACTORIES` は集合の双方向一致と絶対値で押さえており、片側が空になれば赤になる。
+- `packages/core/src/adapters` 全体を vitest の実行制御 API 全種で洗った結果は 4 件で、うち 3 件は本ガード自身の JSDoc と免除対象（`signInOAuthClient.ts:56` の別名束ね）、残り 1 件は `cloudflare/__tests__/searchEdges.test.ts:369` の `it.each` — パラメタ化でありケースを落とさないので対象外。
+- ケース名の変更は canon には現れない（`spec/` からの参照は 0 件）。
+
+## ADR-185: per-row tolerance の `try` は RPC 1 本だけを包む／絞り込みの根拠は「効いている理由」に一本化する
+
+### Context
+
+`getUsageSnapshot` と `di/types.ts` に、記述と実効の乖離が 3 件（review-007-backend-usage W-001 / W-002 / W-003）。
+
+- `listWorkspaceUsage` の JSDoc が「名前なしで残す」の根拠に **`ADR 048` を引くが、ADR 048 は一意性予約の操作 ID の ADR**で無関係（ADR-163「引用は必ず実在の文を指す」の再発）。
+- `MembershipDirectoryReservations` の JSDoc が `commitAccountDeletion` を落とす理由に「終端遷移だから」を挙げるが、**同じ `Pick` に残した `completeRemoval` も終端遷移**で、要求パスの `removeMember` / `leaveWorkspace` から呼ばれる。基準が兄弟に反証されている。
+- `readWorkspaceUsage` の per-row tolerance の `catch` が、許容対象の scope RPC より広く `StorageQuota.initialize` / `QuotaEnforcement.describe` の**純粋な導出まで**包んでいた。CLAUDE.md「broad `try / catch` は明示的な境界だけ」の違反で、ドメイン不変条件の破れが `unavailable` 1 行 + ログ 1 行に畳まれる。
+
+### Decision
+
+- **`try` は許容したい I/O だけを包む。** `find` の呼び出し 1 文だけを `try` に残し、`catch` は早期 return で `unavailable` を返す。導出は `try` の外。`usageReaderFor` はリポジトリを組み立てるだけの同期呼び出し（`memoryRuntime.ts:200` / `cloudflareRuntime.ts:345`）なので外に置いた。
+- **参照は実在の文へ。** 正典は `WorkspaceDirectoryBatchReader` のポート JSDoc（`:59`「A shard that cannot be read does **not** fail the call」）と `spec/usecases/usage.md#getusagesnapshot` 手順 2（`:47`）。どちらも実際にその文を持つことを確認した。`.thread/` は引かない（CLAUDE.md「Design canon」）。
+- **絞り込みの根拠は「この配備に要求パスの呼び出し側が無い」に一本化する。** そのうえで「終端性は基準ではない」ことを 1 文で明示した — `completeRemoval` が残っている理由が読めないと、次の書き手が `WorkspaceDirectoryProjector` の基準（終端はワーカー面へ）をこの型にも一般化して兄弟を落とす。型（ADR-162 の 7 本）は 1 文字も変えていない。
+
+### Consequences
+
+- `TC-usage-086`「a quota row whose derivation breaks fails the call instead of degrading its row」を追加した。scope は正常に応答し、その応答の**導出**が投げる（`quota` の読み出しで例外）状況を作り、`getUsageSnapshot` が rejects することを拘束する。番号の台帳登録は canon 担当へ申し送り。
+- 変異スポットチェック: 導出を `try` の中へ戻すと `TC-usage-086` が `promise resolved … instead of rejecting` で赤。既存 26 ケースは両方の形で緑なので、この 1 ケースだけが範囲の狭さを見ている。
+- `application/usage` / `storage` / `identity` の `try` 34 件を分類した。縮退（握り潰し）する `catch` はいずれも **await 1 本だけ**を包んでおり、直したのは本件 1 件。残りは (i) 補償して再 throw する境界、(ii) ワーカーの per-row tolerance、(iii) 既に port 呼び出し 1 本だけの縮退、の 3 種。
+- 素の `ADR NNN` 形式は repo 全体で 64 件あり、レビューの「ここ 1 箇所だけ」はレビュー担当範囲内の話だった。**書式は欠陥ではない**（bare 形式のほうが多数派）ので揃えていない。参照番号 25 種はすべて `spec/adr/{番号}-*.md` に実在することを機械的に確認済みで、**参照先が誤っていたのは本件 1 件のみ**。
+
+## ADR-187: 遷移の捕捉・脱退の整合・継ぎ足しの再種まきは、島ごとではなく形で揃える
+
+### Context
+
+レビュー 007 frontend は W-003（`router.navigate` / `router.invalidate` の未捕捉 3 件）・W-004（`WorkspaceUsageBoard` に再種まきが無い）・W-005（脱退だけ `router.invalidate()` が無い）を、いずれも「同じ PR の他の経路とだけ非対称」として挙げた。どれも今日は観測されない — 遷移は普通は成功し、P-24 には現状ミューテーションが無い。**次の書き手が非対称を見て別の形を選ぶこと**が害である。
+
+### Decision
+
+3 件とも「先に決まっている形」へ寄せる。あわせて、指摘の文言ではなく**制約を述べている構文**（`router.navigate` / `router.invalidate` の呼び出しに `.catch` が付いているか、ミューテーションの後に `reconcile()` を通るか、継ぎ足しを持つ島が先頭ページの差し替えを見ているか）で全数を洗った。
+
+- 未捕捉の遷移は `.catch(() => console.error(...))` に揃える。洗い出しで**レビューが挙げた 3 件に加えて 4 件目**（`ScopeToken/index.tsx:switchTo` の切り替え遷移）が出たので同じ形で閉じた。引き継ぎ Cookie は `selectScopeFn` の応答で既に書けているので、遷移の失敗を「切り替えられなかった」と見せないのは他の経路と同じ理由である。
+- 脱退は `navigate` の前に `await reconcile()` を通す（CLAUDE.md「Every mutation reconciles with `router.invalidate()`」）。この match は `staleTime` 無限なので、履歴の戻るが古い名簿ごと甦る — `InvitationActions` が同じ理由で明示的に入れているのと揃う。
+- `WorkspaceUsageBoard` は種（サーバーの先頭ページ）と継ぎ足しを分け、`seed !== initialWorkspaces` で継ぎ足しと `cursor` を捨てる（`WorkspaceMembersPanel/board.tsx:useLoadedPages` と同形）。`cursor` も一緒に戻すのは、こちらのページ送りが番号ではなくカーソルだからである。
+
+### Consequences
+
+- 追加読み込みを持つ島 4 件（`ScopeToken` / `NoteMovePicker` / `WorkspaceMembersPanel` / `UsagePanel`）はこれで全部が再種まきを持つ。根拠は島ごとに違う — `ScopeToken` は `scopeIdentity`（ADR-123）、`NoteMovePicker` は `useEffect` の依存が所有者なので取り直し、残る 2 つは props の同一性比較。
+- `useLoadedPages` を共有ヘルパーに切り出すことはしない。ページ送りの鍵（番号 / カーソル）が違うので、畳むと型がどちらかに寄る。同形であることはコメント 1 行で名指してある。
+
+## ADR-186: 手放す slug 鍵は候補を選ばず両方解放する（ADR-160 を反対側の窓へ広げ、削除まで含めて 1 単位にする）
+
+### Context
+
+ADR-160 は「手放す鍵は directory の広告値から決める」を `changeWorkspaceSlug` の 3 経路へ広げた。これは `activate` を恒久的に失った窓（scope だけが進む）を閉じたが、**対称な窓**を開けた（review-007-backend-workspace B-001）。投影は 5 ユースケースすべてで commit の後に走る best-effort で、購読者も修復口も無い。2 回失敗すると **global だけが進んで directory が前の版のまま残る**（G1 が新設した `withFailingDirectoryProjection` が作る状態）。そこでは広告値のほうが外れ、`?? previousSlug` のフォールバックも「広告値が非 `null`」なので効かない。
+
+- 経路 1（主経路）: 広告値が非 `null` なら `previousSlug` は一切解放されず、実際に保持している鍵が `active` のまま残る。期限が無く回収の駆動口も無い（ADR-051 / 076）ので復旧不能。
+- 経路 2（`repairSettledSlug` の非 `null` 枝）: 広告値のみでフォールバック無し。しかも解放が `resolveActive(slug) !== workspaceId` の内側にあるため、次回以降は早期 return で取り残した鍵に触れる呼び出しが二度と現れない。
+- 経路 3（削除）: 逆に **scope の値（`turn.slug`）だけ**を見て広告値を落とす。ADR-160 Consequences が「tombstone が先に directory を潰すので後から読めない・担当ファイル外」として申し送りにした箇所。
+
+つまり「scope の現在値」と「広告値」は**どちらも単独では global に残っている鍵を指さない**。ラウンド 5→6→7 で 3 度続いた再発は、毎回「正しい 1 つの候補」を選び直していたことが原因である。
+
+### Decision
+
+**候補を選ぶのをやめ、両方解放する。** `activate(releasing)` も `release` も「その workspace が `active` で保持している間だけ」解放する条件付き操作なので、外れた候補を渡しても行は動かない（ポート JSDoc / memory・D1 両実装で確認）。外れる側のコストは書き込みの無い呼び出し 1 回、当てを外す側のコストは復旧不能。
+
+- **経路 1**: 交換の `releasing` は `previousSlug` に戻す（公開 URL の連続性が要るのは scope が今まで見せていた鍵で、`activate` の原子性はそこにしか効かない）。そのうえで `advertised !== previousSlug` のときだけ広告値を `release` で追加解放する。**`previousSlug` を交換の外で解放してはならない** — 「両方 / どちらも解決しない窓」を開けるので、この不等号は本質的な条件である。clear 側（後継が無い）は窓の心配が無いので `[previousSlug, advertised]` を素直に両方解放する。
+- **経路 2**: 広告値の解放を早期 skip の**外**へ出し、毎回評価する。skip が覆うのは「鍵の再予約」だけ。`activate` の `releasing` は引き続き広告値を運ぶ（当たっていれば原子的に閉じる）。
+- **経路 3**: 広告値を**受理時に**読み、`WorkspaceDeletionLocalTurn` / `WorkspaceDeletionGlobalTurn` の `advertisedSlug` として運ぶ。global cleanup は tombstone の後に `turn.slug` と `turn.advertisedSlug` の**両方**を（重複を除いて）`release` する。`WorkerContainer` に directory の読みポートを足す案は採らない — DI の型を広げるうえに、tombstone が先に行を潰すので turn の中では読めない。受理時点で読めるのは、`beginDeletion` 以降 scope が変更を受け付けず投影の送信者も居ないため、その値がその後動かないからである。旧版の payload に `advertisedSlug` が無くても `readNullableString` が `null` を返すので、進行中の削除は「従来どおり `turn.slug` だけ解放する」に縮退する。
+
+**W-003（同じ規則の 4 箇所での言い直し）** は、規則の本文を `advertisedSlug` の JSDoc **1 箇所**に集約して閉じた。`releaseKeys` / `repairSettledSlug` / `changeWorkspaceSlug` / `continueWorkspaceDeletionGlobalCleanup` / `WorkspaceDeletionLocalTurn` はそこを指すだけにしてある。ポート JSDoc（`workspaceSlugReservationStore.ts`）には「呼び出し側は保持している鍵を読み戻せないので、候補を全部名指して外れた側に何も書かせない」という**条件付き解放が支えている呼び出し側の前提**だけを 1 段落足した（契約の振る舞いは無改訂、適合スイートも無改訂）。
+
+### Consequences
+
+- 健全な改名・削除では広告値 = scope の値なので、増えるのは削除 1 件あたり `resolveMany` 1 回の読みと、重複除去で消える解放 1 回ぶんの分岐だけ。`repairSettledSlug` は健全な再送でも `resolveMany` を 1 回引くようになった（従来は早期 skip で省いていた）。
+- 新規ケース **TC-workspace-324**（経路 2）を追加した: directory shard が読めない状態で修復が走ると `activate({releasing: null})` になり、1 つの workspace が `active` な鍵を 2 つ持つ。以後 `resolveActive(scope の slug) === workspaceId` が成立し続けるので、解放が skip の内側にあると取り残した鍵に到達する呼び出しが二度と現れない。番号の台帳登録は G8 の持ち分。
+- 変異スポットチェック（すべて red を確認して戻した。`git diff` に残留なし）:
+  - 経路 1 の追加 `release` を落とす → `TC-workspace-314` が red
+  - 経路 1 を ADR-160 の形（`releasing: advertised ?? previousSlug`・追加解放なし）へ戻す → `TC-workspace-317` が red
+  - clear 側を `[previousSlug]` だけにする → `TC-workspace-315` が red
+  - clear 側を `[advertised]` だけにする → `TC-workspace-318` が red
+  - 経路 2 の解放を skip の内側へ戻す → `TC-workspace-048`（2 本）と `TC-workspace-324` が red
+  - 経路 3 を `[turn.slug]` だけにする → `TC-workspace-319` が red
+  - 経路 3 を `[turn.advertisedSlug]` だけにする → `TC-workspace-103` が red
+  - **「両候補のうち片方だけ」を 3 経路 × 2 通りすべて入れて、6 通りとも red になった。**
+- canon の追随は G8 の持ち分: `spec/usecases/workspace.md:173` / `spec/domains/workspace.md:262` の「scope の現在値ではなく広告値から決める」を「両候補を解放する」へ、`spec/testcases/workspace/changeWorkspaceSlug.md` と `spec/inventory/test.md` に TC-workspace-324 と削除側の 1 行、加えて `deleteWorkspace` の継続 payload が候補を 2 つ運ぶことを `spec/usecases/workspace.md#deleteworkspace` 手順 3 / 7 に。
+
+## ADR-188: モックの入力上限は辞書へ寄せ、台帳の掲載範囲は「規約」として前書きに書く
+
+### Context
+
+レビュー 007 general は 3 件を挙げた。
+
+- **B-001**: `spec/design/pages/P30` / `P31` の名前 `maxlength="50"`・説明 `maxlength="300"`（＋ヒント「300 文字まで」）が canon（`WorkspaceName` 80 / `WorkspaceDescription` 500）・マニュアルテスト・実装のすべてに矛盾する。`spec/manual-tests/index.md` は「文言の正典は `spec/design/`」と宣言しているので、canon が canon に反論している状態だった。ラウンド 6（ADR-178）が同じファイルのスラッグ注記だけを直して「他に食い違いは無い」と宣言できたのは、確認を `3〜32` / `半角英数字とハイフン` という**文言の文字列 2 本**で行ったためである。
+- **W-001**: 台帳の前書きが「1 行 = 1 ポートメソッド／生成元 `spec/domains/`」としか言わず、`application/ports/` のどれが載りどれが載らないかの規約が無い。ラウンド 6 は `AppliedOperationStore` に 2 行を足したが、`spec/domains/index.md` に同じ強さで名前が出る `DistributedOperationStore.deleteTerminal` は行を持たないままで、非対称がポートを移っただけだった。
+- **W-002**: `.thread/3/testing.md` 項目 3 の前提が所有数を 1 件数え落とし（項目 2 は手順 7・8 で **2 件**作る）、18 件足すと 21 件目に当たって**正しい実装が手順 1 の途中で `WorkspaceQuotaExceeded` に落ちる**。手順 2 に到達しないので、実行者は正しい実装を退行として記録しうる。
+
+### Decision
+
+**モックの上限は辞書（ドメインの値オブジェクト）へ寄せる。** 実装をモックへ寄せる向きは採らない（ADR-169 / ADR-178 の維持）。確認は文言ではなく**制約を述べている構文**（`maxlength=` 属性）で行い、`spec/design/pages/` 全体の 6 件を canon と 1 件ずつ突き合わせた。同じ 1 回の grep で出る `P21-settings-profile.html` の `bio`（`Bio` = 500 に反する 300）も同単位で閉じる — Issue #2 の持ち分だが、外すと「片側だけ直す」の再演になる。
+
+**台帳には行を 22 本足さず、掲載範囲を規約として前書きに書く**（`Clock` / `Logger` / `IdGenerator` まで巻き込まないため）。規約は「`application/ports/` は `spec/domains/` が**メソッド単位で契約を書いている**ポートだけを載せる。別のポートの契約を説明する文の中でメソッド名が挙がるだけでは掲載条件を満たさない」。これで `DistributedOperationStore.deleteTerminal` の非対称が宣言になり、契約の正典はポート JSDoc と適合スイートが持つ（ADR 026）ことが台帳の側から読める。
+
+**手順書は前提を 3 件・追加を 17 件へ直し、ワークスペース表に `大文字検証` / `my-team` の行を足す。** あわせて、所有上限 20 件 = ページサイズ 20 件なので**A に 2 ページ目は構造的に現れない**ことを項目 4 手順 2 と項目 18 手順 4 に条件として書いた（前者は「20 件以上ある場合」と曖昧に、後者は無条件に 2 ページ目を要求していた。同じ数え落としの系である）。
+
+移行ファイルの注釈（`0002_workspace_directory.sql`）も本ラウンドで閉じた。「rows are written by the `workspace.*` projection, which has no port yet」は同じコミットに `WorkspaceDirectoryProjectionWriter` がある以上**今日すでに偽**で、「その schema 版時点の記録」という根拠は**本 PR で新規追加されたファイル**では循環している。`deletion_operation_id` の片側だけの CHECK は `0004` への前方参照として書き直した。
+
+### Consequences
+
+- `spec/design/` を正本として実装を直す者が名前を 50 文字で打ち切ることは無くなり、`spec/manual-tests/workspace.md` TC-16 手順 6（80 文字）と矛盾しなくなった。P-21 の `bio` も `spec/manual-tests/account.md` の 500 / 501 境界と揃った。
+- 台帳に新規登録した ID: `TC-note-771` / `TC-usage-086` / `TC-workspace-316〜324`（12 件）。**`TC-workspace-320` が G1 と G3 で衝突していた**（`createWorkspace` の投影喪失と `changeWorkspaceSlug` の修復スキップ）ので、後者を末尾の続き番号 **`TC-workspace-324`** へ改番し、ADR-186 本文の参照も追随させた。機械検査の結果、4 台帳に**重複 0 件**、欠番は `TC-usage` の 006 / 008〜012（ラウンド 5 で退役と確認済み）のみ、`spec/testcases/**` 154 ファイルの表データ行数と台帳の行数は**全ファイルで一致**、コードに現れる TC ID で台帳に無いものは 0 件。
+- `.thread/3/adr.md` の **`ADR-184` が重複**していた（G4/G5 と G6/G7 の並行追記）。**後ろに位置する frontend 側を `ADR-187` へ改番**した。既知の欠番（094 / 164〜166）はそのまま。
+- canon の追随（G2 / G3 / G6）も本 ADR の単位で入れた。`spec/domains/note.md` は `NoteMoveSnapshot` が「ポートがそう受け取るであろう不透明な宣言」であること・**実際に動いている移動が運ぶのは `MoveSnapshot`（Note / Revision / ファイル metadata / bytes）**であること・**相のオーケストレーションはユースケースが持ち、ポートは 1 transaction へ畳む日の契約**であることを書いた（台帳 10 行と ポートは撤去しない = ADR-051 / ADR-181 の維持）。`spec/usecases/note.md#movenote` の終端表に「operation を開く呼び出し自体の失敗」の行を足して 5 通りにした（ADR-180 の canon 側）。`spec/scenario/workspace.md#WS-02` 異常系に「引き継ぎを畳むのは文脈を開く読み出しが『開けない』と答えた時点」を 1 行足した（ADR-182 が本 PR を越えて効く決定であるため）。
+
+### 網羅の宣言
+
+- **grep したパターン**
+  - `grep -rn "maxlength=" spec/design/pages/`
+  - `grep -rn "文字まで\|文字以内\|3〜30\|maxLength" spec/design/pages/`
+  - `grep -rn "workspace\.\*\|has no port yet" packages/ spec/ docs/`
+  - `grep -rn "広告\|advertis" spec/usecases/workspace.md spec/domains/workspace.md`
+  - `grep -rn "NoteMoveSnapshot\|NoteMovePort" spec/`
+- **対象範囲**: `spec/**`（`spec/design/` を含む）・`packages/`・`docs/`・`.thread/3/testing.md`・台帳 4 本
+- **ヒット件数 / 直した件数**
+  - `maxlength=` — **6 件**。canon と 1 件ずつ突き合わせ、**4 件**を修正（P30 名前 50→80・説明 300→500、P31 同じ 2 件、P21 `bio` 300→500 で計 5 件）。直さなかった 1 件: `P21:245` の `displayName maxlength="50"` は `DisplayName` の上限 50（`domain/identity/valueObject.ts:117`）と**一致しているので正しい**。
+  - ヒント文 — **3 件**。**2 件**（P31・P21 の「300 文字まで」）を「500 文字まで」へ。直さなかった 1 件: P31 のスラッグ注記「3〜30 文字」は `SLUG_PATTERN` と一致（ADR-169 で修正済み）。
+  - `workspace.*` / `has no port yet` — 修正後 **0 件**（投影をイベントで語る記述は repo に残っていない）。
+  - `広告 / advertis` — **4 件**（`spec/usecases/workspace.md` 3 件・`spec/domains/workspace.md` 1 件）。**4 件すべて**を「両候補を解放する」へ改訂（手順 2 の修復・手順 5 の主経路・`deleteWorkspace` 手順 3 / 7・ドメイン側の契約段落）。
+  - `NoteMoveSnapshot / NoteMovePort` in `spec/` — **16 件**。直したのは `spec/domains/note.md` の 3 箇所（節の前書き・snapshot 内容）。直さなかった 13 件は `spec/inventory/{domain,adapter}.md` の 10 行（撤去は ADR-051 の蒸し返し）と `spec/domains/note.md` の interface 宣言 3 件（シグネチャは据え置きの契約そのもの）。
+- **0 件だった確認**: `grep -rn "\.thread/" spec/ docs/ packages/ apps/` — 0 件（`.thread/` を canon から参照していない）。

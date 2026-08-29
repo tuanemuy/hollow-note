@@ -9,6 +9,7 @@ import { createBlankNote } from "../../note/createBlankNote";
 import type { ScopeTaskPayload } from "../../ports/scopeTaskScheduler";
 import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import { acceptInvitation } from "../acceptInvitation";
+import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
 import { createWorkspace } from "../createWorkspace";
 import { deleteWorkspace } from "../deleteWorkspace";
 import { getPublicWorkspace } from "../getPublicWorkspace";
@@ -184,6 +185,7 @@ describe("deleteWorkspace", () => {
           phase: "memberships",
           cursor: null,
           slug: SLUG,
+          advertisedSlug: SLUG,
         },
       }),
     ]);
@@ -359,6 +361,46 @@ describe("deleteWorkspace", () => {
         input: { userId: OWNER, name: "Reborn", description: "", slug: SLUG },
       }),
     ).resolves.toMatchObject({ slug: SLUG });
+  });
+
+  /**
+   * The slug the deletion carries is the one the scope named when the
+   * request was accepted, and that is only ever *a* candidate: a rename
+   * whose activation was lost for good moved the scope while the global
+   * key stayed where it was. The workspace is about to disappear, so this
+   * is the last call that could free it, and an `active` reservation has
+   * no expiry behind it.
+   */
+  it("TC-workspace-319: a deletion frees the key the directory advertises, not only the one the scope named", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, { slug: "old-slug" });
+
+    const store = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      changeWorkspaceSlug({
+        container: {
+          ...h.container,
+          workspaceSlugReservationStore: {
+            ...store,
+            activate: () => Promise.reject(activateFailure),
+          },
+        },
+        input: { workspaceId: WORKSPACE, userId: OWNER, slug: "team-gamma" },
+      }),
+    ).rejects.toBe(activateFailure);
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBe("team-gamma");
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+
+    await accept(h);
+    await drainScopeTasks(h);
+
+    // `team-gamma` is merely `reserved`, so its expiry collects it; the
+    // `active` key the directory advertised is the one that would be lost
+    // to every workspace in the service.
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-gamma", WORKSPACE, "reserved"]]);
   });
 
   it("TC-workspace-100: the directory tombstone drops the slug and the display data, and the slug is freed only after it lands", async () => {
@@ -542,6 +584,7 @@ describe("deleteWorkspace", () => {
           phase: "memberships",
           cursor: "m-099",
           slug: SLUG,
+          advertisedSlug: SLUG,
         },
       }),
     ]);

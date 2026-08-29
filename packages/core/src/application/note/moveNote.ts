@@ -23,7 +23,10 @@ import {
   SystemErrorCode,
 } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
-import type { DistributedOperationPayload } from "../ports/distributedOperationStore";
+import type {
+  DistributedOperation,
+  DistributedOperationPayload,
+} from "../ports/distributedOperationStore";
 import type { NoteRoute } from "../ports/noteRouteStore";
 import { ScopeKey } from "../scope";
 import {
@@ -268,6 +271,14 @@ const readTagNames = (
     return name;
   });
 };
+
+/** What identifies the control row of one move, in full. */
+type BeginMoveRequest = Readonly<{
+  kind: "noteMove";
+  partitionKey: string;
+  requestKey: string;
+  payload: DistributedOperationPayload;
+}>;
 
 const toPayload = (
   plan: Omit<MovePlan, "migrationId">,
@@ -1016,22 +1027,20 @@ export async function moveNote({
   // first one's operation, and the checks that decide whether the move
   // may still commit would be asked about the wrong person.
   const requestKey = `${noteId}:${actorUserId}:${serializeScope(target)}:${route.routeVersion}`;
-  const { operation } = await container.globalUnitOfWorkProvider.run((ctx) =>
-    ctx.distributedOperationStore.beginOrResume({
-      kind: "noteMove",
-      partitionKey: noteId,
-      requestKey,
-      payload: toPayload({
-        noteId,
-        actorUserId,
-        source,
-        target,
-        sourceMembershipVersion: sourcePin.version,
-        targetMembershipVersion: targetPin.version,
-        droppedTagNames,
-      }),
+  const operation = await beginOperation(container, {
+    kind: "noteMove",
+    partitionKey: noteId,
+    requestKey,
+    payload: toPayload({
+      noteId,
+      actorUserId,
+      source,
+      target,
+      sourceMembershipVersion: sourcePin.version,
+      targetMembershipVersion: targetPin.version,
+      droppedTagNames,
     }),
-  );
+  });
   if (operation.requestKey !== requestKey) {
     throw moveInProgress();
   }
@@ -1254,6 +1263,74 @@ async function releaseUnusedClaim(
       releaseError,
       migrationId: plan.migrationId,
       noteId: plan.noteId,
+    });
+  }
+}
+
+/**
+ * Opens the control row — and closes it again when the answer to that
+ * opening is lost.
+ *
+ * A lost response is not a lost write. The row may well have committed,
+ * `running`, while no one in this process knows its id: nothing is
+ * claimed, nothing is locked, nothing is staged. `beginOrResume` joins
+ * every later request for this note to that row, so from here on every
+ * move of it is refused (`NOTE_MOVE_IN_PROGRESS`) for everyone except a
+ * request deriving the very same key — and the moment the user picks
+ * another destination even that key is gone. Canon settles every
+ * switch-less end of the saga `rejected` for exactly this reason
+ * (spec/usecases/note.md#movenote 手順 4).
+ *
+ * The id is the only thing the loss took, and the request key derives it
+ * again: the call is idempotent on that key, so re-issuing the identical
+ * request returns the committed row, or creates the one that never
+ * committed — which is then settled the same way, since this attempt has
+ * already given up on it.
+ *
+ * Only a row this request authored may be closed. A different
+ * `requestKey` means the store joined us to an operation somebody else
+ * drives, and a terminal row is already closed. Like the other
+ * compensations here, the repair — the re-issue that decides it as much
+ * as the settle — is logged and swallowed rather than allowed to replace
+ * the caller's diagnosis.
+ */
+async function beginOperation(
+  container: RequestContainer,
+  request: BeginMoveRequest,
+): Promise<DistributedOperation> {
+  try {
+    const { operation } = await container.globalUnitOfWorkProvider.run((ctx) =>
+      ctx.distributedOperationStore.beginOrResume(request),
+    );
+    return operation;
+  } catch (cause) {
+    await rejectLostOperation(container, request, cause);
+    throw cause;
+  }
+}
+
+async function rejectLostOperation(
+  container: RequestContainer,
+  request: BeginMoveRequest,
+  cause: unknown,
+): Promise<void> {
+  try {
+    const { operation } = await container.globalUnitOfWorkProvider.run((ctx) =>
+      ctx.distributedOperationStore.beginOrResume(request),
+    );
+    if (
+      operation.requestKey !== request.requestKey ||
+      operation.state !== "running"
+    ) {
+      return;
+    }
+    await settle(container, operation.id, "rejected");
+  } catch (repairError) {
+    container.logger.error("[moveNote] the opened operation was left running", {
+      cause,
+      repairError,
+      noteId: request.partitionKey,
+      requestKey: request.requestKey,
     });
   }
 }

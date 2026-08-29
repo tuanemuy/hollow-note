@@ -45,3 +45,4 @@
 | routeを手放した後、同じtarget scopeを別のmigrationがstageした | 中止する | 自分のstaged importのreceiptが立っていないので何も解体せず、別migrationの複製・credit・file metadataを残したまま両scopeのlockだけ返す | |
 | 中止のthawが返したrouteを別のmigrationが既にclaimしている | 中止する | routeがsourceの同じ世代を指す限り補償は走り、この migration 自身のstaged複製・credit・lockが戻る（掴んだ相手を理由に降りない） | |
 | switchがcommitして応答だけを失い、その後rollbackが走る | 中止する | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） | |
+| operationを開く呼び出し自体が応答を失う（commitはしている） | 別の編集者が同じノートの移動を要求する | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しい operation を開いて移動を完了できる | |

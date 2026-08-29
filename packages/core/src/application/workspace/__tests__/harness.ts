@@ -655,6 +655,31 @@ export function overwriteDirectoryRow(
   h.backend.workspaceDirectory.set(workspaceId, { ...stored, ...patch });
 }
 
+/**
+ * A container whose `workspace_directory` snapshot never lands.
+ *
+ * Every usecase that writes the projection sends it *after* its own
+ * scope-local commit and gives it one retry, so two refusals end the
+ * request in failure with the scope already moved and the directory row
+ * still on the version before it. Nothing repairs that row afterwards —
+ * the projection has no subscriber and no recovery entry point (see
+ * `WorkspaceDirectoryProjectionWriter`) — which is what makes this the
+ * lasting state the advertised slug is read out of, rather than a lag
+ * that the next round of work closes on its own.
+ */
+export function withFailingDirectoryProjection(
+  h: TestHarness,
+  error: Error = new Error("directory shard unreachable"),
+): RequestContainer {
+  return {
+    ...h.container,
+    workspaceDirectoryProjectionWriter: {
+      ...h.container.workspaceDirectoryProjectionWriter,
+      applySnapshotIfNewer: () => Promise.reject(error),
+    },
+  };
+}
+
 // --- outbox and continuations -----------------------------------------
 
 export const outboxRows = (

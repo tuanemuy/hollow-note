@@ -11,3 +11,4 @@
 | ワークスペース所有のノートがある | 名前は変えず説明だけを更新する | `workspace.profileUpdated` は発行されず、読み取りモデルは更新されない | |
 | — | 名前を空文字列にする | `BusinessRuleError(InvalidName)` が投げられる | |
 | 同時に別の要求が更新した | 更新する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
+| commit 後の投影を恒久的に失う | 更新する | scope だけが進み `workspace_directory` は 1 版前に残る。誰も再送しないので、次の保存が両方の変更を載せた snapshot で追いつく | |

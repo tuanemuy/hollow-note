@@ -41,6 +41,37 @@ export function namesWorkspace(
   return scope.kind === "workspace" && scope.workspaceId === workspaceId;
 }
 
+/**
+ * 開こうとしたワークスペースが「もう開けない」理由。`gone` は行が残って
+ * いない（削除の完了 / 不在）、`denied` はメンバーでないことによる拒否。
+ */
+export type WorkspaceUnavailability = "gone" | "denied";
+
+/**
+ * その読み出しの失敗が「この文脈はもう開けない」を意味するか、意味するなら
+ * どちらの理由か（意味しなければ `null`）。
+ *
+ * **どちらの理由も他の owner が起こせる** — 除名（WS-05）とワークスペース
+ * ごとの削除（WS-10）である。だから引き継ぎ Cookie を畳む判定は「自分が
+ * 実行した脱退・削除の応答」ではなく**文脈を開こうとした読み出しの失敗**に
+ * 置く。応答側だけで畳むと、他者が起こした変化では誰も畳まず、入口
+ * （`routes/index.tsx` の `beforeLoad`）が毎回その ID へ送り続ける
+ * （誘導先の `/notes` も Cookie を書かないので自己修復しない）。
+ *
+ * `business` を丸ごと `denied` に寄せるのは、設定シェルと 4 つの断片が
+ * 同じ 3 kind を 1 つの終端表示に畳んでいるためで、判定の広さをそちらと
+ * 揃えてある（`kind` ごとの写像はここ 1 か所）。
+ */
+export function workspaceUnavailability(
+  failure: Readonly<{ kind: string }>,
+): WorkspaceUnavailability | null {
+  if (failure.kind === "notFound") return "gone";
+  if (failure.kind === "forbidden" || failure.kind === "business") {
+    return "denied";
+  }
+  return null;
+}
+
 export function serializeScope(scope: ScopeSelection): string {
   return scope.kind === "personal"
     ? "personal"

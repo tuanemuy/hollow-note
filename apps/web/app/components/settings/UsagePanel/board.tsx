@@ -32,11 +32,23 @@ export function WorkspaceUsageBoard({
   initialCursor: string | null;
 }) {
   const loadMore = useServerFn(loadMoreWorkspaceUsageFn);
-  const [workspaces, setWorkspaces] =
-    useState<readonly WorkspaceUsageView[]>(initialWorkspaces);
+  // 先頭ページはサーバーコンポーネントが渡し、継ぎ足しだけをこの島が持つ。
+  // サーバーが先頭ページを配り直したら継ぎ足しは古い集合を指すので捨てる
+  // （`WorkspaceMembersPanel/board.tsx:useLoadedPages` と同じ形）。
+  const [seed, setSeed] = useState(initialWorkspaces);
+  const [extra, setExtra] = useState<readonly WorkspaceUsageView[]>([]);
   const [cursor, setCursor] = useState(initialCursor);
   const [isLoading, startLoading] = useTransition();
   const [error, setError] = useState<string | null>(null);
+
+  if (seed !== initialWorkspaces) {
+    setSeed(initialWorkspaces);
+    setExtra([]);
+    setCursor(initialCursor);
+  }
+
+  const workspaces =
+    extra.length === 0 ? initialWorkspaces : [...initialWorkspaces, ...extra];
 
   const onLoadMore = (next: string) => {
     startLoading(async () => {
@@ -48,7 +60,7 @@ export function WorkspaceUsageBoard({
         return;
       }
       setError(null);
-      setWorkspaces((current) => [...current, ...page.workspaces]);
+      setExtra((current) => [...current, ...page.workspaces]);
       setCursor(page.nextWorkspaceCursor);
     });
   };

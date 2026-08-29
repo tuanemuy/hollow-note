@@ -3,20 +3,23 @@
 -- The projection three Workspace ports read — `UserWorkspaceDirectory`
 -- joins nothing but shares its page with `WorkspaceDirectoryBatchReader`,
 -- and `PublicWorkspaceDirectoryReader` enumerates it for the sitemap.
--- The rows the readers see are written by the `workspace.*` projection,
--- which has no port yet, so nothing in this schema version writes the
--- table. With no writer to drive them, the conformance suites seed rows
--- straight into it (`seedWorkspaceDirectory`), which is also the only way
--- to pin the column combinations a writer would never produce together.
+-- The rows the readers see are written by
+-- `WorkspaceDirectoryProjectionWriter`, called by name — synchronously by
+-- the request that just committed, and by the worker half of the deletion
+-- saga. No event and no subscriber drives this table. The conformance
+-- suites still seed rows straight into it (`seedWorkspaceDirectory`),
+-- which is the only way to pin the column combinations a writer would
+-- never produce together.
 --
 -- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
 -- as UNIX milliseconds, enumerations as `text` with a `CHECK`.
 --
--- `deletion_operation_id` is declared but not yet constrained to be
--- present on a `deleting` row: `spec/database/index.md#workspace_directory`
--- requires it, and the writer that would supply it arrives with the
--- projection port. Until then the column would make every tombstone
--- unrepresentable.
+-- `deletion_operation_id` is constrained in one direction only at this
+-- version — an `active` row must not carry one.
+-- `spec/database/index.md#workspace_directory` also requires it on a
+-- `deleting` row; that half arrives with
+-- `0004_workspace_directory_tombstone.sql`, which rebuilds the table once
+-- the writer supplies the id.
 
 CREATE TABLE workspace_directory (
   workspace_id text PRIMARY KEY,

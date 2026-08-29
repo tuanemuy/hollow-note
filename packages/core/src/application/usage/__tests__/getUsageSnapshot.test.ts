@@ -12,6 +12,7 @@ import { LlmUsage } from "@repo/core/domain/usage/llmUsage";
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import {
   BillingPeriod,
+  type ByteQuota,
   QuotaSubject,
 } from "@repo/core/domain/usage/valueObject";
 import type { WorkspaceDirectoryResolution } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
@@ -427,6 +428,50 @@ describe("getUsageSnapshot", () => {
       },
     ]);
     expect(view.personal.limitBytes).toBe(USER_LIMIT_BYTES);
+  });
+
+  it("TC-usage-086: a quota row whose derivation breaks fails the call instead of degrading its row", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    await joinWorkspace(h, "ws-01", "owner");
+    await joinWorkspace(h, "ws-02", "owner");
+    await seedWorkspaceQuota(h, "ws-01", { consumedBytes: 20, noteCount: 2 });
+    const broken = {
+      ...h.container,
+      usageReaderFor: (target: ScopeKey): UsageReader => {
+        const reader = h.container.usageReaderFor(target);
+        if (target.type !== "workspace" || target.workspaceId !== "ws-01") {
+          return reader;
+        }
+        return {
+          ...reader,
+          storageQuota: {
+            ...reader.storageQuota,
+            // The scope answers; what breaks is the pure derivation run on
+            // its answer. Folding that into `unavailable` would report a
+            // broken invariant as "this workspace is busy".
+            find: async (quotaSubject) => {
+              const stored = await reader.storageQuota.find(quotaSubject);
+              return stored === null
+                ? null
+                : {
+                    ...stored,
+                    entity: {
+                      ...stored.entity,
+                      get quota(): ByteQuota {
+                        throw new Error("broken storage-quota invariant");
+                      },
+                    },
+                  };
+            },
+          },
+        };
+      },
+    };
+
+    await expect(
+      getUsageSnapshot({ container: broken, input: { userId: USER_ID } }),
+    ).rejects.toThrow("broken storage-quota invariant");
   });
 
   it("TC-usage-083: a workspace the directory reports deleted is dropped from the list", async () => {

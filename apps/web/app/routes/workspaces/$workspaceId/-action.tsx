@@ -27,7 +27,9 @@ const workspaceNoteListSchema = z.object({
  * 非メンバー（`WORKSPACE_INSUFFICIENT_ROLE`）と削除済み
  * （`WORKSPACE_NOT_FOUND`）は `getWorkspaceSettings` が投げ、ルートの
  * `errorComponent` が同じ「開けません」に畳む（WS-02）。存在の有無は
- * どちらの経路でも漏れない。
+ * どちらの経路でも漏れない。あわせて引き継ぎ Cookie も畳む — ここは
+ * 入口（`/`）が引き継ぎを信じて送り込む先なので、畳まないと毎回の訪問が
+ * 同じエラー画面に着き続ける。
  */
 export const renderWorkspaceNoteList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
@@ -39,6 +41,7 @@ export const renderWorkspaceNoteList = createServerFn({ method: "GET" })
       { requireSessionOrRedirect },
       { WorkspaceRole },
       { toViewerView },
+      scopeCookie,
     ] = await Promise.all([
       loadServerDeps(
         () => import("@repo/core/application/workspace/getWorkspaceSettings"),
@@ -47,12 +50,19 @@ export const renderWorkspaceNoteList = createServerFn({ method: "GET" })
       import("@/presentation/sessionGuard"),
       import("@repo/core/domain/workspace/valueObject"),
       import("@/presentation/auth"),
+      import("@/presentation/scopeCookie"),
     ]);
     const user = await requireSessionOrRedirect(data.redirect);
-    const workspace = await module.getWorkspaceSettings({
-      container,
-      input: { workspaceId: data.workspaceId, userId: user.userId },
-    });
+    let workspace: Awaited<ReturnType<typeof module.getWorkspaceSettings>>;
+    try {
+      workspace = await module.getWorkspaceSettings({
+        container,
+        input: { workspaceId: data.workspaceId, userId: user.userId },
+      });
+    } catch (error) {
+      scopeCookie.foldScopeSelectionForUnavailable(data.workspaceId, error);
+      throw error;
+    }
     const owner = {
       kind: "workspace",
       workspaceId: workspace.workspaceId,

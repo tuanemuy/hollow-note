@@ -28,6 +28,8 @@ import type {
   GlobalUnitOfWorkContext,
   ScopeUnitOfWorkContext,
 } from "../../execution/unitOfWork";
+import type { DistributedOperation } from "../../ports/distributedOperationStore";
+import type { NoteRoute } from "../../ports/noteRouteStore";
 import { ScopeKey } from "../../scope";
 import {
   expectBusinessRule,
@@ -649,12 +651,58 @@ const seedWholeNote = async (h: TestHarness): Promise<string> => {
   return noteId;
 };
 
-/** The other half of the pair `seedMovePair` sets up. */
+/**
+ * The other half of the pair `seedMovePair` sets up.
+ *
+ * Two fixed scopes, and `runFollowUp` is what keeps that true by asking
+ * for `TARGET_WS` every time. A fixture that offers a third destination
+ * has to derive this from `route.scope` and the operation's payload
+ * instead — read as it stands, the leftover assertions below would then
+ * examine an unrelated empty scope and pass for free.
+ */
 const acrossFrom = (scope: ScopeKey): ScopeKey =>
   ScopeKey.equals(scope, targetScope) ? sourceWsScope : targetScope;
 
 const scopeOwnerId = (scope: ScopeKey): string =>
   scope.type === "workspace" ? scope.workspaceId : scope.userId;
+
+/** Applied-operation receipts a scope still holds, whoever wrote them. */
+const receiptsIn = (h: TestHarness, scope: ScopeKey) =>
+  h.backend.scope(scope).appliedOperations.values();
+
+/** The destination this operation's payload froze at creation. */
+const operationTarget = (row: DistributedOperation): ScopeKey | null => {
+  const target = row.payload.target;
+  return typeof target === "string" ? ScopeKey.parse(target) : null;
+};
+
+/**
+ * Whether anything can still drive `row` forward.
+ *
+ * `running` on its own does not say so, and reading it that way is what
+ * lets a permanent stop pass as a benign middle state. Canon leaves an
+ * operation `running` in exactly one place — a stop *after* the switch,
+ * where the move is real and only forward steps remain
+ * (spec/usecases/note.md#movenote の終端表, 3 行目) — and every point
+ * before it must reach a terminal state. So a `running` row counts as
+ * live only while it holds the claim (`moving` under its own migration)
+ * or the route has already moved to the destination its payload names.
+ * Any other `running` row is a move nobody can finish and nobody can
+ * start again, which is the state the strong branch below rejects.
+ */
+const stillDrivable = (
+  row: DistributedOperation,
+  route: NoteRoute,
+): boolean => {
+  if (row.state !== "running") {
+    return false;
+  }
+  if (route.state === "moving" && route.migrationId === row.id) {
+    return true;
+  }
+  const target = operationTarget(row);
+  return target !== null && ScopeKey.equals(route.scope, target);
+};
 
 /**
  * The invariants no failure may break, over the pair `seedMovePair` sets
@@ -666,21 +714,40 @@ const scopeOwnerId = (scope: ScopeKey): string =>
  * reader gets there. A copy left behind in the scope the note came from
  * is unreachable and can still be retired later.
  *
- * The other three are conditional on the operation, because what a
- * stopped move may leave behind depends on whether anything can still
- * drive it (spec/usecases/note.md#movenote 手順 4・8):
+ * `note.moved` announces the change of ownership once per move whatever
+ * happened on the way: `retireSource` is deduplicated on its own receipt,
+ * and that receipt lives in the source scope, which no abort clears.
  *
+ * The rest is conditional on whether anything can still drive the move
+ * (`stillDrivable`), because what a stopped move may leave behind depends
+ * on it (spec/usecases/note.md#movenote 手順 4・8 and the four-row table
+ * of terminal states):
+ *
+ * - a move nobody drives may not be `running`. Canon puts the switch-less
+ *   ends of the saga at `rejected`, for the reason it states there: an
+ *   operation left `running` makes `beginOrResume` join every later
+ *   request to a dead one, so this note can never be moved again;
+ * - the route may not be left `moving` either. `beginMove` refuses a
+ *   route another migration holds, so a terminal operation that left one
+ *   behind locks the note out of every future move just as durably;
  * - a move authorization lock carries no lease and no expiry, and only a
- *   caller holding the migration id releases it — once every operation of
- *   this note is terminal no such caller can exist again, so a lock that
- *   outlives them closes both scopes' deletion and membership management
- *   for good;
+ *   caller holding the migration id releases it — once no operation can
+ *   be driven, no such caller can exist again, so a lock that outlives
+ *   them closes both scopes' deletion and membership management for good;
  * - the charge follows the route, since the two scopes' quotas are moved
  *   by the phases themselves; a stopped move is allowed to double-count
- *   but never to under-count, so mid-flight only the floor is asserted;
+ *   but never to under-count, so mid-flight the floor is asserted, with
+ *   the ceiling canon gives it (手順 8: at worst counted in both scopes);
  * - a staged copy across from the route is the abort's leftover, and the
  *   spec's 「完全」 is that no trace of this migration stays in the scope
- *   the note did not end up in.
+ *   the note did not end up in. That includes the `applied_operations`
+ *   receipts: `beginOrResume` replays a terminal operation under the same
+ *   request key, so a staging receipt that outlived the rows it asserts
+ *   would send the next attempt into an empty target. The bound is one
+ *   rather than zero because the teardown's own file-retire step writes a
+ *   receipt *after* the clears, and every later abort clears that key
+ *   before consulting it; a staging whose receipts survived would put the
+ *   count at two or three.
  */
 const expectWholeAndReachable = async (
   h: TestHarness,
@@ -696,16 +763,21 @@ const expectWholeAndReachable = async (
   expect(await read(h, noteId)).toMatchObject({
     ownerId: scopeOwnerId(route.scope),
   });
+  expect(outboxRows(h, "note.moved").length).toBeLessThanOrEqual(1);
 
   const across = acrossFrom(route.scope);
-  const undrivable = operations(h).every((row) => row.state !== "running");
   const charged = quotaTotals(h, route.scope);
-  if (!undrivable) {
+  if (operations(h).some((row) => stillDrivable(row, route))) {
     expect(charged.consumedBytes).toBeGreaterThanOrEqual(WHOLE_NOTE_BYTES);
     expect(charged.noteCount).toBeGreaterThanOrEqual(1);
+    expect(
+      charged.noteCount + quotaTotals(h, across).noteCount,
+    ).toBeLessThanOrEqual(2);
     return;
   }
 
+  expect(operations(h).filter((row) => row.state === "running")).toEqual([]);
+  expect(route.state).toBe("active");
   expect(moveLocksIn(h, route.scope)).toHaveLength(0);
   expect(moveLocksIn(h, across)).toHaveLength(0);
   expect(charged).toEqual({ consumedBytes: WHOLE_NOTE_BYTES, noteCount: 1 });
@@ -713,6 +785,9 @@ const expectWholeAndReachable = async (
   expect(notesIn(h, across)).toHaveLength(0);
   expect(revisionsIn(h, across)).toHaveLength(0);
   expect(filesIn(h, across)).toHaveLength(0);
+  if (ScopeKey.equals(across, targetScope)) {
+    expect(receiptsIn(h, across).length).toBeLessThanOrEqual(1);
+  }
 };
 
 describe("moveNote", () => {
@@ -2479,6 +2554,41 @@ describe("moveNote", () => {
       migrationId: "rival-migration",
     });
     expect(notesIn(h, sourceWsScope)).toHaveLength(1);
+  });
+
+  it("TC-note-771: a lost beginOperation response does not close the note to every later move", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withLostResponseAt(h, "beginOperation"),
+      }),
+    ).rejects.toThrow("response lost");
+
+    // The row that came back without its id is the only thing standing
+    // between this note and every later move: another editor derives a
+    // different request key, so the store would join them to it rather
+    // than start their own.
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        userId: OTHER,
+        expectedVersion: null,
+      }),
+    ).resolves.toMatchObject({ ownerId: TARGET_WS });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: targetScope,
+    });
   });
 
   const MOVE_SEAMS: readonly MoveSeam[] = [

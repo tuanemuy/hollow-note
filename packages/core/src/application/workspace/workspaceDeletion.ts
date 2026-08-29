@@ -56,25 +56,36 @@ export type WorkspaceDeletionLocalPhase =
   | "localDelete";
 
 /**
- * `cursor` is the page position this turn starts from, and `slug` is the
- * public key the workspace held when the deletion was accepted.
+ * `cursor` is the page position this turn starts from; `slug` and
+ * `advertisedSlug` are the two candidate keys the workspace may still
+ * hold on the global plane when the deletion is accepted — what the scope
+ * named, and what `workspace_directory` was advertising.
  *
- * The slug is carried rather than re-read: global cleanup frees it after
- * the Workspace row is already gone, and the scope has been closed to
- * mutation since `beginDeletion`, so the value fixed at admission is still
- * the one the reservation holds.
+ * Both are carried, because either one alone is a guess: a rename whose
+ * `activate` was lost moved the scope past the key it holds, and one
+ * whose projection was lost moved the key past what the directory says.
+ * Global cleanup frees both (`advertisedSlug` in
+ * `application/workspace/changeWorkspaceSlug.ts` states the rule), and
+ * releasing a key this workspace no longer holds writes nothing.
+ *
+ * They are fixed at admission rather than re-read: cleanup runs after the
+ * Workspace row and the directory row are already gone, and the scope has
+ * been closed to mutation since `beginDeletion`, so nothing moves either
+ * value after the deletion is accepted.
  */
 export type WorkspaceDeletionLocalTurn = Readonly<{
   operationId: string;
   phase: WorkspaceDeletionLocalPhase;
   cursor: string | null;
   slug: string | null;
+  advertisedSlug: string | null;
 }>;
 
 export type WorkspaceDeletionGlobalTurn = Readonly<{
   operationId: string;
   cursor: string | null;
   slug: string | null;
+  advertisedSlug: string | null;
 }>;
 
 export type WorkspaceDeletionCompactTurn = Readonly<{ operationId: string }>;
@@ -126,6 +137,7 @@ export const readLocalTurn = (
   phase: readPhase(payload),
   cursor: readNullableString(payload, "cursor"),
   slug: readNullableString(payload, "slug"),
+  advertisedSlug: readNullableString(payload, "advertisedSlug"),
 });
 
 export const readGlobalTurn = (
@@ -134,6 +146,7 @@ export const readGlobalTurn = (
   operationId: readString(payload, "operationId"),
   cursor: readNullableString(payload, "cursor"),
   slug: readNullableString(payload, "slug"),
+  advertisedSlug: readNullableString(payload, "advertisedSlug"),
 });
 
 export const readCompactTurn = (

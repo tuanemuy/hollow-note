@@ -45,12 +45,24 @@ export const Route = createFileRoute("/workspaces/$workspaceId/settings")({
 });
 
 function WorkspaceSettingsLayout() {
-  const { user, workspace } = Route.useLoaderData();
+  const data = Route.useLoaderData();
+  const { user, workspace } = data;
 
   if (workspace === null) {
+    // 行が消えている（`gone`）ときだけ子を描く。削除の「完了」
+    // （spec/pages/index.md#P-34 の終状態）を読めるのは
+    // `getWorkspaceDeletionStatus` を呼ぶ P-34 の断片だけで、ここで畳むと
+    // どの利用者にも汎用の「開けません」しか出ない。非メンバー（`denied`）は
+    // どの断片も答えを持たないので、従来どおりここで畳む。
     return (
       <AppShell displayName={user.displayName} avatarUrl={user.avatarUrl}>
-        <WorkspaceUnavailableState />
+        {data.unavailable === "gone" ? (
+          <SettingsColumn>
+            <Outlet />
+          </SettingsColumn>
+        ) : (
+          <WorkspaceUnavailableState />
+        )}
       </AppShell>
     );
   }
@@ -78,6 +90,7 @@ function WorkspaceSettingsLayout() {
           <span className="min-w-0 truncate">{workspace.name}</span>
         </h1>
         <WorkspaceSettingsTabs workspaceId={workspace.workspaceId} />
+        <Outlet />
       </SettingsColumn>
     </AppShell>
   );
@@ -87,7 +100,6 @@ function SettingsColumn({ children }: { children: ReactNode }) {
   return (
     <main className="mx-auto max-w-[var(--list-max)] px-4 pt-8 pb-20 sm:px-6 sm:pt-10 lg:pt-12">
       {children}
-      <Outlet />
     </main>
   );
 }

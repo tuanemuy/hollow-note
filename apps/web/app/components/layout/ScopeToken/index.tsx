@@ -100,13 +100,19 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
         return;
       }
       setOpen(false);
-      await (next.kind === "personal"
-        ? router.navigate({ to: "/notes", search: {} })
-        : router.navigate({
-            to: "/workspaces/$workspaceId/notes",
-            params: { workspaceId: next.workspaceId },
-            search: {},
-          }));
+      // 引き継ぎ Cookie はもう書けているので、遷移の失敗を「切り替えられ
+      // なかった」と見せない（他の遷移経路と同じ形で捕捉する）。
+      const navigation =
+        next.kind === "personal"
+          ? router.navigate({ to: "/notes", search: {} })
+          : router.navigate({
+              to: "/workspaces/$workspaceId/notes",
+              params: { workspaceId: next.workspaceId },
+              search: {},
+            });
+      await navigation.catch(() => {
+        console.error("Navigation to the selected scope failed");
+      });
     });
   };
 

@@ -80,10 +80,12 @@ async function mapBounded<T, R>(
 /**
  * Reads one workspace's figures from its own scope object.
  *
- * The `catch` is the per-row tolerance the spec asks for: a scope that
- * cannot answer degrades its own row to `unavailable` and leaves the
- * personal section and the other workspaces intact. It is deliberately
- * the only broad catch in this usecase.
+ * The `try` holds the scope RPC and nothing else. That is what the
+ * per-row tolerance is for: a scope that cannot answer degrades its own
+ * row to `unavailable` and leaves the personal section and the other
+ * workspaces intact. The derivation that follows is pure, so keeping it
+ * outside is what makes a broken quota invariant fail the call instead
+ * of arriving as one more `unavailable` row.
  */
 async function readWorkspaceUsage(
   container: RequestContainer,
@@ -91,18 +93,11 @@ async function readWorkspaceUsage(
   workspaceName: string,
 ): Promise<WorkspaceUsageView> {
   const subject = QuotaSubject.workspace(workspaceId);
+  const reader = container.usageReaderFor(ScopeKey.workspace(workspaceId));
+
+  let stored: Awaited<ReturnType<typeof reader.storageQuota.find>>;
   try {
-    const stored = await container
-      .usageReaderFor(ScopeKey.workspace(workspaceId))
-      .storageQuota.find(subject);
-    const quota =
-      stored?.entity ?? StorageQuota.initialize(subject, container.clock.now());
-    return {
-      state: "available",
-      workspaceId,
-      workspaceName,
-      ...QuotaEnforcement.describe({ storage: quota, llm: null }).storage,
-    };
+    stored = await reader.storageQuota.find(subject);
   } catch (cause) {
     container.logger.error("[getUsageSnapshot] workspace scope unreadable", {
       cause,
@@ -110,13 +105,24 @@ async function readWorkspaceUsage(
     });
     return { state: "unavailable", workspaceId, workspaceName };
   }
+
+  const quota =
+    stored?.entity ?? StorageQuota.initialize(subject, container.clock.now());
+  return {
+    state: "available",
+    workspaceId,
+    workspaceName,
+    ...QuotaEnforcement.describe({ storage: quota, llm: null }).storage,
+  };
 }
 
 /**
  * Projects one page of membership edges, in edge order. A row the
- * directory could not resolve carries no name (ADR 048): the display name
- * comes from the directory, so a shard that cannot answer leaves the edge
- * nameless rather than absent.
+ * directory could not resolve carries no name: the display name comes
+ * only from the directory, and `WorkspaceDirectoryBatchReader` contracts
+ * that a shard it cannot read does *not* fail the call, so such an edge
+ * is kept nameless rather than dropped
+ * (spec/usecases/usage.md#getusagesnapshot 手順 2).
  */
 async function listWorkspaceUsage(
   container: RequestContainer,

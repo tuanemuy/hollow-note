@@ -43,3 +43,4 @@
 | ack済みmanifest itemが数千件ある | 縮約する | 各Alarm turnのDELETEは100件以下で、header遷移に全item削除を同居させない | |
 | 最終100件削除の応答を失う | recoveryする | 同じoperation IDでitem 0件を確認し、completed tombstoneを1回だけ保存する | |
 | workspace内ノートの移動がstage済み、または切替後の後処理中である | 削除する | `WorkspaceOperationLockStore.hasActiveMove` が競合を検出し、移動を完了またはabortするまで `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` で削除を拒否する | |
+| 改名の切替を恒久的に失った workspace を削除する | 削除する | global cleanup は turn が運ぶ候補 2 つ（scope の `slug` と `workspace_directory` の広告値）の両方を `release` するので、`active` のまま取り残された鍵が回収される | |

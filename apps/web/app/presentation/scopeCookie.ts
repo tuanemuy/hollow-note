@@ -3,11 +3,14 @@ import {
   getCookie,
   setCookie,
 } from "@tanstack/react-start/server";
+import { serializeError } from "./errorResponse";
 import {
   namesWorkspace,
   parseScope,
   type ScopeSelection,
   serializeScope,
+  type WorkspaceUnavailability,
+  workspaceUnavailability,
 } from "./scope";
 
 /**
@@ -68,4 +71,26 @@ export function clearScopeSelectionFor(workspaceId: string): void {
     return;
   }
   clearScopeSelection();
+}
+
+/**
+ * このワークスペースを開こうとした読み出しが「もう開けない」で落ちたときに
+ * 引き継ぎを畳む。畳んだ理由を返し、開ける失敗（`system` など）では `null`
+ * を返して何もしない。
+ *
+ * 文脈を開く読み出しは 2 つある（ノート一覧のシェルと設定レイアウトの
+ * シェル）ので、**両方がこの 1 本を呼ぶ**。片側だけに置くと、他 owner の
+ * 除名・削除で腐った引き継ぎがもう一方の入口では残ったままになる。
+ * 判定そのものは `scope.ts:workspaceUnavailability` にある。
+ */
+export function foldScopeSelectionForUnavailable(
+  workspaceId: string,
+  error: unknown,
+): WorkspaceUnavailability | null {
+  const unavailability = workspaceUnavailability(serializeError(error));
+  if (unavailability === null) {
+    return null;
+  }
+  clearScopeSelectionFor(workspaceId);
+  return unavailability;
 }

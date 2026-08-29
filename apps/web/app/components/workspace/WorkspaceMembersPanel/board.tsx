@@ -363,7 +363,12 @@ export function WorkspaceMembersBoard({
       }
       setRosterError(null);
       // 脱退した文脈はもう開けない。個人のノートへ戻す（WS-06 手順 4）。
-      await router.navigate({ to: "/notes", search: {} });
+      // 遷移の前に整合を取るのは、この match が `staleTime` 無限で、履歴の
+      // 戻るが古い名簿ごと甦らせるため（`InvitationActions` と同じ理由）。
+      await reconcile();
+      await router.navigate({ to: "/notes", search: {} }).catch(() => {
+        console.error("Navigation to the personal notes failed");
+      });
     });
   };
 

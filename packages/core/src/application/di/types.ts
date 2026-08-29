@@ -221,11 +221,15 @@ export type WorkspaceDirectoryProjector = Pick<
  * Two groups are dropped. The four account-deletion lock turns
  * (`prepareAccountDeletion` / `renewAccountDeletion` /
  * `commitAccountDeletion` / `releaseAccountDeletion`) belong to a prepare
- * wave this deployment does not have, and `commitAccountDeletion` in
- * particular is terminal — it cancels the edge outright, which is exactly
- * the shape `WorkspaceDirectoryProjector` keeps away from the request path
- * above. `applyRoleIfNewer` is the role-projection subscriber's write,
- * reached from the worker plane. `WorkerContainer` keeps the whole port.
+ * wave this deployment does not have, so the request path has no caller
+ * for any of them. `applyRoleIfNewer` is the role-projection subscriber's
+ * write, reached from the worker plane. `WorkerContainer` keeps the whole
+ * port.
+ *
+ * Terminality is not the criterion here, unlike
+ * `WorkspaceDirectoryProjector` above: `completeRemoval` deletes the edge
+ * outright and is kept, because `removeMember` / `leaveWorkspace` reach it
+ * from the request path.
  */
 export type MembershipDirectoryReservations = Pick<
   MembershipDirectoryReservationStore,

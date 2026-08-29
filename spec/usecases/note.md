@@ -554,11 +554,14 @@ route の claim が operation と同じ transaction に入らないのは、rout
 
 **この停止では operation を終端させず `running` のまま残す。** switch は着地しているが手順 8 は走っていないので両 scope に move lock が残り、lock は lease も期限も持たず `migrationId` を握る呼び出し元しか解放できない。ここで `rejected` に落とすと `beginOrResume` は次の要求に新しい operation を作り、その `migrationId` を持つ主体が二度と現れず、両ワークスペースが削除とメンバー管理を恒久的に失う（route は既に次の世代なので `requestKey` も導出できない）。`running` のままなら停止は記録として残り、再開の駆動口（本スライスの外）が走査できる。手順 8 以降で落ちた場合に残る状態と同じであり、同じ物理状態を 2 つの経路が別々に終端しないためでもある。
 
-operation の終端はしたがって次の 4 通りだけである。
+**「switch 前の到達点はすべて `rejected`」には、operation を開く呼び出し自体が応答を失った場合も含まれる。** その呼び出しは補償の内側に置き、失敗したら同じ入力で `beginOrResume` をもう一度 best-effort で呼んで（`requestKey` に対して冪等なので、commit 済みなら同じ行が返る）、返った行が自分のものであれば `rejected` で閉じる。応答喪失で失われるのは行の `id` だけで `requestKey` から引き直せる、というのがこの修復が成立する理由である。閉じずに `running` を残すと、別の編集者は別の `requestKey` を導くのに store がその要求を先の行へ合流させるため、**このノートは以後どの移動要求も受け付けなくなる**。
+
+operation の終端はしたがって次の 5 通りだけである。
 
 | 到達点 | operation の状態 | 補償 |
 | --- | --- | --- |
 | route の claim に失敗（手順 4） | `rejected` | claim を保持していれば手順 4〜6 の補償で返す |
+| operation を開く呼び出し自体の失敗（手順 4 の 1 段目） | `rejected` | 無し（まだ何も掴んでいない） |
 | switch 前の中止（手順 5〜6 の失敗） | `rejected` | 補償する |
 | switch 後の停止（中止の CAS 拒否・手順 8 以降の失敗） | `running` のまま | 何もしない（前進のみ） |
 | 成功（手順 9 まで） | `completed` | — |

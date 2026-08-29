@@ -9,11 +9,13 @@ import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
 import { checkWorkspaceSlugAvailability } from "../checkWorkspaceSlugAvailability";
 import { getPublicWorkspace } from "../getPublicWorkspace";
 import {
+  clearDirectoryOutages,
   createWorkspaceHarness,
   directoryRow,
   expectBusinessRule,
   expectConflict,
   expectNotFound,
+  induceDirectoryOutage,
   outboxPayloads,
   outboxTypes,
   removeWorkspaceRow,
@@ -21,6 +23,7 @@ import {
   slugReservations,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryProjection,
 } from "./harness";
 
 /** spec/testcases/workspace/changeWorkspaceSlug.md (TC-workspace-046〜054). */
@@ -640,6 +643,145 @@ describe("changeWorkspaceSlug", () => {
       ownedBySelf: false,
     });
     expect(directoryRow(h, WORKSPACE)?.slug).toBeNull();
+  });
+
+  /**
+   * The mirror image of TC-workspace-314 / 315, and the state the two of
+   * them are read against: there the activation was lost and the
+   * directory stayed right, here the activation lands and the
+   * *projection* is what is lost for good. The scope and the global key
+   * both move to the new slug while the directory goes on advertising the
+   * one before it — and nothing re-sends that snapshot, so this is where
+   * the workspace stays until its owner saves again.
+   */
+  it("TC-workspace-316: a projection lost for good leaves the directory advertising a slug the global plane has already freed", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await expect(
+      change(h, "team-alpha", OWNER, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBe("team-alpha");
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-alpha", WORKSPACE, "active"]]);
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+    // The advertised key is free: whoever asks for it may have it.
+    await expect(availability(h, "old-slug")).resolves.toMatchObject({
+      available: true,
+    });
+  });
+
+  /**
+   * From that state the directory names a key nobody holds, while the key
+   * the workspace does hold is named only by the scope. A rename that
+   * picks one candidate frees the wrong one — and `team-alpha` is
+   * `active`, so it carries no expiry and no later request can reach it
+   * once the projection overwrites the row it was read from.
+   */
+  it("TC-workspace-317: after a lost projection, a change to a third slug still frees the key the workspace holds", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+    await expect(
+      change(h, "team-alpha", OWNER, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+
+    await expect(change(h, "team-gamma")).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: "team-gamma",
+      previousSlug: "team-alpha",
+    });
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-gamma", WORKSPACE, "active"]]);
+    await expect(availability(h, "team-alpha")).resolves.toEqual({
+      slug: "team-alpha",
+      available: true,
+      ownedBySelf: false,
+    });
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("team-gamma");
+  });
+
+  it("TC-workspace-318: after a lost projection, clearing the slug still frees the key the workspace holds", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+    await expect(
+      change(h, "team-alpha", OWNER, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+
+    await expect(change(h, null)).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: null,
+      previousSlug: "team-alpha",
+    });
+
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBeNull();
+    expect(slugReservations(h)).toEqual([]);
+    await expect(availability(h, "team-alpha")).resolves.toEqual({
+      slug: "team-alpha",
+      available: true,
+      ownedBySelf: false,
+    });
+    expect(directoryRow(h, WORKSPACE)?.slug).toBeNull();
+  });
+
+  /**
+   * A repair that ran while the directory shard was unreadable had no key
+   * to hand the exchange, so it activated the new one beside the old:
+   * the workspace ends up holding two `active` reservations, neither of
+   * which expires. From then on the reservation for the scope's own slug
+   * points at this workspace, so a repair that decides what to do purely
+   * from that answer never looks at the other key again — the release
+   * has to be evaluated on every call, not behind the skip that covers
+   * the re-reservation.
+   */
+  it("TC-workspace-324: a repair that skips the re-reservation still frees the key the directory advertises", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      change(h, "team-alpha", OWNER, {
+        ...h.container,
+        workspaceSlugReservationStore: {
+          ...inner,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    induceDirectoryOutage(h, WORKSPACE);
+    await expect(
+      change(h, "team-alpha", OWNER, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+    clearDirectoryOutages(h);
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([
+      ["old-slug", WORKSPACE, "active"],
+      ["team-alpha", WORKSPACE, "active"],
+    ]);
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+
+    await expect(change(h, "team-alpha")).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: "team-alpha",
+      previousSlug: "team-alpha",
+    });
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-alpha", WORKSPACE, "active"]]);
+    await expect(availability(h, "old-slug")).resolves.toEqual({
+      slug: "old-slug",
+      available: true,
+      ownedBySelf: false,
+    });
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("team-alpha");
   });
 
   /**

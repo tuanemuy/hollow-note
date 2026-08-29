@@ -17,6 +17,7 @@ import {
   seedWorkspaceNotes,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryProjection,
 } from "./harness";
 
 /** spec/testcases/workspace/updateWorkspaceProfile.md (TC-workspace-266〜274). */
@@ -154,6 +155,41 @@ describe("updateWorkspaceProfile", () => {
     expect(directoryRow(h, WORKSPACE)).toMatchObject({
       name: "Team Beta",
       sourceVersion: 1,
+    });
+  });
+
+  /**
+   * The snapshot goes out after the scope commit and is retried once, so
+   * a shard that stays down ends the request with the scope moved and the
+   * directory a version behind. Nothing re-sends it — the projection has
+   * no subscriber and no repair entry point — so that row is what every
+   * list and every public read sees until the owner saves again.
+   */
+  it("TC-workspace-323: a projection lost for good leaves the directory a version behind, and the next save carries both changes", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    await expect(
+      update(h, { name: "Team Beta" }, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      name: "Team Beta",
+      version: 1,
+    });
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      name: "Team Alpha",
+      sourceVersion: 0,
+    });
+
+    await expect(update(h, { description: "Renamed" })).resolves.toMatchObject({
+      name: "Team Beta",
+      description: "Renamed",
+    });
+
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      name: "Team Beta",
+      sourceVersion: 2,
     });
   });
 

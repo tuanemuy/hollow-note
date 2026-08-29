@@ -19,6 +19,7 @@ import {
   seedWorkspaceNotes,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryProjection,
   workspaceScope,
 } from "./harness";
 
@@ -120,6 +121,49 @@ describe("publishWorkspace", () => {
       slug: "team-alpha",
       sourceVersion: seeded.workspace.version + 1,
     });
+  });
+
+  /**
+   * The snapshot is what the public page gates on, and it goes out after
+   * the scope commit with a single retry. A shard that stays down ends
+   * the request with the scope published and the directory still private,
+   * and nothing re-sends it — so the page the owner just published is
+   * unreachable until they ask again.
+   */
+  it("TC-workspace-321: a projection lost for good leaves the page unreachable, and re-sending the request repairs it without publishing twice", async () => {
+    const h = createWorkspaceHarness();
+    const seeded = await seed(h);
+
+    await expect(
+      publishWorkspace({
+        container: withFailingDirectoryProjection(h),
+        input: { workspaceId: WORKSPACE, userId: OWNER },
+      }),
+    ).rejects.toThrow("directory shard unreachable");
+
+    expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
+      publication: "published",
+      version: seeded.workspace.version + 1,
+    });
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      publication: "private",
+      sourceVersion: seeded.workspace.version,
+    });
+
+    await expect(publish(h)).resolves.toMatchObject({
+      publication: "published",
+    });
+
+    expect(directoryRow(h, WORKSPACE)).toMatchObject({
+      publication: "published",
+      sourceVersion: seeded.workspace.version + 1,
+    });
+    // The scope was already where it belongs, so the repair moves nothing
+    // and announces nothing a second time.
+    expect(storedWorkspace(h, WORKSPACE)?.version).toBe(
+      seeded.workspace.version + 1,
+    );
+    expect(outboxTypes(h)).toEqual(["workspace.published"]);
   });
 
   it("TC-workspace-203: a workspace with no slug is SlugRequiredToPublish and stays private everywhere", async () => {

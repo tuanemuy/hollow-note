@@ -1738,6 +1738,7 @@
 | TC-note-768 | moveNote: routeを手放した後、同じtarget scopeを別のmigrationがstageした — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 自分のstaged importのreceiptが立っていないので何も解体せず、別migrationの複製・credit・file metadataを残したまま両scopeのlockだけ返す |
 | TC-note-769 | moveNote: 中止のthawが返したrouteを別のmigrationが既にclaimしている — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | routeがsourceの同じ世代を指す限り補償は走り、このmigration自身のstaged複製・credit・lockが戻る |
 | TC-note-770 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのRevisionだけが増えた — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製のRevisionも今回のsnapshotへ同期され、switch後にsourceのRevisionを消しても失われない |
+| TC-note-771 | moveNote: operationを開く呼び出し自体が応答を失う — 別の編集者が同じノートの移動を要求する | spec/testcases/note/moveNote.md#テストケース-movenote | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しいoperationを開いて移動を完了できる |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -2211,6 +2212,7 @@
 | TC-usage-083 | getUsageSnapshot: directory がワークスペースを `deleted` と判定する — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その行は一覧から落ち、`unavailable` としても残らない |
 | TC-usage-084 | getUsageSnapshot: ワークスペースのクォータが個人の記録より後に更新されている — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `updatedAt` は個人の `StorageQuota` / `LlmUsage` のままで、ワークスペース行を畳み込まない |
 | TC-usage-085 | getUsageSnapshot: 参加中だが一度も消費していないワークスペース — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `StorageQuota.initialize` の値が返り、そのワークスペースにクォータのレコードは作られない |
+| TC-usage-086 | getUsageSnapshot: scope は答えたが、その答えから値を導く純関数が不変条件違反で落ちる — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 呼び出し全体が失敗する。縮退の対象は scope への RPC だけで、壊れた不変条件を `unavailable` へ畳まない |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |
@@ -2524,6 +2526,15 @@
 | TC-workspace-311 | listMembers: 閲覧者と先頭行のロールが異なる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` は先頭行ではなく閲覧者自身のロールになる |
 | TC-workspace-312 | changeMemberRole: 除名して再入会した利用者に、前の membership のロール変更が後から届く — 更新する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 消えた membership の変更は新しい edge を汚さず、新しい membership の最初の変更（版 1）はそのまま届く |
 | TC-workspace-313 | inviteMember: 直近 24 時間に 49 件招待済みで、事前検査のあと発行の transaction に入るまでに別の招待が 1 件着地する — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ValidationError("INVITATION_LIMIT_REACHED")` が投げられ、未処理は 50 件を超えず、token route もメールも残らない |
-| TC-workspace-314 | changeWorkspaceSlug: 切替を恒久的に失った後、**別の** slug を送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 手放す鍵を scope の現在値ではなく `workspace_directory` の広告値から決めるので、旧鍵が `active` のまま取り残されない |
-| TC-workspace-315 | changeWorkspaceSlug: 切替を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく広告値の鍵を `release` し、投影が広告値を消す前に解放する |
+| TC-workspace-314 | changeWorkspaceSlug: 切替を恒久的に失った後、**別の** slug を送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 手放す鍵を 1 つに決めず scope の現在値と広告値の両方を解放するので、旧鍵が `active` のまま取り残されない |
+| TC-workspace-315 | changeWorkspaceSlug: 切替を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく両候補を `release` し、投影が広告値を消す前に解放する |
+| TC-workspace-316 | changeWorkspaceSlug: 改名が commit も切替も終えたあとで投影を恒久的に失う — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | scope と鍵は新 slug へ進み、`workspace_directory` は誰も保持していない旧 slug を広告したまま残る |
+| TC-workspace-317 | changeWorkspaceSlug: 投影を恒久的に失った後、**第 3 の**スラッグを送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 取り残される側が広告値ではなく scope の現在値になる逆向きの窓で、両候補を解放する形だけが鍵を回収する |
+| TC-workspace-318 | changeWorkspaceSlug: 投影を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく scope が保持していた鍵が `release` され、予約が 1 件も残らない |
+| TC-workspace-319 | deleteWorkspace: 改名の切替を恒久的に失った workspace を削除する — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | global cleanup が turn の運ぶ候補 2 つ（`slug` / `advertisedSlug`）の両方を `release` する |
+| TC-workspace-320 | createWorkspace: 作成の最後の投影を恒久的に失う — 作成する | spec/testcases/workspace/createWorkspace.md#テストケース-createworkspace | Workspace と `active` な予約は残り directory 行だけが無い状態になり、次の保存がその行を作る |
+| TC-workspace-321 | publishWorkspace: commit 後の投影を恒久的に失う — 公開する | spec/testcases/workspace/publishWorkspace.md#テストケース-publishworkspace | scope は公開済み・directory は非公開のままになり、同じ要求の再送が二重公開なしに投影を打ち直す |
+| TC-workspace-322 | unpublishWorkspace: commit 後の投影を恒久的に失う — 非公開に戻す | spec/testcases/workspace/unpublishWorkspace.md#テストケース-unpublishworkspace | directory が下げたはずのページを広告し続け、同じ要求の再送が投影を打ち直す |
+| TC-workspace-323 | updateWorkspaceProfile: commit 後の投影を恒久的に失う — 更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | directory が 1 版前に残り、次の保存が両方の変更を載せた snapshot で追いつく |
+| TC-workspace-324 | changeWorkspaceSlug: 切替を失った改名のあと、投影も失った改名が新 slug を `active` にした — 同じ slug をもう一度送る | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 再予約はスキップされるが広告値の解放はスキップの外なので毎回評価され、もう一方の鍵が回収される |
 

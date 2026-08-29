@@ -5,6 +5,7 @@ import {
   parseScope,
   serializeScope,
   WORKSPACE_ID_MAX_LENGTH,
+  workspaceUnavailability,
 } from "../scope";
 
 describe("serializeScope / parseScope", () => {
@@ -49,5 +50,21 @@ describe("namesWorkspace", () => {
 
   it("keeps the personal selection whatever workspace is being left", () => {
     expect(namesWorkspace(PERSONAL_SCOPE, "ws_a")).toBe(false);
+  });
+});
+
+describe("workspaceUnavailability", () => {
+  it("separates a workspace whose row is gone from one the viewer cannot open", () => {
+    expect(workspaceUnavailability({ kind: "notFound" })).toBe("gone");
+    expect(workspaceUnavailability({ kind: "forbidden" })).toBe("denied");
+    expect(workspaceUnavailability({ kind: "business" })).toBe("denied");
+  });
+
+  it("leaves failures that say nothing about the context alone", () => {
+    expect(workspaceUnavailability({ kind: "system" })).toBeNull();
+    expect(workspaceUnavailability({ kind: "unknown" })).toBeNull();
+    expect(workspaceUnavailability({ kind: "conflict" })).toBeNull();
+    expect(workspaceUnavailability({ kind: "validation" })).toBeNull();
+    expect(workspaceUnavailability({ kind: "unauthorized" })).toBeNull();
   });
 });

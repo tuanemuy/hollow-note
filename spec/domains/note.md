@@ -621,6 +621,8 @@ type NoteProjectionEntry = Readonly<{
 
 ### NoteRouteStore / NoteMovePort（application ports）
 
+移動の 5 相（freeze → stage → switch → activate → retire）の**オーケストレーションはユースケースが持つ**。`moveNote` が相ごとに scope の Unit of Work を 1 つずつ開き、各相の `AppliedOperationStore` の receipt をその相の効果と同じ transaction に入れる — アダプターの内側へ入れると「1 相 = 1 transaction」の対応が型で言えなくなる。`NoteMovePort` はそれを実装するポートではなく、**相を自分の 1 transaction へ畳めるバックエンドが現れた日の契約**として据え置いてある。今日この 5 メソッドを実装するアダプターも、それを実行する適合スイートも無い（[ADR 026](../adr/026-port-contract-and-conformance.md) が言う「契約の正典」を持つのは、実装されているポートだけである）。
+
 ```ts
 interface NoteRouteStore {
   resolve(noteId: NoteId): Promise<NoteRoute | null>;
@@ -685,7 +687,11 @@ moveはroute switch前だけabortでき、switch後は必ずforward recoveryす�
 
 **エラーケース**（`ShareTokenProtector`）: `SystemError(DataIntegrityError)`（未知の `keyVersion`、ciphertext の破損）
 
-`NoteMoveSnapshot` は Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage deltaを含む。R2 bytes は移動しない。同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
+`NoteMoveSnapshot` は `NoteMovePort` がそう受け取るであろう凍結後の転送物の**不透明な宣言**で、Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage delta を指す。フィールドの並びを型で固定しないのは、相を 1 transaction へ畳むバックエンドが自分のアダプターと一緒にそれを決めるためである。R2 bytes は移動しない。
+
+**今日動いている移動が運ぶのはこの型ではない。** サガが持つのは `application/note/moveNote.ts` に閉じた `MoveSnapshot` で、中身は Note / Revision / StoredFile metadata と、その metadata が指す bytes の付け替えだけである — tag の名前と BackupRecord はまだ存在しないスライス（[usecases/tag.md](../usecases/tag.md) の `relocateAssignmentsForNote` と Integration のバックアップ記録）の持ち分なので、凍結する対象そのものが無い。
+
+同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
 
 ## ドメインイベント
 

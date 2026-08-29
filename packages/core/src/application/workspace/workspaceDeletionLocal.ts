@@ -209,7 +209,12 @@ async function retireWorkspace(
   // source data that no longer exists.
   await scheduleGlobalTurn(
     ctx,
-    { operationId: turn.operationId, cursor: null, slug: turn.slug },
+    {
+      operationId: turn.operationId,
+      cursor: null,
+      slug: turn.slug,
+      advertisedSlug: turn.advertisedSlug,
+    },
     now,
   );
   await ctx.scopeTaskScheduler.complete(

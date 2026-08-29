@@ -4,6 +4,8 @@
 
 **1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、ケース名（`it` の第 1 引数）の先頭に ADP ID を置く命名規約で追う（複数メソッドを拘束するケースは ID を短縮せず並べる）。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの ADP 行と `domain.md` の DOM 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
+**掲載範囲**: `domain/*/ports/` のポートは全メソッドを載せる。`application/ports/` のポートは、**`spec/domains/` がメソッド単位で契約を書いているもの**（interface 定義ブロック、またはメソッド名を主語にした本文）だけを載せる。書いていないポート — `DistributedOperationStore` / `OutboxRepository` / `ScopeTaskScheduler` / `ScopeTaskQueue` / `IdentityRemovalReceiptStore` と、cross-cutting の `Clock` / `Logger` / `IdGenerator` / `RelayTrigger` / `ScopeTaskTrigger` — は台帳の対象外で、契約の正典はポート JSDoc と適合スイートが持つ（[ADR 026](../adr/026-port-contract-and-conformance.md)）。別のポートの契約を説明する文の中でメソッド名が挙がるだけ（例: `DistributedOperationStore.deleteTerminal`）では掲載条件を満たさない。
+
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
 | ADP-common-001 | `ScopeRouter.forScope` | `spec/domains/index.md#ScopeKey-と永続化境界` | ScopeKey に対応する scope handle を返す |

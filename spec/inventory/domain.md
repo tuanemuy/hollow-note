@@ -4,6 +4,8 @@
 
 **1 行 = 1 ドメイン要素**（値オブジェクト・エンティティ・ドメインサービス・ポートメソッド）。**新規要素には各群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの DOM 行と `adapter.md` の ADP 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
+**掲載範囲**: `domain/*/ports/` のポートは全メソッドを載せる。`application/ports/` のポートは、**`spec/domains/` がメソッド単位で契約を書いているもの**（interface 定義ブロック、またはメソッド名を主語にした本文）だけを載せる。書いていないポート — `DistributedOperationStore` / `OutboxRepository` / `ScopeTaskScheduler` / `ScopeTaskQueue` / `IdentityRemovalReceiptStore` と、cross-cutting の `Clock` / `Logger` / `IdGenerator` / `RelayTrigger` / `ScopeTaskTrigger` — は台帳の対象外で、契約の正典はポート JSDoc と適合スイートが持つ（[ADR 026](../adr/026-port-contract-and-conformance.md)）。別のポートの契約を説明する文の中でメソッド名が挙がるだけ（例: `DistributedOperationStore.deleteTerminal`）では掲載条件を満たさない。
+
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
 | DOM-common-001 | `ScopeKey` 値オブジェクト | `spec/domains/index.md#ScopeKey-と永続化境界` | user または workspace の所有文脈を判別可能 union で表す |

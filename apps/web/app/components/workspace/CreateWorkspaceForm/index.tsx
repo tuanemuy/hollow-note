@@ -105,10 +105,14 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
       }
       // 作成は既に成立しているので、遷移の失敗を「作成できなかった」と
       // 見せない（再送で 2 つ目を作らせないため try の外に置く）。
-      await router.navigate({
-        to: "/workspaces/$workspaceId/settings/members",
-        params: { workspaceId },
-      });
+      await router
+        .navigate({
+          to: "/workspaces/$workspaceId/settings/members",
+          params: { workspaceId },
+        })
+        .catch(() => {
+          console.error("Navigation to the new workspace failed");
+        });
       return IDLE;
     },
     IDLE,

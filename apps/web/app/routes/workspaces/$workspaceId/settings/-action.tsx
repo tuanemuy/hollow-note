@@ -12,7 +12,6 @@ import {
   workspaceAvatarUploadSchema,
   workspaceRefSchema,
 } from "@/components/workspace/schema";
-import { serializeError } from "@/presentation/errorResponse";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
 import { loadServerDeps } from "@/presentation/serverAction";
@@ -42,7 +41,11 @@ const shellInputSchema = z.object({
  * 非メンバー（`InsufficientRole`）・削除済み（`WORKSPACE_NOT_FOUND`）は
  * `workspace: null` に畳んで返す。判定は `getWorkspaceSettings` が持ち、
  * ここでやっているのは表示への写像だけ — シェルごと落とすと閲覧者名も
- * 失われ、個人の文脈への導線（WS-02）が出せなくなる。
+ * 失われ、個人の文脈への導線（WS-02）が出せなくなる。**畳んだ理由は
+ * `unavailable` で捨てずに渡す** — 行が消えている（`gone`）ときだけ
+ * レイアウトが子を描き、P-34 の「完了」を断片に答えさせるためである。
+ *
+ * 同じ失敗で引き継ぎ Cookie も畳む（除名・削除は他の owner も起こせる）。
  */
 export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
@@ -52,12 +55,14 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
       { container, module },
       { requireSessionOrRedirect },
       { toViewerView },
+      scopeCookie,
     ] = await Promise.all([
       loadServerDeps(
         () => import("@repo/core/application/workspace/getWorkspaceSettings"),
       ),
       import("@/presentation/sessionGuard"),
       import("@/presentation/auth"),
+      import("@/presentation/scopeCookie"),
     ]);
     const user = await requireSessionOrRedirect(data.redirect);
     const viewer = toViewerView(user);
@@ -68,6 +73,7 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
       });
       return {
         user: viewer,
+        unavailable: null,
         workspace: {
           workspaceId: settings.workspaceId,
           name: settings.name,
@@ -77,9 +83,12 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
         },
       };
     } catch (error) {
-      const { kind } = serializeError(error);
-      if (kind === "business" || kind === "forbidden" || kind === "notFound") {
-        return { user: viewer, workspace: null };
+      const unavailable = scopeCookie.foldScopeSelectionForUnavailable(
+        data.workspaceId,
+        error,
+      );
+      if (unavailable !== null) {
+        return { user: viewer, unavailable, workspace: null };
       }
       throw error;
     }

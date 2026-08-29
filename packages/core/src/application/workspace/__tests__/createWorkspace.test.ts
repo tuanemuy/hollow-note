@@ -6,6 +6,7 @@ import {
 import { describe, expect, it } from "vitest";
 import type { RequestContainer } from "../../di/types";
 import { isConflictError } from "../../errors";
+import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
 import { createWorkspace } from "../createWorkspace";
 import {
   createWorkspaceHarness,
@@ -20,6 +21,7 @@ import {
   storedMemberships,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryProjection,
   workspaceScope,
 } from "./harness";
 
@@ -146,6 +148,52 @@ describe("createWorkspace", () => {
     expect(outboxTypes(h)).toEqual([
       "workspace.created",
       "workspace.membership.added",
+    ]);
+  });
+
+  /**
+   * The directory snapshot is the last step of the create, sent after the
+   * scope commit and both activations. A shard that stays down ends the
+   * request in failure with the workspace committed and its key `active`
+   * while no row advertises either, and nothing re-sends that snapshot —
+   * the row appears on the owner's next save.
+   */
+  it("TC-workspace-320: a projection lost for good leaves a workspace with no directory row, and the next save publishes it", async () => {
+    const h = createWorkspaceHarness();
+    seedUser(h, { userId: OWNER });
+
+    await expect(
+      create(h, { slug: "team-alpha" }, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+
+    const workspaceId = slugReservations(h)[0]?.workspaceId;
+    if (workspaceId === undefined) {
+      throw new Error("the create left no slug reservation to name it by");
+    }
+    expect(storedWorkspace(h, workspaceId)).toMatchObject({
+      name: "Team Alpha",
+      slug: "team-alpha",
+      version: 0,
+    });
+    expect(slugReservations(h).map((row) => [row.slug, row.state])).toEqual([
+      ["team-alpha", "active"],
+    ]);
+    expect(directoryRow(h, workspaceId)).toBeNull();
+
+    await expect(
+      changeWorkspaceSlug({
+        container: h.container,
+        input: { workspaceId, userId: OWNER, slug: "team-beta" },
+      }),
+    ).resolves.toMatchObject({ slug: "team-beta" });
+
+    expect(directoryRow(h, workspaceId)).toMatchObject({
+      name: "Team Alpha",
+      slug: "team-beta",
+      sourceVersion: 1,
+    });
+    expect(slugReservations(h).map((row) => [row.slug, row.state])).toEqual([
+      ["team-beta", "active"],
     ]);
   });
 

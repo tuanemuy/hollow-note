@@ -22,11 +22,16 @@ import type { WorkspaceId, WorkspaceSlug } from "../valueObject";
  * old public URL keeps working until the new one is live.
  *
  * `release` is the standalone teardown, used where a slug is given up
- * without a replacement. Two callers reach it: workspace deletion frees
- * the key after the directory tombstone is acknowledged, so the tombstone
- * does not block re-use of the same slug, and `changeWorkspaceSlug` frees
- * it when the slug is cleared to `null` — there is no successor to hand
- * the key to, so the `activate(releasing)` exchange does not apply.
+ * without a replacement: workspace deletion frees the key after the
+ * directory tombstone is acknowledged, so the tombstone does not block
+ * re-use of the same slug, and `changeWorkspaceSlug` frees it when the
+ * slug is cleared to `null` — there is no successor to hand the key to,
+ * so the `activate(releasing)` exchange does not apply.
+ *
+ * Both forms of freeing are conditional on the workspace still holding
+ * the key, and callers rely on that: which slug a workspace holds here
+ * cannot be read back, so a caller giving one up names every value that
+ * could be it and lets the ones that are not write nothing.
  *
  * Idempotency is keyed on `(slug, operationId)` throughout: every method
  * may be re-issued any number of times for the same operation and

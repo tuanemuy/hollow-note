@@ -6,6 +6,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ConflictError, ValidationError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { advertisedSlug } from "./changeWorkspaceSlug";
 import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
@@ -87,6 +88,10 @@ export async function deleteWorkspace({
   const scope = ScopeKey.workspace(workspaceId);
   const operationId = container.idGenerator.next();
   const now = container.clock.now();
+  // Read while the directory row still exists: global cleanup tombstones
+  // it before it frees the keys, so this is the last point at which the
+  // advertised candidate can be seen at all.
+  const advertised = await advertisedSlug(container, workspaceId, null);
 
   return container.scopeUnitOfWorkProvider.run<WorkspaceDeletionAcceptedView>(
     scope,
@@ -132,6 +137,7 @@ export async function deleteWorkspace({
           phase: "memberships",
           cursor: null,
           slug: workspace.slug,
+          advertisedSlug: advertised,
         },
         now,
       );
