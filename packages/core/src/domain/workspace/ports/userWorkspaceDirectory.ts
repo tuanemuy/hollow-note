@@ -54,4 +54,22 @@ export interface UserWorkspaceDirectory {
     cursor: string | null,
     limit: number,
   ): Promise<ShardPage<UserWorkspaceEdge>>;
+  /**
+   * How many workspaces the user owns, for the ownership quota
+   * (spec/usecases/workspace.md `createWorkspace` 手順 1).
+   *
+   * Counts `owner` edges that are `active` **or** still reserved
+   * (`pending` / `activating`) — the enumeration above deliberately shows
+   * only settled edges, but a quota that ignored an in-flight creation
+   * would let a caller open the 21st workspace by racing its own
+   * activation. A `removing` edge is not counted: its membership is being
+   * torn down and the seat is already conceded.
+   *
+   * Counting stops at `limit`, so the answer is `min(actual, limit)` and
+   * the read stays bounded whatever a shard holds. A caller comparing
+   * against a ceiling passes that ceiling. `limit` is 1–100; anything
+   * outside that range raises `ValidationError("INVALID_PAGINATION")`,
+   * the same bounded-read contract `listActiveByUser` states for its own.
+   */
+  countOwnedByUser(userId: UserId, limit: number): Promise<number>;
 }

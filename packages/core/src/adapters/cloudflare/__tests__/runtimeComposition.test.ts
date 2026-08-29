@@ -73,6 +73,7 @@ const REQUEST_PORTS = [
   "userWorkspaceDirectory",
   "workspaceDirectoryBatchReader",
   "publicWorkspaceDirectoryReader",
+  "workspaceDirectoryProjectionWriter",
   "workspaceSlugReservationStore",
   "invitationRouteStore",
   "membershipDirectoryReservationStore",

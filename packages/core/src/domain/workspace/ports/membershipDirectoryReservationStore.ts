@@ -35,8 +35,8 @@ export type ActivatingMembershipEdge = Readonly<{
  *
  * The four `…AccountDeletion` methods act on **pending** edges only.
  * Settled (`active` / `removing`) edges are not their business — those
- * are removed through the deletion manifest and its cleanup
- * acknowledgements.
+ * are torn down by `beginRemoval` / `completeRemoval`, or removed through
+ * the deletion manifest and its cleanup acknowledgements.
  *
  * Leases here are fail-safe, matching `MembershipRemovalPreparationStore`:
  * a lapsed prepare lease does **not** free the edge for another deletion.
@@ -177,4 +177,46 @@ export interface MembershipDirectoryReservationStore {
     userId: UserId,
     limit: number,
   ): Promise<readonly ActivatingMembershipEdge[]>;
+  /**
+   * Opens the tear-down of a settled edge: `active → removing`, before
+   * the workspace-local Membership is deleted
+   * (spec/usecases/workspace.md `removeMember` 手順 5 /
+   * `leaveWorkspace` 手順 4).
+   *
+   * A `removing` edge leaves `listActiveByUser` at once — the workspace
+   * stops appearing in the member's list the moment the removal is
+   * announced — while account deletion and integration cleanup can still
+   * find the scope through it. That is why the edge is not simply
+   * dropped here.
+   *
+   * Keyed on `(userId, workspaceId)` rather than on an operation id: the
+   * row's own operation id belongs to the join that created it, and a
+   * removal cannot re-derive it. Idempotency is therefore by target
+   * state — an edge already `removing` succeeds, so a lost response is
+   * repaired by repeating the call, and two concurrent removals of one
+   * membership both succeed on the same row.
+   *
+   * An **absent** edge succeeds too: the outcome the caller wants (no
+   * active edge) already holds, and the workspace-local Membership is the
+   * record of what happened. A `pending` / `activating` edge is a
+   * `ConflictError` — that pair is a join in flight, not a settled
+   * membership, and stealing it would strand the join saga.
+   */
+  beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
+  /**
+   * Drops the `removing` edge, after the residue cleanup of the removed
+   * member has been acknowledged.
+   *
+   * Idempotent by end state: an edge that is already gone succeeds, since
+   * a lost response leaves the caller unable to tell its own commit from
+   * a replay and the outcome it wants already holds.
+   *
+   * An edge that is still `active` is a `ConflictError`: only the
+   * `removing` phase makes the tear-down visible to the cleanup that has
+   * to run before the edge disappears, so deleting one that never entered
+   * it would drop the last pointer to the scope while residue is still
+   * there. A `pending` / `activating` edge conflicts for the reason
+   * `beginRemoval` gives.
+   */
+  completeRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
 }

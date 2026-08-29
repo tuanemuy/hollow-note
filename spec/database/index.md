@@ -133,7 +133,7 @@ indexes: (`created_by`, `note_id`) はmembership離脱後も残る著者表示re
 | `expires_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-token発行時はglobal reservationを先に作り、scope-local Invitation commit後にactiveにする。preview / acceptはactive routeだけを解決し、期限切れまたはrevokedはnot foundとして扱う。
+token発行時はglobal reservationを先に作り、scope-local Invitation commit後にactiveにする。preview / acceptはactive routeだけを解決し、reservedとrevokedはnot foundとして扱う。`expires_at`はreserved行の予約期限とactive行の招待期限を兼ねるが、期限切れの扱いは状態で分かれる — active行は期限を過ぎても解決する（期限の判定はworkspace scopeのInvitationが行い、routeで打ち切ると「期限切れ」と「存在しない」が区別できなくなるため）。reserved行は期限を過ぎるとactive化できず、recoveryがabandonする。
 
 ### distributed_operations
 
@@ -987,7 +987,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 | `source_version` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-`source_version` より古い event は 0 行更新で無視する。削除tombstoneは`lifecycle = deleting`のまま`slug = null`とし、name/avatar等の表示PIIもredactする。directory tombstone確定後に別key shardのslug reservationをreleaseするため、同じslugを新しいWorkspaceが予約できる。
+`source_version` より古い event は 0 行更新で無視する。書き手は `WorkspaceDirectoryProjectionWriter` で、`slug` を持つ snapshot は同じ書き込みでその slug を他の行から外す — 所有の正典は `workspace_slug_reservations` なので、まだ slug を映している古い投影行は定義により stale であり、UNIQUE 違反で投影を止めない。削除tombstoneは`lifecycle = deleting`のまま`slug = null`とし、name/avatar等の表示PIIもredactする。`deletion_operation_id` は tombstone の冪等鍵で、別 operation による tombstone は `ConflictError` になる。directory tombstone確定後に別key shardのslug reservationをreleaseするため、同じslugを新しいWorkspaceが予約できる。
 
 物理配置はWorkspaceId hash shardとする。indexは(`publication`, `lifecycle`, `updated_at` DESC, `workspace_id`)。`resolveMany`/slug route後のlookupはWorkspaceIdで直接routeし、公開一覧は最大32 shard・同時6接続・全体200件の署名cursorでscatter-gatherする。reshard中は旧新をWorkspaceId/sourceVersionで重複排除する。
 

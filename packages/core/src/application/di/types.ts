@@ -20,6 +20,7 @@ import type { MembershipRepository } from "@repo/core/domain/workspace/ports/mem
 import type { PublicWorkspaceDirectoryReader } from "@repo/core/domain/workspace/ports/publicWorkspaceDirectoryReader";
 import type { UserWorkspaceDirectory } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
 import type { WorkspaceDirectoryBatchReader } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceDirectoryProjectionWriter } from "@repo/core/domain/workspace/ports/workspaceDirectoryProjectionWriter";
 import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
 import type { WorkspaceSlugReservationStore } from "@repo/core/domain/workspace/ports/workspaceSlugReservationStore";
 import type {
@@ -237,6 +238,7 @@ export type RequestContainer = SharedDeps &
     userWorkspaceDirectory: UserWorkspaceDirectory;
     workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
     publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
     workspaceSlugReservationStore: WorkspaceSlugReservationStore;
     invitationRouteStore: InvitationRouteStore;
     membershipDirectoryReservationStore: MembershipDirectoryReservationStore;

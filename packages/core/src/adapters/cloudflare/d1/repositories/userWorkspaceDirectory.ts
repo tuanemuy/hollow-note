@@ -7,7 +7,7 @@ import type {
 import { WorkspaceId } from "../../../../domain/workspace/valueObject";
 import { decodeOpaqueCursor, encodeOpaqueCursor } from "../../cursor";
 import { throwTranslated } from "../../sql/errors";
-import { date, enumOf, text } from "../../sql/row";
+import { date, enumOf, int, text } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
 import { GLOBAL_TABLES } from "../schema";
@@ -20,6 +20,7 @@ import {
 const TABLE = GLOBAL_TABLES.membershipDirectory;
 const MIN_LIMIT = 1;
 const MAX_LIMIT = 20;
+const MAX_COUNT_LIMIT = 100;
 
 const ROLES = ["owner", "editor", "viewer"] as const;
 
@@ -99,6 +100,38 @@ export function createD1UserWorkspaceDirectory(
               })
             : null,
       };
+    },
+
+    async countOwnedByUser(userId: UserId, limit: number): Promise<number> {
+      if (
+        !Number.isInteger(limit) ||
+        limit < MIN_LIMIT ||
+        limit > MAX_COUNT_LIMIT
+      ) {
+        throw invalidPagination(
+          `limit must be between ${MIN_LIMIT} and ${MAX_COUNT_LIMIT}`,
+        );
+      }
+      try {
+        // The subquery is what bounds the read: the `(user_id, state, …)`
+        // index is walked at most `limit` times, whatever the shard holds.
+        const rows = await deps.session.query(
+          statement(
+            `SELECT COUNT(*) AS owned FROM (
+               SELECT 1 FROM ${TABLE}
+                 WHERE user_id = ? AND role = 'owner'
+                   AND state IN ('active', 'pending', 'activating')
+                 LIMIT ?
+             )`,
+            userId,
+            limit,
+          ),
+        );
+        const row = rows[0];
+        return row === undefined ? 0 : int(row, "owned");
+      } catch (cause) {
+        throwTranslated(`${TABLE} ownership count`, cause);
+      }
     },
   };
 }

@@ -548,3 +548,66 @@ spec は `NoteQueryService.searchPublic` で公開ノート件数を数えると
 
 - 画面が出す件数と一覧の行数が常に一致する。テストケースの 0 件期待も満たす。
 - 保留中が 1 ページ（既定 50 件）を超えると `count` が総数ではなくページ内件数になる。発行上限が 24 時間あたり 50 件なので実運用では溢れにくいが、総数が要るなら status 別の count をポートへ足す必要がある。
+
+## ADR-035: `workspace_directory` の書き手を snapshot 1 本 + tombstone の 2 メソッドで置く
+
+### Context
+
+`spec/usecases/workspace.md` の `createWorkspace` 手順 4 / `changeWorkspaceSlug` 手順 4 / `deleteWorkspace` 手順 7 は global の `workspace_directory` 投影を書くことを要求するが、既存 3 ポートはすべて reader で、本番コードから書く経路がなかった（memory では適合テストの seed のみ）。`spec/domains/workspace.md#ドメインイベント` の `workspace.*` は「変化の通知」にとどめる設計で、投影側が Workspace の current snapshot から `name` / `slug` / `published` を解決すると明記されている。
+
+### Decision
+
+`WorkspaceDirectoryProjectionWriter`（DOM-workspace-078 / 079）を新設し、`applySnapshotIfNewer(snapshot)` と `tombstone({ workspaceId, operationId })` の 2 本にする。イベント種別ごとのメソッドは作らない — 5 種の `workspace.*` はどれも「行の表示内容が変わった」であり、部分更新を許すと順序が乱れた 2 イベントが scope に存在しなかった行を作る。順序は `sourceVersion` だけで決め、保存済み以下は 0 行更新で `false`。tombstone は終端で、どの版の snapshot も再開させない。`slug` は書き込み時に他の行から奪う（正典は `workspace_slug_reservations`）。
+
+### Consequences
+
+- 良い点: at-least-once の再送・順序逆転・並行適用が 1 つの比較規則へ畳まれる。UNIQUE 違反で投影が詰まる経路がない。適合スイートは 3 reader を通して観測するので、書けたが読めない実装は落ちる。
+- トレードオフ: `updatedAt` は適用時刻なので、サイトマップの並びは event 発行順ではなく投影順になる。
+- `deletion_operation_id` を `deleting` 行に必須化するため D1 に `0004_workspace_directory_tombstone.sql` を足した（`0002` のコメントが「writer が来たら入れる」と予告していた制約）。
+
+## ADR-036: 所有数は `UserWorkspaceDirectory.countOwnedByUser` で 1 回の読みにする
+
+### Context
+
+ADR-028 は所有上限の判定を `listActiveByUser` の keyset 走査と `listActivatingByUser` の件数の合成で近似し、「`role = owner` の active + pending 件数を返すポートメソッドが足されたら合成をやめる」を反証条件に挙げていた。
+
+### Decision
+
+`UserWorkspaceDirectory.countOwnedByUser(userId, limit)`（DOM-workspace-080）を足す。`membership_directory` を読む reader は既にこのポートなので、`MembershipDirectoryReservationStore`（予約サガ用）ではなくこちらに置く。数えるのは `role = owner` の `active` / `pending` / `activating`。`removing` は席を明け渡し済みなので数えない。`limit`（1〜100）で打ち切り、戻り値は `min(実数, limit)`。
+
+### Consequences
+
+- ADR-028 の合成は不要になった。`activating` edge を一律 owner として数える近似も消え、role を見て数えるので受諾サガ中の viewer 参加が所有数を押し上げない。
+- `limit` の範囲外は `ValidationError("INVALID_PAGINATION")` とし、同じポートの `listActiveByUser` と error contract を揃えた。件数の読みに pagination の code を使うのは名前としては緩いが、ポートの宣言済み契約を増やさない方を採った。
+
+## ADR-037: 除名・脱退の edge 遷移は `(userId, workspaceId)` を鍵にし、目標状態で冪等にする
+
+### Context
+
+ADR-026 は「`MembershipDirectoryReservationStore` に `removing` 遷移も edge 削除も無い」ことを欠落として報告し、除名・脱退後に `listUserWorkspaces` へ stale edge が残る状態を許容していた。既存メソッドはすべて edge の `operation_id`（= join が採番した ID）を鍵にする。
+
+### Decision
+
+`beginRemoval(userId, workspaceId)` / `completeRemoval(userId, workspaceId)`（DOM-workspace-081 / 082）を足す。鍵を `(userId, workspaceId)`（UNIQUE 索引）にするのは、除名側が join の operation ID を導出できないためである。除名用の operation ID は列を増やさず持たせない — 冪等性は目標状態で取る。`removing` への再実行、消えた edge の `completeRemoval`、不在 edge の `beginRemoval` はすべて成功。`pending` / `activating`（未確定の join）への両操作と、`removing` を経ていない `completeRemoval` は `ConflictError`。
+
+### Consequences
+
+- `removing` は `listActiveByUser` から外れるので、宣言した瞬間に一覧から消え、ADR-026 の stale edge が閉じる。account deletion / integration cleanup は `removing` edge から scope を辿れる。
+- 並行する 2 つの除名は同じ行へ収束する。`removing` を飛ばした削除を拒むので、後始末の窓が消えることはない。
+- 除名の監査は scope-local の `workspace.membership.removed` が持つ。directory 行には除名側の operation ID が残らない。
+
+## ADR-038: 期限切れ invitation route は「読めるが書けない」に倒す
+
+### Context
+
+ADR-031 は、`InvitationRouteStore.resolveActive` が期限切れ行を `null` にする契約のため `getInvitationPreview` の `state: "expired"` と `acceptInvitation` の `BusinessRuleError(InvitationExpired)` が到達不能であることを記録し、契約側の是正を後続へ送っていた。
+
+### Decision
+
+`resolveActive` は `active` な行を期限に関わらず解決する。route は入口にすぎず、期限の判定は workspace scope の Invitation が持つ — route で打ち切ると「期限切れ」と「存在しない」が区別できない。代わりに書き込み側を締め、期限を過ぎた `reserved` 行の `activate` を `ConflictError` にする（recovery は `abandon` する）。`reserved` / `revoked` が `null` になる点は変えない。
+
+### Consequences
+
+- ユースケース 2 本を触らずに `expired` / `InvitationExpired` が到達可能になる（ADR-031 が予告したとおり）。
+- 「期限切れは読めるが書けない」が 2 ケースで固定され、変異チェックでも両方向が red になる。
+- 期限切れ token を持つ相手は preview で「期限切れ」を見て `resendInvitation` に誘導される。`reserveReplacement` は旧 route の期限を見ないので、期限切れ招待の再送は従来どおり通る。

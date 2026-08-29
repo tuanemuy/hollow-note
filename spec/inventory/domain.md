@@ -150,7 +150,7 @@
 | DOM-workspace-034 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする |
 | DOM-workspace-035 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す |
 | DOM-workspace-036 | `InvitationRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 InvitationId を削除する |
-| DOM-workspace-037 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を解決する |
+| DOM-workspace-037 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を期限に関わらず解決する |
 | DOM-workspace-038 | `InvitationRouteStore.reserve` | `spec/domains/workspace.md#ポート` | 新規 token route を TTL 付き予約する |
 | DOM-workspace-039 | `InvitationRouteStore.activate` | `spec/domains/workspace.md#ポート` | operation の route を有効化する |
 | DOM-workspace-040 | `InvitationRouteStore.reserveReplacement` | `spec/domains/workspace.md#ポート` | 再送用の旧新 token route 交換を予約する |
@@ -191,6 +191,11 @@
 | DOM-workspace-075 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
 | DOM-workspace-076 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する |
 | DOM-workspace-077 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
+| DOM-workspace-078 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する |
+| DOM-workspace-079 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
+| DOM-workspace-080 | `UserWorkspaceDirectory.countOwnedByUser` | `spec/domains/workspace.md#ポート` | 所有上限判定用に owner edge を limit まで数える |
+| DOM-workspace-081 | `MembershipDirectoryReservationStore.beginRemoval` | `spec/domains/workspace.md#ポート` | 除名・脱退で directory edge を removing にする |
+| DOM-workspace-082 | `MembershipDirectoryReservationStore.completeRemoval` | `spec/domains/workspace.md#ポート` | 後始末の ack 後に removing edge を削除する |
 | DOM-storage-001 | `StoredFileId` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-storage-002 | `ObjectKey` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜1024 文字で traversal と先頭 slash を拒否し owner・purpose から構築する |
 | DOM-storage-003 | `FileName` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜255 文字へ安全化し path separator・制御文字を除く |

@@ -84,6 +84,43 @@ export function describeUserWorkspaceDirectoryContract(
       return true;
     };
 
+    /**
+     * `seedEdges` plus the states the ownership count has to tell apart:
+     * user 1 ends up with one active, one pending and one activating
+     * owner edge, one `removing` owner edge that the count concedes, and
+     * two active edges in other roles.
+     */
+    const seedOwnerEdges = async (): Promise<boolean> => {
+      const seed = backend.seedMembershipEdges;
+      if (seed === undefined || !(await seedEdges())) {
+        return false;
+      }
+      await seed.call(backend, userId(1), [
+        {
+          edgeKey: "edge-7",
+          workspaceId: workspaceId(7),
+          edgeState: "pending",
+          membershipId: null,
+          role: "owner",
+        },
+        {
+          edgeKey: "edge-8",
+          workspaceId: workspaceId(8),
+          edgeState: "activating",
+          membershipId: null,
+          role: "owner",
+        },
+        {
+          edgeKey: "edge-9",
+          workspaceId: workspaceId(9),
+          edgeState: "removing",
+          membershipId: "membership-9",
+          role: "owner",
+        },
+      ]);
+      return true;
+    };
+
     it("ADP-workspace-005: returns only the user's active edges with their projected roles (seeded backend)", async (ctx) => {
       if (!(await seedEdges())) {
         // Report as skipped, not passed: a backend that cannot seed
@@ -202,6 +239,43 @@ export function describeUserWorkspaceDirectoryContract(
       expect(replayed).not.toContain(workspaceId(1));
       expect(replayed).not.toContain(workspaceId(2));
       expect(replayed).not.toContain(workspaceId(3));
+    });
+
+    it("ADP-workspace-068: counts owner edges that are active or still reserved, per user (seeded backend)", async (ctx) => {
+      if (!(await seedOwnerEdges())) {
+        ctx.skip();
+        return;
+      }
+      // A quota that ignored the unsettled joins would read 1 here, and a
+      // seat the removal already conceded would push it to 4.
+      expect(
+        await backend.userWorkspaceDirectory.countOwnedByUser(userId(1), 100),
+      ).toBe(3);
+      expect(
+        await backend.userWorkspaceDirectory.countOwnedByUser(userId(2), 100),
+      ).toBe(1);
+      expect(
+        await backend.userWorkspaceDirectory.countOwnedByUser(userId(3), 100),
+      ).toBe(0);
+    });
+
+    it("ADP-workspace-068: the count stops at the limit and rejects one outside 1..100 (seeded backend)", async (ctx) => {
+      if (!(await seedOwnerEdges())) {
+        ctx.skip();
+        return;
+      }
+      expect(
+        await backend.userWorkspaceDirectory.countOwnedByUser(userId(1), 2),
+      ).toBe(2);
+
+      await expectValidation(
+        backend.userWorkspaceDirectory.countOwnedByUser(userId(1), 0),
+        "INVALID_PAGINATION",
+      );
+      await expectValidation(
+        backend.userWorkspaceDirectory.countOwnedByUser(userId(1), 101),
+        "INVALID_PAGINATION",
+      );
     });
   });
 }

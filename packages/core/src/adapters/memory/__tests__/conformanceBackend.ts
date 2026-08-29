@@ -53,6 +53,7 @@ import { createMemoryUserRepository } from "../repositories/userRepository";
 import { createMemoryUserWorkspaceDirectory } from "../repositories/userWorkspaceDirectory";
 import { createMemoryWorkspaceDeletionManifestStore } from "../repositories/workspaceDeletionManifestStore";
 import { createMemoryWorkspaceDirectoryBatchReader } from "../repositories/workspaceDirectoryBatchReader";
+import { createMemoryWorkspaceDirectoryProjectionWriter } from "../repositories/workspaceDirectoryProjectionWriter";
 import { createMemoryWorkspaceOperationLockStore } from "../repositories/workspaceOperationLockStore";
 import { createMemoryWorkspaceRepository } from "../repositories/workspaceRepository";
 import { createMemoryWorkspaceSlugReservationStore } from "../repositories/workspaceSlugReservationStore";
@@ -140,6 +141,8 @@ export function makeMemoryConformanceBackend(
       createMemoryWorkspaceDirectoryBatchReader(backend),
     publicWorkspaceDirectoryReader:
       createMemoryPublicWorkspaceDirectoryReader(backend),
+    workspaceDirectoryProjectionWriter:
+      createMemoryWorkspaceDirectoryProjectionWriter(backend),
     invitationRouteStore: createMemoryInvitationRouteStore(backend),
     membershipDirectoryReservationStore:
       createMemoryMembershipDirectoryReservationStore(backend),
@@ -196,7 +199,7 @@ export function makeMemoryConformanceBackend(
           deletionPrepareOperationId: null,
           deletionPrepareExpiresAt: null,
           reservationExpiresAt:
-            edge.edgeState === "pending"
+            edge.edgeState === "pending" || edge.edgeState === "activating"
               ? new Date(clock.now().getTime() + HOUR_MS)
               : null,
           createdAt: edge.createdAt ?? clock.now(),
@@ -219,7 +222,13 @@ export function makeMemoryConformanceBackend(
       entries: readonly WorkspaceDirectorySeedInput[],
     ): Promise<void> {
       for (const entry of entries) {
-        backend.workspaceDirectory.set(entry.workspaceId, { ...entry });
+        backend.workspaceDirectory.set(entry.workspaceId, {
+          ...entry,
+          deletionOperationId:
+            entry.lifecycle === "deleting"
+              ? (entry.deletionOperationId ?? `deletion-${entry.workspaceId}`)
+              : null,
+        });
       }
     },
     async makeWorkspaceDirectoryUnreadable(

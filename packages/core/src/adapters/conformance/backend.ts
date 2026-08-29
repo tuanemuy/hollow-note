@@ -55,6 +55,7 @@ import type { PublicWorkspaceDirectoryReader } from "../../domain/workspace/port
 import type { UserWorkspaceDirectory } from "../../domain/workspace/ports/userWorkspaceDirectory";
 import type { WorkspaceDeletionManifestStore } from "../../domain/workspace/ports/workspaceDeletionManifestStore";
 import type { WorkspaceDirectoryBatchReader } from "../../domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceDirectoryProjectionWriter } from "../../domain/workspace/ports/workspaceDirectoryProjectionWriter";
 import type { WorkspaceOperationLockStore } from "../../domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceRepository } from "../../domain/workspace/ports/workspaceRepository";
 import type { WorkspaceSlugReservationStore } from "../../domain/workspace/ports/workspaceSlugReservationStore";
@@ -104,7 +105,7 @@ export type ScopedConformancePorts = Readonly<{
 export type MembershipEdgeSeedInput = Readonly<{
   edgeKey: string;
   workspaceId: WorkspaceId;
-  edgeState: "active" | "removing" | "pending";
+  edgeState: "active" | "removing" | "pending" | "activating";
   membershipId: string | null;
   /** Projected role. Defaults to `viewer` when the seed omits it. */
   role?: WorkspaceRole;
@@ -127,9 +128,13 @@ export type MoveAuthorizationLockSeedInput = Readonly<{
 }>;
 
 /**
- * One `workspace_directory` projection row. Written directly rather than
- * through a port: the projection's writer is not part of the workspace
- * port set, while the three reader contracts above are.
+ * One `workspace_directory` projection row, written straight into the
+ * table rather than through `WorkspaceDirectoryProjectionWriter`.
+ *
+ * The readers' cases pin `sourceVersion` and `updatedAt` per row and
+ * combine states the writer would never produce together — a `deleting`
+ * row that still carries a slug is what pins the public enumeration's
+ * lifecycle predicate — so the seed writes the row as given.
  */
 export type WorkspaceDirectorySeedInput = Readonly<{
   workspaceId: WorkspaceId;
@@ -139,6 +144,12 @@ export type WorkspaceDirectorySeedInput = Readonly<{
   publication: "private" | "published";
   /** A tombstoned workspace stays `deleting` (spec/database/index.md). */
   lifecycle: "active" | "deleting";
+  /**
+   * Deletion that owns a tombstone. Backends derive one from the
+   * workspace id when a `deleting` seed omits it, since the column is
+   * required on such a row and no reader discriminates on its value.
+   */
+  deletionOperationId?: string;
   sourceVersion: number;
   updatedAt: Date;
 }>;
@@ -185,6 +196,7 @@ export type ConformanceBackend = Readonly<{
   userWorkspaceDirectory: UserWorkspaceDirectory;
   workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
   publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+  workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
   invitationRouteStore: InvitationRouteStore;
   membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
   workspaceSlugReservationStore: WorkspaceSlugReservationStore;

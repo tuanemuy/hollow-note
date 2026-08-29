@@ -20,6 +20,7 @@ import { createD1UserBatchReader } from "../../adapters/cloudflare/d1/repositori
 import { createD1UserRepository } from "../../adapters/cloudflare/d1/repositories/userRepository";
 import { createD1UserWorkspaceDirectory } from "../../adapters/cloudflare/d1/repositories/userWorkspaceDirectory";
 import { createD1WorkspaceDirectoryBatchReader } from "../../adapters/cloudflare/d1/repositories/workspaceDirectoryBatchReader";
+import { createD1WorkspaceDirectoryProjectionWriter } from "../../adapters/cloudflare/d1/repositories/workspaceDirectoryProjectionWriter";
 import { createD1WorkspaceSlugReservationStore } from "../../adapters/cloudflare/d1/repositories/workspaceSlugReservationStore";
 import { createCloudflareAppliedOperationStore } from "../../adapters/cloudflare/do/repositories/appliedOperationStore";
 import { createCloudflareInvitationRepository } from "../../adapters/cloudflare/do/repositories/invitationRepository";
@@ -406,6 +407,8 @@ export function createCloudflareRuntime(
         publicWorkspaceDirectoryReader: createD1PublicWorkspaceDirectoryReader({
           session,
         }),
+        workspaceDirectoryProjectionWriter:
+          createD1WorkspaceDirectoryProjectionWriter({ session, clock }),
         workspaceSlugReservationStore: createD1WorkspaceSlugReservationStore({
           session,
           clock,

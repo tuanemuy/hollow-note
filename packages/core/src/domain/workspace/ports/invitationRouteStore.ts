@@ -43,6 +43,17 @@ export type InvitationRouteTarget = Readonly<{
  * recovery reconciles a `reserved` row against the workspace-local
  * Invitation of the same operation.
  *
+ * Expiry is read-permissive and write-refusing. An `active` row keeps
+ * resolving past its expiry, because the route is only the entry point:
+ * the workspace-local Invitation is what an expired link has to be
+ * judged against, and a route that stopped resolving would collapse
+ * "expired" into "never existed" — `getInvitationPreview` could not
+ * answer `expired` and `acceptInvitation` could not raise
+ * `InvitationExpired` (spec/testcases/workspace/). A `reserved` row past
+ * its expiry is the opposite case: the reservation lapsed, so `activate`
+ * refuses it and recovery must `abandon` instead. Nothing turns an
+ * expired token into a live one.
+ *
  * Idempotency is keyed on `(tokenHash, operationId)` throughout: every
  * method may be re-issued any number of times for the same operation and
  * converges on the same row. A row held by a **different** operation is
@@ -54,11 +65,16 @@ export type InvitationRouteTarget = Readonly<{
  */
 export interface InvitationRouteStore {
   /**
-   * The only externally readable form: `active` rows whose `expiresAt` is
-   * still in the future. `reserved` (issue in flight), expired, and
-   * closed rows all resolve to `null` and are indistinguishable to the
-   * caller, which is what lets preview / accept answer
-   * `INVITATION_NOT_FOUND` uniformly.
+   * The only externally readable form: rows in the `active` state,
+   * whether or not their `expiresAt` has passed. `reserved` (issue in
+   * flight) and closed rows resolve to `null` and are indistinguishable
+   * to the caller, which is what lets preview / accept answer
+   * `INVITATION_NOT_FOUND` uniformly for a token that never opened or
+   * has already been redeemed.
+   *
+   * An expired route still resolves so that the Invitation in the target
+   * scope can be read and reported as expired; the route carries no
+   * verdict of its own.
    *
    * A pure read — it never lapses a row or collects an expired one.
    */
@@ -92,6 +108,11 @@ export interface InvitationRouteStore {
    * never hand a redeemed token back out. A row that is absent (an
    * `abandon` already ran) or held by another operation is a
    * `ConflictError`.
+   *
+   * A `reserved` row whose `expiresAt` has passed is a `ConflictError`
+   * too: the reservation lapsed, and activating it would publish a token
+   * that is expired the instant it becomes resolvable. Recovery
+   * `abandon`s such a row instead.
    */
   activate(
     input: Readonly<{ tokenHash: TokenHash; operationId: string }>,

@@ -7,6 +7,7 @@ import { describePublicWorkspaceDirectoryReaderContract } from "../../../conform
 import { describeUserWorkspaceDirectoryContract } from "../../../conformance/userWorkspaceDirectory";
 import { describeWorkspaceDeletionManifestStoreContract } from "../../../conformance/workspaceDeletionManifestStore";
 import { describeWorkspaceDirectoryBatchReaderContract } from "../../../conformance/workspaceDirectoryBatchReader";
+import { describeWorkspaceDirectoryProjectionWriterContract } from "../../../conformance/workspaceDirectoryProjectionWriter";
 import { describeWorkspaceOperationLockStoreContract } from "../../../conformance/workspaceOperationLockStore";
 import { describeWorkspaceRepositoryContract } from "../../../conformance/workspaceRepository";
 import { describeWorkspaceSlugReservationStoreContract } from "../../../conformance/workspaceSlugReservationStore";
@@ -28,6 +29,10 @@ describeWorkspaceDirectoryBatchReaderContract(
   makeCloudflareConformanceBackend,
 );
 describePublicWorkspaceDirectoryReaderContract(
+  BACKEND,
+  makeCloudflareConformanceBackend,
+);
+describeWorkspaceDirectoryProjectionWriterContract(
   BACKEND,
   makeCloudflareConformanceBackend,
 );

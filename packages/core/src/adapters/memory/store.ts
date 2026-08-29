@@ -425,6 +425,8 @@ export type WorkspaceDirectoryRow = Readonly<{
   avatarUrl: string | null;
   publication: "private" | "published";
   lifecycle: "active" | "deleting";
+  /** Owner of the tombstone; null while the row is `active`. */
+  deletionOperationId: string | null;
   sourceVersion: number;
   updatedAt: Date;
 }>;

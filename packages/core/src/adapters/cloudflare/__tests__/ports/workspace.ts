@@ -7,6 +7,7 @@ import type { PublicWorkspaceDirectoryReader } from "../../../../domain/workspac
 import type { UserWorkspaceDirectory } from "../../../../domain/workspace/ports/userWorkspaceDirectory";
 import type { WorkspaceDeletionManifestStore } from "../../../../domain/workspace/ports/workspaceDeletionManifestStore";
 import type { WorkspaceDirectoryBatchReader } from "../../../../domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceDirectoryProjectionWriter } from "../../../../domain/workspace/ports/workspaceDirectoryProjectionWriter";
 import type { WorkspaceOperationLockStore } from "../../../../domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceRepository } from "../../../../domain/workspace/ports/workspaceRepository";
 import type { WorkspaceSlugReservationStore } from "../../../../domain/workspace/ports/workspaceSlugReservationStore";
@@ -15,6 +16,7 @@ import { createD1MembershipDirectoryReservationStore } from "../../d1/repositori
 import { createD1PublicWorkspaceDirectoryReader } from "../../d1/repositories/publicWorkspaceDirectoryReader";
 import { createD1UserWorkspaceDirectory } from "../../d1/repositories/userWorkspaceDirectory";
 import { createD1WorkspaceDirectoryBatchReader } from "../../d1/repositories/workspaceDirectoryBatchReader";
+import { createD1WorkspaceDirectoryProjectionWriter } from "../../d1/repositories/workspaceDirectoryProjectionWriter";
 import { createD1WorkspaceSlugReservationStore } from "../../d1/repositories/workspaceSlugReservationStore";
 import { createCloudflareInvitationRepository } from "../../do/repositories/invitationRepository";
 import { createCloudflareMembershipRemovalPreparationStore } from "../../do/repositories/membershipRemovalPreparationStore";
@@ -98,6 +100,7 @@ export type WorkspaceDirectoryPorts = Readonly<{
   userWorkspaceDirectory: UserWorkspaceDirectory;
   workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
   publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+  workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
 }>;
 
 export function createWorkspaceDirectoryPorts(
@@ -115,5 +118,10 @@ export function createWorkspaceDirectoryPorts(
       createD1WorkspaceDirectoryBatchReader(directory),
     publicWorkspaceDirectoryReader:
       createD1PublicWorkspaceDirectoryReader(directory),
+    workspaceDirectoryProjectionWriter:
+      createD1WorkspaceDirectoryProjectionWriter({
+        session: deps.session,
+        clock: deps.clock,
+      }),
   };
 }

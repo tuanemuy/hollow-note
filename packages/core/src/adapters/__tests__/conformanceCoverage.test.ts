@@ -85,7 +85,7 @@ for (const file of walk(CONFORMANCE_DIR)) {
  * either number is the declaration that a port contract was added or
  * withdrawn.
  */
-const PERSISTENCE_SUITES = 42;
+const PERSISTENCE_SUITES = 43;
 const ALL_SUITES = PERSISTENCE_SUITES + 1;
 
 describe("port-conformance suite coverage", () => {

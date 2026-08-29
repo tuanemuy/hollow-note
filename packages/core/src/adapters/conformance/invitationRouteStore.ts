@@ -74,17 +74,40 @@ export function describeInvitationRouteStoreContract(
       );
     });
 
-    it("ADP-workspace-025: an expired active route resolves to null", async () => {
+    it("ADP-workspace-025: an expired active route keeps resolving, so the invitation can be judged expired", async () => {
       await issue("op-1");
-      backend.clock.advance(TTL_MS - 1);
-      expect(
-        await backend.invitationRouteStore.resolveActive(hash(1)),
-      ).not.toBeNull();
+      backend.clock.advance(TTL_MS);
 
-      backend.clock.advance(1);
+      // The route carries no verdict: resolving to null here would make an
+      // expired invitation indistinguishable from one that never existed,
+      // and preview / accept could no longer say which it was.
+      expect(await backend.invitationRouteStore.resolveActive(hash(1))).toEqual(
+        {
+          workspaceId: workspaceId(1),
+          invitationId: invitationId(1),
+        },
+      );
+    });
+
+    it("ADP-workspace-027: a reservation that expired before activation is refused", async () => {
+      await reserve("op-1");
+      backend.clock.advance(TTL_MS);
+
+      // Read-permissive, write-refusing: nothing turns an expired token
+      // into a live one, so recovery has to abandon this row instead.
+      await expectConflict(activate("op-1"));
       expect(
         await backend.invitationRouteStore.resolveActive(hash(1)),
       ).toBeNull();
+
+      await backend.invitationRouteStore.abandon({
+        tokenHash: hash(1),
+        operationId: "op-1",
+      });
+      await issue("op-2");
+      expect(
+        await backend.invitationRouteStore.resolveActive(hash(1)),
+      ).not.toBeNull();
     });
 
     it("ADP-workspace-026: a token hash held by another operation conflicts in every state", async () => {

@@ -36,6 +36,7 @@ import { createMemoryUserBatchReader } from "@repo/core/adapters/memory/reposito
 import { createMemoryUserRepository } from "@repo/core/adapters/memory/repositories/userRepository";
 import { createMemoryUserWorkspaceDirectory } from "@repo/core/adapters/memory/repositories/userWorkspaceDirectory";
 import { createMemoryWorkspaceDirectoryBatchReader } from "@repo/core/adapters/memory/repositories/workspaceDirectoryBatchReader";
+import { createMemoryWorkspaceDirectoryProjectionWriter } from "@repo/core/adapters/memory/repositories/workspaceDirectoryProjectionWriter";
 import { createMemoryWorkspaceRepository } from "@repo/core/adapters/memory/repositories/workspaceRepository";
 import { createMemoryWorkspaceSlugReservationStore } from "@repo/core/adapters/memory/repositories/workspaceSlugReservationStore";
 import { createMemoryScopeRouter } from "@repo/core/adapters/memory/scopeRouter";
@@ -257,6 +258,8 @@ export function createMemoryRuntime(
           createMemoryWorkspaceDirectoryBatchReader(backend),
         publicWorkspaceDirectoryReader:
           createMemoryPublicWorkspaceDirectoryReader(backend),
+        workspaceDirectoryProjectionWriter:
+          createMemoryWorkspaceDirectoryProjectionWriter(backend),
         workspaceSlugReservationStore:
           createMemoryWorkspaceSlugReservationStore(backend),
         invitationRouteStore: createMemoryInvitationRouteStore(backend),

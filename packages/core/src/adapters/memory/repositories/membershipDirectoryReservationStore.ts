@@ -4,6 +4,7 @@ import type {
   ActivatingMembershipEdge,
   MembershipDirectoryReservationStore,
 } from "../../../domain/workspace/ports/membershipDirectoryReservationStore";
+import type { WorkspaceId } from "../../../domain/workspace/valueObject";
 import type { MembershipDirectoryRow, MemoryBackend } from "../store";
 import { compareStrings } from "../support";
 
@@ -30,6 +31,16 @@ export function createMemoryMembershipDirectoryReservationStore(
   ): readonly [string, MembershipDirectoryRow] | null =>
     table.entries().find(([, row]) => row.edgeKey === edgeKey) ?? null;
 
+  const byPair = (
+    userId: UserId,
+    workspaceId: WorkspaceId,
+  ): readonly [string, MembershipDirectoryRow] | null =>
+    table
+      .entries()
+      .find(
+        ([, row]) => row.userId === userId && row.workspaceId === workspaceId,
+      ) ?? null;
+
   /**
    * Lock transitions share one shape: the edge must exist, and the lock
    * it carries must be this deletion's. Expiry is deliberately not part
@@ -54,14 +65,8 @@ export function createMemoryMembershipDirectoryReservationStore(
 
   return {
     async reserveAndClaimActivation(input): Promise<void> {
-      const existing = table
-        .entries()
-        .find(
-          ([, row]) =>
-            row.userId === input.userId &&
-            row.workspaceId === input.workspaceId,
-        );
-      if (existing !== undefined) {
+      const existing = byPair(input.userId, input.workspaceId);
+      if (existing !== null) {
         const [key, row] = existing;
         if (row.edgeKey !== input.operationId) {
           throw alreadyExists(input.userId, input.workspaceId);
@@ -245,6 +250,44 @@ export function createMemoryMembershipDirectoryReservationStore(
           operationId: row.edgeKey,
           workspaceId: row.workspaceId,
         }));
+    },
+
+    async beginRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const found = byPair(userId, workspaceId);
+      // No active edge is the outcome a removal wants; it already holds.
+      if (found === null) {
+        return;
+      }
+      const [key, row] = found;
+      if (row.edgeState === "removing") {
+        return;
+      }
+      if (row.edgeState !== "active") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${row.edgeState} and cannot be removed`,
+        );
+      }
+      table.set(key, { ...row, edgeState: "removing" });
+    },
+
+    async completeRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const found = byPair(userId, workspaceId);
+      if (found === null) {
+        return;
+      }
+      const [key, row] = found;
+      if (row.edgeState !== "removing") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${row.edgeState}, not removing`,
+        );
+      }
+      table.delete(key);
     },
   };
 }

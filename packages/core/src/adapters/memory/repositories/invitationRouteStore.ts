@@ -19,6 +19,12 @@ const routeGone = (tokenHash: TokenHash): ConflictError =>
     `Invitation route ${tokenHash} does not exist`,
   );
 
+const lapsedReservation = (tokenHash: TokenHash): ConflictError =>
+  new ConflictError(
+    "INVITATION_ROUTE_CONFLICT",
+    `Invitation route ${tokenHash} expired before it was activated`,
+  );
+
 const foreignInvitation = (
   tokenHash: TokenHash,
   invitationId: InvitationId,
@@ -64,11 +70,10 @@ export function createMemoryInvitationRouteStore(
       tokenHash: TokenHash,
     ): Promise<InvitationRouteTarget | null> {
       const row = table.get(tokenHash);
-      if (
-        row === undefined ||
-        row.state !== "active" ||
-        row.expiresAt.getTime() <= backend.clock.now().getTime()
-      ) {
+      // An expired route still resolves: the target scope's Invitation is
+      // what an expired link is judged against, and a null here would
+      // collapse "expired" into "never existed".
+      if (row === undefined || row.state !== "active") {
         return null;
       }
       return { workspaceId: row.workspaceId, invitationId: row.invitationId };
@@ -104,6 +109,9 @@ export function createMemoryInvitationRouteStore(
       // row this operation has since closed stays closed.
       if (row.state !== "reserved") {
         return;
+      }
+      if (row.expiresAt.getTime() <= backend.clock.now().getTime()) {
+        throw lapsedReservation(input.tokenHash);
       }
       table.set(input.tokenHash, { ...row, state: "active" });
     },

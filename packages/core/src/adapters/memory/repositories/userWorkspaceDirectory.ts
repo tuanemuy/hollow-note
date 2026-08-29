@@ -11,6 +11,14 @@ import { compareStrings } from "../support";
 
 const MIN_LIMIT = 1;
 const MAX_LIMIT = 20;
+const MAX_COUNT_LIMIT = 100;
+
+/** States a seat is taken in: settled, or reserved by an unsettled join. */
+const OWNED_STATES: ReadonlySet<string> = new Set([
+  "active",
+  "pending",
+  "activating",
+]);
 
 /** `${createdAt}:${workspaceId}` — the trailing key of the page. */
 type KeysetPosition = Readonly<{ createdAt: number; workspaceId: string }>;
@@ -90,6 +98,33 @@ export function createMemoryUserWorkspaceDirectory(
               })
             : null,
       };
+    },
+
+    async countOwnedByUser(userId: UserId, limit: number): Promise<number> {
+      if (
+        !Number.isInteger(limit) ||
+        limit < MIN_LIMIT ||
+        limit > MAX_COUNT_LIMIT
+      ) {
+        throw new ValidationError(
+          "INVALID_PAGINATION",
+          `limit must be between ${MIN_LIMIT} and ${MAX_COUNT_LIMIT}`,
+        );
+      }
+      let owned = 0;
+      for (const row of backend.membershipEdges.values()) {
+        if (
+          row.userId === userId &&
+          row.role === "owner" &&
+          OWNED_STATES.has(row.edgeState)
+        ) {
+          owned += 1;
+          if (owned === limit) {
+            break;
+          }
+        }
+      }
+      return owned;
     },
   };
 }

@@ -512,5 +512,67 @@ export function createD1MembershipDirectoryReservationStore(
         workspaceId: WorkspaceId.create(text(row, "workspace_id")),
       }));
     },
+
+    async beginRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const edge = await readByPair(userId, workspaceId);
+      // No active edge is the outcome a removal wants; it already holds.
+      if (edge === null || edge.state === "removing") {
+        return;
+      }
+      if (edge.state !== "active") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${edge.state} and cannot be removed`,
+        );
+      }
+      const now = toTimestamp(clock.now());
+      await write([
+        opaque(
+          occGuard(
+            statement(
+              `SELECT 1 FROM ${TABLE} WHERE operation_id = ? AND state = 'active'`,
+              edge.operationId,
+            ),
+          ),
+        ),
+        upsert({
+          table: TABLE,
+          key: edge.operationId,
+          row: { ...edge.raw, state: "removing", updated_at: now },
+          statement: statement(
+            `UPDATE ${TABLE} SET state = 'removing', updated_at = ? WHERE operation_id = ? AND state = 'active'`,
+            now,
+            edge.operationId,
+          ),
+        }),
+      ]);
+    },
+
+    async completeRemoval(
+      userId: UserId,
+      workspaceId: WorkspaceId,
+    ): Promise<void> {
+      const edge = await readByPair(userId, workspaceId);
+      if (edge === null) {
+        return;
+      }
+      if (edge.state !== "removing") {
+        throw edgeConflict(
+          `Edge of user ${userId} in workspace ${workspaceId} is ${edge.state}, not removing`,
+        );
+      }
+      await write([
+        remove({
+          table: TABLE,
+          key: edge.operationId,
+          statement: statement(
+            `DELETE FROM ${TABLE} WHERE operation_id = ? AND state = 'removing'`,
+            edge.operationId,
+          ),
+        }),
+      ]);
+    },
   };
 }

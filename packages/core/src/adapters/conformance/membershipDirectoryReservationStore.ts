@@ -268,5 +268,59 @@ export function describeMembershipDirectoryReservationStoreContract(
       await store().activate("op-c");
       expect(await activatingKeys(userId(1))).toEqual([]);
     });
+
+    it("ADP-workspace-069/070: removal hides the edge at once and drops it after the cleanup ack", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+      expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+
+      await store().beginRemoval(userId(1), workspaceId(1));
+      // The workspace leaves the member's list the moment the removal is
+      // announced, while cleanup can still reach the scope through the
+      // `removing` edge.
+      expect(await activeWorkspaces()).toEqual([]);
+
+      await store().completeRemoval(userId(1), workspaceId(1));
+      // The pair is free again, so the same user may be invited back.
+      await claim("op-2");
+      await store().activate("op-2");
+      expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+    });
+
+    it("ADP-workspace-069/070: both transitions are idempotent and tolerate an absent edge", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+
+      await store().beginRemoval(userId(1), workspaceId(1));
+      await store().beginRemoval(userId(1), workspaceId(1));
+      await store().completeRemoval(userId(1), workspaceId(1));
+      await store().completeRemoval(userId(1), workspaceId(1));
+
+      // Nothing to remove is the outcome both calls want.
+      await store().beginRemoval(userId(2), workspaceId(9));
+      await store().completeRemoval(userId(2), workspaceId(9));
+      expect(await activeWorkspaces()).toEqual([]);
+    });
+
+    it("ADP-workspace-069: an edge a join still holds is not a removal's to take", async () => {
+      await claim("op-1");
+      await expectConflict(store().beginRemoval(userId(1), workspaceId(1)));
+
+      if (!(await seedPendingEdge("edge-pending"))) {
+        return;
+      }
+      await expectConflict(store().beginRemoval(userId(2), workspaceId(3)));
+      // The join saga is untouched and still settles.
+      await store().activate("op-1");
+      expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+    });
+
+    it("ADP-workspace-070: an edge that never entered removing is not dropped", async () => {
+      await claim("op-1");
+      await store().activate("op-1");
+
+      await expectConflict(store().completeRemoval(userId(1), workspaceId(1)));
+      expect(await activeWorkspaces()).toEqual([workspaceId(1)]);
+    });
   });
 }

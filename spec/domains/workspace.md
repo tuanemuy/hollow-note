@@ -205,6 +205,7 @@ interface WorkspaceRepository extends TransactionalRepository<Workspace, Workspa
 
 interface UserWorkspaceDirectory {
   listActiveByUser(userId: UserId, cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; role: WorkspaceRole }[]; nextCursor: string | null }>>;
+  countOwnedByUser(userId: UserId, limit: number): Promise<number>; // limitで打ち切る
 }
 
 type WorkspaceDirectoryEntry = Readonly<{
@@ -228,6 +229,20 @@ interface PublicWorkspaceDirectoryReader {
   listPublished(cursor: string | null, limit: number): Promise<Readonly<{ items: readonly { workspaceId: WorkspaceId; slug: WorkspaceSlug; updatedAt: Date }[]; nextCursor: string | null }>>;
 }
 
+type WorkspaceDirectorySnapshot = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: Workspace["publication"];
+  sourceVersion: number;
+}>;
+
+interface WorkspaceDirectoryProjectionWriter {
+  applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<boolean>; // 書いたらtrue
+  tombstone(input: { workspaceId: WorkspaceId; operationId: string }): Promise<void>;
+}
+
 interface WorkspaceSlugReservationStore {
   resolveActive(slug: WorkspaceSlug): Promise<WorkspaceId | null>;
   reserve(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; expiresAt: Date }): Promise<void>;
@@ -236,6 +251,8 @@ interface WorkspaceSlugReservationStore {
   release(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId }): Promise<void>;
 }
 ```
+
+`WorkspaceDirectoryProjectionWriter` は `workspace_directory` の唯一の書き手で、`workspace.created` / `.profileUpdated` / `.slugChanged` / `.published` / `.unpublished` は scope-local commit 後の snapshot 1 件に、`workspace.deleted` は tombstone になる。投影は out-of-band かつ at-least-once なので、順序は `sourceVersion` だけで決める — 保存済みの版以下の snapshot は書かずに `false` を返し、これが stale event の規則と応答喪失の再送の規則を兼ねる。tombstone は終端で、どの版の snapshot も再開させない（削除済み workspace が一覧やサイトマップへ戻らないため）。同じ operation ID の tombstone は冪等、別 operation の tombstone は `ConflictError`。`slug` は書き込み時に他の行から奪う（[database/index.md](../database/index.md) の `workspace_directory`）。
 
 `WorkspaceRepository` は current workspace scope に束縛されて自 scope の 1 行しか見えないので、slug の global uniqueness は `WorkspaceSlugReservationStore` が global D1 の `workspace_slug_reservations` で担う。`ConflictError("SLUG_ALREADY_USED")` を返すのはこのポートであり、`WorkspaceRepository` ではない。`WorkspaceSlug` は自身の構築時に小文字化されるので、渡す値がそのまま `normalized_slug` である。
 
@@ -258,9 +275,11 @@ repository は current workspace scope に束縛される。slug検索、公開w
 
 `UserWorkspaceDirectory.listActiveByUser`はUserId shard内のactive edgeを`(created_at DESC, workspace_id)`のkeysetで読み、limitは1〜20とする。cursorはrouting generationと末尾keyを含む署名opaque値である。`WorkspaceDirectoryBatchReader.resolveMany`はpage内最大20 WorkspaceIdをhash shard別にgroupingし、最大6接続で読み、reshard中はversionが大きい行を採る。名前変更に依存しない順序なのでpage間のrenameで欠落せず、全参加workspaceの取得・メモリsortを行わない。
 
+`UserWorkspaceDirectory.countOwnedByUser`は所有上限（[usecases/workspace.md](../usecases/workspace.md) の `createWorkspace`）の判定に使い、`role = owner`の`active` / `pending` / `activating` edgeを数える。未確定の join を含めるのは、自分の activation と競争すれば 21 件目を開けてしまうためである。`removing` edgeは席を明け渡し済みなので数えない。`limit`（1〜100）で打ち切るので戻り値は `min(実数, limit)` であり、呼び出し側は判定したい上限を渡す。
+
 `PublicWorkspaceDirectoryReader.listPublished`はWorkspaceId hashの最大32 shardを同時6接続のwaveで読み、各shardの`(updated_at DESC, workspace_id)` keysetを署名opaque cursorへ保持して全体最大200件へmergeする。reshard中は旧新generationを読み、WorkspaceId/sourceVersionで重複排除する。総件数は数えず、サイトマップ生成側が`nextCursor`を末尾まで反復する。
 
-directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。
+directory edgeを消す前に、その利用者のJob正データ・BackupRecord・security cleanupをcurrent workspace scopeから消す。削除途中はedgeを`removing`として保持し、account deletion / integration cleanupが対象scopeを見失わないようにする。除名・脱退はこの2相を`MembershipDirectoryReservationStore.beginRemoval` / `completeRemoval`で回す。`removing` edgeは`listActiveByUser`から即座に外れるので、宣言した瞬間に一覧から消える。`(userId, workspaceId)`で鍵を引くのは、行の`operation_id`が作成した join のものであり除名側が導出できないためで、冪等性は目標状態で取る — `removing`への再実行も、消えた edge の`completeRemoval`も成功する。edgeが不在の`beginRemoval`も成功し、`pending` / `activating`（未確定の join）への両操作と、`removing`を経ていない`completeRemoval`は`ConflictError`にする。
 
 ワークスペース削除はmanifestに固定したIDを`deleteByIds`へ最大100件ずつ渡し、Membership/Invitationを先に消してからWorkspaceを消す。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
 
@@ -297,6 +316,8 @@ interface MembershipDirectoryReservationStore {
   commitAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   releaseAccountDeletion(edgeOperationId: string, deletionOperationId: string): Promise<void>;
   listActivatingByUser(userId: UserId, limit: number): Promise<readonly { operationId: string; workspaceId: WorkspaceId }[]>;
+  beginRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
+  completeRemoval(userId: UserId, workspaceId: WorkspaceId): Promise<void>;
 }
 
 `MembershipDirectoryReservationStore`はcurrent UserId shardに束縛する。`reserveAndClaimActivation`はpending row insert、同shardのcurrent UserがActiveであることの検査、`activating`へのclaimを1 transactionで行う。Userがdeletingならrowを一切insertしない。account deletion開始前にclaim済みの`activating` edgeはaccept Sagaがactive/abandonedへ収束するまで削除manifest構築を待たせる。pending edgeのprepare/release/commitはedge operation IDとdeletion operation IDの組で冪等にする。
@@ -334,6 +355,8 @@ type WorkspaceDeletionManifestItem =
   | Readonly<{ key: string; kind: "membership"; userId: UserId; membershipId: MembershipId; localDeletedAt: Date | null; globalAckedAt: Date | null }>
   | Readonly<{ key: string; kind: "invitation"; tokenHash: TokenHash; invitationId: InvitationId; localDeletedAt: Date | null; globalAckedAt: Date | null }>;
 ```
+
+`InvitationRouteStore.resolveActive` は `active` な route を、期限切れかどうかに関わらず解決する。期限の判定は workspace scope の Invitation が持つので、route で打ち切ると preview の `expired` と accept の `InvitationExpired` が「存在しない」に潰れてしまう。書き込み側は逆で、期限を過ぎた `reserved` 行の `activate` は `ConflictError` にし、recovery が `abandon` する（[database/index.md](../database/index.md) の `invitation_routes`）。
 
 `countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。
 

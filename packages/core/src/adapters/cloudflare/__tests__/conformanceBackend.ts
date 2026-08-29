@@ -239,6 +239,8 @@ export async function makeCloudflareConformanceBackend(
       workspaceDirectory.workspaceDirectoryBatchReader,
     publicWorkspaceDirectoryReader:
       workspaceDirectory.publicWorkspaceDirectoryReader,
+    workspaceDirectoryProjectionWriter:
+      workspaceDirectory.workspaceDirectoryProjectionWriter,
     invitationRouteStore: workspaceReservations.invitationRouteStore,
     membershipDirectoryReservationStore:
       workspaceReservations.membershipDirectoryReservationStore,
@@ -284,9 +286,9 @@ export async function makeCloudflareConformanceBackend(
     },
     /**
      * Writes `workspace_directory` rows directly, for the reason
-     * `ConformanceBackend` gives: the projection's writer is not part of
-     * the Workspace port set, so the three readers' contracts have no
-     * executable form without a seed. The table itself is real
+     * `ConformanceBackend` gives: the readers' cases pin columns
+     * `WorkspaceDirectoryProjectionWriter` derives, and combine states it
+     * would never produce together. The table itself is real
      * (`d1/migrations/0002_workspace_directory.sql`) and the readers go
      * through it exactly as they will in production.
      */
@@ -306,6 +308,7 @@ export async function makeCloudflareConformanceBackend(
               "slug",
               "publication",
               "lifecycle",
+              "deletion_operation_id",
               "avatar_url",
               "source_version",
               "updated_at",
@@ -316,6 +319,7 @@ export async function makeCloudflareConformanceBackend(
               "slug",
               "publication",
               "lifecycle",
+              "deletion_operation_id",
               "avatar_url",
               "source_version",
               "updated_at",
@@ -328,6 +332,11 @@ export async function makeCloudflareConformanceBackend(
               slug: entry.slug,
               publication: entry.publication,
               lifecycle: entry.lifecycle,
+              deletion_operation_id:
+                entry.lifecycle === "deleting"
+                  ? (entry.deletionOperationId ??
+                    `deletion-${entry.workspaceId}`)
+                  : null,
               avatar_url: entry.avatarUrl,
               source_version: entry.sourceVersion,
               updated_at: entry.updatedAt.getTime(),
@@ -388,7 +397,9 @@ export async function makeCloudflareConformanceBackend(
               role: edge.role ?? "viewer",
               state: edge.edgeState,
               reservation_expires_at:
-                edge.edgeState === "pending" ? now + HOUR_MS : null,
+                edge.edgeState === "pending" || edge.edgeState === "activating"
+                  ? now + HOUR_MS
+                  : null,
               created_at: edge.createdAt?.getTime() ?? now,
               updated_at: now,
             })),
