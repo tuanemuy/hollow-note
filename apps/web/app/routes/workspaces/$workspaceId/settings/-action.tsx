@@ -1,8 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
+  changeMemberRoleSchema,
   changeWorkspaceSlugSchema,
   deleteWorkspaceSchema,
+  invitationRefSchema,
+  inviteMemberSchema,
+  membershipRefSchema,
   updateWorkspaceProfileSchema,
   WORKSPACE_ID_MAX_LENGTH,
   workspaceAvatarUploadSchema,
@@ -96,6 +100,26 @@ export const renderWorkspacePublishPanel = createServerFn({ method: "GET" })
     return {
       WorkspacePublishPanel: renderServerFragment(() =>
         WorkspacePublishPanel({
+          workspaceId: data.workspaceId,
+          userId: user.userId,
+        }),
+      ),
+    };
+  });
+
+/** P-32 のメンバー管理フラグメント。 */
+export const renderWorkspaceMembersPanel = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceRefSchema))
+  .handler(async ({ data }) => {
+    const [{ WorkspaceMembersPanel }, { requireSession }] = await Promise.all([
+      import("@/components/workspace/WorkspaceMembersPanel"),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return {
+      WorkspaceMembersPanel: renderServerFragment(() =>
+        WorkspaceMembersPanel({
           workspaceId: data.workspaceId,
           userId: user.userId,
         }),
@@ -280,4 +304,147 @@ export const deleteWorkspaceFn = createServerFn({ method: "POST" })
     scopeCookie.clearScopeSelection();
     startServer.setResponseStatus(202);
     return view;
+  });
+
+/**
+ * PAGE-p32-002。応答の `invitationUrl` は招待リンクのコピー
+ * （PAGE-p32-003）が使える唯一の経路 — 一覧はトークンを載せないので、
+ * 発行した本人が発行直後に受け取るこの 1 回きりになる。
+ */
+export const inviteMemberFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(inviteMemberSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/inviteMember"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.inviteMember({
+      container,
+      input: {
+        workspaceId: data.workspaceId,
+        userId: user.userId,
+        email: data.email,
+        role: data.role,
+      },
+    });
+  });
+
+/** PAGE-p32-004。新しい期限と新しいリンクを返す。 */
+export const resendInvitationFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(invitationRefSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/resendInvitation"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.resendInvitation({
+      container,
+      input: {
+        workspaceId: data.workspaceId,
+        userId: user.userId,
+        invitationId: data.invitationId,
+      },
+    });
+  });
+
+/** PAGE-p32-005。 */
+export const revokeInvitationFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(invitationRefSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/revokeInvitation"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    await module.revokeInvitation({
+      container,
+      input: {
+        workspaceId: data.workspaceId,
+        userId: user.userId,
+        invitationId: data.invitationId,
+      },
+    });
+    return { revoked: true };
+  });
+
+/** PAGE-p32-006。 */
+export const changeMemberRoleFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(changeMemberRoleSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/changeMemberRole"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.changeMemberRole({
+      container,
+      input: {
+        workspaceId: data.workspaceId,
+        actorUserId: user.userId,
+        membershipId: data.membershipId,
+        role: data.role,
+      },
+    });
+  });
+
+/** PAGE-p32-007。 */
+export const removeMemberFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(membershipRefSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/removeMember"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    await module.removeMember({
+      container,
+      input: {
+        workspaceId: data.workspaceId,
+        actorUserId: user.userId,
+        membershipId: data.membershipId,
+      },
+    });
+    return { removed: true };
+  });
+
+/**
+ * PAGE-p32-008。脱退するとこの文脈はもう開けないので、引き継ぎ Cookie を
+ * 個人へ戻すのもこの応答の仕事になる（削除と同じ扱い）。
+ */
+export const leaveWorkspaceFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceRefSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }, scopeCookie] =
+      await Promise.all([
+        loadServerDeps(
+          () => import("@repo/core/application/workspace/leaveWorkspace"),
+        ),
+        import("@/presentation/session"),
+        import("@/presentation/scopeCookie"),
+      ]);
+    const user = await requireSession();
+    await module.leaveWorkspace({
+      container,
+      input: { workspaceId: data.workspaceId, userId: user.userId },
+    });
+    scopeCookie.clearScopeSelection();
+    return { left: true };
   });

@@ -17,6 +17,7 @@ import { Route as SigninRouteImport } from './routes/signin'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as VerifyEmailRouteImport } from './routes/verify-email'
+import { Route as InvitationsTokenRouteImport } from './routes/invitations/$token'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
@@ -31,6 +32,7 @@ import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/author
 import { Route as WorkspacesWorkspaceIdSettingsRouteRouteImport } from './routes/workspaces/$workspaceId/settings/route'
 import { Route as WorkspacesWorkspaceIdSettingsDangerRouteImport } from './routes/workspaces/$workspaceId/settings/danger'
 import { Route as WorkspacesWorkspaceIdSettingsGeneralRouteImport } from './routes/workspaces/$workspaceId/settings/general'
+import { Route as WorkspacesWorkspaceIdSettingsMembersRouteImport } from './routes/workspaces/$workspaceId/settings/members'
 import { Route as WorkspacesWorkspaceIdSettingsPublishRouteImport } from './routes/workspaces/$workspaceId/settings/publish'
 
 const IndexRoute = IndexRouteImport.update({
@@ -71,6 +73,11 @@ const TermsRoute = TermsRouteImport.update({
 const VerifyEmailRoute = VerifyEmailRouteImport.update({
   id: '/verify-email',
   path: '/verify-email',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InvitationsTokenRoute = InvitationsTokenRouteImport.update({
+  id: '/invitations/$token',
+  path: '/invitations/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotesIndexRoute = NotesIndexRouteImport.update({
@@ -146,6 +153,12 @@ const WorkspacesWorkspaceIdSettingsGeneralRoute =
     path: '/general',
     getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
   } as any)
+const WorkspacesWorkspaceIdSettingsMembersRoute =
+  WorkspacesWorkspaceIdSettingsMembersRouteImport.update({
+    id: '/members',
+    path: '/members',
+    getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
+  } as any)
 const WorkspacesWorkspaceIdSettingsPublishRoute =
   WorkspacesWorkspaceIdSettingsPublishRouteImport.update({
     id: '/publish',
@@ -162,6 +175,7 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
@@ -176,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRoutesByTo {
@@ -186,6 +201,7 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
@@ -200,6 +216,7 @@ export interface FileRoutesByTo {
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRoutesById {
@@ -212,6 +229,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/terms': typeof TermsRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
@@ -226,6 +244,7 @@ export interface FileRoutesById {
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 export interface FileRouteTypes {
@@ -239,6 +258,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-email'
+    | '/invitations/$token'
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/danger'
@@ -253,6 +273,7 @@ export interface FileRouteTypes {
     | '/dev/oauth/authorize'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -263,6 +284,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-email'
+    | '/invitations/$token'
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/danger'
@@ -277,6 +299,7 @@ export interface FileRouteTypes {
     | '/dev/oauth/authorize'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
   id:
     | '__root__'
@@ -288,6 +311,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/terms'
     | '/verify-email'
+    | '/invitations/$token'
     | '/notes/$noteId'
     | '/settings/auth'
     | '/settings/danger'
@@ -302,6 +326,7 @@ export interface FileRouteTypes {
     | '/dev/oauth/authorize'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
+    | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
   fileRoutesById: FileRoutesById
 }
@@ -314,6 +339,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   TermsRoute: typeof TermsRoute
   VerifyEmailRoute: typeof VerifyEmailRoute
+  InvitationsTokenRoute: typeof InvitationsTokenRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
   StorageSplatRoute: typeof StorageSplatRoute
   WorkspacesNewRoute: typeof WorkspacesNewRoute
@@ -379,6 +405,13 @@ declare module '@tanstack/react-router' {
       path: '/verify-email'
       fullPath: '/verify-email'
       preLoaderRoute: typeof VerifyEmailRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invitations/$token': {
+      id: '/invitations/$token'
+      path: '/invitations/$token'
+      fullPath: '/invitations/$token'
+      preLoaderRoute: typeof InvitationsTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/notes/': {
@@ -479,6 +512,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsGeneralRouteImport
       parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
     }
+    '/workspaces/$workspaceId/settings/members': {
+      id: '/workspaces/$workspaceId/settings/members'
+      path: '/members'
+      fullPath: '/workspaces/$workspaceId/settings/members'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsMembersRouteImport
+      parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
+    }
     '/workspaces/$workspaceId/settings/publish': {
       id: '/workspaces/$workspaceId/settings/publish'
       path: '/publish'
@@ -512,6 +552,7 @@ const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
 interface WorkspacesWorkspaceIdSettingsRouteRouteChildren {
   WorkspacesWorkspaceIdSettingsDangerRoute: typeof WorkspacesWorkspaceIdSettingsDangerRoute
   WorkspacesWorkspaceIdSettingsGeneralRoute: typeof WorkspacesWorkspaceIdSettingsGeneralRoute
+  WorkspacesWorkspaceIdSettingsMembersRoute: typeof WorkspacesWorkspaceIdSettingsMembersRoute
   WorkspacesWorkspaceIdSettingsPublishRoute: typeof WorkspacesWorkspaceIdSettingsPublishRoute
 }
 
@@ -521,6 +562,8 @@ const WorkspacesWorkspaceIdSettingsRouteRouteChildren: WorkspacesWorkspaceIdSett
       WorkspacesWorkspaceIdSettingsDangerRoute,
     WorkspacesWorkspaceIdSettingsGeneralRoute:
       WorkspacesWorkspaceIdSettingsGeneralRoute,
+    WorkspacesWorkspaceIdSettingsMembersRoute:
+      WorkspacesWorkspaceIdSettingsMembersRoute,
     WorkspacesWorkspaceIdSettingsPublishRoute:
       WorkspacesWorkspaceIdSettingsPublishRoute,
   }
@@ -539,6 +582,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   TermsRoute: TermsRoute,
   VerifyEmailRoute: VerifyEmailRoute,
+  InvitationsTokenRoute: InvitationsTokenRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
   StorageSplatRoute: StorageSplatRoute,
   WorkspacesNewRoute: WorkspacesNewRoute,

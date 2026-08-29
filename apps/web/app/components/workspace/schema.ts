@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { EMAIL_MAX_LENGTH } from "@/components/auth/schema";
 
 /**
- * ワークスペース画面の転送境界スキーマ（P-30 / P-31 / P-33 / P-34）。
+ * ワークスペース画面の転送境界スキーマ（P-30 / P-31 / P-32 / P-33 / P-34
+ * と P-06）。
  *
  * 形と DoS 上限だけを見る。名前 80 文字・説明 500 文字・スラッグの字種と
  * 予約語といった業務不変条件は `domain/workspace/valueObject.ts` の値
@@ -63,4 +65,38 @@ export const workspaceAvatarUploadSchema = z.object({
   file: z
     .instanceof(File)
     .refine((file) => file.size > 0 && file.size <= AVATAR_UPLOAD_MAX_BYTES),
+});
+
+// P-32 / P-06。ID はいずれも生成器由来なので実際はこれよりずっと短い。
+const invitationId = z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH);
+const membershipId = z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH);
+
+// ロールの語彙は `WorkspaceRole.create` が持つ。ここを `z.enum` で閉じると
+// 未知の値が転送の形の不正として返り、`WORKSPACE_INVALID_ROLE` の文言に
+// 届かなくなる。
+const role = z.string().min(1).max(16);
+
+export const inviteMemberSchema = z.object({
+  workspaceId,
+  email: z.string().trim().min(1).max(EMAIL_MAX_LENGTH),
+  role,
+});
+
+export const invitationRefSchema = z.object({ workspaceId, invitationId });
+
+export const changeMemberRoleSchema = z.object({
+  workspaceId,
+  membershipId,
+  role,
+});
+
+export const membershipRefSchema = z.object({ workspaceId, membershipId });
+
+/**
+ * 招待トークン（`/invitations/:token`）。URL のパスから来る外部入力なので、
+ * 使う側の server function がこのスキーマで転送境界を閉じる。長さの上限は
+ * 認証系トークン（`components/auth/schema.ts`）と揃える。
+ */
+export const invitationTokenSchema = z.object({
+  token: z.string().min(1).max(512),
 });

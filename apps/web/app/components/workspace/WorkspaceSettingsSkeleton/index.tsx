@@ -54,6 +54,31 @@ export function WorkspaceGeneralSkeleton() {
   );
 }
 
+export function WorkspaceMembersSkeleton() {
+  return (
+    <SkeletonRoot label="メンバーを読み込んでいます">
+      <section className={panelClass}>
+        <Skeleton className="h-5 w-36" />
+        <Skeleton className="mt-2 h-4 w-72" />
+        <Skeleton className="mt-5 h-10 w-full rounded-md" />
+      </section>
+      <section className={panelClass}>
+        <Skeleton className="h-5 w-28" />
+        {[0, 1, 2].map((row) => (
+          <div key={row} className="mt-4 flex items-center gap-3">
+            <Skeleton className="size-8 rounded-full" />
+            <div className="min-w-0 flex-1">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="mt-2 h-3 w-56" />
+            </div>
+            <Skeleton className="h-7.5 w-24 rounded-md" />
+          </div>
+        ))}
+      </section>
+    </SkeletonRoot>
+  );
+}
+
 export function WorkspacePublishSkeleton() {
   return (
     <SkeletonRoot label="公開設定を読み込んでいます">

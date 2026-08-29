@@ -25,6 +25,7 @@ import "@/components/layout/ScopeToken/action";
 import "@/components/note/CreateNoteButton/action";
 import "@/routes/auth/-action";
 import "@/routes/dev/-action";
+import "@/routes/invitations/-action";
 import "@/routes/settings/-action";
 import "@/routes/workspaces/-action";
 import "@/routes/workspaces/$workspaceId/settings/-action";

@@ -7,12 +7,10 @@ import { Link, useRouterState } from "@tanstack/react-router";
  * ワークスペース設定に分かれ、どちらも P-20 の設定タブを共有する。
  * **タブ列は個人とワークスペースで別々に持つ**」）。見た目は
  * `components/layout/SettingsTabs` と揃える。
- *
- * 「メンバー」（P-32）は遷移先が別スライスなので、その画面が入るまで
- * ここには並べない（無効タブの placeholder も作らない）。
  */
 const TABS = [
   { to: "/workspaces/$workspaceId/settings/general", label: "一般" },
+  { to: "/workspaces/$workspaceId/settings/members", label: "メンバー" },
   { to: "/workspaces/$workspaceId/settings/publish", label: "公開" },
   { to: "/workspaces/$workspaceId/settings/danger", label: "削除" },
 ] as const;

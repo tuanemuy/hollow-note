@@ -1011,3 +1011,39 @@ ADR-052 のとおり `WorkspaceOperationLockStore` は `hasActiveMove` / `hasMov
 - `moveNote` に `activateTarget` という 5 番目のフェーズが増えた（target lock の解放だけを行う target-local UoW）。spec/usecases/note.md 手順 8 前半そのものである。
 - move が実行中は source workspace も削除できない。spec/database の「全 scope に置く」と手順 5 の「source move lock を保存して」に従った結果で、意図した挙動である。
 - `MOVE_AUTHORIZATION_LOCK_CONFLICT` は `errorDisplay` の文言表に載せていない。`MEMBERSHIP_REMOVAL_LOCK_CONFLICT` と同じく利用者に出る想定が無い内部欠陥コードで、kind 既定の文言に落ちる。
+
+## ADR-062: P-32 の一覧所有権は 2 つの一覧を束ねた 1 つの島に置き、ロール変更と再送だけを葉に残す
+
+### Context
+
+P-32 は 1 画面に「メンバー」と「保留中の招待」の 2 つの一覧を並べ、7 つのミューテーション（招待・コピー・再送・取消・ロール変更・除名・脱退）を持つ。CLAUDE.md「Frontend」は一覧メンバーシップの変更を親の所有としており、そのうち **招待の発行 / 取消 / 除名 / 脱退の 4 つ** が一覧の増減にあたる。2 つの一覧をそれぞれ別の島にすると、招待の受諾がメンバー一覧を増やす関係（招待→メンバーの遷移）を跨いで表現できず、`router.invalidate()` の再取得も 2 系統に割れる。
+
+### Decision
+
+`WorkspaceMembersBoard` 1 つが `useOptimistic({ members, invitations }, applyRoster)` で **両方の一覧を所有する**。`removeMember` / `revokeInvitation` / `addInvitation` の 3 アクションを 1 つの reducer に集約し、除名・取消・脱退・招待発行はすべてこの親が server function を実行する。
+
+- ロール変更（`MemberRow`）と再送（`PendingRow`）は行の中で完結するので、葉が自分の `useOptimistic` と `useTransition` と失敗表示を持つ。再送の楽観値は `expired` フラグで、再送は必ず新しい 14 日の窓を張るため先に落としてよい。
+- 最後の owner の保護は **楽観的リストから引き直した** owner 数で閉じる。サーバーの `ownerCount` は変更前の集合に対する判定なので、1 人降格した直後の 1 フレームだけ「まだ降ろせる」と見える（`IdentityBoard` の `canRemove` と同じ理由）。
+- 自分の行はロールを `<select>` ではなく静的なテキストで描く。`MembershipPolicy.ensureNotSelfRoleChange` が自分のロール変更を必ず拒否するので、選べない選択肢を出さない（モック P32 は自分の行にも select を置いているが、そちらが契約と食い違っている）。
+
+### Consequences
+
+- 招待リンクのコピー（PAGE-p32-003）は **発行直後と再送直後の応答からしか行えない**。`listPendingInvitations` は意図的にトークンを載せない（ポート JSDoc）ため、再読込するとコピー導線は消える。発行の応答が親に、再送の応答が葉にあるので、コピーボタンも同じ 2 箇所に分かれている。
+- 送信中の招待行は番兵 ID（`optimistic-invitation`）で描き、日付の代わりに「送信中...」を出す。有効期限 14 日はドメインの定数なので、フロントで再現しない。
+
+## ADR-063: P-06 の復帰経路はサインインだけが担い、`alreadyMember` はワークスペースへ直接遷移しない
+
+### Context
+
+PAGE-p06-004 は「未 sign-in 時に invitation URL を安全な同一オリジン復帰先として P-01 または P-02 へ遷移する」を求める。しかし `/signup`（P-02）は `redirect` 検索パラメータを持たず、登録の完了はメール確認を挟むため、この往復の中に復帰の起点が残らない。また PAGE-p06-003 の「対象 workspace 文脈へ遷移」は `acceptInvitation` の応答（`workspaceId` を含む）で満たせるが、`getInvitationPreview` の `InvitationPreviewView` は `workspaceId` を持たないため、**受諾せずに** ワークスペースへ送る経路（`alreadyMember`）だけが表現できない。
+
+### Decision
+
+- 未サインインの主導線は `/signin?redirect=/invitations/:token` にする。`safeRedirectPath` が同一オリジンのパスだけを通すので、招待 URL はそのまま復帰先として使える。`/signup` は復帰先を伴わない副導線として並べ、「登録後にこの招待リンクをもう一度開く」ことを本文で明示する。
+- `alreadyMember` は「すでに参加しています」＋ノート一覧への導線に畳み、スコープトークンからの切り替えを案内する。`acceptInvitationFn` を「開く」ボタンとして流用しない — 受諾済みの招待に対しては `acceptPending` が `INVITATION_NOT_PENDING` を投げるため、既にリンクを使った本人が再訪した最も普通の経路で失敗する。
+- 招待トークンは URL のパスから来る外部入力なので、`renderInvitationPreview` / `acceptInvitationFn` の両方が `invitationTokenSchema`（`min(1).max(512)`、認証系トークンと同じ上限）で転送境界を閉じる。ルートの `head` は canonical に `/invitations` を使い、トークンを書き出さない。
+
+### Consequences
+
+- `InvitationPreviewView` に `workspaceId` が入れば、`alreadyMember` はワークスペース文脈への直接遷移に置き換わる。
+- `/signup` に復帰先を通す仕組み（メール確認リンクへ復帰先を載せる、または確認後の初回サインインへ引き継ぐ）が入るまで、招待からの新規登録は 1 手多い。

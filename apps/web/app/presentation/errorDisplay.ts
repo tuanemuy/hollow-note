@@ -136,6 +136,28 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "このワークスペースは削除処理中です。操作は受け付けられません。",
   WORKSPACE_MOVE_IN_PROGRESS:
     "ノートの移動が進行中です。完了してからもう一度お試しください。",
+  WORKSPACE_INVALID_ROLE:
+    "ロールの指定が正しくありません。owner・editor・viewer から選んでください。",
+  ALREADY_MEMBER:
+    "このメールアドレスはすでにメンバーです。招待は必要ありません。",
+  INVITATION_LIMIT_REACHED:
+    "返事待ちの招待が上限に達しました。不要な招待を取り消してからお試しください。",
+  INVITATION_NOT_FOUND:
+    "この招待は使えません。招待した人にもう一度送ってもらってください。",
+  INVITATION_NOT_PENDING:
+    "この招待はすでに使われたか、取り消されています。招待した人にもう一度送ってもらってください。",
+  WORKSPACE_INVITATION_EXPIRED:
+    "この招待は期限が切れています。招待した人にもう一度送ってもらってください。",
+  MEMBERSHIP_NOT_FOUND:
+    "このメンバーは見つかりません。画面を再読み込みしてもう一度お試しください。",
+  MEMBERSHIP_ALREADY_EXISTS:
+    "すでにこのワークスペースのメンバーです。そのまま開けます。",
+  WORKSPACE_LAST_OWNER_CANNOT_LEAVE:
+    "最後の owner は降格・除名・脱退ができません。別のメンバーを owner にしてからお試しください。",
+  WORKSPACE_CANNOT_CHANGE_OWN_ROLE:
+    "自分のロールは変更できません。他の owner に変更してもらってください。",
+  WORKSPACE_CANNOT_REMOVE_SELF:
+    "自分を除名することはできません。抜けるときは「脱退」をお使いください。",
 
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 
