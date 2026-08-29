@@ -18,3 +18,4 @@
 | 当月の LLM 実行回数が 100 回 | 引く | `consumedCalls: 100` と当月の期間が返る | |
 | LLM を一度も使っておらず当月の記録がない | 引く | `LlmUsage.initialize` の値（`consumedCalls: 0`）が返り、レコードは作られない | |
 | ゴミ箱にノートがある | 引く | 使用量に数えられている | |
+| `workspaceLimit: 21` | 引く | `ValidationError("INVALID_PAGINATION")` が投げられる（20 にクランプしない） | |

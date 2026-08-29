@@ -183,6 +183,8 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 3. `ObjectStorage.put` し、`StoredFile.register` を作る。`FileProvenance` は `{ purpose: "avatar", noteId: null, uploadedBy: userId }`
 4. `UnitOfWorkProvider.run` で新しいアイコンを保存し、既存のアイコンがあれば**同じ UoW で**「保管ファイルの削除手順」（下記 `deleteFiles`）を実行する。イベントはまとめて収集する。差し替えの前後で消費量が二重に計上されたまま残る状態を作らないため
 
+ワークスペースを主体とする場合、手順 4 の transaction の先頭で `manageWorkspace` を**読み直して**再確認する（[usecases/workspace.md](./workspace.md) 冒頭の規則）。手順 1 は R2 へ 1 バイトも書く前に権限の無い要求を落とす早期拒否であって、判定の正本ではない。削除受理済みのワークスペースへの書き込みは同じ transaction の `assertWritable` が `ConflictError("WORKSPACE_DELETING")` で止める。
+
 **クォータを検査しないこと**。このユースケースは `ensureUploadAllowed`（Usage）を呼ばない。一方でアイコンは容量の集計に算入される（除外されるのは `purpose: "artifact"` だけ。[domains/usage.md](../domains/usage.md)）ため検査と算入が非対称になるが、意図的な扱いである。アイコンは 5 MB 上限（[domains/storage.md](../domains/storage.md) の `UploadValidationPolicy`）で、差し替えのたびに手順 4 が旧アイコンを消すため主体あたり 1 枚しか積み上がらず、際限なく増えていく取り込み（`storeUpload` / `storeMedia`）とは性質が違う。逆に検査すると、容量が上限に達した利用者は消費量を増やさない差し替えまで塞がれる。算入するのは、増分集計と棚卸し（`recalculateStorageUsage` の `sumSizeByOwner`）が同じ除外条件で一致している必要があるためで、算入しない側に倒すと除外条件が 2 つに増える。
 
 ### エラーケース
@@ -190,8 +192,9 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 | 条件 | 種類 |
 | --- | --- |
 | 形式・サイズの違反 | `BusinessRuleError` |
-| 権限不足 | `BusinessRuleError(InsufficientRole)` |
+| 権限不足（要求の処理中に降格・除名された場合を含む） | `BusinessRuleError(InsufficientRole)` |
 | ワークスペースが存在しない | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+| ワークスペースが削除を受理済み | `ConflictError("WORKSPACE_DELETING")` |
 | 容量の上限到達 | 検査しない（上記） |
 
 ## issueDownloadUrl
@@ -428,11 +431,13 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 
 ### 入力DTO
 
-`migrationId`, `phase: "snapshotSource" | "stageTarget" | "retireSource"`, `noteId`, `targetOwner`, `files?: readonly MovedFileMetadata[]`
+`migrationId`, `phase: "snapshotSource" | "stageTarget" | "retireSource"`, `noteId`, `owner`（束縛されている scope が行を持っている側の owner）, `targetOwner`（staged 行を登録する owner）, `files?: readonly MovedFileMetadata[]`, `now`
 
 ### 出力DTO
 
-`relocatedCount: number`
+`relocatedCount: number`, `files: readonly MovedFileMetadata[]`
+
+`files` は `snapshotSource` が凍結した snapshot 本体で、他の phase では空である。この戻り値がサガへ渡る snapshot の唯一の経路なので、実装詳細ではなく契約の一部にあたる。
 
 ### 処理フロー
 
@@ -440,6 +445,7 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 2. `stageTarget` は同じobject keyを指すmetadataをtarget ownerで登録する。R2 copyと `storage.fileOwnerChanged` は発行しない
 3. `retireSource` はroute切替後にsource metadataを削除するが、R2 delete eventは発行しない（target metadataが同じkeyを参照中）
 4. 各phaseは `migrationId + phase` で重複排除し、応答喪失時も二重metadataやR2削除を作らない
+5. 重複排除の記録は「この phase の行が置かれている」という主張なので、その phase を**打ち消す**呼び出し側は同じ transaction でその記録も消す（`clearApplied`）。残したまま同じ migration ID で再開すると、戻したはずの staging を飛ばして空の target へ素通りし、その先の route 切替が何も無い場所を指す
 
 ### エラーケース
 

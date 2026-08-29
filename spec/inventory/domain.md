@@ -138,7 +138,7 @@
 | DOM-workspace-022 | `MembershipRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を更新する |
 | DOM-workspace-023 | `MembershipRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を削除する |
 | DOM-workspace-024 | `MembershipRepository.findByWorkspaceAndUser` | `spec/domains/workspace.md#ポート` | workspace・user の membership を取得する |
-| DOM-workspace-025 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする |
+| DOM-workspace-025 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。このポートで唯一、自 transaction の書き込みを観測しない読み |
 | DOM-workspace-026 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を数える |
 | DOM-workspace-027 | `MembershipRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 MembershipId を削除する |
 | DOM-workspace-028 | `InvitationRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Invitation を保存する |
@@ -179,17 +179,17 @@
 | DOM-workspace-063 | `WorkspaceOperationLockStore.assertMaintenanceAllowed` | `spec/domains/workspace.md#ポート` | 削除後に許可された maintenance 種別だけを通す |
 | DOM-workspace-064 | `WorkspaceDeletionManifestStore.appendMembershipPage` | `spec/domains/workspace.md#ポート` | membership page と cursor を manifest に固定する |
 | DOM-workspace-065 | `WorkspaceDeletionManifestStore.appendInvitationPage` | `spec/domains/workspace.md#ポート` | invitation page と cursor を manifest に固定する |
-| DOM-workspace-066 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする |
+| DOM-workspace-066 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする。判定は自 transaction が直前に固定した最終ページを観測する |
 | DOM-workspace-067 | `WorkspaceDeletionManifestStore.listLocalPending` | `spec/domains/workspace.md#ポート` | local 未完了 item を有界列挙する |
 | DOM-workspace-068 | `WorkspaceDeletionManifestStore.acknowledgeLocal` | `spec/domains/workspace.md#ポート` | local deletion 完了を記録する |
 | DOM-workspace-069 | `WorkspaceDeletionManifestStore.listItems` | `spec/domains/workspace.md#ポート` | manifest item を cursor 付きで列挙する |
 | DOM-workspace-070 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する |
-| DOM-workspace-071 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する |
-| DOM-workspace-072 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする |
+| DOM-workspace-071 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する。縮約が引くページは同 transaction の書き込みより前に読む |
+| DOM-workspace-072 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする。残件の判定は同 transaction の縮約を観測する |
 | DOM-workspace-073 | `WorkspaceSlugReservationStore.resolveActive` | `spec/domains/workspace.md#ポート` | active な slug 予約から WorkspaceId を解決する |
-| DOM-workspace-074 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約する |
+| DOM-workspace-074 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約し、行を `attemptId` の試行の保持にする |
 | DOM-workspace-075 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
-| DOM-workspace-076 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する |
+| DOM-workspace-076 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
 | DOM-workspace-077 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
 | DOM-workspace-078 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する |
 | DOM-workspace-079 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
@@ -274,7 +274,7 @@
 | DOM-note-013 | `Note` エンティティ | `spec/domains/note.md#エンティティ` | content・visibility・lifecycle の合法状態と全遷移 event を保つ。`ready` 以外の本文と公開・限定公開の組は**どちらの向きからも**作れず、`reconstruct` は ready 本文の必須列の欠落を空文字で補完せず拒否する |
 | DOM-note-014 | `NoteRevision` エンティティ | `spec/domains/note.md#エンティティ` | ready 本文の不変 snapshot を作り最新 20 件保持に使う |
 | DOM-note-015 | `NoteAccessPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | owner・role・lifecycle・公開・share credential の順で権限を判定する |
-| DOM-note-016 | `NoteOwnershipPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | 移動元編集権・移動先作成権・processing lock を検査する |
+| DOM-note-016 | `NoteOwnershipPolicy` ドメインサービス | `spec/domains/note.md#ドメインサービス` | 移動元編集権と processing lock を検査する（移動先の作成権はワークスペースのロール判定なので引数に取らない） |
 | DOM-note-017 | `HtmlProcessor.process` | `spec/domains/note.md#ポート` | ADR 013 で sanitize し本文・平文・抜粋・見出し・除去報告を返す |
 | DOM-note-018 | `HtmlProcessor.extractExternalReferences` | `spec/domains/note.md#ポート` | 内部 URL を含む属性ベース参照を抽出する |
 | DOM-note-019 | `HtmlProcessor.rewriteReferences` | `spec/domains/note.md#ポート` | URL 参照を置換して NoteHtml を返す |

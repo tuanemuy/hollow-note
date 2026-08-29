@@ -336,6 +336,11 @@ export type ExpirySweep = Readonly<{
  * live on the control plane, outside any scope's unit of work. The request
  * container carries the same ports for the reservation sagas; a deletion
  * reaches them from the worker side instead.
+ *
+ * `membershipDirectoryReservationStore` has a second worker-side user: the
+ * `workspace.membership.roleChanged` subscriber writes the same edge to
+ * project a role change onto the directory, so the port stays on this plane
+ * even without the deletion saga.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{

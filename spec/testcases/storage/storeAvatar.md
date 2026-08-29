@@ -12,3 +12,5 @@
 | — | 5 MB の画像をアップロードする | 成功する（境界値） | |
 | — | GIF をアップロードする | `BusinessRuleError(UnsupportedMimeType)` が投げられる | |
 | 既にアイコンがある | 新しいアイコンをアップロードする | 古いアイコンが削除対象になる | |
+| ワークスペースの owner が、解決のあと書き込みの前に editor へ降格される | ワークスペースのアイコンを差し替える | `BusinessRuleError(InsufficientRole)` が投げられ、`StoredFile` の行は増えない | |
+| ワークスペースが削除を受理済み | ワークスペースのアイコンを差し替える | `ConflictError("WORKSPACE_DELETING")` が投げられる | |

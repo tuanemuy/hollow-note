@@ -22,3 +22,4 @@
 | account deletion開始とactivation claimが同時 | 実行する | UserId shardで直列化され、activation成功→削除がactive edgeを固定、または削除成功→activation拒否のどちらかになる | |
 | pending edge作成後にlocal commit失敗 | recoveryを実行する | edgeを解放しInvitationはpendingのまま | |
 | local commit後にactivation応答を失う | 再試行する | 同じoperation IDでedgeをactiveにしMembershipを二重作成しない | |
+| activationを恒久的に失った後、招待リンクを開き直す | 受諾する | 既存メンバーの判定が招待の status より先に立ち、`activating` のまま残った edge を settle して成功で返る | |

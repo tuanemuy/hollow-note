@@ -249,7 +249,7 @@ describe("storeAvatar", () => {
     );
   });
 
-  it("refuses a workspace icon when the actor is demoted between the resolution and the write", async () => {
+  it("TC-storage-249: refuses a workspace icon when the actor is demoted between the resolution and the write", async () => {
     const h = createTestHarness();
     await seedWorkspaceMember(h, "owner");
 
@@ -270,7 +270,7 @@ describe("storeAvatar", () => {
     expect(h.backend.objects.size).toBe(0);
   });
 
-  it("refuses a workspace icon once the workspace has accepted its deletion", async () => {
+  it("TC-storage-250: refuses a workspace icon once the workspace has accepted its deletion", async () => {
     const h = createTestHarness();
     await seedWorkspaceMember(h, "owner");
     await acceptWorkspaceDeletion(h);

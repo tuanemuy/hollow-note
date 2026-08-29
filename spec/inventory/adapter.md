@@ -101,8 +101,8 @@
 | ADP-workspace-010 | `MembershipRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を更新する |
 | ADP-workspace-011 | `MembershipRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を削除する |
 | ADP-workspace-012 | `MembershipRepository.findByWorkspaceAndUser` | `spec/domains/workspace.md#ポート` | workspace・user の membership を取得する |
-| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする |
-| ADP-workspace-014 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を数える |
+| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。このポートで唯一、自 transaction の書き込みを観測しない読み |
+| ADP-workspace-014 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を、自 transaction の変更を含めて数える |
 | ADP-workspace-015 | `MembershipRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 MembershipId を削除する |
 | ADP-workspace-016 | `InvitationRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Invitation を保存する |
 | ADP-workspace-017 | `InvitationRepository.findById` | `spec/domains/workspace.md#ポート` | InvitationId で OCC token 付き集約を取得する |
@@ -142,17 +142,17 @@
 | ADP-workspace-051 | `WorkspaceOperationLockStore.assertMaintenanceAllowed` | `spec/domains/workspace.md#ポート` | 削除後に許可された maintenance 種別だけを通す |
 | ADP-workspace-052 | `WorkspaceDeletionManifestStore.appendMembershipPage` | `spec/domains/workspace.md#ポート` | membership page と cursor を manifest に固定する |
 | ADP-workspace-053 | `WorkspaceDeletionManifestStore.appendInvitationPage` | `spec/domains/workspace.md#ポート` | invitation page と cursor を manifest に固定する |
-| ADP-workspace-054 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする |
+| ADP-workspace-054 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする。判定は自 transaction が直前に固定した最終ページを観測する |
 | ADP-workspace-055 | `WorkspaceDeletionManifestStore.listLocalPending` | `spec/domains/workspace.md#ポート` | local 未完了 item を有界列挙する |
 | ADP-workspace-056 | `WorkspaceDeletionManifestStore.acknowledgeLocal` | `spec/domains/workspace.md#ポート` | local deletion 完了を記録する |
 | ADP-workspace-057 | `WorkspaceDeletionManifestStore.listItems` | `spec/domains/workspace.md#ポート` | manifest item を cursor 付きで列挙する |
 | ADP-workspace-058 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する |
-| ADP-workspace-059 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する |
-| ADP-workspace-060 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする |
+| ADP-workspace-059 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する。縮約が引くページは同 transaction の書き込みより前に読む |
+| ADP-workspace-060 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする。残件の判定は同 transaction の縮約を観測する |
 | ADP-workspace-061 | `WorkspaceSlugReservationStore.resolveActive` | `spec/domains/workspace.md#ポート` | active な slug 予約から WorkspaceId を解決する |
-| ADP-workspace-062 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約する |
+| ADP-workspace-062 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約し、行を `attemptId` の試行の保持にする |
 | ADP-workspace-063 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
-| ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する |
+| ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
 | ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
 | ADP-workspace-066 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する |
 | ADP-workspace-067 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |

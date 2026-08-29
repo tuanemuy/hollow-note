@@ -59,6 +59,7 @@ type WorkspaceUsageItem =
 
 | 条件 | 種類 |
 | --- | --- |
+| `workspaceLimit` が 1〜20 の外、`workspaceCursor` が読めない、または退役した routing generation を指す | `ValidationError("INVALID_PAGINATION")`（`listUserWorkspaces` と同じく、クランプせずに拒否する） |
 | 取得の失敗 | `SystemError(DatabaseError)` |
 
 ## ensureUploadAllowed
@@ -92,13 +93,15 @@ type WorkspaceUsageItem =
 
 ### 概要
 
-current scopeの保管ファイル・ノート増減を集計する。通常は `storage.fileStored` / `fileDeleted` / `note.created` / `note.purged` のlocal event、move時はSagaのsource debit / target credit commandから呼ぶ。
+current scopeの保管ファイル・ノート増減を集計する。`storage.fileStored` / `fileDeleted` / `note.created` / `note.purged` のlocal eventを購読する。
 
 ### 入力DTO
 
-`input: { type: "localEvent"; eventId; event } | { type: "noteMove"; migrationId; phase: "sourceDebit" | "targetCredit"; bytes; noteCount: 1 }`
+`eventId`, `event`
 
-local eventはoutbox行のID、move commandはmigration IDとphaseを重複排除鍵として明示的に渡す。
+`eventId` は outbox 行の ID で、重複排除鍵として明示的に渡す。
+
+**ノートの移動による増減はこのユースケースを通らない**。移動の `targetCredit` / `sourceDebit` はサガの各 phase の transaction の中で `StorageQuota` を直接加減算し、重複排除はその phase 自身の `AppliedOperationStore`（`migrationId` + command key）が担う（[usecases/note.md](./note.md#movenote)）。加減算と、それを正当化した行の書き込みが同じ transaction に入らなければならないためで、購読者として切り出すと両者が別の transaction に分かれる。
 
 ### 出力DTO
 
@@ -106,16 +109,15 @@ local eventはoutbox行のID、move commandはmigration IDとphaseを重複排�
 
 ### 処理フロー
 
-1. local eventの`deletionOperationId`が非nullなら`ScopeCleanupAdmissionStore.assertOwner`を確認する。その後、local eventは `(consumer, eventId)`、move commandは `(consumer, migrationId + phase)` をcurrent scopeの `IdempotencyStore.markProcessed` に渡す。`false`なら完了する
-2. local eventの `purpose` が `artifact` なら何もせず完了する。move commandの `bytes` はsnapshotに含めたsource / media / referenceだけの合計である
+1. eventの`deletionOperationId`が非nullなら`ScopeCleanupAdmissionStore.assertOwner`を確認する。その後 `(consumer, eventId)` をcurrent scopeの `IdempotencyStore.markProcessed` に渡す。`false`なら完了する
+2. eventの `purpose` が `artifact` なら何もせず完了する
 3. イベントから対象の `QuotaSubject` と増減量を求める
    - `fileStored` → current scopeへ加算、`fileDeleted` → current scopeから減算
    - `note.created` → current scopeのノート件数を+1、`note.purged` → −1
-   - move `sourceDebit` → source scopeでbytesとnote件数を減算、`targetCredit` → target scopeで加算
 4. `StorageQuotaRepository.find` を引く。不在なら経路で分ける
-   - 加算経路（`fileStored` / `note.created` / `targetCredit`）→ `StorageQuota.initialize` をinsertする
-   - 減算経路（`fileDeleted` / `note.purged` / `sourceDebit`）→ 不在なら何もせず終え、削除済みscopeのquotaを復活させない
-5. `add` / `subtract` / `incrementNotes` / `decrementNotes` を適用して保存する。local event IDまたは `migrationId + phase` の処理済み記録と集計更新はcurrent scopeの同一UoWで原子的に行う
+   - 加算経路（`fileStored` / `note.created`）→ `StorageQuota.initialize` をinsertする
+   - 減算経路（`fileDeleted` / `note.purged`）→ 不在なら何もせず終え、削除済みscopeのquotaを復活させない
+5. `add` / `subtract` / `incrementNotes` / `decrementNotes` を適用して保存する。event IDの処理済み記録と集計更新はcurrent scopeの同一UoWで原子的に行う
 6. `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が返ったら読み直して再適用する（最大 5 回）
 7. 上限を超えた場合は `usage.storageExceeded` を発行する
 
@@ -181,17 +183,19 @@ LLM を使う変換の直前に実行回数を 1 消費する（`runConversion` 
 ### 処理フロー
 
 1. 実行者と主体の対応を検査する。user 主体なら `subjectId` が実行者（`userId`）と一致していなければ `BusinessRuleError(InsufficientRole)`。workspace 主体なら `resolveWorkspaceAccess`（[usecases/workspace.md](./workspace.md)）でロールを引き、メンバーでなければ `BusinessRuleError(InsufficientRole)`。求めるのはメンバーシップだけで、ロール表の action は課さない — 棚卸しはメンバーが既に見られる値を実データの合計へ置き換えるだけで、新しい情報も新しい能力も生まないため
-2. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
-3. `NoteRepository.countByOwner(owner, "all")` を引く
-4. `StorageQuota` の値を置き換えて保存する
+2. UoW を開き、workspace 主体なら**その transaction の中で** `MembershipRepository.findByWorkspaceAndUser` を引き直し、不在なら `BusinessRuleError(InsufficientRole)`（[usecases/workspace.md](./workspace.md) 冒頭の規則）。手順 1 の解決は早期拒否であって判定の正本ではない。削除受理済みのワークスペースは同じ transaction の `assertWritable` が `ConflictError("WORKSPACE_DELETING")` で止める
+3. `StoredFileRepository.sumSizeByOwner` を引く。合計には `purpose: "artifact"` を含めない条件を付ける（増分集計と同じ除外規則。[domains/usage.md](../domains/usage.md)）
+4. `NoteRepository.countByOwner(owner, "all")` を引く
+5. `StorageQuota` の値を置き換えて保存する。行が無ければ初期値を作ってから置き換える — 主体の初回の棚卸しは行が無い状態から始まりうる
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | user 主体が実行者と一致しない | `BusinessRuleError(InsufficientRole)` |
-| workspace 主体に実行者のメンバーシップがない | `BusinessRuleError(InsufficientRole)` |
+| workspace 主体に実行者のメンバーシップがない（要求の処理中に除名された場合を含む） | `BusinessRuleError(InsufficientRole)` |
 | workspace 主体が存在しない | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+| workspace 主体が削除を受理済み | `ConflictError("WORKSPACE_DELETING")` |
 | 書き込みの失敗 | `SystemError(DatabaseError)` |
 
 ## initializeQuota

@@ -2099,3 +2099,44 @@ ADR-102 は、決定的 operation ID を共有する 2 つの試行の補償を�
 - 3 の効果は「除名された利用者を再招待できる」こと。`removing` のまま残った edge が `(userId, workspaceId)` を占有し続ける状態を、脱退の再実行が落とす。`leaveWorkspace.test.ts` がポートを直接叩いて後始末していた箇所は production 経路の呼び出しに置き換わった。
 - 1 の repair は scope に何も書かないので、UoW 内の actor 再確認（ADR-101）は通らない。要求は `resolveWorkspaceAccess` + `ensureCan(manageWorkspace)` を既に通っており、書くのは scope が既に決めた事実の global 側だけなので、削除 barrier の確認で足りるとした。
 - 変異スポットチェック: 早期 return に戻すと `TC-workspace-054`（re-sending the slug repairs…）、`isPending` を前に戻すと `TC-workspace-020`（opening the link again settles…）、`settleStrandedRemovalEdge` を外すと `TC-workspace-166` / `-168` が赤になる。
+
+## ADR-119: UoW 内の権限再確認は「ワークスペース自体と管理面を変える書き込み」に課す
+
+### Context
+
+ADR-101 が「ワークスペースへの書き込みはすべて、書き込む transaction の中で actor の Membership を読み直す」を決め、workspace ドメインの mutation に `ensureActorCan` を置いた。ラウンド 2 の backend-usage W-001 / W-002 は、本 PR が縮退を解いた cross-domain な書き込み（`storeAvatar` の workspace アイコン、`recalculateStorageUsage` の workspace 主体）が外側の判定だけで UoW に入ることを指摘し、規則の適用範囲を「workspace scope への書き込み全部」へ広げるか、cross-domain を対象外と明記するかを求めた。
+
+実装の実態は 3 通りに分かれる。workspace ドメインの mutation と上記 2 件は in-tx で読み直す。`moveNote` は各 phase の transaction で Membership の**版**を検査する。ノート本文の作成・更新（`createBlankNote` ほか）は外側の `viewerFor` / `resolveWorkspaceAccess` だけで書く。「scope への書き込み全部」と書くと 3 番目が即座に反例になる。
+
+### Decision
+
+線は**ユースケースが属するドメインではなく、書き込みが何を動かすか**で引く。
+
+- 対象: ワークスペースそのもの（プロフィール・公開設定・存在）とメンバー構成を変える書き込み。ドメインを問わないので、ワークスペースを主体として同じロール表で許される `storeAvatar`（`manageWorkspace`）と `recalculateStorageUsage`（メンバーシップ）も含む。
+- 対象外: ワークスペース scope に**中身**を作る・書き換える書き込み。降格・除名の直後に 1 件通ったノートの書き込みは、残ったメンバーが編集も削除もできる普通のコンテンツにとどまる。対して管理面の書き込みは「誰が何をできるか」や公開の可否を動かし、権限を失った当人には取り消せない。
+- 例外: `moveNote` は中身の書き込みだが、確定が別 scope への引き渡しなので各 phase で版を検査する（ADR-097 / 098 の既決）。
+
+### Consequences
+
+- `spec/usecases/workspace.md` 冒頭の規則にこの範囲を明記した。`storage.md#storeavatar` / `usage.md#recalculatestorageusage` はその参照として in-tx 再確認を手順に持つ。
+- ノート系の cross-domain 書き込みは規則違反ではなく**対象外**として canon に載る。将来これを覆すなら、覆す理由（管理面と同じ取り消し不能性が中身側にも現れる場面）を新しい判断として書くことになる。
+- 変異スポットチェック: `storeAvatar` の `ensureActorCan` を外すと `TC-storage-249`、`recalculateStorageUsage` の in-tx membership を外すと `TC-usage-077` が赤になる。
+
+## ADR-120: `applyStorageDelta` から move 分岐を落とし、退いたテストケース ID は再利用しない
+
+### Context
+
+backend-usage W-004 は、`spec/usecases/usage.md#applystoragedelta` が入力 DTO に `{ type: "noteMove"; migrationId; phase }` を持つ一方、実装は移動サガの phase transaction の中で `StorageQuota` を直接加減算していることを指摘した。実害は無いが、usage スライスが `applyStorageDelta` を実装するとき、誰も呼ばない分岐を作るか購読者を足して二重計上するかのどちらかになる。ADR-046 に従い実装を正本とする。
+
+DTO から `noteMove` を落とすと、`spec/testcases/usage/applyStorageDelta.md` の move 前提のケース 7 件が偽になる。台帳の TC ID は行位置ではなく行の識別子である（spec/adr/052）。
+
+### Decision
+
+- `applyStorageDelta` は local event の購読者に閉じる。移動の増減は「サガの phase transaction が直接適用し、重複排除は `AppliedOperationStore`（`migrationId` + command key）が担う」と `usage.md` / `note.md` の双方に同じ文言で書く。
+- 偽になったケースのうち、`moveNote` のテストケースが既に押さえている観測（TC-usage-006 / 009 / 010）と、実装がそもそも取らない挙動（TC-usage-012 の「減算で行を復活させない」は移動経路には当てはまらない）は**退ける**。TC-usage-005 は「このユースケースには届かない」というケースへ、TC-usage-007 は local event の再配送へ振り直す。移動先に quota 行が無い場合（旧 TC-usage-011）は `moveNote` 側へ `TC-note-764` として置く。
+- 退いた ID（TC-usage-006 / 008 / 009 / 010 / 011 / 012）は欠番のまま残し、**別の内容に再利用しない**。ID は識別子なので、再利用すると過去の参照が別のケースを指す。
+
+### Consequences
+
+- 台帳に欠番が生まれるが、これは spec/adr/052 が明示した「ID は行位置ではない」の帰結であって不整合ではない。
+- 移動の quota 挙動を拘束するのは `spec/testcases/note/moveNote.md` に一本化される。

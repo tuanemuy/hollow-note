@@ -491,7 +491,7 @@ describe("getUsageSnapshot", () => {
     expect(second.nextWorkspaceCursor).toBeNull();
   });
 
-  it("refuses a workspace page outside 1-20 rather than clamping it", async () => {
+  it("TC-usage-076: refuses a workspace page outside 1-20 rather than clamping it", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     await joinWorkspace(h, "ws-01", "owner");

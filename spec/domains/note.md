@@ -284,11 +284,9 @@ NoteAccess =
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `ensureMovable` | `note: Note, from: NoteAccess, to: TargetOwnerAccess` | `void` | 移動元で編集不可、または移動先で作成不可なら `BusinessRuleError(AccessDenied)`。`note.content.status` が `processing` なら `BusinessRuleError(CannotMoveWhileProcessing)` |
+| `ensureMovable` | `note: Note, from: NoteAccess` | `void` | 移動元で編集不可なら `BusinessRuleError(AccessDenied)`。`note.content.status` が `processing` なら `BusinessRuleError(CannotMoveWhileProcessing)` |
 
-```
-TargetOwnerAccess = { owner: NoteOwner; canCreate: boolean }
-```
+移動先は引数に取らない。そこで作成できるかはワークスペースのロールの判定であり、このドメインには評価できない。移動先を名指しできた時点で呼び出し側が `WorkspaceAuthorization.ensureCan(role, "createNote")` で答えを出しているので（拒否は `InsufficientRole`。[usecases/note.md](../usecases/note.md#movenote)）、`canCreate` を受け取っても呼び出し側の主張を写すだけの、強制力のない約束になる。
 
 **依存するポート**: なし
 

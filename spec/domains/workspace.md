@@ -245,9 +245,9 @@ interface WorkspaceDirectoryProjectionWriter {
 
 interface WorkspaceSlugReservationStore {
   resolveActive(slug: WorkspaceSlug): Promise<WorkspaceId | null>;
-  reserve(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; expiresAt: Date }): Promise<void>;
+  reserve(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; attemptId: string; expiresAt: Date }): Promise<void>;
   activate(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId; operationId: string; releasing: WorkspaceSlug | null }): Promise<void>;
-  abandon(input: { slug: WorkspaceSlug; operationId: string }): Promise<void>;
+  abandon(input: { slug: WorkspaceSlug; operationId: string; attemptId: string }): Promise<void>;
   release(input: { slug: WorkspaceSlug; workspaceId: WorkspaceId }): Promise<void>;
 }
 ```
@@ -257,6 +257,8 @@ interface WorkspaceSlugReservationStore {
 `WorkspaceRepository` は current workspace scope に束縛されて自 scope の 1 行しか見えないので、slug の global uniqueness は `WorkspaceSlugReservationStore` が global D1 の `workspace_slug_reservations` で担う。`ConflictError("SLUG_ALREADY_USED")` を返すのはこのポートであり、`WorkspaceRepository` ではない。`WorkspaceSlug` は自身の構築時に小文字化されるので、渡す値がそのまま `normalized_slug` である。
 
 予約は operation ID ごとの 2 相で、`reserve` → workspace-local commit → `activate`。local commit が着地しなかった場合は `abandon` で補償する。slug 変更では `activate` の `releasing` に手放す側の slug を渡し、新旧の切替を 1 transaction で行う — 新しい公開 URL が有効になるまで旧 URL が解決し続け、両方が解決する窓も両方が解決しない窓も生じない。`release` は代わりを取らずに手放す唯一の経路で、呼び出し元は 2 つある — ワークスペース削除が directory tombstone の ack 後に呼ぶ場合（同じ slug の再利用を tombstone が妨げないため）と、`changeWorkspaceSlug` が slug を `null` にする場合（次の予約が無いので `activate(releasing)` の交換が使えない）である。期限を持つのは `reserved` 行だけであり、`active` な予約は所有者の `activate(releasing)` / `release` でしか解放されない。
+
+operation ID は 1 回の要求ではなく 1 つの改名を指すことがある — `changeWorkspaceSlug` は `(workspaceId, slug)` から採番するので、応答を失った再試行が先行の行に着地する — ため、同じ改名の 2 つの試行が 1 行を共有しうる。両者を分けるのが `attemptId` で、用途は `abandon` だけである: **行は最後に予約した試行のものであり、補償を打てるのはその試行だけ**とする。そうしないと、自分の理由で失敗した試行（読みの間に失ったロール、拒否したバリア）が、これから `activate` する走行中の試行の行を落とし、scope だけが slug を持ち global に予約が無い状態になる。`activate` は試行に依らない — 着地したのはその改名であって、どの試行が予約したかは問わない。`createWorkspace` は要求ごとの operation ID をそのまま `attemptId` に使う（1 要求 = 1 試行なので分ける意味がない）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("SLUG_ALREADY_USED")`、`SystemError(DatabaseError)`
 
@@ -286,6 +288,8 @@ directory edgeを消す前に、その利用者のJob正データ・BackupRecord
 `beginRemoval`は`active`に加えて`activating`も受ける。`activating`は`activate`が着地しなかったjoinが残す状態で、membershipが在るかどうかの正本は呼び出し側が既に読んだworkspace scopeである。拒否すると、edgeが確定しなかったメンバーを永久に除名できず、manifestを歩くワークスペース削除がその item で止まる。join側は`activate`を失うが、その補償（`abandon`）は`pending` / `activating`に閉じているので除名を打ち消さない。`pending`だけは引き続き`ConflictError`にする — account deletionのprepare lockが持つ状態であり、既に判断を下した削除に逆らうことになるためである。`abandonRemoval`は逆に`pending` / `activating`を`ConflictError`にする（どの除名もそれらを宣言していないので、戻す対象が無い）。
 
 ワークスペース削除はmanifestに固定したIDを`deleteByIds`へ最大100件ずつ渡し、Membership/Invitationを先に消してからWorkspaceを消す。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
+
+`listByWorkspace` はこのポートで**唯一、自分の transaction の書き込みを観測しない読み**である。offset のページは未コミットの変更から組み直せず、書き込みを buffer するバックエンドは最後にコミットされた状態から答える。したがって同じ transaction の中では書き込みより前に呼ぶか、別の turn で呼ぶ — 削除の掃引は後者で、何も消さない turn で残件を探る。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("MEMBERSHIP_ALREADY_EXISTS")`、`SystemError(DatabaseError)`
 
@@ -384,6 +388,8 @@ move authorization lockの書き手は`stageMove` / `releaseMove`である。`mo
 Workspace削除後も意図的に残すoutbox、Job履歴正データ、compact tombstoneの回収だけは`assertMaintenanceAllowed`で通す。allowlistは`jobRetention` / `outboxRelay` / `tombstonePrune`に閉じ、create/retry/progressなど業務状態を増やす操作は含めない。maintenance taskは利用者commandへ派生せず、削除済み行の縮約だけを行う。
 
 削除受理後は利用者によるabortを提供せず、失敗時も同じoperation IDでforward recoveryする。manifest/CASCADE/global cleanupが複数turnに跨ってもactiveへ戻さないため、cursor通過後に新しいedge/Job/Noteが入らない。`WorkspaceDeletionManifestStore`は同じUoWでpage itemとcursorを保存し、全global ack後に完了tombstoneへ縮約する。tombstoneはscope routingの保持期間以上残し、削除済みscope宛ての遅延writeを恒久的に拒否する。
+
+`WorkspaceDeletionManifestStore` の読みは 2 種に分かれ、同じ transaction に対する見え方が逆になる。**状態のガード**（`markReady` / `markCompleted` が見る header と残件）は自分の transaction が既に行った書き込みを観測する — だからこそ 1 つの turn が最終ページを固定してそのまま manifest を ready にでき、最後の item を縮約してそのまま完了にできる。**ページの読み**（`listLocalPending` / `listItems` / 縮約が引くページ）は逆で、その transaction が manifest へ書く**前**に行わなければならない。未コミットの変更から組み直したページは短くなったり順序が崩れたりするので、バックエンドは答える代わりに拒否してよい。したがって各 turn は先頭でページを読み、書き込みを最後に置く。
 
 membership removal prepare leaseはTTL 10分、orchestratorは2分ごとにrenewする。`hasConflict`は期限を過ぎたprepared lockも自動で無効にせず、安全側に拒否する。global recoveryだけがD1 operationをprimaryで確認し、`running`ならrenew、`rejected` / `completed`ならreleaseする。commit開始前に全lockの残存5分以上を確認し、各lockを`committed`へ遷移してからdestructive cleanupを始める。committed lockは自動失効せず完了/recoveryがreleaseする。
 

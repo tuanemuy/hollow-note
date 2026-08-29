@@ -16,7 +16,7 @@ D1 / DO の実上限、routing、Queue / Alarm の役割は [platform/index.md](
 - **有界な掃引 / 削除**: 期限切れの回収（`deleteExpired` / `pruneTerminal`）と旧世代の回収（`deleteOlderEpochByUser` / `deleteByUserAndPurpose`）は、いずれも**表キー順**に 1 回最大 100 件で進む。`expires_at <= now` / `retain_until <= asOf` や `auth_epoch < current` は**絞り込みの述語であって順序ではない**（正本は `PrunePage` とポート契約。[ADR 026](../adr/026-port-contract-and-conformance.md)）。したがって (`expires_at`, key) の索引が与えるのは期限切れ集合への絞り込みだけで、ページの順序は与えない。keyset の cursor も表キーの値である。**選んだ述語は消す文にも持ち越す** — `DELETE` の `WHERE` は表キーに加えて選択に使った述語をそのまま含める。選びと消しを別の往復で行う配備では、そのあいだに条件から外れた行（`refreshAuthEpoch` が引き上げた現在 session、`recordFailure` が延長した失敗記録）が鍵一致だけで消える。返す件数は選んだ件数であって消えた件数ではない
 - **正規化**: 書き込みモデルは第 3 正規形。非正規化は読み取りモデル（`note_search`）だけに閉じる（[ADR 009](../adr/009-read-models.md)）
 - **行サイズ**: 1 行は 2,000,000 バイトを超えられない。可変長列を複数持つ表は、**それらの上限の合計が 2,000,000 バイトを下回ることを設計として示せること**（[ADR 017](../adr/017-content-size-budget.md)）。内訳は [platform/index.md](../platform/index.md) の「行サイズの予算」。大きな値は必ずバインド変数として渡す（SQL 文へ埋め込むと文の長さの上限 100,000 バイトに触れる）
-- **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる
+- **バインド変数**: 1 クエリのバインド変数は 100 まで。**ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない**。JSON 配列を 1 つのバインド変数として渡し、`json_each` で展開する。多行 INSERT も同じ形で 1 文にまとめる。**その 1 文は、触れた行の鍵（と INSERT / UPDATE なら行の像）も宣言する** — 1 文にまとめたことで write-set が「どの行を書いたか」を失うと、同じ UoW の後続の読みがその書き込みを観測できなくなり、行ごとに 1 文書いた場合と結果が変わってしまう。鍵を列挙できない文（OCC ガード、カウンタ加算、述語だけの `DELETE`）だけがこの宣言を免れ、その文の効果は commit まで読み返せない
 - **原子性**: global D1 の非集約更新は単一 SQL 文、scope 内の複数更新は `transactionSync` で行う。D1 と scope DO、または2つの scope DOを1 transactionに含めない
 - **scope 検証**: scope 鍵として使っている列 — 今日は `notes.owner_type / owner_id` と `_scope_identity` — は object 自身の ScopeKey と一致しなければならない。adapter が復元・保存の両方で検査する。`stored_files.owner_type / owner_id`、`storage_quotas.owner_type / owner_id`、`llm_usages.user_id` は**会計上の帰属**であって scope 鍵ではないので、この検査の対象外である（`StorageOwner` は「バイトが誰の勘定に付くか」を記録し、物理 scope を上書きしない。workspace ノートの匿名エクスポート成果物は利用者に帰属しない）。物理分離そのものは `_scope_identity` の pin が担保するので、帰属列を検査しなくても他 scope の行が混ざることはない
 
@@ -91,10 +91,11 @@ email / provider identity / handle は `identity_unique_reservations` を使う�
 | `normalized_slug` | text | PK |
 | `workspace_id` | text | NOT NULL |
 | `operation_id` | text | NOT NULL |
+| `attempt_id` | text | NULL可。最後に予約した試行 |
 | `state` | text | NOT NULL, CHECK IN ('reserved','active','releasing') |
 | `expires_at` | integer | `state = 'reserved'` のとき NOT NULL |
 
-同じ operation ID または同じworkspaceの現在slugだけが既存reservationを再利用できる。
+同じ operation ID または同じworkspaceの現在slugだけが既存reservationを再利用できる。`attempt_id` は補償（`abandon`）の条件で、行を保持している試行だけが落とせる — slug 変更の operation ID は `(workspaceId, slug)` から決まるので、同じ改名の 2 つの試行が 1 行を共有しうるためである。NULL 可なのは、この列より前に書かれた行がどの試行にも保持されていないからで、NULL はどの `abandon` にも一致せず期限回収へ回る（安全な向き）。
 
 ### note_routes
 

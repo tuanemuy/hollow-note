@@ -12,6 +12,10 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 この「mutation直前のlocal権限確認」を成立させるため、**ワークスペースへの書き込みはすべて、書き込むtransactionの中でactorのMembershipを読み直して権限を再確認する**（プロフィール更新・slug変更・公開 / 非公開・削除受理・招待の発行 / 再送 / 取り消し・role変更・除名）。transactionの外の`resolveWorkspaceAccess`は残すが、それはglobal予約を取る前に権限の無い要求を落とすための早期拒否であって、判定の正本ではない。Workspaceの版はMembershipが変わっても動かないので、要求の処理中に降格・除名されたactorは外側の確認だけでは止まらない。呼ぶ位置は書き込みの前でありさえすればよく、対象側の規則（自分自身の変更・最後のownerの保護）を先に評価するか後にするかは、複数の拒否が同時に成り立つときにどれを報告するかだけを決める。
 
+**この規則が及ぶ範囲**は「ワークスペース scope への書き込み全部」ではなく、**ワークスペースそのもの（プロフィール・公開設定・存在）とメンバー構成を変える書き込み**である。ユースケースがどのドメインに属するかでは分けない — ワークスペースを主体として同じロール表で許される他ドメインの書き込み、すなわちワークスペースのアイコンの差し替え（[usecases/storage.md](./storage.md#storeavatar) の `manageWorkspace`）と使用量の棚卸し（[usecases/usage.md](./usage.md#recalculatestorageusage) のメンバーシップ）も、同じ transaction で読み直す。
+
+対象外は、ワークスペース scope に**中身**を作る・書き換える書き込み（ノートの作成・本文の更新・公開ステータスの変更など）で、これらは transaction の外の権限確認だけで書く。降格や除名の直後に 1 件だけ通ったノートの書き込みは、残ったメンバーが編集も削除もできる普通のコンテンツにとどまるのに対し、上の書き込みは「誰が何をできるか」や公開の可否そのものを動かし、権限を失った当人には取り消せない。ただしノートの**移動**だけは例外で、確定が別 scope への引き渡しになるため、各 phase の transaction で actor の Membership の版を検査する（[usecases/note.md](./note.md#movenote)）。
+
 ## resolveWorkspaceAccess
 
 ### 概要
@@ -163,15 +167,16 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 ### 処理フロー
 
 1. 権限を `manageWorkspace` で確認する
-2. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
-3. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
-4. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
+2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ予約と `workspace_directory` を打ち直して返す（`resolveActive` がこの workspace を指していなければ予約し直し、投影は毎回送る）。commit のあとに来る 2 つの手順はどちらも応答を失いうるので、同じ slug の再送がその修復要求になる。これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる
+3. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID と試行 ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
+4. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
+5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
 
 ### エラーケース
 
 `createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`、`ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("ACCOUNT_DELETING")`、`ConflictError("WORKSPACE_DELETING")`。
 
-local commit が拒否された場合は確保済みの slug reservation を `abandon` する。ただし**この試行の commit が落ちたときに限る** — 補償の直前に workspace を読み直し、scope が既に新しい slug を持っていれば何も打たない。予約 operation ID は `(workspaceId, slug)` から決定的に導かれるので同じ slug を狙う 2 つの要求は 1 行を共有し、条件を付けないと負けた試行の補償が勝った試行の予約を落とす。どちらの commit が着地したかを知っているのは scope だけなので、判定はそちら側で行う。
+local commit が拒否された場合は確保済みの slug reservation を `abandon` する。ただし**この試行が行を保持しているときに限る** — 予約 operation ID は `(workspaceId, slug)` から決定的に導かれるので同じ slug を狙う 2 つの要求は 1 行を共有し、条件を付けないと負けた試行の補償が勝った試行の予約を落とす。条件は要求ごとの試行 ID で、`reserve` が行をその試行の保持にし、`abandon` はその試行のものだけを落とす（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`）。OCC で負けた試行だけでなく、降格・バリア拒否・ロック競合で落ちた試行も同じ条件で止まる。
 
 ## checkWorkspaceSlugAvailability
 
@@ -551,8 +556,8 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 ### 処理フロー
 
 1. トークンのハッシュを `InvitationRouteStore.resolveActive` で解決し、workspace scope object から招待を引く
-2. `status !== "pending"` なら `ValidationError("INVITATION_NOT_PENDING")`
-3. 既にメンバーなら招待を `accept` にしたうえで既存のロールを返す（ロールは変更しない）
+2. **既にメンバーなら**、招待が保留中であればそれを `accept` にし、`activating` のまま残っている自分の edge があれば settle し、token route を `consume` して既存のロールを返す（ロールは変更しない）。この判定を招待の status より**先**に置くのが、local commit は着地したが後続の global 手順を失った join の再入口になる — その時点で招待は `accepted` なので、status で先に落とすと edge を settle できる呼び出しが 1 つも無くなり、そのメンバーの一覧からワークスペースが永久に消える
+3. メンバーでなく、招待が `status !== "pending"` なら `ValidationError("INVITATION_NOT_PENDING")`
 4. UserId shardの`MembershipDirectoryReservationStore.reserveAndClaimActivation`でpending row insert、current UserのActive検査、`activating` claimを1 transactionで行う。Userがdeletingならrowを作らず、削除開始後にmanifest cursorの後方へpending edgeを差し込まない
 5. activation claim取得後だけworkspace scope の1 transactionで `Invitation.accept` と `Membership.create` を保存する。local失敗時はedgeをabandonしInvitationはpendingに保つ。claim後にaccount deletionが開始した場合、削除側はこのSagaがactive/abandonedへ収束するまでmanifest scanを待つ
 6. local commit 後に directory edge を `active` にし、`InvitationRouteStore.consume`でtoken routeをrevokedにする。両方の応答喪失は同じoperation IDで再試行し、受諾済みtokenをactiveのまま残さない
@@ -754,7 +759,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 
 ### 処理フロー
 
-1. `MembershipRepository.findByWorkspaceAndUser` を引く。不在なら `NotFoundError("MEMBERSHIP_NOT_FOUND")`
+1. `MembershipRepository.findByWorkspaceAndUser` を引く。不在なら、`MEMBERSHIP_NOT_FOUND` を返す**前に** `completeRemoval` を再発行する — local commit は着地したが global の edge を落とし損ねた脱退は、この状態でしか観測できない。edge が `removing` のまま残ると `(userId, workspaceId)` の組が押さえられ続け、以後の再参加が通らない。応答は不在のまま `NotFoundError("MEMBERSHIP_NOT_FOUND")`
 2. account deletion lockと`WorkspaceOperationLockStore.hasMoveConflict(userId)`を確認し、`ensureOwnerRemains(ownerCount, membership, null)`を呼ぶ
 3. `JobRepository.listActiveByRequester(userId, 100)`で脱退者の実行中Jobを集める
 4. directory edgeを`removing`にしてから、local UoWでJob終端・Membership削除・security cleanup task保存を行う。残Job正データとBackupRecordを消し終えてからdirectory edgeを削除する

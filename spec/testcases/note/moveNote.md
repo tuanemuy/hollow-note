@@ -15,7 +15,8 @@
 | 元ファイルとメディアを持つノート | 移動する | 保管ファイルの所有者も移動先に移り、使用量が付け替わる | |
 | 移動が成功した | snapshotを確認する | Note・Revision・Tag assignment・StoredFile metadata・Backup・Usage deltaを1つのmigration snapshotとしてtarget scopeへ取り込み、target local projectionも同じscopeで作る | |
 | 移動先の使用量が既に容量クォータを超えている | 移動する | 移動は成功する（移動時に容量クォータを検査しないのは意図的な設計。クォータの強制は取り込み時のみ） | |
-| 移動によって移動先がクォータを超える | 移動する | 移動は成功し、以後の新規アップロードが拒否されるだけになる（`applyStorageDelta` は消費量を付け替えるが判定はしない） | |
+| 移動によって移動先がクォータを超える | 移動する | 移動は成功し、以後の新規アップロードが拒否されるだけになる（サガは消費量を付け替えるが判定はしない） | |
+| 移動先にクォータの行がまだない | 移動する | 初期値を作ってから加算する | |
 | 移動の確定時点で移動元のワークスペースから除名されていた | 移動する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`ensureMovable` の `AccessDenied` には到達しない） | |
 | 移動の確定時点で移動先のワークスペースから除名されていた | 移動する | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | 事前確認後・source freeze前に移動元Membership versionが変わる | freezeする | actorと期待Membership versionをlocal transactionで再検査し、移動を中止する | |
@@ -34,3 +35,7 @@
 | route切替後・source tombstone前 | noteを読む | current routeからtargetへ到達する。sourceへの遅延writeはfreeze/version不一致で拒否される | |
 | move前のpublic projection eventが遅延 | 処理する | routeVersionが古いためtarget ownerのpublic行を上書きしない | |
 | source cleanupが失敗する | recoveryを実行する | routeはtargetを維持し、source tombstoneだけを再試行する。利用者向け所属をsourceへ戻さない | |
+| 事前確認とclaimの間にノートが別のscopeへ移った | 移動する | claimせず `ConflictError("STALE_SCOPE_ROUTE")` が返り、誰も使わない `moving` を残さない | |
+| route切替の応答だけを失い、プロセスは生きている | abortが走る | routeのCASが拒否するので何も補償せず停止する。targetのNote・Revision・staged file metadata・creditはどれも消えない | |
+| 同じワークスペースの別のeditorが、失敗した移動と同じ移動を要求する | 移動する | 走行中operationに合流せず、そのメンバー自身のMembershipで認可される（`requestKey` がactorを含むため） | |
+| 前の試行のstagingがreceiptで飛ばされ、その間にsourceへファイルが増えた | 同じmigration IDで再開する | retireするのはtargetが実際に受け取った集合だけで、増えた metadata はsourceに残る | |

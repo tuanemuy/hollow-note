@@ -22,5 +22,6 @@
 | 脱退後 | `resolveWorkspaceAccess` を呼ぶ | `role: null` が返る（再参加には新しい招待の受諾が必要） | |
 | 脱退後 | 保留中の招待なしで `acceptInvitation` を試みる | 有効な招待トークンがないため `NotFoundError("INVITATION_NOT_FOUND")` が投げられる | |
 | local脱退commit後にdirectory更新が失敗 | 再試行する | scopeでは既に権限なしで、global edgeはoperation IDで後から削除される | |
+| edgeを落とし損ねたまま、もう一度脱退を要求する | 脱退する | `MEMBERSHIP_NOT_FOUND` を返す前に `completeRemoval` を再発行し、`(userId, workspaceId)` の組を解放する | |
 | Membership削除後にJob履歴正データまたはBackupRecordが残る | cleanupを確認する | edgeは`removing`のまま、scope Alarmでresidueを削除し `job.removed` を発行する | |
 | residue cleanupがackした | directoryを確認する | edgeを削除し、以後account deletionがこのscopeを列挙しなくても利用者所有データは残らない | |

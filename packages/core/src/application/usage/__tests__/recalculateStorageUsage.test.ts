@@ -401,7 +401,7 @@ describe("recalculateStorageUsage", () => {
     );
   });
 
-  it("refuses a workspace subject when the actor is removed between the resolution and the write", async () => {
+  it("TC-usage-077: refuses a workspace subject when the actor is removed between the resolution and the write", async () => {
     const h = createTestHarness();
     const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
     await seedWorkspaceMember(h, "editor");
@@ -427,7 +427,7 @@ describe("recalculateStorageUsage", () => {
     );
   });
 
-  it("refuses a workspace stocktake once the workspace has accepted its deletion", async () => {
+  it("TC-usage-078: refuses a workspace stocktake once the workspace has accepted its deletion", async () => {
     const h = createTestHarness();
     const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE_ID));
     await seedWorkspaceMember(h, "owner");
