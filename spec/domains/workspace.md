@@ -48,7 +48,7 @@ WorkspaceBase = {
   id: WorkspaceId
   name: WorkspaceName
   description: WorkspaceDescription
-  avatarUrl: string | null
+  avatarUrl: AvatarUrl | null   // 公開 URL。Storage への依存を持たないための取り決め
   slug: WorkspaceSlug | null
   version: number
   lifecycle: { state: "active" } | { state: "deleting"; operationId: string }
@@ -63,6 +63,8 @@ Workspace = PrivateWorkspace | PublishedWorkspace
 
 `PublishedWorkspace` は `slug` を必須で持つ。これにより「公開なのにスラッグがない」状態が型として表現できない。
 
+`create` が `ownerId` を受けるのは `workspace.created` の payload が `{ workspaceId, ownerId }` であり、イベントの発行元が集約だからである。`updateProfile` の `avatarUrl` だけが構築済みの VO で渡るのは [identity.md](./identity.md) の `User.updateProfile` と同じ理由による（`AvatarUrl.create` が `appUrl` を要し、集約は設定を読まない。[ADR 051](../adr/051-same-origin-url-predicate.md)）。
+
 **不変条件**
 
 - `slug` は設定されていればサービス全体で一意
@@ -73,8 +75,8 @@ Workspace = PrivateWorkspace | PublishedWorkspace
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `create` | `params: { id: string; name: string; description: string; slug: string \| null }, now: Date` | `WithEventDrafts<PrivateWorkspace, WorkspaceEvent>` | `lifecycle: { state: "active" }`・非公開で生成。`workspace.created` を発行 |
-| `updateProfile` | `workspace: Workspace, params: { name?: string; description?: string; avatarUrl?: string \| null }, now: Date` | `WithEventDrafts<Workspace, WorkspaceEvent>` | 指定項目のみ更新。公開状態は保つ。`name` が変わったときのみ `workspace.profileUpdated` を発行 |
+| `create` | `params: { id: string; ownerId: UserId; name: string; description: string; slug: string \| null }, now: Date` | `WithEventDrafts<PrivateWorkspace, WorkspaceEvent>` | `lifecycle: { state: "active" }`・非公開で生成。`workspace.created` を発行 |
+| `updateProfile` | `workspace: Workspace, params: { name?: string; description?: string; avatarUrl?: AvatarUrl \| null }, now: Date` | `WithEventDrafts<Workspace, WorkspaceEvent>` | 指定項目のみ更新。公開状態は保つ。`name` が変わったときのみ `workspace.profileUpdated` を発行 |
 | `changeSlug` | `workspace: Workspace, slug: string \| null, now: Date` | `WithEventDrafts<Workspace, WorkspaceEvent>` | 公開中に `null` を渡すと `BusinessRuleError(PublishedWorkspaceRequiresSlug)`。変更時は `workspace.slugChanged`（旧スラッグを含む）を発行 |
 | `publish` | `workspace: PrivateWorkspace, now: Date` | `WithEventDrafts<PublishedWorkspace, WorkspaceEvent>` | `slug` が `null` なら `BusinessRuleError(SlugRequiredToPublish)`。`workspace.published` を発行 |
 | `unpublish` | `workspace: PublishedWorkspace, now: Date` | `WithEventDrafts<PrivateWorkspace, WorkspaceEvent>` | `workspace.unpublished` を発行 |
