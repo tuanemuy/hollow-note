@@ -24,6 +24,8 @@ export const GLOBAL_TABLES = {
   oauthFlowStates: "oauth_flow_states",
   identityUniqueReservations: "identity_unique_reservations",
   membershipDirectory: "membership_directory",
+  workspaceSlugReservations: "workspace_slug_reservations",
+  invitationRoutes: "invitation_routes",
   noteRoutes: "note_routes",
   distributedOperations: "distributed_operations",
   accountDeletionManifests: "account_deletion_manifests",

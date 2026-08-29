@@ -15,11 +15,13 @@ import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
+  MoveAuthorizationLockSeedInput,
   ScopedConformancePorts,
   WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
+import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
 import {
   createGlobalUnitOfWorkProvider,
@@ -45,6 +47,7 @@ import { createScopeBusinessPorts } from "./ports/scopeBusiness";
 import { createScopeInfraPorts } from "./ports/scopeInfra";
 import {
   createWorkspaceDirectoryPorts,
+  createWorkspaceReservationPorts,
   createWorkspaceScopePorts,
 } from "./ports/workspace";
 
@@ -117,6 +120,7 @@ export async function makeCloudflareConformanceBackend(
   const route = createRoutePorts(globalDeps);
   const projection = createGlobalProjectionPorts(globalDeps);
   const workspaceDirectory = createWorkspaceDirectoryPorts(globalDeps);
+  const workspaceReservations = createWorkspaceReservationPorts(globalDeps);
 
   const scopeExecutorFor = (scope: ScopeKey) =>
     createScopeStubExecutor(env.SCOPE_OBJECT, scope, namespace);
@@ -131,7 +135,6 @@ export async function makeCloudflareConformanceBackend(
       ...createScopeInfraPorts(scopeDeps),
       ...createScopeProjectionPorts(scopeDeps),
       ...createWorkspaceScopePorts(scopeDeps),
-      ...pendingWorkspaceScopePorts(),
     };
   };
 
@@ -229,70 +232,42 @@ export async function makeCloudflareConformanceBackend(
       workspaceDirectory.workspaceDirectoryBatchReader,
     publicWorkspaceDirectoryReader:
       workspaceDirectory.publicWorkspaceDirectoryReader,
-    invitationRouteStore: {
-      resolveActive: () =>
-        unimplementedWorkspacePort("InvitationRouteStore.resolveActive"),
-      reserve: () => unimplementedWorkspacePort("InvitationRouteStore.reserve"),
-      activate: () =>
-        unimplementedWorkspacePort("InvitationRouteStore.activate"),
-      reserveReplacement: () =>
-        unimplementedWorkspacePort("InvitationRouteStore.reserveReplacement"),
-      activateReplacement: () =>
-        unimplementedWorkspacePort("InvitationRouteStore.activateReplacement"),
-      abandon: () => unimplementedWorkspacePort("InvitationRouteStore.abandon"),
-      revoke: () => unimplementedWorkspacePort("InvitationRouteStore.revoke"),
-      consume: () => unimplementedWorkspacePort("InvitationRouteStore.consume"),
-    },
-    membershipDirectoryReservationStore: {
-      reserveAndClaimActivation: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.reserveAndClaimActivation",
+    invitationRouteStore: workspaceReservations.invitationRouteStore,
+    membershipDirectoryReservationStore:
+      workspaceReservations.membershipDirectoryReservationStore,
+    workspaceSlugReservationStore:
+      workspaceReservations.workspaceSlugReservationStore,
+    /**
+     * Writes `move_authorization_locks` rows directly, for the reason
+     * `ConformanceBackend` gives: the writer is `NoteMovePort.stageTarget`,
+     * which is not part of the Workspace port set, so the two reads that
+     * answer from these rows have no executable form without a seed. The
+     * table is real (`do/schema.ts`) and the reads go through it exactly
+     * as they will in production.
+     */
+    async seedMoveAuthorizationLocks(
+      scope: ScopeKey,
+      locks: readonly MoveAuthorizationLockSeedInput[],
+    ): Promise<void> {
+      if (locks.length === 0) {
+        return;
+      }
+      await scopeExecutorFor(scope).apply([
+        statement(
+          insertRowsFromJson({
+            table: SCOPE_TABLES.moveAuthorizationLocks,
+            columns: ["migration_id", "actor_user_id"],
+            conflictKey: ["migration_id"],
+            conflict: ["actor_user_id"],
+          }),
+          jsonRows(
+            locks.map((lock) => ({
+              migration_id: lock.migrationId,
+              actor_user_id: lock.actorUserId,
+            })),
+          ),
         ),
-      activate: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.activate",
-        ),
-      abandon: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.abandon",
-        ),
-      prepareAccountDeletion: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.prepareAccountDeletion",
-        ),
-      renewAccountDeletion: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.renewAccountDeletion",
-        ),
-      commitAccountDeletion: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.commitAccountDeletion",
-        ),
-      releaseAccountDeletion: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.releaseAccountDeletion",
-        ),
-      listActivatingByUser: () =>
-        unimplementedWorkspacePort(
-          "MembershipDirectoryReservationStore.listActivatingByUser",
-        ),
-    },
-    workspaceSlugReservationStore: {
-      resolveActive: () =>
-        unimplementedWorkspacePort(
-          "WorkspaceSlugReservationStore.resolveActive",
-        ),
-      reserve: () =>
-        unimplementedWorkspacePort("WorkspaceSlugReservationStore.reserve"),
-      activate: () =>
-        unimplementedWorkspacePort("WorkspaceSlugReservationStore.activate"),
-      abandon: () =>
-        unimplementedWorkspacePort("WorkspaceSlugReservationStore.abandon"),
-      release: () =>
-        unimplementedWorkspacePort("WorkspaceSlugReservationStore.release"),
-    },
-    async seedMoveAuthorizationLocks(): Promise<void> {
-      unimplementedWorkspacePort("seedMoveAuthorizationLocks");
+      ]);
     },
     forScope(scope: ScopeKey): ScopedConformancePorts {
       return scopePortsOver(
@@ -427,88 +402,6 @@ export async function makeCloudflareConformanceBackend(
 }
 
 const HOUR_MS = 60 * 60 * 1000;
-
-/**
- * The workspace saga / lock / manifest ports have no D1 / Durable Object
- * implementation yet. They are declared so this harness still satisfies
- * `ConformanceBackend`; every entry throws, so their suites fail loudly
- * here instead of passing against a silent stub.
- */
-const unimplementedWorkspacePort = (name: string): never => {
-  throw new Error(`The Cloudflare backend does not implement ${name} yet`);
-};
-
-const pendingWorkspaceScopePorts = (): Pick<
-  ScopedConformancePorts,
-  | "membershipRemovalPreparationStore"
-  | "workspaceOperationLockStore"
-  | "workspaceDeletionManifestStore"
-> => ({
-  membershipRemovalPreparationStore: {
-    prepare: () =>
-      unimplementedWorkspacePort("MembershipRemovalPreparationStore.prepare"),
-    renew: () =>
-      unimplementedWorkspacePort("MembershipRemovalPreparationStore.renew"),
-    commit: () =>
-      unimplementedWorkspacePort("MembershipRemovalPreparationStore.commit"),
-    release: () =>
-      unimplementedWorkspacePort("MembershipRemovalPreparationStore.release"),
-    hasConflict: () =>
-      unimplementedWorkspacePort(
-        "MembershipRemovalPreparationStore.hasConflict",
-      ),
-  },
-  workspaceOperationLockStore: {
-    hasActiveMove: () =>
-      unimplementedWorkspacePort("WorkspaceOperationLockStore.hasActiveMove"),
-    hasMoveConflict: () =>
-      unimplementedWorkspacePort("WorkspaceOperationLockStore.hasMoveConflict"),
-    beginDeletion: () =>
-      unimplementedWorkspacePort("WorkspaceOperationLockStore.beginDeletion"),
-    assertWritable: () =>
-      unimplementedWorkspacePort("WorkspaceOperationLockStore.assertWritable"),
-    assertDeletionOwner: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceOperationLockStore.assertDeletionOwner",
-      ),
-    assertMaintenanceAllowed: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceOperationLockStore.assertMaintenanceAllowed",
-      ),
-  },
-  workspaceDeletionManifestStore: {
-    appendMembershipPage: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.appendMembershipPage",
-      ),
-    appendInvitationPage: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.appendInvitationPage",
-      ),
-    markReady: () =>
-      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.markReady"),
-    listLocalPending: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.listLocalPending",
-      ),
-    acknowledgeLocal: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.acknowledgeLocal",
-      ),
-    listItems: () =>
-      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.listItems"),
-    acknowledge: () =>
-      unimplementedWorkspacePort("WorkspaceDeletionManifestStore.acknowledge"),
-    compactAcknowledged: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.compactAcknowledged",
-      ),
-    markCompleted: () =>
-      unimplementedWorkspacePort(
-        "WorkspaceDeletionManifestStore.markCompleted",
-      ),
-  },
-});
 
 let namespaceSeq = 0;
 let migration: Promise<void> | null = null;

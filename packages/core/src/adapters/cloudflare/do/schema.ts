@@ -19,6 +19,10 @@ export const SCOPE_TABLES = {
   workspaces: "workspaces",
   memberships: "memberships",
   invitations: "invitations",
+  membershipRemovalLocks: "membership_removal_locks",
+  moveAuthorizationLocks: "move_authorization_locks",
+  workspaceDeletionManifests: "workspace_deletion_manifests",
+  workspaceDeletionManifestItems: "workspace_deletion_manifest_items",
   notes: "notes",
   noteProjectionRevisions: "note_projection_revisions",
   noteRevisions: "note_revisions",
@@ -125,6 +129,69 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
      ON ${SCOPE_TABLES.invitations} (token_hash)`,
   `CREATE INDEX IF NOT EXISTS invitations_workspace_email_idx
      ON ${SCOPE_TABLES.invitations} (workspace_id, email, status)`,
+
+  // At most one lock per user in a scope, hence the UNIQUE: a second
+  // deletion preparing the same membership must lose rather than stack a
+  // lock behind the first.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.membershipRemovalLocks} (
+     operation_id text PRIMARY KEY,
+     user_id text NOT NULL UNIQUE,
+     membership_id text NOT NULL,
+     expected_membership_version integer NOT NULL,
+     state text NOT NULL CHECK (state IN ('prepared', 'committed')),
+     expires_at integer,
+     CHECK ((state = 'prepared') = (expires_at IS NOT NULL))
+   )`,
+
+  // Only the two columns the Workspace domain discriminates on. The
+  // remaining columns of `spec/database/index.md#move_authorization_locks`
+  // — the pinned membership, its version, the note being moved — belong to
+  // the move slice that writes the table; nothing here reads them, and a
+  // column no writer can fill would only be a NULL nobody may trust.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.moveAuthorizationLocks} (
+     migration_id text PRIMARY KEY,
+     actor_user_id text NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS move_authorization_locks_actor_idx
+     ON ${SCOPE_TABLES.moveAuthorizationLocks} (actor_user_id, migration_id)`,
+
+  // The header outlives the Workspace row: once the aggregate is deleted
+  // it is what `WorkspaceOperationLockStore` reads to keep refusing late
+  // writes, and its completed tombstone is never pruned by this schema.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.workspaceDeletionManifests} (
+     operation_id text PRIMARY KEY,
+     workspace_id text NOT NULL UNIQUE,
+     state text NOT NULL CHECK (state IN (
+       'building', 'ready', 'localCleaning', 'globalCleaning', 'compacting', 'completed'
+     )),
+     membership_cursor text,
+     invitation_cursor text,
+     created_at integer NOT NULL,
+     updated_at integer NOT NULL
+   )`,
+
+  // The payload carries the global route key next to the local id, because
+  // global cleanup runs after the local rows are gone and could not
+  // re-derive either from source data that no longer exists.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.workspaceDeletionManifestItems} (
+     operation_id text NOT NULL,
+     key text NOT NULL,
+     kind text NOT NULL CHECK (kind IN ('membership', 'invitation')),
+     user_id text,
+     membership_id text,
+     token_hash text,
+     invitation_id text,
+     local_deleted_at integer,
+     global_acked_at integer,
+     PRIMARY KEY (operation_id, key),
+     CHECK ((kind = 'membership') = (user_id IS NOT NULL)),
+     CHECK ((kind = 'membership') = (membership_id IS NOT NULL)),
+     CHECK ((kind = 'invitation') = (token_hash IS NOT NULL)),
+     CHECK ((kind = 'invitation') = (invitation_id IS NOT NULL))
+   )`,
+  `CREATE INDEX IF NOT EXISTS workspace_deletion_manifest_items_local_idx
+     ON ${SCOPE_TABLES.workspaceDeletionManifestItems} (operation_id, key)
+     WHERE local_deleted_at IS NULL`,
 
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.notes} (
      id text PRIMARY KEY,

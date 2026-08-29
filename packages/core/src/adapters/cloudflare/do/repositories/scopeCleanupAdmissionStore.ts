@@ -159,12 +159,12 @@ export function createCloudflareScopeCleanupAdmissionStore(
     },
 
     async assertActorWritable(_actorUserId: UserId): Promise<void> {
-      // The membership removal prepare lock this would additionally check
-      // lives in `membership_removal_locks`, a workspace-scope table of
-      // `spec/database/index.md` that no port writes yet — the Workspace
-      // domain has none. The slice that adds the lock adds the table and
-      // the read here together; until then the scope-wide barrier is the
-      // whole of admission, exactly as on the memory backend.
+      // The membership removal prepare lock lives in
+      // `membership_removal_locks` and is read through
+      // `MembershipRemovalPreparationStore.hasConflict`, which the
+      // Workspace write paths consult themselves. This store is the
+      // personal scope's barrier and is not that lock's reader on either
+      // backend — the reference backend answers the same here.
       if ((await receipt()) !== null) {
         throw barrierClosed();
       }
