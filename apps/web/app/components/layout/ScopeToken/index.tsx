@@ -18,11 +18,6 @@ import { listMyWorkspacesFn, selectScopeFn } from "./action";
  * 正本）ことと、**検索語・タグ・月の絞り込みを持ち越さない**こと — タグは
  * 文脈ごとに独立しているので、遷移先の検索パラメータを空にして渡す。
  * 次回訪問への引き継ぎは `selectScopeFn` が書く Cookie が担う。
- *
- * ワークスペース文脈の入口が設定画面なのは、`/workspaces/:id/notes`
- * （ワークスペース文脈のノート一覧）がまだ無いため。読み出しユースケース
- * （`listNotes` は個人スコープしか読まない）ごと後続スライスなので、
- * 一覧が入ったらここと `routes/index.tsx` の遷移先を差し替える。
  */
 export type ShellScope =
   | Readonly<{ kind: "personal" }>
@@ -117,7 +112,7 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
       await (next.kind === "personal"
         ? router.navigate({ to: "/notes", search: {} })
         : router.navigate({
-            to: "/workspaces/$workspaceId/settings/general",
+            to: "/workspaces/$workspaceId/notes",
             params: { workspaceId: next.workspaceId },
             search: {},
           }));

@@ -2,20 +2,32 @@ import type { NoteDetailView } from "@repo/core/application/note/view";
 import { NotFoundState } from "@/components/ui/ErrorState";
 import { serializeError } from "@/presentation/errorResponse";
 import { NoteBody } from "../NoteBody";
-import { loadNote } from "./action";
+import {
+  loadNote,
+  type NoteDetailContext,
+  PERSONAL_NOTE_DETAIL_CONTEXT,
+} from "./action";
 import { NoteDetailMenu } from "./menu";
+import { NoteUrlNormalizer } from "./normalize";
 
 /**
  * P-11 ノート詳細（閲覧のみの最小形、モック P11-note.html）。本文の
  * Shadow DOM 描画・タイトル・公開ステータス・見出しの折りたたみを持つ。
  * 操作メニュー・タグ・共有パネル・ダウンロードは後続スライス。
+ *
+ * 個人（`/notes/:noteId`）とワークスペース
+ * （`/workspaces/:workspaceId/notes/:noteId`）で同じ画面。文脈は呼び出し側
+ * が URL から渡し、ノートの所属先と食い違えば正規な URL へ送り直す
+ * （OR-12）。
  */
 export async function NoteDetail({
   noteId,
   userId,
+  context = PERSONAL_NOTE_DETAIL_CONTEXT,
 }: {
   noteId: string;
   userId: string;
+  context?: NoteDetailContext;
 }) {
   // The not-found verdict is resolved inside the fragment: an error
   // thrown here would cross the Flight stream as a plain Error and lose
@@ -31,8 +43,19 @@ export async function NoteDetail({
     throw error;
   }
 
+  const canonicalWorkspaceId =
+    note.ownerType === "workspace" ? note.ownerId : null;
+  const currentWorkspaceId =
+    context.kind === "workspace" ? context.workspaceId : null;
+
   return (
     <main className="mx-auto max-w-[var(--content-max)] px-4 pt-10 pb-16 sm:px-6">
+      {canonicalWorkspaceId === currentWorkspaceId ? null : (
+        <NoteUrlNormalizer
+          noteId={note.noteId}
+          workspaceId={canonicalWorkspaceId}
+        />
+      )}
       <div className="mb-4 flex flex-wrap items-start gap-2 text-xs text-ink-tertiary">
         <VisibilityBadge visibility={note.visibility} />
         <span className="text-hairline-strong">·</span>

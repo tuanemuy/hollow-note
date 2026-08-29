@@ -16,6 +16,9 @@ import { validateInput } from "@/presentation/validator";
 /**
  * PAGE-p06-002。未サインインでも読める — 参加の条件を先に示し、
  * セッションを求めるのは受諾の時点だけ（WS-04）。
+ *
+ * 閲覧者のメールアドレスは招待先との照合にだけ使い、断片の中で消費する。
+ * クライアントへ渡すのは一致したかどうかだけ（`InvitationPreview`）。
  */
 export const renderInvitationPreview = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
@@ -30,7 +33,8 @@ export const renderInvitationPreview = createServerFn({ method: "GET" })
       InvitationPreview: renderServerFragment(() =>
         InvitationPreview({
           token: data.token,
-          userId: user === null ? null : user.userId,
+          viewer:
+            user === null ? null : { userId: user.userId, email: user.email },
         }),
       ),
     };

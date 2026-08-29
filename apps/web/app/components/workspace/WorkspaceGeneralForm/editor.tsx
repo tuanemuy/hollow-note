@@ -37,6 +37,7 @@ import {
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
 import type { WorkspaceSettingsView } from "@/components/workspace/settingsRead";
+import { useSlugAvailability } from "@/components/workspace/slugAvailability";
 import { slugSuggestionsFor } from "@/components/workspace/slugSuggestions";
 import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
@@ -266,6 +267,14 @@ export function WorkspaceGeneralEditor({
     setSlug(workspace.slug ?? "");
   };
 
+  // 変更時は自分がいま押さえているスラッグを添える（同じ値の再入力が
+  // 自分自身との衝突として返らないようにするため）。
+  const slugHint = useSlugAvailability({
+    slug,
+    current: workspace.slug ?? "",
+    workspaceId: workspace.workspaceId,
+  });
+
   const failure = saveState.kind === "error" ? saveState.error : null;
   const nameError = failure?.target === "name" ? failure.message : null;
   const descriptionError =
@@ -275,6 +284,18 @@ export function WorkspaceGeneralEditor({
     failure !== null && failure.target === "slug" && failure.slug === slug
       ? failure
       : null;
+  const hintProblem =
+    slugHint.kind === "taken" || slugHint.kind === "problem"
+      ? slugHint.message
+      : null;
+  const slugProblem = slugFailure !== null ? slugFailure.message : hintProblem;
+  // 実際に予約が落ちた値の候補を、入力中の目安より先に採る。
+  const slugSuggestions =
+    slugFailure !== null
+      ? slugFailure.suggestions
+      : slugHint.kind === "taken"
+        ? slugHint.suggestions
+        : [];
 
   return (
     <form action={save}>
@@ -422,13 +443,13 @@ export function WorkspaceGeneralEditor({
               autoComplete="off"
               spellCheck={false}
               className={`${inputClass} rounded-l-none ${
-                slugFailure === null ? "" : inputInvalidClass
+                slugProblem === null ? "" : inputInvalidClass
               }`}
               maxLength={WORKSPACE_SLUG_MAX_LENGTH}
               value={slug}
               disabled={readOnly}
               aria-describedby={slugHintId}
-              aria-invalid={slugFailure !== null}
+              aria-invalid={slugProblem !== null}
               onChange={(event) => setSlug(event.target.value)}
             />
           </div>
@@ -437,13 +458,17 @@ export function WorkspaceGeneralEditor({
             className="text-xs not-empty:mt-2"
             aria-live="polite"
           >
-            {slugFailure === null ? null : (
-              <span className="text-error">{slugFailure.message}</span>
-            )}
+            {slugProblem !== null ? (
+              <span className="text-error">{slugProblem}</span>
+            ) : slugHint.kind === "available" ? (
+              <span className="text-success">このスラッグは使用できます</span>
+            ) : slugHint.kind === "checking" ? (
+              <span className="text-ink-tertiary">確認中...</span>
+            ) : null}
           </p>
-          {slugFailure !== null && slugFailure.suggestions.length > 0 ? (
+          {slugSuggestions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-2">
-              {slugFailure.suggestions.map((suggestion) => (
+              {slugSuggestions.map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"

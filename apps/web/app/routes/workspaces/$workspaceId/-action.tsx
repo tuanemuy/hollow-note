@@ -1,0 +1,110 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
+import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
+import { WORKSPACE_ID_MAX_LENGTH } from "@/presentation/scope";
+import { loadServerDeps } from "@/presentation/serverAction";
+import { renderServerFragment } from "@/presentation/serverFragment";
+import { validateInput } from "@/presentation/validator";
+
+/**
+ * ワークスペース文脈のノート（`/workspaces/:workspaceId/notes...`）の
+ * server function 置き場。設定（`settings/-action.tsx`）とは別の場所に
+ * 置くのは、こちらが設定レイアウトの子ではなく `$workspaceId` 直下の
+ * ルートだからである。
+ */
+
+const workspaceNoteListSchema = z.object({
+  workspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH),
+  redirect: z.string().min(1).max(REDIRECT_MAX_LENGTH),
+});
+
+/**
+ * P-10 のワークスペース版。シェルに要る名前・スラッグ・公開状態は素の値で
+ * 返し（設定レイアウトと同じ理由 — RSC ペイロードに載せるとルートを跨ぐ
+ * たびに作り直され、スコープトークンの開閉が飛ぶ）、一覧だけを断片で流す。
+ *
+ * 非メンバー（`WORKSPACE_INSUFFICIENT_ROLE`）と削除済み
+ * （`WORKSPACE_NOT_FOUND`）は `getWorkspaceSettings` が投げ、ルートの
+ * `errorComponent` が同じ「開けません」に畳む（WS-02）。存在の有無は
+ * どちらの経路でも漏れない。
+ */
+export const renderWorkspaceNoteList = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceNoteListSchema))
+  .handler(async ({ data }) => {
+    const [
+      { container, module },
+      { NoteList },
+      { requireSessionOrRedirect },
+      { WorkspaceRole },
+      { toViewerView },
+    ] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/getWorkspaceSettings"),
+      ),
+      import("@/components/note/NoteList"),
+      import("@/presentation/sessionGuard"),
+      import("@repo/core/domain/workspace/valueObject"),
+      import("@/presentation/auth"),
+    ]);
+    const user = await requireSessionOrRedirect(data.redirect);
+    const workspace = await module.getWorkspaceSettings({
+      container,
+      input: { workspaceId: data.workspaceId, userId: user.userId },
+    });
+    const owner = {
+      kind: "workspace",
+      workspaceId: workspace.workspaceId,
+      name: workspace.name,
+      canWrite: WorkspaceRole.atLeast(workspace.role, "editor"),
+    } as const;
+    return {
+      user: toViewerView(user),
+      workspace: {
+        workspaceId: workspace.workspaceId,
+        name: workspace.name,
+        slug: workspace.slug,
+        publication: workspace.publication,
+      },
+      NoteList: renderServerFragment(() =>
+        NoteList({ userId: user.userId, owner }),
+      ),
+    };
+  });
+
+const workspaceNoteDetailSchema = z.object({
+  workspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH),
+  noteId: z.string().min(1).max(128),
+  redirect: z.string().min(1).max(REDIRECT_MAX_LENGTH),
+});
+
+/**
+ * P-11 のワークスペース版（`/workspaces/:workspaceId/notes/:noteId`）。
+ * 個人の `/notes/:noteId` と同じ `NoteDetail` を描き、文脈だけが URL から
+ * 来る（`spec/pages/index.md` の「`/notes` 以下と同じ構成」）。
+ *
+ * 一覧と違ってワークスペース自身は読まない。この画面が読むのはノート 1 件
+ * だけで、その認可は `getNote` が持つ — 非メンバーも削除済みも
+ * `NOTE_NOT_FOUND` に収斂し、P-11 の「見つかりません」に落ちる。URL の
+ * `workspaceId` は所属先の照合（OR-12 の正規化）にだけ使う。
+ */
+export const renderWorkspaceNoteDetail = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceNoteDetailSchema))
+  .handler(async ({ data }) => {
+    const [{ NoteDetail }, { requireSessionOrRedirect }] = await Promise.all([
+      import("@/components/note/NoteDetail"),
+      import("@/presentation/sessionGuard"),
+    ]);
+    const user = await requireSessionOrRedirect(data.redirect);
+    return {
+      NoteDetail: renderServerFragment(() =>
+        NoteDetail({
+          noteId: data.noteId,
+          userId: user.userId,
+          context: { kind: "workspace", workspaceId: data.workspaceId },
+        }),
+      ),
+    };
+  });

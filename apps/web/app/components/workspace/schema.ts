@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EMAIL_MAX_LENGTH } from "@/components/auth/schema";
+import { EMAIL_MAX_LENGTH, EMAIL_PATTERN } from "@/components/auth/schema";
 
 /**
  * ワークスペース画面の転送境界スキーマ（P-30 / P-31 / P-32 / P-33 / P-34
@@ -46,6 +46,20 @@ export const changeWorkspaceSlugSchema = z.object({
   slug,
 });
 
+/**
+ * P-30 / P-31 のスラッグ欄の目安表示。`workspaceId` は「いま自分が
+ * 押さえているスラッグ」を伝えるための任意項目で、作成時は `null`。
+ * 省略ではなく `null` を要求するのは `exactOptionalPropertyTypes` の下で
+ * 「省略」と「undefined」が別物になるため。
+ */
+export const workspaceSlugAvailabilitySchema = z.object({
+  slug: z
+    .string()
+    .min(1)
+    .max(WORKSPACE_SLUG_MAX_LENGTH + 1),
+  workspaceId: workspaceId.nullable(),
+});
+
 export const workspaceRefSchema = z.object({ workspaceId });
 
 export const deleteWorkspaceSchema = z.object({
@@ -76,9 +90,14 @@ const membershipId = z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH);
 // 届かなくなる。
 const role = z.string().min(1).max(16);
 
+/**
+ * 形式は転送境界でも閉じる（WS-03「メールアドレスの形式が不正な場合は
+ * 送信前に弾く」）。パターンはドメインの `Email` と同じものを使うので、
+ * ここで落ちるのは画面側の事前判定をすり抜けた要求だけになる。
+ */
 export const inviteMemberSchema = z.object({
   workspaceId,
-  email: z.string().trim().min(1).max(EMAIL_MAX_LENGTH),
+  email: z.string().trim().min(1).max(EMAIL_MAX_LENGTH).regex(EMAIL_PATTERN),
   role,
 });
 

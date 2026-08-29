@@ -36,11 +36,20 @@ export type SignInView = Readonly<{
   sessionToken: string;
 }>;
 
+/**
+ * The session probe's projection. `email` is PII, and it is safe here for
+ * one structural reason: the only input this view is reachable through is
+ * a session token, so the address it carries is always the caller's own.
+ * It is projected because the invitation screen has to tell "the invited
+ * address" from "the signed-in account" (WS-04); consumers that only need
+ * the shell should narrow the object before it crosses to a client.
+ */
 export type AuthenticatedUserView = Readonly<{
   userId: string;
   displayName: string;
   handle: string | null;
   avatarUrl: string | null;
+  email: string;
 }>;
 
 export const toAuthenticatedUserView = (
@@ -50,6 +59,7 @@ export const toAuthenticatedUserView = (
   displayName: user.displayName,
   handle: user.handle,
   avatarUrl: user.avatarUrl,
+  email: user.email,
 });
 
 export type StartOAuthFlowView = Readonly<{

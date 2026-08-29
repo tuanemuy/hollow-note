@@ -406,6 +406,9 @@ OAuth コールバックの単一経路（`/auth/callback/:provider`）で、flo
 | `displayName` | `string` |
 | `handle` | `string \| null` |
 | `avatarUrl` | `string \| null` |
+| `email` | `string` |
+
+`email`は本人のsession tokenでしか到達できない投影なので、返す相手は常にその持ち主である。招待の確認（WS-04）が「招待先のアドレス」と「サインイン中のアカウント」を突き合わせるために要る。画面のシェルにしか使わない呼び出し元は、クライアントへ渡す前にこのフィールドを落とす。
 
 ### 処理フロー
 

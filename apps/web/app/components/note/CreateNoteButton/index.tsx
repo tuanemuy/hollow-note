@@ -14,9 +14,11 @@ import { createBlankNoteFn } from "./action";
 export function CreateNoteButton({
   variant = "primary",
   label = "新規作成",
+  workspaceId = null,
 }: {
   variant?: "primary" | "toolbar";
   label?: string;
+  workspaceId?: string | null;
 }) {
   const router = useRouter();
   const create = useServerFn(createBlankNoteFn);
@@ -27,7 +29,7 @@ export function CreateNoteButton({
     startTransition(async () => {
       let noteId: string;
       try {
-        noteId = (await create({})).noteId;
+        noteId = (await create({ data: { workspaceId } })).noteId;
       } catch (e) {
         setError(displayError(e));
         return;
@@ -39,11 +41,19 @@ export function CreateNoteButton({
       await router.invalidate().catch(() => {
         console.error("Note list reconcile failed");
       });
-      await router
-        .navigate({ to: "/notes/$noteId", params: { noteId } })
-        .catch(() => {
-          console.error("Navigation to the new note failed");
-        });
+      // 作った文脈の詳細 URL へ直接送る。`/notes/:noteId` へ送っても
+      // `NoteDetail` が正規化するが、開いてから URL が動く 1 往復を
+      // 省ける（呼び出し側は所属先を知っている）。
+      const navigation =
+        workspaceId === null || workspaceId === undefined
+          ? router.navigate({ to: "/notes/$noteId", params: { noteId } })
+          : router.navigate({
+              to: "/workspaces/$workspaceId/notes/$noteId",
+              params: { noteId, workspaceId },
+            });
+      await navigation.catch(() => {
+        console.error("Navigation to the new note failed");
+      });
     });
   };
 

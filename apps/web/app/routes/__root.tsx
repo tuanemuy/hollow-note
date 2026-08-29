@@ -23,6 +23,7 @@ import "@/components/auth/ResetPasswordPanel/action";
 import "@/components/layout/AccountMenu/action";
 import "@/components/layout/ScopeToken/action";
 import "@/components/note/CreateNoteButton/action";
+import "@/components/settings/UsagePanel/action";
 import "@/routes/auth/-action";
 import "@/routes/dev/-action";
 import "@/routes/invitations/-action";

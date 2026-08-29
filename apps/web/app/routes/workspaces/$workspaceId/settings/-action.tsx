@@ -45,15 +45,19 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(shellInputSchema))
   .handler(async ({ data }) => {
-    const [{ loadWorkspaceSettings }, { requireSessionOrRedirect }] =
-      await Promise.all([
-        import("@/components/workspace/settingsRead"),
-        import("@/presentation/sessionGuard"),
-      ]);
+    const [
+      { loadWorkspaceSettings },
+      { requireSessionOrRedirect },
+      { toViewerView },
+    ] = await Promise.all([
+      import("@/components/workspace/settingsRead"),
+      import("@/presentation/sessionGuard"),
+      import("@/presentation/auth"),
+    ]);
     const user = await requireSessionOrRedirect(data.redirect);
     const settings = await loadWorkspaceSettings(data.workspaceId, user.userId);
     return {
-      user,
+      user: toViewerView(user),
       workspace:
         settings === null
           ? null

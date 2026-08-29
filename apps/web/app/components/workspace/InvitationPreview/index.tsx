@@ -8,8 +8,12 @@ import { InvitationActions } from "./panel";
  * P-06 招待の確認（モック P06-invitation.html、PAGE-p06-001..005）。
  *
  * 未サインインでも読める。参加の条件を先に示し、セッションを求めるのは
- * 受諾の時点だけ（WS-04）。期限切れ・取り消し済み・使用済み・届かない
- * トークンは同じ「使えない招待」に畳んで、存在の有無を漏らさない。
+ * 受諾の時点だけ（WS-04）。
+ *
+ * 使えない招待は理由ごとに表示を分ける（P-06 の状態一覧、WS-04「その旨を
+ * 表示し、招待者への連絡を促す」）。分けてよいのは**トークンが実在した
+ * 場合だけ**で、届かないトークンは理由を持たない「使えません」に倒す
+ * — 状態を答えること自体が、そのトークンが実在するという答えになるため。
  */
 
 const ROLE_NOTE: Readonly<Record<string, string>> = {
@@ -24,13 +28,20 @@ const primaryLinkClass =
 const ghostLinkClass =
   "inline-flex h-11 w-full items-center justify-center rounded-pill border border-hairline px-5 text-sm font-medium text-ink transition-colors hover:bg-surface";
 
+/**
+ * サインイン中の閲覧者。`email` は招待先との照合にだけ使い、この
+ * サーバーコンポーネントの外（クライアント）へは出さない。
+ */
+type Viewer = Readonly<{ userId: string; email: string }>;
+
 export async function InvitationPreview({
   token,
-  userId,
+  viewer,
 }: {
   token: string;
-  userId: string | null;
+  viewer: Viewer | null;
 }) {
+  const userId = viewer === null ? null : viewer.userId;
   // 断片の中で `throw` すると Flight ストリームを素の Error が渡り、
   // `kind` タグを失ってからルートの境界に届くので、終端表示をここで描く。
   let preview: InvitationPreviewView;
@@ -38,7 +49,7 @@ export async function InvitationPreview({
     preview = await loadInvitationPreview(token, userId);
   } catch (error) {
     if (serializeError(error).kind === "notFound") {
-      return <InvitationUnusable />;
+      return <InvitationUnknown />;
     }
     throw error;
   }
@@ -46,9 +57,10 @@ export async function InvitationPreview({
   if (preview.state === "alreadyMember") {
     // 受諾済みのリンクを本人が再訪した経路。`acceptInvitation` は
     // `INVITATION_NOT_PENDING` で落ちるので受諾は出さず、そのワークスペース
-    // の文脈へ直接送る（PAGE-p06-003）。`workspaceId` を載せるのはこの分岐
-    // だけで（`InvitationPreviewView` の JSDoc）、`null` なら状態を作れて
-    // いないのでノート一覧へ倒す。
+    // のノート一覧へ直接送る（PAGE-p06-003、WS-04「参加済みである旨を示して
+    // ワークスペースへ遷移する」）。`workspaceId` を載せるのはこの分岐だけで
+    // （`InvitationPreviewView` の JSDoc）、`null` なら状態を作れていないので
+    // 個人のノート一覧へ倒す。
     return (
       <ResultPanel
         tone="success"
@@ -62,7 +74,7 @@ export async function InvitationPreview({
           ) : (
             <a
               className={primaryLinkClass}
-              href={`/workspaces/${encodeURIComponent(preview.workspaceId)}/settings/general`}
+              href={`/workspaces/${encodeURIComponent(preview.workspaceId)}/notes`}
             >
               {preview.workspaceName} を開く
             </a>
@@ -73,7 +85,7 @@ export async function InvitationPreview({
   }
 
   if (preview.state !== "acceptable") {
-    return <InvitationUnusable />;
+    return <InvitationUnusable state={preview.state} />;
   }
 
   const returnPath = `/invitations/${encodeURIComponent(token)}`;
@@ -144,18 +156,68 @@ export async function InvitationPreview({
           </p>
         </div>
       ) : (
-        <InvitationActions token={token} />
+        <InvitationActions
+          token={token}
+          inviteeEmail={preview.email}
+          // 招待先と別のアカウントで開いているときだけ確認を挟む
+          // （WS-04「異なる場合、確認したうえで参加させる」）。どちらも
+          // `Email` の正規形なので単純な一致で判定できる。
+          mismatched={viewer !== null && viewer.email !== preview.email}
+        />
       )}
     </main>
   );
 }
 
-function InvitationUnusable() {
+/** 実在しないトークン。理由を持たない終端表示に倒す。 */
+function InvitationUnknown() {
   return (
     <ResultPanel
       tone="warning"
       title="この招待は使えません"
-      body="期限が切れているか、取り消されています。招待した人にもう一度送ってもらってください。"
+      body="リンクが正しくないか、招待が取り消されています。招待した人にもう一度送ってもらってください。"
+      actions={
+        <a className={ghostLinkClass} href="/">
+          トップへ
+        </a>
+      }
+    />
+  );
+}
+
+type UnusableState = Exclude<
+  InvitationPreviewView["state"],
+  "acceptable" | "alreadyMember"
+>;
+
+const UNUSABLE_PANEL: Readonly<
+  Record<UnusableState, Readonly<{ title: string; body: string }>>
+> = {
+  expired: {
+    title: "この招待は期限が切れています",
+    body: "招待の有効期限は 14 日です。招待した人に、もう一度送ってもらってください。",
+  },
+  revoked: {
+    title: "この招待は取り消されています",
+    body: "招待した人が取り消しました。参加が必要な場合は、招待し直してもらってください。",
+  },
+  accepted: {
+    title: "この招待はすでに使われています",
+    body: "別のアカウントがこの招待で参加しました。あなたが参加するには、招待した人に新しい招待を送ってもらってください。",
+  },
+  workspaceMissing: {
+    title: "このワークスペースは削除されています",
+    body: "招待の宛先だったワークスペースはもうありません。招待した人に確認してください。",
+  },
+};
+
+function InvitationUnusable({ state }: { state: UnusableState }) {
+  const panel = UNUSABLE_PANEL[state];
+  return (
+    <ResultPanel
+      tone="warning"
+      title={panel.title}
+      body={panel.body}
       actions={
         <a className={ghostLinkClass} href="/">
           トップへ

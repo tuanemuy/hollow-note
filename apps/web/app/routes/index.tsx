@@ -12,8 +12,6 @@ import { buildHead } from "@/presentation/head";
  * 引き継ぎ（WS-02「選択は次回の訪問時にも引き継がれる」）を読むのは
  * ここだけ。権限は遷移先が判定するので、ここでは記録された選択を信じる
  * — 除名済み・削除済みのワークスペースはその画面が個人へ誘導する。
- * ワークスペースの行き先が設定画面なのは、その文脈のノート一覧が後続
- * スライスであるため（`components/layout/ScopeToken` と同じ理由）。
  */
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
@@ -24,7 +22,7 @@ export const Route = createFileRoute("/")({
     const scope = await lastScopeFn();
     throw scope.kind === "workspace"
       ? redirect({
-          to: "/workspaces/$workspaceId/settings/general",
+          to: "/workspaces/$workspaceId/notes",
           params: { workspaceId: scope.workspaceId },
         })
       : redirect({ to: "/notes" });

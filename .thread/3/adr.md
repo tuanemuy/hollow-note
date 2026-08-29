@@ -1382,3 +1382,168 @@ ADR-063 は当時の 2 つの欠落（`InvitationPreviewView` に `workspaceId` 
 - 冪等性（同じ migration ID の再開が重複 target Note を作らない）とデータ保全（abort 後の再要求がノートを失わない）が両立する。前者は `TC-note-258`（freeze 直後の失敗）・`TC-note-263` / `-265` で、後者は `TC-note-258`（abort 後の再要求）で固定した。
 - 変異スポットチェックで `TARGET_SCOPE_COMMANDS` からファイル側の鍵を落としても既存テストが全部通ってしまったので、`TC-note-258` に「abort 後の再開が Revision・ファイル・credit も張り直す」ケースを 1 本足した。3 つの鍵それぞれに検出力がある。
 - 今後 `applied_operations` で守るコマンドを足すときは「補償があるか」を必ず問うこと。あるなら `clearApplied` が対になる。`deleteFilesByOwner` / `deleteQuota` の cleanup コマンドには補償が無いので現状の単調な記録のままでよい。
+
+## ADR-081: ワークスペース文脈のノート一覧は `NoteList` に owner を渡す 1 画面で作る
+
+### Context
+
+`spec/pages/index.md` 39〜40 行は `/workspaces/:workspaceId/...` を「`/notes` 以下と同じ構成」と定め、P-10 を「文脈によらない 1 つの画面」として記述する。実装側は `/notes` だけがあり、`NoteList` が `userId` しか受け取らないため、WS-02 手順 3 の切替先が設定「一般」に倒れていた（AC-3 が本来の形で成立していない）。`listNotes` は既に `ownerType` / `ownerWorkspaceId` を受ける（ADR-060）。
+
+### Decision
+
+`NoteList` に省略可能な `owner`（`personal` | `workspace`）を足し、`/notes` と `/workspaces/:workspaceId/notes` の 2 ルートが同じサーバーコンポーネントを描く。個人側の呼び出しは既定値で無変更。
+
+- 文脈の解決とシェル（スコープトークン）に要る名前・スラッグ・公開状態は `getWorkspaceSettings`（ADR-056）を読む。設定画面のためのユースケースだが、返すのは「そのワークスペース自身の表示に要る一式 + ロールの能力フラグ」で、一覧が要るものはその部分集合である。専用の読みを増やさない。
+- 非メンバーは `WORKSPACE_INSUFFICIENT_ROLE`、削除済み・不在は `WORKSPACE_NOT_FOUND` で来る。ルートの `errorComponent` が両者を同じ「このワークスペースは開けません」に畳む（WS-02、設定レイアウトと同じ表示）。
+- `canWrite`（editor 以上）を owner に載せ、viewer には「新規作成」と行の操作メニューを出さない。L-01 の「使えない行き先は並べずに消す」に合わせる。
+- `createBlankNoteFn` は文脈（`workspaceId`）を転送境界で受けるようにした。認可は `createBlankNote` が対象ワークスペースで `createNote` を判定するので緩まない。
+
+`loadNotes` の引数を `NoteListOwner` ではなく `workspaceId: string | null` にしたのは、`cache()` の同一性が引数の参照で決まるためである。
+
+### Consequences
+
+- ADR-054 / ADR-055 が「後続スライス」として残していたスコープ切替の暫定（`ScopeToken` と `routes/index.tsx` が設定画面へ送る）が解消し、P-40 の「`/` → P-10」も spec どおりになった。
+- ノート詳細のワークスペース文脈 URL（`/workspaces/:workspaceId/notes/:noteId`）は依然として無く、行のリンクは `/notes/:noteId` を指す。`getNote` が経路を解決するので閲覧はできる。OR-12 の「移動後に URL が新しい文脈へ正規化される」はこの URL が入るまで満たせない。
+- 招待受諾後（`InvitationPreview`）と作成完了後（`CreateWorkspaceForm`）の遷移先は設定「一般」のまま。どちらもそのワークスペースの文脈には入っているので誤りではないが、ノート一覧へ送るほうが WS-01 / WS-04 の読みには近い。
+
+## ADR-082: P-24 のワークスペース別使用量は追加読み込みを所有する島に切り出す
+
+### Context
+
+`getUsageSnapshot` は `workspaceCursor` / `workspaceLimit` を受け `workspaces` / `nextWorkspaceCursor` を返す（AC-14）が、`UsagePanel` はワークスペースの行も「20 件ずつ読み込む導線」も描かず、カーソルも渡していなかった。P-24 の「個人とワークスペースごとの容量・ノート件数」「workspace を 20 件ずつ読み込む導線」が presentation 側で欠けていた。
+
+### Decision
+
+追加読み込みは一覧メンバーシップの変更なので、行ではなく一覧を所有する `"use client"` の島（`UsagePanel/board.tsx`）が server function を持つ。先頭ページはサーバーコンポーネントが `loadUsageSnapshot` で取って島に渡し、以降は `loadMoreWorkspaceUsageFn` が同じユースケースをカーソル付きで呼ぶ。
+
+セクションの描画と数値整形（`UsageSection` / `formatBytes` / `ratioOf`）は `"use client"` を持たない `section.tsx` に置き、サーバー側の個人・LLM とクライアント側のワークスペースが同じものを使う。整形に `Intl` を使わない算術しか含めていないので、サーバーが描いた行とブラウザーが足した行で表記がずれない（`updatedAt` の `Intl` はサーバー側に残す）。
+
+`unavailable` の行は落とさず並べたまま数値だけを落とし、「使用量を取得できませんでした。ほかの表示には影響しません」を出す。ADR-048 が画面に委ねた `workspaceName === null` は「名前を取得できないワークスペース」とし、ID は出さない（閲覧者にとって意味を持たない）。モックにある行ごとの「再試行」は、1 つのワークスペースだけを読み直す入口がユースケースに無いため置かない。
+
+### Consequences
+
+- 追加読み込みは `getUsageSnapshot` を丸ごと呼ぶので個人・LLM の数値も一緒に返るが、島はワークスペースの行だけを使う。「◯◯時点」は先頭ページの `updatedAt` に固定され、ページを繰っても動かない（ユースケースの JSDoc が置いた約束と一致する）。
+- ADR-047 のとおりロール絞り込みが後段なので、1 ページ全部が viewer だと行が 0 件のままボタンだけが残る。ボタンの有無は件数ではなくカーソルだけで決める。
+- 行ごとの再試行が要るなら、1 ワークスペースだけを読む入口をユースケース側に足す必要がある。
+
+## ADR-083: スラッグの即時検出は共有フックにし、確定した拒否の候補を目安より優先する
+
+### Context
+
+P-30 / P-31 のスラッグ欄は spec/pages が「スラッグ重複の即時検出」を求めるのに、可否を返す読み取りが無い前提で作られていた。`checkWorkspaceSlugAvailability`（UC-workspace-023）が入ったので入力中に照会できるが、判定の出所が 2 つ（入力中の目安と、保存時に返る `SLUG_ALREADY_USED`）になる。
+
+### Decision
+
+`components/workspace/slugAvailability.ts` の `useSlugAvailability` に照会・デバウンス・状態を閉じ、2 画面が同じフックを使う（`slugSuggestions.ts` を 1 か所に置いたのと同じ理由）。表示では**保存が実際に落ちた値の判断を目安より先に採る**。目安は `resolveActive` が settled な予約しか見ない advisory で、予約を取ろうとして負けた側のほうが新しい情報だからである。P-31 は自分の `workspaceId` を添え、いま押さえているスラッグを打ち直しても自分自身との衝突にならないようにする。
+
+`checkWorkspaceSlugAvailabilityFn` は `routes/workspaces/-action.tsx` に 1 本だけ置く。同じユースケースを同じ形で 2 画面が呼ぶだけで、`/workspaces` 配下の入口はここだから。
+
+### Consequences
+
+- 「使用できます」が出ても作成が `SLUG_ALREADY_USED` で落ちうる（並行に取られた場合）。落ちた側でも代替候補が出るので、画面としては閉じている。
+- 予約語・字種違反は `WorkspaceSlug.create` が throw するので `problem` として出る。候補は付けない — 打てない一手を勧めないため。
+
+## ADR-084: 招待の受諾には常に確認を挟む（不一致を判定できないため）
+
+### Context
+
+WS-04 は「招待されたメールアドレスと、サインインしているアカウントのメールアドレスが異なる場合、確認したうえで参加させる」と定める。ところが閲覧者自身のメールアドレスを返す読み取りがアプリケーション層に無い（`AuthenticatedUserView` は `userId` / `displayName` / `handle` / `avatarUrl`、`ProfileView` にも email は無い）。presentation からは不一致を判定できない。
+
+### Decision
+
+条件で出し分けず、サインイン済みの受諾に**常に**確認を 1 段挟む。確認は招待先のアドレスと「いまサインインしているアカウントが参加する（招待リンク自体が認可の根拠）」ことを述べる。判定できない以上、見逃す側ではなく常に確認する側へ倒す。
+
+### Consequences
+
+- WS-04 基本フロー 4 の「『参加する』を選ぶとメンバーになる」が 2 クリックになる。`spec/manual-tests/workspace.md` の TC-03 / TC-04 / TC-30 と `.thread/3/testing.md` 項目 6 / 7・エッジケース 4 をこの形に合わせた。
+- `AuthenticatedUserView` に email が載れば、確認を不一致時だけに絞れる。載せるかどうかは identity 側の判断（メールアドレスをセッション probe の投影に含める是非）なので、本スライスでは触らず報告に回す。
+
+## ADR-085: 使えない招待は理由ごとに分け、実在しないトークンだけ理由を持たない
+
+### Context
+
+`InvitationPreview` は期限切れ・取り消し済み・使用済み・ワークスペース削除済み・不在トークンを 1 つの「この招待は使えません」に畳んでいた（P06 のモックもそう描いている）。一方 spec/pages P-06 の状態一覧と WS-04 異常系は「その旨を表示し、招待者への連絡を促す」と、状態ごとの表示を求める。
+
+### Decision
+
+`getInvitationPreview` が返す 4 つの状態はそれぞれ固有の見出しと案内にする。**分けてよいのはトークンが実在した場合だけ**で、`invitationNotFound`（届かないトークン）は理由を持たない「この招待は使えません」に据え置く — 状態を答えること自体が、そのトークンが実在するという答えになるため。
+
+### Consequences
+
+- モック `P06-invitation.html` の「状態 4 — 期限切れ / 取り消し済み / 使用済み（同じ表示）」は spec/pages に対して古い。実装は spec/pages に合わせた。
+- 再送で失効した旧リンクは「取り消し済み」ではなく不在トークン側に落ちる（トークンが入れ替わるため）。手順書にその旨を書いた。
+
+## ADR-086: 最後の owner の行内保護は到達しないので置かない
+
+### Context
+
+`WorkspaceMembersBoard` は他人の行にも「最後の owner は降格も除名もできません」の行ヒントを描き、セレクターと除名ボタンを無効化していた。だがロール変更・除名を出せるのは `canManage`（= owner）の閲覧者だけで、その閲覧者自身が owner を 1 人数える。他人が唯一の owner という状態は成立せず、`isLastOwner && !isSelf` は管理者には決して真にならない。真になるのは `canManage` が false の閲覧者（editor / viewer）のときだけで、そこでは操作自体が描かれないため、禁止の理由だけが宙に浮いて出ていた。
+
+### Decision
+
+行内の保護（`LAST_OWNER_ROW_HINT_ID` とその `aria-describedby`、`isLastOwner` によるセレクター・除名ボタンの無効化）を落とす。`isLastOwner` は「自分が唯一の owner」だけを意味する props にし、脱退の無効化と説明にのみ使う。サーバーの `MembershipPolicy` は変えないので、想定外の経路で降格が来ても拒否は効く。
+
+### Consequences
+
+- WS-05「最後の owner を降格・除名できない」の画面表現は、自己変更・自己除名の禁止（セレクターを出さない / 除名を出さない）が先に効くことで満たされる。ADR-074 が「並行窓の執行形」で同じ順序を採ったのと一致する。
+- 脱退の説明には WS-06 が促すもう一方の代替として、削除タブへのリンクを添えた。
+
+## ADR-087: 作成後はメンバー管理へ、受諾後はノート一覧へ送る
+
+### Context
+
+ADR-081 は「招待受諾後（`InvitationPreview`）と作成完了後（`CreateWorkspaceForm`）の遷移先は設定「一般」のまま」を積み残しとして残していた。ワークスペース文脈のノート一覧が入ったので、行き先を確定できる。
+
+### Decision
+
+2 つの遷移先は**別々の画面**にする。同じ「そのワークスペースの文脈」でも、シナリオが要求しているものが違うためである。
+
+- 作成完了（WS-01 手順 4）→ `/workspaces/:workspaceId/settings/members`（P-32）。手順 4 は「切り替わり、**メンバー招待への導線が表示される**」で、P-30 の終状態も「作成完了（招待への導線）」、PAGE-p30-002 も「新 workspace context と P-32 の invitation 導線を表示する」と書く。招待の入口を持つ画面は P-32 だけなので、ノート一覧へ送ると導線が消える。空の一覧に招待 CTA を足す案は採らない（spec に無い UI を作らないため）。
+- 招待受諾（WS-04 手順 4）→ `/workspaces/:workspaceId/notes`（P-10）。手順 4 は「メンバーになり、そのワークスペースの**一覧へ**遷移する」。既参加のリンクを再訪したときの「{名前} を開く」も同じ行き先に揃えた（WS-04 異常系「参加済みである旨を示してワークスペースへ遷移する」）。
+
+### Consequences
+
+- ADR-081 Consequences の 3 点目（遷移先が設定「一般」のまま）は解消した。
+- `spec/manual-tests/workspace.md` の TC-01 / TC-03 / TC-04 / TC-31 と `.thread/3/testing.md` の項目 1 / 6・エッジケース 4 を、それぞれの行き先に合わせて直した。
+
+## ADR-088: ノート詳細の URL 正規化はクライアント側で行う
+
+### Context
+
+ADR-081 Consequences の 2 点目のとおり、ノート詳細のワークスペース文脈 URL（`/workspaces/:workspaceId/notes/:noteId`）が無く、OR-12 /  P-11 の「移動後に旧文脈のアプリ内 URL を開いた場合は、新しい所属先の文脈の URL へ正規化（リダイレクト）する」と PAGE-p10-005「current scope 用 P-11 URL へ遷移する」が満たせなかった。
+
+### Decision
+
+一覧（ADR-081）と同じく、2 つのルートが同じ `NoteDetail` を描く。文脈は URL から来て、ノートの所属先と食い違ったときだけ正規な URL へ送り直す。
+
+- 正規化は**サーバーの redirect ではなくクライアントの `router.navigate({ replace: true })`** で行う（`NoteDetail/normalize.tsx`）。断片の中で throw したものは Flight を素の Error として渡り（`InvitationPreview` が終端表示を自前で描いているのと同じ制約）、リダイレクトではなくエラー表示になるためである。ハンドラー側で先に判定する案は、所属先を知るのに `getNote` を待つことになり断片のストリーミングを潰すか、認可前に所属先を解決して**閲覧できないノートの workspaceId を URL に出す**かのどちらかになる。判定を `getNote` の後ろに置けば、その 2 つをどちらも踏まない。
+- 移動後の URL も同じ経路に乗せる。`NoteDetailMenu` は `router.invalidate()` までを行い、読み直した `NoteDetail` が新しい所属先を見て URL を動かす（PAGE-p11-009）。正規化の判断を 1 か所に閉じるため。
+- ワークスペース版のブリッジは一覧と違って `getWorkspaceSettings` を読まない。この画面が読むのはノート 1 件だけで、その認可は `getNote` が持つ（非メンバーも削除済みも `NOTE_NOT_FOUND` に収斂し、P-11 の「見つかりません」になる）。URL の `workspaceId` は所属先の照合にしか使わない。
+- 読むシェル（L-01 の変形）は `components/layout/ReaderShell` に出し、戻り先だけを文脈から受ける。
+
+### Consequences
+
+- 旧 URL を開くと、いったんノートが描かれてから URL が置き換わる。中身は同じなので画面のちらつきは無く、履歴も `replace` で汚れない。
+- `/workspaces/:workspaceId/notes.tsx` は `notes/index.tsx` へ移した（`$noteId.tsx` を兄弟に置くため）。`to: "/workspaces/$workspaceId/notes"` の呼び出し側は index ルートに解決されるので変更不要。
+- `spec/manual-tests/organize.md` の TC-13 に URL 正規化の手順を足し、`.thread/3/testing.md` 項目 17 が「対象外」としていた「アプリ内 URL が新しい文脈のものに変わること」を判定対象へ戻した。
+
+## ADR-089: セッションの投影に email を載せ、招待の確認は不一致のときだけ出す
+
+### Context
+
+ADR-084 は「閲覧者自身のメールアドレスを返す読み取りがアプリケーション層に無い」ことを理由に、招待の受諾へ**常に**確認を挟んでいた。WS-04 が確認を求めるのは「招待されたメールアドレスと、サインインしているアカウントのメールアドレスが異なる場合」だけなので、一致している人には手順 4 の 1 クリックが 2 クリックになっていた。
+
+### Decision
+
+`AuthenticatedUserView` に `email` を足す（`spec/usecases/identity.md#authenticateSession` の出力 DTO も同時に改訂）。この投影を選んだのは**到達経路が構造的に本人に閉じている**ためで、入力が session token しか無い以上、返るのは常に呼び出し元自身のアドレスになる。`ProfileView` は `userId` を入力に取るので、同じ保証は型の側からは出てこない。
+
+露出は 2 段で絞る。
+
+- 転送境界: `presentation/auth.ts` の `ViewerView` / `toViewerView` が `email` を落とす。シェルへ `user` を渡すブリッジ（`sessionUserFn`、`/notes`、`/workspaces/:id/notes`、`/workspaces/:id/settings/*`、`/workspaces/new`）はこの投影を返すので、アドレスがクライアントのペイロードへ載る画面は 1 つも無い。
+- 招待画面: `renderInvitationPreview` はアドレスをサーバーコンポーネントへだけ渡し、`InvitationPreview` が招待先と突き合わせて `mismatched: boolean` だけをクライアントの島へ渡す。どちらも `Email` の正規形なので単純な一致で判定できる。
+
+### Consequences
+
+- ADR-084 を解消した。一致していれば「参加する」の 1 クリックで参加し、不一致のときだけ確認（「招待先とは別のアカウントでサインインしています」）が挟まる。
+- `spec/manual-tests/workspace.md` の TC-03 / TC-04 / TC-30 と `.thread/3/testing.md` 項目 6・エッジケース 4 を、確認が条件付きで出る形に直した。
+- `TC-identity-008` の投影の期待値に `email` を足した。

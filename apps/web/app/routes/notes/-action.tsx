@@ -18,13 +18,15 @@ export const renderNoteList = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(z.object({ redirect: redirectField })))
   .handler(async ({ data }) => {
-    const [{ NoteList }, { requireSessionOrRedirect }] = await Promise.all([
-      import("@/components/note/NoteList"),
-      import("@/presentation/sessionGuard"),
-    ]);
+    const [{ NoteList }, { requireSessionOrRedirect }, { toViewerView }] =
+      await Promise.all([
+        import("@/components/note/NoteList"),
+        import("@/presentation/sessionGuard"),
+        import("@/presentation/auth"),
+      ]);
     const user = await requireSessionOrRedirect(data.redirect);
     return {
-      user,
+      user: toViewerView(user),
       NoteList: renderServerFragment(() => NoteList({ userId: user.userId })),
     };
   });

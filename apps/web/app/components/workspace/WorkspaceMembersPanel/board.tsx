@@ -5,7 +5,7 @@ import type {
   WorkspaceMemberView,
   WorkspaceRoleView,
 } from "@repo/core/application/workspace/view";
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
   useActionState,
@@ -15,6 +15,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { emailFormatError } from "@/components/auth/fieldValidation";
 import {
   fieldErrorClass,
   inputClass,
@@ -56,6 +57,11 @@ import {
  * **楽観的リストから引き直した** owner 数で操作を先に閉じる。サーバーが
  * 返した `ownerCount` は変更前の集合に対する判定なので、1 人降格した直後
  * に「まだ降ろせる」と見えてしまう。
+ *
+ * この保護が画面に出るのは**自分の脱退だけ**である。ロール変更・除名を
+ * 出せるのは `canManage`（= owner）の閲覧者に限られ、その閲覧者自身が
+ * owner を 1 人数えてしまうので、「他人が唯一の owner」は成立しない。
+ * 他人の行に降格・除名の禁止を描いても到達しないため、置いていない。
  */
 
 const ROLES: readonly WorkspaceRoleView[] = ["owner", "editor", "viewer"];
@@ -116,12 +122,25 @@ function applyRoster(current: Roster, action: RosterAction): Roster {
 
 type IssuedInvitation = Readonly<{ email: string; url: string }>;
 
+/**
+ * 送信の要求（`<form action>` が渡す `FormData`）と、owner の確認に対する
+ * 返事を 1 つの入口に束ねる。確認は送信そのものの一段であって別の状態
+ * ではないので、`useActionState` の外に持つと pending が二重になる。
+ */
+type InvitePayload = FormData | "confirmOwner" | "cancelOwner";
+
 type InviteState = Readonly<{
   error: string | null;
   issued: IssuedInvitation | null;
+  /** owner ロールの重さを説明する確認の待ち（WS-03 異常系）。 */
+  ownerConfirmEmail: string | null;
 }>;
 
-const IDLE_INVITE: InviteState = { error: null, issued: null };
+const IDLE_INVITE: InviteState = {
+  error: null,
+  issued: null,
+  ownerConfirmEmail: null,
+};
 
 type Confirming =
   | Readonly<{ kind: "removeMember"; membershipId: string }>
@@ -180,8 +199,21 @@ export function WorkspaceMembersBoard({
     });
 
   const [inviteState, submitInvite, isInviting] = useActionState(
-    async (_previous: InviteState): Promise<InviteState> => {
+    async (
+      _previous: InviteState,
+      payload: InvitePayload,
+    ): Promise<InviteState> => {
+      if (payload === "cancelOwner") return IDLE_INVITE;
       const address = email.trim();
+      // 形式は送る前に弾く（WS-03）。転送境界も同じパターンで閉じている
+      // ので、ここを抜けた値だけがユースケースに届く。
+      const formatError = emailFormatError(address);
+      if (formatError !== null) {
+        return { error: formatError, issued: null, ownerConfirmEmail: null };
+      }
+      if (inviteRole === "owner" && payload !== "confirmOwner") {
+        return { error: null, issued: null, ownerConfirmEmail: address };
+      }
       dispatchRoster({
         kind: "addInvitation",
         email: address,
@@ -194,16 +226,25 @@ export function WorkspaceMembersBoard({
         });
         issued = { email: view.email, url: view.invitationUrl };
       } catch (error) {
-        return { error: displayError(error), issued: null };
+        return {
+          error: displayError(error),
+          issued: null,
+          ownerConfirmEmail: null,
+        };
       }
       setEmail("");
       // 招待はもう成立しているので、再取得の失敗を「送れなかった」と
       // 見せない（再送で 2 通目を出させないため try の外に置く）。
       await reconcile();
-      return { error: null, issued };
+      return { error: null, issued, ownerConfirmEmail: null };
     },
     IDLE_INVITE,
   );
+
+  // 入力中の形式の指摘。空欄は「まだ書いていない」なので指摘しない
+  // （送信ボタンの活性は空欄でも閉じる）。
+  const emailProblem = email.trim() === "" ? null : emailFormatError(email);
+  const inviteProblem = emailProblem ?? inviteState.error;
 
   const copyInvitationUrl = (url: string) => {
     navigator.clipboard
@@ -303,11 +344,11 @@ export function WorkspaceMembersBoard({
                 autoComplete="off"
                 placeholder="メールアドレス"
                 className={`${inputClass} h-10 min-w-50 flex-1 text-sm ${
-                  inviteState.error === null ? "" : inputInvalidClass
+                  inviteProblem === null ? "" : inputInvalidClass
                 }`}
                 value={email}
                 disabled={isInviting}
-                aria-invalid={inviteState.error !== null}
+                aria-invalid={inviteProblem !== null}
                 aria-describedby={inviteErrorId}
                 onChange={(event) => setEmail(event.target.value)}
               />
@@ -332,7 +373,9 @@ export function WorkspaceMembersBoard({
               <button
                 type="submit"
                 className={primaryButtonClass}
-                disabled={isInviting || email.trim() === ""}
+                disabled={
+                  isInviting || email.trim() === "" || emailProblem !== null
+                }
                 aria-busy={isInviting}
               >
                 {isInviting ? "送信中..." : "招待を送る"}
@@ -344,13 +387,49 @@ export function WorkspaceMembersBoard({
               id={inviteErrorId}
               aria-live="polite"
             >
-              {inviteState.error}
+              {inviteProblem}
             </p>
             <p className="mt-2 text-xs text-ink-tertiary">
               editor はノートの取り込み・編集・公開ができます。viewer
               は閲覧とダウンロードのみです。
             </p>
           </form>
+
+          {inviteState.ownerConfirmEmail === null ? null : (
+            <Alert
+              tone="warning"
+              role="note"
+              title="owner として招待しますか"
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    disabled={isInviting}
+                    aria-busy={isInviting}
+                    onClick={() => submitInvite("confirmOwner")}
+                  >
+                    {isInviting ? "送信中..." : "owner として招待する"}
+                  </button>
+                  <button
+                    type="button"
+                    className={ghostButtonClass}
+                    disabled={isInviting}
+                    onClick={() => submitInvite("cancelOwner")}
+                  >
+                    やめる
+                  </button>
+                </>
+              }
+            >
+              owner
+              はメンバーの招待・ロール変更・除名に加えて、ワークスペースの設定・公開・削除まで行えます。
+              <b className="font-medium text-ink">
+                {inviteState.ownerConfirmEmail}
+              </b>{" "}
+              に同じ権限を渡すことになります。
+            </Alert>
+          )}
 
           {inviteState.issued !== null ? (
             <div className="mt-4 border-t border-hairline pt-4">
@@ -404,7 +483,7 @@ export function WorkspaceMembersBoard({
               member={member}
               isSelf={member.userId === viewerUserId}
               canManage={canManage}
-              isLastOwner={member.role === "owner" && ownerCount <= 1}
+              isLastOwner={member.userId === viewerUserId && selfIsLastOwner}
               busy={isMutating}
               confirming={
                 confirming?.kind === "removeMember" &&
@@ -431,7 +510,15 @@ export function WorkspaceMembersBoard({
         {selfIsLastOwner ? (
           <p className="mt-3 text-xs text-ink-tertiary" id={LAST_OWNER_HINT_ID}>
             最後の owner は脱退できません。別のメンバーを owner
-            にしてからお試しください。
+            にするか、ワークスペースごと必要なくなった場合は{" "}
+            <Link
+              to="/workspaces/$workspaceId/settings/danger"
+              params={{ workspaceId }}
+              className="text-ink underline underline-offset-2"
+            >
+              ワークスペースを削除
+            </Link>
+            してください。
           </p>
         ) : null}
       </section>
@@ -514,6 +601,7 @@ function MemberRow({
   member: WorkspaceMemberView;
   isSelf: boolean;
   canManage: boolean;
+  /** 自分が唯一の owner のときだけ立つ（脱退の禁止）。 */
   isLastOwner: boolean;
   busy: boolean;
   confirming: boolean;
@@ -535,6 +623,7 @@ function MemberRow({
   const [isChanging, startChanging] = useTransition();
   const [roleError, setRoleError] = useState<string | null>(null);
   const roleId = useId();
+  const confirmNoteId = useId();
 
   const onSelectRole = (next: WorkspaceRoleView) => {
     startChanging(async () => {
@@ -590,11 +679,8 @@ function MemberRow({
               id={roleId}
               className={`${selectClass} h-7.5 px-2 text-xs`}
               value={role}
-              disabled={busy || isChanging || isLastOwner}
+              disabled={busy || isChanging}
               aria-busy={isChanging}
-              aria-describedby={
-                isLastOwner ? LAST_OWNER_ROW_HINT_ID : undefined
-              }
               onChange={(event) =>
                 onSelectRole(event.target.value as WorkspaceRoleView)
               }
@@ -618,6 +704,7 @@ function MemberRow({
               type="button"
               className={dangerButtonClass}
               disabled={busy}
+              aria-describedby={confirmNoteId}
               onClick={confirmingLeave ? onLeave : onRemove}
             >
               {confirmingLeave ? "脱退する" : "除名する"}
@@ -645,21 +732,21 @@ function MemberRow({
           <button
             type="button"
             className={dangerButtonClass}
-            disabled={busy || isLastOwner}
-            aria-describedby={isLastOwner ? LAST_OWNER_ROW_HINT_ID : undefined}
+            disabled={busy}
             onClick={onConfirmRemove}
           >
             除名
           </button>
         ) : null}
       </span>
-      {isLastOwner && !isSelf ? (
+      {confirmOpen ? (
         <span
-          id={LAST_OWNER_ROW_HINT_ID}
-          className="col-start-2 text-xs text-ink-tertiary"
+          id={confirmNoteId}
+          className="col-start-2 text-xs text-ink-secondary"
         >
-          最後の owner は降格も除名もできません。別のメンバーを owner
-          にしてからお試しください。
+          {confirmingLeave
+            ? "脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残ります。再び参加するには招待が必要です。"
+            : `除名すると、${name} はこのワークスペースのノートに一切アクセスできなくなります。${name} が作成したノートはワークスペースに残ります。`}
         </span>
       ) : null}
     </li>
@@ -800,7 +887,6 @@ function PendingRow({
 }
 
 const LAST_OWNER_HINT_ID = "workspace-last-owner-hint";
-const LAST_OWNER_ROW_HINT_ID = "workspace-last-owner-row-hint";
 
 const selectClass =
   "h-10 rounded-md border border-hairline-strong bg-bg px-3 text-sm text-ink transition-colors focus:border-transparent focus:shadow-focus focus:outline-none disabled:cursor-not-allowed disabled:opacity-55";

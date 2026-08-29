@@ -20,6 +20,7 @@ import {
   WORKSPACE_NAME_MAX_LENGTH,
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
+import { useSlugAvailability } from "@/components/workspace/slugAvailability";
 import { slugSuggestionsFor } from "@/components/workspace/slugSuggestions";
 import { renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
@@ -29,10 +30,15 @@ import { createWorkspaceFn } from "@/routes/workspaces/-action";
  * P-30 ワークスペース作成（モック P30-workspace-new.html、
  * PAGE-p30-001..002）。
  *
- * 作成に成功したらそのワークスペースの文脈へ移る（WS-01 手順 4）。
- * スラッグの重複は**入力中には検出しない** — 可否を判定する読み取り
- * ユースケースがまだ無く、確定するのは作成時の予約なので、拒否された
- * ときにその場で代替候補を出す形にしてある。
+ * 作成に成功したらそのワークスペースの文脈へ移る（WS-01 手順 4）。行き先を
+ * メンバー管理（P-32）にするのは、手順 4 が「切り替わり、メンバー招待への
+ * 導線が表示される」と定め、P-30 の終状態も「作成完了（招待への導線）」だ
+ * からである。招待の入口を持つ画面はここだけなので、ノート一覧へ送ると
+ * 導線が消える。
+ * スラッグの重複は入力中に照会して代替候補を出す（`useSlugAvailability`）
+ * が、確定するのは作成時の予約なので、作成が `SLUG_ALREADY_USED` で
+ * 落ちた場合の候補提示も残す。実際に予約が落ちた値の判断のほうが新しい
+ * ので、そちらを目安より先に採る。
  */
 
 const SLUG_FIELD_CODES: ReadonlySet<string> = new Set([
@@ -43,6 +49,8 @@ const SLUG_FIELD_CODES: ReadonlySet<string> = new Set([
 
 type CreateError = Readonly<{
   target: "name" | "slug" | "form";
+  /** 判断の対象になった値。入力が変わったら失効させるために持つ。 */
+  slug: string;
   message: string;
   suggestions: readonly string[];
 }>;
@@ -58,14 +66,15 @@ function createErrorFor(slug: string, error: unknown): CreateError {
   if (code !== null && SLUG_FIELD_CODES.has(code)) {
     return {
       target: "slug",
+      slug,
       message,
       suggestions: code === "SLUG_ALREADY_USED" ? slugSuggestionsFor(slug) : [],
     };
   }
   if (code === WorkspaceErrorCode.InvalidName) {
-    return { target: "name", message, suggestions: [] };
+    return { target: "name", slug, message, suggestions: [] };
   }
-  return { target: "form", message, suggestions: [] };
+  return { target: "form", slug, message, suggestions: [] };
 }
 
 export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
@@ -96,7 +105,7 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
       // 作成は既に成立しているので、遷移の失敗を「作成できなかった」と
       // 見せない（再送で 2 つ目を作らせないため try の外に置く）。
       await router.navigate({
-        to: "/workspaces/$workspaceId/settings/general",
+        to: "/workspaces/$workspaceId/settings/members",
         params: { workspaceId },
       });
       return IDLE;
@@ -104,9 +113,31 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
     IDLE,
   );
 
+  const slugHint = useSlugAvailability({
+    slug,
+    current: "",
+    workspaceId: null,
+  });
+
   const failure = state.error;
   const nameError = failure?.target === "name" ? failure.message : null;
-  const slugError = failure?.target === "slug" ? failure.message : null;
+  // スラッグの失敗は、判断の対象になった値が残っているあいだだけ効く。
+  const slugFailure =
+    failure !== null && failure.target === "slug" && failure.slug === slug
+      ? failure
+      : null;
+  const hintProblem =
+    slugHint.kind === "taken" || slugHint.kind === "problem"
+      ? slugHint.message
+      : null;
+  const slugError = slugFailure !== null ? slugFailure.message : hintProblem;
+  // 実際に予約が落ちた値の候補を、入力中の目安より先に採る。
+  const suggestions =
+    slugFailure !== null
+      ? slugFailure.suggestions
+      : slugHint.kind === "taken"
+        ? slugHint.suggestions
+        : [];
 
   return (
     <main className="mx-auto max-w-[var(--content-max)] px-4 pt-10 pb-20 sm:px-6 sm:pt-12 lg:pt-16">
@@ -186,12 +217,22 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
               onChange={(event) => setSlug(event.target.value)}
             />
           </div>
-          <p className={fieldErrorClass} id={slugErrorId} aria-live="polite">
-            {slugError}
+          <p
+            className="text-xs not-empty:mt-2"
+            id={slugErrorId}
+            aria-live="polite"
+          >
+            {slugError !== null ? (
+              <span className="text-error">{slugError}</span>
+            ) : slugHint.kind === "available" ? (
+              <span className="text-success">このスラッグは使用できます</span>
+            ) : slugHint.kind === "checking" ? (
+              <span className="text-ink-tertiary">確認中...</span>
+            ) : null}
           </p>
-          {failure !== null && failure.suggestions.length > 0 ? (
+          {suggestions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-2">
-              {failure.suggestions.map((suggestion) => (
+              {suggestions.map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"
