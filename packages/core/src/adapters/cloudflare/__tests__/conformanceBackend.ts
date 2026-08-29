@@ -195,6 +195,13 @@ export async function makeCloudflareConformanceBackend(
           storageQuotaRepository: scoped.storageQuotaRepository,
           llmUsageRepository: scoped.llmUsageRepository,
           storedFileRepository: scoped.storedFileRepository,
+          workspaceRepository: scoped.workspaceRepository,
+          membershipRepository: scoped.membershipRepository,
+          invitationRepository: scoped.invitationRepository,
+          membershipRemovalPreparationStore:
+            scoped.membershipRemovalPreparationStore,
+          workspaceOperationLockStore: scoped.workspaceOperationLockStore,
+          workspaceDeletionManifestStore: scoped.workspaceDeletionManifestStore,
         };
       },
       stageOutbox,

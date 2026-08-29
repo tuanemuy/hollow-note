@@ -363,3 +363,39 @@ item 側の書き込みはすべて `opaque` で stage し、item の読み（`l
 
 - 同一 UoW 内で `acknowledgeLocal` の直後に `listLocalPending` を呼ぶと、Cloudflare はまだ ack 前の item を返し memory は返さない。契約が要求するのは「delete と ack が同じ UoW で一緒に着地すること」であり、同一 turn 内での読み戻しではないので適合スイートの範囲外。ADR-019 と同じクラスの差分であり、UoW 内で読み戻す呼び出しが増えたら per-id `upsert` への切り替えが必要になる。
 - header は overlay に載るので、`beginDeletion` と同じ UoW 内の `assertWritable` / `assertDeletionOwner` は正しく閉じた scope を観測する。
+
+## ADR-023: workspace 12 ポートの DI 配置を「scope-local は UoW context / global は request container」で割る
+
+### Context
+
+ADR-012 が先送りした配線をステップ 7 で行う。12 ポートは物理プレーンで 2 つに割れる（`adapters/cloudflare/__tests__/ports/workspace.ts` の 3 グループがその区分をすでに持っている）。`ScopeUnitOfWorkContext` に載せるとその面の callback からしか触れなくなり、`RequestContainer` に載せると UoW の外からしか触れない。どちらに置くかは「その書き込みが transaction の中に居るべきか」で決まる。
+
+### Decision
+
+scope DO 側の 6 つ（`WorkspaceRepository` / `MembershipRepository` / `InvitationRepository` / `MembershipRemovalPreparationStore` / `WorkspaceOperationLockStore` / `WorkspaceDeletionManifestStore`）を `ScopeUnitOfWorkContext` に載せる。manifest の page・cursor・継続 task は同一 UoW で着地することが契約であり、`beginDeletion` は scope を閉じる transaction そのものなので、UoW の外に置く選択肢がない。
+
+global D1 側の 6 つ（3 directory と 3 予約ストア）は `RequestContainer` に置く。予約サガは reserve → scope commit → activate と transaction をまたぐ設計であり（ADR-013）、directory は読み取り専用の投影である。あわせて、3 集約の**読み取り専用ビュー** `workspaceReaderFor(scope): WorkspaceReader` を `noteReaderFor` / `usageReaderFor` と同じ形で置き、`Pick` で write メソッドを落として「表示のための読みが書き込み経路にならない」を型で保つ。
+
+`UserBatchReader` も同時に `RequestContainer` へ載せる。`listMembers` は UserId shard 横断で表示名を解決する必要があり、これは workspace scope が到達できない読みで、workspace ポートではないが最初の消費者が本ステップになる。
+
+### Consequences
+
+- `pnpm typecheck` が両合成ルートを同じ形に拘束したまま通る。`AppRuntime` の 4 メソッドは変わらない。
+- Cloudflare の適合バックエンド（`__tests__/conformanceBackend.ts`）と `deleteFilesByOwner.test.ts` の `ScopePlaneRepositories` に 6 件の追加が必要になった。前者は既存の `createWorkspaceScopePorts` の結果をそのまま渡すだけで済む。
+- `runtimeComposition.test.ts` の `REQUEST_PORTS` に 8 件追加。この一覧は型レベルの網羅検査を伴うので、以降ポートを足すたびに更新が要る（それが狙い）。
+- ステップ 8〜12 は新しい配線を足さずに書ける。worker container には何も足していないので、削除サガの worker がステップ 11 で必要とするものはそこで判断する。
+
+## ADR-024: `getPublicWorkspace` は directory の `unavailable` を「判定なし」として scope 読みに委ねる
+
+### Context
+
+`spec/usecases/workspace.md#getPublicWorkspace` の手順 2 は「global D1 のactive slug reservationと `workspace_directory` を引く。not found / 非公開なら `WORKSPACE_NOT_FOUND`」と述べるが、`WorkspaceDirectoryBatchReader` の 3 値のうち `unavailable`（shard 障害・投影未到着）に触れていない。手順 3 は description のために scope object を必ず読むので、この経路では directory は「公開かどうかの門」と「投影 version の基準」にしか使われていない。
+
+### Decision
+
+`deleted` は NotFound、`active` かつ `publication !== "published"` も NotFound、`unavailable` は判定を出さず（`null`）scope 読みの結果を唯一の権威とする。scope の Workspace は publication も lifecycle も持つので、directory が答えられない時に 404 を返す理由がない。version 比較による 1 回だけの再読は、directory が `active` を返した時のみ行う。
+
+### Consequences
+
+- 1 shard の障害が「そのワークスペースは存在しない」という、クローラにキャッシュされうる嘘にならない。
+- 逆に、投影が遅れている公開直後のワークスペースは directory が `unavailable` でも scope 読みで公開ページが出る。正データが公開なので、これは仕様の意図（手順 3 の retry も「投影より古い scope 読み」を直す方向）と整合する。

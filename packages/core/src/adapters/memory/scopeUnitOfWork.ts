@@ -8,7 +8,10 @@ import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import type { MemoryUnitOfWorkOptions } from "./globalUnitOfWork";
 import { createMemoryAppliedOperationStore } from "./repositories/appliedOperationStore";
+import { createMemoryInvitationRepository } from "./repositories/invitationRepository";
 import { createMemoryLlmUsageRepository } from "./repositories/llmUsageRepository";
+import { createMemoryMembershipRemovalPreparationStore } from "./repositories/membershipRemovalPreparationStore";
+import { createMemoryMembershipRepository } from "./repositories/membershipRepository";
 import {
   createMemoryLocalNoteProjectionWriter,
   createMemoryNoteProjectionRevisionStore,
@@ -20,6 +23,9 @@ import { createMemoryScopeCleanupAdmissionStore } from "./repositories/scopeClea
 import { createMemoryScopeTaskScheduler } from "./repositories/scopeTaskScheduler";
 import { createMemoryStorageQuotaRepository } from "./repositories/storageQuotaRepository";
 import { createMemoryStoredFileRepository } from "./repositories/storedFileRepository";
+import { createMemoryWorkspaceDeletionManifestStore } from "./repositories/workspaceDeletionManifestStore";
+import { createMemoryWorkspaceOperationLockStore } from "./repositories/workspaceOperationLockStore";
+import { createMemoryWorkspaceRepository } from "./repositories/workspaceRepository";
 import type { MemoryBackend } from "./store";
 
 /**
@@ -73,6 +79,19 @@ export function createMemoryScopeUnitOfWorkProvider(
             createMemoryStorageQuotaRepository(scopeStore),
           llmUsageRepository: createMemoryLlmUsageRepository(scopeStore),
           storedFileRepository: createMemoryStoredFileRepository(scopeStore),
+          workspaceRepository: createMemoryWorkspaceRepository(scopeStore),
+          membershipRepository: createMemoryMembershipRepository(scopeStore),
+          invitationRepository: createMemoryInvitationRepository(scopeStore),
+          membershipRemovalPreparationStore:
+            createMemoryMembershipRemovalPreparationStore(scopeStore),
+          workspaceOperationLockStore: createMemoryWorkspaceOperationLockStore(
+            backend,
+            scopeStore,
+          ),
+          workspaceDeletionManifestStore:
+            createMemoryWorkspaceDeletionManifestStore(scopeStore, () =>
+              backend.clock.now(),
+            ),
           collectEvents(drafts: readonly EventDraft[]): void {
             buffered.push(
               ...attachEventIds(drafts, (draft) =>

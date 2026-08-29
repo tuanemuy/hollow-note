@@ -6,16 +6,26 @@ import { createD1IdempotencyStore } from "../../adapters/cloudflare/d1/repositor
 import { createD1IdentityRemovalReceiptStore } from "../../adapters/cloudflare/d1/repositories/identityRemovalReceiptStore";
 import { createD1IdentityRepository } from "../../adapters/cloudflare/d1/repositories/identityRepository";
 import { createD1IdentityUniqueDirectory } from "../../adapters/cloudflare/d1/repositories/identityUniqueDirectory";
+import { createD1InvitationRouteStore } from "../../adapters/cloudflare/d1/repositories/invitationRouteStore";
 import { createD1LoginAttemptStore } from "../../adapters/cloudflare/d1/repositories/loginAttemptStore";
+import { createD1MembershipDirectoryReservationStore } from "../../adapters/cloudflare/d1/repositories/membershipDirectoryReservationStore";
 import { createD1NoteRouteFanOutReader } from "../../adapters/cloudflare/d1/repositories/noteRouteFanOutReader";
 import { createD1NoteRouteStore } from "../../adapters/cloudflare/d1/repositories/noteRouteStore";
 import { createD1OAuthStateStore } from "../../adapters/cloudflare/d1/repositories/oauthStateStore";
 import { createD1OutboxRepository } from "../../adapters/cloudflare/d1/repositories/outboxRepository";
 import { createD1PublicNoteProjectionWriter } from "../../adapters/cloudflare/d1/repositories/publicNoteProjection";
+import { createD1PublicWorkspaceDirectoryReader } from "../../adapters/cloudflare/d1/repositories/publicWorkspaceDirectoryReader";
 import { createD1SessionRepository } from "../../adapters/cloudflare/d1/repositories/sessionRepository";
+import { createD1UserBatchReader } from "../../adapters/cloudflare/d1/repositories/userBatchReader";
 import { createD1UserRepository } from "../../adapters/cloudflare/d1/repositories/userRepository";
+import { createD1UserWorkspaceDirectory } from "../../adapters/cloudflare/d1/repositories/userWorkspaceDirectory";
+import { createD1WorkspaceDirectoryBatchReader } from "../../adapters/cloudflare/d1/repositories/workspaceDirectoryBatchReader";
+import { createD1WorkspaceSlugReservationStore } from "../../adapters/cloudflare/d1/repositories/workspaceSlugReservationStore";
 import { createCloudflareAppliedOperationStore } from "../../adapters/cloudflare/do/repositories/appliedOperationStore";
+import { createCloudflareInvitationRepository } from "../../adapters/cloudflare/do/repositories/invitationRepository";
 import { createCloudflareLlmUsageRepository } from "../../adapters/cloudflare/do/repositories/llmUsageRepository";
+import { createCloudflareMembershipRemovalPreparationStore } from "../../adapters/cloudflare/do/repositories/membershipRemovalPreparationStore";
+import { createCloudflareMembershipRepository } from "../../adapters/cloudflare/do/repositories/membershipRepository";
 import {
   createScopeLocalNoteProjectionWriter,
   createScopeNoteProjectionRevisionStore,
@@ -26,6 +36,9 @@ import { createCloudflareScopeCleanupAdmissionStore } from "../../adapters/cloud
 import { createCloudflareScopeTaskScheduler } from "../../adapters/cloudflare/do/repositories/scopeTaskScheduler";
 import { createCloudflareStorageQuotaRepository } from "../../adapters/cloudflare/do/repositories/storageQuotaRepository";
 import { createCloudflareStoredFileRepository } from "../../adapters/cloudflare/do/repositories/storedFileRepository";
+import { createCloudflareWorkspaceDeletionManifestStore } from "../../adapters/cloudflare/do/repositories/workspaceDeletionManifestStore";
+import { createCloudflareWorkspaceOperationLockStore } from "../../adapters/cloudflare/do/repositories/workspaceOperationLockStore";
+import { createCloudflareWorkspaceRepository } from "../../adapters/cloudflare/do/repositories/workspaceRepository";
 import type { ScopeObjectNamespace } from "../../adapters/cloudflare/do/scopeStub";
 import { createScopeStubExecutor } from "../../adapters/cloudflare/do/scopeStub";
 import {
@@ -81,6 +94,7 @@ import type {
   SharedDeps,
   UsageReader,
   WorkerContainer,
+  WorkspaceReader,
 } from "./types";
 
 /** The three bindings the adapter group needs from `wrangler.jsonc`. */
@@ -305,6 +319,15 @@ export function createCloudflareRuntime(
         }),
         llmUsageRepository: createCloudflareLlmUsageRepository({ session }),
         storedFileRepository: createCloudflareStoredFileRepository({ session }),
+        workspaceRepository: createCloudflareWorkspaceRepository({ session }),
+        membershipRepository: createCloudflareMembershipRepository({ session }),
+        invitationRepository: createCloudflareInvitationRepository({ session }),
+        membershipRemovalPreparationStore:
+          createCloudflareMembershipRemovalPreparationStore({ session }),
+        workspaceOperationLockStore:
+          createCloudflareWorkspaceOperationLockStore({ session, clock }),
+        workspaceDeletionManifestStore:
+          createCloudflareWorkspaceDeletionManifestStore({ session, clock }),
       }),
       stageOutbox,
       relayTrigger,
@@ -319,6 +342,15 @@ export function createCloudflareRuntime(
     return {
       storageQuota: createCloudflareStorageQuotaRepository({ session }),
       llmUsage: createCloudflareLlmUsageRepository({ session }),
+    };
+  };
+
+  const workspaceReaderFor = (scope: ScopeKey): WorkspaceReader => {
+    const session = scopeSessionFor(scope);
+    return {
+      workspace: createCloudflareWorkspaceRepository({ session }),
+      membership: createCloudflareMembershipRepository({ session }),
+      invitation: createCloudflareInvitationRepository({ session }),
     };
   };
 
@@ -365,6 +397,22 @@ export function createCloudflareRuntime(
         }),
         noteReaderFor,
         usageReaderFor,
+        workspaceReaderFor,
+        userBatchReader: createD1UserBatchReader({ session }),
+        userWorkspaceDirectory: createD1UserWorkspaceDirectory({ session }),
+        workspaceDirectoryBatchReader: createD1WorkspaceDirectoryBatchReader({
+          session,
+        }),
+        publicWorkspaceDirectoryReader: createD1PublicWorkspaceDirectoryReader({
+          session,
+        }),
+        workspaceSlugReservationStore: createD1WorkspaceSlugReservationStore({
+          session,
+          clock,
+        }),
+        invitationRouteStore: createD1InvitationRouteStore({ session, clock }),
+        membershipDirectoryReservationStore:
+          createD1MembershipDirectoryReservationStore({ session, clock }),
         mailSender: options.mailSender,
         passwordHasher,
         secureTokenGenerator,

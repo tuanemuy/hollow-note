@@ -7,11 +7,21 @@ import type { PasswordHasher } from "@repo/core/domain/identity/ports/passwordHa
 import type { SecureTokenGenerator } from "@repo/core/domain/identity/ports/secureTokenGenerator";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
+import type { UserBatchReader } from "@repo/core/domain/identity/ports/userBatchReader";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { PublicNoteProjectionWriter } from "@repo/core/domain/note/ports/publicNoteProjectionWriter";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
+import type { InvitationRepository } from "@repo/core/domain/workspace/ports/invitationRepository";
+import type { InvitationRouteStore } from "@repo/core/domain/workspace/ports/invitationRouteStore";
+import type { MembershipDirectoryReservationStore } from "@repo/core/domain/workspace/ports/membershipDirectoryReservationStore";
+import type { MembershipRepository } from "@repo/core/domain/workspace/ports/membershipRepository";
+import type { PublicWorkspaceDirectoryReader } from "@repo/core/domain/workspace/ports/publicWorkspaceDirectoryReader";
+import type { UserWorkspaceDirectory } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
+import type { WorkspaceDirectoryBatchReader } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
+import type { WorkspaceSlugReservationStore } from "@repo/core/domain/workspace/ports/workspaceSlugReservationStore";
 import type {
   GlobalUnitOfWorkProvider,
   ScopeUnitOfWorkProvider,
@@ -143,6 +153,29 @@ export type UsageReader = Readonly<{
   storageQuota: Pick<StorageQuotaRepository, "find" | "listBySubjects">;
   llmUsage: Pick<LlmUsageRepository, "find">;
 }>;
+/**
+ * Scope-bound read view over one workspace's three aggregates: access
+ * resolution, member and invitation listings, and the token / email
+ * lookups the invitation flow starts from.
+ *
+ * Every write method is dropped, which is what forces a mutation through
+ * `scopeUnitOfWorkProvider.run` — including the ones that only look like
+ * reads, since `findById` yields the OCC token a save would consume.
+ */
+export type WorkspaceReader = Readonly<{
+  workspace: Pick<WorkspaceRepository, "findById">;
+  membership: Pick<
+    MembershipRepository,
+    "findByWorkspaceAndUser" | "listByWorkspace" | "countByRole"
+  >;
+  invitation: Pick<
+    InvitationRepository,
+    | "findByTokenHash"
+    | "findPendingByWorkspaceAndEmail"
+    | "listByWorkspace"
+    | "countPendingIssuedSince"
+  >;
+}>;
 
 /**
  * Request-path container. Provided to usecases (mutations must run
@@ -160,6 +193,15 @@ export type UsageReader = Readonly<{
  * bytes *before* the transaction that records the file, and the delivery
  * route reads them back — both request-path work that no unit of work
  * may enclose.
+ *
+ * The workspace ports here are exactly the global-plane half of that
+ * group: the three directories a scope cannot answer on its own, and the
+ * three service-wide reservations (slug, invitation token, membership
+ * edge) whose reserve → scope commit → activate saga straddles the
+ * transaction by design. The scope-local half lives on
+ * `ScopeUnitOfWorkContext`. `userBatchReader` joins them because a member
+ * listing resolves its display names across UserId shards, which no
+ * workspace scope can reach.
  *
  * `oauthDevMode` is not a port but the one flag the composition root
  * publishes about its own OAuth wiring: the dev consent route reads it
@@ -190,6 +232,14 @@ export type RequestContainer = SharedDeps &
     deletionOperationReader: DeletionOperationReader;
     noteReaderFor: (scope: ScopeKey) => NoteReader;
     usageReaderFor: (scope: ScopeKey) => UsageReader;
+    workspaceReaderFor: (scope: ScopeKey) => WorkspaceReader;
+    userBatchReader: UserBatchReader;
+    userWorkspaceDirectory: UserWorkspaceDirectory;
+    workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
+    publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+    workspaceSlugReservationStore: WorkspaceSlugReservationStore;
+    invitationRouteStore: InvitationRouteStore;
+    membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
     mailSender: MailSender;
     passwordHasher: PasswordHasher;
     secureTokenGenerator: SecureTokenGenerator;

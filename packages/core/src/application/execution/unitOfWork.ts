@@ -11,6 +11,12 @@ import type { NoteRevisionRepository } from "@repo/core/domain/note/ports/noteRe
 import type { StoredFileRepository } from "@repo/core/domain/storage/ports/storedFileRepository";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
+import type { InvitationRepository } from "@repo/core/domain/workspace/ports/invitationRepository";
+import type { MembershipRemovalPreparationStore } from "@repo/core/domain/workspace/ports/membershipRemovalPreparationStore";
+import type { MembershipRepository } from "@repo/core/domain/workspace/ports/membershipRepository";
+import type { WorkspaceDeletionManifestStore } from "@repo/core/domain/workspace/ports/workspaceDeletionManifestStore";
+import type { WorkspaceOperationLockStore } from "@repo/core/domain/workspace/ports/workspaceOperationLockStore";
+import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
 import type { AccountDeletionManifestStore } from "../ports/accountDeletionManifestStore";
 import type { AppliedOperationStore } from "../ports/appliedOperationStore";
 import type { DistributedOperationStore } from "../ports/distributedOperationStore";
@@ -72,6 +78,16 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * writes belong to the transaction of the change they project.
  * `appliedOperationStore` likewise records a cleanup command in the
  * transaction that applies it, so a redelivery cannot apply it twice.
+ *
+ * The workspace group is here in full because every one of its members
+ * is scope-local business data or the admission state guarding it: the
+ * three aggregates, the account-deletion prepare lock on a membership,
+ * the move locks and deletion admission, and the deletion manifest whose
+ * page, cursor and continuation task must land in one transaction
+ * (spec/usecases/workspace.md `deleteWorkspace`). Their global
+ * counterparts — the directories and the three service-wide reservations
+ * — sit on the request container instead, since the design deliberately
+ * places those writes outside any unit of work.
  */
 export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly noteRepository: NoteRepository;
@@ -84,6 +100,12 @@ export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly storageQuotaRepository: StorageQuotaRepository;
   readonly llmUsageRepository: LlmUsageRepository;
   readonly storedFileRepository: StoredFileRepository;
+  readonly workspaceRepository: WorkspaceRepository;
+  readonly membershipRepository: MembershipRepository;
+  readonly invitationRepository: InvitationRepository;
+  readonly membershipRemovalPreparationStore: MembershipRemovalPreparationStore;
+  readonly workspaceOperationLockStore: WorkspaceOperationLockStore;
+  readonly workspaceDeletionManifestStore: WorkspaceDeletionManifestStore;
 }
 
 /**

@@ -229,6 +229,14 @@ const repositories = (session: SqlSession): ScopePlaneRepositories => ({
   storageQuotaRepository: unusedPort("StorageQuotaRepository"),
   llmUsageRepository: unusedPort("LlmUsageRepository"),
   storedFileRepository: createCloudflareStoredFileRepository({ session }),
+  workspaceRepository: unusedPort("WorkspaceRepository"),
+  membershipRepository: unusedPort("MembershipRepository"),
+  invitationRepository: unusedPort("InvitationRepository"),
+  membershipRemovalPreparationStore: unusedPort(
+    "MembershipRemovalPreparationStore",
+  ),
+  workspaceOperationLockStore: unusedPort("WorkspaceOperationLockStore"),
+  workspaceDeletionManifestStore: unusedPort("WorkspaceDeletionManifestStore"),
 });
 
 const runOneTurn = async (

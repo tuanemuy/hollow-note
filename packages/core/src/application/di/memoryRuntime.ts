@@ -17,17 +17,27 @@ import { createMemoryIdempotencyStore } from "@repo/core/adapters/memory/reposit
 import { createMemoryIdentityRemovalReceiptStore } from "@repo/core/adapters/memory/repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "@repo/core/adapters/memory/repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "@repo/core/adapters/memory/repositories/identityUniqueDirectory";
+import { createMemoryInvitationRepository } from "@repo/core/adapters/memory/repositories/invitationRepository";
+import { createMemoryInvitationRouteStore } from "@repo/core/adapters/memory/repositories/invitationRouteStore";
 import { createMemoryLlmUsageRepository } from "@repo/core/adapters/memory/repositories/llmUsageRepository";
 import { createMemoryLoginAttemptStore } from "@repo/core/adapters/memory/repositories/loginAttemptStore";
+import { createMemoryMembershipDirectoryReservationStore } from "@repo/core/adapters/memory/repositories/membershipDirectoryReservationStore";
+import { createMemoryMembershipRepository } from "@repo/core/adapters/memory/repositories/membershipRepository";
 import { createMemoryPublicNoteProjectionWriter } from "@repo/core/adapters/memory/repositories/noteProjection";
 import { createMemoryNoteRepository } from "@repo/core/adapters/memory/repositories/noteRepository";
 import { createMemoryNoteRouteFanOutReader } from "@repo/core/adapters/memory/repositories/noteRouteFanOutReader";
 import { createMemoryNoteRouteStore } from "@repo/core/adapters/memory/repositories/noteRouteStore";
 import { createMemoryOAuthStateStore } from "@repo/core/adapters/memory/repositories/oauthStateStore";
 import { createMemoryOutboxRepository } from "@repo/core/adapters/memory/repositories/outboxRepository";
+import { createMemoryPublicWorkspaceDirectoryReader } from "@repo/core/adapters/memory/repositories/publicWorkspaceDirectoryReader";
 import { createMemorySessionRepository } from "@repo/core/adapters/memory/repositories/sessionRepository";
 import { createMemoryStorageQuotaRepository } from "@repo/core/adapters/memory/repositories/storageQuotaRepository";
+import { createMemoryUserBatchReader } from "@repo/core/adapters/memory/repositories/userBatchReader";
 import { createMemoryUserRepository } from "@repo/core/adapters/memory/repositories/userRepository";
+import { createMemoryUserWorkspaceDirectory } from "@repo/core/adapters/memory/repositories/userWorkspaceDirectory";
+import { createMemoryWorkspaceDirectoryBatchReader } from "@repo/core/adapters/memory/repositories/workspaceDirectoryBatchReader";
+import { createMemoryWorkspaceRepository } from "@repo/core/adapters/memory/repositories/workspaceRepository";
+import { createMemoryWorkspaceSlugReservationStore } from "@repo/core/adapters/memory/repositories/workspaceSlugReservationStore";
 import { createMemoryScopeRouter } from "@repo/core/adapters/memory/scopeRouter";
 import { createMemoryScopeTaskQueue } from "@repo/core/adapters/memory/scopeTaskQueue";
 import { createMemoryScopeUnitOfWorkProvider } from "@repo/core/adapters/memory/scopeUnitOfWork";
@@ -60,6 +70,7 @@ import type {
   SharedDeps,
   UsageReader,
   WorkerContainer,
+  WorkspaceReader,
 } from "./types";
 
 export type MemoryRuntimeOptions = MemoryBackendOptions &
@@ -192,6 +203,15 @@ export function createMemoryRuntime(
     };
   };
 
+  const workspaceReaderFor = (scope: ScopeKey): WorkspaceReader => {
+    const scopeStore = backend.scope(scope);
+    return {
+      workspace: createMemoryWorkspaceRepository(scopeStore),
+      membership: createMemoryMembershipRepository(scopeStore),
+      invitation: createMemoryInvitationRepository(scopeStore),
+    };
+  };
+
   return {
     backend,
     mailSender,
@@ -230,6 +250,18 @@ export function createMemoryRuntime(
         deletionOperationReader: distributedOperationStore,
         noteReaderFor,
         usageReaderFor,
+        workspaceReaderFor,
+        userBatchReader: createMemoryUserBatchReader(backend),
+        userWorkspaceDirectory: createMemoryUserWorkspaceDirectory(backend),
+        workspaceDirectoryBatchReader:
+          createMemoryWorkspaceDirectoryBatchReader(backend),
+        publicWorkspaceDirectoryReader:
+          createMemoryPublicWorkspaceDirectoryReader(backend),
+        workspaceSlugReservationStore:
+          createMemoryWorkspaceSlugReservationStore(backend),
+        invitationRouteStore: createMemoryInvitationRouteStore(backend),
+        membershipDirectoryReservationStore:
+          createMemoryMembershipDirectoryReservationStore(backend),
         mailSender,
         passwordHasher,
         secureTokenGenerator: createNodeSecureTokenGenerator(),
