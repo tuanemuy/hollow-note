@@ -82,6 +82,6 @@ describe("createInMemoryQueueDispatcher", () => {
 
     expect(handler).toHaveBeenCalledTimes(6);
     expect(outcomes).toHaveLength(6);
-    expect(peak).toBeLessThanOrEqual(2);
+    expect(peak).toBe(2);
   });
 });

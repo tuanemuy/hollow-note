@@ -165,6 +165,13 @@ export interface WorkspaceSlugReservationStore {
    * by the one freeing it. A row held by another workspace is left alone,
    * so a delayed release can never take a key away from its successor.
    *
+   * Only an `active` row is freed. This workspace's own `reserved` row —
+   * a change still in flight — is left standing and reclaimed by its
+   * expiry instead: with no operation id to judge by, dropping it would
+   * take the reservation out from under the change about to activate it,
+   * and callers name candidates rather than the key they hold, so they
+   * reach `reserved` rows routinely.
+   *
    * Idempotent by target state: an absent row succeeds, because the only
    * obligation is that the slug stops resolving and it already does not.
    */

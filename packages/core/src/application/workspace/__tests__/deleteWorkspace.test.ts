@@ -27,12 +27,14 @@ import {
 } from "../workspaceDeletionGlobal";
 import { continueWorkspaceDeletionLocal } from "../workspaceDeletionLocal";
 import {
+  clearDirectoryOutages,
   createWorkspaceHarness,
   directoryRow,
   drainScopeTasks,
   expectConflict,
   expectNotFound,
   expectValidation,
+  induceDirectoryOutage,
   invitationRoutes,
   membershipEdges,
   outboxPayloads,
@@ -46,6 +48,7 @@ import {
   storedMemberships,
   storedWorkspace,
   type TestHarness,
+  withFailingDirectoryTombstone,
   workspaceScope,
 } from "./harness";
 
@@ -401,6 +404,83 @@ describe("deleteWorkspace", () => {
     expect(
       slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
     ).toEqual([["team-gamma", WORKSPACE, "reserved"]]);
+  });
+
+  /**
+   * The advertised candidate can only be read while the directory row is
+   * there, and this deletion is what removes it. A shard that cannot
+   * answer therefore is not "this workspace advertises nothing": folding
+   * it that way admits a deletion carrying one candidate, and the
+   * `active` reservation the directory named would outlive every caller
+   * able to free it. Refusing keeps the scope open, which is what leaves
+   * the requester somewhere to go.
+   */
+  it("TC-workspace-326: a deletion is refused while the directory cannot name the advertised key, and frees it once it can", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, { slug: "old-slug" });
+
+    const store = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      changeWorkspaceSlug({
+        container: {
+          ...h.container,
+          workspaceSlugReservationStore: {
+            ...store,
+            activate: () => Promise.reject(activateFailure),
+          },
+        },
+        input: { workspaceId: WORKSPACE, userId: OWNER, slug: "team-gamma" },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    induceDirectoryOutage(h, WORKSPACE);
+    await expectConflict(accept(h), "WORKSPACE_DIRECTORY_UNAVAILABLE");
+    // Nothing was accepted: the scope is untouched and no turn is armed.
+    expect(storedWorkspace(h, WORKSPACE)?.lifecycle.state).toBe("active");
+    expect(scheduledTasks(h, WORKSPACE)).toHaveLength(0);
+
+    clearDirectoryOutages(h);
+    await accept(h);
+    await drainScopeTasks(h);
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-gamma", WORKSPACE, "reserved"]]);
+  });
+
+  /**
+   * The tombstone is the judgement the public route reads, and the turn
+   * runs it before anything else it owes. A shard that refuses it must
+   * stop the turn there — a slug freed while the directory row still
+   * advertises it hands the next taker a URL two workspaces answer.
+   */
+  it("TC-workspace-325: a tombstone that never lands backs the turn off with the slug still held", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+    const { operationId } = await accept(h);
+
+    await drive(h, 8, withFailingDirectoryTombstone(h));
+
+    // The local half is done, the global one has not got past its first
+    // act, and the row that drives it is ageing rather than spinning.
+    expect(storedWorkspace(h, WORKSPACE)).toBeNull();
+    expect(directoryRow(h, WORKSPACE)?.lifecycle).toBe("active");
+    expect(slugReservations(h)).toHaveLength(1);
+    expect(scheduledTasks(h, WORKSPACE)).toEqual([
+      expect.objectContaining({
+        kind: WORKSPACE_DELETION_GLOBAL_TASK_KIND,
+        operationId,
+        state: "pending",
+      }),
+    ]);
+    expect(scheduledTasks(h, WORKSPACE)[0]?.attempt).toBeGreaterThan(0);
+
+    // Once the shard answers again the same row carries the saga to the end.
+    h.clock.advance(60 * 60 * 1000);
+    await drainScopeTasks(h);
+    expect(directoryRow(h, WORKSPACE)?.lifecycle).toBe("deleting");
+    expect(slugReservations(h)).toHaveLength(0);
   });
 
   it("TC-workspace-100: the directory tombstone drops the slug and the display data, and the slug is freed only after it lands", async () => {

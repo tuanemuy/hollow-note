@@ -50,6 +50,8 @@ export function PublicWorkspaceFilters({
           q: nextKeyword.length === 0 ? undefined : nextKeyword,
           tags: nextTags.length === 0 ? undefined : [...nextTags],
         },
+      }).catch(() => {
+        console.error("Navigation to the filtered public workspace failed");
       });
     });
   };

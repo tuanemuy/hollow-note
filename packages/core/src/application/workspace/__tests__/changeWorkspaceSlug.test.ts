@@ -785,6 +785,59 @@ describe("changeWorkspaceSlug", () => {
   });
 
   /**
+   * The state TC-workspace-324 builds, read from the other side. The
+   * workspace holds two `active` keys and the directory advertises the
+   * one the scope has already left — which makes that key the only one
+   * the public URL still resolves through. A change to a third slug
+   * gives it up, but only the exchange may open the successor, so
+   * handing it back before `activate` lands is the window in which
+   * neither URL resolves.
+   */
+  it("TC-workspace-327: a change whose activation never lands keeps the key the directory advertises", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, { publication: "published" });
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    const losingActivate: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        activate: () => Promise.reject(activateFailure),
+      },
+    };
+
+    await expect(change(h, "team-alpha", OWNER, losingActivate)).rejects.toBe(
+      activateFailure,
+    );
+    induceDirectoryOutage(h, WORKSPACE);
+    await expect(
+      change(h, "team-alpha", OWNER, withFailingDirectoryProjection(h)),
+    ).rejects.toThrow("directory shard unreachable");
+    clearDirectoryOutages(h);
+
+    await expect(change(h, "team-gamma", OWNER, losingActivate)).rejects.toBe(
+      activateFailure,
+    );
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([
+      ["old-slug", WORKSPACE, "active"],
+      ["team-alpha", WORKSPACE, "active"],
+      ["team-gamma", WORKSPACE, "reserved"],
+    ]);
+    // The public page is still reachable through the URL the directory
+    // hands out, which is the whole point of not freeing it first.
+    await expect(
+      getPublicWorkspace({
+        container: h.container,
+        input: { slug: "old-slug" },
+      }),
+    ).resolves.toMatchObject({ name: "Team Alpha" });
+  });
+
+  /**
    * Two attempts at the same rename share one reservation row, because
    * the operation id is derived from `(workspaceId, slug)`. The loser
    * must therefore not compensate: dropping the row the winner is about

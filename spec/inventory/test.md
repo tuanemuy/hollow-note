@@ -1739,6 +1739,8 @@
 | TC-note-769 | moveNote: 中止のthawが返したrouteを別のmigrationが既にclaimしている — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | routeがsourceの同じ世代を指す限り補償は走り、このmigration自身のstaged複製・credit・lockが戻る |
 | TC-note-770 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのRevisionだけが増えた — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製のRevisionも今回のsnapshotへ同期され、switch後にsourceのRevisionを消しても失われない |
 | TC-note-771 | moveNote: operationを開く呼び出し自体が応答を失う — 別の編集者が同じノートの移動を要求する | spec/testcases/note/moveNote.md#テストケース-movenote | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しいoperationを開いて移動を完了できる |
+| TC-note-772 | moveNote: 前の試行が staged 複製・credit・両scopeのmove lockと `moving` な route を残しており、再開した試行が operation を開く呼び出しの応答を失う — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | 引き直した行が claim を保持しているので素の `rejected` にはせず、手順 4〜6 の補償を通してから閉じる（恒久的に残る move lock を作らない） |
+| TC-note-773 | moveNote: switch 前の中止で target の解体が失敗する — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | source の move lock の解放は道連れにされず、source のワークスペースは削除もメンバー変更も続けられる |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -2537,4 +2539,7 @@
 | TC-workspace-322 | unpublishWorkspace: commit 後の投影を恒久的に失う — 非公開に戻す | spec/testcases/workspace/unpublishWorkspace.md#テストケース-unpublishworkspace | directory が下げたはずのページを広告し続け、同じ要求の再送が投影を打ち直す |
 | TC-workspace-323 | updateWorkspaceProfile: commit 後の投影を恒久的に失う — 更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | directory が 1 版前に残り、次の保存が両方の変更を載せた snapshot で追いつく |
 | TC-workspace-324 | changeWorkspaceSlug: 切替を失った改名のあと、投影も失った改名が新 slug を `active` にした — 同じ slug をもう一度送る | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 再予約はスキップされるが広告値の解放はスキップの外なので毎回評価され、もう一方の鍵が回収される |
+| TC-workspace-325 | deleteWorkspace: directory tombstone の shard が答えない — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | global turn はそこで止まって backoff し、slug 予約を保持したまま directory 行を `active` のまま残す。shard が答え直せば同じ task 行が最後まで運ぶ |
+| TC-workspace-326 | deleteWorkspace: `workspace_directory` が広告値を答えられない — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | 受理せず `ConflictError("WORKSPACE_DIRECTORY_UNAVAILABLE")` を返し、scope も継続 task も動かさない。答えられるようになってからの受理が取り残された鍵まで解放する |
+| TC-workspace-327 | changeWorkspaceSlug: 鍵を 2 つ保持し広告値だけが公開 URL を解決している — 第 3 のスラッグへ変更し、その切替も失う | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 広告値の単独 `release` は `activate` の後段なので、交換が着地するまで生きた公開 URL を手放さない |
 

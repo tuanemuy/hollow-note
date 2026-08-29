@@ -66,7 +66,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `operation_id` | text | PK |
 | `user_id` | text | NOT NULL |
 | `workspace_id` | text | NOT NULL |
-| `membership_id` | text | CHECK が要求するのは `active` / `removing` だけ。書き手は全状態で値を入れる |
+| `membership_id` | text | NULL可。要求を持つのはポート契約（書き手）で、schema の CHECK ではない |
 | `role` | text | NOT NULL |
 | `role_source_version` | integer | NULL可。`role` の投影元Membership版。NULLは予約が運んだ初期role |
 | `state` | text | NOT NULL, CHECK IN ('pending','activating','active','removing') |
@@ -76,7 +76,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-- `membership_id` の**要求は CHECK が持ち**、それが縛るのは settled state だけである（`CHECK (state NOT IN ('active','removing') OR membership_id IS NOT NULL)`）。列が NULL 許容なのはこの制約の置き方の帰結にすぎず、**書き手はどの状態でも常に値を入れる** — `reserveAndClaimActivation` が `membership_id` を必須引数として受けるので、edge は最初に挿入された状態から自分の membership を名乗る。名乗らない行が万一あってもロール投影は届かない（`applyRoleIfNewer` が fail closed で落とす）
+- `membership_id` の**要求を持つのは書き手**であって schema ではない。**書き手はどの状態でも常に値を入れる** — `reserveAndClaimActivation` が `membership_id` を必須引数として受けるので、edge は最初に挿入された状態から自分の membership を名乗る。列が NULL 許容なのはその帰結であり、`state NOT IN ('active','removing') OR membership_id IS NOT NULL` の CHECK は**置かない**。`activate` は operation ID しか取らず、行が既に持っているものをそのまま確定させるので、membership を名乗らないまま `pending` に達した edge を CHECK が拒み、参照バックエンドが受け入れる状態を D1 だけが拒む形になる。永続化ポートの正典はポート契約なので schema が譲る（[ADR 026](../adr/026-port-contract-and-conformance.md) / [ADR 046](../adr/046-canon-follows-implementation.md)）。名乗らない行が万一あってもロール投影は届かない（`applyRoleIfNewer` が fail closed で落とす）
 - UNIQUE (`user_id`, `workspace_id`)。`pending` / `activating` は所有 / 参加workspace数とaccount deletionに、`removing`は後始末完了待ちのaccount deletion / integration cleanup列挙に含める。`reserveAndClaimActivation`はpending INSERT、同じUserId shardのActive User検査、`activating`化を1 transactionで行い、DeletingならINSERTごとrollbackする。account deletionは先行`activating`を最大100件ずつ解決待ちし、0件確認後にpending edgeへdeletion prepare ownerを設定する。owner設定後のactivationは拒否し、rollback releaseはpendingを保ち、commitだけがedgeを取消す
 - indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用、(`user_id`, `operation_id`) は account deletion manifest の edge key 昇順ページング用。edge key は `operation_id` であり、前 2 本はどちらもその順序を走れないので専用の索引を持つ。UserId物理shard後のworkspace削除は 2 本目をscatterせずmanifest route keyを使う
 - `role`は`workspace.membership.roleChanged`の投影で、`applyRoleIfNewer`が`(user_id, workspace_id)`で引いた行を、`membership_id`がイベントの世代と一致し、かつ`role_source_version`より大きい版のときだけ更新する。配送はat-least-once・順不同なので、再配送は書かず、後着の古い変更はroleを巻き戻さない。版は1つのMembershipの中でしか比較できないので、別の世代（再入会が作り直した行、`membership_id`を持たない行）は照合で落とす。行が無いときはinsertせず、除名済みedgeを復活させない

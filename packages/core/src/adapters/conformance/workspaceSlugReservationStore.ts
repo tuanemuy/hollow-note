@@ -13,10 +13,11 @@ const slug = (name: string): WorkspaceSlug => WorkspaceSlug.create(name);
 
 /**
  * Shared conformance suite for `WorkspaceSlugReservationStore`
- * (ADP-workspace-061..065): the two-phase claim behind
+ * (ADP-workspace-061..066): the two-phase claim behind
  * `ConflictError("SLUG_ALREADY_USED")`, the atomic exchange that keeps a
  * public URL live across a slug change, which attempt of a shared
- * operation may compensate, and the teardown a deletion runs.
+ * operation may compensate, and the teardown a deletion runs — including
+ * which rows that teardown may not touch.
  */
 export function describeWorkspaceSlugReservationStoreContract(
   backendName: string,
@@ -285,6 +286,33 @@ export function describeWorkspaceSlugReservationStoreContract(
 
       await claim("op-2", "alpha", workspaceId(2));
       expect(await store().resolveActive(slug("alpha"))).toBe(workspaceId(2));
+    });
+
+    /**
+     * Callers name every key that *could* be the one they hold and let
+     * the wrong guesses write nothing, so a workspace regularly releases
+     * a slug it is at that moment only holding as `reserved` — the row a
+     * change still in flight took. Dropping it there would take the
+     * reservation out from under the change that is about to activate
+     * it, and the release path has no operation id with which to tell
+     * the two apart.
+     */
+    it("ADP-workspace-065: release leaves the workspace's own reserved row alone", async () => {
+      await reserve("op-1", "alpha", workspaceId(1));
+
+      await store().release({
+        slug: slug("alpha"),
+        workspaceId: workspaceId(1),
+      });
+
+      // The row is still the claim it was: nobody else may take it ...
+      await expectConflict(
+        reserve("op-2", "alpha", workspaceId(2)),
+        "SLUG_ALREADY_USED",
+      );
+      // ... and the change that reserved it still lands.
+      await activate("op-1");
+      expect(await store().resolveActive(slug("alpha"))).toBe(workspaceId(1));
     });
   });
 }

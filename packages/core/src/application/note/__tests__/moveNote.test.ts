@@ -683,7 +683,7 @@ const operationTarget = (row: DistributedOperation): ScopeKey | null => {
  * lets a permanent stop pass as a benign middle state. Canon leaves an
  * operation `running` in exactly one place — a stop *after* the switch,
  * where the move is real and only forward steps remain
- * (spec/usecases/note.md#movenote の終端表, 3 行目) — and every point
+ * (spec/usecases/note.md#movenote の終端表, 4 行目) — and every point
  * before it must reach a terminal state. So a `running` row counts as
  * live only while it holds the claim (`moving` under its own migration)
  * or the route has already moved to the destination its payload names.
@@ -720,7 +720,7 @@ const stillDrivable = (
  *
  * The rest is conditional on whether anything can still drive the move
  * (`stillDrivable`), because what a stopped move may leave behind depends
- * on it (spec/usecases/note.md#movenote 手順 4・8 and the four-row table
+ * on it (spec/usecases/note.md#movenote 手順 4・8 and the five-row table
  * of terminal states):
  *
  * - a move nobody drives may not be `running`. Canon puts the switch-less
@@ -2589,6 +2589,161 @@ describe("moveNote", () => {
       state: "active",
       scope: targetScope,
     });
+  });
+
+  it("TC-note-772: a lost beginOperation response does not close an operation that is still holding the claim", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // The first attempt stages the target and then loses the route store
+    // and the control row with it: the route stays `moving` under this
+    // migration, the staged copy, its credit and both move locks outlive
+    // the attempt, and the operation is left `running`.
+    let switchTried = false;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => {
+          switchTried = true;
+          return Promise.reject(failure("switch failed"));
+        },
+        abortMove: () => Promise.reject(failure("route store down")),
+        resolve: (id) =>
+          switchTried
+            ? Promise.reject(failure("route store down"))
+            : h.container.noteRouteStore.resolve(id),
+      },
+      globalUnitOfWorkProvider: {
+        run: <T>(
+          fn: (ctx: GlobalUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> =>
+          switchTried
+            ? Promise.reject(failure("settle response lost"))
+            : h.container.globalUnitOfWorkProvider.run(fn),
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+    expect(operations(h)[0]).toMatchObject({ state: "running" });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "moving",
+      routeVersion: 1,
+    });
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+
+    // The retry derives the same request key — `beginMove` leaves
+    // `routeVersion` alone — so the re-issue that repairs its own lost
+    // response is handed that very row back, claim and all. Closing it on
+    // the strength of `running` alone settles the only party that could
+    // ever release those two locks.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withLostResponseAt(h, "beginOperation"),
+      }),
+    ).rejects.toThrow("beginOperation response lost");
+
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+      routeVersion: 1,
+    });
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(0);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(0);
+    expect(notesIn(h, targetScope)).toHaveLength(0);
+    expect(revisionsIn(h, targetScope)).toHaveLength(0);
+    expect(filesIn(h, targetScope)).toHaveLength(0);
+    expect(quotaTotals(h, targetScope)).toEqual({
+      consumedBytes: 0,
+      noteCount: 0,
+    });
+    await expectWholeAndReachable(h, noteId);
+
+    // What the leftover locks would have refused for good.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        userId: OTHER,
+        expectedVersion: null,
+      }),
+    ).resolves.toMatchObject({ ownerId: TARGET_WS });
+  });
+
+  it("TC-note-773: a target teardown that fails does not take the source's move lock with it", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    let runs = 0;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("switch failed")),
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          runs += 1;
+          // 0 freeze, 1 stage, 2 the rollback's undo of the target — and
+          // 3 the source lock it has to release whatever 2 answered.
+          return runs === 3
+            ? Promise.reject(failure("the target teardown failed"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+
+    // The source's lock was staged by the freeze and says nothing about
+    // what the target holds, so the target's failure may not strand it:
+    // the operation is `rejected` right after, and nothing but this
+    // migration could ever have released it.
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(0);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+    });
+    // The teardown really did fail — this is the leftover #28 collects.
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+
+    const deleted = await deleteWorkspace({
+      container: h.container,
+      input: {
+        workspaceId: SOURCE_WS,
+        userId: BOSS,
+        confirmationName: WORKSPACE_NAME,
+      },
+    });
+    expect(deleted.status).toBe("accepted");
   });
 
   const MOVE_SEAMS: readonly MoveSeam[] = [

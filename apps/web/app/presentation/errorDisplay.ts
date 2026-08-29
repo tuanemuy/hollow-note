@@ -9,6 +9,13 @@ import {
 const NOTE_INACCESSIBLE_MESSAGE =
   "このノートは見つかりません。URL が変わったか、削除された可能性があります。";
 
+// 「開けないワークスペース」の文言。壊れた ID（`WORKSPACE_INVALID_ID`）と
+// 不在・除名（`WORKSPACE_NOT_FOUND`）を同一表示に収斂させる —
+// `presentation/scope.ts:workspaceUnavailability` が両方を「開けない」に
+// 畳むので、辞書だけが両者を区別すると同じ失敗が経路ごとに違って見える。
+const WORKSPACE_INACCESSIBLE_MESSAGE =
+  "このワークスペースは開けません。削除されたか、メンバーから外れた可能性があります。";
+
 /**
  * 認可の往復が途中で切れたときの文言。P-05 は `SerializedError` を伴わ
  * ない失敗（プロバイダーが `code` / `state` を返さない）も同じ状態に畳む
@@ -114,8 +121,8 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
   STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
-  WORKSPACE_NOT_FOUND:
-    "このワークスペースは開けません。削除されたか、メンバーから外れた可能性があります。",
+  WORKSPACE_NOT_FOUND: WORKSPACE_INACCESSIBLE_MESSAGE,
+  WORKSPACE_INVALID_ID: WORKSPACE_INACCESSIBLE_MESSAGE,
   WORKSPACE_INVALID_NAME:
     "ワークスペース名は 1〜80 文字です。入力内容を確認してもう一度お試しください。",
   WORKSPACE_INVALID_DESCRIPTION:
@@ -134,8 +141,20 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "作成できるワークスペースは 20 件までです。使っていないワークスペースを削除してからお試しください。",
   WORKSPACE_DELETING:
     "このワークスペースは削除処理中です。操作は受け付けられません。",
+  WORKSPACE_DIRECTORY_UNAVAILABLE:
+    "ワークスペースの情報を確認できませんでした。少し待ってからもう一度お試しください。",
   WORKSPACE_MOVE_IN_PROGRESS:
     "ノートの移動が進行中です。完了してからもう一度お試しください。",
+  // 移動サガが返す 4 コード。`conflict` の共通文言（「もう一度お試し
+  // ください」）は、ロックが解けるまで成功しない再試行を勧めてしまう。
+  NOTE_MOVE_IN_PROGRESS:
+    "このノートは別の移動が進行中です。その移動が終わるまで待ってから、画面を再読み込みしてください。",
+  MOVE_AUTHORIZATION_LOCK_CONFLICT:
+    "このワークスペースで別の移動が進行中です。その移動が終わるまで待ってから、画面を再読み込みしてください。",
+  STALE_MEMBERSHIP:
+    "移動の途中でメンバーの状態が変わりました。画面を再読み込みして、権限を確かめてからお試しください。",
+  STALE_SCOPE_ROUTE:
+    "このノートは別の場所へ移されました。画面を再読み込みして、移動先をご確認ください。",
   WORKSPACE_INVALID_ROLE:
     "ロールの指定が正しくありません。owner・editor・viewer から選んでください。",
   ALREADY_MEMBER:

@@ -60,7 +60,11 @@ export type WorkspaceUnavailability = "gone" | "denied";
  *
  * `business` を丸ごと `denied` に寄せるのは、設定シェルと 4 つの断片が
  * 同じ 3 kind を 1 つの終端表示に畳んでいるためで、判定の広さをそちらと
- * 揃えてある（`kind` ごとの写像はここ 1 か所）。
+ * 揃えてある。**`kind` ごとの写像はこの関数だけが持つ** — Cookie を畳む
+ * 側（`scopeCookie.ts`）と画面へ倒す側（`routes/workspaces/$workspaceId/
+ * notes/index.tsx` の `errorComponent`）が同じ入力で違う結論を出さない
+ * ようにするためで、どちらかが独自に `kind` / `code` を読み始めた時点で
+ * この不変条件は失われる。
  */
 export function workspaceUnavailability(
   failure: Readonly<{ kind: string }>,
@@ -70,6 +74,23 @@ export function workspaceUnavailability(
     return "denied";
   }
   return null;
+}
+
+/**
+ * 「開けない」と分かったワークスペース設定を、レイアウトが子へ委ねるか
+ * 自分で終端表示に畳むか（spec/pages/index.md#P-34）。
+ *
+ * `gone`（行が残っていない）だけが `children` になる。削除の「完了」を
+ * 読めるのは `getWorkspaceDeletionStatus` を呼ぶ P-34 の断片だけなので、
+ * レイアウトがここで畳むと完了表示に到達できる利用者が誰も居なくなる。
+ * `denied`（非メンバー）はどの断片も答えを持たず、削除の進行を非メンバーへ
+ * 見せない線もここで引かれる。`null` は畳む理由が無かった場合で、
+ * シェルはそのときワークスペースを持っているため終端表示側へ倒す。
+ */
+export function workspaceUnavailableDestination(
+  unavailable: WorkspaceUnavailability | null,
+): "children" | "terminal" {
+  return unavailable === "gone" ? "children" : "terminal";
 }
 
 export function serializeScope(scope: ScopeSelection): string {

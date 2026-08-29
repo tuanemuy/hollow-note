@@ -6,6 +6,7 @@ import { ServerErrorState } from "@/components/ui/ErrorState";
 import { WorkspaceUnavailableState } from "@/components/workspace/WorkspaceUnavailable";
 import { buildHead } from "@/presentation/head";
 import { boundedRedirectSource } from "@/presentation/redirect";
+import { workspaceUnavailableDestination } from "@/presentation/scope";
 import { loadWorkspaceSettingsShell } from "./-action";
 
 /**
@@ -49,14 +50,9 @@ function WorkspaceSettingsLayout() {
   const { user, workspace } = data;
 
   if (workspace === null) {
-    // 行が消えている（`gone`）ときだけ子を描く。削除の「完了」
-    // （spec/pages/index.md#P-34 の終状態）を読めるのは
-    // `getWorkspaceDeletionStatus` を呼ぶ P-34 の断片だけで、ここで畳むと
-    // どの利用者にも汎用の「開けません」しか出ない。非メンバー（`denied`）は
-    // どの断片も答えを持たないので、従来どおりここで畳む。
     return (
       <AppShell displayName={user.displayName} avatarUrl={user.avatarUrl}>
-        {data.unavailable === "gone" ? (
+        {workspaceUnavailableDestination(data.unavailable) === "children" ? (
           <SettingsColumn>
             <Outlet />
           </SettingsColumn>

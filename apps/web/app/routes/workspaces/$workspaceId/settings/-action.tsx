@@ -79,7 +79,6 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
           name: settings.name,
           slug: settings.slug,
           publication: settings.publication,
-          role: settings.role,
         },
       };
     } catch (error) {

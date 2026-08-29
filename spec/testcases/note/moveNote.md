@@ -46,3 +46,5 @@
 | 中止のthawが返したrouteを別のmigrationが既にclaimしている | 中止する | routeがsourceの同じ世代を指す限り補償は走り、この migration 自身のstaged複製・credit・lockが戻る（掴んだ相手を理由に降りない） | |
 | switchがcommitして応答だけを失い、その後rollbackが走る | 中止する | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） | |
 | operationを開く呼び出し自体が応答を失う（commitはしている） | 別の編集者が同じノートの移動を要求する | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しい operation を開いて移動を完了できる | |
+| 前の試行が staged 複製・credit・両scopeのmove lockと `moving` な route を残しており、再開した試行が operation を開く呼び出しの応答を失う | 同じ入力で再試行する | 引き直した行が claim を保持しているので素の `rejected` にはせず、手順 4〜6 の補償を通してから閉じる（期限も所有者も持たない move lock を恒久的に残さない） | |
+| switch 前の中止で target の解体が失敗する | 中止する | source の move lock の解放は道連れにされず、source のワークスペースは削除もメンバー変更も続けられる。target 側の staged 複製と credit だけが残る | |

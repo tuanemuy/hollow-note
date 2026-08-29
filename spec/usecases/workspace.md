@@ -167,10 +167,10 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 ### 処理フロー
 
 1. 権限を `manageWorkspace` で確認する
-2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ鍵と `workspace_directory` を打ち直して返す（投影は毎回送る）。commit のあとに来る手順はどれも応答を失いうるので、同じ要求の再送がその修復要求になる。非 `null` の側は `resolveActive` がこの workspace を指していなければ予約し直す — これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる。**この「global が既に scope と一致しているならやり直さない」というスキップが掛かるのは鍵の再予約だけで、広告値の解放は `null` / 非 `null` のどちらでも毎回評価する** — この修復が対象にしている状態は 2 面が「どの鍵を保持しているか」で食い違っている状態そのものなので、新しい slug だけを見たスキップは、もう一方の候補を二度と誰も見ない状態にしてしまう。`workspace_directory` がまだ広告している旧 slug は毎回拾って `release` する — `active` な予約には期限が無いので、解放の応答を失うとその slug は**どのワークスペースからも二度と取得できない**。**鍵の解放は投影より先に置く**（投影が先に走ると directory 行の slug が消え、次の要求から旧 slug を辿る手掛かりが無くなる）
+2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ鍵と `workspace_directory` を打ち直して返す（投影は毎回送る）。commit のあとに来る手順はどれも応答を失いうるので、同じ要求の再送がその修復要求になる。非 `null` の側は `resolveActive` がこの workspace を指していなければ予約し直す — これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる。**この「global が既に scope と一致しているならやり直さない」というスキップが掛かるのは鍵の再予約だけで、広告値の解放は `null` / 非 `null` のどちらでも毎回評価する** — この修復が対象にしている状態は 2 面が「どの鍵を保持しているか」で食い違っている状態そのものなので、新しい slug だけを見たスキップは、もう一方の候補を二度と誰も見ない状態にしてしまう。`workspace_directory` がまだ広告している旧 slug は毎回拾って `release` する — `active` な予約には期限が無いので、解放の応答を失うとその slug は**どのワークスペースからも二度と取得できない**。**鍵の解放は投影より先に置く**（投影が先に走ると directory 行の slug が消え、次の要求から旧 slug を辿る手掛かりが無くなる）。この修復が回収できるのは、2 面のうち**片側だけが 1 回置き去りにされた**改名までである（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`）
 3. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID と試行 ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
 4. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
-5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。**手放す鍵は候補を 1 つに決めず、scope の現在値と `workspace_directory` の広告値の両方を解放する**（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`。手順 2 の修復と同じ根拠で、主経路もここを見る — `activate` を恒久的に失った改名では scope の現在値が、投影を恒久的に失った改名では広告値が、それぞれ global に残っている鍵を指さない。どちらの解放も「その workspace が `active` で保持している間だけ」効く条件付き操作なので、外れた候補を渡した呼び出しは何も書かず、当たっている側だけが取り残しを閉じる）。scope が手放す鍵は `activate` の `releasing` に載せて交換の原子性を保ち、広告値がそれと別なら同じ位置で単独に `release` する。`slug` が `null` なら引き継ぐ先が無いので両候補とも `release` で手放す（`activate` と同じく 1 度だけ再試行し、恒久的に失った分は手順 2 の修復が回収する）。**解放は投影より先に置く**。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
+5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。**手放す鍵は候補を 1 つに決めず、scope の現在値と `workspace_directory` の広告値の両方を解放する**（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`。手順 2 の修復と同じ根拠で、主経路もここを見る — `activate` を恒久的に失った改名では scope の現在値が、投影を恒久的に失った改名では広告値が、それぞれ global に残っている鍵を指さない。どちらの解放も「その workspace が `active` で保持している間だけ」効く条件付き操作なので、外れた候補を渡した呼び出しは何も書かず、当たっている側だけが取り残しを閉じる。**2 候補が保持鍵を名指すのは片側 1 回の恒久失敗までで、両側で 1 回ずつ失った鍵はどちらの候補でもなく、逆引きが無い今は解放できない**）。scope が手放す鍵は `activate` の `releasing` に載せて交換の原子性を保ち、広告値がそれと別なら**`activate` の後段**で単独に `release` する（`activate` が着地するまで広告値のほうが唯一まだ解決している公開 URL でありうるので、交換の前に手放さない）。`slug` が `null` なら引き継ぐ先が無いので両候補とも `release` で手放す（`activate` と同じく 1 度だけ再試行し、恒久的に失った分は手順 2 の修復が回収する）。**解放は投影より先に置く**。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
 
 ### エラーケース
 
@@ -327,7 +327,7 @@ local commit が拒否された場合は確保済みの slug reservation を `ab
 
 1. 権限を `deleteWorkspace` で確認する
 2. `confirmationName` がワークスペース名と一致しなければ `ValidationError("CONFIRMATION_MISMATCH")`
-3. operation IDを採番し、最初のworkspace-local transactionで`hasActiveMove`を確認して`beginDeletion`を呼び、決定的IDの`workspace.deletionLocalContinued { operationId }`を`scheduled_tasks`へ保存する。これが全scope mutationを閉じる切替点であり、task保存と同じcommitの成功後にacceptedを返す。staged targetを消してsourceだけをretireする競合を防ぐ。**この継続のpayloadは手放しうる鍵の候補を 2 つ運ぶ** — scope が持つ `slug` と、`workspace_directory` が広告している値（`advertisedSlug`）である。広告値はこのtransactionを開く**前**に読む（global cleanup が鍵を解放する前に directory 行をtombstoneにするので、広告値が見える最後の点がここになる）。候補が 2 つ要る理由は `changeWorkspaceSlug` 手順 5 と同じで、`activate` を失った改名では scope 側が、投影を失った改名では広告値が、それぞれ global に残る鍵を指さない
+3. operation IDを採番し、最初のworkspace-local transactionで`hasActiveMove`を確認して`beginDeletion`を呼び、決定的IDの`workspace.deletionLocalContinued { operationId }`を`scheduled_tasks`へ保存する。これが全scope mutationを閉じる切替点であり、task保存と同じcommitの成功後にacceptedを返す。staged targetを消してsourceだけをretireする競合を防ぐ。**この継続のpayloadは手放しうる鍵の候補を 2 つ運ぶ** — scope が持つ `slug` と、`workspace_directory` が広告している値（`advertisedSlug`）である。広告値はこのtransactionを開く**前**に読む（global cleanup が鍵を解放する前に directory 行をtombstoneにするので、広告値が見える最後の点がここになる）。候補が 2 つ要る理由は `changeWorkspaceSlug` 手順 5 と同じで、`activate` を失った改名では scope 側が、投影を失った改名では広告値が、それぞれ global に残る鍵を指さない。**広告値を読めない間は受理せず `ConflictError("WORKSPACE_DIRECTORY_UNAVAILABLE")` を返す** — `workspace_directory` の shard が答えられないことは契約上の例外ではないので「候補なし」と読むと一時障害だけで鍵を落とすことになり、受理してしまえばこれがその鍵を解放できる最後の呼び出しになる（`active` な予約に期限も回収する掃除も無い）。拒否は要求者に再試行を課すだけで scope は開いたまま残るので、修復の経路（プロフィール保存が投影を打ち直す）も届く。**2 候補が保持鍵を名指すのは片側 1 回の恒久失敗まで**であり、両側で 1 回ずつ失った鍵はどちらの候補でもない（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`）
 4. deletion ownerとして `JobRepository.listActiveByScope({ type: "workspace", workspaceId }, limit: 100)` を0件になるまで引き、取り消しと後始末を`scheduled_tasks`で継続する。deleting切替後なので新しいJobは入らない
 5. `workspace.deletionLocalContinued` workerはheader stateから再開し、`WorkspaceDeletionManifestStore`でMembershipとInvitationを各100件ずつキーセットで読み、`{ userId, membershipId }`と`{ tokenHash, invitationId }`をlocal manifestへ固定する。page/cursorと次の同名taskを同じUoWで保存し、両方の終端後にmarkReadyする
 6. manifest完成後かつ手順4の強制終端continuationが0件まで完了したことを確認する。`listLocalPending(operationId, 100)`でmanifest itemを読み、Membership/Invitationをkind別に`deleteByIds`で最大100件ずつ削除して、同じUoWで`acknowledgeLocal`と次の`workspace.deletionLocalContinued`を保存する。local pendingが0件になった最後のUoWでだけ、Membership / Invitationの残件を数え直して0件であることを確認してからWorkspaceを削除し、`workspace.deleted { workspaceId, operationId }`を保存する。manifestが固定しそこねた子が残っていれば、削除を失敗させずにmembership列挙からやり直す（appendは対象ごとに冪等）。数千edgeを親DELETEのCASCADEへ渡さないのが目的なので、安全網も物理制約ではなくこの数え直しが担う（Workspace → Membership / Invitation の `RESTRICT` は論理的な所有関係の宣言であって DDL の `FOREIGN KEY` を要求しない。[database/index.md](../database/index.md)）。manifest/tombstoneはglobal cleanup ackまで残す
@@ -343,7 +343,7 @@ local commit が拒否された場合は確保済みの slug reservation を `ab
 
 上表の各cleanup commandと、それらが保存するscope-local `scheduled_tasks` は`workspace.deleted`の`operationId`を必ずpayloadへ保持する。ScopeRouterでは通常write用`assertWritable`を迂回せず、`assertDeletionOwner(operationId)`がWorkspace lifecycleまたはmanifest headerと一致した場合だけ削除continuationとして通す。別operation IDやoperation ID欠落は拒否する。
 
-7. local phaseがWorkspace行を消した最後のUoWで、決定的IDの`workspace.deletionGlobalCleanupContinued { operationId }`を`scheduled_tasks`へ積む（手順 3 / 手順 7 末尾の 2 つと同じ形の継続で、global orchestratorの駆動口はこれである）。orchestratorは `workspace_directory` をtombstoneにし、同じWorkspaceId shardのrowで`slug = null`・表示PIIをredactしてpublic routeをnot foundにする。そのack後にslug key shardのreservationをreleaseするため、旧directory tombstoneが同じslugの再利用を妨げない。**releaseするのは手順 3 が運んだ 2 つの候補の両方**で、scope が名指した側だけではない（重複する場合は 1 度だけ打つ）。ワークスペースは消えるのでどちらの鍵も解放できる最後の呼び出しがここであり、`active` な予約には期限も回収する掃除も無い。外れた候補への `release` は「その workspace が `active` で保持している間だけ」の条件付き操作なので何も書かない。manifestを100件ずつ読み、userIdからmembership directory shard、tokenHashからinvitation route shardへ最大6接続で直接delete commandを送る。各item ackをoperation IDで記録し、reshard中は旧新両generationへdeleteする。全ack後に`workspace.deletionManifestCompactContinued { operationId }`をscopeへ保存する。workerはlocal/global双方のack済みitemを`compactAcknowledged(operationId, 100)`で1pageだけ回収し、残件中は同じtaskを同一UoWで再登録する。itemsが0件になった最後のUoWだけが`markCompleted`でheaderをcompleted tombstone化する。local行削除後や応答喪失でも正データを読み直さずmanifestから再開し、遅延した通常writeはcompleted tombstoneで拒否する
+7. local phaseがWorkspace行を消した最後のUoWで、決定的IDの`workspace.deletionGlobalCleanupContinued { operationId }`を`scheduled_tasks`へ積む（手順 3 / 手順 7 末尾の 2 つと同じ形の継続で、global orchestratorの駆動口はこれである）。orchestratorは `workspace_directory` をtombstoneにし、同じWorkspaceId shardのrowで`slug = null`・表示PIIをredactしてpublic routeをnot foundにする。そのack後にslug key shardのreservationをreleaseするため、旧directory tombstoneが同じslugの再利用を妨げない。**releaseするのは手順 3 が運んだ 2 つの候補の両方**で、scope が名指した側だけではない（重複する場合は 1 度だけ打つ）。ワークスペースは消えるのでどちらの鍵も解放できる最後の呼び出しがここであり、`active` な予約には期限も回収する掃除も無い。外れた候補への `release` は「その workspace が `active` で保持している間だけ」の条件付き操作なので何も書かない。**この 2 候補が保持鍵を名指すのも片側 1 回の恒久失敗までで**、両側で 1 回ずつ失った鍵はどちらの候補でもなく、逆引きが無い今は解放されないまま残る（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`）。manifestを100件ずつ読み、userIdからmembership directory shard、tokenHashからinvitation route shardへ最大6接続で直接delete commandを送る。各item ackをoperation IDで記録し、reshard中は旧新両generationへdeleteする。全ack後に`workspace.deletionManifestCompactContinued { operationId }`をscopeへ保存する。workerはlocal/global双方のack済みitemを`compactAcknowledged(operationId, 100)`で1pageだけ回収し、残件中は同じtaskを同一UoWで再登録する。itemsが0件になった最後のUoWだけが`markCompleted`でheaderをcompleted tombstone化する。local行削除後や応答喪失でも正データを読み直さずmanifestから再開し、遅延した通常writeはcompleted tombstoneで拒否する
 
 global cleanupがlocal phaseの**後**に走ることで、削除受理からdirectory tombstoneまでの窓はlocal phaseのturn数だけ開く。この窓で観測できるのは `listPublicWorkspaces` が組むサイトマップだけである — 公開ページ本体（`getPublicWorkspace`）はscope側の lifecycle を見るので `beginDeletion` の瞬間からnot foundになるのに対し、サイトマップは `PublicWorkspaceDirectoryReader.listPublished` しか読まないため、メンバーの多いワークスペースはlocal phaseのあいだ列挙され続ける。受理と同時にglobal turnを積まないのは、global cleanupが対象を正データではなく**完成したmanifest**からしか読まないためである。manifestが`markReady`に達するのはlocal phaseの中であり、それ以前に走らせても消すべきedge / routeの集合が確定していない。手放すslugの候補 2 つも、Workspace行が消える前のturnが読み取ってpayloadへ載せる
 
@@ -361,6 +361,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 | 既に削除が進行中 | 進行中の `operationId` を返して受理済みとして扱う |
 | 削除が終端済み（Workspace 行が消えている） | `NotFoundError("WORKSPACE_NOT_FOUND")` |
 | 要求者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| `workspace_directory` が広告値を答えられない（手順 3） | `ConflictError("WORKSPACE_DIRECTORY_UNAVAILABLE")` |
 
 進行中の削除に**合流する**（別の operation を開かない）のは、要求パスが毎回新しい operation ID を採番するためである。要求そのものは冪等な鍵を持たないので、二重送信を `ConflictError` にすると、確認欄を正しく埋めた 2 回目の押下が失敗として見える。削除は終端であり結果は同じなので、進行中の operation ID を返して受理済みとして扱う。`beginDeletion` 自体は operation ID について冪等なので、継続 turn の再実行も何も書かない。
 
@@ -522,7 +523,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 | `state` | `"acceptable" \| "expired" \| "revoked" \| "accepted" \| "alreadyMember" \| "workspaceMissing"` |
 | `workspaceId` | `string \| null` |
 
-`workspaceId` は `state: "alreadyMember"` のときだけ非 null にする。このユースケースは未サインインでも読めるため、他の状態で返すとリンクを持っているだけの相手にワークスペースの識別子を渡すことになる。`alreadyMember` の閲覧者は既にそのワークスペースを持っているので追加の露出にならず、受諾済みのリンクを本人が開き直した経路（`acceptInvitation` は `INVITATION_NOT_PENDING` を返すため使えない）でワークスペースへ送る唯一の手立てになる（P-06）。
+`workspaceId` は `state: "alreadyMember"` のときだけ非 null にする。このユースケースは未サインインでも読めるため、他の状態で返すとリンクを持っているだけの相手にワークスペースの識別子を渡すことになる。`alreadyMember` の閲覧者は既にそのワークスペースを持っているので追加の露出にならず、生きた招待リンクを既存メンバーが開いた経路（`acceptInvitation` は参加を作らずに既存のロールを返すだけである）でワークスペースへ送る手立てになる（P-06）。
 
 ### 処理フロー
 
@@ -532,11 +533,14 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 4. `userId` があり既にメンバーなら `state: "alreadyMember"`
 5. 招待者の表示名を `UserBatchReader.resolveMany` でUserId shard別に解決する。招待者のアカウントが既に無い場合は `inviterName: null` にする（招待そのものは有効なままで、名乗る相手が消えただけである）
 
+**手順 1 が `resolveActive`（`active` な route だけ）を引くので、`revoked` / `accepted` / `workspaceMissing` は通常の運用では返らない。** 取り消しは `revoke`、受諾は `consume`、ワークスペース削除は global cleanup の `revoke` が、いずれも必ず route を閉じるためであり、閉じた route への来訪は `NotFoundError("INVITATION_NOT_FOUND")` になる。この 3 状態が観測できるのは、route を閉じる呼び出しの応答を恒久的に失い、scope 側の Invitation / Workspace だけが先へ進んだ窓に限られる（この窓を無言のエラーにしないために状態は残す）。閉じた route と発行されたことのないトークンを区別しないのは意図した設計であり、区別すればトークンの実在が外から確かめられる。したがって**理由を持つ表示は `expired` だけ**で、`alreadyMember` は生きた招待リンクを既存メンバーが開いた場合に現れる。
+
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | トークン不在・不正 | `NotFoundError("INVITATION_NOT_FOUND")` |
+| route が閉じている（取り消し済み・受諾済み・ワークスペース削除済み） | `NotFoundError("INVITATION_NOT_FOUND")`（理由は返さない） |
 
 ## acceptInvitation
 

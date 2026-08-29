@@ -48,9 +48,25 @@ type SlugReservation = Readonly<{
 }>;
 
 /**
+ * What the directory can say about the slug this workspace advertises,
+ * when it is not the one the caller is settling on.
+ *
+ * `known: false` is the shard that cannot answer. It is kept apart from
+ * `slug: null` because the two are different facts — "this workspace
+ * advertises nothing" against "nobody can say what it advertises" — and
+ * a caller that collapses them frees one candidate fewer than it thinks
+ * it does (`WorkspaceDirectoryBatchReader`: a failing shard degrades a
+ * row rather than failing the call, so the loss is silent).
+ */
+export type AdvertisedSlugResolution =
+  | Readonly<{ known: true; slug: WorkspaceSlug | null }>
+  | Readonly<{ known: false }>;
+
+/**
  * The slug the directory still advertises for this workspace, when it is
- * not the one the caller is settling on. Anything else — no row, a row
- * the shard cannot answer for, a row already on that slug — is `null`.
+ * not the one the caller is settling on. A row already on that slug, a
+ * row with no slug, and a tombstoned row all read as `slug: null`; a
+ * shard that cannot answer reads as `known: false`.
  *
  * ## The rule every path that gives a key up follows
  *
@@ -75,37 +91,78 @@ type SlugReservation = Readonly<{
  * collects it, so a key nobody frees is lost to every workspace in the
  * service.
  *
+ * **How far the two candidates reach.** They name the held key while at
+ * most *one* of the two planes has been left behind — one lost
+ * `activate`, or one lost projection. Two permanent losses on opposite
+ * sides put it beyond both: a projection lost for good (scope `B`,
+ * directory `A`, key `B`) followed by a rename to `C` whose `activate`
+ * is lost for good leaves scope `C`, directory `A` and the key still
+ * `B`, which is neither candidate. Nothing here can free it — the store
+ * cannot be asked which keys a workspace holds — so the claim this rule
+ * makes stops at one failure per side, and the doubly-failed key needs a
+ * reverse lookup the port does not offer today.
+ *
  * The key the scope is leaving is handed to `activate` as `releasing`
  * rather than freed on its own, so the old public URL keeps resolving
- * until the new one is live; the other candidate is freed beside it.
- * Both are freed **before** the projection, since a snapshot landing
- * first overwrites the directory row and with it the only record of the
+ * until the new one is live; the other candidate is freed beside it,
+ * *after* the exchange rather than before it, since until `activate`
+ * lands the advertised key may be the only one still resolving. Both are
+ * freed **before** the projection, since a snapshot landing first
+ * overwrites the directory row and with it the only record of the
  * advertised candidate.
  *
- * `deleteWorkspace` reads this for the same reason and carries the
- * answer on the deletion turn, being the last request that can free
- * either key.
+ * `deleteWorkspace` reads this for the same reason, being the last
+ * request that can free either key — and it is the one caller that
+ * refuses `known: false` instead of folding it, because there is no
+ * later request to repair what it gets wrong.
+ */
+export async function resolveAdvertisedSlug(
+  container: RequestContainer,
+  workspaceId: WorkspaceId,
+  current: WorkspaceSlug | null,
+): Promise<AdvertisedSlugResolution> {
+  const resolved = await container.workspaceDirectoryBatchReader.resolveMany([
+    workspaceId,
+  ]);
+  const row = resolved.get(workspaceId);
+  // A key the contract promises is a backend defect, and reading it as
+  // "advertises nothing" is the one reading that loses a candidate.
+  if (row === undefined || row.state === "unavailable") {
+    return { known: false };
+  }
+  if (row.state === "deleted") {
+    return { known: true, slug: null };
+  }
+  const advertised = row.entry.entity.slug;
+  return {
+    known: true,
+    slug: advertised === null || advertised === current ? null : advertised,
+  };
+}
+
+/**
+ * `resolveAdvertisedSlug` for the paths that read it **after** their own
+ * scope commit, where an unreadable shard folds to "no candidate".
+ *
+ * Folding is right there and only there: the commit cannot be taken
+ * back, so failing on the read would leave the scope moved with neither
+ * key freed, while folding frees the one candidate that is still known
+ * and leaves a repair path open — re-sending the same slug re-reads the
+ * directory and frees whatever it names then (`repairSettledSlug`).
  */
 export async function advertisedSlug(
   container: RequestContainer,
   workspaceId: WorkspaceId,
   current: WorkspaceSlug | null,
 ): Promise<WorkspaceSlug | null> {
-  const resolved = await container.workspaceDirectoryBatchReader.resolveMany([
-    workspaceId,
-  ]);
-  const row = resolved.get(workspaceId);
-  if (row === undefined || row.state !== "active") {
-    return null;
-  }
-  const advertised = row.entry.entity.slug;
-  return advertised === null || advertised === current ? null : advertised;
+  const resolved = await resolveAdvertisedSlug(container, workspaceId, current);
+  return resolved.known ? resolved.slug : null;
 }
 
 /**
- * Frees the candidate keys of `advertisedSlug`'s rule that no `activate`
- * is carrying, skipping the absent ones and never asking twice for the
- * same key.
+ * Frees the candidate keys of `resolveAdvertisedSlug`'s rule that no
+ * `activate` is carrying, skipping the absent ones and never asking
+ * twice for the same key.
  *
  * Each call is retried for the reason the activation is: it runs after
  * the commit that dropped the slug, and an `active` reservation has no
@@ -163,7 +220,7 @@ async function releaseKeys(
  * direction the deletion moves in.
  *
  * Which keys are given up, and in what order against the projection, is
- * `advertisedSlug`'s rule.
+ * `resolveAdvertisedSlug`'s rule.
  */
 async function repairSettledSlug(
   container: RequestContainer,
@@ -255,9 +312,9 @@ async function abandonSlugReservation(
  * cannot get there — the aggregate refuses to drop the slug its public
  * page is served from.
  *
- * Which keys either path gives up — and why picking one of the two
- * candidates is what strands the other for good — is `advertisedSlug`'s
- * rule.
+ * Which keys either path gives up, in what order against the exchange,
+ * and why picking one of the two candidates is what strands the other
+ * for good, is `resolveAdvertisedSlug`'s rule.
  *
  * Re-sending the slug the workspace already holds — `null` included —
  * changes nothing and emits nothing while the global plane agrees with
@@ -375,13 +432,6 @@ export async function changeWorkspaceSlug({
   const advertised = await advertisedSlug(container, workspaceId, nextSlug);
 
   if (reservation !== null) {
-    // The advertised candidate is freed on its own only when it is not
-    // the one the exchange is carrying: releasing `previousSlug` here
-    // would open the window between the two URLs that the exchange
-    // exists to close.
-    if (advertised !== previousSlug) {
-      await releaseKeys(container, workspaceId, [advertised]);
-    }
     const exchange = {
       slug: reservation.slug,
       operationId: reservation.operationId,
@@ -396,6 +446,14 @@ export async function changeWorkspaceSlug({
       });
       await workspaceSlugReservationStore.activate(exchange);
     }
+    // The advertised candidate is freed only once the exchange has
+    // published the successor. Until then it may be the only key still
+    // resolving to this workspace — an `activate` lost for good leaves
+    // the directory's key as the live public URL — so freeing it first
+    // opens the window in which neither URL resolves that the exchange
+    // exists to close. Naming `previousSlug` again costs nothing: the
+    // exchange has already returned it, so the call writes no row.
+    await releaseKeys(container, workspaceId, [advertised]);
   } else {
     // No successor to hand either key to, so the standalone teardown
     // frees both.

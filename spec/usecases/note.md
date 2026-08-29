@@ -556,17 +556,21 @@ route の claim が operation と同じ transaction に入らないのは、rout
 
 **「switch 前の到達点はすべて `rejected`」には、operation を開く呼び出し自体が応答を失った場合も含まれる。** その呼び出しは補償の内側に置き、失敗したら同じ入力で `beginOrResume` をもう一度 best-effort で呼んで（`requestKey` に対して冪等なので、commit 済みなら同じ行が返る）、返った行が自分のものであれば `rejected` で閉じる。応答喪失で失われるのは行の `id` だけで `requestKey` から引き直せる、というのがこの修復が成立する理由である。閉じずに `running` を残すと、別の編集者は別の `requestKey` を導くのに store がその要求を先の行へ合流させるため、**このノートは以後どの移動要求も受け付けなくなる**。
 
+**ただし終端表 2 行目の「まだ何も掴んでいない」は前提であって観測ではない。** `beginOrResume` は `requestKey` について冪等で state を問わず同じ行を返すので、引き直した行が**前の試行の staged 複製・credit・両 scope の move lock を引き継いでいる**ことがありうる。したがって閉じる前に route を読み、この migration の下で `moving` を掴んでいれば手順 4〜6 の補償を通してから `rejected` にし、route が既に target を指している（switch 済み）なら**終端させず** `running` のまま停止として記録する（switch 後の停止と同じ扱いにする）。route の読み自体が失敗したときは何も終端せずログだけ残す — 掴んでいるかもしれない行を閉じない側に倒れる。
+
 operation の終端はしたがって次の 5 通りだけである。
 
 | 到達点 | operation の状態 | 補償 |
 | --- | --- | --- |
 | route の claim に失敗（手順 4） | `rejected` | claim を保持していれば手順 4〜6 の補償で返す |
-| operation を開く呼び出し自体の失敗（手順 4 の 1 段目） | `rejected` | 無し（まだ何も掴んでいない） |
+| operation を開く呼び出し自体の失敗（手順 4 の 1 段目） | `rejected` | 「まだ何も掴んでいない」ことを確かめてから閉じる（下記） |
 | switch 前の中止（手順 5〜6 の失敗） | `rejected` | 補償する |
 | switch 後の停止（中止の CAS 拒否・手順 8 以降の失敗） | `running` のまま | 何もしない（前進のみ） |
 | 成功（手順 9 まで） | `completed` | — |
 
 補償へ進んだときは target creditを逆仕訳し、stageと両scopeのmove lockを削除し、sourceをthawする。**完全**とは target scope にこの migration の痕跡を残さないことで、消した行を「適用済み」と主張する `applied_operations` の記録も同じ transaction で消す（`clearApplied`）。target へ receipt を書く相は自分の鍵を申告する — ノート本体・ファイル metadata に加え、tag の seam も staged 分の鍵を型として宣言し、abort はそれらをまとめて消す。申告のない相が receipt を残すと、再開した手順6がその鍵で空振りする。各応答喪失は同じmigration IDで再試行するため、記録が残っていると再開した手順6が空のtargetへ素通りし、手順7がそこへrouteを切り替えてしまう。abort自体はstaged Noteの存在で冪等にし、自前のcommand keyは持たない。補償が消すのは attempt の snapshot ではなく target を列挙した結果である — 手順5に到達しなかった試行も、前の試行が staged した行を戻さなければならない。switch後はabortせず必ず前進する。
+
+**補償自体が失敗した場合に何が残るか。** 両 scope の move lock の解放は互いに独立に打ち、片方の失敗がもう片方を道連れにしない — lock は lease も期限も持たずこの migration しか解放できないうえ、直後に operation が `rejected` で閉じるので、道連れにした取り残しはそのまま恒久化する。source の解放が着地すれば、target 側の解体（staged 複製・staged file metadata・credit・`applied_operations` の記録）が落ちても source のワークスペースは削除もメンバー変更も続けられる。落ちた target 側に残るのは、route がどこも指していない staged 複製と戻し損ねた credit であり、これは本スライスの外に置いた移動の recovery が回収する対象である。呼び出し元へ返るのは補償の失敗ではなく**ここへ至った元の失敗**である（補償は診断を置き換えない）。
 
 外れるタグ名は手順3で固定した operation payload から返し、再開時に計算し直さない。
 

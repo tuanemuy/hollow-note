@@ -761,6 +761,23 @@ async function thawRoute(
 }
 
 /**
+ * Runs one half of a compensation and answers what it threw instead of
+ * propagating, so a half that has nothing to do with the failure still
+ * runs. The caller decides which cause to raise once every half has had
+ * its turn.
+ */
+async function runIndependently(
+  half: () => Promise<unknown>,
+): Promise<Readonly<{ cause: unknown }> | null> {
+  try {
+    await half();
+    return null;
+  } catch (cause) {
+    return { cause };
+  }
+}
+
+/**
  * The 中止 of 手順 4〜6 (spec/usecases/note.md#movenote), or `"switched"`
  * when the switch turns out to have landed and there is nothing left to
  * compensate.
@@ -780,6 +797,14 @@ async function thawRoute(
  * And what it gives back is read from the target, never from the attempt's
  * snapshot: an attempt that failed before it froze the source must still
  * reverse whatever an *earlier* attempt of this same migration staged.
+ *
+ * The two scopes' halves run independently rather than in sequence. The
+ * source's move lock was staged by the freeze and says nothing about what
+ * the target holds, so one target-side failure must not strand it: a lock
+ * carries no lease and no expiry, only this migration releases one, and
+ * the operation is settled `rejected` right after — which is what would
+ * make the leftover permanent. Whatever failed is still what the caller is
+ * told about, since a compensation never replaces a diagnosis.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
@@ -795,56 +820,64 @@ async function abortBeforeSwitch(
     ...TARGET_SCOPE_COMMANDS,
     ...tagRelocation.targetScopeCommandKeys,
   ];
-  await container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
-    await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
-    // The receipt commits with the rows it asserts, so it is the only
-    // authority on "is what this scope holds mine?". `markApplied`
-    // answering `true` means the key was not there — this migration never
-    // staged — and the write it just made is undone by the clear below.
-    const stagedHere = !(await ctx.appliedOperationStore.markApplied({
-      operationId: plan.migrationId,
-      commandKey: STAGE_TARGET_COMMAND,
-    }));
-    for (const commandKey of targetScopeCommands) {
-      await ctx.appliedOperationStore.clearApplied({
+  const teardown = await runIndependently(() =>
+    container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
+      await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
+      // The receipt commits with the rows it asserts, so it is the only
+      // authority on "is what this scope holds mine?". `markApplied`
+      // answering `true` means the key was not there — this migration
+      // never staged — and the write it just made is undone by the clear
+      // below.
+      const stagedHere = !(await ctx.appliedOperationStore.markApplied({
         operationId: plan.migrationId,
-        commandKey,
+        commandKey: STAGE_TARGET_COMMAND,
+      }));
+      for (const commandKey of targetScopeCommands) {
+        await ctx.appliedOperationStore.clearApplied({
+          operationId: plan.migrationId,
+          commandKey,
+        });
+      }
+      if (!stagedHere) {
+        return;
+      }
+      const staged = await ctx.noteRepository.findById(plan.noteId);
+      if (staged === null) {
+        return;
+      }
+      await ctx.noteRepository.delete(plan.noteId, staged.expectedVersion);
+      await ctx.noteRevisionRepository.deleteByNote(plan.noteId);
+      const { files } = await relocateFilesForNote(ctx, {
+        migrationId: plan.migrationId,
+        phase: "snapshotSource",
+        noteId: plan.noteId,
+        owner: storageOwnerOf(plan.target),
+        targetOwner: storageOwnerOf(plan.source),
+        now,
       });
-    }
-    if (!stagedHere) {
-      return;
-    }
-    const staged = await ctx.noteRepository.findById(plan.noteId);
-    if (staged === null) {
-      return;
-    }
-    await ctx.noteRepository.delete(plan.noteId, staged.expectedVersion);
-    await ctx.noteRevisionRepository.deleteByNote(plan.noteId);
-    const { files } = await relocateFilesForNote(ctx, {
-      migrationId: plan.migrationId,
-      phase: "snapshotSource",
-      noteId: plan.noteId,
-      owner: storageOwnerOf(plan.target),
-      targetOwner: storageOwnerOf(plan.source),
-      now,
-    });
-    await relocateFilesForNote(ctx, {
-      migrationId: plan.migrationId,
-      // Removing the staged rows is the same operation as retiring a
-      // source, seen from the scope that is giving the metadata back.
-      phase: "retireSource",
-      noteId: plan.noteId,
-      owner: storageOwnerOf(plan.target),
-      targetOwner: storageOwnerOf(plan.source),
-      files,
-      now,
-    });
-    await applyStorageDelta(ctx, plan.target, -totalBytes(files), -1, now);
-  });
-
-  await container.scopeUnitOfWorkProvider.run(plan.source, (ctx) =>
-    ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
+      await relocateFilesForNote(ctx, {
+        migrationId: plan.migrationId,
+        // Removing the staged rows is the same operation as retiring a
+        // source, seen from the scope that is giving the metadata back.
+        phase: "retireSource",
+        noteId: plan.noteId,
+        owner: storageOwnerOf(plan.target),
+        targetOwner: storageOwnerOf(plan.source),
+        files,
+        now,
+      });
+      await applyStorageDelta(ctx, plan.target, -totalBytes(files), -1, now);
+    }),
   );
+  const released = await runIndependently(() =>
+    container.scopeUnitOfWorkProvider.run(plan.source, (ctx) =>
+      ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
+    ),
+  );
+  const failed = teardown ?? released;
+  if (failed !== null) {
+    throw failed.cause;
+  }
   return "compensated";
 }
 
@@ -1027,20 +1060,24 @@ export async function moveNote({
   // first one's operation, and the checks that decide whether the move
   // may still commit would be asked about the wrong person.
   const requestKey = `${noteId}:${actorUserId}:${serializeScope(target)}:${route.routeVersion}`;
-  const operation = await beginOperation(container, {
-    kind: "noteMove",
-    partitionKey: noteId,
-    requestKey,
-    payload: toPayload({
-      noteId,
-      actorUserId,
-      source,
-      target,
-      sourceMembershipVersion: sourcePin.version,
-      targetMembershipVersion: targetPin.version,
-      droppedTagNames,
-    }),
-  });
+  const operation = await beginOperation(
+    container,
+    {
+      kind: "noteMove",
+      partitionKey: noteId,
+      requestKey,
+      payload: toPayload({
+        noteId,
+        actorUserId,
+        source,
+        target,
+        sourceMembershipVersion: sourcePin.version,
+        targetMembershipVersion: targetPin.version,
+        droppedTagNames,
+      }),
+    },
+    tagRelocation,
+  );
   if (operation.requestKey !== requestKey) {
     throw moveInProgress();
   }
@@ -1272,31 +1309,46 @@ async function releaseUnusedClaim(
  * opening is lost.
  *
  * A lost response is not a lost write. The row may well have committed,
- * `running`, while no one in this process knows its id: nothing is
- * claimed, nothing is locked, nothing is staged. `beginOrResume` joins
- * every later request for this note to that row, so from here on every
- * move of it is refused (`NOTE_MOVE_IN_PROGRESS`) for everyone except a
- * request deriving the very same key — and the moment the user picks
- * another destination even that key is gone. Canon settles every
+ * `running`, while no one in this process knows its id. `beginOrResume`
+ * joins every later request for this note to that row, so from here on
+ * every move of it is refused (`NOTE_MOVE_IN_PROGRESS`) for everyone
+ * except a request deriving the very same key — and the moment the user
+ * picks another destination even that key is gone. Canon settles every
  * switch-less end of the saga `rejected` for exactly this reason
  * (spec/usecases/note.md#movenote 手順 4).
  *
  * The id is the only thing the loss took, and the request key derives it
  * again: the call is idempotent on that key, so re-issuing the identical
  * request returns the committed row, or creates the one that never
- * committed — which is then settled the same way, since this attempt has
- * already given up on it.
+ * committed.
+ *
+ * What comes back is *not* necessarily a row that holds nothing, which is
+ * the premise canon's "補償: 無し" rests on. The key is idempotent on
+ * state as well, and a failed attempt leaves `routeVersion` alone, so the
+ * same key is derivable — and returns the same row — while an earlier
+ * attempt's claim, both scopes' move locks and a staged copy are still
+ * standing, or while a concurrent request for the identical move is
+ * driving them. Closing such a row settles the only party that could ever
+ * release those locks. So the route decides which row of the terminal
+ * table this is: a claim still held under this operation is given back
+ * through the pre-switch compensation before the row is closed, a route
+ * that already names the destination is a post-switch stop and is left
+ * `running` (spec/usecases/note.md#movenote の終端表, 4 行目), and only a
+ * row holding nothing is settled outright.
  *
  * Only a row this request authored may be closed. A different
  * `requestKey` means the store joined us to an operation somebody else
  * drives, and a terminal row is already closed. Like the other
- * compensations here, the repair — the re-issue that decides it as much
- * as the settle — is logged and swallowed rather than allowed to replace
- * the caller's diagnosis.
+ * compensations here, the repair — the re-issue and the route read that
+ * decide it as much as the settle — is logged and swallowed rather than
+ * allowed to replace the caller's diagnosis; a repair that fails leaves
+ * the row `running` with its claim, which is recoverable, rather than
+ * terminal with it, which is not.
  */
 async function beginOperation(
   container: RequestContainer,
   request: BeginMoveRequest,
+  tagRelocation: NoteMoveTagRelocation,
 ): Promise<DistributedOperation> {
   try {
     const { operation } = await container.globalUnitOfWorkProvider.run((ctx) =>
@@ -1304,7 +1356,7 @@ async function beginOperation(
     );
     return operation;
   } catch (cause) {
-    await rejectLostOperation(container, request, cause);
+    await rejectLostOperation(container, request, tagRelocation, cause);
     throw cause;
   }
 }
@@ -1312,6 +1364,7 @@ async function beginOperation(
 async function rejectLostOperation(
   container: RequestContainer,
   request: BeginMoveRequest,
+  tagRelocation: NoteMoveTagRelocation,
   cause: unknown,
 ): Promise<void> {
   try {
@@ -1322,6 +1375,26 @@ async function rejectLostOperation(
       operation.requestKey !== request.requestKey ||
       operation.state !== "running"
     ) {
+      return;
+    }
+    const plan = readPlan(operation.id, operation.payload);
+    const route = await container.noteRouteStore.resolve(plan.noteId);
+    if (route !== null && ScopeKey.equals(route.scope, plan.target)) {
+      logStuckAfterSwitch(container, plan, cause);
+      return;
+    }
+    if (
+      route !== null &&
+      route.state === "moving" &&
+      route.migrationId === plan.migrationId &&
+      (await abortBeforeSwitch(
+        container,
+        plan,
+        route.routeVersion,
+        tagRelocation,
+      )) === "switched"
+    ) {
+      logStuckAfterSwitch(container, plan, cause);
       return;
     }
     await settle(container, operation.id, "rejected");

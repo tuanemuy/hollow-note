@@ -9,9 +9,8 @@ import { WorkspaceUnavailableState } from "@/components/workspace/WorkspaceUnava
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
 import { boundedRedirectSource } from "@/presentation/redirect";
+import { workspaceUnavailability } from "@/presentation/scope";
 import { renderWorkspaceNoteList } from "../-action";
-
-const WORKSPACE_INSUFFICIENT_ROLE = "WORKSPACE_INSUFFICIENT_ROLE";
 
 /**
  * P-10 のワークスペース文脈版（`/workspaces/:workspaceId/notes`、WS-02 手順
@@ -39,23 +38,21 @@ export const Route = createFileRoute("/workspaces/$workspaceId/notes/")({
   },
   component: WorkspaceNotesPage,
   // 非メンバーと削除済み・不在を 1 つの表示に畳む（存在の有無を漏らさない）。
-  // `loader` が失敗している以上シェルに渡す利用者が無いので、上部バーが
-  // 戻り先だけの最小形（`ReaderShell`、スコープは個人）で包む — 素のページに
-  // 落とさず、次の行き先を必ず 1 つ残すため（`notes/$noteId` と同じ理由）。
-  errorComponent: ({ error }) => {
-    const serialized = extractSerializedError(error);
-    return (
-      <ReaderShell>
-        {serialized.kind === "notFound" ||
-        (serialized.kind === "business" &&
-          serialized.code === WORKSPACE_INSUFFICIENT_ROLE) ? (
-          <WorkspaceUnavailableState />
-        ) : (
-          <ServerErrorState />
-        )}
-      </ReaderShell>
-    );
-  },
+  // 判定は `workspaceUnavailability` に委ねる — 同じ失敗で loader が引き継ぎ
+  // Cookie を畳んでいるので、ここが独自の写像を持つと画面と Cookie が同じ
+  // 入力で違う結論を出す。`loader` が失敗している以上シェルに渡す利用者が
+  // 無いので、上部バーが戻り先だけの最小形（`ReaderShell`、スコープは個人）で
+  // 包む — 素のページに落とさず、次の行き先を必ず 1 つ残すため
+  // （`notes/$noteId` と同じ理由）。
+  errorComponent: ({ error }) => (
+    <ReaderShell>
+      {workspaceUnavailability(extractSerializedError(error)) === null ? (
+        <ServerErrorState />
+      ) : (
+        <WorkspaceUnavailableState />
+      )}
+    </ReaderShell>
+  ),
 });
 
 function WorkspaceNotesPage() {

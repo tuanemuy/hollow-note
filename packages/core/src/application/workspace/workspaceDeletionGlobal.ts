@@ -51,7 +51,7 @@ import {
  * *Both* candidate keys the turn carries are freed, not the one the scope
  * named. The workspace is disappearing, so this is the last call that
  * could free either, and an `active` reservation has no expiry behind it;
- * `advertisedSlug` in `application/workspace/changeWorkspaceSlug.ts`
+ * `resolveAdvertisedSlug` in `application/workspace/changeWorkspaceSlug.ts`
  * states why neither candidate is reliable on its own and why freeing the
  * wrong one writes nothing.
  */

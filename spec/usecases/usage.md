@@ -50,7 +50,7 @@ type WorkspaceUsageItem =
 
 1. personal scope object から `StorageQuotaRepository.find({ type: "user", userId })` を引く。不在なら初期値を返す
 2. global D1 の `membership_directory` から active workspace edge を `UserWorkspaceDirectory.listActiveByUser` の `created_at DESC, workspace_id` の keyset で `workspaceLimit` 件引き、`owner` / `editor` だけを残して `workspace_directory` で名前を解決する。editor 参加数には上限がないため、所有上限を fan-out 上限には使わない。ポートはロール述語を取らないので、ロールの絞り込みは取得の**後段**である — 1 ページの表示件数は `workspaceLimit` を下回りうるし、viewer だけのページは 0 件にもなる
-3. このページに含まれる最大20個の workspace scope object だけへ問い合わせる。同時RPCは6以下とし、1 scopeの失敗はそのworkspaceを `unavailable` として返し、personalや他workspaceを失敗させない。続きがあれば、ポートが返す**不透明（署名済み）な cursor をそのまま** `nextWorkspaceCursor` として返す。カーソルは絞り込み後の末尾ではなく**ページ全体の末尾**まで進むので、表示が 0 件のページでも次ページの起点は前へ進む
+3. このページに含まれる最大20個の workspace scope object だけへ問い合わせる。同時RPCは6以下とし、1 scopeの失敗はそのworkspaceを `unavailable` として返し、personalや他workspaceを失敗させない。縮退させるのは scope への RPC の失敗だけであり、その答えから値を導く純粋な導出（`StorageQuota.initialize` / `QuotaEnforcement.describe`）の失敗は畳まず要求ごと失敗させる。続きがあれば、ポートが返す**不透明（署名済み）な cursor をそのまま** `nextWorkspaceCursor` として返す。カーソルは絞り込み後の末尾ではなく**ページ全体の末尾**まで進むので、表示が 0 件のページでも次ページの起点は前へ進む
 4. personal scope の `LlmUsageRepository.find(userId, BillingPeriod.of(now))` を引く。不在なら初期値を返す
 5. `QuotaEnforcement.describe` で表示用の値を組み立てる
 6. `updatedAt` は personal scope の `StorageQuota` と `LlmUsage` の最終更新時刻のうち新しいほう。**workspace 行は畳み込まない** — workspace の一覧はページの持ち物なので、畳み込むと画面が示す基準時刻がページを繰るたびに動く

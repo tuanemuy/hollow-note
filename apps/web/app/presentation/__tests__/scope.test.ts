@@ -6,6 +6,7 @@ import {
   serializeScope,
   WORKSPACE_ID_MAX_LENGTH,
   workspaceUnavailability,
+  workspaceUnavailableDestination,
 } from "../scope";
 
 describe("serializeScope / parseScope", () => {
@@ -66,5 +67,39 @@ describe("workspaceUnavailability", () => {
     expect(workspaceUnavailability({ kind: "conflict" })).toBeNull();
     expect(workspaceUnavailability({ kind: "validation" })).toBeNull();
     expect(workspaceUnavailability({ kind: "unauthorized" })).toBeNull();
+  });
+});
+
+/**
+ * P-34 の「完了」（spec/pages/index.md#P-34、AC-12）に到達できるのは、
+ * 行が消えた設定シェルが子ルートを描いたときだけである。
+ */
+describe("workspaceUnavailableDestination", () => {
+  it("hands a workspace whose row is gone to the child fragment", () => {
+    expect(workspaceUnavailableDestination("gone")).toBe("children");
+  });
+
+  it("keeps a viewer who is not a member out of the child fragment", () => {
+    expect(workspaceUnavailableDestination("denied")).toBe("terminal");
+  });
+
+  it("does not open the child fragment when nothing said the context is closed", () => {
+    expect(workspaceUnavailableDestination(null)).toBe("terminal");
+  });
+
+  it("routes the deletion outcome the read reports, end to end", () => {
+    // 削除が完了した直後の `getWorkspaceSettings` は `WORKSPACE_NOT_FOUND`
+    // （`notFound`）で落ちる。その 1 本の写像が `children` まで繋がって
+    // いなければ、P-34 の完了は誰にも描けない。
+    expect(
+      workspaceUnavailableDestination(
+        workspaceUnavailability({ kind: "notFound" }),
+      ),
+    ).toBe("children");
+    expect(
+      workspaceUnavailableDestination(
+        workspaceUnavailability({ kind: "business" }),
+      ),
+    ).toBe("terminal");
   });
 });

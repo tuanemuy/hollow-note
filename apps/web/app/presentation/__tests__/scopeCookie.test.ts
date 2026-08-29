@@ -35,9 +35,11 @@ beforeEach(() => {
 });
 
 /**
- * 引き継ぎが指す文脈が開けないと分かった時点で畳む（レビュー 007 B-001）。
- * どのケースも**閲覧者自身は何も操作していない** — 他の owner による除名
- * （WS-05）・削除（WS-10）の後で入口から送り込まれた読み出しである。
+ * 引き継ぎが指す文脈が開けないと分かった時点で畳む
+ * （spec/scenario/workspace.md#WS-02 異常系）。どのケースも**閲覧者自身は
+ * 何も操作していない** — 他の owner による除名（WS-05）・削除（WS-10）の
+ * 後で入口から送り込まれた読み出しである。自分の操作の応答だけで畳む形に
+ * 戻すと、この 3 ケースの引き継ぎは誰にも畳まれない。
  */
 describe("foldScopeSelectionForUnavailable", () => {
   it("folds the handover after another owner removed the viewer", () => {

@@ -157,7 +157,7 @@
 | ADP-workspace-062 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約し、行を `attemptId` の試行の保持にする |
 | ADP-workspace-063 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
 | ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
-| ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
+| ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する。解放するのは `active` 行だけで、同じ workspace 自身の `reserved` 行は残す（走行中の改名の予約を奪わない。回収は expiry が行う） |
 | ADP-workspace-066 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する。slug の剥がしは適用と同じ述語を持ち、何も書かない snapshot は slug を奪わない |
 | ADP-workspace-067 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
 | ADP-workspace-068 | `UserWorkspaceDirectory.countOwnedByUser` | `spec/domains/workspace.md#ポート` | 所有上限判定用に owner edge を limit まで数える |

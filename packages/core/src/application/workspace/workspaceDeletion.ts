@@ -64,14 +64,16 @@ export type WorkspaceDeletionLocalPhase =
  * Both are carried, because either one alone is a guess: a rename whose
  * `activate` was lost moved the scope past the key it holds, and one
  * whose projection was lost moved the key past what the directory says.
- * Global cleanup frees both (`advertisedSlug` in
+ * Global cleanup frees both (`resolveAdvertisedSlug` in
  * `application/workspace/changeWorkspaceSlug.ts` states the rule), and
  * releasing a key this workspace no longer holds writes nothing.
  *
  * They are fixed at admission rather than re-read: cleanup runs after the
  * Workspace row and the directory row are already gone, and the scope has
  * been closed to mutation since `beginDeletion`, so nothing moves either
- * value after the deletion is accepted.
+ * value after the deletion is accepted. Admission is refused outright
+ * while the directory cannot name the second candidate, so no turn ever
+ * carries a `null` that only means "nobody could say".
  */
 export type WorkspaceDeletionLocalTurn = Readonly<{
   operationId: string;

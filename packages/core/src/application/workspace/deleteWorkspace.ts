@@ -6,7 +6,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { ConflictError, ValidationError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
-import { advertisedSlug } from "./changeWorkspaceSlug";
+import { resolveAdvertisedSlug } from "./changeWorkspaceSlug";
 import { ensureActorCan } from "./membershipMutation";
 import {
   resolveWorkspaceAccess,
@@ -52,6 +52,12 @@ const confirmationMismatch = (): ValidationError =>
  * edge deletion, the Workspace row and `workspace.deleted`, then global
  * cleanup and the ack compaction that ends in `markCompleted`.
  *
+ * Ahead of that commit the request fixes the two candidate keys the
+ * cleanup will free, and refuses with `WORKSPACE_DIRECTORY_UNAVAILABLE`
+ * while the directory cannot name the second one: accepting is what
+ * makes this the last caller able to free either
+ * (`resolveAdvertisedSlug`), so a deletion is not opened blind.
+ *
  * Re-requesting is safe: a scope already `deleting` answers with the
  * operation that owns it and stores nothing, so a double submit joins the
  * running deletion instead of opening a second one. Its driver is the task
@@ -90,8 +96,20 @@ export async function deleteWorkspace({
   const now = container.clock.now();
   // Read while the directory row still exists: global cleanup tombstones
   // it before it frees the keys, so this is the last point at which the
-  // advertised candidate can be seen at all.
-  const advertised = await advertisedSlug(container, workspaceId, null);
+  // advertised candidate can be seen at all. A shard that cannot answer
+  // is therefore refused rather than folded to "no candidate" — the
+  // deletion would otherwise be accepted carrying one candidate, and an
+  // `active` reservation the deletion misses has no expiry and no later
+  // caller (`resolveAdvertisedSlug`). Refusing costs the requester a
+  // retry and leaves the scope open, which is what keeps the repair
+  // paths (a profile save re-sends the snapshot) reachable.
+  const advertised = await resolveAdvertisedSlug(container, workspaceId, null);
+  if (!advertised.known) {
+    throw new ConflictError(
+      "WORKSPACE_DIRECTORY_UNAVAILABLE",
+      `The workspace directory cannot answer for ${workspaceId} yet`,
+    );
+  }
 
   return container.scopeUnitOfWorkProvider.run<WorkspaceDeletionAcceptedView>(
     scope,
@@ -137,7 +155,7 @@ export async function deleteWorkspace({
           phase: "memberships",
           cursor: null,
           slug: workspace.slug,
-          advertisedSlug: advertised,
+          advertisedSlug: advertised.slug,
         },
         now,
       );

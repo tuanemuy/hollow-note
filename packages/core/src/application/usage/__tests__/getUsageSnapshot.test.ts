@@ -379,7 +379,7 @@ describe("getUsageSnapshot", () => {
 
     expect(view.workspaces).toHaveLength(20);
     expect(workspaceReads).toBe(20);
-    expect(peak).toBeLessThanOrEqual(6);
+    expect(peak).toBe(6);
     expect(view.nextWorkspaceCursor).not.toBeNull();
   });
 

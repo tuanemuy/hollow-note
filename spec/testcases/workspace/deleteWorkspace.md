@@ -44,3 +44,5 @@
 | 最終100件削除の応答を失う | recoveryする | 同じoperation IDでitem 0件を確認し、completed tombstoneを1回だけ保存する | |
 | workspace内ノートの移動がstage済み、または切替後の後処理中である | 削除する | `WorkspaceOperationLockStore.hasActiveMove` が競合を検出し、移動を完了またはabortするまで `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` で削除を拒否する | |
 | 改名の切替を恒久的に失った workspace を削除する | 削除する | global cleanup は turn が運ぶ候補 2 つ（scope の `slug` と `workspace_directory` の広告値）の両方を `release` するので、`active` のまま取り残された鍵が回収される | |
+| directory tombstone の shard が答えない | 削除する | global turn はそこで止まって backoff し、slug 予約を保持したまま directory 行を `active` のまま残す。shard が答え直せば同じ task 行が最後まで運ぶ（広告している URL と解放済みの鍵が同時に存在する窓を作らない） | |
+| `workspace_directory` が広告値を答えられない | 削除する | 受理せず `ConflictError("WORKSPACE_DIRECTORY_UNAVAILABLE")` を返し、scope の lifecycle も継続 task も動かさない。答えられるようになってから受理すれば、取り残されていた鍵まで解放される | |

@@ -32,7 +32,7 @@ import {
   type TestHarness,
   type TestHarnessOptions,
 } from "../../__tests__/helpers";
-import type { RequestContainer } from "../../di/types";
+import type { RequestContainer, WorkerContainer } from "../../di/types";
 import {
   isConflictError,
   isNotFoundError,
@@ -676,6 +676,35 @@ export function withFailingDirectoryProjection(
     workspaceDirectoryProjectionWriter: {
       ...h.container.workspaceDirectoryProjectionWriter,
       applySnapshotIfNewer: () => Promise.reject(error),
+    },
+  };
+}
+
+/**
+ * The worker-plane half of the same fault: the deletion saga's directory
+ * `tombstone` never lands.
+ *
+ * It takes a container of its own rather than an argument to the request
+ * helper above because the two writes sit on different containers on
+ * purpose — the request path is handed a `Pick` without `tombstone`
+ * (`WorkspaceDirectoryProjector`), since the terminal write belongs to
+ * the cleanup turn alone.
+ *
+ * Unlike the projection, this loss is not permanent by construction: the
+ * turn is a scope task, so it backs off and comes round again. What it
+ * exposes is the order the turn owes — nothing past the tombstone runs,
+ * the slug keys included, so a workspace whose public route is still
+ * resolving never has its keys handed to the next taker.
+ */
+export function withFailingDirectoryTombstone(
+  h: TestHarness,
+  error: Error = new Error("directory shard unreachable"),
+): WorkerContainer {
+  return {
+    ...h.workerContainer,
+    workspaceDirectoryProjectionWriter: {
+      ...h.workerContainer.workspaceDirectoryProjectionWriter,
+      tombstone: () => Promise.reject(error),
     },
   };
 }
