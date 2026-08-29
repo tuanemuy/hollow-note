@@ -399,3 +399,152 @@ global D1 側の 6 つ（3 directory と 3 予約ストア）は `RequestContain
 
 - 1 shard の障害が「そのワークスペースは存在しない」という、クローラにキャッシュされうる嘘にならない。
 - 逆に、投影が遅れている公開直後のワークスペースは directory が `unavailable` でも scope 読みで公開ページが出る。正データが公開なので、これは仕様の意図（手順 3 の retry も「投影より古い scope 読み」を直す方向）と整合する。
+
+## ADR-025: メンバーシップ変更の「未終端ジョブ取り消し」は継続要求を発行せず不在として記録する
+
+### Context
+
+`changeMemberRole` / `removeMember` / `leaveWorkspace` は spec 上、対象者の未終端 Job を 100 件ずつ終端し、満杯なら同一 UoW で `job.terminationContinued` を積むことになっている。しかし本リポジトリの Job ドメインは `JobId` のみで、`JobRepository` / `Job.cancel` / `continueForcedTermination` のいずれも存在しない（Issue #5 待ち）。さらに `application/workers/subscribers.ts` の `continuationSubscribers` は継続要求型に対して網羅的で、購読者のない継続要求を型に足すとコンパイルエラーになり、仮に発行できても「止まった鎖」になる。
+
+### Decision
+
+継続要求を発行しない。取り消し自体も行わない。代わりに、不在の理由と復帰時の置き場所（各ユースケースの既存 UoW の中）を `application/workspace/membershipMutation.ts` のモジュール JSDoc に明記する。形式は `application/cleanup/participants.ts` が account deletion について同じ欠落を `job: absent("The Job aggregate does not exist", "#5")` と宣言しているのに倣う。
+
+### Consequences
+
+`TC-workspace` の降格・除名・脱退のうちジョブ取り消しに関わる行（100 件継続、`origin` の内容、kind 別の取り消し可否、`markConversionFailed("canceled")`、artifact 回収）は Job スライスまで判定不能。ロール保護・自己変更禁止・除名/脱退の本体は本スライスで満たされる。
+
+## ADR-026: 除名・脱退は directory edge を `removing` にせず、scope-local commit だけで確定させる
+
+### Context
+
+spec/usecases/workspace.md の `removeMember` 手順 5 / `leaveWorkspace` 手順 4 は「global directory edge を `removing` にしてから local UoW を回し、residue cleanup の ack 後に edge を削除する」と定める。しかし `MembershipDirectoryReservationStore`（`spec/domains/workspace.md#ポート` / `DOM-workspace-045〜052`）には join サガと account deletion 用の遷移しかなく、`removing` への遷移も edge 削除も**メソッドが存在しない**。台帳にも該当行がない。
+
+### Decision
+
+本スライスでは scope-local の `Membership` 削除と `workspace.membership.removed` の発行までを行い、directory edge には触れない。ポートを勝手に増やさず、欠落として報告する。
+
+### Consequences
+
+除名・脱退の直後、`listUserWorkspaces` に stale な edge が一時的に残りうる。権限昇格にはならない — 認可はすべて scope の `Membership` を読み直すため、削除済みメンバーはあらゆる操作で拒否される（`UserWorkspaceDirectory` の JSDoc が定める「role は投影であって認可事実ではない」）。ただし `TC-workspace` の「edge は `removing` のまま残る」「residue ack 後に削除される」行は満たせない。ポート追加は `spec/domains/workspace.md#ポート` と適合スイートの同時改訂を要する。
+
+## ADR-027: メンバーシップ変更 3 件の共通ガードを `membershipMutation.ts` に置く
+
+### Context
+
+`requireManageMembers`（非メンバーを `InsufficientRole` に畳む認可）と、対象者の account deletion prepare lock / move lock の検査は 3 ユースケースで同一である。ユースケース間 import（`resolveWorkspaceAccess` の `workspaceNotFound`）も同ディレクトリの `pagination.ts` も既に前例がある。
+
+### Decision
+
+`application/workspace/membershipMutation.ts` を新設し、`requireManageMembers` と `ensureMembershipMutable` を置く。ロック検査は必ず呼び出し側の UoW の中で行うため、`ScopeUnitOfWorkContext` を引数で受け取る関数とし、自分では `run` を開かない（ADR 023 の入れ子禁止）。
+
+### Consequences
+
+ステップ 10 の対象ファイルは 3 件と指示されていたが 4 件になる。ステップ 8 / 9 が別の共通認可ヘルパーを作った場合は後で統合が要る。
+
+## ADR-028: 所有上限の判定に `listActivatingByUser` を足して pending 分を数える
+
+### Context
+
+`spec/usecases/workspace.md#createWorkspace` 手順 1 は「global D1 の active / pending `membership_directory` から `role = owner` の件数を数え」と定め、`spec/testcases/workspace/createWorkspace.md` は「pending workspace を含め所有数 20 件 → quota 回避を防ぐため `WorkspaceQuotaExceeded`」を要求する。しかし所有数を数えるポートが無い。`UserWorkspaceDirectory.listActiveByUser` は契約上 `active` edge だけを返し（pending / removing は意図的に除外）、`MembershipDirectoryReservationStore` に件数を返すメソッドは無い。`spec/domains/workspace.md` の interface 一覧にも所有数を数える口は無く、同 257 行の「利用者の参加 workspace 一覧・所有数は ... query service が担う」という記述だけが宙に浮いている。
+
+### Decision
+
+`listActiveByUser` を keyset で辿って `role === "owner"` を数え、そこへ `MembershipDirectoryReservationStore.listActivatingByUser(userId, 20)` の件数を足す。上限（20）に達した時点で読み止める。`activating` edge は role を持たないので、in-flight な join は一律 owner として数える。
+
+### Consequences
+
+- 良い点: 「commit が着地しなかった create の edge が枠を空ける」経路を塞げる。テストケースの pending 行を満たす。読み取りは上限で打ち切るので、bounded に保てる。
+- トレードオフ: `activating` な viewer 参加（招待受諾の途中）を owner として数えるため、19 件所有中の利用者が受諾サガと同時に作成すると一時的に拒否されうる。誤りの向きは常に「拒否側」で、21 件目を通すことはない。edge は予約 TTL 内に収束する。
+- 反証条件: `membership_directory` に「role = owner の active + pending 件数」を返すポートメソッドが足されたら、この合成はやめて 1 回の read に置き換える。その際は `spec/domains/workspace.md#ポート` と `spec/inventory/domain.md` にも行を足す。
+
+## ADR-029: `publishWorkspace` の `publicNoteCount` は workspace scope から数える
+
+### Context
+
+spec は `NoteQueryService.searchPublic` で公開ノート件数を数えると定めるが、`PublicNoteQueryService` は `RequestContainer`（`application/di/types.ts`）に載っていない。載っているのは `noteReaderFor(scope)`（`findById` / `listByOwner` / `countByOwner`）だけで、`countByOwner` は可視性で絞れない。加えて `searchPublic` は件数を返さず `hasMore` しか持たないため、正典の経路でもページ反復が要る。
+
+### Decision
+
+`noteReaderFor(ScopeKey.workspace(id)).listByOwner(NoteOwner.workspace(id), "active", …)` を 100 件ずつ辿り、`visibility.status === "public"` を数える。理由と差し替え先を関数の JSDoc に残す。
+
+### Consequences
+
+- 良い点: DI を触らずに `publicNoteCount: 0` / `3` のテストケースを満たせる。scope は自 workspace のノートの可視性の正データなので、数自体は正確。
+- トレードオフ: 公開ページが実際に描画する global 投影ではなく scope を読む。ノート数に比例した読み取りになる。
+- 反証条件: `PublicNoteQueryService` が request container に載ったら差し替える。`application/note/listNotes.ts` が同じ理由で暫定実装になっているので、そちらと同時に片付けるのが自然。
+
+## ADR-030: `changeWorkspaceSlug` の予約 operation ID を決定的に導出する
+
+### Context
+
+`WorkspaceSlugReservationStore` は `(slug, operationId)` で冪等になっている。応答喪失後の再実行で新しい ID を採番すると、前回の試行が残した自分自身の `reserved` 行に衝突し、TTL が切れるまで `SLUG_ALREADY_USED` を返してしまう。`createWorkspace` は再試行が別の workspace の作成なので採番でよいが、slug 変更は「同じ workspace を同じ slug へ」の再実行になる。
+
+### Decision
+
+`workspace.changeSlug:{workspaceId}:{slug}` を operation ID とする（`identity/updateProfile.ts` の `profileOperationId` と同じ手口）。slug は公開 URL の一部なので、ID に埋め込んでもログ経由の情報漏れにはならない。
+
+### Consequences
+
+- 良い点: 予約・commit・切替のどこで応答を失っても、同じ入力の再実行が同じ行へ収束する。テストケースの「local 更新後に global 切替応答を失う → recovery」がユースケースの再実行だけで成立する。
+- トレードオフ: 同じ workspace が同じ slug を短時間に取り直す 2 つの要求は 1 行を共有する。どちらも同じ結果へ収束するので実害はない。
+
+## ADR-031: 期限切れ招待の `expired` / `InvitationExpired` は現契約では到達しないまま実装する
+
+### Context
+
+`spec/testcases/workspace/getInvitationPreview.md` は「期限切れの招待 → `state: "expired"`」を、`acceptInvitation.md` は「期限切れの招待 → `BusinessRuleError(InvitationExpired)`」を期待する。一方 `InvitationRouteStore.resolveActive` の JSDoc と ADR-009 は「`active` かつ未期限切れの行だけを解決し、期限切れは `null`（preview / accept は一様に `INVITATION_NOT_FOUND`）」と定める。route の `expires_at` は招待自身の `expiresAt` と同値なので、両者の境界は完全に一致し、期限切れ招待は token から workspace scope を解決できない。token hash から scope を引く経路は `resolveActive` しかないため、2 つの期待は同時には満たせない。
+
+### Decision
+
+ユースケース側は spec の処理フローどおりに書く — `getInvitationPreview` は `Invitation.isExpired` を含めて `state` を決め、`acceptInvitation` は `Invitation.accept` に期限判定を委ねて `InvitationExpired` を素通しする。アダプターとポート契約には手を触れない（適合スイートの正本であり、本ステップの担当外）。結果として上記 2 分岐は現状到達不能なままとする。
+
+### Consequences
+
+- ユースケースのコードは「期限切れは起きない」を前提にしていないので、`resolveActive` を期限に寛容へ変えるか、期限切れ専用の解決口を足せば、ユースケースを触らずに両テストケースが通る。
+- それまでは該当 2 テストケースが `NotFoundError("INVITATION_NOT_FOUND")` を観測して落ちる。ステップ 17 で契約側の是正（`spec/testcases/` か ポート JSDoc のどちらを正とするか）を決める必要がある。
+
+## ADR-032: `inviteMember` の「既にメンバー」判定は identity の email claim を経由する
+
+### Context
+
+`inviteMember` の入力はメールアドレスだが、`MembershipRepository.findByWorkspaceAndUser` は `UserId` を要る。workspace のポート集合には email から member を引く手段が無い。
+
+### Decision
+
+`IdentityUniqueDirectory.resolve("email", email)` で `UserId` を解決し、解決できた場合だけ membership を引く。未登録アドレスはどのワークスペースのメンバーでもありえないので、`null` はそのまま「メンバーでない」とする。
+
+### Consequences
+
+- workspace のユースケースが identity の global directory を 1 本読む。どちらも request container 上の global plane ポートで、UoW を跨がない。
+- 恒久 claim（`active`）だけが解決されるので、サインアップ処理中でまだ `reserved` のアドレスは「メンバーでない」と見なされる。そのアドレスはまだメンバーになりようがないため、判定として正しい。
+
+## ADR-033: `resendInvitation` は読み取りと書き込みを 2 つの scope transaction に割る
+
+### Context
+
+`reserveReplacement` は旧 token hash を要るので、招待を読んだ**あと**・local commit の**前**に呼ぶ必要がある（spec 手順 2 → 3 → 4）。しかし `WorkspaceReader.invitation` は `findById` を持たない（OCC トークンを産む読みは UoW の中に閉じ込める設計）ため、招待 ID からの読みは scope UoW を開くしかない。
+
+### Decision
+
+読み取り専用の `run` で招待を引いて `Invitation.resend` を適用し、その結果の `expiresAt` で `reserveReplacement` を張り、2 本目の `run` で `save(expectedVersion)` する。`run` の入れ子は生じない。跨いだ `expectedVersion` は OCC の本来の用途どおりに働かせる。
+
+### Consequences
+
+- 並行する 2 つの再送は 2 本目の `save` で片方が `OPTIMISTIC_LOCK_FAILURE` になり、敗者は自分が予約した replacement を `abandon` する。ポート JSDoc が「敗者が abandon する責任を負う」と書く状況が、`activateReplacement` を待たずに commit 段階で解決する。
+- 招待の読みが 2 transaction ぶんになる。scope object 内の往復なので実害は小さい。
+
+## ADR-034: `listPendingInvitations` の `count` は絞り込み後の件数とする
+
+### Context
+
+`InvitationRepository.listByWorkspace` は status を絞らず、`PaginationResult.count` は「ワークスペースの招待総数」である（JSDoc 明記）。一方 `spec/testcases/workspace/listPendingInvitations.md` は「保留中が 0 件 → `count: 0`」「保留中 2 件 → 2 件が返る」を期待し、受諾済み・取り消し済みは一覧に含めない。
+
+### Decision
+
+`count` は射影後の `invitations.length`（＝このページの保留中件数）とする。理由をユースケースの JSDoc に残す。
+
+### Consequences
+
+- 画面が出す件数と一覧の行数が常に一致する。テストケースの 0 件期待も満たす。
+- 保留中が 1 ページ（既定 50 件）を超えると `count` が総数ではなくページ内件数になる。発行上限が 24 時間あたり 50 件なので実運用では溢れにくいが、総数が要るなら status 別の count をポートへ足す必要がある。
