@@ -74,6 +74,7 @@ export async function createBlankNote({
     note = await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       const projectionRevision =
         await ctx.noteProjectionRevisionStore.bump(noteId);
       const created = Note.createBlank(

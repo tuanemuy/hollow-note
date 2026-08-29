@@ -58,20 +58,28 @@ export async function requireManageMembers(
 }
 
 /**
- * Refuses a membership mutation that would invalidate a decision another
- * in-flight operation already took about the same user.
+ * Refuses a membership mutation the scope no longer admits, or one that
+ * would invalidate a decision another in-flight operation already took
+ * about the same user.
  *
- * Both reads happen inside the caller's unit of work, so the answer and
- * the write it admits share one transaction. Neither lock lapses on a
- * clock reading — an account deletion mid-recovery still answers true,
- * and a staged move keeps its lock until the move settles or aborts — so
- * a membership mutation can never decide on its own that one has gone
- * stale (`MembershipRemovalPreparationStore` / `WorkspaceOperationLockStore`).
+ * The scope-wide barrier comes first and is the coarsest of the three: a
+ * workspace that has accepted a deletion takes no further membership of
+ * any kind, so a member added or demoted behind the manifest cursor
+ * cannot outlive the scope (`WorkspaceOperationLockStore.assertWritable`,
+ * spec/usecases/workspace.md#deleteworkspace 手順 3).
+ *
+ * All three reads happen inside the caller's unit of work, so the answer
+ * and the write it admits share one transaction. None of the locks lapses
+ * on a clock reading — an account deletion mid-recovery still answers
+ * true, a staged move keeps its lock until the move settles or aborts,
+ * and a deletion never reopens — so a membership mutation can never
+ * decide on its own that one has gone stale.
  */
 export async function ensureMembershipMutable(
   ctx: ScopeUnitOfWorkContext,
   userId: UserId,
 ): Promise<void> {
+  await ctx.workspaceOperationLockStore.assertWritable();
   if (await ctx.membershipRemovalPreparationStore.hasConflict(userId)) {
     throw new ConflictError(
       "ACCOUNT_DELETING",

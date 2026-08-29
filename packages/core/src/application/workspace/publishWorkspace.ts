@@ -101,6 +101,7 @@ export async function publishWorkspace({
     async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
 
       const fresh = await ctx.workspaceRepository.findById(workspaceId);
       if (fresh === null) {

@@ -56,6 +56,7 @@ export async function revokeInvitation({
     async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(actorId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       const stored = await ctx.invitationRepository.findById(invitationId);
       if (stored === null || stored.entity.workspaceId !== workspaceId) {
         throw invitationNotFound();

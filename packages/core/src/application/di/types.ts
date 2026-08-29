@@ -21,6 +21,7 @@ import type { PublicWorkspaceDirectoryReader } from "@repo/core/domain/workspace
 import type { UserWorkspaceDirectory } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
 import type { WorkspaceDirectoryBatchReader } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
 import type { WorkspaceDirectoryProjectionWriter } from "@repo/core/domain/workspace/ports/workspaceDirectoryProjectionWriter";
+import type { WorkspaceOperationLockStore } from "@repo/core/domain/workspace/ports/workspaceOperationLockStore";
 import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
 import type { WorkspaceSlugReservationStore } from "@repo/core/domain/workspace/ports/workspaceSlugReservationStore";
 import type {
@@ -162,8 +163,16 @@ export type UsageReader = Readonly<{
  * Every write method is dropped, which is what forces a mutation through
  * `scopeUnitOfWorkProvider.run` — including the ones that only look like
  * reads, since `findById` yields the OCC token a save would consume.
+ *
+ * `admission` is the one deletion check a request may make outside a
+ * transaction: the three invitation sagas reserve a global row *before*
+ * their scope commit, and refusing a scope that is already closed keeps
+ * them from claiming a token or an edge they would only have to abandon
+ * (spec/usecases/workspace.md#deleteworkspace). It is a pure read; the
+ * binding refusal is the second `assertWritable` inside the commit.
  */
 export type WorkspaceReader = Readonly<{
+  admission: Pick<WorkspaceOperationLockStore, "assertWritable">;
   workspace: Pick<WorkspaceRepository, "findById">;
   membership: Pick<
     MembershipRepository,

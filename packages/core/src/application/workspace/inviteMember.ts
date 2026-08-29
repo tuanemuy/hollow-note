@@ -148,6 +148,10 @@ export async function inviteMember({
   );
   const expiresAt = issued.entity.expiresAt;
 
+  // Refused before the token is claimed globally, and again inside the
+  // commit below (spec/usecases/workspace.md#deleteworkspace).
+  await reader.admission.assertWritable();
+
   // The route row carries a single expiry that serves both phases, so it
   // is the invitation's own — a short reservation TTL would stop the link
   // resolving right after activation (ports/invitationRouteStore.ts).
@@ -163,6 +167,7 @@ export async function inviteMember({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(inviterId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       await ctx.invitationRepository.insert(issued.entity);
       ctx.collectEvents(issued.eventDrafts);
     });

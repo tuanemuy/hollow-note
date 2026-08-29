@@ -72,6 +72,9 @@ export async function resendInvitation({
   const operationId = idGenerator.next();
 
   const pending = await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    // Refused before the replacement token is claimed globally, and again
+    // inside the commit below (spec/usecases/workspace.md#deleteworkspace).
+    await ctx.workspaceOperationLockStore.assertWritable();
     const stored = await ctx.invitationRepository.findById(invitationId);
     if (stored === null || stored.entity.workspaceId !== workspaceId) {
       throw invitationNotFound();
@@ -102,6 +105,7 @@ export async function resendInvitation({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(actorId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       await ctx.invitationRepository.save(
         pending.resent.entity,
         pending.expectedVersion,

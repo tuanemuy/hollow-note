@@ -99,6 +99,7 @@ export async function acceptInvitation({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       await acceptPending(ctx, invitationId, userId, now);
     });
     await retryOnce(logger, "[acceptInvitation] consume", () =>
@@ -110,6 +111,10 @@ export async function acceptInvitation({
     );
     return { workspaceId, role: existing.entity.role };
   }
+
+  // Refused before the edge is claimed on the invitee's shard, and again
+  // inside the commit below (spec/usecases/workspace.md#deleteworkspace).
+  await reader.admission.assertWritable();
 
   const operationId = idGenerator.next();
   const membershipId = MembershipId.create(idGenerator.next());
@@ -126,6 +131,7 @@ export async function acceptInvitation({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
       const accepted = await acceptPending(ctx, invitationId, userId, now);
       const membership = Membership.create(
         { id: membershipId, workspaceId, userId, role: accepted.role },

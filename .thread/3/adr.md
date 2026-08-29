@@ -773,3 +773,42 @@ spec/usecases/usage.md 手順 2 は「`membership_directory` から `owner` / `e
 
 - 画面は `workspaceName === null` のときの表示（ID か既定文言）を決める必要がある。P-24 の実装時に決める。
 - 空文字で埋めて型を守る案は採らない。「名前が空の workspace」は存在しない状態であり、型が嘘をつく。
+
+## ADR-049: workspace event の decoder は 12 件を 1 モジュールに置き、網羅は `satisfies` の型フェンスで担保する
+
+### Context
+
+`WorkspaceEvent` が `AllDomainEvents` に入っておらず、`buildDecoder` を使った decoder も無かった。UoW が enqueue した `workspace.*` は outbox には載るが relay が decode できず、`maxAttempts` 超過で quarantine される。既存 3 ドメイン（identity / note / storage）は `application/{domain}/eventDecoders.ts` に decoder を集め、`defaultEventDecoderRegistry` で spread して `satisfies DefaultEventDecoderRegistry` を付けている。
+
+### Decision
+
+`application/workspace/eventDecoders.ts` を同じ流儀で新設し、12 件すべてを登録する。`AllDomainEvents` に `WorkspaceEvent` を足す。網羅は追加の実行時チェックを置かず、既存の `satisfies DefaultEventDecoderRegistry`（mapped type がキーを全要求する）に任せる — 実際、1 件を外すと `eventRelayWorker.ts` が TS2741 で落ちることを確認した。
+
+購読者の有無は decoder の要否と無関係である。`dispatchDomainEvent` は購読者ゼロを warn して ack するが、それは decode に成功した後の話であり、監査用途の 8 件も decoder が要る。
+
+削除サガの 3 継続（`workspace.deletionLocalContinued` ほか）は outbox ではなく scope plane の `scheduled_tasks` に載る（ADR 040）ため、この registry の対象外である。
+
+### Consequences
+
+- 新しい workspace event を足すと、decoder 未登録がコンパイルエラーになる。
+- `workspace.membership.*` / `workspace.invitation.*` は購読者ゼロのまま relay を通過し、warn ログだけが出る。
+
+## ADR-050: workspace deletion の write バリアは各 write 入口の UoW 内で呼び、招待サガだけ予約前にも読む
+
+### Context
+
+`WorkspaceOperationLockStore.assertWritable`（`WORKSPACE_DELETING`）をどのユースケースも呼んでいなかった。`ScopeCleanupAdmissionStore.assertWritable` はアカウント削除の receipt しか見ないため代用にならない。spec/usecases/workspace.md は「その他の workspace write は ScopeRouter 入口の共通検査で拒否する」「`inviteMember` / `resendInvitation` / `acceptInvitation` は global reservation の前に呼び、local commit transaction でも再確認する」と定めている。
+
+### Decision
+
+ScopeRouter にミドルウェアを置かず、各 write 入口が自分の UoW callback の先頭で `ctx.workspaceOperationLockStore.assertWritable()` を呼ぶ。判定と、それが許可する write が同じ transaction に入るのはこの位置だけだからである。メンバーシップ 3 件（`changeMemberRole` / `removeMember` / `leaveWorkspace`）は共有ヘルパ `ensureMembershipMutable` に 1 行置いて重複を避ける — `removeMember` / `leaveWorkspace` は事前の read UoW でも同じヘルパを通るので、global edge を `removing` と宣言する前に拒否できる。
+
+予約先行の 2 件（`inviteMember` / `acceptInvitation`）のために `WorkspaceReader` へ `admission: Pick<WorkspaceOperationLockStore, "assertWritable">` を足す。純粋な read なので reader の契約（write メソッドを落とす）を破らず、この事前検査のためだけに transaction を 1 つ増やさずに済む。`resendInvitation` は既に予約前に read UoW を開いているので、その ctx で呼ぶ。
+
+`deleteWorkspace` と `createWorkspace` には置かない。前者は scope を閉じる操作そのもので、冪等性と競合は `beginDeletion` が扱う。後者は新しい scope を作るため、閉じられている状態があり得ない。
+
+### Consequences
+
+- workspace scope に書く入口が増えるたびに 1 行足す必要がある。忘れても型は助けない — テストが唯一の網である（`application/workspace/__tests__/deletionAdmission.test.ts`）。
+- user scope の入口も同じ 1 行を持つ（`createBlankNote` / `storeAvatar` / `recalculateStorageUsage` は scope が実行時に決まる）。user scope では header も deleting workspace も無いので素通りする。
+- spec の「ScopeRouter 入口の共通検査」という記述と、実装の「各 write 入口」はまだ言い回しが揃っていない。ScopeRouter に共通検査を持たせるかどうかは Cloudflare 実行系の入口設計と一緒に決める。

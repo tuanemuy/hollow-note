@@ -123,6 +123,7 @@ export async function storeAvatar({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
 
       // Read the icons to replace *before* inserting the new row, or the
       // replacement would be in its own list of things to delete.

@@ -37,6 +37,7 @@ import { createMemoryUserRepository } from "@repo/core/adapters/memory/repositor
 import { createMemoryUserWorkspaceDirectory } from "@repo/core/adapters/memory/repositories/userWorkspaceDirectory";
 import { createMemoryWorkspaceDirectoryBatchReader } from "@repo/core/adapters/memory/repositories/workspaceDirectoryBatchReader";
 import { createMemoryWorkspaceDirectoryProjectionWriter } from "@repo/core/adapters/memory/repositories/workspaceDirectoryProjectionWriter";
+import { createMemoryWorkspaceOperationLockStore } from "@repo/core/adapters/memory/repositories/workspaceOperationLockStore";
 import { createMemoryWorkspaceRepository } from "@repo/core/adapters/memory/repositories/workspaceRepository";
 import { createMemoryWorkspaceSlugReservationStore } from "@repo/core/adapters/memory/repositories/workspaceSlugReservationStore";
 import { createMemoryScopeRouter } from "@repo/core/adapters/memory/scopeRouter";
@@ -207,6 +208,7 @@ export function createMemoryRuntime(
   const workspaceReaderFor = (scope: ScopeKey): WorkspaceReader => {
     const scopeStore = backend.scope(scope);
     return {
+      admission: createMemoryWorkspaceOperationLockStore(backend, scopeStore),
       workspace: createMemoryWorkspaceRepository(scopeStore),
       membership: createMemoryMembershipRepository(scopeStore),
       invitation: createMemoryInvitationRepository(scopeStore),

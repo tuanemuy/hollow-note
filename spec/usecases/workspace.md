@@ -93,6 +93,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 1. `resolveWorkspaceAccess` でロールを解決し、`WorkspaceAuthorization.ensureCan(role, "manageWorkspace")` を呼ぶ
 2. `WorkspaceRepository.findById` で引き、`Workspace.updateProfile` を適用して保存し、イベントを収集する。`name` が変わったときは `Workspace.updateProfile` が `workspace.profileUpdated` を発行し、読み取りモデルのワークスペース名の投影（`projectNoteChanges`）が購読する
+3. local commit 後に `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` で `workspace_directory` を更新する。応答喪失は同じ snapshot で再試行する（`sourceVersion` 条件付きなので再送は無害である）
 
 ### エラーケース
 
@@ -101,6 +102,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
 | 名前・説明の違反 | `BusinessRuleError` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
+| 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## changeWorkspaceSlug
 
@@ -125,7 +128,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 ### エラーケース
 
-`createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`。
+`createWorkspace` と同じスラッグ関連のエラーに加え、`BusinessRuleError(PublishedWorkspaceRequiresSlug)`、`ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("ACCOUNT_DELETING")`、`ConflictError("WORKSPACE_DELETING")`。local commit が拒否された場合は確保済みの slug reservation を `abandon` する。
 
 ## publishWorkspace
 
@@ -146,7 +149,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 1. 権限を `publishWorkspace` で確認する
 2. `WorkspaceRepository.findById` で引く。既に `published` なら変更もイベントもなく、現在の状態を射影して返す
 3. `Workspace.publish` を適用して保存し、イベントを収集する（スラッグ未設定はドメインが `SlugRequiredToPublish` で拒否する）
-4. `NoteQueryService.searchPublic` で公開ノート件数を数えて `publicNoteCount` として返す（0 件でも成功する。公開ページが空であることを画面が案内するために返す）
+4. local commit 後に `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` で `workspace_directory` を更新する。公開ページとサイトマップはこの行を見るため、投影しなければ公開が外から見えない
+5. `NoteQueryService.searchPublic` で公開ノート件数を数えて `publicNoteCount` として返す（0 件でも成功する。公開ページが空であることを画面が案内するために返す）
 
 ### エラーケース
 
@@ -156,6 +160,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
 | 既に公開中 | 変更もイベントもなく成功として返す |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
+| 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## unpublishWorkspace
 
@@ -178,6 +184,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 1. 権限を `publishWorkspace` で確認する
 2. `WorkspaceRepository.findById` で引く。既に `private` なら変更もイベントもなく、現在の状態を射影して返す
 3. `Workspace.unpublish` を適用して保存し、イベントを収集する。スラッグは残る（再公開でも同じ URL に戻せるようにするため。解除は `changeWorkspaceSlug` が担う）
+4. local commit 後に `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` で `workspace_directory` を更新する。`getPublicWorkspace` はこの行の `publication` で公開ページを絞るため、投影しなければ取り下げ後も公開 URL が解決し続ける
 
 ### エラーケース
 
@@ -186,6 +193,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
 | 既に非公開 | 変更もイベントもなく成功として返す |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
+| 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## deleteWorkspace
 
@@ -233,6 +242,11 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | --- | --- |
 | 確認入力の不一致 | `ValidationError("CONFIRMATION_MISMATCH")` |
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
+| 移動が stage 済み | `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` |
+| 別 operation が削除中・削除が終端済み | `ConflictError("WORKSPACE_DELETING")` / `ConflictError` |
+| 要求者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+
+同じ operation ID の再要求は受理済みの `operationId` を返して何も書かない（`beginDeletion` は operation ID について冪等である）。
 
 ## inviteMember
 
@@ -270,6 +284,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | メール形式・ロールの違反 | `BusinessRuleError` |
 | 既にメンバー | `ConflictError("ALREADY_MEMBER")` |
 | 未処理の招待が上限（50 件） | `ValidationError("INVITATION_LIMIT_REACHED")` |
+| 招待者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 | メール送信の失敗 | 記録して継続（招待は成立させる） |
 
 ## resendInvitation
@@ -304,6 +320,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 招待が不在・他ワークスペースのもの | `NotFoundError("INVITATION_NOT_FOUND")` |
 | 受諾済み・取り消し済み | `ValidationError("INVITATION_NOT_PENDING")` |
 | レート制限（転送境界） | `ValidationError("RATE_LIMITED")` |
+| 要求者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## revokeInvitation
 
@@ -399,6 +417,8 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 受諾済み・取り消し済み | `ValidationError("INVITATION_NOT_PENDING")` |
 | ワークスペースが削除済み | `NotFoundError("WORKSPACE_NOT_FOUND")` |
 | メンバーシップの競合 | `ConflictError("MEMBERSHIP_ALREADY_EXISTS")` |
+| 受諾者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## listMembers
 
@@ -523,6 +543,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 最後の owner の降格 | `BusinessRuleError(LastOwnerCannotLeave)` |
 | 対象が不在 | `NotFoundError("MEMBERSHIP_NOT_FOUND")` |
 | 未知のロール | `BusinessRuleError(InvalidRole)` |
+| 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| 対象者を actor とする移動が stage 済み | `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 | 同じロールの指定 | 変更もイベントもなく成功として返す（ジョブの取り消しも起きない） |
 
 ## removeMember
@@ -557,6 +580,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | 自分自身の除名 | `BusinessRuleError(CannotRemoveSelf)`（自身の離脱は `leaveWorkspace` へ誘導する） |
 | 最後の owner の除名 | `BusinessRuleError(LastOwnerCannotLeave)` |
 | 対象が不在 | `NotFoundError("MEMBERSHIP_NOT_FOUND")` |
+| 対象者のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| 対象者を actor とする移動が stage 済み | `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## leaveWorkspace
 
@@ -585,6 +611,9 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 | --- | --- |
 | 唯一の owner | `BusinessRuleError(LastOwnerCannotLeave)` |
 | 非メンバー | `NotFoundError("MEMBERSHIP_NOT_FOUND")` |
+| 自身のアカウント削除が進行中 | `ConflictError("ACCOUNT_DELETING")` |
+| 自身を actor とする移動が stage 済み | `ConflictError("WORKSPACE_MOVE_IN_PROGRESS")` |
+| ワークスペースの削除が受理済み | `ConflictError("WORKSPACE_DELETING")` |
 
 ## listPublicWorkspaces
 

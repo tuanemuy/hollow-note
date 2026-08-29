@@ -81,6 +81,7 @@ export async function recalculateStorageUsage({
   return container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
     await ctx.cleanupAdmission.assertWritable();
     await ctx.cleanupAdmission.assertActorWritable(actorUserId);
+    await ctx.workspaceOperationLockStore.assertWritable();
 
     const [consumedBytes, noteCount] = await Promise.all([
       ctx.storedFileRepository.sumSizeByOwner(owner),

@@ -349,6 +349,10 @@ export function createCloudflareRuntime(
   const workspaceReaderFor = (scope: ScopeKey): WorkspaceReader => {
     const session = scopeSessionFor(scope);
     return {
+      admission: createCloudflareWorkspaceOperationLockStore({
+        session,
+        clock,
+      }),
       workspace: createCloudflareWorkspaceRepository({ session }),
       membership: createCloudflareMembershipRepository({ session }),
       invitation: createCloudflareInvitationRepository({ session }),
