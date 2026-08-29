@@ -1172,3 +1172,152 @@ ADR-063 は当時の 2 つの欠落（`InvitationPreviewView` に `workspaceId` 
 
 - 一覧系のチェックリスト行は「参照ランタイムで観測できる範囲で緑」であり、shard トポロジー由来の性質は `pnpm test:workers` 側の適合が担保する。`pnpm test:node` だけの緑を本番の保証と読まないこと（`docs/test.md` の同旨）。
 - 部分失敗は逆に memory でも執行形がある。`MemoryBackend.workspaceDirectoryOutages` に WorkspaceId を入れると、batch reader はその行だけ `unavailable` に落ち、公開列挙は全体を失敗させる。`TC-workspace-200` / `-201` と sitemap の「短いページを返さない」性質はこれで押さえた。
+
+## ADR-070: 所有上限テストは workspace を 19〜20 件作らず `membership_directory` の owner edge を直接置く
+
+### Context
+
+`TC-workspace-062` / `-063` / `-068` は「19 件所有で成功」「20 件所有で `WorkspaceQuotaExceeded`」「pending を含めて 20 件でも拒否」を要求する。判定は `UserWorkspaceDirectory.countOwnedByUser` ただ一つを読む — `role === "owner"` かつ edge state が `active` / `pending` / `activating` の行を数える。
+
+選択肢:
+
+1. `seedWorkspace` を 19〜20 回呼んで本物のワークスペースを作る
+2. `membershipDirectoryReservationStore` を通じて owner edge だけを 19〜20 本置く
+3. `userWorkspaceDirectory` をフェイクに差し替えて数を返させる
+
+### Decision
+
+2 を採る。`reserveAndClaimActivation`（+ `activate`）は本番アダプターそのもので、`activate` を呼ばずに止めれば `activating`（= 作成が飛行中）の edge が得られる。`TC-workspace-068` が要求する「pending を含めて 20 件」は、この「settle させない」という一点だけが本物の差であり、フェイクを置かずに再現できる。
+
+1 は採らない。1 件あたり scope UoW・slug 予約・directory 投影まで走らせるのに、判定が読むのは edge 表だけで、テストが遅くなるだけ意図がぼける。3 は `docs/test.md` の fake ポリシー（リポジトリ / ストアのフェイクは置かない）に反する。
+
+### Consequences
+
+- `createWorkspace.test.ts` のローカルヘルパー `seedOwnerEdges(h, userId, count, settle)` がこの足場。`settle: "inFlight"` が `activating` を残す。
+- 「owner 以外の edge は席を占めない」ことも同じ足場で `role: "editor"` の edge を 1 本足して押さえた。境界（`>=` → `>`）の変異で `-063` / `-068` が red になることを確認済み。
+
+## ADR-071: `TC-workspace-271` の「読み取りモデル更新」半分は執行形を持たせず、イベント発行までを執行形にする
+
+### Context
+
+`TC-workspace-271` の期待結果は 2 つある — (a) `workspace.profileUpdated` が発行される、(b) `projectNoteChanges` が読み取りモデルのワークスペース名を更新する。本 Issue の実装では `subscribers.ts` に `workspace.profileUpdated` の購読者が存在せず、(b) を担う `projectNoteChanges` はノート読み取りモデルの後続スライスに属する。
+
+### Decision
+
+(a) だけを執行形にする。`updateWorkspaceProfile.test.ts` は outbox に `workspace.profileUpdated` が 1 件だけ積まれ、payload が新しい名前を運ぶことを確かめる。加えて、本スライスで実際に更新される読み取りモデル（global `workspace_directory`）の `name` / `sourceVersion` が追随することを `TC-workspace-266` / `-270` で押さえる。
+
+(b) の欠落をテストで表明しない — 未実装の購読者を「呼ばれないこと」で固定すると、実装した瞬間に無関係な red を生む。
+
+### Consequences
+
+- チェックリスト上の `TC-workspace-271` は「イベント発行まで緑、読み取りモデル反映は後続スライス」と読むこと。購読者を足すときはこのケースに (b) の表明を追加する。
+
+## ADR-072: 取り消し後にリンクを開いたときの期待値は `INVITATION_NOT_FOUND` とする
+
+### Context
+
+`spec/testcases/workspace/revokeInvitation.md` の `TC-workspace-253` は「取り消し後にその招待リンクを開く → 取り消し済みとして扱われる」とだけ書く。一方 `getInvitationPreview.md` の `TC-workspace-119` は「取り消し済みの招待を引く → `state: "revoked"`」と書く。両方を額面どおりに読むと、取り消し後のリンクは `state: "revoked"` を返すべきに見える。
+
+しかし `InvitationRouteStore` の JSDoc（ポート契約の正典）は、閉じた route は `resolveActive` で `null` になり「一度も開かれなかったトークンと既に使われたトークンを呼び出し側から区別できない」ことを明示し、preview / accept が一様に `INVITATION_NOT_FOUND` を返すのはそのためだと述べている。`revokeInvitation` は local commit → global `revoke` の順に進むので、収束後の route は必ず閉じている。
+
+### Decision
+
+- `TC-workspace-253` は「リンクが開けなくなる」= preview / accept ともに `NotFoundError("INVITATION_NOT_FOUND")` として執行形にする。
+- `TC-workspace-119` の `state: "revoked"` は、local revoke は済んだが global route の close がまだ届いていない窓（`seedInvitation({ state: "revoked", route: "active" })`）でだけ観測できる状態として執行形にする。この窓は `TC-workspace-258` が同じ経路で実在することを示している。
+
+実装のバグとしては扱わない。仕様書の文言が曖昧で、ポート契約が曖昧さを解いている側だと判断した。
+
+### Consequences
+
+- `revokeInvitation.md` の `TC-workspace-253` を読み直すときは「取り消し済みとして扱われる」を「そのリンクではもう入れない」と読むこと。UI に「取り消されました」と出したいなら route を閉じない設計が要るが、それは閉じた route と未発行トークンの区別を外部に晒すことになる。
+
+## ADR-073: `acceptInvitation` の recovery / 削除競合ケースは、ユースケース層で表現できる分だけを執行形にする
+
+### Context
+
+`spec/testcases/workspace/acceptInvitation.md` の `TC-workspace-015〜018` は membership edge の saga を、アカウント削除側の進行と絡めて記述する。このうち
+
+- `TC-workspace-017`（activation claim 後に worker が停止し lease が切れる → operation ID で workspace 正データと突き合わせて収束）
+- `TC-workspace-018`（削除開始と activation claim が同時 → UserId shard で直列化）
+
+を駆動する主体は `acceptInvitation` ではない。前者は lease 失効後の global recovery、後者はアカウント削除サーガであり、本スライスのアプリケーション層にその入口が存在しない（`application/workers/` には membership edge の recovery worker がない）。
+
+### Decision
+
+- `TC-workspace-015` は「アカウント削除が prepare lock を取った edge があると join が負け、workspace へ local commit しない」というユースケース層で観測できる形に落として執行形にする。`membershipEdges` へ直接 pending + prepare lock の行を書いて再現する（`deleteAccount.manifestBuild.test.ts` と同じ直接シード）。条件付き更新の優先順位そのものは `adapters/conformance/membershipDirectoryReservationStore.ts`（ADP-workspace-036〜040）の担当とする。
+- `TC-workspace-016` は「commit 中は `listActivatingByUser` に現れ、収束後は `active` になる」まで、つまり削除側が待つ対象が確かに観測できることまでを執行形にする。
+- `TC-workspace-017` / `-018` はユースケーステストを置かない。
+
+### Consequences
+
+- membership edge の recovery worker を足すスライスで `TC-workspace-017` の執行形を追加すること。チェックリスト上はこの 2 行を「conformance と後続スライスで担保」と読む。
+
+## ADR-074: 最後の owner 保護（`TC-workspace-022` / `-211`）は、自己変更・自己除名の禁止が先に効くため並行窓の執行形にする
+
+### Context
+
+`TC-workspace-022`（changeMemberRole）と `TC-workspace-211`（removeMember）は「owner が 1 名で、その owner を対象にする」を前提に `LastOwnerCannotLeave` を要求する。しかし `manageMembers` を持つのは owner だけで、owner が 1 名ならその 1 名が対象＝自分自身になる。`spec/usecases/workspace.md` の手順順序（changeMemberRole 手順 3 の `ensureNotSelfRoleChange`、removeMember 手順 2 の `ensureNotSelfRemoval` が owner 数の判定より前）どおり、実装は先に `CannotChangeOwnRole` / `CannotRemoveSelf` を投げる。行の文言どおりの入力では `LastOwnerCannotLeave` に到達しない。
+
+### Decision
+
+この 2 行は「認可を通った後に owner 数が 1 に落ちる」並行窓として執行形にする。`scopeUnitOfWorkProvider.run` を薄いラッパーで包み、最初の `run` の直前にもう一方の owner を降格させてから本体へ委譲する（`docs/test.md`「Injecting into a concurrency window」）。窓の位置がテストの価値そのものなので、`requireManageMembers` の後・判定 UoW の前であることをテスト名とコメントに書く。`leaveWorkspace` の `TC-workspace-148` は自己判定を持たないため、素直な入力のまま執行形になる。
+
+### Consequences
+
+- 保護そのものは変異チェックで担保される（`MembershipPolicy.ensureOwnerRemains` の `ownerCount <= 1` を `<= 0` にすると `TC-workspace-022` / `-148` / `-149` / `-211` の 4 件が red）。
+- 手順順序を入れ替える改訂が入ったら、この 2 行は素直な入力へ書き換えられる。spec 側の 2 行と `MembershipPolicy` の判定順が反証条件。
+
+## ADR-075: `deleteMembershipsForUser`（`TC-workspace-069〜075`）は本デプロイに存在しないため執行形を置かない
+
+### Context
+
+`spec/testcases/workspace/deleteMembershipsForUser.md` は account deletion が列挙した workspace edge ごとに scope command を回す前提だが、本リポジトリにその command は無い。`application/identity/deleteAccount/cleanupDispatch.ts` は「workspace cleanup wave は membership item が固定されて初めて存在する」として dispatch せず、`manifestBuild.ts` も `FIRST_DISPATCH_PHASE = "cleanup"` として prepare 相当を空に倒している。`application/workers/scopeTaskRunner.ts` の `scopeTaskHandlers` にも membership 掃除の kind は無い。
+
+### Decision
+
+7 行すべてについてユースケーステストを置かない。`membership_directory` 側の冪等性・operation ID による削除は適合スイート（`adapters/conformance/membershipDirectoryReservationStore.ts` / `accountDeletionManifestStore.ts`）が担保しており、そこへ重複を足さない。`TC-workspace-168` だけは `leaveWorkspace` 側から「edge が消えれば account deletion の `appendMembershipPage` がこの scope を固定しない」ことを執行形にした。
+
+### Consequences
+
+- account deletion の workspace wave を足すスライスで 7 行の執行形を追加すること。チェックリスト上は「usecase 不在」と読む。
+- 唯一 owner の再検査（`TC-workspace-070`）は `MembershipPolicy.ensureOwnerRemains` が正本のままなので、wave が来ても新しい規則は要らない。
+
+## ADR-076: ノート移動の recovery 系 TC は「観測できる半分」だけをテストにし、駆動口の不在は報告に回す
+
+### Context
+
+`spec/testcases/note/moveNote.md` の 4 行（`TC-note-263` / `-265` / `-266` / `-269`）はいずれも「recovery を実行する」「再開する」を操作としている。ところが ADR-051 のとおり本スライスには route switch 後に落ちた移動を拾う入口が無い（`recoverBlankNoteCreation` に相当する関数も cron も無い）。`moveNote` を同じ requestKey で再要求すると、route が既に target を指しているため事前確認が「所有者が同じ」の早期 return に落ち、`activateTarget` / `retireSource` / sourceDebit へは前進しない。
+
+同様に `TC-note-268`（move 前の public projection event が遅延）は `note.moved` の購読者が本スライスに無いため、ユースケース経由では駆動できない。
+
+### Decision
+
+これらの行は「契約として本スライスに存在する側」だけをテストにする。
+
+- `TC-note-263`：switch 後の失敗が **abort しない**こと（route は target のまま、target lock は activate 済み、source 行は retry 待ちで残る）を固定する。「前進する」半分は書かない。
+- `TC-note-265`：target credit 済み・source debit 前で止まると source が過大計上のまま残ること、および再要求が二重に credit / debit しないことを固定する。
+- `TC-note-266`：switch の応答喪失後に再要求しても `routeVersion` が 2 度上がらないこと（`NoteRouteStore.switchMove` の lost-response 分岐が効くこと）を固定する。
+- `TC-note-269`：source cleanup 失敗後も route が target を維持し、再要求が所属を source へ戻さないことを固定する。
+- `TC-note-268`：`PublicNoteProjectionWriter.replaceSnapshotIfNewer` を、`note.moved` が実際に載せた `routeVersion` を使って直接呼び、古い generation が `stale` になることを固定する。
+
+満たせない半分は報告に回し、テストとして赤で残さない（赤で残すのは spec と実装が食い違う欠陥だけにする）。
+
+### Consequences
+
+- 移動の recovery 入口（cron / scope alarm）を足すスライスで、この 4 行に「前進する」側の執行形を追加する必要がある。
+- `TC-note-268` は購読者が実装された時点でユースケース経由へ書き換えられる。現状の形は writer の契約に依存しているので、`adapters/conformance/` の同種ケースと二重になりうる。
+
+## ADR-077: 移動テストの workspace セットアップは `application/workspace/__tests__/harness.ts` を借りる
+
+### Context
+
+`moveNote` のテストは移動元・移動先の 2 ワークスペースを要り、`removeMember` / `changeMemberRole` / `deleteWorkspace` を「移動中に割り込む操作」として実際に呼ぶ。これらは global の `membership_directory` edge が無いと動かない（`beginRemoval` が edge を要求する）ため、scope へ直に行を書く簡易 seed では足りない。
+
+### Decision
+
+`packages/core/src/application/note/__tests__/moveNote.test.ts` から `../../workspace/__tests__/harness` の `seedWorkspace` / `expectBusinessRule` / `expectConflict` / `expectNotFound` / `outboxRows` を import する。note 側に固有の足場（`markProcessing` / `makeUnlisted` / `seedRevision` / `seedFile` / `seedQuota` / スコープ transaction の前後に割り込む `withScopeRunHooks`）はテストファイル内にローカルで置く。
+
+### Consequences
+
+- `harness.ts` は workspace テスト専用ではなくなった。破壊的に変えるときは note 側も見ること。
+- `withScopeRunHooks` は移動の固定した順序（0 `snapshotSource` / 1 `stageTarget` / 2 `activateTarget` / 3 `retireSource`）に index で割り込む。フェーズを増減したらテスト側の index も動く。
