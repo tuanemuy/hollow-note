@@ -1,10 +1,12 @@
 import type { MaintenanceKind } from "../../../application/ports/globalMaintenanceRunStore";
 import type { ScopeKey } from "../../../application/scope";
 import type { UserId } from "../../../domain/identity/valueObject";
+import type { WorkspaceId } from "../../../domain/workspace/valueObject";
 import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
+  WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
 import { createMemoryGlobalUnitOfWorkProvider } from "../globalUnitOfWork";
@@ -18,9 +20,11 @@ import { createMemoryIdempotencyStore } from "../repositories/idempotencyStore";
 import { createMemoryIdentityRemovalReceiptStore } from "../repositories/identityRemovalReceiptStore";
 import { createMemoryIdentityRepository } from "../repositories/identityRepository";
 import { createMemoryIdentityUniqueDirectory } from "../repositories/identityUniqueDirectory";
+import { createMemoryInvitationRepository } from "../repositories/invitationRepository";
 import { createMemoryLlmUsageRepository } from "../repositories/llmUsageRepository";
 import { createMemoryLocalNoteQueryService } from "../repositories/localNoteQueryService";
 import { createMemoryLoginAttemptStore } from "../repositories/loginAttemptStore";
+import { createMemoryMembershipRepository } from "../repositories/membershipRepository";
 import {
   createMemoryLocalNoteProjectionWriter,
   createMemoryNoteProjectionRevisionStore,
@@ -34,6 +38,7 @@ import { createMemoryNoteRouteStore } from "../repositories/noteRouteStore";
 import { createMemoryOAuthStateStore } from "../repositories/oauthStateStore";
 import { createMemoryOutboxRepository } from "../repositories/outboxRepository";
 import { createMemoryPublicNoteQueryService } from "../repositories/publicNoteQueryService";
+import { createMemoryPublicWorkspaceDirectoryReader } from "../repositories/publicWorkspaceDirectoryReader";
 import { createMemoryScopeCleanupAdmissionStore } from "../repositories/scopeCleanupAdmissionStore";
 import { createMemoryScopeTaskScheduler } from "../repositories/scopeTaskScheduler";
 import { createMemorySessionRepository } from "../repositories/sessionRepository";
@@ -41,6 +46,9 @@ import { createMemoryStorageQuotaRepository } from "../repositories/storageQuota
 import { createMemoryStoredFileRepository } from "../repositories/storedFileRepository";
 import { createMemoryUserBatchReader } from "../repositories/userBatchReader";
 import { createMemoryUserRepository } from "../repositories/userRepository";
+import { createMemoryUserWorkspaceDirectory } from "../repositories/userWorkspaceDirectory";
+import { createMemoryWorkspaceDirectoryBatchReader } from "../repositories/workspaceDirectoryBatchReader";
+import { createMemoryWorkspaceRepository } from "../repositories/workspaceRepository";
 import { createMemoryScopeRouter } from "../scopeRouter";
 import { createMemoryScopeTaskQueue } from "../scopeTaskQueue";
 import { createMemoryScopeUnitOfWorkProvider } from "../scopeUnitOfWork";
@@ -118,9 +126,17 @@ export function makeMemoryConformanceBackend(
     globalMaintenanceRunStore: createMemoryGlobalMaintenanceRunStore(backend),
     publicNoteProjectionWriter: createMemoryPublicNoteProjectionWriter(backend),
     publicNoteQueryService: createMemoryPublicNoteQueryService(backend),
+    userWorkspaceDirectory: createMemoryUserWorkspaceDirectory(backend),
+    workspaceDirectoryBatchReader:
+      createMemoryWorkspaceDirectoryBatchReader(backend),
+    publicWorkspaceDirectoryReader:
+      createMemoryPublicWorkspaceDirectoryReader(backend),
     forScope(scope: ScopeKey) {
       const scopeStore = backend.scope(scope);
       return {
+        workspaceRepository: createMemoryWorkspaceRepository(scopeStore),
+        membershipRepository: createMemoryMembershipRepository(scopeStore),
+        invitationRepository: createMemoryInvitationRepository(scopeStore),
         noteRepository: createMemoryNoteRepository(scopeStore),
         noteRevisionRepository: createMemoryNoteRevisionRepository(scopeStore),
         scopeCleanupAdmissionStore: createMemoryScopeCleanupAdmissionStore(
@@ -152,7 +168,23 @@ export function makeMemoryConformanceBackend(
           workspaceId: edge.workspaceId,
           edgeState: edge.edgeState,
           membershipId: edge.membershipId,
+          role: edge.role ?? "viewer",
+          createdAt: edge.createdAt ?? clock.now(),
         });
+      }
+    },
+    async seedWorkspaceDirectory(
+      entries: readonly WorkspaceDirectorySeedInput[],
+    ): Promise<void> {
+      for (const entry of entries) {
+        backend.workspaceDirectory.set(entry.workspaceId, { ...entry });
+      }
+    },
+    async makeWorkspaceDirectoryUnreadable(
+      ids: readonly WorkspaceId[],
+    ): Promise<void> {
+      for (const id of ids) {
+        backend.workspaceDirectoryOutages.add(id);
       }
     },
     async setMaintenanceTables(

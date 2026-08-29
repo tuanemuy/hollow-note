@@ -122,6 +122,7 @@ export async function makeCloudflareConformanceBackend(
       ...createScopeBusinessPorts(scopeDeps),
       ...createScopeInfraPorts(scopeDeps),
       ...createScopeProjectionPorts(scopeDeps),
+      ...pendingWorkspaceScopePorts(),
     };
   };
 
@@ -214,11 +215,31 @@ export async function makeCloudflareConformanceBackend(
     publicNoteProjectionWriter: projection.publicNoteProjectionWriter,
     publicNoteQueryService: projection.publicNoteQueryService,
     objectStorage: projection.objectStorage,
+    userWorkspaceDirectory: {
+      listActiveByUser: () =>
+        unimplementedWorkspacePort("UserWorkspaceDirectory.listActiveByUser"),
+    },
+    workspaceDirectoryBatchReader: {
+      resolveMany: () =>
+        unimplementedWorkspacePort("WorkspaceDirectoryBatchReader.resolveMany"),
+    },
+    publicWorkspaceDirectoryReader: {
+      listPublished: () =>
+        unimplementedWorkspacePort(
+          "PublicWorkspaceDirectoryReader.listPublished",
+        ),
+    },
     forScope(scope: ScopeKey): ScopedConformancePorts {
       return scopePortsOver(
         createAutocommitSession(scopeExecutorFor(scope)),
         scope,
       );
+    },
+    async seedWorkspaceDirectory(): Promise<void> {
+      unimplementedWorkspacePort("seedWorkspaceDirectory");
+    },
+    async makeWorkspaceDirectoryUnreadable(): Promise<void> {
+      unimplementedWorkspacePort("makeWorkspaceDirectoryUnreadable");
     },
     /**
      * Writes `membership_directory` rows directly: the Workspace domain
@@ -284,6 +305,62 @@ export async function makeCloudflareConformanceBackend(
 }
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * The workspace ports have no D1 / Durable Object implementation yet.
+ * They are declared so this harness still satisfies
+ * `ConformanceBackend`; every entry throws, so the workspace suites fail
+ * loudly here instead of passing against a silent stub.
+ */
+const unimplementedWorkspacePort = (name: string): never => {
+  throw new Error(`The Cloudflare backend does not implement ${name} yet`);
+};
+
+const pendingWorkspaceScopePorts = (): Pick<
+  ScopedConformancePorts,
+  "workspaceRepository" | "membershipRepository" | "invitationRepository"
+> => ({
+  workspaceRepository: {
+    insert: () => unimplementedWorkspacePort("WorkspaceRepository.insert"),
+    findById: () => unimplementedWorkspacePort("WorkspaceRepository.findById"),
+    save: () => unimplementedWorkspacePort("WorkspaceRepository.save"),
+    delete: () => unimplementedWorkspacePort("WorkspaceRepository.delete"),
+  },
+  membershipRepository: {
+    insert: () => unimplementedWorkspacePort("MembershipRepository.insert"),
+    findById: () => unimplementedWorkspacePort("MembershipRepository.findById"),
+    save: () => unimplementedWorkspacePort("MembershipRepository.save"),
+    delete: () => unimplementedWorkspacePort("MembershipRepository.delete"),
+    findByWorkspaceAndUser: () =>
+      unimplementedWorkspacePort("MembershipRepository.findByWorkspaceAndUser"),
+    listByWorkspace: () =>
+      unimplementedWorkspacePort("MembershipRepository.listByWorkspace"),
+    countByRole: () =>
+      unimplementedWorkspacePort("MembershipRepository.countByRole"),
+    deleteByIds: () =>
+      unimplementedWorkspacePort("MembershipRepository.deleteByIds"),
+  },
+  invitationRepository: {
+    insert: () => unimplementedWorkspacePort("InvitationRepository.insert"),
+    findById: () => unimplementedWorkspacePort("InvitationRepository.findById"),
+    save: () => unimplementedWorkspacePort("InvitationRepository.save"),
+    delete: () => unimplementedWorkspacePort("InvitationRepository.delete"),
+    findByTokenHash: () =>
+      unimplementedWorkspacePort("InvitationRepository.findByTokenHash"),
+    findPendingByWorkspaceAndEmail: () =>
+      unimplementedWorkspacePort(
+        "InvitationRepository.findPendingByWorkspaceAndEmail",
+      ),
+    listByWorkspace: () =>
+      unimplementedWorkspacePort("InvitationRepository.listByWorkspace"),
+    countPendingIssuedSince: () =>
+      unimplementedWorkspacePort(
+        "InvitationRepository.countPendingIssuedSince",
+      ),
+    deleteByIds: () =>
+      unimplementedWorkspacePort("InvitationRepository.deleteByIds"),
+  },
+});
 
 let namespaceSeq = 0;
 let migration: Promise<void> | null = null;

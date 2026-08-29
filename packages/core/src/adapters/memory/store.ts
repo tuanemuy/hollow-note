@@ -14,7 +14,15 @@ import type {
 import type { StoredFile } from "@repo/core/domain/storage/storedFile";
 import type { LlmUsage } from "@repo/core/domain/usage/llmUsage";
 import type { StorageQuota } from "@repo/core/domain/usage/storageQuota";
-import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type { Invitation } from "@repo/core/domain/workspace/invitation";
+import type { Membership } from "@repo/core/domain/workspace/membership";
+import type {
+  WorkspaceId,
+  WorkspaceName,
+  WorkspaceRole,
+  WorkspaceSlug,
+} from "@repo/core/domain/workspace/valueObject";
+import type { Workspace } from "@repo/core/domain/workspace/workspace";
 import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import { type Clock, SystemClock } from "../../application/ports/clock";
 import type { DistributedOperation } from "../../application/ports/distributedOperationStore";
@@ -275,17 +283,44 @@ export type ManifestItemRow =
   | ManifestAuthorRouteItemRow;
 
 /**
- * Placeholder source for `AccountDeletionManifestStore.appendMembershipPage`
- * until the Workspace domain lands. The table key is opaque:
- * the page scan filters on the `userId` field and orders by `edgeKey`, so
- * a seeder may key rows however it likes as long as keys stay unique.
+ * One row of the global `membership_directory`: which workspaces a user
+ * belongs to, and in which projected role.
+ *
+ * `edgeKey` is the row's own operation id, the key
+ * `AccountDeletionManifestStore.appendMembershipPage` walks in ascending
+ * order. The table key is opaque — the page scan filters on the `userId`
+ * field and orders by `edgeKey`, so a writer may key rows however it
+ * likes as long as keys stay unique.
  */
-export type MembershipEdgeSeed = Readonly<{
+export type MembershipDirectoryRow = Readonly<{
   userId: UserId;
   edgeKey: string;
   workspaceId: WorkspaceId;
   edgeState: "active" | "removing" | "pending";
   membershipId: string | null;
+  role: WorkspaceRole;
+  createdAt: Date;
+}>;
+
+/**
+ * One row of the global `workspace_directory` projection. `avatarUrl`
+ * stays a raw string for the reason `WorkspaceDirectoryEntry` gives: it
+ * was validated on write and rehydrating it would need the app origin.
+ *
+ * A deletion tombstone keeps `lifecycle: "deleting"` with its display
+ * fields redacted, which is what makes "gone" a durable verdict the
+ * batch reader can report as `deleted` after the row's workspace scope
+ * is unreachable (spec/database/index.md `workspace_directory`).
+ */
+export type WorkspaceDirectoryRow = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: "private" | "published";
+  lifecycle: "active" | "deleting";
+  sourceVersion: number;
+  updatedAt: Date;
 }>;
 
 export type MaintenanceLaneRow = Readonly<{
@@ -351,6 +386,9 @@ export type ScheduledTaskRow =
 export type ScopeStore = Readonly<{
   key: string;
   scope: ScopeKey;
+  workspaces: MemTable<Workspace>;
+  memberships: MemTable<Membership>;
+  invitations: MemTable<Invitation>;
   notes: MemTable<Note>;
   noteRevisions: MemTable<NoteRevision>;
   cleanupReceipts: MemTable<CleanupReceiptRow>;
@@ -416,7 +454,17 @@ export class MemoryBackend {
   readonly noteRoutes = this.table<NoteRouteRow>();
   readonly manifestHeaders = this.table<ManifestHeaderRow>();
   readonly manifestItems = this.table<ManifestItemRow>();
-  readonly membershipEdges = this.table<MembershipEdgeSeed>();
+  readonly membershipEdges = this.table<MembershipDirectoryRow>();
+  readonly workspaceDirectory = this.table<WorkspaceDirectoryRow>();
+  /**
+   * WorkspaceIds whose directory shard is currently unreadable. This
+   * backend keeps one process-local shard that cannot fail on its own,
+   * so the partial-failure halves of the directory contracts — one dead
+   * shard degrades a single row for `WorkspaceDirectoryBatchReader` but
+   * fails the whole page for `PublicWorkspaceDirectoryReader` — have no
+   * executable form unless an outage can be induced.
+   */
+  readonly workspaceDirectoryOutages = new Set<string>();
   readonly maintenanceRuns = this.table<MaintenanceRunRow>();
   readonly publicProjection = this.table<PublicProjectionRow>();
   readonly publicPurgeAcks = this.table<true>();
@@ -443,6 +491,9 @@ export class MemoryBackend {
     const created: ScopeStore = {
       key,
       scope,
+      workspaces: this.table<Workspace>(),
+      memberships: this.table<Membership>(),
+      invitations: this.table<Invitation>(),
       notes: this.table<Note>(),
       noteRevisions: this.table<NoteRevision>(),
       cleanupReceipts: this.table<CleanupReceiptRow>(),

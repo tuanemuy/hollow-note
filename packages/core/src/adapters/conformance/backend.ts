@@ -46,7 +46,18 @@ import type { PublicNoteQueryService } from "../../domain/note/ports/publicNoteQ
 import type { StoredFileRepository } from "../../domain/storage/ports/storedFileRepository";
 import type { LlmUsageRepository } from "../../domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "../../domain/usage/ports/storageQuotaRepository";
-import type { WorkspaceId } from "../../domain/workspace/valueObject";
+import type { InvitationRepository } from "../../domain/workspace/ports/invitationRepository";
+import type { MembershipRepository } from "../../domain/workspace/ports/membershipRepository";
+import type { PublicWorkspaceDirectoryReader } from "../../domain/workspace/ports/publicWorkspaceDirectoryReader";
+import type { UserWorkspaceDirectory } from "../../domain/workspace/ports/userWorkspaceDirectory";
+import type { WorkspaceDirectoryBatchReader } from "../../domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceRepository } from "../../domain/workspace/ports/workspaceRepository";
+import type {
+  WorkspaceId,
+  WorkspaceName,
+  WorkspaceRole,
+  WorkspaceSlug,
+} from "../../domain/workspace/valueObject";
 import type { TestClock } from "./testClock";
 
 export type ConformanceBackendOptions = Readonly<{
@@ -71,6 +82,9 @@ export type ScopedConformancePorts = Readonly<{
   noteProjectionSnapshotReader: NoteProjectionSnapshotReader;
   noteProjectionRevisionStore: NoteProjectionRevisionStore;
   localNoteQueryService: LocalNoteQueryService;
+  workspaceRepository: WorkspaceRepository;
+  membershipRepository: MembershipRepository;
+  invitationRepository: InvitationRepository;
   scopeTaskScheduler: ScopeTaskScheduler;
   appliedOperationStore: AppliedOperationStore;
   storageQuotaRepository: StorageQuotaRepository;
@@ -83,6 +97,31 @@ export type MembershipEdgeSeedInput = Readonly<{
   workspaceId: WorkspaceId;
   edgeState: "active" | "removing" | "pending";
   membershipId: string | null;
+  /** Projected role. Defaults to `viewer` when the seed omits it. */
+  role?: WorkspaceRole;
+  /**
+   * Keyset position of the edge in `listActiveByUser`. Defaults to the
+   * backend clock's current instant, which leaves the id tiebreak as the
+   * only order — seed it explicitly to pin the primary key.
+   */
+  createdAt?: Date;
+}>;
+
+/**
+ * One `workspace_directory` projection row. Written directly rather than
+ * through a port: the projection's writer is not part of the workspace
+ * port set, while the three reader contracts above are.
+ */
+export type WorkspaceDirectorySeedInput = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: "private" | "published";
+  /** A tombstoned workspace stays `deleting` (spec/database/index.md). */
+  lifecycle: "active" | "deleting";
+  sourceVersion: number;
+  updatedAt: Date;
 }>;
 
 /**
@@ -124,7 +163,26 @@ export type ConformanceBackend = Readonly<{
   globalMaintenanceRunStore: GlobalMaintenanceRunStore;
   publicNoteProjectionWriter: PublicNoteProjectionWriter;
   publicNoteQueryService: PublicNoteQueryService;
+  userWorkspaceDirectory: UserWorkspaceDirectory;
+  workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
+  publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
   forScope(scope: ScopeKey): ScopedConformancePorts;
+  /** Seeds `workspace_directory` rows for the two directory readers. */
+  seedWorkspaceDirectory(
+    entries: readonly WorkspaceDirectorySeedInput[],
+  ): Promise<void>;
+  /**
+   * Puts the directory shards holding `ids` out of reach, standing in for
+   * a shard a fan-out read cannot open. Both halves of the contract hang
+   * on it: `WorkspaceDirectoryBatchReader.resolveMany` must degrade only
+   * the affected ids to `unavailable`, while
+   * `PublicWorkspaceDirectoryReader.listPublished` must fail rather than
+   * return a page short of the dead shard's rows.
+   *
+   * It must really take effect — the suites assert on reads issued after
+   * the call, so a stub that swallows its argument fails them.
+   */
+  makeWorkspaceDirectoryUnreadable(ids: readonly WorkspaceId[]): Promise<void>;
   /**
    * Seeds workspace membership edges for `appendMembershipPage` until the
    * Workspace domain exists. Optional — suites skip the page-content

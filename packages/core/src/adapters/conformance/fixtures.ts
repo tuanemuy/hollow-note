@@ -23,6 +23,21 @@ import { type ActiveNote, Note } from "../../domain/note/note";
 import { NoteRevision } from "../../domain/note/noteRevision";
 import type { NoteProjectionEntry } from "../../domain/note/ports/localNoteProjectionWriter";
 import { NoteId, NoteOwner } from "../../domain/note/valueObject";
+import {
+  Invitation,
+  type PendingInvitation,
+} from "../../domain/workspace/invitation";
+import { Membership } from "../../domain/workspace/membership";
+import {
+  InvitationId,
+  MembershipId,
+  WorkspaceId,
+  type WorkspaceRole,
+} from "../../domain/workspace/valueObject";
+import {
+  type PrivateWorkspace,
+  Workspace,
+} from "../../domain/workspace/workspace";
 
 export const at = (iso: string): Date => new Date(iso);
 
@@ -132,6 +147,74 @@ export function makeRevision(
     },
     now,
   );
+}
+
+export const workspaceId = (n: number): WorkspaceId =>
+  WorkspaceId.create(`workspace-${n}`);
+
+export const membershipId = (n: number): MembershipId =>
+  MembershipId.create(`membership-${String(n).padStart(3, "0")}`);
+
+export const invitationId = (n: number): InvitationId =>
+  InvitationId.create(`invitation-${String(n).padStart(3, "0")}`);
+
+export const workspaceScopeOf = (n: number): ScopeKey =>
+  ScopeKey.workspace(workspaceId(n));
+
+export function makeWorkspace(
+  n: number,
+  owner: UserId,
+  now: Date,
+  slug: string | null = `workspace-${n}`,
+): PrivateWorkspace {
+  return Workspace.create(
+    {
+      id: `workspace-${n}`,
+      ownerId: owner,
+      name: `Workspace ${n}`,
+      description: `Description of workspace ${n}`,
+      slug,
+    },
+    now,
+  ).entity;
+}
+
+export function makeMembership(
+  n: number,
+  workspace: WorkspaceId,
+  member: UserId,
+  role: WorkspaceRole,
+  now: Date,
+): Membership {
+  return Membership.create(
+    {
+      id: `membership-${String(n).padStart(3, "0")}`,
+      workspaceId: workspace,
+      userId: member,
+      role,
+    },
+    now,
+  ).entity;
+}
+
+export function makeInvitation(
+  n: number,
+  workspace: WorkspaceId,
+  invitedBy: UserId,
+  now: Date,
+  overrides: Readonly<{ email?: string; role?: WorkspaceRole }> = {},
+): PendingInvitation {
+  return Invitation.issue(
+    {
+      id: `invitation-${String(n).padStart(3, "0")}`,
+      workspaceId: workspace,
+      email: overrides.email ?? `invitee-${n}@example.com`,
+      role: overrides.role ?? "editor",
+      invitedBy,
+      tokenHash: TokenHash.create(`invitation-hash-${n}`),
+    },
+    now,
+  ).entity;
 }
 
 export function makeProjectionEntry(

@@ -45,6 +45,8 @@ const seedMembershipEdges = (
       workspaceId: WorkspaceId.create(`ws-${i}`),
       edgeState: "active",
       membershipId: `membership-${i}`,
+      role: "viewer",
+      createdAt: h.backend.clock.now(),
     });
   }
 };
