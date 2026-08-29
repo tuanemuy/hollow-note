@@ -56,8 +56,9 @@ const workspaceMembershipsRemain = (): ConflictError =>
  * Called **after** the user has been moved to `deleting` in this very
  * transaction, which is what makes the pair a decision rather than a
  * guess: a join arriving before this read is seen here, and one arriving
- * after loses its own Active-User check. Neither ordering leaves an
- * admitted deletion facing an edge that settles behind it.
+ * after loses its own Active-User check. On the reference runtime (Node +
+ * in-memory) neither ordering leaves an admitted deletion facing an edge
+ * that settles behind it (spec/usecases/identity.md#deleteaccount 手順 2).
  */
 const refuseWhileMemberOfAnyWorkspace = async (
   ctx: GlobalUnitOfWorkContext,
@@ -147,6 +148,14 @@ const uniquenessKeysOf = (
  * Creating an operation the refusal rolls back costs nothing: the
  * rollback is what the transaction is for, and no terminal row survives
  * it to burn the retry window.
+ *
+ * Both claims hold **on the reference runtime**, which is the limit the
+ * canon states (spec/usecases/identity.md#deleteaccount 手順 2): the
+ * in-memory backend serialises transactions and makes a write visible the
+ * moment it is staged, so the transition really is published before the
+ * read. On a backend whose write set stays invisible until commit — D1 —
+ * a join batch can still land between this read and the apply, and only a
+ * commit-time guard on the directory closes that residue.
  */
 export async function admitAccountDeletion(
   container: RequestContainer,

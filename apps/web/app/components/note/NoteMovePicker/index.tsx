@@ -16,6 +16,7 @@ import {
 } from "./listing";
 
 export type { MoveTarget } from "./listing";
+export { moveNotePayload } from "./listing";
 
 /**
  * ノート移動の移動先セレクター（PAGE-p11-009 / PAGE-p10-007）。
@@ -166,7 +167,11 @@ export function NoteMovePicker({
       {listing.kind === "loaded"
         ? listing.targets.map((target) => (
             <button
-              key={`${target.ownerType}:${target.workspaceId ?? "self"}`}
+              key={
+                target.ownerType === "user"
+                  ? "user"
+                  : `workspace:${target.workspaceId}`
+              }
               type="button"
               disabled={busy}
               onClick={() => setChosen(target)}

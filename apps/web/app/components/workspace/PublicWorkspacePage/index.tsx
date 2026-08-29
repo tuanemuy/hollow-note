@@ -47,10 +47,15 @@ export async function PublicWorkspacePage({
     throw error;
   }
 
+  // 2 本目は best-effort。得られるのはバナー 1 枚で、2 本の読みのあいだに
+  // 削除サガが行を落とすとここが reject し、**サインイン済みの閲覧者だけ**が
+  // 上の「見つかりません」ではなく一時的な障害の表示へ落ちる。
   const role =
     userId === null
       ? null
-      : await loadViewerWorkspaceRole(workspace.workspaceId, userId);
+      : await loadViewerWorkspaceRole(workspace.workspaceId, userId).catch(
+          () => null,
+        );
 
   return (
     <main className="mx-auto max-w-[var(--list-max)] px-4 pt-10 pb-16 sm:px-6 sm:pt-12">

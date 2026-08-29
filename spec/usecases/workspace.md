@@ -170,7 +170,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 2. scope の現在の slug を読む。**要求が現在値と同じ**なら、global が scope と食い違うときだけ鍵と `workspace_directory` を打ち直して返す（投影は毎回送る）。commit のあとに来る手順はどれも応答を失いうるので、同じ要求の再送がその修復要求になる。非 `null` の側は `resolveActive` がこの workspace を指していなければ予約し直す — これが無いと、予約が `reserved` のまま成功応答を返した要求のあと、新しい公開 URL を予約し直す呼び出しが 1 つも無くなる。`null` の側は同型で、`workspace_directory` がまだ広告している旧 slug を拾って `release` する — `active` な予約には期限が無いので、解放の応答を失うとその slug は**どのワークスペースからも二度と取得できない**。**鍵の解放は投影より先に置く**（投影が先に走ると directory 行の slug が消え、次の要求から旧 slug を辿る手掛かりが無くなる）
 3. `slug` が非 `null` なら global D1 の `workspace_slug_reservations` を operation ID と試行 ID 付きで予約する。現在の workspace が同じ値を保持する場合だけ再利用できる
 4. workspace scope の transaction で actor の権限を再確認したうえで `Workspace.changeSlug` を適用して保存する（公開中に `null` を渡すとドメインが拒否する）
-5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。`slug` が `null` なら引き継ぐ先が無いので旧slugは `release` で手放す（`activate` と同じく 1 度だけ再試行し、恒久的に失った分は手順 2 の修復が回収する）。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
+5. local commit 後に reservation と `workspace_directory` を切り替え、旧slugを解放する。**手放す鍵は scope の現在値ではなく `workspace_directory` が広告している値から決める**（[domains/workspace.md](../domains/workspace.md) の `WorkspaceSlugReservationStore`。手順 2 の修復と同じ根拠で、主経路もここを見る — 前の改名が切替を恒久的に失っていると scope の現在値は global に残っている鍵を指さない。広告値が無ければ scope の現在値へ落とす）。`slug` が `null` なら引き継ぐ先が無いのでその鍵は `release` で手放す（`activate` と同じく 1 度だけ再試行し、恒久的に失った分は手順 2 の修復が回収する）。**解放は投影より先に置く**。失敗時は operation record から再開し、旧slugは切替完了まで有効に保つ
 
 ### エラーケース
 

@@ -18,6 +18,7 @@ import { Alert } from "@/components/ui/Alert";
 import {
   WORKSPACE_DESCRIPTION_MAX_LENGTH,
   WORKSPACE_NAME_MAX_LENGTH,
+  WORKSPACE_SLUG_HINT,
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
 import { useSlugAvailability } from "@/components/workspace/slugAvailability";
@@ -248,8 +249,7 @@ export function CreateWorkspaceForm({ slugPrefix }: { slugPrefix: string }) {
             </div>
           ) : null}
           <p className="mt-2 text-xs text-ink-tertiary">
-            半角英小文字・数字・ハイフン · 3〜30
-            文字。あとから設定できます。ノートを公開するときに必要になります。
+            {`${WORKSPACE_SLUG_HINT}。あとから設定できます。ノートを公開するときに必要になります。`}
           </p>
         </div>
 

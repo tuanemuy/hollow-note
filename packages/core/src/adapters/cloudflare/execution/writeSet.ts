@@ -15,8 +15,8 @@ import type { SqlRow, SqlStatement } from "../sql/statement";
  * the image from the same whole-row helper the table's inserts use is
  * what keeps this true as projections come and go.
  *
- * A multi-row statement — the `json_each` insert or delete
- * `spec/database/index.md` の「共通の規約」 requires instead of one
+ * A multi-row statement — the `json_each` insert or delete that
+ * `spec/database/index.md`'s 「共通の規約」 requires instead of one
  * statement per id — still names the rows it touches: `upsertMany` and
  * `removeMany` apply as a single statement while contributing the same
  * overlay entries the per-row kinds would. One statement, full

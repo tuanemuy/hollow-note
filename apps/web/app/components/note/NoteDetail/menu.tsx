@@ -6,7 +6,11 @@ import { useState, useTransition } from "react";
 import { errorTextClass } from "@/components/settings/panelStyles";
 import { displayError } from "@/presentation/errorDisplay";
 import { moveNoteFn } from "@/routes/notes/-action";
-import { type MoveTarget, NoteMovePicker } from "../NoteMovePicker";
+import {
+  type MoveTarget,
+  moveNotePayload,
+  NoteMovePicker,
+} from "../NoteMovePicker";
 
 /**
  * P-11 の操作メニュー（PAGE-p11-009 の「移動」）。編集・表示スタイル・
@@ -47,11 +51,7 @@ export function NoteDetailMenu({
       let droppedTagNames: readonly string[];
       try {
         const moved = await moveNote({
-          data: {
-            noteId,
-            targetOwnerType: target.ownerType,
-            targetWorkspaceId: target.workspaceId,
-          },
+          data: { noteId, ...moveNotePayload(target) },
         });
         droppedTagNames = moved.droppedTagNames;
       } catch (failure) {

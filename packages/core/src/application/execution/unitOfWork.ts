@@ -71,9 +71,11 @@ export type ActivatingMembershipReader = Pick<
  * to `deleting`, and the terminal prune drops the manifest header and
  * the operation together.
  *
- * The two membership readers are the exception to "the directories sit
- * outside any unit of work" (`application/di/types.ts`). They are reads,
- * not writes, and account-deletion admission has to take them **inside**
+ * The two membership readers are the exception to "the design deliberately
+ * places those writes outside any unit of work" — the rule
+ * `ScopeUnitOfWorkContext` below states for the global counterparts of
+ * the workspace group. They are reads, not writes, and account-deletion
+ * admission has to take them **inside**
  * the transaction that moves the user to `deleting`: judged from outside,
  * a join that lands between the read and the transition is admitted, its
  * edge settles, and the manifest fixes a membership item nothing in this

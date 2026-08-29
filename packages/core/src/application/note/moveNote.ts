@@ -36,18 +36,27 @@ import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { noteAccessPolicy } from "./accessControl";
 import { ownerOf } from "./view";
 
+/**
+ * Destination of a move. The workspace id belongs to the workspace member
+ * alone: an id-less workspace target would otherwise reach
+ * `WorkspaceId.create("")` and surface as `InvalidId`, which is not one of
+ * the outcomes spec/testcases/note/moveNote.md defines.
+ */
+export type MoveNoteTarget =
+  | Readonly<{ targetOwnerType: "user" }>
+  | Readonly<{ targetOwnerType: "workspace"; targetWorkspaceId: string }>;
+
 export type MoveNoteInput = Readonly<{
   noteId: string;
   userId: string;
-  targetOwnerType: "user" | "workspace";
-  targetWorkspaceId?: string | null;
   /**
    * Version the caller saw, or `null` when it holds none — `getNote` does
    * not project one, so the transport boundary has nothing to send.
    * `null` skips the optimistic check.
    */
   expectedVersion: number | null;
-}>;
+}> &
+  MoveNoteTarget;
 
 export type MovedNoteView = Readonly<{
   noteId: string;
@@ -556,13 +565,18 @@ async function stageTarget(
  * copy left at the older version turns that edit into a silent loss the
  * instant the switch commits.
  *
- * Staleness is decidable without asking the source twice: the staged copy
- * is `Note.withOwner` of what was frozen, so its version is exactly one
- * past the frozen one, and an equal version means nothing has been
- * written to the source since. File metadata is deliberately *not*
- * brought forward — a row that never crossed stays with the source and is
- * not retired either, which the note cannot do because the route names a
- * single scope.
+ * Staleness of the note *row* is decidable without asking the source
+ * twice: the staged copy is `Note.withOwner` of what was frozen, so its
+ * version is exactly one past the frozen one, and an equal version means
+ * nothing has been written to the source's note row since. The revisions
+ * are not covered by that answer — a revision may be captured without the
+ * note row moving — so they are re-synced on both branches rather than
+ * hung on the version. Skipping them would leave the target short of a
+ * revision `retireSource` then deletes from the source unconditionally.
+ *
+ * File metadata is deliberately *not* brought forward — a row that never
+ * crossed stays with the source and is not retired either, which the note
+ * cannot do because the route names a single scope.
  */
 async function adoptStagedCopy(
   ctx: ScopeUnitOfWorkContext,
@@ -579,10 +593,9 @@ async function adoptStagedCopy(
     noteOwnerOf(plan.target),
     now,
   );
-  if (staged.entity.version === refreshed.version) {
-    return staged.entity.version;
+  if (staged.entity.version !== refreshed.version) {
+    await ctx.noteRepository.save(refreshed, staged.expectedVersion);
   }
-  await ctx.noteRepository.save(refreshed, staged.expectedVersion);
   await ctx.noteRevisionRepository.deleteByNote(plan.noteId);
   for (const revision of snapshot.revisions) {
     await ctx.noteRevisionRepository.insert(revision);
@@ -705,6 +718,14 @@ async function retireSource(
  * assumed: a route still parked on the source at the same generation is
  * safe to compensate whatever `abortMove` answered, and one that moved on
  * never is.
+ *
+ * *Who* holds that route is deliberately not part of the answer. A route
+ * this thaw gave back and another migration has since claimed still names
+ * the source, and what the compensation then reverses is identified by
+ * this migration's own receipt (`abortBeforeSwitch`), so the rival's
+ * staged copy is out of reach either way. Standing down instead would
+ * strand this migration's own move locks and its operation — a permanent
+ * stop where there was a recoverable one.
  */
 async function thawRoute(
   container: RequestContainer,
@@ -736,14 +757,18 @@ async function thawRoute(
  * Three things the spec's "完全に" rests on, and none of them is optional.
  * The applied-operation keys go with the rows they assert — the note's own
  * and every key the tag seam declares — or a resumed `stageTarget` skips
- * into an empty target. The abort is idempotent on the staged note's
- * presence rather than on a key of its own, since the note is the witness
- * that the credit was applied and is deleted in the same transaction that
- * reverses it; both move locks are released outside that check, because an
- * abort may follow a failure that never reached the staging it undoes.
+ * into an empty target. What is torn down is identified by *this*
+ * migration's `STAGE_TARGET_COMMAND` receipt and never by the mere
+ * presence of a note row in the target (spec/domains/note.md: the abort is
+ * idempotent on the migration id): the thaw hands the route back before
+ * the teardown opens its transaction, so what the target holds by then may
+ * be a rival migration's staged copy — the only party that may switch to
+ * it or give it back — and deleting it loses the note the instant that
+ * rival switches. Both move locks are released outside that check, because
+ * an abort may follow a failure that never reached the staging it undoes.
  * And what it gives back is read from the target, never from the attempt's
  * snapshot: an attempt that failed before it froze the source must still
- * reverse whatever an *earlier* attempt staged.
+ * reverse whatever an *earlier* attempt of this same migration staged.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
@@ -761,11 +786,22 @@ async function abortBeforeSwitch(
   ];
   await container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
     await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
+    // The receipt commits with the rows it asserts, so it is the only
+    // authority on "is what this scope holds mine?". `markApplied`
+    // answering `true` means the key was not there — this migration never
+    // staged — and the write it just made is undone by the clear below.
+    const stagedHere = !(await ctx.appliedOperationStore.markApplied({
+      operationId: plan.migrationId,
+      commandKey: STAGE_TARGET_COMMAND,
+    }));
     for (const commandKey of targetScopeCommands) {
       await ctx.appliedOperationStore.clearApplied({
         operationId: plan.migrationId,
         commandKey,
       });
+    }
+    if (!stagedHere) {
+      return;
     }
     const staged = await ctx.noteRepository.findById(plan.noteId);
     if (staged === null) {
@@ -1059,11 +1095,15 @@ export async function moveNote({
       routeVersion,
       tagRelocation,
     );
-    await settle(container, plan.migrationId, "completed");
   } catch (cause) {
     logStuckAfterSwitch(container, plan, cause);
     throw cause;
   }
+  // Everything the caller asked for has committed; closing the control row
+  // is bookkeeping. Reported as a failure it would be a lie the caller
+  // cannot act on — a re-request joins the still-`running` operation and
+  // is refused with `NOTE_MOVE_IN_PROGRESS`.
+  await settleQuietly(container, plan, "completed", null);
 
   return {
     noteId,
@@ -1124,12 +1164,19 @@ function ensurePlanMatchesRequest(
  * A rollback that finds the switch already landed is not a failure: the
  * request lost its response after the move became real, so the abort
  * stands down, and what it leaves is the state any post-switch failure
- * leaves.
+ * leaves — *including* the operation, which stays `running`. Neither
+ * `activateTarget` nor `retireSource` ran, so both scopes still hold a
+ * move lock, and those carry no lease and no expiry: only a caller
+ * holding this migration id releases one. Settling here would make
+ * `beginOrResume` mint a new migration for the next request, so no such
+ * caller could ever exist again and both workspaces would lose deletion
+ * and membership management for good. The same physical state reached
+ * through the post-switch catch is left `running` for that reason.
  *
- * The operation is settled in either case. The two are separate repairs:
- * a route stuck in `moving` only stops this note, while an operation
- * stuck in `running` makes every later move of it refuse to start (the
- * store would join the new request to this dead one).
+ * Before the switch the trade runs the other way and the operation is
+ * settled `rejected`: a route stuck in `moving` only stops this note,
+ * while an operation stuck in `running` makes every later move of it
+ * refuse to start (the store would join the new request to this dead one).
  */
 async function rollBack(
   container: RequestContainer,
@@ -1148,6 +1195,7 @@ async function rollBack(
       )) === "switched"
     ) {
       logStuckAfterSwitch(container, plan, cause);
+      return;
     }
   } catch (rollbackError) {
     container.logger.error("[moveNote] rollback failed before route switch", {
@@ -1210,7 +1258,12 @@ async function releaseUnusedClaim(
   }
 }
 
-/** Settling is a repair, so its own failure never replaces the diagnosis. */
+/**
+ * Settling is bookkeeping on the control row, so its own failure never
+ * replaces what the caller was owed — the diagnosis of the failure that
+ * led here, or the view of a move that has already committed. `cause` is
+ * `null` on that second path.
+ */
 async function settleQuietly(
   container: RequestContainer,
   plan: MovePlan,
@@ -1263,7 +1316,7 @@ async function resolveTargetOwner(
   const access = await resolveWorkspaceAccess({
     container,
     input: {
-      workspaceId: input.targetWorkspaceId ?? "",
+      workspaceId: input.targetWorkspaceId,
       userId: input.userId,
     },
   });

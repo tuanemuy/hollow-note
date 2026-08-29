@@ -4,11 +4,24 @@
  * コンポーネントから分けてあるのは、DOM もサーバー関数のランタイムも
  * 無しでこの遷移を単体テストできる形に保つため。
  */
-export type MoveTarget = Readonly<{
-  ownerType: "user" | "workspace";
-  workspaceId: string | null;
-  label: string;
-}>;
+export type MoveTarget =
+  | Readonly<{ ownerType: "user"; label: string }>
+  | Readonly<{ ownerType: "workspace"; workspaceId: string; label: string }>;
+
+/**
+ * 選ばれた行き先を `moveNoteFn` の本文へ写す。所有者側（P-10 の一覧 /
+ * P-11 のメニュー）が 2 か所で同じ写像を書くと、片方だけが転送境界の形
+ * から外れうるので 1 か所に畳む。
+ */
+export function moveNotePayload(
+  target: MoveTarget,
+):
+  | Readonly<{ targetOwnerType: "user" }>
+  | Readonly<{ targetOwnerType: "workspace"; targetWorkspaceId: string }> {
+  return target.ownerType === "user"
+    ? { targetOwnerType: "user" }
+    : { targetOwnerType: "workspace", targetWorkspaceId: target.workspaceId };
+}
 
 export type Loaded = Readonly<{
   kind: "loaded";
@@ -48,7 +61,7 @@ export function appendPage(
       ? [...loaded.targets]
       : currentOwnerType === "user"
         ? []
-        : [{ ownerType: "user", workspaceId: null, label: PERSONAL_LABEL }];
+        : [{ ownerType: "user", label: PERSONAL_LABEL }];
   let currentLabel = loaded?.currentLabel ?? null;
   for (const target of page.targets) {
     if (

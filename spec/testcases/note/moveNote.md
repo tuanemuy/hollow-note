@@ -41,3 +41,7 @@
 | 前の試行のstagingがreceiptで飛ばされ、その間にsourceへファイルが増えた | 同じmigration IDで再開する | retireするのはtargetが実際に受け取った集合だけで、増えた metadata はsourceに残る | |
 | 前の試行がstagingを残しており、再開した試行がrouteのclaimに失敗する | 同じmigration IDで再開する | routeをactive sourceへ戻すだけでなく、前の試行のstaged複製・credit・両scopeのmove lockも同じ補償で戻す（恒久的に残るlockを作らない） | |
 | 前の試行のstagingがreceiptで飛ばされ、その間にsourceのノートが編集された | 同じmigration IDで再開する | staged複製が今回freezeした版へ引き上げられ、switch後にsourceのNoteとRevisionを消しても編集が失われない | |
+| 前の試行のstagingがreceiptで飛ばされ、その間にsourceのRevisionだけが増えた（Noteの版は動かない） | 同じmigration IDで再開する | staged複製のRevisionも今回のsnapshotへ同期され、switch後にsourceのRevisionを消しても失われない | |
+| routeを手放した後、同じtarget scopeを別のmigrationがstageした | 中止する | 自分のstaged importのreceiptが立っていないので何も解体せず、別migrationの複製・credit・file metadataを残したまま両scopeのlockだけ返す | |
+| 中止のthawが返したrouteを別のmigrationが既にclaimしている | 中止する | routeがsourceの同じ世代を指す限り補償は走り、この migration 自身のstaged複製・credit・lockが戻る（掴んだ相手を理由に降りない） | |
+| switchがcommitして応答だけを失い、その後rollbackが走る | 中止する | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） | |

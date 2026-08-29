@@ -21,7 +21,6 @@ describe("listNotes", () => {
       input: {
         userId: "u1",
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "One",
       },
     });
@@ -30,7 +29,6 @@ describe("listNotes", () => {
       input: {
         userId: "u1",
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "Two",
       },
     });
@@ -39,7 +37,6 @@ describe("listNotes", () => {
       input: {
         userId: "u2",
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "Foreign",
       },
     });
@@ -90,7 +87,6 @@ describe("listNotes", () => {
       input: {
         userId: "u1",
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "Personal",
       },
     });

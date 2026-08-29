@@ -47,6 +47,8 @@
 | ADP-common-039 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
 | ADP-common-040 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |
 | ADP-common-041 | `AccountDeletionManifestStore.describe` | `spec/domains/index.md#ScopeKey-と永続化境界` | manifest header の読み取り射影（2 つの build cursor と所有 user）を返し、既に消えていれば null を返す |
+| ADP-common-042 | `AppliedOperationStore.markApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | operation の `(operationId, commandKey)` を記録し、初回は true・再配送は false を返す。記録はガードするコマンドと同じ UoW に入る |
+| ADP-common-043 | `AppliedOperationStore.clearApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | 効果を打ち消す補償トランザクションと同じ UoW で記録を消す。存在しない記録の消去は no-op |
 | ADP-identity-001 | `UserRepository.insert` | `spec/domains/identity.md#ポート` | 新規 User を保存する |
 | ADP-identity-002 | `UserRepository.findById` | `spec/domains/identity.md#ポート` | UserId で OCC token 付き User を取得する |
 | ADP-identity-003 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |

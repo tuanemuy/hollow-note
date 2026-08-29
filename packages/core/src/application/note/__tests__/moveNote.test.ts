@@ -98,9 +98,13 @@ const createNote = async (
     container: h.container,
     input: {
       userId: owner.userId ?? ACTOR,
-      ownerType: owner.workspaceId === undefined ? "user" : "workspace",
-      ownerWorkspaceId: owner.workspaceId ?? null,
       title: "移動するノート",
+      ...(owner.workspaceId === undefined
+        ? { ownerType: "user" as const }
+        : {
+            ownerType: "workspace" as const,
+            ownerWorkspaceId: owner.workspaceId,
+          }),
     },
   });
   return view.noteId;
@@ -122,10 +126,14 @@ const move = (h: TestHarness, input: MoveInput): Promise<MovedNoteView> =>
     input: {
       noteId: input.noteId,
       userId: input.userId ?? ACTOR,
-      targetOwnerType: input.workspaceId === undefined ? "user" : "workspace",
-      targetWorkspaceId: input.workspaceId ?? null,
       expectedVersion:
         input.expectedVersion === undefined ? 0 : input.expectedVersion,
+      ...(input.workspaceId === undefined
+        ? { targetOwnerType: "user" as const }
+        : {
+            targetOwnerType: "workspace" as const,
+            targetWorkspaceId: input.workspaceId,
+          }),
     },
     ...(input.tagRelocation === undefined
       ? {}
@@ -148,6 +156,18 @@ const revisionsIn = (h: TestHarness, scope: ScopeKey) =>
 
 const quotaOf = (h: TestHarness, scope: ScopeKey): StorageQuota | undefined =>
   h.backend.scope(scope).storageQuotas.values()[0];
+
+/** A scope that was never charged has no row, which reads as zero. */
+const quotaTotals = (
+  h: TestHarness,
+  scope: ScopeKey,
+): Readonly<{ consumedBytes: number; noteCount: number }> => {
+  const quota = quotaOf(h, scope);
+  return {
+    consumedBytes: quota?.consumedBytes ?? 0,
+    noteCount: quota?.noteCount ?? 0,
+  };
+};
 
 const moveLocksIn = (h: TestHarness, scope: ScopeKey) =>
   h.backend.scope(scope).moveAuthorizationLocks.values();
@@ -609,6 +629,9 @@ const seedMovePair = async (h: TestHarness): Promise<void> => {
   }
 };
 
+/** What the one file `seedWholeNote` attaches weighs. */
+const WHOLE_NOTE_BYTES = 120;
+
 /** A note with everything a move carries: a revision, a file, a charge. */
 const seedWholeNote = async (h: TestHarness): Promise<string> => {
   const noteId = await createNote(h, { workspaceId: SOURCE_WS });
@@ -617,21 +640,47 @@ const seedWholeNote = async (h: TestHarness): Promise<string> => {
     id: "file-source",
     noteId,
     purpose: "source",
-    size: 120,
+    size: WHOLE_NOTE_BYTES,
   });
-  await seedQuota(h, sourceWsScope, sourceWsOwner, { bytes: 120, notes: 1 });
+  await seedQuota(h, sourceWsScope, sourceWsOwner, {
+    bytes: WHOLE_NOTE_BYTES,
+    notes: 1,
+  });
   return noteId;
 };
+
+/** The other half of the pair `seedMovePair` sets up. */
+const acrossFrom = (scope: ScopeKey): ScopeKey =>
+  ScopeKey.equals(scope, targetScope) ? sourceWsScope : targetScope;
 
 const scopeOwnerId = (scope: ScopeKey): string =>
   scope.type === "workspace" ? scope.workspaceId : scope.userId;
 
 /**
- * The invariant no failure may break: the scope the route names holds the
- * note whole — its revision and its file with it — and a reader gets
- * there. A copy left behind in the scope the note came from is
- * unreachable and can still be retired later; a route naming a scope that
- * holds nothing is the loss this saga must never produce.
+ * The invariants no failure may break, over the pair `seedMovePair` sets
+ * up. Stated for a move whose every compensation ran to its own end: one
+ * injected fault, and whatever the saga decided to do about it completed.
+ *
+ * The first is the loss this saga must never produce: the scope the route
+ * names holds the note whole — its revision and its file with it — and a
+ * reader gets there. A copy left behind in the scope the note came from
+ * is unreachable and can still be retired later.
+ *
+ * The other three are conditional on the operation, because what a
+ * stopped move may leave behind depends on whether anything can still
+ * drive it (spec/usecases/note.md#movenote 手順 4・8):
+ *
+ * - a move authorization lock carries no lease and no expiry, and only a
+ *   caller holding the migration id releases it — once every operation of
+ *   this note is terminal no such caller can exist again, so a lock that
+ *   outlives them closes both scopes' deletion and membership management
+ *   for good;
+ * - the charge follows the route, since the two scopes' quotas are moved
+ *   by the phases themselves; a stopped move is allowed to double-count
+ *   but never to under-count, so mid-flight only the floor is asserted;
+ * - a staged copy across from the route is the abort's leftover, and the
+ *   spec's 「完全」 is that no trace of this migration stays in the scope
+ *   the note did not end up in.
  */
 const expectWholeAndReachable = async (
   h: TestHarness,
@@ -647,6 +696,23 @@ const expectWholeAndReachable = async (
   expect(await read(h, noteId)).toMatchObject({
     ownerId: scopeOwnerId(route.scope),
   });
+
+  const across = acrossFrom(route.scope);
+  const undrivable = operations(h).every((row) => row.state !== "running");
+  const charged = quotaTotals(h, route.scope);
+  if (!undrivable) {
+    expect(charged.consumedBytes).toBeGreaterThanOrEqual(WHOLE_NOTE_BYTES);
+    expect(charged.noteCount).toBeGreaterThanOrEqual(1);
+    return;
+  }
+
+  expect(moveLocksIn(h, route.scope)).toHaveLength(0);
+  expect(moveLocksIn(h, across)).toHaveLength(0);
+  expect(charged).toEqual({ consumedBytes: WHOLE_NOTE_BYTES, noteCount: 1 });
+  expect(quotaTotals(h, across)).toEqual({ consumedBytes: 0, noteCount: 0 });
+  expect(notesIn(h, across)).toHaveLength(0);
+  expect(revisionsIn(h, across)).toHaveLength(0);
+  expect(filesIn(h, across)).toHaveLength(0);
 };
 
 describe("moveNote", () => {
@@ -2198,6 +2264,223 @@ describe("moveNote", () => {
     );
   });
 
+  it("TC-note-767: an abort that stands down after the switch leaves a stop something can still drive", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    const container = withRouteStore(h, {
+      switchMove: async (input) => {
+        await h.container.noteRouteStore.switchMove(input);
+        throw failure("switch response lost");
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+    ).rejects.toThrow("switch response lost");
+
+    // Neither phase that releases a lock ran, so both locks stand — and
+    // the only caller that may release them is one holding this migration
+    // id. A terminal operation makes the next request a new migration, so
+    // settling here would take both workspaces' deletion and membership
+    // management away for good instead of leaving a stop to recover from.
+    expect(moveLocksIn(h, personalScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "running" });
+  });
+
+  it("TC-note-768: an abort leaves the copy a rival migration staged in the target alone", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // A second migration takes the route this one just thawed and stages
+    // its own copy, then dies before its own compensation reaches the
+    // target. From here on the target's contents are the rival's.
+    const stageRival = async (): Promise<void> => {
+      let rivalRuns = 0;
+      const stranded: RequestContainer = {
+        ...h.container,
+        noteRouteStore: {
+          ...h.container.noteRouteStore,
+          switchMove: () => Promise.reject(failure("rival switch failed")),
+        },
+        scopeUnitOfWorkProvider: {
+          run: <T>(
+            scope: ScopeKey,
+            fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+          ): Promise<T> => {
+            rivalRuns += 1;
+            // 0 freeze, 1 stage, 2 the rollback's undo of the target.
+            return rivalRuns === 3
+              ? Promise.reject(failure("rival rollback died"))
+              : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+          },
+        },
+      };
+      await expect(
+        move(h, {
+          noteId,
+          workspaceId: TARGET_WS,
+          userId: OTHER,
+          expectedVersion: null,
+          container: stranded,
+        }),
+      ).rejects.toThrow("rival switch failed");
+    };
+
+    // The attempt that aborts below resumes an operation that is already
+    // terminal — the shape a re-request takes after a failure settled its
+    // own row (`beginOrResume` matches the request key whatever the state
+    // says). That is what lets a second migration exist at the same time:
+    // while any operation of this note is `running`, every other request
+    // joins it and is refused.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withScopeRunHooks(h, {
+          before: (_scope, index) => {
+            if (index === 0) {
+              throw failure("the first freeze failed");
+            }
+          },
+        }),
+      }),
+    ).rejects.toThrow("the first freeze failed");
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    expect(notesIn(h, targetScope)).toHaveLength(0);
+
+    let runs = 0;
+    let rivalStaged = false;
+    const container: RequestContainer = {
+      ...h.container,
+      scopeUnitOfWorkProvider: {
+        run: async <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          const index = runs;
+          runs += 1;
+          // 0 freeze, 1 the rollback's undo of the target — and the thaw
+          // that precedes it has already handed the route back, so the
+          // window the rival claims in is between the two.
+          if (index === 1 && !rivalStaged) {
+            rivalStaged = true;
+            await stageRival();
+          }
+          const result = await h.container.scopeUnitOfWorkProvider.run(
+            scope,
+            fn,
+          );
+          if (index === 0) {
+            throw failure("snapshotSource response lost");
+          }
+          return result;
+        },
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container,
+      }),
+    ).rejects.toThrow("snapshotSource response lost");
+
+    expect(rivalStaged).toBe(true);
+    // Two migrations, and the target's contents belong to the other one.
+    expect(operations(h)).toHaveLength(2);
+    // Nothing in the target was put there by this migration, so nothing
+    // in it is this migration's to reverse: the rival is the only one
+    // that can switch to that copy or give it back, and tearing it down
+    // loses the note the moment the rival's switch lands.
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(revisionsIn(h, targetScope)).toHaveLength(1);
+    expect(filesIn(h, targetScope)).toHaveLength(1);
+    expect(quotaTotals(h, targetScope)).toEqual({
+      consumedBytes: WHOLE_NOTE_BYTES,
+      noteCount: 1,
+    });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+    });
+    expect(notesIn(h, sourceWsScope)).toHaveLength(1);
+  });
+
+  it("TC-note-769: a thaw whose route another migration has already claimed still gives this migration's own leftovers back", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // The thaw commits and only its response is lost, so the compensation
+    // re-reads the route to decide whether it may run — and by then the
+    // route it gave back is `moving` again under someone else's migration
+    // id. What this migration staged is identified by its own receipt, so
+    // the rival's side is out of reach whatever the read says; standing
+    // down here would instead leave this migration's own lock and its
+    // operation with nobody able to release them.
+    let thawed = false;
+    let runs = 0;
+    const container: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        abortMove: async (input) => {
+          const route = await h.container.noteRouteStore.abortMove(input);
+          thawed = true;
+          await h.container.noteRouteStore.beginMove({
+            noteId: NoteId.create(noteId),
+            expectedRouteVersion: route.routeVersion,
+            target: targetScope,
+            migrationId: "rival-migration",
+          });
+          throw failure("abort response lost");
+        },
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          const index = runs;
+          runs += 1;
+          // 0 freeze — which stages the source's move lock — then 1 the
+          // staging this test fails, and 2 / 3 the compensation's own.
+          return index === 1
+            ? Promise.reject(failure("the staging failed"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container,
+      }),
+    ).rejects.toThrow("the staging failed");
+
+    expect(thawed).toBe(true);
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(0);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(0);
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    // The rival's claim, and everything it may still stage under it, are
+    // left exactly as they were.
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "moving",
+      scope: sourceWsScope,
+      migrationId: "rival-migration",
+    });
+    expect(notesIn(h, sourceWsScope)).toHaveLength(1);
+  });
+
   const MOVE_SEAMS: readonly MoveSeam[] = [
     "beginOperation",
     "claimRoute",
@@ -2221,14 +2504,23 @@ describe("moveNote", () => {
         await seedMovePair(h);
         const noteId = await seedWholeNote(h);
 
-        await expect(
-          move(h, {
-            noteId,
-            workspaceId: TARGET_WS,
-            expectedVersion: null,
-            container: withLostResponseAt(h, seam),
-          }),
-        ).rejects.toThrow("response lost");
+        const attempt = move(h, {
+          noteId,
+          workspaceId: TARGET_WS,
+          expectedVersion: null,
+          container: withLostResponseAt(h, seam),
+        });
+        if (seam === "settle") {
+          // The one seam whose loss the caller must not be told about:
+          // route, target and source are all final by the time the
+          // control row is closed, so reporting it would refuse a move
+          // that happened and then refuse the retry as well.
+          await expect(attempt).resolves.toMatchObject({
+            ownerId: TARGET_WS,
+          });
+        } else {
+          await expect(attempt).rejects.toThrow("response lost");
+        }
         await expectWholeAndReachable(h, noteId);
 
         await runFollowUp(h, follow, noteId);
@@ -2603,5 +2895,53 @@ describe("moveNote", () => {
     });
     expect(notesIn(h, personalScope)).toHaveLength(0);
     expect(revisionsIn(h, personalScope)).toHaveLength(0);
+  });
+
+  it("TC-note-770: a resume whose staged copy is already at the frozen version still carries the revisions the source gained", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    await seedRevision(h, personalScope, noteId, "revision-1");
+    let runs = 0;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("switch failed")),
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          runs += 1;
+          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
+          return runs === 3
+            ? Promise.reject(failure("rollback died"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container: stranded }),
+    ).rejects.toThrow("switch failed");
+    expect(revisionsIn(h, targetScope)).toHaveLength(1);
+
+    // A revision that lands without a note write, which is what the two
+    // attempts' equal versions mean: nothing tells the adoption that the
+    // staged copy is short of one. `retireSource` deletes the source
+    // revisions all the same, so what it does not carry is lost.
+    await seedRevision(h, personalScope, noteId, "revision-late");
+
+    await move(h, { noteId, workspaceId: TARGET_WS, expectedVersion: null });
+
+    expect(
+      revisionsIn(h, targetScope)
+        .map((revision) => revision.id)
+        .sort(),
+    ).toEqual(["revision-1", "revision-late"]);
+    expect(revisionsIn(h, personalScope)).toHaveLength(0);
+    expect(await read(h, noteId)).toMatchObject({ ownerId: TARGET_WS });
   });
 });

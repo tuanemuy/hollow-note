@@ -991,7 +991,7 @@ FTS は「どの行が一致したか」と関連度（`bm25`）だけを担い�
 | `source_version` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-`source_version` より古い event は 0 行更新で無視する。書き手は `WorkspaceDirectoryProjectionWriter` で、`slug` を持つ snapshot は同じ書き込みでその slug を他の行から外す — 所有の正典は `workspace_slug_reservations` なので、まだ slug を映している古い投影行は定義により stale であり、UNIQUE 違反で投影を止めない。削除tombstoneは`lifecycle = deleting`のまま`slug = null`とし、name/avatar等の表示PIIもredactする。`deletion_operation_id` は tombstone の冪等鍵で、別 operation による tombstone は `ConflictError` になる。directory tombstone確定後に別key shardのslug reservationをreleaseするため、同じslugを新しいWorkspaceが予約できる。
+`source_version` より古い snapshot は 0 行更新で無視する。書き手は `WorkspaceDirectoryProjectionWriter` だけで（購読者は無く、要求パスと削除ワーカーが名指しで送る。[domains/workspace.md](../domains/workspace.md) の `WorkspaceRepository` 節）、`slug` を持つ snapshot は同じ書き込みでその slug を他の行から外す — 所有の正典は `workspace_slug_reservations` なので、まだ slug を映している古い投影行は定義により stale であり、UNIQUE 違反で投影を止めない。削除tombstoneは`lifecycle = deleting`のまま`slug = null`とし、name/avatar等の表示PIIもredactする。`deletion_operation_id` は tombstone の冪等鍵で、別 operation による tombstone は `ConflictError` になる。directory tombstone確定後に別key shardのslug reservationをreleaseするため、同じslugを新しいWorkspaceが予約できる。
 
 物理配置はWorkspaceId hash shardとする。indexは(`publication`, `lifecycle`, `updated_at` DESC, `workspace_id`)。`resolveMany`/slug route後のlookupはWorkspaceIdで直接routeし、公開一覧は最大32 shard・同時6接続・全体200件の署名cursorでscatter-gatherする。reshard中は旧新をWorkspaceId/sourceVersionで重複排除する。
 

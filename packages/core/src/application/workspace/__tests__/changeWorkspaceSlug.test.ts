@@ -558,6 +558,91 @@ describe("changeWorkspaceSlug", () => {
   });
 
   /**
+   * `previousSlug` is the scope's view of the rename being made now, and
+   * a rename whose activation was lost for good moved the scope without
+   * moving the global plane. From then on the key nobody freed is named
+   * only by the directory row — and the next change overwrites that row,
+   * so a key the exchange does not free here is stranded with no expiry
+   * and no way left to find it.
+   */
+  it("TC-workspace-314: a change to a different slug frees the key the directory still advertises", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      change(h, "team-alpha", OWNER, {
+        ...h.container,
+        workspaceSlugReservationStore: {
+          ...inner,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBe("team-alpha");
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("old-slug");
+
+    // The scope is on `team-alpha`, so `previousSlug` names that — but
+    // the key still held is `old-slug`.
+    await expect(change(h, "team-gamma")).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: "team-gamma",
+      previousSlug: "team-alpha",
+    });
+
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([
+      // Left to lapse: a `reserved` row carries an expiry, unlike the key
+      // the exchange had to free here.
+      ["team-alpha", WORKSPACE, "reserved"],
+      ["team-gamma", WORKSPACE, "active"],
+    ]);
+    await expect(availability(h, "old-slug")).resolves.toEqual({
+      slug: "old-slug",
+      available: true,
+      ownedBySelf: false,
+    });
+    expect(directoryRow(h, WORKSPACE)?.slug).toBe("team-gamma");
+  });
+
+  it("TC-workspace-315: clearing the slug frees the key the directory still advertises", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      change(h, "team-alpha", OWNER, {
+        ...h.container,
+        workspaceSlugReservationStore: {
+          ...inner,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+
+    await expect(change(h, null)).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      slug: null,
+      previousSlug: "team-alpha",
+    });
+
+    expect(storedWorkspace(h, WORKSPACE)?.slug).toBeNull();
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.workspaceId, row.state]),
+    ).toEqual([["team-alpha", WORKSPACE, "reserved"]]);
+    await expect(availability(h, "old-slug")).resolves.toEqual({
+      slug: "old-slug",
+      available: true,
+      ownedBySelf: false,
+    });
+    expect(directoryRow(h, WORKSPACE)?.slug).toBeNull();
+  });
+
+  /**
    * Two attempts at the same rename share one reservation row, because
    * the operation id is derived from `(workspaceId, slug)`. The loser
    * must therefore not compensate: dropping the row the winner is about

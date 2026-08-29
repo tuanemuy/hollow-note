@@ -48,6 +48,8 @@
 | DOM-common-040 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
 | DOM-common-041 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |
 | DOM-common-042 | `AccountDeletionManifestStore.describe` | `spec/domains/index.md#ScopeKey-と永続化境界` | manifest header の読み取り射影（2 つの build cursor と所有 user）を返し、既に消えていれば null を返す |
+| DOM-common-043 | `AppliedOperationStore.markApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | operation の `(operationId, commandKey)` を記録し、初回は true・再配送は false を返す。記録はガードするコマンドと同じ UoW に入る |
+| DOM-common-044 | `AppliedOperationStore.clearApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | 効果を打ち消す補償トランザクションと同じ UoW で記録を消す。存在しない記録の消去は no-op |
 | DOM-identity-001 | `UserId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-identity-002 | `IdentityId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-identity-003 | `SessionId` 値オブジェクト | `spec/domains/identity.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |

@@ -73,7 +73,7 @@ ExportTicket = {
 | --- | --- | --- | --- |
 | `userId` | `string` | ○ | — |
 | `ownerType` | `"user" \| "workspace"` | ○ | 既知の値 |
-| `ownerWorkspaceId` | `string \| null` | — | `ownerType === "workspace"` のとき必須 |
+| `ownerWorkspaceId` | `string` | — | `ownerType === "workspace"` のとき必須（2 つは相関する 1 つの入力なので、転送境界の schema も `ownerType` で判別する直和にする） |
 | `title` | `string \| null` | — | `NoteTitle` の規則 |
 
 ### 出力DTO
@@ -282,7 +282,7 @@ ReferenceReport = {
 | --- | --- | --- | --- |
 | `userId` | `string` | ○ | — |
 | `ownerType` | `"user" \| "workspace"` | ○ | 既知の値 |
-| `ownerWorkspaceId` | `string \| null` | — | — |
+| `ownerWorkspaceId` | `string` | — | `ownerType === "workspace"` のとき必須（2 つは相関する 1 つの入力なので、転送境界の schema も `ownerType` で判別する直和にする） |
 | `lifecycle` | `"active" \| "trashed"` | ○ | 既定は `active` |
 | `keyword` | `string \| null` | — | 2 文字未満は `null` に落とす |
 | `tagNames` | `string[]` | — | 各 50 文字以内、最大 10 件 |
@@ -530,7 +530,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 入力DTO
 
-`noteId`, `userId`, `targetOwnerType: "user" | "workspace"`, `targetWorkspaceId: string | null`, `expectedVersion: number | null`（版を持たない呼び出し元は `null` を渡し、版の検査を省く）
+`noteId`, `userId`, 移動先（`{ targetOwnerType: "user" }` または `{ targetOwnerType: "workspace"; targetWorkspaceId: string }` の直和 — `targetWorkspaceId` は `targetOwnerType === "workspace"` のときだけ存在し、転送境界の schema も `targetOwnerType` で判別する）, `expectedVersion: number | null`（版を持たない呼び出し元は `null` を渡し、版の検査を省く）
 
 ### 出力DTO
 
@@ -545,12 +545,23 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 route の claim が operation と同じ transaction に入らないのは、route store が UoW の外に置かれた atomic store だからである（[ADR 023](../adr/023-two-plane-unit-of-work.md)。ノートの現在地は所有 scope をまたいで解決される鍵であり、どちらの面の UoW にも属さない）。したがって「operation は `running` だが route は掴めていない」中間状態が存在しうる。この状態は次の同一要求が再開する — `requestKey` は「ノート・**要求した actor**・移動先・出発点の routeVersion」から決まり、失敗した試行は routeVersion を動かさないので、同じ移動の再試行は必ず同じ operation を replay する（一方、かつて住んでいた scope へ戻す移動は別の鍵になり、完了済みの operation の receipt を引き継いで staging を空振りさせない）。actor が鍵に入るのは、replay される plan が認可そのものだからである — 各 phase が読み直す Membership の版も、move authorization lock の主体も、payload の `actorUserId` を名指しする。actor を鍵から外すと、別のメンバーの要求が最初の要求の operation を再開し、「まだ確定してよいか」の検査が別人について行われる。返ってきた operation が自分の `requestKey` と違えば別の移動が進行中なので、前進せず `ConflictError("NOTE_MOVE_IN_PROGRESS")` を返す。route の claim に失敗した operation はその場で `rejected` へ落とす — `running` のまま残すと、このノートの以後の移動がすべて止まるためである。同じ場で route も返す: claim が commit したのに応答だけを失った場合、`moving` を掴んだままの route が残り、別の actor も別の移動先も進めなくなる。route を読み直し、この migration の下で `moving` であるときだけ返す（掴んでいなければ何もしない）。**返し方は裸の `abortMove` ではなく手順 4〜6 の補償そのもの**である — 初回の試行なら staged 行が無いので route を戻すだけで済むが、**再開された試行は前の試行の staged 複製・credit・receipt と両 scope の move lock を引き継いでいる**。それらを残したまま route だけ戻すと、利用者が次に**別の移動先**を選んだ瞬間に `routeVersion` が進んで `requestKey` を二度と導出できなくなり、期限も所有者も持たない move lock が両 workspace に永久に残る（削除とメンバー変更が恒久的に拒否される）
 5. actorとsource Membership versionを渡して`freezeSource`を呼ぶ。再認可し、source move lockを保存して、active Jobを終端し、Note・tags・projectionRevisionをsnapshotへ固定する。この時点ではsource Usageを減らさない
-6. actorとtarget Membership versionを渡してtargetへstaged importする。snapshot revisionを復元してowner変更分を1増やし、move authorization lock保存とtargetCreditを同じlocal transactionで行う。**receipt が既に立っていて staging を飛ばす再開では、staged 複製を今回 freeze した版へ引き上げる** — route が `moving` のあいだも source は書き込み可能（move lock が止めるのはメンバー変更と scope 削除であって編集ではない）なので、2 つの試行のあいだに着地した編集は snapshot に入り staged 複製に入らない。引き上げる対象は Note 本体と版だけで、**ファイル metadata は引き継がない**（target へ渡らなかった行は source に残り、手順 8 でも retire されない）
+6. actorとtarget Membership versionを渡してtargetへstaged importする。snapshot revisionを復元してowner変更分を1増やし、move authorization lock保存とtargetCreditを同じlocal transactionで行う。**receipt が既に立っていて staging を飛ばす再開では、staged 複製を今回 freeze した版へ引き上げる** — route が `moving` のあいだも source は書き込み可能（move lock が止めるのはメンバー変更と scope 削除であって編集ではない）なので、2 つの試行のあいだに着地した編集は snapshot に入り staged 複製に入らない。引き上げる対象は Note 本体・版・**Revision** で、**ファイル metadata は引き継がない**（target へ渡らなかった行は source に残り、手順 8 でも retire されない）。Revision は版と一緒には判定しない — 版が動かないまま Revision だけが増える書き込みがありうるので、版が一致して Note 行を書き直さない場合でも Revision は snapshot の集合へ同期し直す。手順 8 が source の Revision を無条件に消すのは、この同期があるからである
 7. D1 route を source → target へ1文で切り替える。これが利用者から見える所属変更の唯一の切替点である
 8. target を有効化してauthorization lockを解放し、その後sourceをtombstoneにしてUsageの`sourceDebit`を適用する。source の Note 行と全 Revision は**無条件に**消す（ファイル metadata と使用量の減算は逆で、target が実際に受け取った集合だけを対象にする）。無条件にできるのは手順 6 の引き上げがあるからで、staged 複製を古い版のまま残したままここへ来ると、2 つの試行のあいだの編集が switch の瞬間に消える。停止中は最大でsource/targetへ二重計上され、過少計上にはならない。local projection、tag assignment、file metadata、backup recordはroute switch前に準備済みである
-9. `note.moved` を global projection Queue に送り、public projection を current route から再構築する。手順7以降の失敗は operation recovery Cron / scope Alarm が再開し、API は route switch 完了後なら成功を返してよい
+9. `note.moved` を global projection Queue に送り、public projection を current route から再構築する。手順7以降の失敗は operation recovery Cron / scope Alarm が再開し、API は route switch 完了後なら成功を返してよい。**最後に operation を `completed` へ落とす失敗は利用者へ返さない** — 利用者が求めたことはすべて commit 済みなので、失敗として返すのは利用者が行動できない偽であり、しかも再送は `running` の operation に合流して `NOTE_MOVE_IN_PROGRESS` で拒否される。記録して view を返し、残る `running` 行の回収は手順 7 以降の停止と同じ扱いにする
 
 手順4〜6で失敗したら、まず `abortMove`（「この migration の下で今も `moving`」の compare-and-swap）で route を active source へ戻し、**それが通ったときにだけ**補償へ進む。順序は入れ替えられない — switch が commit した瞬間から staged 行がノートの唯一の複製になるので、解体してよいのは route がまだ source の同じ世代を指しているあいだだけである。CAS が拒否された場合（応答を失ったときは route を読み直して判定する）は switch が既に着地しているとみなし、**何も補償せず**その場で停止して migration ID と両 scope を記録する。停止した移動を前進させる駆動口は本スライスに無い。
+
+**この停止では operation を終端させず `running` のまま残す。** switch は着地しているが手順 8 は走っていないので両 scope に move lock が残り、lock は lease も期限も持たず `migrationId` を握る呼び出し元しか解放できない。ここで `rejected` に落とすと `beginOrResume` は次の要求に新しい operation を作り、その `migrationId` を持つ主体が二度と現れず、両ワークスペースが削除とメンバー管理を恒久的に失う（route は既に次の世代なので `requestKey` も導出できない）。`running` のままなら停止は記録として残り、再開の駆動口（本スライスの外）が走査できる。手順 8 以降で落ちた場合に残る状態と同じであり、同じ物理状態を 2 つの経路が別々に終端しないためでもある。
+
+operation の終端はしたがって次の 4 通りだけである。
+
+| 到達点 | operation の状態 | 補償 |
+| --- | --- | --- |
+| route の claim に失敗（手順 4） | `rejected` | claim を保持していれば手順 4〜6 の補償で返す |
+| switch 前の中止（手順 5〜6 の失敗） | `rejected` | 補償する |
+| switch 後の停止（中止の CAS 拒否・手順 8 以降の失敗） | `running` のまま | 何もしない（前進のみ） |
+| 成功（手順 9 まで） | `completed` | — |
 
 補償へ進んだときは target creditを逆仕訳し、stageと両scopeのmove lockを削除し、sourceをthawする。**完全**とは target scope にこの migration の痕跡を残さないことで、消した行を「適用済み」と主張する `applied_operations` の記録も同じ transaction で消す（`clearApplied`）。target へ receipt を書く相は自分の鍵を申告する — ノート本体・ファイル metadata に加え、tag の seam も staged 分の鍵を型として宣言し、abort はそれらをまとめて消す。申告のない相が receipt を残すと、再開した手順6がその鍵で空振りする。各応答喪失は同じmigration IDで再試行するため、記録が残っていると再開した手順6が空のtargetへ素通りし、手順7がそこへrouteを切り替えてしまう。abort自体はstaged Noteの存在で冪等にし、自前のcommand keyは持たない。補償が消すのは attempt の snapshot ではなく target を列挙した結果である — 手順5に到達しなかった試行も、前の試行が staged した行を戻さなければならない。switch後はabortせず必ず前進する。
 

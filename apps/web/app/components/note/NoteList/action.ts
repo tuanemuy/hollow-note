@@ -23,7 +23,7 @@ export const loadNotes = cache(
         container,
         input:
           workspaceId === null
-            ? { userId }
+            ? { userId, ownerType: "user" }
             : { userId, ownerType: "workspace", ownerWorkspaceId: workspaceId },
       }),
   ),

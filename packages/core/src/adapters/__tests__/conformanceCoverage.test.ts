@@ -22,8 +22,33 @@ const CONFORMANCE_DIR = join(ADAPTERS_DIR, "conformance");
 const CALL_SITES = /^(describe[A-Za-z]*Contract)\s*\(/gm;
 const EXPORTS = /\bexport\s+function\s+(describe[A-Za-z]*Contract)\b/g;
 const FACTORIES = /\b(make[A-Za-z]*ConformanceBackend)\b/g;
-/** Members a `ConformanceBackend` may leave out — `name?(...)`. */
-const OPTIONAL_MEMBERS = /^\s{2}([a-z][A-Za-z]*)\?\(/gm;
+/**
+ * Members a backend declaration may leave out, in **both** syntaxes —
+ * `name?(...)` and `name?: ...`. A member is a member whichever way it
+ * is written, so watching only the method form would let the property
+ * form reopen the hole the case below exists to keep shut.
+ */
+const OPTIONAL_MEMBERS = /^\s{2}([a-z][A-Za-z]*)\?[(:]/gm;
+/**
+ * Runtime opt-outs, in the forms vitest actually offers. `.skip` is
+ * matched on the word rather than on a following `(` because the
+ * natural way to close a suite on a capability is to bind the modifier
+ * to a name first (`const gated = ok ? describe : describe.skip`), which
+ * a `.skip(` pattern reads straight past.
+ */
+const SELF_SKIPS: readonly RegExp[] = [
+  /\.(skip|skipIf|runIf|todo)\b/,
+  /\b(xit|xdescribe)\s*\(/,
+];
+
+/**
+ * The declarations that make up the surface a backend must supply: the
+ * root and the scope-plane bundle `forScope` returns. Read one
+ * declaration at a time, because the seed-input types alongside them
+ * carry optional properties by design — a whole-file scan could only be
+ * satisfied by giving those up.
+ */
+const BACKEND_DECLARATIONS = ["ConformanceBackend", "ScopedConformancePorts"];
 
 const walk = (dir: string): readonly string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -31,20 +56,43 @@ const walk = (dir: string): readonly string[] =>
     return entry.isDirectory() ? walk(path) : [path];
   });
 
+const matchesIn = (source: string, pattern: RegExp): ReadonlySet<string> => {
+  const found = new Set<string>();
+  for (const match of source.matchAll(pattern)) {
+    const name = match[1];
+    if (name !== undefined) {
+      found.add(name);
+    }
+  }
+  return found;
+};
+
 const namesIn = (
   files: readonly string[],
   pattern: RegExp = CALL_SITES,
 ): ReadonlySet<string> => {
   const found = new Set<string>();
   for (const file of files) {
-    for (const match of readFileSync(file, "utf8").matchAll(pattern)) {
-      const name = match[1];
-      if (name !== undefined) {
-        found.add(name);
-      }
+    for (const name of matchesIn(readFileSync(file, "utf8"), pattern)) {
+      found.add(name);
     }
   }
   return found;
+};
+
+/**
+ * The member list of one `export type X = Readonly<{ … }>;`. Throws when
+ * the declaration is not found so that renaming or reshaping one turns
+ * the check red instead of quietly making it vacuous.
+ */
+const membersOf = (source: string, name: string): string => {
+  const opening = `export type ${name} = Readonly<{`;
+  const start = source.indexOf(opening);
+  const end = start < 0 ? -1 : source.indexOf("\n}>;", start);
+  if (start < 0 || end < 0) {
+    throw new Error(`backend.ts declares no \`${opening}\` … \`}>;\``);
+  }
+  return source.slice(start + opening.length, end);
 };
 
 const sorted = (names: ReadonlySet<string>): readonly string[] =>
@@ -53,11 +101,6 @@ const sorted = (names: ReadonlySet<string>): readonly string[] =>
 const testFiles = walk(ADAPTERS_DIR).filter((path) =>
   path.endsWith(".test.ts"),
 );
-
-const HARNESSES = ["memory", "cloudflare"].map((backend) => ({
-  backend,
-  path: join(ADAPTERS_DIR, backend, "__tests__", "conformanceBackend.ts"),
-}));
 
 const memoryFiles = testFiles.filter((path) =>
   path.includes(`${join("memory", "__tests__")}`),
@@ -116,27 +159,40 @@ describe("port-conformance suite coverage", () => {
    * to be a decision that fails here first.
    */
   it("declares no optional backend member", () => {
+    const source = readFileSync(join(CONFORMANCE_DIR, "backend.ts"), "utf8");
     expect(
-      sorted(namesIn([join(CONFORMANCE_DIR, "backend.ts")], OPTIONAL_MEMBERS)),
-    ).toEqual([]);
-    // The harnesses are still the reason it matters, so they stay named.
-    for (const harness of HARNESSES) {
-      expect(readFileSync(harness.path, "utf8")).toContain(
-        "seedMembershipEdges(",
-      );
-    }
+      Object.fromEntries(
+        BACKEND_DECLARATIONS.map((name) => [
+          name,
+          sorted(matchesIn(membersOf(source, name), OPTIONAL_MEMBERS)),
+        ]),
+      ),
+    ).toEqual({ ConformanceBackend: [], ScopedConformancePorts: [] });
   });
 
   /**
-   * The other half of the same rule: a case may not opt itself out at
-   * runtime either. A `ctx.skip()` inside a suite reports green while a
+   * The other half of the same rule, stated at the width it can hold: a
+   * suite a persistence backend runs may not opt itself out at runtime
+   * either. A `ctx.skip()` inside such a suite reports green while a
    * contract clause goes unverified on that backend, which is the state
    * the required members above exist to prevent.
+   *
+   * The exemption is the suite no persistence backend calls — today the
+   * `SignInOAuthClient` one, whose exchange half needs an authorization
+   * code an adapter holding no credentials cannot mint, and which
+   * deliberately registers those cases as skipped with the reason in the
+   * suite name. It is derived from the call sites rather than listed by
+   * hand, so a file earns it only by being wired to neither backend —
+   * which the absolute counts above already make a declared decision.
    */
-  it("lets no conformance case skip itself", () => {
-    const skipping = walk(CONFORMANCE_DIR).filter((path) =>
-      /\.skip\s*\(/.test(readFileSync(path, "utf8")),
-    );
+  it("lets no persistence conformance case skip itself", () => {
+    const skipping = walk(CONFORMANCE_DIR).filter((path) => {
+      const source = readFileSync(path, "utf8");
+      const suites = matchesIn(source, EXPORTS);
+      const exempt =
+        suites.size > 0 && [...suites].every((name) => !memoryCalls.has(name));
+      return !exempt && SELF_SKIPS.some((pattern) => pattern.test(source));
+    });
     expect(skipping).toEqual([]);
   });
 

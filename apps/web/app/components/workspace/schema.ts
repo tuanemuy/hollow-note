@@ -22,6 +22,16 @@ export const WORKSPACE_NAME_MAX_LENGTH = 80;
 export const WORKSPACE_DESCRIPTION_MAX_LENGTH = 500;
 export const WORKSPACE_SLUG_MAX_LENGTH = 30;
 
+/**
+ * P-30 / P-31 のスラッグ欄の注記。正本は `domain/workspace/valueObject.ts`
+ * の `SLUG_PATTERN`（`/^[a-z0-9][a-z0-9_-]{1,28}[a-z0-9]$/`）で、`_` も
+ * 通る。同じ規則を失敗後に述べる `errorDisplay.ts` の
+ * `WORKSPACE_INVALID_SLUG` と揃えるための定数 — 入力前と失敗後で違う規則を
+ * 教えないために 1 か所に置く。
+ */
+export const WORKSPACE_SLUG_HINT =
+  "半角英小文字・数字・ハイフン・アンダースコア · 3〜30 文字";
+
 const workspaceId = z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH);
 const name = z
   .string()

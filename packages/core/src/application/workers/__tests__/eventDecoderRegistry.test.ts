@@ -39,7 +39,6 @@ describe("defaultEventDecoderRegistry", () => {
       input: {
         userId: "u1",
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: null,
       },
     });

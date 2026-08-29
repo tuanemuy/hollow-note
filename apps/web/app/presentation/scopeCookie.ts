@@ -3,7 +3,12 @@ import {
   getCookie,
   setCookie,
 } from "@tanstack/react-start/server";
-import { parseScope, type ScopeSelection, serializeScope } from "./scope";
+import {
+  namesWorkspace,
+  parseScope,
+  type ScopeSelection,
+  serializeScope,
+} from "./scope";
 
 /**
  * 表示中のスコープの運搬（WS-02「選択は URL に反映され、次回の訪問時にも
@@ -43,7 +48,7 @@ export function writeScopeSelection(scope: ScopeSelection): void {
   });
 }
 
-/** 個人へ戻す。削除・脱退のように文脈が消える操作の応答でも呼ぶ。 */
+/** 個人へ戻す。 */
 export function clearScopeSelection(): void {
   deleteCookie(SCOPE_COOKIE_NAME, {
     httpOnly: true,
@@ -51,4 +56,16 @@ export function clearScopeSelection(): void {
     path: "/",
     secure: !isDevelopment(),
   });
+}
+
+/**
+ * 引き継ぎがこのワークスペースを名指していたときだけ個人へ戻す。削除・
+ * 脱退のように文脈が消える操作の応答はこちらを呼ぶ — 判定の理由は
+ * `scope.ts:namesWorkspace` にある。
+ */
+export function clearScopeSelectionFor(workspaceId: string): void {
+  if (!namesWorkspace(readScopeSelection(), workspaceId)) {
+    return;
+  }
+  clearScopeSelection();
 }

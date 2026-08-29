@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  namesWorkspace,
   PERSONAL_SCOPE,
   parseScope,
   serializeScope,
@@ -30,5 +31,23 @@ describe("serializeScope / parseScope", () => {
     expect(
       parseScope(`workspace:${"a".repeat(WORKSPACE_ID_MAX_LENGTH + 1)}`),
     ).toEqual(PERSONAL_SCOPE);
+  });
+});
+
+describe("namesWorkspace", () => {
+  it("names the workspace the selection points at", () => {
+    expect(
+      namesWorkspace({ kind: "workspace", workspaceId: "ws_a" }, "ws_a"),
+    ).toBe(true);
+  });
+
+  it("keeps a selection that points at another workspace", () => {
+    expect(
+      namesWorkspace({ kind: "workspace", workspaceId: "ws_a" }, "ws_b"),
+    ).toBe(false);
+  });
+
+  it("keeps the personal selection whatever workspace is being left", () => {
+    expect(namesWorkspace(PERSONAL_SCOPE, "ws_a")).toBe(false);
   });
 });

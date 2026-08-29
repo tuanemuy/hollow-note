@@ -2,16 +2,14 @@ import type { WorkspaceId, WorkspaceName, WorkspaceSlug } from "../valueObject";
 import type { Workspace } from "../workspace";
 
 /**
- * What a `workspace.*` event projects into the global
- * `workspace_directory`: the whole display row, plus the aggregate
- * version it was derived from.
+ * What one apply writes into the global `workspace_directory`: the whole
+ * display row, plus the aggregate version it was derived from.
  *
- * The snapshot is complete rather than a patch. Events carry only the
- * notification of a change (spec/domains/workspace.md `ドメインイベント`),
- * so the projection resolves the current `name` / `slug` / `publication`
- * from the Workspace and writes all of them at once — a partial write
- * would let two events applied out of order leave a row that never
- * existed in the scope.
+ * The snapshot is complete rather than a patch. The sender resolves the
+ * current `name` / `slug` / `publication` from the Workspace it just
+ * committed and writes all of them at once — a partial write would let
+ * two applies landing out of order leave a row that never existed in the
+ * scope.
  */
 export type WorkspaceDirectorySnapshot = Readonly<{
   workspaceId: WorkspaceId;
@@ -29,20 +27,23 @@ export type WorkspaceDirectorySnapshot = Readonly<{
  * three readers that serve the workspace list, the batch display read and
  * the sitemap.
  *
- * Every `workspace.*` event that changes what those readers show —
- * `created`, `profileUpdated`, `slugChanged`, `published`, `unpublished` —
- * lands here as one snapshot; `deleted` lands as a tombstone. The
- * projection is written **after** the scope-local commit, out of band and
- * at-least-once, so both methods have to converge under redelivery and
- * out-of-order arrival rather than assume a sequence.
+ * Both methods are called by name, never by a subscriber: no event drives
+ * this projection. `applySnapshotIfNewer` is sent synchronously by the
+ * request that just committed — workspace creation, profile update, slug
+ * change, publish and unpublish each send their own, right after their
+ * scope-local commit — and is therefore best-effort, since nothing
+ * re-sends a snapshot whose response was lost; the row stays behind until
+ * the user's next save. `tombstone` is sent by the worker half of the
+ * deletion saga. Convergence under repeated and out-of-order arrival is
+ * still required of both — a sender may repeat its own call, and two
+ * senders may overlap — so neither may assume a sequence.
  *
  * `sourceVersion` is what orders them. A snapshot at or below the stored
- * version is ignored, which is both the stale-event rule and the
- * lost-response rule: replaying the same event a second time writes
- * nothing and leaves the row the winner produced. Of two concurrent
- * applies the higher version wins whichever arrives second, because the
- * comparison is against the stored row rather than against what the
- * caller last read.
+ * version is ignored, which is both the stale rule and the lost-response
+ * rule: sending the same snapshot a second time writes nothing and leaves
+ * the row the winner produced. Of two concurrent applies the higher
+ * version wins whichever arrives second, because the comparison is
+ * against the stored row rather than against what the caller last read.
  *
  * A tombstone is terminal. Once `tombstone` has run, no snapshot may
  * reopen the row at any version — a `deleted` verdict the batch reader
@@ -57,13 +58,13 @@ export type WorkspaceDirectorySnapshot = Readonly<{
  * (spec/domains/workspace.md `WorkspaceSlugReservationStore`), so a
  * projection row still showing one that another workspace has since
  * reserved is stale by definition, and a projection write that could fail
- * on it would stall behind an event that may never be redelivered.
+ * on it would stall on a row nothing is going to send again.
  *
  * Taking the slug and applying the snapshot are one step: a snapshot that
  * writes nothing — stale, or against a tombstone — releases nothing. A
  * release that outlived its apply would leave a third workspace with no
  * slug and no one holding it, silently out of the sitemap until its own
- * next `workspace.*` event.
+ * next apply.
  *
  * Error contract: `ConflictError` (a row already tombstoned by another
  * deletion), `SystemError(DatabaseError)`.
@@ -82,8 +83,8 @@ export interface WorkspaceDirectoryProjectionWriter {
    *
    * The row's `updatedAt` (the sitemap's keyset order) is stamped by the
    * backend clock at apply time, not carried in the snapshot: it orders
-   * projection applies, and a source instant would order them by an event
-   * whose delivery may be arbitrarily late.
+   * projection applies, and a source instant would order them by a call
+   * whose arrival may be arbitrarily late.
    */
   applySnapshotIfNewer(snapshot: WorkspaceDirectorySnapshot): Promise<void>;
   /**
@@ -94,7 +95,7 @@ export interface WorkspaceDirectoryProjectionWriter {
    * (spec/usecases/workspace.md `deleteWorkspace` 手順 7).
    *
    * Inserts the tombstone when no row was ever projected, so a workspace
-   * deleted before its creation event landed still answers `deleted`
+   * deleted before its creation snapshot landed still answers `deleted`
    * rather than `unavailable` forever.
    *
    * Idempotent for `operationId`: a row this deletion already tombstoned

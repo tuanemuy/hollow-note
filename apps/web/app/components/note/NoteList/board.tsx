@@ -6,7 +6,11 @@ import { useOptimistic, useState, useTransition } from "react";
 import { errorTextClass } from "@/components/settings/panelStyles";
 import { displayError } from "@/presentation/errorDisplay";
 import { moveNoteFn } from "@/routes/notes/-action";
-import { type MoveTarget, NoteMovePicker } from "../NoteMovePicker";
+import {
+  type MoveTarget,
+  moveNotePayload,
+  NoteMovePicker,
+} from "../NoteMovePicker";
 import type { NoteListOwner } from "./action";
 
 /**
@@ -79,13 +83,7 @@ export function NoteListBoard({
     startMoving(async () => {
       removeRow(noteId);
       try {
-        await moveNote({
-          data: {
-            noteId,
-            targetOwnerType: target.ownerType,
-            targetWorkspaceId: target.workspaceId,
-          },
-        });
+        await moveNote({ data: { noteId, ...moveNotePayload(target) } });
       } catch (failure) {
         setError(displayError(failure));
         return;

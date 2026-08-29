@@ -293,8 +293,9 @@ export const unpublishWorkspaceFn = createServerFn({ method: "POST" })
 
 /**
  * PAGE-p34-002。受理（202）までが要求経路の答えで、以降はワーカー面が
- * 続ける。この文脈はもう開けないので、引き継ぎ Cookie を個人へ戻すのも
- * この応答の仕事になる。
+ * 続ける。引き継ぎ Cookie を個人へ戻すのもこの応答の仕事だが、**それが
+ * 消えるこのワークスペースを名指していたときだけ**に限る — この画面は
+ * 表示中のスコープ以外からも開ける（P-24 / P-25 の一覧）。
  */
 export const deleteWorkspaceFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -322,7 +323,7 @@ export const deleteWorkspaceFn = createServerFn({ method: "POST" })
         confirmationName: data.confirmationName,
       },
     });
-    scopeCookie.clearScopeSelection();
+    scopeCookie.clearScopeSelectionFor(data.workspaceId);
     startServer.setResponseStatus(202);
     return view;
   });
@@ -446,8 +447,8 @@ export const removeMemberFn = createServerFn({ method: "POST" })
   });
 
 /**
- * PAGE-p32-008。脱退するとこの文脈はもう開けないので、引き継ぎ Cookie を
- * 個人へ戻すのもこの応答の仕事になる（削除と同じ扱い）。
+ * PAGE-p32-008。脱退するとこの文脈はもう開けないので、引き継ぎがこの
+ * ワークスペースを名指していたときだけ個人へ戻す（削除と同じ扱い）。
  */
 export const leaveWorkspaceFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -466,6 +467,6 @@ export const leaveWorkspaceFn = createServerFn({ method: "POST" })
       container,
       input: { workspaceId: data.workspaceId, userId: user.userId },
     });
-    scopeCookie.clearScopeSelection();
+    scopeCookie.clearScopeSelectionFor(data.workspaceId);
     return { left: true };
   });

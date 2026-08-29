@@ -10,7 +10,7 @@
 
 ## 決定
 
-- 採番した値は**ドメインメソッドの引数**として渡す。`Note.createBlank` / `createFromUpload` は `projectionRevision`、`Note.moveTo` は `routeVersion` を受け取る。ユースケースが UoW の中で採番して渡す
+- 採番した値は**ドメインメソッドの引数**として渡す。`Note.createBlank` / `createFromUpload` は `projectionRevision` を受け取り、ユースケースが UoW の中で採番して渡す。`routeVersion` を運ぶ `note.moved` はドメインメソッドの成果物ではなく（`Note.withOwner` はエンティティだけを返す）、route の切替を所有する移動サガが採番した版とともに発行する
 - 投影世代ストアを scope の UoW コンテキストに載せる。bump は UoW の中からしか呼べない
 
 ## 検討した代替案
@@ -31,4 +31,4 @@
 
 - イベント payload が spec どおりの形で型付けされ、ドメインは純粋関数のままでいられる
 - UoW コンテキストの形が「同一トランザクションで行うべき操作」の契約になる。以降、投影対象を変えるユースケースはすべて同じ経路を通る
-- ドメインのメソッド表に、spec には現れない引数が 2 か所増える
+- ドメインのメソッド表に、spec には現れない引数（`projectionRevision`）が生成のファクトリ 2 つに増える

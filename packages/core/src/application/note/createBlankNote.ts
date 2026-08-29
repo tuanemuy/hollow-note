@@ -15,12 +15,20 @@ import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { type CreatedNoteView, ownerOf } from "./view";
 
+/**
+ * Owner the note is created under. The workspace id belongs to the
+ * workspace member alone, so an id-less workspace request cannot be built
+ * and `WorkspaceId.create("")` is unreachable from here.
+ */
+export type CreateBlankNoteOwnerInput =
+  | Readonly<{ ownerType: "user" }>
+  | Readonly<{ ownerType: "workspace"; ownerWorkspaceId: string }>;
+
 export type CreateBlankNoteInput = Readonly<{
   userId: string;
-  ownerType: "user" | "workspace";
-  ownerWorkspaceId?: string | null;
   title?: string | null;
-}>;
+}> &
+  CreateBlankNoteOwnerInput;
 
 /** TTL of the `reserved` route while the scope-local commit runs. */
 const CREATE_RESERVATION_TTL_MS = 10 * 60 * 1000;
@@ -183,7 +191,7 @@ async function resolveOwner(
   const access = await resolveWorkspaceAccess({
     container,
     input: {
-      workspaceId: input.ownerWorkspaceId ?? "",
+      workspaceId: input.ownerWorkspaceId,
       userId: input.userId,
     },
   });

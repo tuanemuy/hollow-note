@@ -26,8 +26,15 @@ export async function WorkspaceMembersPanel({
   // 中で `throw` すると `kind` タグを失ってルート境界に届くので、終端表示を
   // ここで描く（`WorkspacePublishPanel` と同じ理由）。
   let members: WorkspaceMemberListView;
+  let invitations: PendingInvitationListView;
   try {
     members = await loadMembers(workspaceId, userId);
+    // 2 本目も同じ try に置く。外に出すと、2 本の読みのあいだに除名・削除が
+    // 成立した瞬間だけ `canManage` を持つ閲覧者が終端表示ではなく
+    // ルート境界へ落ちる（`PublicWorkspacePage` の 2 本目と同じ形）。
+    invitations = members.canManage
+      ? await loadPendingInvitations(workspaceId, userId)
+      : { invitations: [], count: 0 };
   } catch (error) {
     const { kind } = serializeError(error);
     if (kind === "business" || kind === "forbidden" || kind === "notFound") {
@@ -35,10 +42,6 @@ export async function WorkspaceMembersPanel({
     }
     throw error;
   }
-
-  const invitations: PendingInvitationListView = members.canManage
-    ? await loadPendingInvitations(workspaceId, userId)
-    : { invitations: [], count: 0 };
 
   return (
     <WorkspaceMembersBoard

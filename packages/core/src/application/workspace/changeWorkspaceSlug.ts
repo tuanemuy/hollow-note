@@ -50,8 +50,17 @@ type SlugReservation = Readonly<{
 /**
  * The slug the directory still advertises for this workspace, when it is
  * one the scope has already left behind. Anything else — no row, a row
- * the shard cannot answer for, a row already on the current slug — is
- * `null`, which asks the exchange to release nothing.
+ * the shard cannot answer for, a row already on the slug being taken — is
+ * `null`.
+ *
+ * This is what every path on this usecase hands to the exchange as the
+ * key being given up. The scope's own `previousSlug` is only its view of
+ * the rename it is making now, and a rename whose activation was lost
+ * moved the scope without moving the global plane, so from then on the
+ * two disagree and only the directory row still names the key nobody
+ * freed. `activate` and `release` both free a key solely while it is
+ * `active` for this workspace, so an advertised value that is merely
+ * stale costs nothing.
  */
 async function advertisedSlug(
   container: RequestContainer,
@@ -199,15 +208,19 @@ async function abandonSlugReservation(
  * spec/usecases/workspace.md#changeworkspaceslug, WS-07).
  *
  * Saga: reserve the new slug globally → the scope-local commit →
- * `activate` with the old slug as `releasing`, which frees it in the same
- * transaction that publishes the new one. The exchange is atomic by
- * contract, so the old public URL keeps resolving until the new one is
+ * `activate` with the key being given up as `releasing`, which frees it in
+ * the same transaction that publishes the new one. The exchange is atomic
+ * by contract, so the old public URL keeps resolving until the new one is
  * live and no window exists where both — or neither — resolve.
  *
  * Clearing the slug takes the other path: there is nothing to reserve, so
- * the old key is freed by `release` after the commit. A published
- * workspace cannot get there — the aggregate refuses to drop the slug its
- * public page is served from.
+ * the key is freed by `release` after the commit. A published workspace
+ * cannot get there — the aggregate refuses to drop the slug its public
+ * page is served from.
+ *
+ * Both paths take that key from `advertisedSlug` rather than from the
+ * scope's own `previousSlug`, and free it *before* the projection
+ * overwrites the directory row it was read from.
  *
  * Re-sending the slug the workspace already holds — `null` included —
  * changes nothing and emits nothing while the global plane agrees with
@@ -322,12 +335,15 @@ export async function changeWorkspaceSlug({
     throw error;
   }
 
+  const releasing =
+    (await advertisedSlug(container, workspaceId, nextSlug)) ?? previousSlug;
+
   if (reservation !== null) {
     const exchange = {
       slug: reservation.slug,
       operationId: reservation.operationId,
       workspaceId,
-      releasing: previousSlug,
+      releasing,
     };
     try {
       await workspaceSlugReservationStore.activate(exchange);
@@ -337,10 +353,10 @@ export async function changeWorkspaceSlug({
       });
       await workspaceSlugReservationStore.activate(exchange);
     }
-  } else if (previousSlug !== null) {
+  } else if (releasing !== null) {
     // No successor to hand the key to, so the standalone teardown frees
     // it; `release` is conditional on this workspace still holding it.
-    await releaseSlug(container, workspaceId, previousSlug);
+    await releaseSlug(container, workspaceId, releasing);
   }
 
   await projectWorkspaceDirectory(

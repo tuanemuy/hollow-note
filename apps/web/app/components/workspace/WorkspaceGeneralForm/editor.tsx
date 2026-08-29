@@ -34,6 +34,7 @@ import { Alert } from "@/components/ui/Alert";
 import {
   WORKSPACE_DESCRIPTION_MAX_LENGTH,
   WORKSPACE_NAME_MAX_LENGTH,
+  WORKSPACE_SLUG_HINT,
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
 import { useSlugAvailability } from "@/components/workspace/slugAvailability";
@@ -450,8 +451,7 @@ export function WorkspaceGeneralEditor({
             </div>
           ) : null}
           <p className="mt-2 text-xs text-ink-tertiary">
-            半角英小文字・数字・ハイフン · 3〜30
-            文字。空欄にすると解除します（公開中は解除できません）。
+            {`${WORKSPACE_SLUG_HINT}。空欄にすると解除します（公開中は解除できません）。`}
           </p>
         </div>
       </section>

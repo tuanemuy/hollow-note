@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { moveNoteSchema } from "@/components/note/schema";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
-import { WORKSPACE_ID_MAX_LENGTH } from "@/presentation/scope";
 import { loadServerDeps } from "@/presentation/serverAction";
 import { renderServerFragment } from "@/presentation/serverFragment";
 import { validateInput } from "@/presentation/validator";
@@ -95,12 +95,6 @@ export const listMoveTargetsFn = createServerFn({ method: "GET" })
     };
   });
 
-const moveNoteSchema = z.object({
-  noteId: z.string().min(1).max(128),
-  targetOwnerType: z.enum(["user", "workspace"]),
-  targetWorkspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH).nullable(),
-});
-
 /**
  * ノートの移動（UC-note-013、OR-12）。
  *
@@ -126,12 +120,6 @@ export const moveNoteFn = createServerFn({ method: "POST" })
 
     return module.moveNote({
       container,
-      input: {
-        noteId: data.noteId,
-        userId: user.userId,
-        targetOwnerType: data.targetOwnerType,
-        targetWorkspaceId: data.targetWorkspaceId,
-        expectedVersion: null,
-      },
+      input: { ...data, userId: user.userId, expectedVersion: null },
     });
   });

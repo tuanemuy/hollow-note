@@ -363,7 +363,6 @@ describe("getNote", () => {
       input: {
         userId: OWNER,
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "Shared",
       },
     });
@@ -405,7 +404,6 @@ describe("getNote", () => {
       input: {
         userId: OWNER,
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: "Public",
       },
     });

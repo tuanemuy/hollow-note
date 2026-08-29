@@ -21,7 +21,7 @@ const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE));
 const create = (h: TestHarness, title: string | null = null) =>
   createBlankNote({
     container: h.container,
-    input: { userId: USER, ownerType: "user", ownerWorkspaceId: null, title },
+    input: { userId: USER, ownerType: "user", title },
   });
 
 const createInWorkspace = (h: TestHarness) =>
@@ -219,7 +219,6 @@ describe("createBlankNote", () => {
         input: {
           userId: USER,
           ownerType: "user",
-          ownerWorkspaceId: null,
           title: null,
         },
       }),
@@ -255,7 +254,6 @@ describe("createBlankNote", () => {
       input: {
         userId: USER,
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: null,
       },
     });

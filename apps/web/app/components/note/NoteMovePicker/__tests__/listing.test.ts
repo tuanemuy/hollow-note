@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { appendPage, type Loaded, PERSONAL_LABEL } from "../listing";
+import { moveNoteSchema } from "@/components/note/schema";
+import {
+  appendPage,
+  type Loaded,
+  moveNotePayload,
+  PERSONAL_LABEL,
+} from "../listing";
 
 const page = (
   targets: readonly { workspaceId: string; name: string }[],
@@ -20,7 +26,7 @@ describe("appendPage", () => {
 
     expect(listing.currentLabel).toBe("設計チーム");
     expect(listing.targets).toEqual([
-      { ownerType: "user", workspaceId: null, label: PERSONAL_LABEL },
+      { ownerType: "user", label: PERSONAL_LABEL },
       { ownerType: "workspace", workspaceId: "ws_b", label: "広報チーム" },
     ]);
   });
@@ -99,5 +105,41 @@ describe("appendPage", () => {
 
     expect(retried.pending).toBe(false);
     expect(retried.error).toBeNull();
+  });
+});
+
+describe("moveNotePayload", () => {
+  it("sends no workspace id for the personal destination", () => {
+    expect(
+      moveNotePayload({ ownerType: "user", label: PERSONAL_LABEL }),
+    ).toEqual({ targetOwnerType: "user" });
+  });
+
+  it("carries the chosen workspace id for a workspace destination", () => {
+    expect(
+      moveNotePayload({
+        ownerType: "workspace",
+        workspaceId: "ws_b",
+        label: "広報チーム",
+      }),
+    ).toEqual({ targetOwnerType: "workspace", targetWorkspaceId: "ws_b" });
+  });
+
+  it("produces a body the transport boundary accepts for every candidate", () => {
+    const listing = appendPage(
+      null,
+      page([{ workspaceId: "ws_b", name: "広報チーム" }]),
+      "workspace",
+      "ws_a",
+    );
+
+    for (const target of listing.targets) {
+      expect(
+        moveNoteSchema.safeParse({
+          noteId: "note_1",
+          ...moveNotePayload(target),
+        }).success,
+      ).toBe(true);
+    }
   });
 });

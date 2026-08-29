@@ -1,7 +1,7 @@
 "use client";
 
 import type { WorkspaceSettingsView } from "@repo/core/application/workspace/view";
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import {
@@ -16,6 +16,7 @@ import {
   dangerPanelTitleClass,
   ghostButtonClass,
   panelNoteClass,
+  subtleButtonClass,
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { WORKSPACE_NAME_MAX_LENGTH } from "@/components/workspace/schema";
@@ -28,9 +29,9 @@ import { deleteWorkspaceFn } from "@/routes/workspaces/$workspaceId/settings/-ac
  *
  * 要求経路の答えは受理（202）までで、実際の掃除はワーカー面が続ける。
  * 受理と同時にこの文脈は開けなくなるので、受理を描いたうえで個人の文脈へ
- * 送り直す（WS-10 手順 4。引き継ぎ Cookie はサーバー側の応答が個人へ
- * 戻している）。再訪時の「実行中」も同じ表示で、違うのは見出しだけ
- * である。
+ * 送り直す（WS-10 手順 4。引き継ぎ Cookie は、それがこのワークスペースを
+ * 名指していたときだけサーバー側の応答が個人へ戻す）。再訪時の「実行中」も
+ * 同じ表示で、違うのは見出しだけである。
  *
  * 確認の不一致だけは専用の欄に出す。`CONFIRMATION_MISMATCH` は
  * アカウント削除（メールアドレス）と共有のコードで、辞書の文言はそちら
@@ -142,12 +143,21 @@ export function WorkspaceDeletionForm({
 
   return (
     <>
-      {/* 移動先の選択（P-10 の一括操作 / P-11 の移動）は別スライスなので、
-          ここでは案内だけを出して導線は置かない。 */}
+      {/* 一括移動（P-10 の選択モード）は別スライスなので、導線は 1 本ずつ
+          移せるノート一覧へ向ける。 */}
       <Alert
         tone="warning"
         role="note"
         title="残したいノートは先に移動できます"
+        actions={
+          <Link
+            to="/workspaces/$workspaceId/notes"
+            params={{ workspaceId: workspace.workspaceId }}
+            className={subtleButtonClass}
+          >
+            ノートを移動する
+          </Link>
+        }
       >
         個人や他のワークスペースへ移すと、削除の影響を受けません。移動はノート一覧とノート詳細から行えます。
       </Alert>

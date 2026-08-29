@@ -25,6 +25,22 @@ export const WORKSPACE_ID_MAX_LENGTH = 128;
 
 const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
+/**
+ * その選択がこのワークスペースを名指しているか。
+ *
+ * 脱退・削除は**表示中のスコープ以外からも**実行できる（P-24 の使用量
+ * 一覧と P-25 の残存一覧が任意のワークスペースの P-32 / P-34 へ直接
+ * リンクする）ので、応答が引き継ぎを畳んでよいのはここが真のときだけ
+ * になる。無条件に消すと、無関係なワークスペースを片づけただけで
+ * WS-02 手順 4 の「選択は次回の訪問時にも引き継がれる」が壊れる。
+ */
+export function namesWorkspace(
+  scope: ScopeSelection,
+  workspaceId: string,
+): boolean {
+  return scope.kind === "workspace" && scope.workspaceId === workspaceId;
+}
+
 export function serializeScope(scope: ScopeSelection): string {
   return scope.kind === "personal"
     ? "personal"

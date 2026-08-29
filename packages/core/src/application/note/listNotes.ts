@@ -10,13 +10,22 @@ import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { type NoteListView, toNoteListItemView } from "./view";
 
+/**
+ * Owner scope to list. Omitting `ownerType` reads the personal scope; the
+ * workspace id belongs to the workspace member alone, so an id-less
+ * workspace request cannot be built and `WorkspaceId.create("")` is
+ * unreachable from here.
+ */
+export type ListNotesOwnerInput =
+  | Readonly<{ ownerType?: "user" }>
+  | Readonly<{ ownerType: "workspace"; ownerWorkspaceId: string }>;
+
 export type ListNotesInput = Readonly<{
   userId: string;
-  ownerType?: "user" | "workspace";
-  ownerWorkspaceId?: string | null;
   page?: number;
   limit?: number;
-}>;
+}> &
+  ListNotesOwnerInput;
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -68,7 +77,7 @@ async function resolveOwner(
   const access = await resolveWorkspaceAccess({
     container,
     input: {
-      workspaceId: input.ownerWorkspaceId ?? "",
+      workspaceId: input.ownerWorkspaceId,
       userId: input.userId,
     },
   });

@@ -429,7 +429,7 @@ describe("getUsageSnapshot", () => {
     expect(view.personal.limitBytes).toBe(USER_LIMIT_BYTES);
   });
 
-  it("a workspace the directory reports deleted is dropped from the list", async () => {
+  it("TC-usage-083: a workspace the directory reports deleted is dropped from the list", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     await joinWorkspace(h, "ws-01", "owner");
@@ -454,7 +454,7 @@ describe("getUsageSnapshot", () => {
     ]);
   });
 
-  it("a workspace the directory cannot resolve is kept without a name", async () => {
+  it("TC-usage-082: a workspace the directory cannot resolve is kept without a name", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     await joinWorkspace(h, "ws-01", "owner");
@@ -487,7 +487,7 @@ describe("getUsageSnapshot", () => {
     ]);
   });
 
-  it("a workspace updated later than the viewer's own records leaves updatedAt alone", async () => {
+  it("TC-usage-084: a workspace updated later than the viewer's own records leaves updatedAt alone", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     await seedQuota(h, { consumedBytes: GIB, noteCount: 1 });
@@ -638,7 +638,7 @@ describe("getUsageSnapshot", () => {
     ]);
   });
 
-  it("a workspace with no quota row reports the initialized values and creates nothing", async () => {
+  it("TC-usage-085: a workspace with no quota row reports the initialized values and creates nothing", async () => {
     const h = createTestHarness();
     await seedActiveUser(h);
     await joinWorkspace(h, "ws-01", "owner");

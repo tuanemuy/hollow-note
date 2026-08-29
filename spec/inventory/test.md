@@ -1734,6 +1734,10 @@
 | TC-note-764 | moveNote: 移動先にクォータの行がまだない — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 初期値を作ってから加算する |
 | TC-note-765 | moveNote: 前の試行がstagingを残しており、再開した試行がrouteのclaimに失敗する — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | routeをactive sourceへ戻すだけでなく、前の試行のstaged複製・credit・両scopeのmove lockも同じ補償で戻す（恒久的に残るlockを作らない） |
 | TC-note-766 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのノートが編集された — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製が今回freezeした版へ引き上げられ、switch後にsourceのNoteとRevisionを消しても編集が失われない |
+| TC-note-767 | moveNote: switchがcommitして応答だけを失い、その後rollbackが走る — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） |
+| TC-note-768 | moveNote: routeを手放した後、同じtarget scopeを別のmigrationがstageした — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 自分のstaged importのreceiptが立っていないので何も解体せず、別migrationの複製・credit・file metadataを残したまま両scopeのlockだけ返す |
+| TC-note-769 | moveNote: 中止のthawが返したrouteを別のmigrationが既にclaimしている — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | routeがsourceの同じ世代を指す限り補償は走り、このmigration自身のstaged複製・credit・lockが戻る |
+| TC-note-770 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのRevisionだけが増えた — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製のRevisionも今回のsnapshotへ同期され、switch後にsourceのRevisionを消しても失われない |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -2203,6 +2207,10 @@
 | TC-usage-079 | getUsageSnapshot: ページの後段で行が削られる（viewer のみ / directory が deleted） — 次ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 削られた行を読み直さず、ページ全体の末尾の次から返る（表示が 0 件のページでも `nextWorkspaceCursor` は進む） |
 | TC-usage-080 | getUsageSnapshot: 当月の LLM 実行回数が上限の 80 % — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | LLM 側に `level: "warning"` と消費・上限・期間が返る（境界値） |
 | TC-usage-081 | getUsageSnapshot: ワークスペースの消費が上限の 80 % / 上限超過 — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | ワークスペースの行も `QuotaEnforcement.describe` の導出をそのまま返し、`level` が `warning` / `exceeded` になる（境界値） |
+| TC-usage-082 | getUsageSnapshot: `workspace_directory` が名前を答えられないワークスペースがページに含まれる — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その行は `state: "unavailable"` かつ `workspaceName: null` で残り、他の行は影響を受けない |
+| TC-usage-083 | getUsageSnapshot: directory がワークスペースを `deleted` と判定する — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その行は一覧から落ち、`unavailable` としても残らない |
+| TC-usage-084 | getUsageSnapshot: ワークスペースのクォータが個人の記録より後に更新されている — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `updatedAt` は個人の `StorageQuota` / `LlmUsage` のままで、ワークスペース行を畳み込まない |
+| TC-usage-085 | getUsageSnapshot: 参加中だが一度も消費していないワークスペース — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `StorageQuota.initialize` の値が返り、そのワークスペースにクォータのレコードは作られない |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |
@@ -2516,4 +2524,6 @@
 | TC-workspace-311 | listMembers: 閲覧者と先頭行のロールが異なる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` は先頭行ではなく閲覧者自身のロールになる |
 | TC-workspace-312 | changeMemberRole: 除名して再入会した利用者に、前の membership のロール変更が後から届く — 更新する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 消えた membership の変更は新しい edge を汚さず、新しい membership の最初の変更（版 1）はそのまま届く |
 | TC-workspace-313 | inviteMember: 直近 24 時間に 49 件招待済みで、事前検査のあと発行の transaction に入るまでに別の招待が 1 件着地する — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ValidationError("INVITATION_LIMIT_REACHED")` が投げられ、未処理は 50 件を超えず、token route もメールも残らない |
+| TC-workspace-314 | changeWorkspaceSlug: 切替を恒久的に失った後、**別の** slug を送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 手放す鍵を scope の現在値ではなく `workspace_directory` の広告値から決めるので、旧鍵が `active` のまま取り残されない |
+| TC-workspace-315 | changeWorkspaceSlug: 切替を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく広告値の鍵を `release` し、投影が広告値を消す前に解放する |
 

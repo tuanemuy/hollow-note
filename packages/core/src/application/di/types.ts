@@ -157,12 +157,22 @@ export type UsageReader = Readonly<{
 }>;
 /**
  * Scope-bound read view over one workspace's three aggregates: access
- * resolution, member and invitation listings, and the token / email
- * lookups the invitation flow starts from.
+ * resolution, member and pending-invitation listings, and the token /
+ * email lookups the invitation flow starts from.
  *
  * Every write method is dropped, which is what forces a mutation through
  * `scopeUnitOfWorkProvider.run` — including the ones that only look like
  * reads, since `findById` yields the OCC token a save would consume.
+ *
+ * Two invitation reads are dropped for a second reason, unrelated to
+ * writes. `countPendingIssuedSince` is the invitation quota check, and the
+ * count is only sound while it shares the transaction that inserts the
+ * row: read outside one, two requests that each see 49 both pass and the
+ * workspace lands at 51 (spec/usecases/workspace.md `inviteMember`). Not
+ * offering it here is how that stays true by type rather than by
+ * convention. `listByWorkspace` returns invitations in every state, which
+ * only the scope's own deletion sweep enumerates; the pending listing
+ * screen reads `listPendingByWorkspace`.
  *
  * `admission` is the one deletion check a request may make outside a
  * transaction: the three invitation sagas reserve a global row *before*
@@ -182,9 +192,7 @@ export type WorkspaceReader = Readonly<{
     InvitationRepository,
     | "findByTokenHash"
     | "findPendingByWorkspaceAndEmail"
-    | "listByWorkspace"
     | "listPendingByWorkspace"
-    | "countPendingIssuedSince"
   >;
 }>;
 
@@ -202,6 +210,32 @@ export type WorkspaceReader = Readonly<{
 export type WorkspaceDirectoryProjector = Pick<
   WorkspaceDirectoryProjectionWriter,
   "applySnapshotIfNewer"
+>;
+
+/**
+ * Request-path half of the membership directory reservation: the join
+ * saga's reserve → activate / abandon, the removal saga's three turns, and
+ * the read `acceptInvitation` uses to see the edges a user is already
+ * activating.
+ *
+ * Two groups are dropped. The four account-deletion lock turns
+ * (`prepareAccountDeletion` / `renewAccountDeletion` /
+ * `commitAccountDeletion` / `releaseAccountDeletion`) belong to a prepare
+ * wave this deployment does not have, and `commitAccountDeletion` in
+ * particular is terminal — it cancels the edge outright, which is exactly
+ * the shape `WorkspaceDirectoryProjector` keeps away from the request path
+ * above. `applyRoleIfNewer` is the role-projection subscriber's write,
+ * reached from the worker plane. `WorkerContainer` keeps the whole port.
+ */
+export type MembershipDirectoryReservations = Pick<
+  MembershipDirectoryReservationStore,
+  | "reserveAndClaimActivation"
+  | "activate"
+  | "abandon"
+  | "listActivatingByUser"
+  | "beginRemoval"
+  | "abandonRemoval"
+  | "completeRemoval"
 >;
 
 /**
@@ -267,7 +301,7 @@ export type RequestContainer = SharedDeps &
     workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjector;
     workspaceSlugReservationStore: WorkspaceSlugReservationStore;
     invitationRouteStore: InvitationRouteStore;
-    membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
+    membershipDirectoryReservationStore: MembershipDirectoryReservations;
     mailSender: MailSender;
     passwordHasher: PasswordHasher;
     secureTokenGenerator: SecureTokenGenerator;
