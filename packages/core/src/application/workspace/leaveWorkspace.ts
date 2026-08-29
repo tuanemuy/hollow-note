@@ -8,6 +8,7 @@ import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import {
+  armRemovalEdgeSettlement,
   ensureRemovable,
   restoreRemovalEdge,
   settleRemovalEdge,
@@ -38,10 +39,12 @@ export type LeaveWorkspaceInput = Readonly<{
  * Leaving does not delete the member's notes, and rejoining takes a fresh
  * invitation — the removal here leaves no route behind.
  *
- * Leaving again is how the edge of a departure whose global drop was lost
- * is settled: the membership is gone by then, so the request answers
- * `MEMBERSHIP_NOT_FOUND` either way, but the edge it leaves behind would
- * otherwise hold the `(userId, workspaceId)` pair against a future join.
+ * Leaving again settles the edge of a departure whose global drop was
+ * lost, ahead of the continuation the departing transaction armed for the
+ * same obligation: the membership is gone by then, so the request answers
+ * `MEMBERSHIP_NOT_FOUND` either way, and the edge that would otherwise
+ * hold the `(userId, workspaceId)` pair against a future join is dropped
+ * before the refusal is raised.
  *
  * The job termination this flow shares with `removeMember` is absent in
  * this slice for the reason recorded in `./membershipMutation`.
@@ -89,6 +92,7 @@ export async function leaveWorkspace({
         membership.entity.id,
         membership.expectedVersion,
       );
+      await armRemovalEdgeSettlement(ctx, userId, workspaceId, now);
       ctx.collectEvents([
         WorkspaceEvents.membershipRemoved(workspaceId, userId, now),
       ]);

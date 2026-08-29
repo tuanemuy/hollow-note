@@ -27,7 +27,32 @@ export type WorkspacePage = Readonly<{
   nextCursor: string | null;
 }>;
 
+/** トークンが表示している文脈。正本はルートが渡す loaderData 側にある。 */
+export type ShellScope =
+  | Readonly<{ kind: "personal" }>
+  | Readonly<{
+      kind: "workspace";
+      workspaceId: string;
+      name: string;
+      slug: string | null;
+      publication: "private" | "published";
+    }>;
+
 export const IDLE_LISTING: Listing = { kind: "idle" };
+
+/**
+ * 一覧がどの正本の下で取られたかを表す鍵。
+ *
+ * ワークスペース設定の 4 タブは同じレイアウトの子なので、タブを跨いでも
+ * トークンは再マウントされない。名前を変えるとラベル（loaderData 由来）
+ * だけが新しくなり、旧名を並べたまま `aria-current` までその行に付いた
+ * 一覧が同じ画面に居座る。鍵が変わったら一覧を捨てて開き直しで取り直させる。
+ */
+export function scopeIdentity(scope: ShellScope): string {
+  return scope.kind === "personal"
+    ? "personal"
+    : JSON.stringify([scope.workspaceId, scope.name]);
+}
 
 /**
  * 開いた時点で取りに行くかどうか。`failed` を含めるのは、初回取得に

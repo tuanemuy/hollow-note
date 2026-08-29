@@ -1,6 +1,7 @@
 "use client";
 
 import type { WorkspaceUsageView } from "@repo/core/application/usage/view";
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useState, useTransition } from "react";
 import { displayError } from "@/presentation/errorDisplay";
@@ -67,16 +68,26 @@ export function WorkspaceUsageBoard({
             figure={`${formatBytes(workspace.consumedBytes)} / ${formatBytes(workspace.limitBytes)}`}
             level={workspace.level}
             ratio={ratioOf(workspace.consumedBytes, workspace.limitBytes)}
-            notes={
-              workspace.level === "exceeded"
+            notes={[
+              ...(workspace.level === "exceeded"
                 ? [
                     <span key="exceeded" className="text-error">
                       上限に達しています。新しいアップロードは受け付けられません
                     </span>,
-                    `${workspace.noteCount} 件のノート`,
                   ]
-                : [`${workspace.noteCount} 件のノート`]
-            }
+                : []),
+              `${workspace.noteCount} 件のノート`,
+              // PAGE-p24-003 の workspace 側。行が名指ししているワークスペース
+              // をそのまま P-34 の文脈にする。
+              <Link
+                key="danger"
+                to="/workspaces/$workspaceId/settings/danger"
+                params={{ workspaceId: workspace.workspaceId }}
+                className="text-ink underline underline-offset-2"
+              >
+                ワークスペース削除へ
+              </Link>,
+            ]}
           />
         ) : (
           <UnavailableRow

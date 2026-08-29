@@ -516,7 +516,7 @@ describe("acceptInvitation", () => {
    * good — the member holding a workspace their own list never shows.
    * Opening the link again is what settles it.
    */
-  it("TC-workspace-020: opening the link again settles an edge whose activation was lost for good", async () => {
+  it("TC-workspace-305: opening the link again settles an edge whose activation was lost for good", async () => {
     const h = createWorkspaceHarness();
     const seeded = await seedJoinable(h);
     const store = h.container.membershipDirectoryReservationStore;

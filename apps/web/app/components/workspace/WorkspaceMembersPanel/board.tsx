@@ -44,6 +44,7 @@ import {
 import { loadMoreMembersFn, loadMorePendingInvitationsFn } from "./action";
 import {
   applyRoster,
+  canLeave,
   PENDING_INVITATION_ID,
   rosterOf,
   selfIsLastOwner,
@@ -65,6 +66,12 @@ import {
  * コンポーネントが渡し、以降の継ぎ足しはこの島が持つ。件数と最後の owner
  * の判定に使う総数は、ページから数え直さずサーバーの `count` /
  * `ownerCount` に楽観的な差分を足し引きして求める（`roster.ts`）。
+ *
+ * 脱退（WS-06 手順 1「ワークスペース設定の下部から『脱退する』を選ぶ」）は
+ * 一覧の中ではなくパネル下部の独立した節に置く。一覧は `joinedAt` 昇順で
+ * 1 ページ 50 件なので、後から参加した閲覧者ほど自分の行が後ろのページに
+ * 来る — 行の中に導線を置くと、その利用者は自分の行を手繰るまで脱退でき
+ * ない。可否の判定材料（`viewerRole` / `ownerCount`）もページの外から取る。
  *
  * 最後の owner の保護はサーバー（`MembershipPolicy`）が正本で、ここでは
  * その総数で自分の脱退を先に閉じるだけである。ロール変更は行の中で完結
@@ -156,6 +163,7 @@ type Confirming =
 export function WorkspaceMembersBoard({
   workspaceId,
   viewerUserId,
+  viewerRole,
   members,
   memberCount,
   ownerCount,
@@ -165,6 +173,8 @@ export function WorkspaceMembersBoard({
 }: {
   workspaceId: string;
   viewerUserId: string;
+  /** 閲覧者自身のロール（`listMembers.viewerRole`）。 */
+  viewerRole: WorkspaceRoleView;
   /** メンバー一覧の先頭ページ。 */
   members: readonly WorkspaceMemberView[];
   /** ワークスペース全体のメンバー数（`listMembers.count`）。 */
@@ -211,8 +221,8 @@ export function WorkspaceMembersBoard({
   const totalMembers = memberCount + roster.memberDelta;
   const totalOwners = ownerCount + roster.ownerDelta;
   const totalInvitations = invitationCount + roster.invitationDelta;
-  const self = selfOf(roster, viewerUserId);
-  const isLastOwner = selfIsLastOwner(roster, viewerUserId, ownerCount);
+  const isLastOwner = selfIsLastOwner(roster, viewerRole, ownerCount);
+  const leaveAvailable = canLeave(roster, viewerRole, ownerCount);
 
   const reconcile = () =>
     router.invalidate().catch(() => {
@@ -340,13 +350,11 @@ export function WorkspaceMembersBoard({
     setConfirming(null);
     startMutating(async () => {
       setNotice(null);
-      if (self !== null) {
-        dispatchRoster({
-          kind: "removeMember",
-          membershipId: self.membershipId,
-          role: self.role,
-        });
-      }
+      dispatchRoster({
+        kind: "leave",
+        membershipId: selfOf(roster, viewerUserId)?.membershipId ?? null,
+        role: viewerRole,
+      });
       try {
         await leaveWorkspace({ data: { workspaceId } });
       } catch (error) {
@@ -568,14 +576,10 @@ export function WorkspaceMembersBoard({
               member={member}
               isSelf={member.userId === viewerUserId}
               canManage={canManage}
-              isLastOwner={member.userId === viewerUserId && isLastOwner}
               busy={isMutating}
               confirming={
                 confirming?.kind === "removeMember" &&
                 confirming.membershipId === member.membershipId
-              }
-              confirmingLeave={
-                confirming?.kind === "leave" && member.userId === viewerUserId
               }
               onConfirmRemove={() =>
                 setConfirming({
@@ -583,10 +587,8 @@ export function WorkspaceMembersBoard({
                   membershipId: member.membershipId,
                 })
               }
-              onConfirmLeave={() => setConfirming({ kind: "leave" })}
               onCancel={() => setConfirming(null)}
               onRemove={() => onRemoveMember(member)}
-              onLeave={onLeave}
               onChanged={reconcile}
             />
           ))}
@@ -598,21 +600,6 @@ export function WorkspaceMembersBoard({
             label="メンバーをさらに読み込む"
             onClick={onLoadMoreMembers}
           />
-        ) : null}
-
-        {isLastOwner ? (
-          <p className="mt-3 text-xs text-ink-tertiary" id={LAST_OWNER_HINT_ID}>
-            最後の owner は脱退できません。別のメンバーを owner
-            にするか、ワークスペースごと必要なくなった場合は{" "}
-            <Link
-              to="/workspaces/$workspaceId/settings/danger"
-              params={{ workspaceId }}
-              className="text-ink underline underline-offset-2"
-            >
-              ワークスペースを削除
-            </Link>
-            してください。
-          </p>
         ) : null}
       </section>
 
@@ -671,6 +658,17 @@ export function WorkspaceMembersBoard({
         </section>
       ) : null}
 
+      <LeaveSection
+        workspaceId={workspaceId}
+        isLastOwner={isLastOwner}
+        available={leaveAvailable}
+        busy={isMutating}
+        confirming={confirming?.kind === "leave"}
+        onConfirm={() => setConfirming({ kind: "leave" })}
+        onCancel={() => setConfirming(null)}
+        onLeave={onLeave}
+      />
+
       {/* 常設の live region。一覧を変える操作の失敗と成功はここだけに出る。 */}
       <p className={errorTextClass} role="status" aria-live="polite">
         {rosterError}
@@ -707,36 +705,111 @@ function LoadMoreButton({
   );
 }
 
+/**
+ * 脱退（PAGE-p32-008 / WS-06 手順 1）。一覧の外に置くので、閲覧者自身の行が
+ * 読み込み済みのページに載っているかに依存しない。
+ */
+function LeaveSection({
+  workspaceId,
+  isLastOwner,
+  available,
+  busy,
+  confirming,
+  onConfirm,
+  onCancel,
+  onLeave,
+}: {
+  workspaceId: string;
+  /** 自分が唯一の owner のときだけ立つ（脱退の禁止）。 */
+  isLastOwner: boolean;
+  available: boolean;
+  busy: boolean;
+  confirming: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onLeave: () => void;
+}) {
+  const hintId = useId();
+
+  return (
+    <section className={panelClass}>
+      <h2 className={panelTitleClass}>このワークスペースから脱退</h2>
+      {isLastOwner ? (
+        <p className={panelNoteClass} id={hintId}>
+          最後の owner は脱退できません。別のメンバーを owner
+          にするか、ワークスペースごと必要なくなった場合は{" "}
+          <Link
+            to="/workspaces/$workspaceId/settings/danger"
+            params={{ workspaceId }}
+            className="text-ink underline underline-offset-2"
+          >
+            ワークスペースを削除
+          </Link>
+          してください。
+        </p>
+      ) : (
+        <p className={panelNoteClass} id={hintId}>
+          脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残るので、手元に残したいものは脱退前にノート一覧・ノート詳細のメニューから個人へ移してください。再び参加するには招待が必要です。
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {confirming ? (
+          <>
+            <button
+              type="button"
+              className={dangerButtonClass}
+              disabled={busy}
+              aria-describedby={hintId}
+              onClick={onLeave}
+            >
+              脱退する
+            </button>
+            <button
+              type="button"
+              className={ghostButtonClass}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              やめる
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={ghostButtonClass}
+            disabled={busy || !available}
+            aria-describedby={hintId}
+            onClick={onConfirm}
+          >
+            脱退する
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function MemberRow({
   workspaceId,
   member,
   isSelf,
   canManage,
-  isLastOwner,
   busy,
   confirming,
-  confirmingLeave,
   onConfirmRemove,
-  onConfirmLeave,
   onCancel,
   onRemove,
-  onLeave,
   onChanged,
 }: {
   workspaceId: string;
   member: WorkspaceMemberView;
   isSelf: boolean;
   canManage: boolean;
-  /** 自分が唯一の owner のときだけ立つ（脱退の禁止）。 */
-  isLastOwner: boolean;
   busy: boolean;
   confirming: boolean;
-  confirmingLeave: boolean;
   onConfirmRemove: () => void;
-  onConfirmLeave: () => void;
   onCancel: () => void;
   onRemove: () => void;
-  onLeave: () => void;
   onChanged: () => Promise<void>;
 }) {
   const changeMemberRole = useServerFn(changeMemberRoleFn);
@@ -768,7 +841,6 @@ function MemberRow({
   };
 
   const name = member.displayName ?? "退会した利用者";
-  const confirmOpen = confirming || confirmingLeave;
 
   return (
     <li className="grid grid-cols-[auto_1fr] items-center gap-3 border-t border-hairline py-3 first:border-t-0 first:pt-0 min-[520px]:grid-cols-[auto_1fr_auto]">
@@ -824,16 +896,16 @@ function MemberRow({
           <span className="text-xs text-ink-tertiary">{ROLE_LABEL[role]}</span>
         )}
 
-        {confirmOpen ? (
+        {confirming ? (
           <>
             <button
               type="button"
               className={dangerButtonClass}
               disabled={busy}
               aria-describedby={confirmNoteId}
-              onClick={confirmingLeave ? onLeave : onRemove}
+              onClick={onRemove}
             >
-              {confirmingLeave ? "脱退する" : "除名する"}
+              除名する
             </button>
             <button
               type="button"
@@ -844,17 +916,7 @@ function MemberRow({
               やめる
             </button>
           </>
-        ) : isSelf ? (
-          <button
-            type="button"
-            className={ghostButtonClass}
-            disabled={busy || isLastOwner}
-            aria-describedby={isLastOwner ? LAST_OWNER_HINT_ID : undefined}
-            onClick={onConfirmLeave}
-          >
-            脱退
-          </button>
-        ) : canManage ? (
+        ) : canManage && !isSelf ? (
           <button
             type="button"
             className={dangerButtonClass}
@@ -865,14 +927,12 @@ function MemberRow({
           </button>
         ) : null}
       </span>
-      {confirmOpen ? (
+      {confirming ? (
         <span
           id={confirmNoteId}
           className="col-start-2 text-xs text-ink-secondary"
         >
-          {confirmingLeave
-            ? "脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残るので、手元に残したいものは脱退前にノート一覧・ノート詳細のメニューから個人へ移してください。再び参加するには招待が必要です。"
-            : `除名すると、${name} はこのワークスペースのノートに一切アクセスできなくなります。${name} が作成したノートはワークスペースに残ります。`}
+          {`除名すると、${name} はこのワークスペースのノートに一切アクセスできなくなります。${name} が作成したノートはワークスペースに残ります。`}
         </span>
       ) : null}
     </li>
@@ -1020,8 +1080,6 @@ function PendingRow({
     </li>
   );
 }
-
-const LAST_OWNER_HINT_ID = "workspace-last-owner-hint";
 
 const selectClass =
   "h-10 rounded-md border border-hairline-strong bg-bg px-3 text-sm text-ink transition-colors focus:border-transparent focus:shadow-focus focus:outline-none disabled:cursor-not-allowed disabled:opacity-55";

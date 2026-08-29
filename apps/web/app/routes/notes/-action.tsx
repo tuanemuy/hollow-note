@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
 import { REDIRECT_MAX_LENGTH } from "@/presentation/redirect";
+import { WORKSPACE_ID_MAX_LENGTH } from "@/presentation/scope";
 import { loadServerDeps } from "@/presentation/serverAction";
 import { renderServerFragment } from "@/presentation/serverFragment";
 import { validateInput } from "@/presentation/validator";
@@ -101,7 +102,7 @@ export const listMoveTargetsFn = createServerFn({ method: "GET" })
 const moveNoteSchema = z.object({
   noteId: z.string().min(1).max(128),
   targetOwnerType: z.enum(["user", "workspace"]),
-  targetWorkspaceId: z.string().min(1).max(128).nullable(),
+  targetWorkspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH).nullable(),
 });
 
 /**

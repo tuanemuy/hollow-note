@@ -101,7 +101,7 @@
 | ADP-workspace-010 | `MembershipRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を更新する |
 | ADP-workspace-011 | `MembershipRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を削除する |
 | ADP-workspace-012 | `MembershipRepository.findByWorkspaceAndUser` | `spec/domains/workspace.md#ポート` | workspace・user の membership を取得する |
-| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。このポートで唯一、自 transaction の書き込みを観測しない読み |
+| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。自 UoW の insert も `deleteByIds` も見えず、両バックエンドが同じ答えを返す |
 | ADP-workspace-014 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を、自 transaction の変更を含めて数える |
 | ADP-workspace-015 | `MembershipRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 MembershipId を削除する |
 | ADP-workspace-016 | `InvitationRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Invitation を保存する |
@@ -110,8 +110,8 @@
 | ADP-workspace-019 | `InvitationRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Invitation を削除する |
 | ADP-workspace-020 | `InvitationRepository.findByTokenHash` | `spec/domains/workspace.md#ポート` | token hash で招待を取得する |
 | ADP-workspace-021 | `InvitationRepository.findPendingByWorkspaceAndEmail` | `spec/domains/workspace.md#ポート` | workspace・email の pending 招待を取得する |
-| ADP-workspace-022 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする |
-| ADP-workspace-023 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す |
+| ADP-workspace-022 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする。自 UoW の書き込みを観測せず、両バックエンドが同じ答えを返す |
+| ADP-workspace-023 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す。listing と違い自 UoW の書き込みを数える |
 | ADP-workspace-024 | `InvitationRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 InvitationId を削除する |
 | ADP-workspace-025 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を期限に関わらず解決する |
 | ADP-workspace-026 | `InvitationRouteStore.reserve` | `spec/domains/workspace.md#ポート` | 新規 token route を TTL 付き予約する |
@@ -154,7 +154,7 @@
 | ADP-workspace-063 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
 | ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
 | ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
-| ADP-workspace-066 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する |
+| ADP-workspace-066 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する。slug の剥がしは適用と同じ述語を持ち、何も書かない snapshot は slug を奪わない |
 | ADP-workspace-067 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
 | ADP-workspace-068 | `UserWorkspaceDirectory.countOwnedByUser` | `spec/domains/workspace.md#ポート` | 所有上限判定用に owner edge を limit まで数える |
 | ADP-workspace-069 | `MembershipDirectoryReservationStore.beginRemoval` | `spec/domains/workspace.md#ポート` | 除名・脱退で `active` / `activating` の directory edge を removing にし、`pending` は拒否する |
@@ -163,7 +163,7 @@
 | ADP-workspace-072 | `WorkspaceOperationLockStore.releaseMove` | `spec/domains/workspace.md#ポート` | move authorization lock を無条件・冪等に解放する |
 | ADP-workspace-073 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | source version が大きい role 変更だけを directory edge へ投影し、不在の edge は復活させない |
 | ADP-workspace-074 | `MembershipDirectoryReservationStore.abandonRemoval` | `spec/domains/workspace.md#ポート` | 拒否された除名の `removing` edge を `active` へ戻し、`pending` / `activating` は拒否する |
-| ADP-workspace-075 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする |
+| ADP-workspace-075 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする。自 UoW の書き込みは観測しない |
 | ADP-storage-001 | `StoredFileRepository.insert` | `spec/domains/storage.md#ポート` | 新規 StoredFile を保存する |
 | ADP-storage-002 | `StoredFileRepository.findById` | `spec/domains/storage.md#ポート` | StoredFileId で OCC token 付き集約を取得する |
 | ADP-storage-003 | `StoredFileRepository.save` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を更新する |

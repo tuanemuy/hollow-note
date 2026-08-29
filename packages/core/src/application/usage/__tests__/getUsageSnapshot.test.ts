@@ -140,6 +140,16 @@ function withResolution(
   };
 }
 
+/**
+ * The directory orders edges `created_at DESC, workspace_id` and the test
+ * clock is frozen, so every seeded edge shares a timestamp and the id
+ * alone decides the page order.
+ */
+const wsId = (index: number) => `ws-${String(index).padStart(2, "0")}`;
+
+const wsIdRange = (from: number, to: number) =>
+  Array.from({ length: to - from + 1 }, (_, offset) => wsId(from + offset));
+
 const quotaRows = (h: TestHarness) => h.backend.scope(scope).storageQuotas;
 const llmRows = (h: TestHarness) => h.backend.scope(scope).llmUsages;
 
@@ -488,6 +498,91 @@ describe("getUsageSnapshot", () => {
     expect(firstIds).toHaveLength(20);
     expect(secondIds).toHaveLength(5);
     expect(firstIds.filter((id) => secondIds.includes(id))).toEqual([]);
+    expect(second.nextWorkspaceCursor).toBeNull();
+  });
+
+  it("a page the role filter trims still advances the cursor past the whole page", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    for (let index = 1; index <= 25; index += 1) {
+      await joinWorkspace(
+        h,
+        wsId(index),
+        index >= 18 && index <= 20 ? "viewer" : "editor",
+      );
+    }
+
+    const first = await snapshot(h);
+
+    expect(first.workspaces.map((item) => item.workspaceId)).toEqual(
+      wsIdRange(1, 17),
+    );
+    expect(first.nextWorkspaceCursor).not.toBeNull();
+
+    // Narrowing the second page is what makes the cursor's landing point
+    // observable: a cursor rebuilt from the last *shown* row (ws-17) spends
+    // this page re-reading the three viewer edges and yields nothing.
+    const second = await snapshot(h, {
+      workspaceCursor: first.nextWorkspaceCursor,
+      workspaceLimit: 3,
+    });
+
+    expect(second.workspaces.map((item) => item.workspaceId)).toEqual(
+      wsIdRange(21, 23),
+    );
+  });
+
+  it("a page a deleted row trims still advances the cursor past the whole page", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    for (let index = 1; index <= 25; index += 1) {
+      await joinWorkspace(h, wsId(index), "editor");
+    }
+    const container = withResolution(h, wsId(20), { state: "deleted" });
+
+    const first = await getUsageSnapshot({
+      container,
+      input: { userId: USER_ID },
+    });
+
+    expect(first.workspaces.map((item) => item.workspaceId)).toEqual(
+      wsIdRange(1, 19),
+    );
+    expect(first.nextWorkspaceCursor).not.toBeNull();
+
+    const second = await getUsageSnapshot({
+      container,
+      input: {
+        userId: USER_ID,
+        workspaceCursor: first.nextWorkspaceCursor,
+        workspaceLimit: 1,
+      },
+    });
+
+    expect(second.workspaces.map((item) => item.workspaceId)).toEqual([
+      wsId(21),
+    ]);
+  });
+
+  it("a page made entirely of viewer memberships still hands back a cursor", async () => {
+    const h = createTestHarness();
+    await seedActiveUser(h);
+    for (let index = 1; index <= 25; index += 1) {
+      await joinWorkspace(h, wsId(index), index <= 20 ? "viewer" : "editor");
+    }
+
+    const first = await snapshot(h);
+
+    expect(first.workspaces).toEqual([]);
+    expect(first.nextWorkspaceCursor).not.toBeNull();
+
+    const second = await snapshot(h, {
+      workspaceCursor: first.nextWorkspaceCursor,
+    });
+
+    expect(second.workspaces.map((item) => item.workspaceId)).toEqual(
+      wsIdRange(21, 25),
+    );
     expect(second.nextWorkspaceCursor).toBeNull();
   });
 

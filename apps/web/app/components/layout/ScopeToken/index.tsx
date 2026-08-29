@@ -11,8 +11,16 @@ import {
   failLoad,
   IDLE_LISTING,
   type Listing,
+  type ShellScope,
+  scopeIdentity,
   shouldLoadOnOpen,
 } from "./listing";
+
+export type { ShellScope };
+
+export const PERSONAL_SHELL_SCOPE: ShellScope = { kind: "personal" };
+
+const initials = (name: string): string => name.trim().slice(0, 2) || "?";
 
 /**
  * L-01 スコープトークン（spec/pages/index.md#L-01、WS-02）。
@@ -26,20 +34,6 @@ import {
  * 文脈ごとに独立しているので、遷移先の検索パラメータを空にして渡す。
  * 次回訪問への引き継ぎは `selectScopeFn` が書く Cookie が担う。
  */
-export type ShellScope =
-  | Readonly<{ kind: "personal" }>
-  | Readonly<{
-      kind: "workspace";
-      workspaceId: string;
-      name: string;
-      slug: string | null;
-      publication: "private" | "published";
-    }>;
-
-export const PERSONAL_SHELL_SCOPE: ShellScope = { kind: "personal" };
-
-const initials = (name: string): string => name.trim().slice(0, 2) || "?";
-
 export function ScopeToken({ scope }: { scope: ShellScope }) {
   const router = useRouter();
   const selectScope = useServerFn(selectScopeFn);
@@ -50,6 +44,14 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
   const [isSwitching, startSwitching] = useTransition();
   const [switchError, setSwitchError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 正本が変わったら、その下で取った一覧は捨てる（`scopeIdentity` の JSDoc）。
+  const identity = scopeIdentity(scope);
+  const [loadedFor, setLoadedFor] = useState(identity);
+  if (loadedFor !== identity) {
+    setLoadedFor(identity);
+    setListing(IDLE_LISTING);
+  }
 
   useEffect(() => {
     if (!open) return;

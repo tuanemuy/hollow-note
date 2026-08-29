@@ -38,9 +38,10 @@ const displayOf = (user: User | undefined): MemberDisplay | null =>
  *
  * Any member may read the list; `canManage` tells the screen whether to
  * offer the role / removal controls, so the read and the permission to
- * act on it stay separate decisions. `ownerCount` is read exactly, not
- * derived from the page, because the last-owner rule is judged against
- * the whole workspace.
+ * act on it stay separate decisions. `ownerCount` and `viewerRole` are
+ * both answered outside the page, because the last-owner rule is judged
+ * against the whole workspace and the reader's own row need not be on the
+ * page at all.
  *
  * Display data is resolved through the identity plane's batch reader,
  * which omits ids it cannot answer; a member whose account is gone still
@@ -83,6 +84,7 @@ export async function listMembers({
     ),
     count: page.count,
     ownerCount,
+    viewerRole: access.role,
     canManage: WorkspaceAuthorization.can(access.role, "manageMembers"),
   };
 }

@@ -25,7 +25,8 @@ import {
 /**
  * spec/testcases/workspace/resendInvitation.md (TC-workspace-236〜244).
  *
- * The `mailSent: false` row is covered by `invitationResponse.test.ts`
+ * The `mailSent: false` row (TC-workspace-309) is covered by
+ * `invitationResponse.test.ts`
  * alongside the `inviteMember` tail call that forwards it, and is not
  * repeated here.
  */

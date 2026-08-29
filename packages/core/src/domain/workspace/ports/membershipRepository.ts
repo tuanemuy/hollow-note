@@ -61,10 +61,14 @@ export interface MembershipRepository
    *
    * The one read of this contract that does **not** observe its own
    * transaction: an offset page cannot be recomputed from uncommitted
-   * changes without re-reading the whole set, so a backend that buffers
-   * its writes answers from the last committed state. Call it before the
-   * transaction writes, or in a later one — the deletion sweep does the
-   * latter, probing for leftovers in a turn that deletes nothing.
+   * changes without re-reading the whole set, so it answers from the
+   * **last committed state** — neither this unit's inserts nor its
+   * `deleteByIds` are visible here. That is the answer on every backend,
+   * not a licence for one that buffers its writes: a read whose verdict
+   * depended on how the backend stages would make the deletion sweep
+   * terminate on one and loop on another. Call it before the transaction
+   * writes, or in a later one — the sweep does the latter, probing for
+   * leftovers in a turn that deletes nothing.
    */
   listByWorkspace(
     workspaceId: WorkspaceId,

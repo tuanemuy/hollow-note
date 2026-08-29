@@ -18,6 +18,10 @@ import { ScopeKey } from "../scope";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
 import { deleteQuota } from "../usage/deleteQuota";
 import {
+  continueRemovalEdgeSettlement,
+  MEMBERSHIP_REMOVAL_EDGE_TASK_KIND,
+} from "../workspace/membershipMutation";
+import {
   WORKSPACE_DELETION_COMPACT_TASK_KIND,
   WORKSPACE_DELETION_GLOBAL_TASK_KIND,
   WORKSPACE_DELETION_LOCAL_TASK_KIND,
@@ -129,6 +133,13 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     }),
   [WORKSPACE_DELETION_COMPACT_TASK_KIND]: (container, task) =>
     compactWorkspaceDeletionManifest(container, {
+      scope: task.scope,
+      payload: task.payload,
+    }),
+  // The removal settles its own row too: the turn drops the directory
+  // edge and completes the row only once nothing is left to drop.
+  [MEMBERSHIP_REMOVAL_EDGE_TASK_KIND]: (container, task) =>
+    continueRemovalEdgeSettlement(container, {
       scope: task.scope,
       payload: task.payload,
     }),

@@ -294,7 +294,7 @@ describe("leaveWorkspace", () => {
     );
   });
 
-  it("TC-workspace-166: a failed edge drop leaves the scope's verdict final and the edge collectable by a retry", async () => {
+  it("TC-workspace-166 / TC-workspace-308: a failed edge drop leaves the scope's verdict final and the edge collectable by a retry", async () => {
     const h = createWorkspaceHarness();
     await seed(h);
 

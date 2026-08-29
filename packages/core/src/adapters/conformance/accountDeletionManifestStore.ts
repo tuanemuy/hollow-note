@@ -198,6 +198,44 @@ export function describeAccountDeletionManifestStoreContract(
       );
     });
 
+    it("ADP-common-014/017/019: a turn reads back the page and the acks it staged itself", async () => {
+      await store().begin("op-1", userId(1));
+
+      // Everything below is one transaction, exactly as the build turn
+      // and the redaction turn are. A backend whose multi-row statements
+      // do not name the rows they touch answers these reads from the
+      // pre-transaction image: the claim comes back empty, and the second
+      // ack is written over an image that never saw the first.
+      const turn = await backend.globalUnitOfWork.run(async (ctx) => {
+        const staged = ctx.accountDeletionManifestStore;
+        await staged.appendAuthorRoutePage(
+          "op-1",
+          [
+            { noteId: noteId(1), routeVersion: 1 },
+            { noteId: noteId(2), routeVersion: 1 },
+          ],
+          null,
+        );
+        await staged.markBuilt("op-1");
+
+        const claimed = await staged.claimPending("op-1", "redaction", 100);
+        const keys = claimed.map((item) => item.key);
+        await staged.acknowledge("op-1", keys, "localRedaction");
+        await staged.acknowledge("op-1", keys, "publicRedaction");
+        for (const receipt of FINALIZE_RECEIPTS) {
+          await staged.acknowledgeReceipt("op-1", receipt);
+        }
+        return {
+          claimed: keys.length,
+          settled: await staged.allRequiredAcknowledged("op-1"),
+        };
+      });
+
+      expect(turn).toEqual({ claimed: 2, settled: true });
+      expect(await store().claimPending("op-1", "redaction", 100)).toEqual([]);
+      expect(await store().allRequiredAcknowledged("op-1")).toBe(true);
+    });
+
     it("ADP-common-019/021/023: finalize requires item acks plus the receipt set", async () => {
       await beginWithRoutes();
       await store().markBuilt("op-1");
@@ -336,6 +374,33 @@ export function describeAccountDeletionManifestStoreContract(
 
       // The live manifest survives.
       await store().appendMembershipPage("op-live", null, 100);
+    });
+
+    it("ADP-common-025: a reclaimed manifest is gone to the transaction that reclaimed it", async () => {
+      await beginWithRoutes();
+      await store().markBuilt("op-1");
+      await finalizeAll();
+      const terminalAt = backend.clock.now();
+      await store().markCompleted(
+        "op-1",
+        terminalAt,
+        new Date(terminalAt.getTime() + 120 * DAY_MS),
+      );
+      backend.clock.advance(120 * DAY_MS);
+
+      // The caller drops each reclaimed operation's control-plane row in
+      // this very transaction, so the header has to read as gone to the
+      // rest of it.
+      const seen = await backend.globalUnitOfWork.run(async (ctx) => {
+        const staged = ctx.accountDeletionManifestStore;
+        const page = await staged.pruneTerminal(backend.clock.now(), null, 100);
+        return {
+          reclaimed: page.operationIds,
+          header: await staged.describe("op-1"),
+        };
+      });
+
+      expect(seen).toEqual({ reclaimed: ["op-1"], header: null });
     });
 
     it("ADP-common-017/022: claimPending and compactItems cap a page at 100 items (spec/domains/index.md 最大100件)", async () => {
@@ -504,6 +569,41 @@ export function describeAccountDeletionManifestStoreContract(
         "release",
       );
       expect(await store().allRollbackReleased("op-1")).toBe(true);
+    });
+
+    it("ADP-common-017/020: a rollback releases what its own transaction dispatched (seeded backend)", async (ctx) => {
+      const seed = backend.seedMembershipEdges;
+      if (seed === undefined) {
+        ctx.skip();
+        return;
+      }
+      await seed.call(backend, userId(1), [
+        {
+          edgeKey: "edge-a",
+          workspaceId: WorkspaceId.create("ws-1"),
+          edgeState: "active",
+          membershipId: "membership-1",
+        },
+      ]);
+      await store().begin("op-1", userId(1));
+
+      // A page, a dispatch and the decision to roll it back can share a
+      // turn. The claim then has to see the edges this transaction just
+      // fixed, and the release has to cover what it just dispatched.
+      const turn = await backend.globalUnitOfWork.run(async (uow) => {
+        const staged = uow.accountDeletionManifestStore;
+        await staged.appendMembershipPage("op-1", null, 100);
+        await staged.markBuilt("op-1");
+        const claimed = await staged.claimPending("op-1", "prepare", 100);
+        await staged.beginRollback("op-1");
+        return {
+          claimed: claimed.length,
+          released: await staged.allRollbackReleased("op-1"),
+        };
+      });
+
+      expect(turn).toEqual({ claimed: 1, released: false });
+      expect(await store().allRollbackReleased("op-1")).toBe(false);
     });
 
     it("ADP-common-017/019/021: the cleanup lane is what finalizes membership items (seeded backend)", async (ctx) => {

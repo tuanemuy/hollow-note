@@ -186,6 +186,64 @@ export function describeMembershipRepositoryContract(
       expect(foreign.count).toBe(0);
     });
 
+    it("ADP-workspace-013: listByWorkspace answers from the last committed state, so the deletion sweep's probe never reads its own turn", async () => {
+      const now = backend.clock.now();
+      await seed(1, 1, "owner", new Date(now.getTime() - MINUTE_MS));
+      await seed(2, 2, "editor", now);
+
+      const observed = await backend.scopeUnitOfWork.run(
+        workspaceScopeOf(1),
+        async (ctx) => {
+          await ctx.membershipRepository.insert(
+            makeMembership(
+              3,
+              workspaceId(1),
+              userId(3),
+              "viewer",
+              new Date(now.getTime() + MINUTE_MS),
+            ),
+          );
+          const afterInsert = await ctx.membershipRepository.listByWorkspace(
+            workspaceId(1),
+            { page: 1, limit: 10 },
+          );
+          await ctx.membershipRepository.deleteByIds([membershipId(1)]);
+          const afterDelete = await ctx.membershipRepository.listByWorkspace(
+            workspaceId(1),
+            { page: 1, limit: 10 },
+          );
+          return {
+            afterInsert: afterInsert.items.map((row) => row.id),
+            afterInsertCount: afterInsert.count,
+            afterDelete: afterDelete.items.map((row) => row.id),
+            // The last-owner count is the read that does observe the
+            // unit, which is what makes the split visible in one turn.
+            owners: await ctx.membershipRepository.countByRole(
+              workspaceId(1),
+              "owner",
+            ),
+          };
+        },
+      );
+
+      expect(observed).toEqual({
+        afterInsert: [membershipId(1), membershipId(2)],
+        afterInsertCount: 2,
+        afterDelete: [membershipId(1), membershipId(2)],
+        owners: 0,
+      });
+
+      const settled = await scoped.membershipRepository.listByWorkspace(
+        workspaceId(1),
+        { page: 1, limit: 10 },
+      );
+      expect(settled.items.map((row) => row.id)).toEqual([
+        membershipId(2),
+        membershipId(3),
+      ]);
+      expect(settled.count).toBe(2);
+    });
+
     it("ADP-workspace-014: countByRole is the exact number of members holding the role", async () => {
       const now = backend.clock.now();
       await seed(1, 1, "owner", now);

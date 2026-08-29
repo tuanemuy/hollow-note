@@ -10,7 +10,10 @@ import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import { QuotaSubject } from "@repo/core/domain/usage/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
-import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import {
+  WorkspaceId,
+  type WorkspaceRole,
+} from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
 import {
   ConflictError,
@@ -30,7 +33,7 @@ import {
 } from "../storage/relocateFilesForNote";
 import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
-import { noteAccessPolicy, viewerFor } from "./accessControl";
+import { noteAccessPolicy } from "./accessControl";
 import { ownerOf } from "./view";
 
 export type MoveNoteInput = Readonly<{
@@ -40,11 +43,8 @@ export type MoveNoteInput = Readonly<{
   targetWorkspaceId?: string | null;
   /**
    * Version the caller saw, or `null` when it holds none — `getNote` does
-   * not project one, so the transport boundary has nothing to send. The
-   * check is skipped rather than faked: a caller that re-reads the note to
-   * fill this in would only compare the value against itself, and the
-   * *appearance* of an optimistic lock is worse than its documented
-   * absence.
+   * not project one, so the transport boundary has nothing to send.
+   * `null` skips the optimistic check.
    */
   expectedVersion: number | null;
 }>;
@@ -71,6 +71,14 @@ export type MovedNoteView = Readonly<{
  * an assignment change commits with the note write that caused it.
  */
 export interface NoteMoveTagRelocation {
+  /**
+   * Every applied-operation key `stageTarget` may write in the target
+   * scope. An abort deletes the rows those keys assert, so it has to
+   * clear them in the same transaction; declaring them here is what keeps
+   * an implementation from leaving a receipt the resumed staging would
+   * skip on (`abortBeforeSwitch`).
+   */
+  readonly targetScopeCommandKeys: readonly string[];
   plan(
     container: RequestContainer,
     input: Readonly<{ noteId: NoteId; source: ScopeKey; target: ScopeKey }>,
@@ -87,6 +95,7 @@ export interface NoteMoveTagRelocation {
 
 /** The seam's only implementation until the tag slice lands (Issue #8). */
 export const noTagRelocation: NoteMoveTagRelocation = {
+  targetScopeCommandKeys: [],
   async plan(): Promise<readonly string[]> {
     return [];
   },
@@ -104,9 +113,10 @@ const STAGE_TARGET_COMMAND = "note.moveStageTarget";
 const RETIRE_SOURCE_COMMAND = "note.moveRetireSource";
 
 /**
- * Every applied-operation key this migration can write in the *target*
- * scope. An abort clears the whole set, because each key asserts that
- * rows the abort is deleting are in place — see `abortBeforeSwitch`.
+ * The applied-operation keys the note half of this migration writes in
+ * the *target* scope. An abort clears them together with the keys the tag
+ * seam declares, because each one asserts that rows the abort is deleting
+ * are in place — see `abortBeforeSwitch`.
  */
 const TARGET_SCOPE_COMMANDS: readonly string[] = [
   STAGE_TARGET_COMMAND,
@@ -281,6 +291,42 @@ const readPlan = (
 });
 
 /**
+ * The actor's Membership in one scope, read exactly once: the role an
+ * authorization decision rests on and the version pinned for the
+ * commit-time re-check must come from the *same* read
+ * (spec/usecases/note.md#movenote 手順 1・2). Read twice, a demotion that
+ * commits in between is pinned after the fact, and `ensurePinnedMembership`
+ * — which compares versions, not roles — then confirms a role nobody
+ * checked.
+ */
+type MembershipPin = Readonly<{
+  role: WorkspaceRole | null;
+  version: number | null;
+}>;
+
+/** A scope with no membership to pin: a personal scope, or a non-member. */
+const NO_MEMBERSHIP: MembershipPin = { role: null, version: null };
+
+async function pinActorMembership(
+  container: RequestContainer,
+  scope: ScopeKey,
+  actorUserId: UserId,
+): Promise<MembershipPin> {
+  if (scope.type !== "workspace") {
+    return NO_MEMBERSHIP;
+  }
+  const membership = await container
+    .workspaceReaderFor(scope)
+    .membership.findByWorkspaceAndUser(scope.workspaceId, actorUserId);
+  return membership === null
+    ? NO_MEMBERSHIP
+    : {
+        role: membership.entity.role,
+        version: membership.expectedVersion as number,
+      };
+}
+
+/**
  * Re-checks, inside the phase's own transaction, the membership the
  * pre-flight authorization rested on.
  *
@@ -406,16 +452,12 @@ async function snapshotSource(
 }
 
 /**
- * 手順 6 — stages the note in the target scope and credits its usage,
- * answering the version the staged copy carries and the file rows that
- * actually crossed.
- *
- * The whole phase is one target-local transaction, which is what makes
- * "the target admits this actor", "the target's move lock stands" and
- * "the target now holds the data" inseparable. `note.moved` is *not*
- * emitted here: nothing has changed
- * hands until the route switch, and a consumer that saw the event first
- * would resolve the note back to the source.
+ * 手順 6 (spec/usecases/note.md#movenote) — one target-local transaction,
+ * which is what makes "the target admits this actor", "the target's move
+ * lock stands" and "the target now holds the data" inseparable.
+ * `note.moved` belongs to `retireSource`: nothing has changed hands until
+ * the route switch, and a consumer that saw the event first would resolve
+ * the note back to the source.
  *
  * What it answers is what the *target* holds, not what this attempt was
  * given. The two differ whenever the receipt already stands: an earlier
@@ -638,43 +680,39 @@ async function thawRoute(
 }
 
 /**
- * Thaws the route and reverses everything the pre-switch legs may have
- * left behind (spec/usecases/note.md#movenote 手順 4〜6 の中止：
- * 「完全abortする」), or answers `"switched"` when the switch turns out to
- * have landed and there is nothing left to compensate.
+ * The 中止 of 手順 4〜6 (spec/usecases/note.md#movenote), or `"switched"`
+ * when the switch turns out to have landed and there is nothing left to
+ * compensate.
  *
- * Complete means the target keeps no trace of the migration — not the
- * staged rows, not the credit, not the lock, and **not the
- * applied-operation keys that assert those rows exist**. Clearing them is
- * what makes the abort survivable: the spec retries a lost response under
- * the same migration id, so a key left behind would make the resumed
- * `stageTarget` skip into an empty target and the route switch onto
- * nothing, after which `retireSource` deletes the last copy.
- *
- * The abort is therefore idempotent on the staged note's presence rather
- * than on a key of its own: the note is the witness that the credit was
- * ever applied, and it is deleted in the same transaction that reverses
- * it. Both scopes' move locks are released outside that check, since an
+ * Three things the spec's "完全に" rests on, and none of them is optional.
+ * The applied-operation keys go with the rows they assert — the note's own
+ * and every key the tag seam declares — or a resumed `stageTarget` skips
+ * into an empty target. The abort is idempotent on the staged note's
+ * presence rather than on a key of its own, since the note is the witness
+ * that the credit was applied and is deleted in the same transaction that
+ * reverses it; both move locks are released outside that check, because an
  * abort may follow a failure that never reached the staging it undoes.
- *
- * What it gives back is read from the target itself, never from the
- * attempt's snapshot: an attempt that failed before it froze the source
- * still has to reverse whatever an *earlier* attempt staged, and a
- * snapshot-shaped argument would silently leave those file rows and that
- * credit behind.
+ * And what it gives back is read from the target, never from the attempt's
+ * snapshot: an attempt that failed before it froze the source must still
+ * reverse whatever an *earlier* attempt staged.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
   plan: MovePlan,
   routeVersion: number,
+  tagRelocation: NoteMoveTagRelocation,
 ): Promise<"compensated" | "switched"> {
   if (!(await thawRoute(container, plan, routeVersion))) {
     return "switched";
   }
   const now = container.clock.now();
+  const targetScopeCommands = [
+    ...TARGET_SCOPE_COMMANDS,
+    ...tagRelocation.targetScopeCommandKeys,
+  ];
   await container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
     await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
-    for (const commandKey of TARGET_SCOPE_COMMANDS) {
+    for (const commandKey of targetScopeCommands) {
       await ctx.appliedOperationStore.clearApplied({
         operationId: plan.migrationId,
         commandKey,
@@ -767,32 +805,28 @@ async function claimRoute(
 
 /**
  * Moves a note to another owner (UC-note-013,
- * spec/usecases/note.md#movenote, OR-12).
+ * spec/usecases/note.md#movenote, OR-12). The phase order, the abort rule
+ * and the request key are canon there; this is what the implementation
+ * adds to them.
  *
- * Four phases, each idempotent under one migration id:
- * `snapshotSource` (freeze + source lock) → `stageTarget` (target-local
- * insert + credit + target lock) → the route switch, which is the single
- * instant the change is visible → `activateTarget` / `retireSource`
- * (locks released, source rows, debit, `note.moved`). Before the switch a
- * failure aborts, both locks are released and the route thaws back to the
- * source; after it, recovery is forward-only. Which of the two a failure
- * gets is decided by the route rather than by where the code caught it —
- * the abort begins by taking the route back and stands down if it cannot,
- * so a switch whose response was lost is never compensated away.
- *
- * The migration id is the `distributed_operations` row's id, so the same
- * request key replays the same operation and every phase's
- * `AppliedOperationStore` key resolves to the same command. That is what
- * makes a lost response converge instead of duplicating the note, the
- * revisions, the file metadata or the usage delta. The key names the
- * actor as well as the journey, because the plan it replays is an
- * authorization: every phase re-checks `plan.actorUserId`, so another
- * member's request has to become its own operation instead of resuming
- * one whose checks are about somebody else. A request that is
- * *not* the running operation's own is refused
+ * The migration id is the `distributed_operations` row's id, so every
+ * phase's `AppliedOperationStore` key resolves to the same command across
+ * a replay — that is what makes a lost response converge instead of
+ * duplicating the note, the revisions, the file metadata or the usage
+ * delta. A request that is *not* the running operation's own is refused
  * (`ConflictError("NOTE_MOVE_IN_PROGRESS")`) rather than joined: the
  * store's join is a control-plane courtesy, and a saga that drives a plan
  * it did not author reverses phases it never ran.
+ *
+ * Authorization is guarded from two directions, and neither replaces the
+ * other. Forwards: the pre-flight pass reads the actor's Membership once
+ * per scope and pins the version of that same read, so each phase's
+ * re-check inside its own transaction catches a removal or a demotion
+ * that committed since. Backwards: each phase stages the move
+ * authorization lock in its own scope, which is what makes a workspace
+ * deletion or a mutation of the actor's membership attempted *after* that
+ * phase lose to the move (`WORKSPACE_MOVE_IN_PROGRESS`) instead of racing
+ * it.
  *
  * Two things this slice deliberately does not do. A failure after the
  * route switch leaves the source's move lock standing and the operation
@@ -802,16 +836,6 @@ async function claimRoute(
  * and both scopes so an operator can find it. And the local / public note
  * projections are not rebuilt for the new owner: the target's generation
  * counter is prepared, but no `note.moved` subscriber exists yet.
- *
- * Authorization is guarded from two directions, and neither replaces the
- * other. Forwards: the pre-flight pass decides the request (and answers
- * `NOTE_NOT_FOUND` / `WORKSPACE_NOT_FOUND` / `InsufficientRole`), then
- * each phase re-checks the *pinned Membership version* inside its own
- * transaction, which is what catches a change that committed before the
- * phase began. Backwards: each phase stages the move authorization lock
- * in its own scope, which is what makes a workspace deletion or a
- * mutation of the actor's membership attempted *after* that phase lose to
- * the move (`WORKSPACE_MOVE_IN_PROGRESS`) instead of racing it.
  *
  * One piece of 手順 5 is **absent in this slice**: terminating the
  * source's unfinished jobs, because the Job aggregate does not exist
@@ -839,10 +863,10 @@ export async function moveNote({
   }
   const note = stored.entity;
 
-  const viewer = await viewerFor(container, note.owner, input.userId);
+  const sourcePin = await pinActorMembership(container, source, actorUserId);
   const access = noteAccessPolicy.evaluate(
     note,
-    viewer,
+    { kind: "user", userId: actorUserId, workspaceRole: sourcePin.role },
     { tokenHash: null, pass: null },
     container.clock.now(),
   );
@@ -855,7 +879,11 @@ export async function moveNote({
     throw noteNotFound();
   }
 
-  const targetOwner = await resolveTargetOwner(container, input, actorUserId);
+  const { owner: targetOwner, pin: targetPin } = await resolveTargetOwner(
+    container,
+    input,
+    actorUserId,
+  );
   if (NoteOwner.equals(note.owner, targetOwner)) {
     return {
       noteId,
@@ -885,16 +913,6 @@ export async function moveNote({
     source,
     target,
   });
-  const sourceMembershipVersion = await membershipVersionOf(
-    container,
-    source,
-    actorUserId,
-  );
-  const targetMembershipVersion = await membershipVersionOf(
-    container,
-    target,
-    actorUserId,
-  );
 
   // What identifies *this* move: the note, who is moving it, where it is
   // going, and the route generation it starts from. A failed attempt
@@ -921,8 +939,8 @@ export async function moveNote({
         actorUserId,
         source,
         target,
-        sourceMembershipVersion,
-        targetMembershipVersion,
+        sourceMembershipVersion: sourcePin.version,
+        targetMembershipVersion: targetPin.version,
         droppedTagNames,
       }),
     }),
@@ -937,17 +955,26 @@ export async function moveNote({
     // the phase that commits it. Read back from the payload instead, a
     // move that failed once could never succeed again after any later
     // change to the actor's membership.
-    sourceMembershipVersion,
-    targetMembershipVersion,
+    sourceMembershipVersion: sourcePin.version,
+    targetMembershipVersion: targetPin.version,
   };
 
   let routeVersion: number;
   try {
     ensurePlanMatchesRequest(plan, actorUserId, source, target);
+    // Every phase addresses the two scopes separately — the freeze reads
+    // one and the staging inserts into the other — so a migration whose
+    // scopes coincide would have `stageTarget` insert over the row
+    // `snapshotSource` just read, and the abort delete the only copy.
+    if (ScopeKey.equals(plan.source, plan.target)) {
+      throw corrupt("the route scope and the target are the same scope");
+    }
     routeVersion = (await claimRoute(container, plan)).routeVersion;
   } catch (cause) {
-    // Nothing is staged yet, so there is nothing to compensate — but an
-    // operation left `running` would block every later move of this note.
+    // Nothing is staged yet, so there is nothing to compensate — but a
+    // claim whose response was lost, or an operation left `running`,
+    // would block every later move of this note.
+    await releaseUnusedClaim(container, plan);
     await settleQuietly(container, plan, "rejected", cause);
     throw cause;
   }
@@ -967,7 +994,7 @@ export async function moveNote({
     });
     previousOwner = observed.note.owner;
   } catch (cause) {
-    await rollBack(container, plan, routeVersion, cause);
+    await rollBack(container, plan, routeVersion, cause, tagRelocation);
     throw cause;
   }
 
@@ -1058,10 +1085,16 @@ async function rollBack(
   plan: MovePlan,
   routeVersion: number,
   cause: unknown,
+  tagRelocation: NoteMoveTagRelocation,
 ): Promise<void> {
   try {
     if (
-      (await abortBeforeSwitch(container, plan, routeVersion)) === "switched"
+      (await abortBeforeSwitch(
+        container,
+        plan,
+        routeVersion,
+        tagRelocation,
+      )) === "switched"
     ) {
       logStuckAfterSwitch(container, plan, cause);
     }
@@ -1073,6 +1106,42 @@ async function rollBack(
     });
   }
   await settleQuietly(container, plan, "rejected", cause);
+}
+
+/**
+ * Gives back a route this attempt may hold without knowing it does:
+ * `beginMove` can commit and lose its response, and the operation is
+ * about to be settled `rejected`, so nobody would ever drive that claim
+ * again — every later move of the note would be refused
+ * (`NOTE_ROUTE_STATE_VIOLATION`) even though nothing was ever staged.
+ * The claim is identified by the migration id, so a route claimed by
+ * somebody else is left alone.
+ */
+async function releaseUnusedClaim(
+  container: RequestContainer,
+  plan: MovePlan,
+): Promise<void> {
+  const route = await container.noteRouteStore.resolve(plan.noteId);
+  if (
+    route === null ||
+    route.state !== "moving" ||
+    route.migrationId !== plan.migrationId
+  ) {
+    return;
+  }
+  try {
+    await container.noteRouteStore.abortMove({
+      noteId: plan.noteId,
+      migrationId: plan.migrationId,
+      expectedRouteVersion: route.routeVersion,
+    });
+  } catch (releaseError) {
+    container.logger.error("[moveNote] the claimed route was left moving", {
+      releaseError,
+      migrationId: plan.migrationId,
+      noteId: plan.noteId,
+    });
+  }
 }
 
 /** Settling is a repair, so its own failure never replaces the diagnosis. */
@@ -1105,19 +1174,23 @@ async function settle(
 }
 
 /**
- * Decides the destination — and with it, in one place, whether the actor
- * may create there. `NoteOwnershipPolicy.ensureMovable` judges the source
- * side and takes this answer as given, since the target's refusal is a
+ * 手順 2 — decides the destination and pins the Membership that decision
+ * rests on. `NoteOwnershipPolicy.ensureMovable` judges the source side and
+ * takes this answer as given, since the target's refusal is a
  * workspace-role verdict (`InsufficientRole`) the note domain cannot
  * reach.
+ *
+ * The verdict is read from the pin rather than from `resolveWorkspaceAccess`,
+ * whose role comes from an earlier round trip: the version a later phase
+ * re-checks has to belong to the very read that granted the permission.
  */
 async function resolveTargetOwner(
   container: RequestContainer,
   input: MoveNoteInput,
   actorUserId: UserId,
-): Promise<NoteOwner> {
+): Promise<Readonly<{ owner: NoteOwner; pin: MembershipPin }>> {
   if (input.targetOwnerType === "user") {
-    return NoteOwner.user(actorUserId);
+    return { owner: NoteOwner.user(actorUserId), pin: NO_MEMBERSHIP };
   }
   // The target is the requester's own choice, so its absence is reported
   // as itself rather than folded into the source's existence secrecy.
@@ -1128,23 +1201,15 @@ async function resolveTargetOwner(
       userId: input.userId,
     },
   });
-  if (access.role === null) {
+  const workspaceId = WorkspaceId.create(access.workspaceId);
+  const pin = await pinActorMembership(
+    container,
+    ScopeKey.workspace(workspaceId),
+    actorUserId,
+  );
+  if (pin.role === null) {
     throw insufficientTargetRole();
   }
-  WorkspaceAuthorization.ensureCan(access.role, "createNote");
-  return NoteOwner.workspace(WorkspaceId.create(access.workspaceId));
-}
-
-async function membershipVersionOf(
-  container: RequestContainer,
-  scope: ScopeKey,
-  actorUserId: UserId,
-): Promise<number | null> {
-  if (scope.type !== "workspace") {
-    return null;
-  }
-  const membership = await container
-    .workspaceReaderFor(scope)
-    .membership.findByWorkspaceAndUser(scope.workspaceId, actorUserId);
-  return membership === null ? null : (membership.expectedVersion as number);
+  WorkspaceAuthorization.ensureCan(pin.role, "createNote");
+  return { owner: NoteOwner.workspace(workspaceId), pin };
 }

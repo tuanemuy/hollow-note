@@ -11,7 +11,7 @@ import {
   type TestHarness,
 } from "./harness";
 
-/** spec/testcases/workspace/listMembers.md (TC-workspace-169〜176). */
+/** spec/testcases/workspace/listMembers.md (TC-workspace-169〜176 / 310・311). */
 
 const WORKSPACE = "workspace-1";
 const OWNER = "owner-1";
@@ -92,6 +92,7 @@ describe("listMembers", () => {
       ],
       count: 3,
       ownerCount: 1,
+      viewerRole: "owner",
       canManage: true,
     });
   });
@@ -140,6 +141,31 @@ describe("listMembers", () => {
 
     expect(view.members).toHaveLength(1);
     expect(view.ownerCount).toBe(2);
+  });
+
+  it("TC-workspace-310: viewerRole answers for the reader whose own row is off the page", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, [
+      { userId: OWNER, role: "owner", membershipId: "m-1" },
+      { userId: "owner-2", role: "owner", membershipId: "m-2" },
+    ]);
+
+    const view = await list(h, "owner-2", { limit: 1 });
+
+    expect(view.members.map((m) => m.userId)).toEqual([OWNER]);
+    expect(view.viewerRole).toBe("owner");
+  });
+
+  it("TC-workspace-311: viewerRole is the reader's own role, not the first row's", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h, [
+      { userId: OWNER, role: "owner", membershipId: "m-1" },
+      { userId: "viewer-1", role: "viewer", membershipId: "m-2" },
+    ]);
+
+    await expect(list(h, "viewer-1", { limit: 1 })).resolves.toMatchObject({
+      viewerRole: "viewer",
+    });
   });
 
   it("TC-workspace-173: a page over the limit returns `limit` rows and the total count", async () => {

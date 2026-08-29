@@ -36,7 +36,7 @@ export function createMemoryInvitationRepository(
 
   const matching = (workspaceId: WorkspaceId): Invitation[] =>
     table
-      .values()
+      .committedValues()
       .filter((row) => row.workspaceId === workspaceId)
       .sort(
         (a, b) =>

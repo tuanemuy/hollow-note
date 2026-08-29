@@ -44,6 +44,7 @@ export async function WorkspaceMembersPanel({
     <WorkspaceMembersBoard
       workspaceId={workspaceId}
       viewerUserId={userId}
+      viewerRole={members.viewerRole}
       members={members.members}
       memberCount={members.count}
       ownerCount={members.ownerCount}

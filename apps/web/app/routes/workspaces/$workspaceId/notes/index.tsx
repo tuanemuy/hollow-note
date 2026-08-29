@@ -4,11 +4,8 @@ import { AppShell } from "@/components/layout/AppShell";
 import { ReaderShell } from "@/components/layout/ReaderShell";
 import { NoteListSkeleton } from "@/components/note/NoteListSkeleton";
 import { Deferred } from "@/components/ui/Deferred";
-import {
-  ErrorState,
-  ErrorStateLink,
-  ServerErrorState,
-} from "@/components/ui/ErrorState";
+import { ServerErrorState } from "@/components/ui/ErrorState";
+import { WorkspaceUnavailableState } from "@/components/workspace/WorkspaceUnavailable";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
 import { boundedRedirectSource } from "@/presentation/redirect";
@@ -79,19 +76,5 @@ function WorkspaceNotesPage() {
         <Deferred promise={NoteList} />
       </Suspense>
     </AppShell>
-  );
-}
-
-/**
- * WS-02 の「除名された / 削除されたワークスペースを URL で直接開いた」。
- * 個人の文脈へ誘導する。
- */
-function WorkspaceUnavailableState() {
-  return (
-    <ErrorState
-      title="このワークスペースは開けません"
-      body="削除されたか、メンバーから外れた可能性があります。個人の文脈に戻ります。"
-      actions={<ErrorStateLink href="/notes">個人のノートへ</ErrorStateLink>}
-    />
   );
 }

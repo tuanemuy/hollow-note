@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   applyRoster,
+  canLeave,
   PENDING_INVITATION_ID,
   rosterOf,
   selfIsLastOwner,
@@ -83,12 +84,36 @@ describe("P-32 roster", () => {
       expect(revoked.invitationDelta).toBe(0);
       expect(revoked.invitations).toHaveLength(1);
     });
+
+    it("carries a leave whose own row was never loaded as a delta", () => {
+      const after = applyRoster(rosterOf([member("m2", "u2", "editor")], []), {
+        kind: "leave",
+        membershipId: null,
+        role: "owner",
+      });
+
+      expect(after.members).toHaveLength(1);
+      expect(after.memberDelta).toBe(-1);
+      expect(after.ownerDelta).toBe(-1);
+      expect(after.left).toBe(true);
+    });
+
+    it("drops the viewer's own row when the leave knows it", () => {
+      const after = applyRoster(rosterOf([viewerAsOwner], []), {
+        kind: "leave",
+        membershipId: "m1",
+        role: "owner",
+      });
+
+      expect(after.members).toEqual([]);
+      expect(after.left).toBe(true);
+    });
   });
 
   describe("selfIsLastOwner", () => {
     it("judges against the whole workspace rather than the loaded page", () => {
       // 先頭ページには閲覧者しか載っていないが、ワークスペースには owner が 3 人いる。
-      expect(selfIsLastOwner(rosterOf([viewerAsOwner], []), VIEWER, 3)).toBe(
+      expect(selfIsLastOwner(rosterOf([viewerAsOwner], []), "owner", 3)).toBe(
         false,
       );
     });
@@ -97,7 +122,7 @@ describe("P-32 roster", () => {
       expect(
         selfIsLastOwner(
           rosterOf([viewerAsOwner, member("m2", "u2", "editor")], []),
-          VIEWER,
+          "owner",
           1,
         ),
       ).toBe(true);
@@ -109,24 +134,62 @@ describe("P-32 roster", () => {
         { kind: "removeMember", membershipId: "m2", role: "owner" },
       );
 
-      expect(selfIsLastOwner(after, VIEWER, 2)).toBe(true);
+      expect(selfIsLastOwner(after, "owner", 2)).toBe(true);
     });
 
-    it("stays false while the viewer's own row is off the loaded page", () => {
-      const roster = rosterOf([member("m2", "u2", "owner")], []);
+    it("judges the viewer whose own row is off the loaded page all the same", () => {
+      // 51 人目以降に参加した閲覧者。自分の行は先頭ページに無い。
+      const roster = rosterOf([member("m2", "u2", "editor")], []);
 
       expect(selfOf(roster, VIEWER)).toBeNull();
-      expect(selfIsLastOwner(roster, VIEWER, 1)).toBe(false);
+      expect(selfIsLastOwner(roster, "owner", 1)).toBe(true);
+      expect(selfIsLastOwner(roster, "editor", 1)).toBe(false);
+    });
+
+    it("stops claiming last owner once the viewer has optimistically left", () => {
+      const after = applyRoster(rosterOf([viewerAsOwner], []), {
+        kind: "leave",
+        membershipId: "m1",
+        role: "owner",
+      });
+
+      expect(selfIsLastOwner(after, "owner", 2)).toBe(false);
     });
 
     it("stays false for a viewer who is not an owner", () => {
       expect(
         selfIsLastOwner(
           rosterOf([member("m1", VIEWER, "editor")], []),
-          VIEWER,
+          "editor",
           1,
         ),
       ).toBe(false);
+    });
+  });
+
+  describe("canLeave", () => {
+    it("offers leaving to a viewer whose own row is off the loaded page", () => {
+      // 51 人目以降に参加した閲覧者。可否はページの中身ではなく、サーバー
+      // が答えた自分のロールと owner 総数だけで決まる。
+      const roster = rosterOf([member("m2", "u2", "owner")], []);
+
+      expect(selfOf(roster, VIEWER)).toBeNull();
+      expect(canLeave(roster, "editor", 1)).toBe(true);
+      expect(canLeave(roster, "owner", 1)).toBe(false);
+    });
+
+    it("closes leaving for the last owner", () => {
+      expect(canLeave(rosterOf([viewerAsOwner], []), "owner", 1)).toBe(false);
+    });
+
+    it("closes leaving once it has been requested", () => {
+      const after = applyRoster(rosterOf([viewerAsOwner], []), {
+        kind: "leave",
+        membershipId: "m1",
+        role: "owner",
+      });
+
+      expect(canLeave(after, "owner", 3)).toBe(false);
     });
   });
 });

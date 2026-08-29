@@ -354,6 +354,75 @@ export function describeInvitationRepositoryContract(
       ).toBe(2);
     });
 
+    it("ADP-workspace-022/023/075: the listings answer from the last committed state while the quota count sees its own unit of work", async () => {
+      const now = backend.clock.now();
+      const older = new Date(now.getTime() - MINUTE_MS);
+      await seed(1, older);
+      await seed(2, now);
+
+      const observed = await backend.scopeUnitOfWork.run(
+        workspaceScopeOf(1),
+        async (ctx) => {
+          await ctx.invitationRepository.insert(
+            makeInvitation(
+              3,
+              workspaceId(1),
+              userId(1),
+              new Date(now.getTime() + MINUTE_MS),
+            ),
+          );
+          const afterInsert = await ctx.invitationRepository.listByWorkspace(
+            workspaceId(1),
+            { page: 1, limit: 10 },
+          );
+          const countAfterInsert =
+            await ctx.invitationRepository.countPendingIssuedSince(
+              workspaceId(1),
+              older,
+            );
+          await ctx.invitationRepository.deleteByIds([invitationId(1)]);
+          const afterDelete =
+            await ctx.invitationRepository.listPendingByWorkspace(
+              workspaceId(1),
+              { page: 1, limit: 10 },
+            );
+          return {
+            afterInsert: afterInsert.items.map((row) => row.id),
+            afterInsertCount: afterInsert.count,
+            countAfterInsert,
+            afterDelete: afterDelete.items.map((row) => row.id),
+            countAfterDelete:
+              await ctx.invitationRepository.countPendingIssuedSince(
+                workspaceId(1),
+                older,
+              ),
+          };
+        },
+      );
+
+      expect(observed).toEqual({
+        // Neither the insert this unit staged nor the row it deleted
+        // moves an offset page: both listings are the committed state.
+        afterInsert: [invitationId(2), invitationId(1)],
+        afterInsertCount: 2,
+        afterDelete: [invitationId(2), invitationId(1)],
+        // The quota, decided inside the issuing transaction, does see
+        // both writes.
+        countAfterInsert: 3,
+        countAfterDelete: 2,
+      });
+
+      const settled = await scoped.invitationRepository.listByWorkspace(
+        workspaceId(1),
+        { page: 1, limit: 10 },
+      );
+      expect(settled.items.map((row) => row.id)).toEqual([
+        invitationId(3),
+        invitationId(2),
+      ]);
+      expect(settled.count).toBe(2);
+    });
+
     it("ADP-workspace-024: deleteByIds is idempotent per page and answers how many rows it removed", async () => {
       const now = backend.clock.now();
       await seed(1, now);

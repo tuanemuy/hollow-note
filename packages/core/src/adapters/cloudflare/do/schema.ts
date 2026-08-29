@@ -100,11 +100,12 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS memberships_workspace_joined_idx
      ON ${SCOPE_TABLES.memberships} (workspace_id, joined_at, id)`,
 
-  // No `(workspace_id, email) WHERE status = 'pending'` unique index,
-  // unlike `spec/database/index.md#invitations`: the port contract states
-  // the invariant is not enforced by the store and gives `insert` no
-  // conflict code for it, so a schema that rejected the second pending
-  // invitation would diverge from the reference backend (ADR 046).
+  // No `(workspace_id, email) WHERE status = 'pending'` unique index: the
+  // port contract leaves the "at most one pending invitation per address"
+  // invariant to `inviteMember`, which folds a second invite into a
+  // resend, and gives `insert` no conflict code to raise. A schema that
+  // rejected the second pending invitation would fail where the
+  // reference backend succeeds (ADR 046).
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.invitations} (
      id text PRIMARY KEY,
      workspace_id text NOT NULL,

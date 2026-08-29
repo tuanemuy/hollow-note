@@ -675,7 +675,7 @@ interface NoteMovePort {
 
 列挙対象は**作成が commit 済みの route すべて** — `active` / `moving` / `purging` — であり、除外するのは `reserved`（対応するノートが存在しないまま終わりうる）だけである。これは `NoteRouteStore.resolve`（`reserved` に加えて `purging` も隠す）より**意図的に広い**。`resolve` は「外部の読み取りがこのノートに到達してよいか」を答える口で、fan-out は「scope 全体の修正がどの route に触れなければならないか」を答える口であり、移動中・完全削除中のノートも著者 route の redaction の義務を負ったままだからである。ここを `active` だけに絞ると、それらのノートが account deletion の manifest から落ち、永久に未処理のまま残る。`tombstone` の扱いは unspecified で、アダプターは失効まで残しても物理的に回収してもよく、呼び出し側はどちらも許容しなければならない。
 
-moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。完了後に`abortMove`が同じmigration IDの`moving → active(source)`をCASする。routeが既にtargetならabortを拒否する。
+moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。abortはまず`abortMove`が同じmigration IDの`moving → active(source)`をCASし、**通ったときにだけ**補償へ進む。routeが既にtargetならCASが拒否し、何も補償せず停止する — switchがcommitした瞬間からstaged行がノートの唯一の複製になるので、解体してよいのはrouteがまだsourceの同じ世代を指しているあいだだけである。CASが通った後の`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。
 
 `ShareTokenProtector` は版付き鍵で共有トークンを暗号化する application port である。新規暗号化には現行版、復号には `keyVersion` が指す旧版を含む鍵束を使う。鍵はデータベースへ置かず、供給とローテーションはアダプターの責務とする。復号は所有者に共有 URL を返す経路だけで使い、共有リンクからの読み取りでは使わない。
 

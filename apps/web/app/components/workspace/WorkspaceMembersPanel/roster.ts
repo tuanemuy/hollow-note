@@ -22,12 +22,25 @@ export type Roster = Readonly<{
   memberDelta: number;
   ownerDelta: number;
   invitationDelta: number;
+  /** 閲覧者自身の脱退を楽観的に適用済みか。 */
+  left: boolean;
 }>;
 
+/**
+ * `leave` の `membershipId` が `null` になりうるのは、閲覧者自身の行が
+ * 読み込み済みのページに無い場合があるため（`joinedAt` 昇順なので後から
+ * 参加した人ほど後ろのページに来る）。行が無くても総数は動くので、差分
+ * だけを進める。
+ */
 export type RosterAction =
   | Readonly<{
       kind: "removeMember";
       membershipId: string;
+      role: WorkspaceRoleView;
+    }>
+  | Readonly<{
+      kind: "leave";
+      membershipId: string | null;
       role: WorkspaceRoleView;
     }>
   | Readonly<{ kind: "revokeInvitation"; invitationId: string }>
@@ -42,6 +55,7 @@ export const rosterOf = (
   memberDelta: 0,
   ownerDelta: 0,
   invitationDelta: 0,
+  left: false,
 });
 
 export function applyRoster(current: Roster, action: RosterAction): Roster {
@@ -54,6 +68,19 @@ export function applyRoster(current: Roster, action: RosterAction): Roster {
         ),
         memberDelta: current.memberDelta - 1,
         ownerDelta: current.ownerDelta - (action.role === "owner" ? 1 : 0),
+      };
+    case "leave":
+      return {
+        ...current,
+        members:
+          action.membershipId === null
+            ? current.members
+            : current.members.filter(
+                (member) => member.membershipId !== action.membershipId,
+              ),
+        memberDelta: current.memberDelta - 1,
+        ownerDelta: current.ownerDelta - (action.role === "owner" ? 1 : 0),
+        left: true,
       };
     case "revokeInvitation":
       return {
@@ -93,20 +120,33 @@ export const selfOf = (
 /**
  * 最後の owner の脱退禁止（WS-06 / PAGE-p32-008）。
  *
- * owner 数はワークスペース全体の値で判定する — 読み込み済みのページから
- * 数え直すと、先頭 50 件に他の owner が載らないだけで自分が唯一の owner に
- * 見え、正当な脱退が閉じる。サーバーの厳密値に、楽観的な除名・脱退の分
- * （`ownerDelta`）だけを足す。
+ * 判定材料はどちらも読み込み済みのページの外から取る — owner 数はサーバー
+ * の厳密値（ページから数え直すと、先頭 50 件に他の owner が載らないだけで
+ * 自分が唯一の owner に見え、正当な脱退が閉じる）、閲覧者のロールは
+ * `listMembers` の `viewerRole`（`joinedAt` 昇順なので、後から参加した閲覧者
+ * 自身の行は先頭ページに無い）。楽観的な除名・脱退の分（`ownerDelta`）だけ
+ * を足す。
+ *
+ * 自分の脱退を楽観適用した後は判定そのものが意味を失うので `left` で閉じる
+ * — そうしないと、脱退の往復のあいだだけ「最後の owner は脱退できません」が
+ * 出る。
  */
 export const selfIsLastOwner = (
   roster: Roster,
-  viewerUserId: string,
+  viewerRole: WorkspaceRoleView,
   serverOwnerCount: number,
-): boolean => {
-  const self = selfOf(roster, viewerUserId);
-  return (
-    self !== null &&
-    self.role === "owner" &&
-    serverOwnerCount + roster.ownerDelta <= 1
-  );
-};
+): boolean =>
+  !roster.left &&
+  viewerRole === "owner" &&
+  serverOwnerCount + roster.ownerDelta <= 1;
+
+/**
+ * 脱退（WS-06 手順 1）を出せるか。閲覧者自身の行が読み込み済みのページに
+ * 載っているかには依存しない。
+ */
+export const canLeave = (
+  roster: Roster,
+  viewerRole: WorkspaceRoleView,
+  serverOwnerCount: number,
+): boolean =>
+  !roster.left && !selfIsLastOwner(roster, viewerRole, serverOwnerCount);

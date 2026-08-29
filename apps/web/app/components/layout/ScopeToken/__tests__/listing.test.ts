@@ -6,6 +6,8 @@ import {
   failLoad,
   IDLE_LISTING,
   type Listing,
+  type ShellScope,
+  scopeIdentity,
   shouldLoadOnOpen,
 } from "../listing";
 
@@ -37,6 +39,39 @@ describe("shouldLoadOnOpen", () => {
     expect(
       shouldLoadOnOpen(loadedWith([workspace("ws_a", "設計")], null)),
     ).toBe(false);
+  });
+});
+
+describe("scopeIdentity", () => {
+  const design: ShellScope = {
+    kind: "workspace",
+    workspaceId: "ws_a",
+    name: "設計",
+    slug: null,
+    publication: "private",
+  };
+
+  it("asks for a refetch once the source of truth changes", () => {
+    expect(
+      shouldLoadOnOpen(loadedWith([workspace("ws_a", "設計")], null)),
+    ).toBe(false);
+
+    expect(scopeIdentity({ ...design, name: "設計チーム 2026" })).not.toBe(
+      scopeIdentity(design),
+    );
+    expect(scopeIdentity({ ...design, workspaceId: "ws_b" })).not.toBe(
+      scopeIdentity(design),
+    );
+    expect(
+      scopeIdentity({ ...design, slug: "design", publication: "published" }),
+    ).toBe(scopeIdentity(design));
+    expect(shouldLoadOnOpen(IDLE_LISTING)).toBe(true);
+  });
+
+  it("keeps the personal context apart from a workspace", () => {
+    expect(scopeIdentity({ kind: "personal" })).not.toBe(
+      scopeIdentity({ ...design, name: "個人" }),
+    );
   });
 });
 

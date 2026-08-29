@@ -1,5 +1,5 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
-import type { UserId } from "@repo/core/domain/identity/valueObject";
+import { UserId } from "@repo/core/domain/identity/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import type { Membership } from "@repo/core/domain/workspace/membership";
 import { MembershipPolicy } from "@repo/core/domain/workspace/services/membershipPolicy";
@@ -8,9 +8,20 @@ import {
   WorkspaceAuthorization,
 } from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
-import type { RequestContainer } from "../di/types";
-import { ConflictError, isNotFoundError } from "../errors";
+import type { RequestContainer, WorkerContainer } from "../di/types";
+import {
+  ConflictError,
+  isConflictError,
+  isNotFoundError,
+  SystemError,
+  SystemErrorCode,
+} from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import {
+  type ScopeTaskPayload,
+  ScopeTaskPriority,
+} from "../ports/scopeTaskScheduler";
+import { ScopeKey } from "../scope";
 import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
 
 /**
@@ -216,19 +227,15 @@ export async function restoreRemovalEdge(
  * Re-issues the edge drop for a removal whose local commit landed and
  * whose `completeRemoval` did not (`leaveWorkspace`).
  *
- * That failure is only logged, so the edge stays `removing`: absent from
- * the member's list, which is what the removal wanted, but still holding
- * the `(userId, workspaceId)` pair — so the removed user cannot be
- * invited back. Repeating the removal is the natural move and the only
- * one available, and it stops at `MEMBERSHIP_NOT_FOUND` because the
- * membership is exactly what is already gone. Answering that refusal by
- * settling the edge first is what gives the state an owner.
+ * Repeating the departure stops at `MEMBERSHIP_NOT_FOUND` because the
+ * membership is exactly what is already gone, so the refusal is still the
+ * caller's answer; settling the edge before it is re-raised is what makes
+ * the retry worth issuing at all. It is a fast path in front of
+ * {@link MEMBERSHIP_REMOVAL_EDGE_TASK_KIND}, not the only owner of the
+ * obligation.
  *
  * Only that refusal drives it: any other means the membership still
- * exists and the removal has to run properly. The refusal itself is still
- * the caller's answer — there is no membership to remove — so this runs
- * before it is re-raised, and {@link settleRemovalEdge} swallows a
- * `completeRemoval` that finds an `active` edge instead.
+ * exists and the removal has to run properly.
  */
 export async function settleStrandedRemovalEdge(
   container: RequestContainer,
@@ -244,8 +251,59 @@ export async function settleStrandedRemovalEdge(
 }
 
 /**
+ * Scope-task kind that carries a removal's edge drop
+ * ([ADR 040](spec/adr/040-continuation-transport.md)).
+ */
+export const MEMBERSHIP_REMOVAL_EDGE_TASK_KIND =
+  "workspace.membershipRemovalEdgeContinued";
+
+/**
+ * Row key of one removal's obligation. The directory edge carries no
+ * operation id a removal could re-derive — it is keyed on the pair itself
+ * (`MembershipDirectoryReservationStore.beginRemoval`) — so the pair is
+ * also this continuation's deterministic id
+ * ([ADR 041](spec/adr/041-deterministic-continuation-event-id.md)): two
+ * concurrent removals of one membership arm the same row, and a turn
+ * replayed after a lost response rewrites it instead of forking.
+ */
+const removalEdgeTaskId = (userId: UserId, workspaceId: WorkspaceId): string =>
+  `${workspaceId}:${userId}`;
+
+/**
+ * Arms the durable driver of the edge drop, inside the transaction that
+ * deletes the Membership (`removeMember` / `leaveWorkspace`).
+ *
+ * {@link settleRemovalEdge} runs immediately after that commit and
+ * normally drops the edge before the request returns, but its failure is
+ * not the caller's to retry: the membership is gone, so repeating the
+ * removal answers `MEMBERSHIP_NOT_FOUND`. Left with no owner, the
+ * `removing` edge would hold `(userId, workspaceId)` for good — neither a
+ * re-invitation (`MEMBERSHIP_ALREADY_EXISTS`) nor another removal could
+ * clear it, and the removed member could never rejoin.
+ *
+ * Storing the row in the removal's own transaction is what makes it
+ * durable: an edge is announced `removing` only for a membership this
+ * transaction deletes, so a committed row and a standing obligation are
+ * the same fact.
+ */
+export const armRemovalEdgeSettlement = (
+  ctx: ScopeUnitOfWorkContext,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+  now: Date,
+): Promise<void> =>
+  ctx.scopeTaskScheduler.schedule({
+    kind: MEMBERSHIP_REMOVAL_EDGE_TASK_KIND,
+    operationId: removalEdgeTaskId(userId, workspaceId),
+    priority: ScopeTaskPriority.securityCleanup,
+    dueAt: now,
+    payload: { memberUserId: userId },
+  });
+
+/**
  * Drops the global directory edge once the removal's residue is settled
- * (`removeMember` 手順 5 / `leaveWorkspace` 手順 4).
+ * (`removeMember` 手順 5 / `leaveWorkspace` 手順 4), then settles the row
+ * that stood behind it.
  *
  * Called straight after the local commit because this slice leaves no
  * residue behind: the Job aggregate and the BackupRecord the spec waits
@@ -254,10 +312,10 @@ export async function settleStrandedRemovalEdge(
  *
  * A failure is logged, not raised: the membership is already gone, so the
  * removal itself succeeded, and an edge left `removing` is absent from the
- * member's list anyway — the outcome the removal wanted. What it is not is
- * final, since the pair stays claimed against a future join, which is why
- * {@link settleStrandedRemovalEdge} re-issues it from the request that
- * finds the membership already gone.
+ * member's list anyway — the outcome the removal wanted. The row armed by
+ * {@link armRemovalEdgeSettlement} is left standing in that case, which is
+ * what carries the rest of the way; the row is settled only once the edge
+ * is actually gone.
  */
 export async function settleRemovalEdge(
   container: RequestContainer,
@@ -272,5 +330,88 @@ export async function settleRemovalEdge(
     );
   } catch (cause) {
     container.logger.error(`${label} directory edge removal failed`, { cause });
+    return;
   }
+  try {
+    await clearRemovalEdgeTask(container, userId, workspaceId);
+  } catch (cause) {
+    container.logger.error(`${label} removal edge task settle failed`, {
+      cause,
+    });
+  }
+}
+
+const clearRemovalEdgeTask = (
+  container: Pick<RequestContainer, "scopeUnitOfWorkProvider">,
+  userId: UserId,
+  workspaceId: WorkspaceId,
+): Promise<void> =>
+  container.scopeUnitOfWorkProvider.run(
+    ScopeKey.workspace(workspaceId),
+    (ctx) =>
+      ctx.scopeTaskScheduler.complete(
+        MEMBERSHIP_REMOVAL_EDGE_TASK_KIND,
+        removalEdgeTaskId(userId, workspaceId),
+      ),
+  );
+
+const corruptTurn = (detail: string): SystemError =>
+  new SystemError(
+    SystemErrorCode.DataIntegrityError,
+    `Membership removal edge continuation: ${detail}`,
+  );
+
+const readRemovalEdgeTurn = (
+  scope: ScopeKey,
+  payload: ScopeTaskPayload,
+): Readonly<{ userId: UserId; workspaceId: WorkspaceId }> => {
+  if (scope.type !== "workspace") {
+    throw corruptTurn(`scope ${scope.type} owns no membership removal`);
+  }
+  const memberUserId = payload.memberUserId;
+  if (typeof memberUserId !== "string" || memberUserId.length === 0) {
+    throw corruptTurn("payload carries no memberUserId");
+  }
+  return {
+    userId: UserId.create(memberUserId),
+    workspaceId: scope.workspaceId,
+  };
+};
+
+/**
+ * Re-issues the edge drop from the scope plane's own driver, for a
+ * removal whose local commit landed and whose `completeRemoval` did not
+ * (`application/workers/scopeTaskRunner.ts`).
+ *
+ * Delivery is at-least-once, so the turn is written to converge from
+ * every state the pair can be in by the time it runs. An edge already
+ * gone succeeds — that is the redelivery of a turn that worked. An edge
+ * a later join has re-claimed answers `ConflictError`, and that refusal is
+ * the point rather than a fault: the pair now belongs to a membership this
+ * removal never announced, so the row is settled instead of retried, and
+ * the new member's edge is left alone.
+ */
+export async function continueRemovalEdgeSettlement(
+  container: WorkerContainer,
+  params: Readonly<{ scope: ScopeKey; payload: ScopeTaskPayload }>,
+): Promise<void> {
+  const { userId, workspaceId } = readRemovalEdgeTurn(
+    params.scope,
+    params.payload,
+  );
+  try {
+    await container.membershipDirectoryReservationStore.completeRemoval(
+      userId,
+      workspaceId,
+    );
+  } catch (cause) {
+    if (!isConflictError(cause)) {
+      throw cause;
+    }
+    container.logger.warn(
+      "[workspace] a later edge holds the removed pair; nothing to drop",
+      { cause, userId, workspaceId },
+    );
+  }
+  await clearRemovalEdgeTask(container, userId, workspaceId);
 }

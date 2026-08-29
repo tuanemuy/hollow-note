@@ -153,12 +153,19 @@ async function listWorkspaceUsage(
  * that has never consumed anything.
  *
  * The workspace section is one keyset page of the global
- * `membership_directory`, narrowed to the roles the figures mean
- * something to, resolved for display through the directory batch read and
- * then fanned out to at most twenty workspace scope objects, six at a
- * time. `updatedAt` describes the viewer's own records only — a workspace
- * row belongs to a page, and folding its timestamp in would make the
- * screen's "as of" jump as the reader pages.
+ * `membership_directory` in its `created_at DESC, workspace_id` order,
+ * narrowed to the roles the figures mean something to, resolved for
+ * display through the directory batch read and then fanned out to at most
+ * twenty workspace scope objects, six at a time. `updatedAt` describes the
+ * viewer's own records only — a workspace row belongs to a page, and
+ * folding its timestamp in would make the screen's "as of" jump as the
+ * reader pages.
+ *
+ * `workspaceLimit` / `workspaceCursor` are validated by the directory
+ * port, which raises `ValidationError("INVALID_PAGINATION")` for a limit
+ * outside 1–20, an unreadable cursor, or a retired routing generation.
+ * `nextWorkspaceCursor` is the port's own opaque value, passed through
+ * untouched.
  */
 export async function getUsageSnapshot({
   container,

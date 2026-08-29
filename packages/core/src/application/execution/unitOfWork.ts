@@ -63,7 +63,7 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
 
 /**
  * Scope-plane transaction context: one scope object's repositories and
- * its local outbox. Later slices add tag / storage repositories here.
+ * its local outbox. Later slices add the tag repositories here.
  * `cleanupAdmission` is bound to the same scope — every normal write
  * entry point calls `assertWritable` (and `assertActorWritable` where an
  * actor is involved) before mutating.

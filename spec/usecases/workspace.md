@@ -67,7 +67,7 @@ Workspace / Membership / Invitation の正データは `{ type: "workspace", wor
 
 ### 処理フロー
 
-1. global D1 の active / pending `membership_directory` から `role = owner` の件数を数え、`MembershipPolicy.ensureWorkspaceQuota` を呼ぶ
+1. global D1 の `membership_directory` から `UserWorkspaceDirectory.countOwnedByUser` で `role = owner` の件数を数え、`MembershipPolicy.ensureWorkspaceQuota` を呼ぶ。数える edge の状態は `spec/domains/workspace.md` の同メソッドの規定に従う（未確定の join も含む）
 2. workspace ID と operation ID を採番し、slug があれば `workspace_slug_reservations` を予約する。同時予約は一意制約で `SLUG_ALREADY_USED` になる
 3. workspace scope DO の `ScopeUnitOfWorkProvider.run` で `Workspace.create` と `Membership.create(role: "owner")` を保存する
 4. local commit 後に global D1 の membership edge、slug reservation、`workspace_directory` を operation ID 条件で active にする。activation の応答を失った場合は再試行し、local commit 前に失敗した reservation は解放する
@@ -588,7 +588,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 
 ### 出力DTO
 
-`members: { membershipId; userId; displayName; email; avatarUrl; role; joinedAt }[]`, `count`, `ownerCount: number`, `canManage: boolean`
+`members: { membershipId; userId; displayName; email; avatarUrl; role; joinedAt }[]`, `count`, `ownerCount: number`, `viewerRole`, `canManage: boolean`
 
 ### 処理フロー
 
@@ -596,6 +596,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 2. `MembershipRepository.listByWorkspace` のpage内最大100 UserIdを`UserBatchReader.resolveMany`でshard別に最大6接続で解決し、射影を組み立てる
 3. `MembershipRepository.countByRole(workspaceId, "owner")` を `ownerCount` として返す
 4. `canManage` は `WorkspaceAuthorization.can(role, "manageMembers")`。UI が操作の可否を出し分けるために返す
+5. 手順 1 で解決したロールを `viewerRole` として返す。一覧は `joinedAt` 昇順なので閲覧者自身の行はページに載るとは限らず、自分の操作（WS-06 の脱退）の可否を `members` から読み取ることはできない
 
 ### エラーケース
 
@@ -726,7 +727,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 2. 対象を引き、`MembershipPolicy.ensureNotSelfRemoval(actorUserId, target)` を呼ぶ
 3. `ensureOwnerRemains(ownerCount, target, null)` を呼ぶ
 4. account deletion lockまたは`WorkspaceOperationLockStore.hasMoveConflict(target.userId)`が真なら拒否する。`JobRepository.listActiveByRequester(target.userId, 100)`で最終述語にlimitを適用する
-5. global directory edgeを`removing`にしてから、local UoWで4のJob終端・後始末・Membership削除・`workspace.membership.removed`を保存する。同時に残Job正データと`BackupRecord.userId`を100件ずつ削除するsecurity cleanup taskを保存し、全residue削除と`job.removed`発行が完了してからD1 edgeを削除する
+5. global directory edgeを`removing`にしてから、local UoWで4のJob終端・後始末・Membership削除・`workspace.membership.removed`を保存する。同時に残Job正データと`BackupRecord.userId`を100件ずつ削除するsecurity cleanup taskを保存し、全residue削除と`job.removed`発行が完了してからD1 edgeを削除する。edge の削除は同じ transaction に積む scope task（`workspace.membershipRemovalEdgeContinued`。ID は `(workspaceId, userId)` の組）が耐久的に駆動し、commit 直後の即時削除はその前に置く速い経路である。削除の応答を失っても edge は必ず落ちる — 落ちなければ `(userId, workspaceId)` の組が押さえられ続け、再除名も再招待もその組を解放できない
 6. 手順 5 の transaction が拒否されたら `abandonRemoval` で宣言を取り消し、edgeを`active`へ戻す。手順 2〜4 の規則は宣言の前と削除transactionの中の2回評価され、2回目が拒否しうる（最後のownerの保護・削除受理・actorのrole喪失はいずれも再試行で解けない終端の拒否である）。取り消さなければ、まだメンバーである利用者の一覧からワークスペースが消えたまま戻せない。**Membershipが既に無いという拒否だけは取り消さない** — 同じMembershipの別の除名が着地したということであり、edgeはその除名のものである
 
 生成物の回収は除名では特に落とせない。一括ダウンロードの生成物は要求者の個人 subject に帰属して TTL が 7 日あるため、回収しなければ、アクセス権を失った利用者の手元にこのワークスペースのノート本文を含む ZIP が 7 日残る（[usecases/job.md](./job.md)）。
@@ -762,7 +763,7 @@ global cleanupがlocal phaseの**後**に走ることで、削除受理からdir
 1. `MembershipRepository.findByWorkspaceAndUser` を引く。不在なら、`MEMBERSHIP_NOT_FOUND` を返す**前に** `completeRemoval` を再発行する — local commit は着地したが global の edge を落とし損ねた脱退は、この状態でしか観測できない。edge が `removing` のまま残ると `(userId, workspaceId)` の組が押さえられ続け、以後の再参加が通らない。応答は不在のまま `NotFoundError("MEMBERSHIP_NOT_FOUND")`
 2. account deletion lockと`WorkspaceOperationLockStore.hasMoveConflict(userId)`を確認し、`ensureOwnerRemains(ownerCount, membership, null)`を呼ぶ
 3. `JobRepository.listActiveByRequester(userId, 100)`で脱退者の実行中Jobを集める
-4. directory edgeを`removing`にしてから、local UoWでJob終端・Membership削除・security cleanup task保存を行う。残Job正データとBackupRecordを消し終えてからdirectory edgeを削除する
+4. directory edgeを`removing`にしてから、local UoWでJob終端・Membership削除・security cleanup task保存を行う。残Job正データとBackupRecordを消し終えてからdirectory edgeを削除する。`removeMember` 手順 5 と同じく、edge の削除は同じ transaction に積む scope task（`workspace.membershipRemovalEdgeContinued`）が耐久的に駆動し、手順 1 の再発行と即時削除はその前に立つ速い経路である
 5. 手順 4 の transaction が拒否されたら `removeMember` 手順 6 と同じ形で `abandonRemoval` を呼び、宣言を取り消す。2 人の owner が同時に脱退すれば手順 2 の owner 数の確認は両方が通り、削除transactionは片方しか通らない。Membershipが既に無い場合だけは取り消さない
 
 ### エラーケース

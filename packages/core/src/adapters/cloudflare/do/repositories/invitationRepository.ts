@@ -133,6 +133,12 @@ export function createCloudflareInvitationRepository(
     const limit = Math.max(0, pagination.limit);
     const offset = Math.max(0, (pagination.page - 1) * limit);
     try {
+      // Straight to storage rather than overlay-aware: an offset page
+      // cannot be merged with staged rows without re-reading the whole
+      // set. Both listings say so in the port contract — they are the
+      // reads that answer from the last committed state, which is why
+      // the deletion sweep probes for leftovers in a turn that stages no
+      // delete of its own.
       const [items, totals] = await Promise.all([
         session.query(
           statement(
@@ -208,16 +214,28 @@ export function createCloudflareInvitationRepository(
       workspaceId: WorkspaceId,
       since: Date,
     ): Promise<number> {
+      const boundary = toTimestamp(since);
       try {
-        const rows = await session.query(
-          statement(
-            `SELECT COUNT(*) AS total FROM ${TABLE}
+        // Materialised rather than a `COUNT(*)` for the reason
+        // `membershipRepository.countByRole` gives: the issuance quota is
+        // decided inside the transaction that issues, so an aggregate
+        // computed over storage would miss the invitation this unit has
+        // already staged and let the quota be exceeded.
+        const rows = await session.readRows({
+          table: TABLE,
+          statement: statement(
+            `SELECT ${base.selection} FROM ${TABLE}
                WHERE workspace_id = ? AND status = 'pending' AND created_at >= ?`,
             workspaceId,
-            toTimestamp(since),
+            boundary,
           ),
-        );
-        return rows[0] === undefined ? 0 : int(rows[0], "total");
+          keyOf: (row) => text(row, "id"),
+          matches: (row) =>
+            text(row, "workspace_id") === workspaceId &&
+            text(row, "status") === "pending" &&
+            int(row, "created_at") >= boundary,
+        });
+        return rows.length;
       } catch (cause) {
         throwTranslated(`${TABLE} quota count`, cause);
       }

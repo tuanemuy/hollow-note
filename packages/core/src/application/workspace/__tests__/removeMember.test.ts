@@ -1,8 +1,10 @@
 import type { UserId } from "@repo/core/domain/identity/valueObject";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
+import { isConflictError } from "../../errors";
 import { createBlankNote } from "../../note/createBlankNote";
 import { getNote } from "../../note/getNote";
+import { acceptInvitation } from "../acceptInvitation";
 import { changeMemberRole } from "../changeMemberRole";
 import { listUserWorkspaces } from "../listUserWorkspaces";
 import { removeMember } from "../removeMember";
@@ -10,14 +12,18 @@ import { resolveWorkspaceAccess } from "../resolveWorkspaceAccess";
 import {
   createWorkspaceHarness,
   drainOutbox,
+  drainScopeTasks,
   expectBusinessRule,
   expectNotFound,
   membershipEdges,
   outboxPayloads,
+  scheduledTasks,
+  seedInvitation,
   seedWorkspace,
   storedMembership,
   storedMemberships,
   type TestHarness,
+  workspaceScope,
 } from "./harness";
 
 /**
@@ -361,7 +367,7 @@ describe("removeMember", () => {
     expect(edgeOf(h, EDITOR)).toBeNull();
   });
 
-  it("TC-workspace-218: an edge whose drop failed stays `removing` and leaves the member's list at once", async () => {
+  it("TC-workspace-218: an edge whose drop failed leaves the member's list at once and is collected by the removal's own continuation", async () => {
     const h = createWorkspaceHarness();
     await seed(h);
 
@@ -393,6 +399,88 @@ describe("removeMember", () => {
         input: { userId: EDITOR },
       }),
     ).resolves.toMatchObject({ workspaces: [], hasMore: false });
+    // The transaction that deleted the membership armed the drop, so the
+    // obligation outlived the request that could not discharge it.
+    expect(scheduledTasks(h, WORKSPACE)).toHaveLength(1);
+
+    await drainScopeTasks(h);
+
+    expect(edgeOf(h, EDITOR)).toBeNull();
+    expect(scheduledTasks(h, WORKSPACE)).toHaveLength(0);
+  });
+
+  it("TC-workspace-218: the collected edge frees the pair, and a redelivered continuation leaves the rejoined member alone", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const store = h.container.membershipDirectoryReservationStore;
+    await removeMember({
+      container: {
+        ...h.container,
+        membershipDirectoryReservationStore: {
+          ...store,
+          completeRemoval: () =>
+            Promise.reject(new Error("directory shard unreachable")),
+        },
+      },
+      input: {
+        workspaceId: WORKSPACE,
+        actorUserId: OWNER,
+        membershipId: "m-editor",
+      },
+    });
+
+    const armed = scheduledTasks(h, WORKSPACE)[0];
+    if (armed === undefined) {
+      throw new Error("the removal armed no continuation");
+    }
+
+    const invite = await seedInvitation(h, WORKSPACE, {
+      invitationId: "invitation-rejoin",
+      invitedBy: OWNER,
+      role: "editor",
+    });
+    const rejoin = () =>
+      acceptInvitation({
+        container: h.container,
+        input: { token: invite.token, userId: EDITOR },
+      });
+
+    // The stranded edge still claims `(userId, workspaceId)`, so the join
+    // it announced is refused on the invitee's own shard.
+    await expect(rejoin()).rejects.toSatisfy(
+      (error: unknown) =>
+        isConflictError(error) && error.code === "MEMBERSHIP_ALREADY_EXISTS",
+    );
+
+    await drainScopeTasks(h);
+    await expect(rejoin()).resolves.toMatchObject({
+      workspaceId: WORKSPACE,
+      role: "editor",
+    });
+
+    // Delivery is at-least-once: the same continuation arrives again, by
+    // which time the pair belongs to a membership it never announced.
+    await h.container.scopeUnitOfWorkProvider.run(
+      workspaceScope(WORKSPACE),
+      (ctx) =>
+        ctx.scopeTaskScheduler.schedule({
+          kind: armed.kind,
+          operationId: armed.operationId,
+          priority: armed.priority,
+          dueAt: h.clock.now(),
+          payload: armed.payload,
+        }),
+    );
+    await drainScopeTasks(h);
+
+    expect(edgeOf(h, EDITOR)?.edgeState).toBe("active");
+    expect(scheduledTasks(h, WORKSPACE)).toHaveLength(0);
+    await expect(
+      listUserWorkspaces({ container: h.container, input: { userId: EDITOR } }),
+    ).resolves.toMatchObject({
+      workspaces: [{ workspaceId: WORKSPACE, role: "editor" }],
+    });
   });
 
   it("TC-workspace-218: a removal that lost the race leaves the winner's edge alone", async () => {

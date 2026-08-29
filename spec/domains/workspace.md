@@ -134,7 +134,7 @@ Invitation = PendingInvitation | AcceptedInvitation | RevokedInvitation
 
 **不変条件**
 
-- `(workspaceId, email)` に対して `pending` の招待は最大 1 件
+- `(workspaceId, email)` に対して `pending` の招待は最大 1 件。これは `inviteMember` が既存の pending を引いて resend へ畳むことで保つ規則であり、**store は強制しない**（[database/index.md](../database/index.md) の `invitations`。部分 UNIQUE 索引を置かない理由はそこにある）。同時に発行された 2 件はどちらも成立しうる
 - 受諾済み・取り消し済みの招待は再び `pending` に戻らない
 - 有効期限は発行から 14 日
 
@@ -252,7 +252,7 @@ interface WorkspaceSlugReservationStore {
 }
 ```
 
-`WorkspaceDirectoryProjectionWriter` は `workspace_directory` の唯一の書き手で、`workspace.created` / `.profileUpdated` / `.slugChanged` / `.published` / `.unpublished` は scope-local commit 後の snapshot 1 件に、`workspace.deleted` は tombstone になる。投影は out-of-band かつ at-least-once なので、順序は `sourceVersion` だけで決める — 保存済みの版以下の snapshot は何も書かない。これが stale event の規則と応答喪失の再送の規則を兼ねる。**どちらだったかは答えない**（ガード付き UPDATE が 0 行だったことを報告できないバックエンドがあり、呼び出し側も必要としない。投影は誰が書いたかに関わらず最大の版へ収束する）。tombstone は終端で、どの版の snapshot も再開させない（削除済み workspace が一覧やサイトマップへ戻らないため）。同じ operation ID の tombstone は冪等、別 operation の tombstone は `ConflictError`。`slug` は書き込み時に他の行から奪う（[database/index.md](../database/index.md) の `workspace_directory`）。
+`WorkspaceDirectoryProjectionWriter` は `workspace_directory` の唯一の書き手で、`workspace.created` / `.profileUpdated` / `.slugChanged` / `.published` / `.unpublished` は scope-local commit 後の snapshot 1 件に、`workspace.deleted` は tombstone になる。投影は out-of-band かつ at-least-once なので、順序は `sourceVersion` だけで決める — 保存済みの版以下の snapshot は何も書かない。これが stale event の規則と応答喪失の再送の規則を兼ねる。**どちらだったかは答えない**（ガード付き UPDATE が 0 行だったことを報告できないバックエンドがあり、呼び出し側も必要としない。投影は誰が書いたかに関わらず最大の版へ収束する）。tombstone は終端で、どの版の snapshot も再開させない（削除済み workspace が一覧やサイトマップへ戻らないため）。同じ operation ID の tombstone は冪等、別 operation の tombstone は `ConflictError`。`slug` は書き込み時に他の行から奪う（[database/index.md](../database/index.md) の `workspace_directory`）。奪う操作と snapshot の適用は 1 段である — **何も書かない snapshot（stale、または tombstone 済みの行に対するもの）は何も奪わない**。剥がしだけが適用より長生きすると、第三者のワークスペースが slug を失ったまま誰にも取られず、その行自身の次の `workspace.*` イベントまでサイトマップから黙って消える。
 
 `WorkspaceRepository` は current workspace scope に束縛されて自 scope の 1 行しか見えないので、slug の global uniqueness は `WorkspaceSlugReservationStore` が global D1 の `workspace_slug_reservations` で担う。`ConflictError("SLUG_ALREADY_USED")` を返すのはこのポートであり、`WorkspaceRepository` ではない。`WorkspaceSlug` は自身の構築時に小文字化されるので、渡す値がそのまま `normalized_slug` である。
 
@@ -289,7 +289,7 @@ directory edgeを消す前に、その利用者のJob正データ・BackupRecord
 
 ワークスペース削除はmanifestに固定したIDを`deleteByIds`へ最大100件ずつ渡し、Membership/Invitationを先に消してからWorkspaceを消す。メンバー数は `listByWorkspace` の `PaginationResult` から得る。
 
-`listByWorkspace` はこのポートで**唯一、自分の transaction の書き込みを観測しない読み**である。offset のページは未コミットの変更から組み直せず、書き込みを buffer するバックエンドは最後にコミットされた状態から答える。したがって同じ transaction の中では書き込みより前に呼ぶか、別の turn で呼ぶ — 削除の掃引は後者で、何も消さない turn で残件を探る。
+`MembershipRepository.listByWorkspace` と `InvitationRepository.listByWorkspace` / `listPendingByWorkspace` の 3 本は、**自分の transaction の書き込みを観測しない**。offset のページは未コミットの変更から組み直せないため、**どのバックエンドでも**最後にコミットされた状態から答える — 同じ unit of work の insert も `deleteByIds` も見えない。バックエンドごとの裁量ではない: 判定が「書き込みをどう stage するか」に依存すると、削除の掃引が一方では終端し他方では周回する。したがって同じ transaction の中では書き込みより前に呼ぶか、別の turn で呼ぶ — 削除の掃引は後者で、何も消さない turn で残件を探る。これらを除く読み（`findById` 系・`countByRole`・`countPendingIssuedSince`）は自 UoW の書き込みを観測する。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("MEMBERSHIP_ALREADY_EXISTS")`、`SystemError(DatabaseError)`
 
@@ -375,9 +375,9 @@ type WorkspaceDeletionManifestItem =
 
 `InvitationRouteStore.resolveActive` は `active` な route を、期限切れかどうかに関わらず解決する。期限の判定は workspace scope の Invitation が持つので、route で打ち切ると preview の `expired` と accept の `InvitationExpired` が「存在しない」に潰れてしまう。書き込み側は逆で、期限を過ぎた `reserved` 行の `activate` は `ConflictError` にし、recovery が `abandon` する（[database/index.md](../database/index.md) の `invitation_routes`）。
 
-`listByWorkspace` と `listPendingByWorkspace` はどちらも `createdAt DESC, id DESC` の全順序で読む（`id` の tiebreak が無いと同時刻の招待が page 間で重複・欠落しうる）。分かれているのは絞り込みの位置である。`listByWorkspace` は status を絞らず、削除 manifest が歩く列挙であり `count` はワークスペースの招待総数になる。画面が引く保留中一覧は `listPendingByWorkspace` を使い、`count` は保留中の総数になる — page を引いてから絞ると、終端状態の招待が 1 ページ分並んだだけで保留中の招待が隠れ、件数も縮む。期限切れは status ではないので、期限を過ぎた `pending` はどちらにも返り続ける（判定は `Invitation.isExpired` が呼び出し側の `now` に対して行う）。
+`listByWorkspace` と `listPendingByWorkspace` はどちらも `createdAt DESC, id DESC` の全順序で読む（`id` の tiebreak が無いと同時刻の招待が page 間で重複・欠落しうる）。分かれているのは絞り込みの位置である。`listByWorkspace` は status を絞らず、削除 manifest が歩く列挙であり `count` はワークスペースの招待総数になる。画面が引く保留中一覧は `listPendingByWorkspace` を使い、`count` は保留中の総数になる — page を引いてから絞ると、終端状態の招待が 1 ページ分並んだだけで保留中の招待が隠れ、件数も縮む。期限切れは status ではないので、期限を過ぎた `pending` はどちらにも返り続ける（判定は `Invitation.isExpired` が呼び出し側の `now` に対して行う）。どちらも `MembershipRepository.listByWorkspace` と同じく最後にコミットされた状態から答える（`MembershipRepository` の節）。
 
-`countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。
+`countPendingIssuedSince` は招待の発行上限（[usecases/workspace.md](../usecases/workspace.md) の `inviteMember`）の判定に使う。返すのは件数だけで、**枠が空く時刻は返せない** — 上限は「発行済みかつ未処理の件数」で決まり、招待が 1 件受諾されるか取り消されればその時点で枠が空くため、時刻を予告できない。この性質から、上限に達したことを表す応答は「待てば解ける」レート制限とは別のものとして扱う（[presentation/index.md](../presentation/index.md)）。2 つの listing とは逆に、この count は `countByRole` と同じく自 UoW の書き込みを観測する — 発行する transaction の中で枠を決めるので、同じ unit が既に書いた招待を数え落とすと次の発行が上限を越える。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
 

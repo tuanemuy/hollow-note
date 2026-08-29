@@ -26,13 +26,23 @@ import type { InvitationId, WorkspaceId } from "../valueObject";
  * enforced here — that is why `insert` has no dedicated conflict code.
  * `inviteMember` resolves a live invitation through
  * `findPendingByWorkspaceAndEmail` and turns a second invite into a
- * resend, which keeps one token route per address; a store-level unique
- * constraint would instead reject the request that the design wants to
- * succeed as a resend.
+ * resend, which is what keeps one token route per address. Enforcing it
+ * in the store would mean a conflict code every backend can raise
+ * identically, and the reference backend has no unique index to raise it
+ * from: the same second invite would succeed on one backend and fail as
+ * `SystemError(DatabaseError)` on another. Two pending invitations to
+ * one address are therefore reachable when two invites race, and cost a
+ * surplus token route that holds a quota slot until it lapses: the
+ * second acceptance finds the membership already there and settles on
+ * it rather than creating a duplicate member.
  *
  * Token routing is likewise outside this port: a token hash alone cannot
  * locate a scope, so `InvitationRouteStore.resolveActive` resolves it to
  * a workspace first and `findByTokenHash` is then read inside that scope.
+ *
+ * Every read observes the writes of its own unit of work except the two
+ * offset listings, which answer from the last committed state — the same
+ * split `MembershipRepository` draws, and for the same reason.
  *
  * Error contract: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`,
  * `SystemError(DatabaseError)`.
@@ -78,6 +88,13 @@ export interface InvitationRepository
    * the outstanding ones calls `listPendingByWorkspace` instead, because
    * narrowing after the page is drawn would hide pending invitations
    * behind a page's worth of terminal ones.
+   *
+   * Answers from the **last committed state**: an offset page cannot be
+   * recomputed from uncommitted changes without re-reading the whole
+   * set, so neither this unit's inserts nor its `deleteByIds` are
+   * visible here. Page it before the unit writes, or in a later one —
+   * the deletion sweep does the latter, probing for leftovers in a turn
+   * that deletes nothing.
    */
   listByWorkspace(
     workspaceId: WorkspaceId,
@@ -94,6 +111,9 @@ export interface InvitationRepository
    * still returned, since `Invitation.isExpired` is the domain's answer
    * against the caller's `now` and resending it is the action the screen
    * offers.
+   *
+   * Answers from the last committed state, on the same terms as
+   * `listByWorkspace`.
    */
   listPendingByWorkspace(
     workspaceId: WorkspaceId,
@@ -114,6 +134,11 @@ export interface InvitationRepository
    * This is why the port returns only a number and nothing resembling a
    * "retry at" — nothing can predict when a slot frees, which is what
    * separates the quota from a rate limit.
+   *
+   * Unlike the two listings this observes the writes of its own unit of
+   * work: the quota is decided in the transaction that issues, so a
+   * number that missed the invitation the same unit has already written
+   * would let the next issue past the limit.
    */
   countPendingIssuedSince(
     workspaceId: WorkspaceId,

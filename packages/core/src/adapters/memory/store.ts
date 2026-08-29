@@ -110,6 +110,15 @@ export class MemoryTransactionController {
  */
 export class MemTable<V> {
   private readonly rows = new Map<string, V>();
+  /**
+   * Row images as they stood when the open transaction first touched
+   * each key. `committedValues` replays them to reconstruct the state the
+   * transaction started from; the entry dies with the transaction.
+   */
+  private readonly originals = new WeakMap<
+    MemoryTransaction,
+    Map<string, V | undefined>
+  >();
 
   constructor(private readonly tx: MemoryTransactionController) {}
 
@@ -126,6 +135,7 @@ export class MemTable<V> {
     if (transaction !== null) {
       const had = this.rows.has(key);
       const previous = this.rows.get(key);
+      this.remember(transaction, key);
       transaction.undoLog.push(() => {
         if (had) {
           this.rows.set(key, previous as V);
@@ -141,11 +151,54 @@ export class MemTable<V> {
     const transaction = this.tx.current();
     if (transaction !== null && this.rows.has(key)) {
       const previous = this.rows.get(key);
+      this.remember(transaction, key);
       transaction.undoLog.push(() => {
         this.rows.set(key, previous as V);
       });
     }
     return this.rows.delete(key);
+  }
+
+  /**
+   * The rows as of the start of the open transaction — this backend's
+   * answer for the reads whose port contract says they do not observe
+   * their own unit of work (the offset listings, which cannot be
+   * recomputed from uncommitted changes without re-reading the whole
+   * set). Outside a transaction it is simply `values()`.
+   *
+   * Writes here apply immediately rather than being buffered, so without
+   * this the reference backend would answer such a read from the staged
+   * state while a backend that buffers answers from storage — the same
+   * call, two verdicts, and no conformance case able to say which is
+   * contractual.
+   */
+  committedValues(): readonly V[] {
+    const transaction = this.tx.current();
+    const images =
+      transaction === null ? undefined : this.originals.get(transaction);
+    if (images === undefined) {
+      return this.values();
+    }
+    const committed = new Map(this.rows);
+    for (const [key, image] of images) {
+      if (image === undefined) {
+        committed.delete(key);
+      } else {
+        committed.set(key, image);
+      }
+    }
+    return [...committed.values()];
+  }
+
+  private remember(transaction: MemoryTransaction, key: string): void {
+    let images = this.originals.get(transaction);
+    if (images === undefined) {
+      images = new Map<string, V | undefined>();
+      this.originals.set(transaction, images);
+    }
+    if (!images.has(key)) {
+      images.set(key, this.rows.get(key));
+    }
   }
 
   keys(): readonly string[] {

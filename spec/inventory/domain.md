@@ -138,7 +138,7 @@
 | DOM-workspace-022 | `MembershipRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を更新する |
 | DOM-workspace-023 | `MembershipRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を削除する |
 | DOM-workspace-024 | `MembershipRepository.findByWorkspaceAndUser` | `spec/domains/workspace.md#ポート` | workspace・user の membership を取得する |
-| DOM-workspace-025 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。このポートで唯一、自 transaction の書き込みを観測しない読み |
+| DOM-workspace-025 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。3 本の offset listing の 1 つで、どのバックエンドでも最後にコミットされた状態から答える |
 | DOM-workspace-026 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を数える |
 | DOM-workspace-027 | `MembershipRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 MembershipId を削除する |
 | DOM-workspace-028 | `InvitationRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Invitation を保存する |
@@ -147,8 +147,8 @@
 | DOM-workspace-031 | `InvitationRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Invitation を削除する |
 | DOM-workspace-032 | `InvitationRepository.findByTokenHash` | `spec/domains/workspace.md#ポート` | token hash で招待を取得する |
 | DOM-workspace-033 | `InvitationRepository.findPendingByWorkspaceAndEmail` | `spec/domains/workspace.md#ポート` | workspace・email の pending 招待を取得する |
-| DOM-workspace-034 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする |
-| DOM-workspace-035 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す |
+| DOM-workspace-034 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待を `createdAt DESC, id DESC` でページングする。最後にコミットされた状態から答える |
+| DOM-workspace-035 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す。listing と違い自 UoW の書き込みを観測する |
 | DOM-workspace-036 | `InvitationRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 InvitationId を削除する |
 | DOM-workspace-037 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を期限に関わらず解決する |
 | DOM-workspace-038 | `InvitationRouteStore.reserve` | `spec/domains/workspace.md#ポート` | 新規 token route を TTL 付き予約する |
@@ -191,7 +191,7 @@
 | DOM-workspace-075 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
 | DOM-workspace-076 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
 | DOM-workspace-077 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する |
-| DOM-workspace-078 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する |
+| DOM-workspace-078 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する。何も書かない snapshot は他行の slug を奪わない |
 | DOM-workspace-079 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
 | DOM-workspace-080 | `UserWorkspaceDirectory.countOwnedByUser` | `spec/domains/workspace.md#ポート` | 所有上限判定用に owner edge を limit まで数える |
 | DOM-workspace-081 | `MembershipDirectoryReservationStore.beginRemoval` | `spec/domains/workspace.md#ポート` | 除名・脱退で `active` / `activating` の directory edge を removing にし、`pending` は拒否する |
@@ -200,7 +200,7 @@
 | DOM-workspace-084 | `WorkspaceOperationLockStore.releaseMove` | `spec/domains/workspace.md#ポート` | move authorization lock を無条件・冪等に解放する |
 | DOM-workspace-085 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | source version が大きい role 変更だけを directory edge へ投影し、不在の edge は復活させない |
 | DOM-workspace-086 | `MembershipDirectoryReservationStore.abandonRemoval` | `spec/domains/workspace.md#ポート` | 拒否された除名の `removing` edge を `active` へ戻し、`pending` / `activating` は拒否する |
-| DOM-workspace-087 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする |
+| DOM-workspace-087 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする。最後にコミットされた状態から答える |
 | DOM-storage-001 | `StoredFileId` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 空白のみを拒否する公称 ID とする |
 | DOM-storage-002 | `ObjectKey` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜1024 文字で traversal と先頭 slash を拒否し owner・purpose から構築する |
 | DOM-storage-003 | `FileName` 値オブジェクト | `spec/domains/storage.md#値オブジェクト` | 1〜255 文字へ安全化し path separator・制御文字を除く |

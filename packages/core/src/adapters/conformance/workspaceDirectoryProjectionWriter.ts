@@ -150,6 +150,39 @@ export function describeWorkspaceDirectoryProjectionWriterContract(
       expect(await slugOf(2)).toBe(WorkspaceSlug.create("shared-slug"));
     });
 
+    it("ADP-workspace-066: a snapshot that writes nothing takes no slug away", async () => {
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 5, { slug: WorkspaceSlug.create("alpha") }),
+      );
+      await writer().applySnapshotIfNewer(
+        snapshot(2, 1, {
+          slug: WorkspaceSlug.create("shared-slug"),
+          publication: "published",
+        }),
+      );
+
+      // Stale by `sourceVersion`, so it neither lands nor strips the
+      // slug the snapshot names off the row that now holds it.
+      await writer().applySnapshotIfNewer(
+        snapshot(1, 2, { slug: WorkspaceSlug.create("shared-slug") }),
+      );
+
+      expect(await slugOf(1)).toBe(WorkspaceSlug.create("alpha"));
+      expect(await slugOf(2)).toBe(WorkspaceSlug.create("shared-slug"));
+      expect(await published()).toEqual([workspaceId(2)]);
+
+      // Same for a snapshot against a tombstone.
+      await writer().tombstone({
+        workspaceId: workspaceId(3),
+        operationId: "deletion-3",
+      });
+      await writer().applySnapshotIfNewer(
+        snapshot(3, 9, { slug: WorkspaceSlug.create("shared-slug") }),
+      );
+      expect(await slugOf(2)).toBe(WorkspaceSlug.create("shared-slug"));
+      expect(await published()).toEqual([workspaceId(2)]);
+    });
+
     it("ADP-workspace-067: a tombstone answers deleted, leaves the sitemap, and frees its slug", async () => {
       await writer().applySnapshotIfNewer(
         snapshot(1, 1, { publication: "published" }),

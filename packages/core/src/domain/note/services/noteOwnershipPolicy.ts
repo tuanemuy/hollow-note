@@ -6,13 +6,11 @@ import type { NoteAccess } from "./noteAccessPolicy";
 /**
  * Decides whether a note may leave its current owner.
  *
- * The destination is deliberately not an argument. Whether the actor may
- * create in the target is a workspace-role question this domain cannot
- * evaluate, and the caller must have answered it to name a target at all
- * (`WorkspaceAuthorization.ensureCan(role, "createNote")`, whose refusal
- * is `InsufficientRole` — spec/usecases/note.md#movenote). Taking a
- * `canCreate` flag here only let a caller assert that answer, which is an
- * unenforceable convention rather than a check.
+ * The destination is not an argument: whether the actor may create in the
+ * target is a workspace-role question this domain cannot evaluate, and the
+ * caller has answered it before naming a target
+ * (`WorkspaceAuthorization.ensureCan(role, "createNote")`, whose refusal is
+ * `InsufficientRole` — spec/usecases/note.md#movenote).
  */
 export const NoteOwnershipPolicy = {
   ensureMovable: (note: Note, from: NoteAccess): void => {

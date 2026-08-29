@@ -12,6 +12,7 @@ import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import {
+  armRemovalEdgeSettlement,
   ensureActorCan,
   ensureRemovable,
   requireManageMembers,
@@ -43,7 +44,10 @@ export type RemoveMemberInput = Readonly<{
  * transactions because the two planes never share a unit of work. Both
  * transactions run the same guards, so the second may still refuse what
  * the first allowed; the announcement is then taken back rather than left
- * standing over a membership that survived.
+ * standing over a membership that survived. The transaction that does
+ * delete the membership arms the edge drop as a continuation of its own,
+ * since nothing the caller can re-send would reach an edge left behind
+ * (see `./membershipMutation`).
  *
  * Notes the removed member created stay with the workspace — they belong
  * to the workspace, not to their author — so nothing here touches them.
@@ -98,6 +102,7 @@ export async function removeMember({
         removed.entity.id,
         removed.expectedVersion,
       );
+      await armRemovalEdgeSettlement(ctx, memberUserId, workspaceId, now);
       ctx.collectEvents([
         WorkspaceEvents.membershipRemoved(
           workspaceId,

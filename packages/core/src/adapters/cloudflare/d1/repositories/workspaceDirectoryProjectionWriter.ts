@@ -61,7 +61,9 @@ export type D1WorkspaceDirectoryProjectionWriterDeps = Readonly<{
  * The `slug UNIQUE` index is satisfied by taking the slug rather than by
  * failing on it. The reservation table is the authority on ownership, so
  * the row still holding a slug that this workspace has reserved is stale,
- * and the release is staged in the same write-set as the apply.
+ * and the release is staged in the same write-set as the apply — under
+ * the same predicate, so a snapshot that turns out to write nothing
+ * takes nothing away either.
  */
 export function createD1WorkspaceDirectoryProjectionWriter(
   deps: D1WorkspaceDirectoryProjectionWriterDeps,
@@ -90,14 +92,36 @@ export function createD1WorkspaceDirectoryProjectionWriter(
     }
   };
 
-  /** Frees the slug from whichever other row still projects it. */
-  const releaseSlug = (slug: string, owner: WorkspaceId): RowMutation =>
+  /**
+   * Frees the slug from whichever other row still projects it.
+   *
+   * The `NOT EXISTS` is the same guard the apply carries, so the two
+   * statements stand or fall together: the branch was decided from a
+   * `read` issued a round trip earlier, and if a newer snapshot or a
+   * tombstone lands in between, an unconditional release would strip a
+   * third workspace's slug — dropping it out of the sitemap until its
+   * own next event — while the apply that was going to take the slug
+   * writes nothing.
+   */
+  const releaseSlug = (
+    slug: string,
+    owner: WorkspaceId,
+    sourceVersion: number,
+  ): RowMutation =>
     opaque({
       table: TABLE,
       statement: statement(
-        `UPDATE ${TABLE} SET slug = NULL WHERE slug = ? AND workspace_id <> ?`,
+        `UPDATE ${TABLE} SET slug = NULL
+           WHERE slug = ? AND workspace_id <> ?
+             AND NOT EXISTS (
+               SELECT 1 FROM ${TABLE} taker
+                WHERE taker.workspace_id = ?
+                  AND (taker.lifecycle <> 'active'
+                       OR taker.source_version >= ?))`,
         slug,
         owner,
+        owner,
+        sourceVersion,
       ),
     });
 
@@ -127,7 +151,13 @@ export function createD1WorkspaceDirectoryProjectionWriter(
       };
       const mutations: RowMutation[] = [];
       if (snapshot.slug !== null) {
-        mutations.push(releaseSlug(snapshot.slug, snapshot.workspaceId));
+        mutations.push(
+          releaseSlug(
+            snapshot.slug,
+            snapshot.workspaceId,
+            snapshot.sourceVersion,
+          ),
+        );
       }
       mutations.push(
         upsert({

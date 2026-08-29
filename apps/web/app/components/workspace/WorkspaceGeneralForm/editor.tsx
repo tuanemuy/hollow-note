@@ -6,7 +6,6 @@ import {
   AVATAR_ALLOWED_MIME_TYPES,
   AVATAR_MAX_BYTES,
 } from "@repo/core/domain/storage/services/uploadValidationPolicy";
-import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -38,14 +37,18 @@ import {
   WORKSPACE_SLUG_MAX_LENGTH,
 } from "@/components/workspace/schema";
 import { useSlugAvailability } from "@/components/workspace/slugAvailability";
-import { slugSuggestionsFor } from "@/components/workspace/slugSuggestions";
 import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
-import { extractSerializedError } from "@/presentation/errorResponse";
 import {
   changeWorkspaceSlugFn,
   updateWorkspaceProfileFn,
   uploadWorkspaceAvatarFn,
 } from "@/routes/workspaces/$workspaceId/settings/-action";
+import {
+  IDLE_SAVE_STATE,
+  type SaveOutcome,
+  type SaveState,
+  saveOutcome,
+} from "./save";
 
 /**
  * P-31 の編集を持つ島（PAGE-p31-001..004）。
@@ -73,51 +76,6 @@ const OVERSIZE_MESSAGE = renderErrorMessage({
   code: StorageErrorCode.FileTooLarge,
   message: "",
 });
-
-const SLUG_FIELD_CODES: ReadonlySet<string> = new Set([
-  "SLUG_ALREADY_USED",
-  WorkspaceErrorCode.InvalidSlug,
-  WorkspaceErrorCode.SlugReserved,
-  WorkspaceErrorCode.PublishedWorkspaceRequiresSlug,
-]);
-
-type SaveTarget = "name" | "description" | "slug" | "form";
-
-type SaveError = Readonly<{
-  target: SaveTarget;
-  /** 判断の対象になった値。入力が変わったら失効させるために持つ。 */
-  slug: string;
-  message: string;
-  suggestions: readonly string[];
-}>;
-
-type SaveState =
-  | Readonly<{ kind: "idle" }>
-  | Readonly<{ kind: "saved" }>
-  | Readonly<{ kind: "error"; error: SaveError }>;
-
-const IDLE_SAVE_STATE: SaveState = { kind: "idle" };
-
-function saveErrorFor(slug: string, error: unknown): SaveError {
-  const serialized = extractSerializedError(error);
-  const message = renderErrorMessage(serialized);
-  const code = serialized.code;
-  if (code !== null && SLUG_FIELD_CODES.has(code)) {
-    return {
-      target: "slug",
-      slug,
-      message,
-      suggestions: code === "SLUG_ALREADY_USED" ? slugSuggestionsFor(slug) : [],
-    };
-  }
-  if (code === WorkspaceErrorCode.InvalidName) {
-    return { target: "name", slug, message, suggestions: [] };
-  }
-  if (code === WorkspaceErrorCode.InvalidDescription) {
-    return { target: "description", slug, message, suggestions: [] };
-  }
-  return { target: "form", slug, message, suggestions: [] };
-}
 
 export function WorkspaceGeneralEditor({
   workspace,
@@ -159,6 +117,11 @@ export function WorkspaceGeneralEditor({
       console.error("Workspace settings reconcile failed");
     });
 
+  const settle = async (outcome: SaveOutcome): Promise<SaveState> => {
+    if (outcome.reconcile) await reconcile();
+    return outcome.state;
+  };
+
   const [saveState, save, isSaving] = useActionState(
     async (_previous: SaveState, formData: FormData): Promise<SaveState> => {
       const submitted = {
@@ -170,6 +133,7 @@ export function WorkspaceGeneralEditor({
         submitted.name !== workspace.name ||
         submitted.description !== workspace.description;
       const slugChanged = submitted.slug !== (workspace.slug ?? "");
+      let committed = false;
 
       if (profileChanged) {
         try {
@@ -180,6 +144,7 @@ export function WorkspaceGeneralEditor({
               description: submitted.description,
             },
           });
+          committed = true;
           // サーバー側の正規化（`WorkspaceName.create` の trim）で値が変わると
           // 送った値のまま残るローカル状態は永久に未保存扱いになる。保存中に
           // 打ち替えた欄まで巻き戻さないよう、送った値がそのまま残っている
@@ -191,7 +156,9 @@ export function WorkspaceGeneralEditor({
             current === submitted.description ? saved.description : current,
           );
         } catch (error) {
-          return { kind: "error", error: saveErrorFor(submitted.slug, error) };
+          return settle(
+            saveOutcome(committed, { slug: submitted.slug, error }),
+          );
         }
       }
 
@@ -203,16 +170,18 @@ export function WorkspaceGeneralEditor({
               slug: submitted.slug,
             },
           });
+          committed = true;
           setSlug((current) =>
             current === submitted.slug ? (changed.slug ?? "") : current,
           );
         } catch (error) {
-          return { kind: "error", error: saveErrorFor(submitted.slug, error) };
+          return settle(
+            saveOutcome(committed, { slug: submitted.slug, error }),
+          );
         }
       }
 
-      await reconcile();
-      return { kind: "saved" };
+      return settle(saveOutcome(committed, null));
     },
     IDLE_SAVE_STATE,
   );

@@ -2140,3 +2140,231 @@ DTO から `noteMove` を落とすと、`spec/testcases/usage/applyStorageDelta.
 
 - 台帳に欠番が生まれるが、これは spec/adr/052 が明示した「ID は行位置ではない」の帰結であって不整合ではない。
 - 移動の quota 挙動を拘束するのは `spec/testcases/note/moveNote.md` に一本化される。
+
+## ADR-121: 除名・脱退の edge 削除に scope task の駆動口を足す（ADR-118 の「`removeMember` は駆動口を持てない」を訂正する）
+
+### Context
+
+ADR-118 は local commit 後の global ステップを「同じ要求をもう一度出す」で前進させると決め、`leaveWorkspace` には `settleStrandedRemovalEdge` を置いた一方、`removeMember` については「対象を membershipId で引くので、行が消えた後は userId を復元できず、この駆動口を持てない」として何も置かなかった。
+
+ラウンド 3 の backend-workspace B-001 はこの前提が成立していないことを指摘した。`removeMember` は 1 本目の UoW で対象の `UserId` を既に握っており（`removeMember.ts:74-83`）、削除の transaction はそれを持ったまま走る。前提が偽である以上、結論も残せない。実害は復旧不能状態である: `completeRemoval` の一過性失敗で残った `removing` edge は誰も落とせず（再除名は `MEMBERSHIP_NOT_FOUND` で try/catch の外、再招待は `MEMBERSHIP_ALREADY_EXISTS`）、除名されたメンバーはそのワークスペースへ二度と参加できない。
+
+### Decision
+
+要求パスの再入だけに頼るのをやめ、**義務そのものを永続化する**。除名・脱退が Membership を削除する transaction の中で、scope task `workspace.membershipRemovalEdgeContinued` を同じ commit に積む（`armRemovalEdgeSettlement`）。ハンドラ `continueRemovalEdgeSettlement` は `completeRemoval` を打ち、成功しても `ConflictError` でも行を `complete` する。`settleRemovalEdge` は速い経路として残り、edge が実際に消えたときだけ行を畳む。
+
+- transport は削除サガと同じ scope-local `scheduled_tasks`（ADR-043 / ADR-040）。行の鍵 `(kind, operationId)` の `operationId` は `${workspaceId}:${userId}` — edge 自身が `(userId, workspaceId)` を鍵に持ち removal 側の operation ID を持たない（ADR-037）ので、その対がそのまま決定的な継続要求 ID になる（ADR-041）。並行する 2 つの除名は同じ行へ収束する。
+- payload は `memberUserId` だけを運び、workspaceId は claim した scope から導く。
+- `leaveWorkspace` にも同じ武装を入れる。ADR-118 の `settleStrandedRemovalEdge` は撤去せず、耐久的な駆動口の前段の速い経路として残す。
+
+### Consequences
+
+- ADR-118 の Decision 第 3 項の但し書き（「`removeMember` は駆動口を持てない」）は本 ADR で無効。ADR-041 の Consequences 第 3 項「失敗はログに落として握る — 呼び出し側に再実行の手立てが無い」も、義務に持ち主ができたので「握るのは応答だけ」に狭まる。
+- ハンドラは冪等でなければならない（at-least-once・順序保証なし）。edge が既に無い再配送は成功、**再入会が同じ対を取り直したあとの再配送は `ConflictError`** になり、これは障害ではなく「この除名の義務は既に果たされている」の意味なので握って行を畳む。新しいメンバーの edge には触れない。この安全性はポート契約（`completeRemoval` は `removing` 以外を拒む）が担保しており、ハンドラ側で状態を読み分けてはいない。
+- 通常経路では速い経路が同一要求内で行を畳むので、`scheduled_tasks` に残骸は残らない。
+- 変異スポットチェック: `armRemovalEdgeSettlement` の呼びを外す / runner の kind 登録を外す / ハンドラの `ConflictError` 握りを再送出に変える、のいずれでも `removeMember.test.ts` の TC-workspace-218 系 2 本が赤になる。
+
+## ADR-122: loader の失効は保存の結末ではなく「確定した書き込みがあったか」で決める
+
+### Context
+
+P-31 の保存バーは 1 つの操作で 2 つのユースケース（`updateWorkspaceProfile` → `changeWorkspaceSlug`）を順に呼ぶ。実装は成功の末尾でだけ `router.invalidate()` していたため、プロフィールが確定したあとスラッグ交換が落ちる部分成功で loader が古いまま残り、シェルのラベルと `<h1>` が旧名を出し続け、`dirty`（`name !== workspace.name` = 古い loader 値）が保存済みの名前に「未保存の変更があります」を出し続けた（レビュー frontend W-001）。CLAUDE.md「Frontend」の "Every mutation reconciles with `router.invalidate()`" からの逸脱でもある。
+
+### Decision
+
+失効の要否を結末（saved / error）から切り離し、**サーバー側で確定した段が 1 つでもあるか**だけで決める。判定は島から出した `WorkspaceGeneralForm/save.ts:saveOutcome(committed, failure)` が持ち、島は `settle` でそれを実行するだけにする。失敗の表示（スラッグ欄のエラーと候補）はそのまま返るので、部分成功では「名前は保存され、スラッグだけ直す」状態が画面に出る。
+
+段の順序と「プロフィールが落ちたらスラッグ交換へ進まない」判断は動かさない（公開 URL だけが変わる状態を作らないため）。
+
+### Consequences
+
+- 何も書けずに落ちた保存は `router.invalidate()` を呼ばない。無駄な往復が減るだけで、表示は変わらない。
+- `saveErrorFor` も同じモジュールへ移り、DOM もサーバー関数のランタイムも無しに単体テストできるようになった（ADR-107 と同じ分け方）。変異スポットチェックで確認: `reconcile` を `failure === null` に倒すと部分成功のケースが red になる。
+
+## ADR-123: スコープトークンの一覧は「正本の鍵」が変わった時点で捨てる
+
+### Context
+
+ドロップダウンの一覧は開いた時点で初めて取りに行き、以降 `loaded` のまま島の `useState` に残る。ワークスペース設定の 4 タブは同一レイアウトの子なので、一般設定で名前を保存してもトークンは再マウントされない。結果、ラベル（loaderData 由来の正本）だけが新名になり、ドロップダウンは旧名を並べたまま `aria-current` までその旧名の行に付く — 同じ画面に新旧 2 つの名前が同居する（レビュー frontend W-002）。
+
+### Decision
+
+一覧が「どの正本の下で取られたか」を `listing.ts:scopeIdentity(scope)`（`kind` + `workspaceId` + `name`）で表し、島はレンダー中に前回の鍵と比べて、変わっていれば `IDLE_LISTING` へ戻す。取り直しは既存の `shouldLoadOnOpen` が担うので、開き直した一枚目から新名が並ぶ。
+
+代案の「開くたびに再取得（`loaded` を保ったまま `pending`）」は採らない。取得が終わるまで旧名が見え続け、W-002 が問題にした新旧の同居がその窓のあいだ残る。鍵に `slug` / `publication` を入れないのは、それらを読む導線（公開ページを開く）が一覧ではなく props を直接見ているため。
+
+### Consequences
+
+- スコープを切り替えた直後もトークンを開くと取り直しになる。一覧はどのみち `aria-current` の位置が変わるので、余分な取得は 1 回だけ増える。
+- `ShellScope` は `listing.ts` が持ち、`index.tsx` が型を再 export する（`PERSONAL_SHELL_SCOPE` の定義位置は動かさない）。ADR-107 の `MoveTarget` と同じ置き方。
+
+## ADR-124: 脱退はメンバー一覧の外に置き、可否の判定材料をサーバーの応答から取る
+
+### Context
+
+脱退（PAGE-p32-008 / WS-06 / AC-7）の導線はメンバー行の中にしか無く、`selfOf`（読み込み済みページから閲覧者自身の行を引く）が `null` を返すと存在しなかった。`MembershipRepository.listByWorkspace` は `joinedAt` 昇順・1 ページ 50 件なので、**51 人目以降に参加した利用者は自分の行を「さらに読み込む」で手繰るまで脱退できない**（レビュー frontend W-003）。ADR-109 は総数の正本をサーバーへ移したが、閲覧者自身のロールだけはページの中から取ったままだった。
+
+WS-06 手順 1 の canon は「ワークスペース設定の**下部**から『脱退する』を選ぶ」で、行の中に置くこと自体が canon から外れていた。
+
+### Decision
+
+- `listMembers` の応答に `viewerRole` を足す。`resolveWorkspaceAccess` が既に解決している値なので追加の読みは無く、非メンバーはそもそも一覧を得られないので非 null で持てる。`ownerCount` と同じく「ページの外から答える値」であり、`WorkspaceMemberListView` の JSDoc にその理由を書く。
+- 脱退はメンバー一覧から出し、パネル下部の独立した節（`LeaveSection`）に置く。行側からは脱退の確認・禁止表示・最後の owner ヒントを落とす。所有権は親の島のまま（ADR-062）で、脱退は依然として一覧メンバーシップの変更なので `useOptimistic` も親が持つ。
+- `selfIsLastOwner(roster, viewerRole, serverOwnerCount)` に署名を変え、判定材料を 2 つともページの外から取る。到達性そのものは `canLeave` を別に切り出して純関数側で拘束する（`__tests__/roster.test.ts`）。
+- 楽観適用に `leave` アクションを足す。`membershipId` は `string | null` — 自分の行がページに無くても総数の差分は動かす必要があるため。適用後は `left` が立ち、`selfIsLastOwner` / `canLeave` を閉じる。これが無いと、脱退の往復のあいだだけ `ownerDelta` が自分を引いた数で「最後の owner は脱退できません」を出す。
+
+### Consequences
+
+- 何人のワークスペースでも、閲覧者は 1 ページも繰らずに脱退へ到達できる。ADR-109 が「先頭ページに自分を必ず載せる並び順は作らない」と決めたことは動かさない — 並び順ではなく導線の位置で解いた。
+- `MemberRow` から脱退が消え、行内の破壊的操作は除名だけになった。自分の行は「あなた」バッジと現在のロールだけを描く。
+- `viewerRole` は `canManage` と重複しない。`canManage` は権限表の答え（他人を管理できるか）、`viewerRole` は自分の身分で、閉じる対象が違う（`WorkspaceSettingsView` が 3 つの capability flag を分けているのと同じ理由）。
+
+## ADR-125: P-24 の削除導線はワークスペース行の注記に置き、ロールで出し分けない
+
+### Context
+
+`spec/inventory/frontend.md` の PAGE-p24-003 は「personal は P-25、workspace は P-34 へ current context 付きで遷移する」を求めるが、実装は個人側（`/settings/danger`）だけで、ワークスペース行には何も無かった（レビュー frontend W-004）。`/workspaces/:workspaceId/settings/danger` が生えたのは本スライスなので、この PR で初めて実装可能になった。
+
+### Decision
+
+`state === "available"` の行の注記列（`UsageSection.notes`）の末尾に `Link to="/workspaces/$workspaceId/settings/danger"` を足す。`workspaceId` は行そのものが持っているので、「current context 付き」は行が名指ししているワークスペースをそのまま渡すことで満たす。`unavailable` の行には出さない — 名前すら出せない行に破壊的操作の入口を置いても、閲覧者はどのワークスペースなのか判断できない。
+
+ロールでの出し分けはしない。`WorkspaceUsageView` はロールを持たず（`getUsageSnapshot` は owner / editor の行を返す）、可否の正本は P-34 側の `canDelete` にある。導線は遷移であって破壊的操作そのものではないので、行き先で閉じるほうが判定の重複を作らない。
+
+### Consequences
+
+- editor の閲覧者にも導線が出て、P-34 では削除の実行だけが閉じる（ADR-093 の「可否は画面ごとのフラグで閉じる」と同じ形）。
+- ロールで出し分けたくなったら `getUsageSnapshot` の DTO にロールを足す必要がある。今は行の意味（自分が使っている容量）にロールが要らないので足さない。
+
+## ADR-126: 移動の認可はロールと Membership 版を同じ読みから取る
+
+### Context
+
+`moveNote` の事前確認は、ロールを `viewerFor` / `resolveWorkspaceAccess` で読み、ピン留めする版を `membershipVersionOf` の**別の往復**で読んでいた（レビュー backend-note W-001）。この隙間に**降格**が commit すると、ピンは降格後の版になる。`ensurePinnedMembership` は版しか比べないので、各 phase の再検査は「誰も検査していないロール」を追認する。除名は行が消えて `onMissing` に落ちるので塞がっていたが、降格は移動元・移動先の両方で素通りしていた。`spec/usecases/note.md#movenote` 手順 1・2 は「同じ読みからロールと Membership version を得る」と書いており、実装だけがずれていた。
+
+### Decision
+
+`MembershipPin`（`role` + `version`）を導入し、scope ごとに `pinActorMembership` の**1 回の読み**からロールと版を同時に取る。
+
+- 移動元: `viewerFor` を呼ばず、pin したロールで `NoteViewer` を組んで `noteAccessPolicy.evaluate` に渡す。`viewerFor` の workspace 不在の縮退（`WORKSPACE_NOT_FOUND` → ロール `null`）と結果は同じで、往復が 1 つ減る。
+- 移動先: `resolveWorkspaceAccess` は**実在の検査**（`WORKSPACE_NOT_FOUND`。UC-workspace-001 が workspace 配下の入口である規約は動かさない）として残し、`createNote` の可否は pin したロールで判定する。`access.role` は前の往復の答えなので使わない。membership の読みが 1 回増えるが、認可の判定と再検査の版が同じ行の同じ読みに載ることを優先した。
+
+### Consequences
+
+- `membershipVersionOf` は削除。plan にピンする版は `sourcePin.version` / `targetPin.version` で、attempt ごとにピンする ADR-112 の性質は変わらない。
+- 移動先の降格が事前確認の最中に着地すると `InsufficientRole`、事前確認の後なら各 phase の `STALE_MEMBERSHIP` になる。どちらも spec のエラー表にある答えで、新しい種類は増えない。
+- テストは `withMembershipReadHook`（UoW の外の membership 読みの直後に commit を差し込む）で移動元・移動先の両方向を拘束した。2 度読みに戻すとどちらも赤になる。
+
+## ADR-127: 移動 abort が消す target の receipt は、seam が自分で申告する
+
+### Context
+
+`abortBeforeSwitch` が消す target scope の applied-operation key は `TARGET_SCOPE_COMMANDS` のハードコード配列だった。`NoteMoveTagRelocation.stageTarget` は target の `ScopeUnitOfWorkContext` をそのまま受け取るので、Issue #8 が `ctx.appliedOperationStore.markApplied` を自分の commandKey で書くのは自然な形である。そのとき abort は staged 行だけ消して tag の receipt を残し、同じ migration ID の再開が tag の staging を「適用済み」として飛ばす — ADR-080 / B-001 と同型のデータ消失が tag の分だけ再発する（レビュー backend-note W-002）。
+
+### Decision
+
+`NoteMoveTagRelocation` に `readonly targetScopeCommandKeys: readonly string[]` を足し、`abortBeforeSwitch` が note 自身の 3 鍵と合わせて消す。`TARGET_SCOPE_COMMANDS` は note の鍵だけに縮める。
+
+- **型で申告を強制する**のが目的なので任意プロパティにはしない。`noTagRelocation` も空配列を明示的に書く。#8 は seam を実装する時点で必ずこの行に触る。
+- `abortBeforeSwitch` / `rollBack` は `tagRelocation` を引数で受け取る（`stageTarget` / `retireSource` と同じ経路）。
+
+### Consequences
+
+- 「target に receipt を書く相 = その鍵を申告する」が seam の契約になった。`relocateFilesForNote` の 2 鍵は note 側が知っているので配列に残す。
+- テストは、自分の commandKey で `markApplied` する seam を渡して「abort 後の再開が tag の staging をもう一度走らせる」を拘束した（`TC-note-258`）。申告を落とすと赤になる。
+
+## ADR-128: claim の応答喪失は operation の確定と同時に route も返す
+
+### Context
+
+`beginMove` が commit して応答だけ失われると、route は `moving`（migrationId = M）で残り、`moveNote` は operation を `rejected` にして終える。ここから復帰できるのは同じ `requestKey`（同じ actor・同じ移動先・同じ routeVersion）の再送だけで、別の actor や別の移動先は `beginMove` が `ConflictError("NOTE_ROUTE_STATE_VIOLATION")` を返して恒久的に拒否される（レビュー backend-note W-004）。**何も staged していない**のに route を掴んだまま離さない状態で、ADR-097 が受け入れた「switch 後の停止」とは別の窓である。
+
+### Decision
+
+claim 経路の catch で、operation を `rejected` にする前に `releaseUnusedClaim` を打つ。route を 1 回読み、`moving` かつ migrationId が自分のものであるときだけ `abortMove` する。
+
+- 掴んでいなければ何もしない（読みで判定するので、CAS の空振りをログに出さない）。`abortMove` 自体が落ちたら 1 行記録して原因の例外は差し替えない — 補償の失敗が診断を置き換えないという既存の方針（`settleQuietly` / `rollBack`）と同じ。
+- あわせて `claimRoute` の直前に `ScopeKey.equals(plan.source, plan.target)` の防御を置いた（W-005）。route の scope ≡ note.owner という不変条件は assert されていないので、破れたときに `stageTarget` が `snapshotSource` の読んだ行へ insert し、abort が唯一の実体を消す。到達経路は現状無いが被害が全損なので 1 行で止める。
+
+### Consequences
+
+- claim の応答を失った移動のあと、別のメンバーが別の移動先へ移せる（`TC-note-261` に追加）。この 1 行を落とすと赤になる。
+- `source === target` の防御は到達不能な状態に対するもので、テストは無い（公開 API からは「移動先が同じ」の早期 return に落ちる）。
+
+## ADR-129: offset ページの「自 UoW を観測しない」を契約として両バックエンドに課す（ADR-110 の宣言を実装へ降ろす）
+
+### Context
+
+ADR-110 は `MembershipRepository.listByWorkspace` について「この 1 本だけは自分の transaction を観測しない」を**契約側に明記**したが、実装を揃えず適合ケースも置かなかった。実際には memory は書き込みを即時適用するので自 UoW の insert / delete を観測し、Cloudflare は `session.query` で保存済みだけを見る。`InvitationRepository.listByWorkspace` / `listPendingByWorkspace` に至っては契約が沈黙しており（review-003-backend-workspace W-001）、**どちらの挙動が正なのかが決まっていない**。今の呼び出し元は削除サガの probe だけで実害は無いが、サガに 1 行でも書き込みを前倒しすれば memory は終端し Cloudflare は周回する（またはその逆）という、緑のまま壊れる形になる。
+
+`countPendingIssuedSince` も同型で、memory は観測し Cloudflare は `COUNT(*)`（保存済み）だった。
+
+### Decision
+
+**分割線をポート契約に書き、両バックエンドを同じ答えに揃える。**
+
+- offset ページ（`MembershipRepository.listByWorkspace` / `InvitationRepository.listByWorkspace` / `listPendingByWorkspace`）は**最後にコミットされた状態**を返す。自 UoW の insert も `deleteByIds` も見えない。ADR-110 の言い分（offset は overlay と合成できない）をそのまま契約にし、「buffer するバックエンドは」という条件節を外して無条件にした。
+- それ以外の読み（`findById` 系・`countByRole`・`countPendingIssuedSince`）は自 UoW を観測する。`countPendingIssuedSince` は発行 quota を「発行する transaction の中で」決めるので、`countByRole` と同じく `readRows` へ寄せた（ADR-110 が `countByRole` に与えたのと同じ理由）。
+- memory 側は `MemTable.committedValues()` を新設して契約に合わせた。transaction が最初に触れた鍵の行イメージを WeakMap に控え、現在の行集合へ巻き戻して「transaction 開始時点の状態」を作る。undo ログはそのまま（ロールバックの意味論は変えない）。
+- 適合スイートに `scopeUnitOfWork.run` を通す 2 ケース（invitation / membership）を足し、「listing は自分の insert / delete を見ない」「count は見る」を 1 つの turn で同時に拘束した。
+
+### Consequences
+
+- memory は「書いたのに読み返せない」読みを 3 本持つことになるが、それは reference backend が**最も弱い契約を強制する**ということであり、memory で書いたコードが Cloudflare で壊れる経路を 1 つ閉じる（ADR 024 / 026）。
+- `MemTable.committedValues()` は全テーブルで使える。将来 offset ページを足す memory リポジトリはこれを使うこと。`values()` のままだと契約から静かに外れる。
+- 変異スポットチェック: memory の 2 リポジトリで `committedValues()` → `values()`、Cloudflare で `countPendingIssuedSince` を `COUNT(*)` へ / `listWhere` の items を overlay 対応の `readRows` へ、の 4 点でそれぞれ新ケースが red。
+- `spec/domains/workspace.md` の該当段落は両ポートに掛かる書き方へ直す必要がある（G7）。
+
+## ADR-130: `workspace_directory` の slug 剥がしは apply と同じ述語を持つ
+
+### Context
+
+Cloudflare の `applySnapshotIfNewer` は、`read` で分岐を決めたあと write-set に「他行から slug を剥がす」`UPDATE`（`opaque`）と guard 付き upsert を積む。upsert は `lifecycle = 'active' AND source_version < excluded.source_version` で守られているが、剥がし側は**無条件**だった。read と write のあいだに同じワークスペースのより新しい snapshot（または tombstone）が着地すると、upsert は 0 行・剥がしは 1 行という半端な適用になり、**第三者のワークスペースの slug が誰にも取られないまま NULL に落ちる**。剥がれた行は `publication='published' AND slug IS NOT NULL` を要求するサイトマップ列挙から黙って消え、その行自身の次の `workspace.*` イベントまで戻らない（review-003-backend-workspace W-002）。memory は read と write が不可分なのでこの窓が無く、片方のバックエンドだけが持つ挙動になっていた。
+
+### Decision
+
+剥がしの `UPDATE` に upsert と同じ述語を相関 `NOT EXISTS` で持たせ、「upsert が 0 行なら剥がしも 0 行」を SQL の述語一致で成立させる。`occGuard` で write-set ごと落とす形は採らない — ポートは「誰が書いたか」を答えない契約（ADR-035）であり、投影が `ConflictError` で詰まる経路を作らないことが `applySnapshotIfNewer` の設計そのものだから。ポート JSDoc に「何も書かない snapshot は何も奪わない」を契約として足した。
+
+### Consequences
+
+- レース自体は適合スイートでは作れない（memory は原子的）。**直列で届く半分**（stale な snapshot / tombstone 済みの行が slug を奪わない）を共有ケースとして適合スイートに置き、**インターリーブ**は `cloudflare/__tests__/projectionConcurrency.test.ts` の `interposeOnce` で 2 ケース置いた。層の分け方は public note projection の並行ケースと同じ。
+- 変異スポットチェック: Cloudflare の `NOT EXISTS` を落とすと race 2 ケースが red、memory の `takeSlug` を版ガードの前へ動かすと共有ケースが red。
+
+## ADR-131: pending 招待の一意性を store に強制しない理由は「バックエンド間で結果が分かれる」ことである
+
+### Context
+
+`InvitationRepository` の JSDoc は「(workspaceId, email) の pending 招待が最大 1 件」を store で強制しない理由を「UNIQUE にすると resend として成功させたい要求を弾くから」と書いていた。しかし resend は同一行の `UPDATE` なので部分 UNIQUE には触れず、この論拠は成立していない（review-003-backend-workspace W-003）。ADR-017 が索引を置かないと決めた実際の理由は別で、「置くと同じ入力に対し memory は成功し Cloudflare は `SystemError(DatabaseError)` になる」である。
+
+### Decision
+
+実装は変えない（ADR-017 は既決）。ポート JSDoc の論拠を ADR-017 の実際の理由へ書き換え、代償（同時 invite で pending が 2 件になり得る／余った token route が期限まで quota 枠を食う／2 度目の受諾は既存 membership に落ち着く）を明記した。`do/schema.ts` のコメントも spec の記述に依存しない形（制約そのものを述べる形）へ縮めた。
+
+### Consequences
+
+- canon 側（`spec/database/index.md` の `invitations_pending_uq` 行、`spec/domains/workspace.md` の不変条件、`invitations_workspace_created_idx` の tiebreak）は実装に追随させる必要がある（G7）。
+- 逆に不変条件を守り切る道を選ぶなら、`insert` に conflict code を足して両バックエンドと適合スイートに入れることになる。その判断は本 ADR ではなく ADR-017 の再検討になる。
+
+## ADR-132: 鍵の申告は「読み側も overlay を通す」までを 1 組にする（D1 の account deletion manifest）
+
+### Context
+
+`accountDeletionManifestStore`（D1）の多行 1 文 4 箇所（membership / author route の page append、`claimPending`、`acknowledge`）が `opaque` のままで、`spec/database/index.md:19` の「その 1 文は触れた行の鍵（と行の像）も宣言する」と正面から矛盾していた（review-003 general W-001）。鍵は `jsonList` / `jsonRows` に列挙済みで、`upsertMany` / `removeMany` も ADR-110 で存在するので、能力の不足ではない。
+
+ただし書き側だけを `upsertMany` に替えても、item の読みが `session.query`（ストレージ直読み）と `COUNT(*)` のままでは **像は誰にも観測されない** — 規約を満たした形にはなるが、read-your-writes は戻らず、像を空にする変異もテストで検出できない。
+
+### Decision
+
+**書き側の申告と読み側の overlay 経由を 1 組で入れる。** `workspaceDeletionManifestStore`（DO、ADR-110）の流儀に合わせた。
+
+- item の読みは `readItems` 1 本に集約し、`session.readRows` を通す。述語は `ItemFilter`（SQL と、同じ判定を staged image に対して行う `matches`）として持ち、SQL と JS の 2 表現が必ず並ぶ形にした。
+- `COUNT(*)` の 2 箇所（`allRollbackReleased` / `allRequiredAcknowledged` の open item）は overlay と合成できないので、merge 済み集合の要素数に置き換えた。`compactItems` の `remaining` も「今消した鍵を除いた残り」の存在確認にした。
+- `ORDER BY key` + `compare` は **page だけの opt-in** にした。セッションは「LIMIT が埋まった順序付きの読み」に自 UoW の書き込みが混ざると拒否するので、存在確認まで ordered にすると `acknowledge → allRequiredAcknowledged` を同一 UoW で行っただけで `DatabaseError` になる。
+- `pruneTerminal` の header 側 DELETE（`operation_id IN (…)`。`operation_id` は header の主キー）も `removeMany` にした。指摘の 4 箇所には挙がっていないが、鍵が列挙できている以上これも規約の対象で、同じファイルに反例を残す理由がない。item 側は「manifest ごと消す」文で item の鍵を列挙していないため `opaque` のまま — 免除条項に当たる唯一の箇所であることをコメントに書いた。
+- 適合スイートに 3 ケース追加（`globalUnitOfWork.run` を通す）。ポート JSDoc は触っていない: 「同一 UoW で自分の書き込みを読める」は ADR-110 と `spec/database/index.md:19` が既に全ポートに課している一般契約で、新しい契約の追加ではなく既存契約の執行形の追加にあたる。
+
+### Consequences
+
+- アカウント削除の振る舞いは変えていない。SQL 文の本体・述語・返り値はすべて据え置きで、変わったのは (1) 文が write-set に申告する鍵と像、(2) 同じ UoW 内の読みがそれを観測すること、の 2 点だけ。`pnpm test:node` / `pnpm test:workers` は既存ケースを 1 件も書き換えずに緑。
+- `allRequiredAcknowledged` は `COUNT(*)` から「開いている item を全部読む」に変わった。ADR-110 が `countByRole` で払ったのと同じ代償で、集約関数では自 transaction の書き込みを数えられないため避けられない。実際の呼び出し点（finalize / compaction の前）では開いている item は 0 件なので、返る行数は通常 0。
+- 変異スポットチェック 5 件（4 箇所 + prune header）はすべて red を確認して戻した: append 2 箇所は「同一 UoW で page を claim し直すと 0 件」、`claimPending` は「同一 UoW の rollback が release 不要と判定する」、`acknowledge` は「2 つ目の ack が 1 つ目を上書きして finalize が立たない」、prune header は「消した manifest を同一 UoW の `describe` が返す」として出る。

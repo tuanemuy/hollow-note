@@ -223,10 +223,19 @@ export type WorkspaceMemberView = Readonly<{
   joinedAt: Date;
 }>;
 
+/**
+ * `viewerRole` is the reader's own role, answered separately from
+ * `members` because the page need not contain the reader's row: the list
+ * is ordered by `joinedAt`, so a member who joined after the first page
+ * was filled is absent from it. A screen that gates the reader's own
+ * actions (leaving, WS-06) on their role therefore cannot read it out of
+ * `members`. It is non-null because a non-member gets no list at all.
+ */
 export type WorkspaceMemberListView = Readonly<{
   members: readonly WorkspaceMemberView[];
   count: number;
   ownerCount: number;
+  viewerRole: WorkspaceRoleView;
   canManage: boolean;
 }>;
 

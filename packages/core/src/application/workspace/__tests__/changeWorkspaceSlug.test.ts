@@ -363,11 +363,10 @@ describe("changeWorkspaceSlug", () => {
   /**
    * The two steps that follow the local commit — the reservation's
    * activation and the directory snapshot — can both be lost while the
-   * scope has already moved to the new slug. Re-sending that slug is what
-   * repairs them; before it did, the reservation stayed `reserved` and
-   * the new public URL never resolved again.
+   * scope has already moved to the new slug. Re-sending that slug is the
+   * request that repairs them.
    */
-  it("TC-workspace-054: re-sending the slug repairs an activation that was lost for good", async () => {
+  it("TC-workspace-307: re-sending the slug repairs an activation that was lost for good", async () => {
     const h = createWorkspaceHarness();
     await seed(h, { publication: "published" });
 
@@ -534,7 +533,7 @@ describe("changeWorkspaceSlug", () => {
    * refusals that reach here are all of that kind: a role lost between the
    * two reads, a deletion barrier, an operation lock.
    */
-  it("TC-workspace-053: an attempt refused for a reason of its own leaves the winner's reservation alone", async () => {
+  it("TC-workspace-306: an attempt refused for a reason of its own leaves the winner's reservation alone", async () => {
     const h = createWorkspaceHarness();
     await seedWorkspace(h, {
       workspaceId: WORKSPACE,

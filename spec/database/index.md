@@ -432,7 +432,7 @@ RETURNING failure_count, last_failed_at;
 | `created_at` | integer | NOT NULL |
 | `expires_at` | integer | NOT NULL |
 
-- **インデックス**: `invitations_pending_uq` UNIQUE (`workspace_id`, `email`) WHERE `status = 'pending'`、`invitations_workspace_created_idx` (`workspace_id`, `created_at` DESC)。token の global uniqueness / route は D1 `invitation_routes` が担う
+- **インデックス**: `invitations_workspace_created_idx` (`workspace_id`, `created_at` DESC, `id` DESC)、`invitations_token_idx` (`token_hash`)、`invitations_workspace_email_idx` (`workspace_id`, `email`, `status`)。`created_at` だけでは同時刻の招待が page 間で重複・欠落するので `id` を tiebreak に持つ。`(workspace_id, email)` の pending 一意性に部分 UNIQUE 索引は**置かない** — 置くと同じ入力に対して in-memory バックエンドは成功し SQL バックエンドは `SystemError(DatabaseError)` になる。この規則は `inviteMember` が既存の pending を resend へ畳むことで保つ（[domains/workspace.md](../domains/workspace.md) の `Invitation` 不変条件）。token の global uniqueness / route は D1 `invitation_routes` が担う
 
 ---
 

@@ -78,11 +78,14 @@ export function createMemoryMembershipRepository(
       workspaceId: WorkspaceId,
       pagination: Pagination,
     ): Promise<PaginationResult<Membership>> {
-      const matched = [...byWorkspace(workspaceId)].sort(
-        (a, b) =>
-          a.joinedAt.getTime() - b.joinedAt.getTime() ||
-          compareStrings(a.id, b.id),
-      );
+      const matched = table
+        .committedValues()
+        .filter((row) => row.workspaceId === workspaceId)
+        .sort(
+          (a, b) =>
+            a.joinedAt.getTime() - b.joinedAt.getTime() ||
+            compareStrings(a.id, b.id),
+        );
       const start = (pagination.page - 1) * pagination.limit;
       return {
         items: matched.slice(start, start + pagination.limit).map(clone),

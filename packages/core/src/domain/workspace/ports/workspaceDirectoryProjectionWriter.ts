@@ -59,6 +59,12 @@ export type WorkspaceDirectorySnapshot = Readonly<{
  * reserved is stale by definition, and a projection write that could fail
  * on it would stall behind an event that may never be redelivered.
  *
+ * Taking the slug and applying the snapshot are one step: a snapshot that
+ * writes nothing — stale, or against a tombstone — releases nothing. A
+ * release that outlived its apply would leave a third workspace with no
+ * slug and no one holding it, silently out of the sitemap until its own
+ * next `workspace.*` event.
+ *
  * Error contract: `ConflictError` (a row already tombstoned by another
  * deletion), `SystemError(DatabaseError)`.
  */

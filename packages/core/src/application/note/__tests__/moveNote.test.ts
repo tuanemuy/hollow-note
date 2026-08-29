@@ -22,7 +22,7 @@ import { Membership } from "@repo/core/domain/workspace/membership";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
-import type { RequestContainer } from "../../di/types";
+import type { RequestContainer, WorkspaceReader } from "../../di/types";
 import { SystemError, SystemErrorCode } from "../../errors";
 import type {
   GlobalUnitOfWorkContext,
@@ -41,7 +41,11 @@ import { deleteWorkspace } from "../../workspace/deleteWorkspace";
 import { removeMember } from "../../workspace/removeMember";
 import { createBlankNote } from "../createBlankNote";
 import { getNote } from "../getNote";
-import { type MovedNoteView, moveNote } from "../moveNote";
+import {
+  type MovedNoteView,
+  moveNote,
+  type NoteMoveTagRelocation,
+} from "../moveNote";
 
 const ACTOR = "user-1";
 const BOSS = "owner-1";
@@ -52,7 +56,9 @@ const SOURCE_WS = "workspace-source";
 const WORKSPACE_NAME = "Workspace";
 
 const actorId = UserId.create(ACTOR);
+const otherId = UserId.create(OTHER);
 const personalScope = ScopeKey.user(actorId);
+const otherPersonalScope = ScopeKey.user(otherId);
 const targetScope = ScopeKey.workspace(WorkspaceId.create(TARGET_WS));
 const sourceWsScope = ScopeKey.workspace(WorkspaceId.create(SOURCE_WS));
 const CHECKSUM = Checksum.sha256("d".repeat(64));
@@ -107,6 +113,7 @@ type MoveInput = Readonly<{
   /** `null` is the transport's own shape: a caller with no version. */
   expectedVersion?: number | null;
   container?: RequestContainer;
+  tagRelocation?: NoteMoveTagRelocation;
 }>;
 
 const move = (h: TestHarness, input: MoveInput): Promise<MovedNoteView> =>
@@ -120,6 +127,9 @@ const move = (h: TestHarness, input: MoveInput): Promise<MovedNoteView> =>
       expectedVersion:
         input.expectedVersion === undefined ? 0 : input.expectedVersion,
     },
+    ...(input.tagRelocation === undefined
+      ? {}
+      : { tagRelocation: input.tagRelocation }),
   });
 
 const read = (h: TestHarness, noteId: string, userId: string | null = ACTOR) =>
@@ -391,6 +401,60 @@ const withRouteStore = (
 ): RequestContainer => ({
   ...h.container,
   noteRouteStore: { ...h.container.noteRouteStore, ...overrides },
+});
+
+/**
+ * A container that lets a test commit something the instant a membership
+ * is read outside a transaction. That is the window the pre-flight has to
+ * close: a role observed by one read and a version taken by another leave
+ * the commit-time re-check comparing the *new* version against itself.
+ */
+const withMembershipReadHook = (
+  h: TestHarness,
+  onRead: (scope: ScopeKey, role: string) => Promise<void> | void,
+): RequestContainer => ({
+  ...h.container,
+  workspaceReaderFor: (scope: ScopeKey): WorkspaceReader => {
+    const reader = h.container.workspaceReaderFor(scope);
+    return {
+      ...reader,
+      membership: {
+        ...reader.membership,
+        findByWorkspaceAndUser: async (workspaceId, userId) => {
+          const found = await reader.membership.findByWorkspaceAndUser(
+            workspaceId,
+            userId,
+          );
+          if (found !== null) {
+            await onRead(scope, found.entity.role);
+          }
+          return found;
+        },
+      },
+    };
+  },
+});
+
+const TAG_COMMAND = "tag.moveRelocateAssignments";
+
+/**
+ * The tag seam as Issue #8 will write it: a receipt of its own in the
+ * target scope, declared so an abort clears it with the note's.
+ */
+const recordingTagRelocation = (stagings: string[]): NoteMoveTagRelocation => ({
+  targetScopeCommandKeys: [TAG_COMMAND],
+  plan: async () => [],
+  stageTarget: async (ctx, input) => {
+    if (
+      await ctx.appliedOperationStore.markApplied({
+        operationId: input.migrationId,
+        commandKey: TAG_COMMAND,
+      })
+    ) {
+      stagings.push(input.migrationId);
+    }
+  },
+  retireSource: async () => {},
 });
 
 const failure = (detail: string): SystemError =>
@@ -783,7 +847,7 @@ describe("moveNote", () => {
     });
   });
 
-  it("TC-note-249: note, revisions, file metadata and the usage delta land in the target scope as one migration", async () => {
+  it("TC-note-249 / TC-note-764: note, revisions, file metadata and the usage delta land in a target scope that has no quota row yet", async () => {
     const h = createTestHarness();
     await seedTarget(h, "editor");
     const noteId = await createNote(h);
@@ -965,6 +1029,68 @@ describe("moveNote", () => {
     });
     expect(notesIn(h, sourceWsScope)).toHaveLength(1);
     expect(notesIn(h, personalScope)).toHaveLength(0);
+  });
+
+  it("TC-note-254: a source demotion that lands while the pre-flight is still deciding cannot take the note out of the workspace", async () => {
+    const h = createTestHarness();
+    await seedSource(h, "editor");
+    const noteId = await createNote(h, { workspaceId: SOURCE_WS });
+    let demoted = false;
+    const container = withMembershipReadHook(h, async (scope, role) => {
+      if (
+        !demoted &&
+        ScopeKey.equals(scope, sourceWsScope) &&
+        role === "editor"
+      ) {
+        demoted = true;
+        await demoteMembership(h, SOURCE_WS, ACTOR);
+      }
+    });
+
+    await expectConflict(move(h, { noteId, container }), "STALE_MEMBERSHIP");
+
+    expect(demoted).toBe(true);
+    expect(notesIn(h, sourceWsScope)).toHaveLength(1);
+    expect(notesIn(h, personalScope)).toHaveLength(0);
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+    });
+  });
+
+  it("TC-note-254: a demotion that lands while the pre-flight is still deciding cannot slip between the role and the version", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    let demoted = false;
+    // The target answers "editor", and the role is taken away before the
+    // pre-flight is done with it. A version pinned by a *later* read would
+    // describe the demoted row, so every commit-time re-check — which
+    // compares versions, not roles — would find nothing wrong.
+    const container = withMembershipReadHook(h, async (scope, role) => {
+      if (
+        !demoted &&
+        ScopeKey.equals(scope, targetScope) &&
+        role === "editor"
+      ) {
+        demoted = true;
+        await demoteMembership(h, TARGET_WS, ACTOR);
+      }
+    });
+
+    await expectBusinessRule(
+      move(h, { noteId, workspaceId: TARGET_WS, container }),
+      WorkspaceErrorCode.InsufficientRole,
+    );
+
+    expect(demoted).toBe(true);
+    expect(notesIn(h, targetScope)).toHaveLength(0);
+    expect(notesIn(h, personalScope)).toHaveLength(1);
+    expect(operations(h)).toHaveLength(0);
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: personalScope,
+    });
   });
 
   it("TC-note-255: demoting or removing the actor is refused while the target staging stands, and allowed once it activates", async () => {
@@ -1201,6 +1327,38 @@ describe("moveNote", () => {
       consumedBytes: 0,
       noteCount: 0,
     });
+  });
+
+  it("TC-note-258: the resume after an abort re-stages the tag half, whose receipts the seam declares", async () => {
+    const h = createTestHarness();
+    await seedTarget(h, "editor");
+    const noteId = await createNote(h);
+    const stagings: string[] = [];
+    const tagRelocation = recordingTagRelocation(stagings);
+    let switchAttempted = false;
+    const container = withRouteStore(h, {
+      switchMove: (input) => {
+        if (!switchAttempted) {
+          switchAttempted = true;
+          return Promise.reject(failure("switch failed"));
+        }
+        return h.container.noteRouteStore.switchMove(input);
+      },
+    });
+
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, container, tagRelocation }),
+    ).rejects.toThrow("switch failed");
+    expect(stagings).toHaveLength(1);
+
+    await move(h, { noteId, workspaceId: TARGET_WS, tagRelocation });
+
+    // The abort cleared the key the seam declared along with the note's
+    // own, so the resumed staging runs the tag half again instead of
+    // skipping it on a receipt whose rows the abort deleted.
+    expect(stagings).toHaveLength(2);
+    expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(notesIn(h, personalScope)).toHaveLength(0);
   });
 
   it("TC-note-259: while the target is staged the route still names the source, and the abort clears the staged copy", async () => {
@@ -1667,6 +1825,45 @@ describe("moveNote", () => {
     expect(view.ownerId).toBe(SOURCE_WS);
   });
 
+  it("TC-note-261: a claim whose response was lost gives the route back instead of parking it", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withLostResponseAt(h, "claimRoute"),
+      }),
+    ).rejects.toThrow("claimRoute response lost");
+
+    // The claim committed, nothing was staged, and the operation is
+    // settled — so nobody is left to drive that claim.
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: sourceWsScope,
+      routeVersion: 1,
+    });
+
+    // Another member's move to another destination is not held hostage by
+    // it: a route left `moving` would refuse every later move of the note.
+    const view = await move(h, {
+      noteId,
+      userId: OTHER,
+      expectedVersion: null,
+    });
+
+    expect(view).toMatchObject({ ownerType: "user", ownerId: OTHER });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: otherPersonalScope,
+    });
+    expect(notesIn(h, otherPersonalScope)).toHaveLength(1);
+  });
+
   it("TC-note-254: a retry completes across a membership change made after the first attempt failed", async () => {
     const h = createTestHarness();
     await seedTarget(h, "owner");
@@ -1901,7 +2098,7 @@ describe("moveNote", () => {
     expect(await read(h, noteId)).toMatchObject({ ownerId: TARGET_WS });
   });
 
-  it("TC-note-266: an abort that follows a switch whose response was lost undoes nothing", async () => {
+  it("TC-note-761: an abort that follows a switch whose response was lost undoes nothing", async () => {
     const h = createTestHarness();
     await seedTarget(h, "editor");
     const noteId = await createNote(h);
@@ -1991,7 +2188,7 @@ describe("moveNote", () => {
     }
   }
 
-  it("TC-note-253: another member's request is authorized about that member, not about the actor whose attempt failed", async () => {
+  it("TC-note-762: another member's request is authorized about that member, not about the actor whose attempt failed", async () => {
     const h = createTestHarness();
     await seedMovePair(h);
     const noteId = await seedWholeNote(h);
@@ -2035,7 +2232,7 @@ describe("moveNote", () => {
     expect(notesIn(h, sourceWsScope)).toHaveLength(1);
   });
 
-  it("TC-note-254: the version another member's request pins is that member's own", async () => {
+  it("TC-note-762: the version another member's request pins is that member's own", async () => {
     const h = createTestHarness();
     await seedMovePair(h);
     const noteId = await seedWholeNote(h);
@@ -2074,7 +2271,7 @@ describe("moveNote", () => {
     expect(notesIn(h, sourceWsScope)).toHaveLength(1);
   });
 
-  it("TC-note-259: a note that leaves its scope between the pre-flight and the claim is refused as a stale route", async () => {
+  it("TC-note-760: a note that leaves its scope between the pre-flight and the claim is refused as a stale route", async () => {
     const h = createTestHarness();
     await seedTarget(h, "editor");
     await seedSource(h, "editor");
@@ -2146,7 +2343,7 @@ describe("moveNote", () => {
     expect(operations(h)[0]).toMatchObject({ state: "rejected" });
   });
 
-  it("TC-note-260: a resume whose staging was already applied retires only what actually crossed", async () => {
+  it("TC-note-763: a resume whose staging was already applied retires only what actually crossed", async () => {
     const h = createTestHarness();
     await seedTarget(h, "editor");
     const noteId = await createNote(h);

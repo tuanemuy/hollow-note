@@ -112,7 +112,7 @@ describe("invitation mail outcome", () => {
     ).not.toBeNull();
   });
 
-  it("reports the mail outcome of a resend, and through the tail call", async () => {
+  it("TC-workspace-309: reports the mail outcome of a resend, and through the tail call", async () => {
     const h = await seed({
       requestOverrides: { mailSender: failingMailSender },
     });

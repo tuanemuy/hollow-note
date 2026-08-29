@@ -2498,4 +2498,11 @@
 | TC-workspace-302 | getWorkspaceDeletionStatus: ワークスペースは存在するが非メンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-303 | listPendingInvitations: 終端状態の招待が 1 ページ分より多くある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 保留中の招待が隠れず、1 ページ目に返る |
 | TC-workspace-304 | listPendingInvitations: 保留中の招待が 3 件あり 2 件目のページを引く — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | そのページの行数ではなく保留中の総数が `count` になる |
+| TC-workspace-305 | acceptInvitation: activation を恒久的に失った後、招待リンクを開き直す — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 既存メンバーの判定が招待の status より先に立ち、`activating` のまま残った edge を settle して成功で返る |
+| TC-workspace-306 | changeWorkspaceSlug: 同じ slug を狙う 2 つの要求のうち、片方が自分の理由（降格・バリア拒否）で落ちる — 同時に変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 落ちた試行は勝った試行の予約を落とさない |
+| TC-workspace-307 | changeWorkspaceSlug: 切替を恒久的に失った後、同じ slug をもう一度送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | global が scope と食い違うときだけ予約と投影を打ち直し、新しい公開 URL が解決するようになる |
+| TC-workspace-308 | leaveWorkspace: edge を落とし損ねたまま、もう一度脱退を要求する — 脱退する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | `MEMBERSHIP_NOT_FOUND` を返す前に `completeRemoval` を再発行し、`(userId, workspaceId)` の組を解放する |
+| TC-workspace-309 | resendInvitation: メール送信基盤が失敗する — 再送する | spec/testcases/workspace/resendInvitation.md#テストケース-resendinvitation | 再送は成立し、送信失敗が記録され、`mailSent: false` が返る |
+| TC-workspace-310 | listMembers: 閲覧者自身の行がページに載らない — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` に閲覧者自身のロールが返る |
+| TC-workspace-311 | listMembers: 閲覧者と先頭行のロールが異なる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` は先頭行ではなく閲覧者自身のロールになる |
 
