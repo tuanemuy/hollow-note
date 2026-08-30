@@ -42,7 +42,17 @@ export const personalCleanupParticipants = {
   storage: { kind: "participant", taskKind: STORAGE_OWNER_DELETE_TASK_KIND },
   usage: { kind: "participant", taskKind: USAGE_USER_CLEANUP_TASK_KIND },
   job: absent("The Job aggregate does not exist", "#5"),
-  note: absent("`deleteNotesForOwner` does not exist", "editing / curation"),
+  // `deleteNotesForOwner` exists, but nothing can command it here: a
+  // purge claims and tombstones the *global* note route, so it runs on
+  // the request plane (ADR 017), while the cleanup wave and the
+  // scope-task runner both dispatch with a `WorkerContainer`, which
+  // carries `NoteRouteStore` only as a `resolve` view. Promoting this
+  // entry before that gap closes would make the barrier wait on an
+  // acknowledgement no caller can produce.
+  note: absent(
+    "Nothing on the worker plane can drive a note purge",
+    "the slice giving the worker plane the note-route saga",
+  ),
   // Both aggregates exist only on their delete side, which the
   // `note.purged` fan-out drives one note at a time. Neither has the
   // scope-wide sweep a barrier can wait on — `deleteTagsForScope` and

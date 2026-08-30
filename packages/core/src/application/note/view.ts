@@ -181,6 +181,22 @@ export type RestoredNoteView = Readonly<{
   visibility: "private" | "unlisted" | "public";
 }>;
 
+/**
+ * Result of emptying the trash.
+ *
+ * `mode` is not decoration: it is what `purgedCount` has to be read
+ * against. `"purged"` counts notes this request destroyed, `"scheduled"`
+ * counts notes it enrolled into bulk-operation jobs — none of which have
+ * run yet — so a response that carried the number alone would announce a
+ * completed deletion that has not started. `jobIds` is the screen's link
+ * into the job history and is empty on the inline path.
+ */
+export type EmptyTrashView = Readonly<{
+  mode: "purged" | "scheduled";
+  purgedCount: number;
+  jobIds: readonly string[];
+}>;
+
 export const ownerOf = (
   note: Note,
 ): Readonly<{ ownerType: "user" | "workspace"; ownerId: string }> =>

@@ -540,3 +540,94 @@ ADR-002 は「`participants.ts` の `absent(...)` は実装した分だけ `part
 - 良い点: #8 / #4 は既存の行の形（テーブル定義・`reconstruct`・conformance スイート）を引き継いで書き込み側を足すだけでよく、削除側を書き直す必要がない
 - トレードオフ: TC-tag-024（「タグ本体は残る」）は `tags` テーブルがまだ無いため直接は書けない。代わりに「このユースケースは scope の中で `tag_assignments` 以外のどのテーブルも増減させない」を検証している。語彙の残存そのものは #8 が `TagRepository` を入れた時点で直接書ける
 - 既知の制限: TC-storage-074（`applyStorageDelta` との重複排除）は `applyStorageDelta` が未実装のため書けない。TC-storage-063 / 066 / 067 / 073 は、`deleteStoredObjects` の実装が spec の「1 配送分のまとまりを受け取り `deletedCount` / `failed` を返す」形ではなく `storage.fileDeleted` を 1 件ずつ受ける形になっているため、購読者を 1 件ずつ回して「失敗した鍵だけが残り、他は回収される」を検証する形に読み替えている。署名を spec に合わせるかは、本ステップの担当範囲（実装は変えない）の外
+
+---
+
+## ADR-022: `emptyTrash` の 51 件以上の経路は `NoteBulkPurgeJobs` の継ぎ目で表す
+
+### Context
+
+ADR-002 は「一括操作ジョブ（`requestBulkNoteOperation` の `{ kind: "purge" }`）は Job 集約が無いので、spec の手順から呼び出しを削らずに実装する」と決めた。`emptyTrash` が Job に触るのは 1 点だけである — 手順 2 の 50 件超の分岐で、500 件ごとの分割を親 Job として登録する箇所。
+
+### Decision
+
+ADR-012 / ADR-016 と同じ形をとる。`emptyTrash.ts` に `NoteBulkPurgeJobs`（`requestBulkPurge` の 1 メソッド）を置き、既定値 `noNoteBulkPurgeJobs`（`null` を返す）をユースケースの省略可能な引数で受ける。置き場所を `jobs.ts` にしないのは、このメソッドの呼び出し側が 1 か所しかなく、編集経路（transaction の外）とゴミ箱経路（transaction の内側）という `jobs.ts` の 2 つの継ぎ目のどちらの性質も持たないためである。
+
+`null` は「この配備には Job を登録する先が無い」を意味し、`jobIds` に積まれない。件数と `mode` は Job の有無に関わらず spec のとおり返るので、画面の文言分岐（`"purged"` / `"scheduled"`）は Job のスライスを待たずに正しく動く。
+
+分割は列挙しながら 500 件ごとに flush する。この経路は 1 件も消さないので、offset ページングでも列挙が自分の足元を崩さない。
+
+### Consequences
+
+- 良い点: TC-note-102 / 103 / 106 / 107（境界 51、分割 500、1200 件の 500/500/200、各分割の source ScopeKey）が継ぎ目に対して検証できる。実際の `bulkDelete` Job 行が生えるかは #5 / #6 の持ち分
+- 既知の制限: `jobIds` に**本物の Job ID** が返ることは検証できない。テストは記録用の継ぎ目が返す ID を見ている
+
+---
+
+## ADR-023: 完全削除を駆動できるのは request plane だけなので、一括・自動の回収は `RequestContainer` を取り、`scopeTaskRunner` には登録しない
+
+### Context
+
+ADR-017 は `purgeNote` に route saga の全 phase（`beginPurge` → local delete → `removeForPurge` → `finishPurge`）を駆動させ、そのために `PublicNoteProjectionWriter` を `RequestContainer` に載せた。結果として `purgeNote` の引数は `RequestContainer` である。
+
+一方 `WorkerContainer` が持つ note route のポートは `noteRouteResolver`（`Pick<NoteRouteStore, "resolve">`）だけで、`beginPurge` / `abortPurge` / `finishPurge` に届かない。`scopeRouter` / `noteReaderFor` / `workspaceReaderFor` も無い。つまり **worker plane からは 1 件のノートも purge できない**。
+
+`deleteNotesForOwner` / `purgeExpiredTrash` は spec 上は Alarm / cleanup command から呼ばれる worker plane の経路である。両者は `purgeNote` の合成で成り立つので、この非対称が直接ぶつかる。
+
+### Decision
+
+- **2 つのユースケースは `RequestContainer` を取る。** `purgeNote` と同じ plane に置き、合成をそのまま成立させる
+- **`application/workers/scopeTaskRunner.ts` には登録しない。** `ScopeTaskHandler` は `WorkerContainer` を受け取るので、登録しても呼べる実装が書けない。未登録の kind は「due のまま warn を出して残す」と runner が明示的に決めており、嘘の完了より見える停滞のほうがよい
+- **`application/cleanup/participants.ts` の `note` は `absent` のまま、理由の文面だけ現状に合わせる。** `participant` へ移すと `REQUIRED_PERSONAL_CLEANUP_COMPONENTS` に載り、`PERSONAL_CLEANUP_COMMANDS`（`WorkerContainer` を受け取る）に `note` の行が要るが、その行が書けない。ack する実装が無いまま移せば退会が永久に完了しない（ADR-021 と同じ判断）
+- **`deleteNotesForOwner` は `acknowledgePersonalComponent(operationId, "note")` を呼ぶ。** 不在宣言されている component を ack しても完了判定は変わらず、worker plane が広がって `participant` へ移した瞬間に配線が揃う
+
+解消の手順は 1 つに絞れる — `WorkerContainer` に `noteRouteStore` / `scopeRouter` / `noteReaderFor` / `workspaceReaderFor` を足す（か、`purgeNote` の引数を構造的に絞る）こと。どちらも DI の型と両ランタイム、`adapters/cloudflare/__tests__/runtimeComposition.test.ts` を触るので、本ステップの担当範囲の外である。
+
+### Consequences
+
+- 良い点: 2 ユースケースは今日から呼べて、TC 行のほぼ全部が実 backend の上で検証できる
+- 既知の制限: `deleteNotesForOwner` が積む `note.ownerPurgeContinued` を処理する受け手が居ない。101 件目以降は次の呼び出しが来るまで残り、runner は行を due のまま報告し続ける
+- 既知の制限: 退会 / ワークスペース削除からこのユースケースを起動する経路（`cleanupDispatch` の command、`workspace.deleted` の購読者）が無い。どちらも `WorkerContainer` 側の配線で、上の解消手順とセットになる
+
+---
+
+## ADR-024: `purgeExpiredTrash` の purge は `ExpiredNotePurge` の継ぎ目にする
+
+### Context
+
+`spec/usecases/note.md#purgeNote` の入力 DTO は `userRequest` と `scopeCleanup` の 2 種だけである。保持期限の回収はそのどちらでもない — 要求した人が居ないので `userRequest` の権限判定に評価する相手が無く（ワークスペース所有ノートでは名指しできる member すら決まらない）、削除 barrier も無いので `scopeCleanup` の `assertOwner` に拒まれる。
+
+`spec/usecases/note.md#purgeExpiredTrash` は手順 2 を「内部 purge command を開始し、route を閉じてから local delete・public remove・tombstone まで進める」と書き、`emptyTrash` / `deleteNotesForOwner` と違って `purgeNote` を名指ししていない。spec 側にも同じ穴がある。
+
+### Decision
+
+列挙・境界・上限・継続の判断は本ユースケースが持ち、purge の 1 件分だけを `ExpiredNotePurge` として呼び出し側から受ける。**既定値は置かない**。「何もしない」既定を置くと、期限切れのノートを 1 件も消さないまま成功を返す掃除になるからである。
+
+塞ぐには `PurgeNoteInput` に 3 つ目の admission 種別（actor も barrier も要求せず、scope 一致と expected version だけを見るもの）を足す。`purgeNote.ts` の変更は本ステップの担当範囲の外なので、継ぎ目のまま残す。
+
+### Consequences
+
+- 良い点: 保持期限の述語（`purgeAfter <= now`）、`limit` の上限、満ページでの再武装、進捗 0 での backoff が実 backend の上で検証できる（TC-note-340〜343 / 345 / 346）
+- 既知の制限: 本番の駆動経路が無い。上記の admission 種別に加えて、`trashNote` が最小の `purgeAfter` で `scheduled_tasks` を upsert する手順（spec の概要）も未実装で、そちらも本ステップの担当範囲の外
+- 既知の制限: TC-note-347（実行後に使用量が減っている）は `applyStorageDelta` が未実装のため書けない
+
+---
+
+## ADR-025: `deleteNotesForOwner` の継続要求は、バッチの最後の削除とは別の transaction で積む
+
+### Context
+
+`spec/usecases/note.md#deleteNotesForOwner` の手順 4 は、継続要求 `note.ownerPurgeContinued` を「そのバッチの最後の削除と同じ scope-local `UnitOfWorkProvider.run` の中で」積むことを求める。`deleteFilesByOwner` はこれを満たしている — 削除も継続も同じ 1 つの `run` の中にあるからである。
+
+`deleteNotesForOwner` の削除は `purgeNote` の呼び出しで、`purgeNote` は自分の transaction を開いて確定する。`run` の入れ子は禁止なので、同じ transaction に相乗りする方法が無い。
+
+### Decision
+
+継続の判断（settled / continued / stalled）とその書き込みを、バッチの直後に開く 1 つの独立した `run` にまとめる。同じ transaction に置けない代わりに、**その窓で失われるものが何かを固定する**: バッチの purge は既に確定しており、落ちるのは task 行の武装だけである。同じ cleanup command の再配送がそれを取り戻す（再配送はこの経路の正常系で、残りを先頭から読み直すだけで前に進む）。
+
+`assertOwner` はバッチの前に 1 回、`purgeNote` の中で 1 件ごとにもう 1 回取られる。前者は「所有権を失った command に列挙もさせない」ため、後者は削除そのものと同じ transaction にあるための判定で、役割が違う。
+
+### Consequences
+
+- 良い点: `run` の入れ子を作らずに spec の手順の意味（残作業がある限り 1 系列 1 行の継続が残る）を保てる
+- トレードオフ: 「バッチは進んだが継続が積まれていない」窓が開く。塞ぐには purge の transaction を呼び出し側が握れる形（ADR-023 の解消手順）が要る
