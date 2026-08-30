@@ -27,6 +27,8 @@ export const SCOPE_TABLES = {
   noteProjectionRevisions: "note_projection_revisions",
   noteRevisions: "note_revisions",
   storedFiles: "stored_files",
+  tagAssignments: "tag_assignments",
+  backupRecords: "backup_records",
   storageQuotas: "storage_quotas",
   llmUsages: "llm_usages",
   noteSearch: "note_search",
@@ -297,6 +299,45 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
      ON ${SCOPE_TABLES.storedFiles} (purpose, created_at)`,
   `CREATE INDEX IF NOT EXISTS stored_files_note_idx
      ON ${SCOPE_TABLES.storedFiles} (note_id) WHERE note_id IS NOT NULL`,
+
+  // `note_id` carries no foreign key on purpose: Note is another domain,
+  // and a purged note's assignments are reclaimed by the `note.purged`
+  // fan-out rather than by a cascade (spec/database/index.md).
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.tagAssignments} (
+     id text PRIMARY KEY,
+     tag_id text NOT NULL,
+     note_id text NOT NULL,
+     scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),
+     scope_id text NOT NULL,
+     assigned_by text NOT NULL,
+     assigned_at integer NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS tag_assignments_tag_note_uq
+     ON ${SCOPE_TABLES.tagAssignments} (tag_id, note_id)`,
+  `CREATE INDEX IF NOT EXISTS tag_assignments_note_idx
+     ON ${SCOPE_TABLES.tagAssignments} (note_id)`,
+  `CREATE INDEX IF NOT EXISTS tag_assignments_tag_assigned_idx
+     ON ${SCOPE_TABLES.tagAssignments} (tag_id, assigned_at DESC)`,
+
+  // `user_id` names the connection whose Drive holds the copy; it is
+  // attribution, not a scope key — the row lives in the scope of its
+  // note, which is why `note_id` is the only way in.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.backupRecords} (
+     id text PRIMARY KEY,
+     user_id text NOT NULL,
+     note_id text NOT NULL,
+     source_file_id text NOT NULL,
+     external_file_id text NOT NULL,
+     web_view_url text NOT NULL,
+     checksum_value text NOT NULL,
+     version integer NOT NULL DEFAULT 0,
+     backed_up_at integer NOT NULL,
+     updated_at integer NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS backup_records_note_file_uq
+     ON ${SCOPE_TABLES.backupRecords} (note_id, source_file_id)`,
+  `CREATE INDEX IF NOT EXISTS backup_records_user_idx
+     ON ${SCOPE_TABLES.backupRecords} (user_id)`,
 
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.storageQuotas} (
      subject_type text NOT NULL CHECK (subject_type IN ('user', 'workspace')),

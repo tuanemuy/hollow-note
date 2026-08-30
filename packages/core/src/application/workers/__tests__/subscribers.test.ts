@@ -1,7 +1,12 @@
+import { ScopeKey } from "@repo/core/application/scope";
 import { EventId } from "@repo/core/domain/common/event";
 import type { UserDeletedEvent } from "@repo/core/domain/identity/events";
 import { UserId } from "@repo/core/domain/identity/valueObject";
+import { BackupRecord } from "@repo/core/domain/integration/backupRecord";
+import type { NotePurgedEvent } from "@repo/core/domain/note/events";
+import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
 import type { FileDeletedEvent } from "@repo/core/domain/storage/events";
+import { StoredFile } from "@repo/core/domain/storage/storedFile";
 import {
   ByteSize,
   Checksum,
@@ -10,8 +15,9 @@ import {
   StorageOwner,
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
+import { TagAssignment } from "@repo/core/domain/tag/tagAssignment";
 import { describe, expect, it } from "vitest";
-import { createTestHarness } from "../../__tests__/helpers";
+import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import {
   continuationSubscribers,
   dispatchDomainEvent,
@@ -145,5 +151,134 @@ describe("dispatchDomainEvent", () => {
     expect(
       continuationTypes.filter((type) => !registered.has(type)),
     ).toHaveLength(0);
+  });
+});
+
+const PURGED_NOTE = NoteId.create("note-1");
+const PURGE_SCOPE = ScopeKey.user(UserId.create("user-1"));
+
+const notePurged = (): NotePurgedEvent => ({
+  id: EventId.create("event-3"),
+  type: "note.purged",
+  payload: {
+    noteId: PURGED_NOTE,
+    owner: NoteOwner.user(UserId.create("user-1")),
+    sourceFileId: StoredFileId.create("file-1"),
+    operationId: "purge-note-1",
+    deletionOperationId: null,
+    routeVersion: 1,
+    projectionRevision: 1,
+  },
+  occurredAt: new Date("2026-01-01T00:00:00.000Z"),
+  aggregateId: "note-1",
+});
+
+async function seedPurgeResidue(h: TestHarness): Promise<void> {
+  await h.container.scopeUnitOfWorkProvider.run(PURGE_SCOPE, async (ctx) => {
+    await ctx.storedFileRepository.insert(
+      StoredFile.register(
+        {
+          id: "file-1",
+          owner: OWNER,
+          objectKey: ObjectKey.build(
+            OWNER,
+            "source",
+            StoredFileId.create("file-1"),
+            "html",
+          ),
+          fileName: "file-1.html",
+          mimeType: "text/html",
+          size: 10,
+          checksum: Checksum.sha256("a".repeat(64)),
+          purpose: "source",
+          noteId: PURGED_NOTE,
+          uploadedBy: UserId.create("user-1"),
+        },
+        h.clock.now(),
+      ).entity,
+    );
+    await ctx.tagAssignmentRepository.insert(
+      TagAssignment.reconstruct({
+        id: "assignment-1",
+        tagId: "tag-1",
+        noteId: PURGED_NOTE,
+        scopeType: "user",
+        scopeId: "user-1",
+        assignedBy: "user-1",
+        assignedAt: h.clock.now(),
+      }),
+    );
+    await ctx.backupRecordRepository.insert(
+      BackupRecord.reconstruct({
+        id: "backup-1",
+        userId: "user-1",
+        noteId: PURGED_NOTE,
+        sourceFileId: "file-1",
+        externalFileId: "drive-1",
+        webViewUrl: "https://drive.example.test/1",
+        checksumValue: "c".repeat(64),
+        version: 0,
+        backedUpAt: h.clock.now(),
+        updatedAt: h.clock.now(),
+      }),
+    );
+  });
+}
+
+const residueCounts = (h: TestHarness) => {
+  const store = h.backend.scope(PURGE_SCOPE);
+  return {
+    files: store.storedFiles.values().length,
+    assignments: store.tagAssignments.values().length,
+    backups: store.backupRecords.values().length,
+  };
+};
+
+describe("note.purged fan-out", () => {
+  // The dispatcher acknowledges an unsubscribed event with nothing but a
+  // warning, so a follower that is written and never registered leaves
+  // every other test green. The registration itself is the assertion.
+  it("registers one subscriber per follower, so no leg of the purge is acknowledged with a warning", () => {
+    expect(
+      subscribers
+        .filter((subscriber) => subscriber.eventType === "note.purged")
+        .map((subscriber) => subscriber.consumerName)
+        .sort(),
+    ).toEqual([
+      "integration.deleteBackupRecordsForNote",
+      "storage.deleteFilesForNote",
+      "tag.deleteAssignmentsForNote",
+    ]);
+  });
+
+  it("clears the files, assignments and backup records of the purged note through the default registry, and stays a no-op on redelivery", async () => {
+    const h = createTestHarness();
+    await seedPurgeResidue(h);
+    expect(residueCounts(h)).toEqual({
+      files: 1,
+      assignments: 1,
+      backups: 1,
+    });
+
+    await dispatchDomainEvent(notePurged(), h.workerContainer);
+
+    expect(residueCounts(h)).toEqual({
+      files: 0,
+      assignments: 0,
+      backups: 0,
+    });
+    expect(h.logger.byLevel("warn")).toHaveLength(0);
+    const afterFirst = h.backend.outbox.values().length;
+
+    await dispatchDomainEvent(notePurged(), h.workerContainer);
+
+    expect(residueCounts(h)).toEqual({
+      files: 0,
+      assignments: 0,
+      backups: 0,
+    });
+    // The second delivery announces nothing new: every follower found
+    // its rows already gone.
+    expect(h.backend.outbox.values()).toHaveLength(afterFirst);
   });
 });

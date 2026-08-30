@@ -1,4 +1,5 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
+import { scopeOfNoteOwner } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
 import type { IdentityContinuationEvent } from "../identity/continuations";
@@ -9,7 +10,10 @@ import { finalizeAccountDeletion } from "../identity/deleteAccount/finalize";
 import { runAccountDeletionGlobalCleanup } from "../identity/deleteAccount/globalCleanup";
 import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
+import { deleteBackupRecordsForNote } from "../integration/deleteBackupRecordsForNote";
+import { deleteFilesForNote } from "../storage/deleteFilesForNote";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
+import { deleteAssignmentsForNote } from "../tag/deleteAssignmentsForNote";
 import { projectMembershipRole } from "../workspace/membershipRoleProjection";
 import type { AllDomainEvents } from "./eventRelayWorker";
 
@@ -164,6 +168,55 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
     eventType: "workspace.membership.roleChanged",
     consumerName: "workspace.membershipRoleProjection",
     handle: projectMembershipRole,
+  },
+  // The `note.purged` fan-out. Each follower owns one aggregate's rows
+  // and settles its own continuation, so they are independent
+  // subscribers rather than steps of one handler: a redelivery re-runs
+  // every one of them, and each is a no-op once its own rows are gone.
+  {
+    eventType: "note.purged",
+    consumerName: "storage.deleteFilesForNote",
+    handle: async (event, deps) => {
+      await deleteFilesForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
+  },
+  {
+    eventType: "note.purged",
+    consumerName: "tag.deleteAssignmentsForNote",
+    handle: async (event, deps) => {
+      await deleteAssignmentsForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
+  },
+  {
+    eventType: "note.purged",
+    consumerName: "integration.deleteBackupRecordsForNote",
+    handle: async (event, deps) => {
+      await deleteBackupRecordsForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
   },
 ];
 

@@ -8,6 +8,7 @@ import type { EventDraft } from "../../domain/common/event";
 import { attachEventIds, type DomainEvent } from "../../domain/common/event";
 import type { MemoryUnitOfWorkOptions } from "./globalUnitOfWork";
 import { createMemoryAppliedOperationStore } from "./repositories/appliedOperationStore";
+import { createMemoryBackupRecordRepository } from "./repositories/backupRecordRepository";
 import { createMemoryInvitationRepository } from "./repositories/invitationRepository";
 import { createMemoryLlmUsageRepository } from "./repositories/llmUsageRepository";
 import { createMemoryMembershipRemovalPreparationStore } from "./repositories/membershipRemovalPreparationStore";
@@ -23,6 +24,7 @@ import { createMemoryScopeCleanupAdmissionStore } from "./repositories/scopeClea
 import { createMemoryScopeTaskScheduler } from "./repositories/scopeTaskScheduler";
 import { createMemoryStorageQuotaRepository } from "./repositories/storageQuotaRepository";
 import { createMemoryStoredFileRepository } from "./repositories/storedFileRepository";
+import { createMemoryTagAssignmentRepository } from "./repositories/tagAssignmentRepository";
 import { createMemoryWorkspaceDeletionManifestStore } from "./repositories/workspaceDeletionManifestStore";
 import { createMemoryWorkspaceOperationLockStore } from "./repositories/workspaceOperationLockStore";
 import { createMemoryWorkspaceRepository } from "./repositories/workspaceRepository";
@@ -79,6 +81,10 @@ export function createMemoryScopeUnitOfWorkProvider(
             createMemoryStorageQuotaRepository(scopeStore),
           llmUsageRepository: createMemoryLlmUsageRepository(scopeStore),
           storedFileRepository: createMemoryStoredFileRepository(scopeStore),
+          tagAssignmentRepository:
+            createMemoryTagAssignmentRepository(scopeStore),
+          backupRecordRepository:
+            createMemoryBackupRecordRepository(scopeStore),
           workspaceRepository: createMemoryWorkspaceRepository(scopeStore),
           membershipRepository: createMemoryMembershipRepository(scopeStore),
           invitationRepository: createMemoryInvitationRepository(scopeStore),

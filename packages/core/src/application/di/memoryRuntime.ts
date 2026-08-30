@@ -241,6 +241,8 @@ export function createMemoryRuntime(
         ),
         scopeRouter: createMemoryScopeRouter(backend),
         noteRouteStore: createMemoryNoteRouteStore(backend),
+        publicNoteProjectionWriter:
+          createMemoryPublicNoteProjectionWriter(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
         loginAttemptStore,
         oauthStateStore,

@@ -159,6 +159,28 @@ export type RestoredNoteRevisionView = Readonly<{
   version: number;
 }>;
 
+/**
+ * Result of moving a note to the trash. `purgeAfter` is carried rather
+ * than derived on the screen: the retention window belongs to the
+ * domain (`TRASH_RETENTION_MS`), and the trash list shows the days left
+ * against it.
+ */
+export type TrashedNoteView = Readonly<{
+  noteId: string;
+  trashedAt: Date;
+  purgeAfter: Date;
+}>;
+
+/**
+ * Result of restoring a note. The visibility is what the caller needs to
+ * know: a restored note gets its former publication back, so the screen
+ * has to say where the note is now reachable from.
+ */
+export type RestoredNoteView = Readonly<{
+  noteId: string;
+  visibility: "private" | "unlisted" | "public";
+}>;
+
 export const ownerOf = (
   note: Note,
 ): Readonly<{ ownerType: "user" | "workspace"; ownerId: string }> =>

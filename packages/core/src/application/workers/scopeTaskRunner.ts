@@ -1,3 +1,4 @@
+import { readNotePurgeTurn } from "../cleanup/notePurgeFanOut";
 import {
   STORAGE_OWNER_DELETE_TASK_KIND,
   USAGE_USER_CLEANUP_TASK_KIND,
@@ -10,12 +11,24 @@ import type { WorkerContainer } from "../di/types";
 import { isConflictError } from "../errors";
 import { acknowledgePersonalCleanup } from "../identity/deleteAccount/cleanupDispatch";
 import {
+  deleteBackupRecordsForNote,
+  NOTE_BACKUP_DELETE_TASK_KIND,
+} from "../integration/deleteBackupRecordsForNote";
+import {
   SCOPE_TASK_LEASE_MS,
   type ScopeTask,
   ScopeTaskPriority,
 } from "../ports/scopeTaskScheduler";
 import { ScopeKey } from "../scope";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
+import {
+  deleteFilesForNote,
+  NOTE_FILE_DELETE_TASK_KIND,
+} from "../storage/deleteFilesForNote";
+import {
+  deleteAssignmentsForNote,
+  NOTE_ASSIGNMENT_DELETE_TASK_KIND,
+} from "../tag/deleteAssignmentsForNote";
 import { deleteQuota } from "../usage/deleteQuota";
 import {
   continueRemovalEdgeSettlement,
@@ -118,6 +131,39 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     await settleCleanupTurn(container, task, turn);
   },
   [PERSONAL_CLEANUP_HANDOVER_TASK_KIND]: handOverPersonalCleanup,
+  // The `note.purged` followers settle their own rows: a turn either
+  // re-arms the row it was claimed for or completes it, in the same
+  // transaction as the page it reclaimed.
+  [NOTE_FILE_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteFilesForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
+  [NOTE_ASSIGNMENT_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteAssignmentsForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
+  [NOTE_BACKUP_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteBackupRecordsForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
   // The workspace deletion settles its own rows: every turn either
   // re-arms the row it was claimed for or completes it, in the same
   // transaction as the work it did.

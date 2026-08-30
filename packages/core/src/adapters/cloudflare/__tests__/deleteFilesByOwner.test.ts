@@ -227,6 +227,8 @@ const repositories = (session: SqlSession): ScopePlaneRepositories => ({
   storageQuotaRepository: unusedPort("StorageQuotaRepository"),
   llmUsageRepository: unusedPort("LlmUsageRepository"),
   storedFileRepository: createCloudflareStoredFileRepository({ session }),
+  tagAssignmentRepository: unusedPort("TagAssignmentRepository"),
+  backupRecordRepository: unusedPort("BackupRecordRepository"),
   workspaceRepository: unusedPort("WorkspaceRepository"),
   membershipRepository: unusedPort("MembershipRepository"),
   invitationRepository: unusedPort("InvitationRepository"),

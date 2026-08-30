@@ -45,6 +45,13 @@ export type EditableNote = Readonly<{
   noteId: NoteId;
   actorUserId: UserId;
   scope: ScopeKey;
+  /**
+   * Generation of the route this read resolved through. Carried because
+   * the purge path claims that same generation (`beginPurge` is a CAS on
+   * it) and re-reading the route would leave a window between the
+   * permission decision and the claim.
+   */
+  routeVersion: number;
   note: Note;
 }>;
 
@@ -54,18 +61,28 @@ export const scopeOfOwner = (owner: NoteOwner): ScopeKey =>
     : ScopeKey.workspace(owner.workspaceId);
 
 /**
- * Viewer-context resolution (spec/usecases/note.md「共通: 閲覧者コンテキ
- * ストの解決」) narrowed to the editing paths: route → scope-bound read →
- * `NoteAccessPolicy.evaluate`, with everything short of `canEdit`
- * collapsed to `NOTE_NOT_FOUND` so existence is never leaked.
+ * The capability a gate demands. `canEdit` covers the editing paths;
+ * `canDelete` covers the trash paths, which part company with them the
+ * moment `WorkspaceAuthorization` gives `deleteNote` and `editNote`
+ * different minimum roles.
  */
-export async function resolveEditableNote(
+type NoteCapability = "canEdit" | "canDelete";
+
+/**
+ * Viewer-context resolution (spec/usecases/note.md「共通: 閲覧者コンテキ
+ * ストの解決」) narrowed to the mutation paths: route → scope-bound read →
+ * `NoteAccessPolicy.evaluate`, with everything short of the demanded
+ * capability collapsed to `NOTE_NOT_FOUND` so existence is never leaked.
+ */
+async function resolveNoteFor(
   container: RequestContainer,
   input: Readonly<{ noteId: string; userId: string }>,
+  capability: NoteCapability,
 ): Promise<EditableNote> {
   const noteId = NoteId.create(input.noteId);
   const actorUserId = UserId.create(input.userId);
-  const { scope } = await container.scopeRouter.resolveNote(noteId);
+  const { scope, routeVersion } =
+    await container.scopeRouter.resolveNote(noteId);
 
   const versioned = await container.noteReaderFor(scope).findById(noteId);
   if (versioned === null) {
@@ -79,11 +96,27 @@ export async function resolveEditableNote(
     { tokenHash: null, pass: null },
     container.clock.now(),
   );
-  if (access.kind !== "granted" || !access.canEdit) {
+  if (access.kind !== "granted" || !access[capability]) {
     throw noteNotFound();
   }
-  return { noteId, actorUserId, scope, note };
+  return { noteId, actorUserId, scope, routeVersion, note };
 }
+
+export const resolveEditableNote = (
+  container: RequestContainer,
+  input: Readonly<{ noteId: string; userId: string }>,
+): Promise<EditableNote> => resolveNoteFor(container, input, "canEdit");
+
+/**
+ * The entry gate of the trash paths (`trashNote` / `restoreNote`). It
+ * takes no view on the note's lifecycle: both a live note and one
+ * already in the trash have to be readable here, and which of the two is
+ * admissible is the caller's rule.
+ */
+export const resolveDeletableNote = (
+  container: RequestContainer,
+  input: Readonly<{ noteId: string; userId: string }>,
+): Promise<EditableNote> => resolveNoteFor(container, input, "canDelete");
 
 const viewerInScope = async (
   ctx: ScopeUnitOfWorkContext,
@@ -114,17 +147,15 @@ const viewerInScope = async (
  * order keeps "you may not edit this note" from being reported as a
  * conflict the caller would retry.
  */
-export async function claimNoteForEdit(
+async function claimNote(
   ctx: ScopeUnitOfWorkContext,
   params: Readonly<{
     noteId: NoteId;
     actorUserId: UserId;
-    expectedVersion: number;
     now: Date;
+    capability: NoteCapability;
   }>,
-): Promise<
-  Readonly<{ note: ActiveNote; expectedVersion: ExpectedVersion<Note> }>
-> {
+): Promise<Readonly<{ note: Note; expectedVersion: ExpectedVersion<Note> }>> {
   await ctx.cleanupAdmission.assertWritable();
   await ctx.cleanupAdmission.assertActorWritable(params.actorUserId);
   await ctx.workspaceOperationLockStore.assertWritable();
@@ -140,16 +171,56 @@ export async function claimNoteForEdit(
     { tokenHash: null, pass: null },
     params.now,
   );
-  if (access.kind !== "granted" || !access.canEdit) {
+  if (access.kind !== "granted" || !access[params.capability]) {
     throw noteNotFound();
   }
-  if (!Note.isActive(note)) {
+  return { note, expectedVersion: stored.expectedVersion };
+}
+
+export async function claimNoteForEdit(
+  ctx: ScopeUnitOfWorkContext,
+  params: Readonly<{
+    noteId: NoteId;
+    actorUserId: UserId;
+    expectedVersion: number;
+    now: Date;
+  }>,
+): Promise<
+  Readonly<{ note: ActiveNote; expectedVersion: ExpectedVersion<Note> }>
+> {
+  const claimed = await claimNote(ctx, { ...params, capability: "canEdit" });
+  if (!Note.isActive(claimed.note)) {
     throw noteIsTrashed();
   }
-  if ((stored.expectedVersion as number) !== params.expectedVersion) {
+  ensureExpectedVersion(claimed.expectedVersion, params.expectedVersion);
+  return { note: claimed.note, expectedVersion: claimed.expectedVersion };
+}
+
+/**
+ * The commit gate of the trash paths, taking the same permission
+ * decision a second time inside the transaction for the reason
+ * {@link claimNoteForEdit} states.
+ *
+ * The lifecycle and the version are deliberately left to the caller:
+ * `trashNote` answers an already-trashed note with success while
+ * `restoreNote` refuses a live one, so the middle of the fixed
+ * permission → trash → version order differs per path, and the version
+ * check has to sit behind whichever of the two the path takes.
+ */
+export const claimNoteForDelete = (
+  ctx: ScopeUnitOfWorkContext,
+  params: Readonly<{ noteId: NoteId; actorUserId: UserId; now: Date }>,
+): Promise<Readonly<{ note: Note; expectedVersion: ExpectedVersion<Note> }>> =>
+  claimNote(ctx, { ...params, capability: "canDelete" });
+
+/** The OCC refusal, third and last of the fixed refusal order. */
+export function ensureExpectedVersion(
+  actual: ExpectedVersion<Note>,
+  expected: number,
+): void {
+  if ((actual as number) !== expected) {
     throw versionConflict();
   }
-  return { note, expectedVersion: stored.expectedVersion };
 }
 
 /** The `NoteIsTrashed` refusal taken before any work, on the entry read. */

@@ -255,6 +255,12 @@ export type MembershipDirectoryReservations = Pick<
  * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
  * atomic step (`oauthStateStore`), and the pure read views above.
  *
+ * `publicNoteProjectionWriter` joins them for the last phase of the
+ * purge saga: the public projection is global, so it belongs to no
+ * scope's unit of work, and `purgeNote` may only tombstone the route
+ * once that removal has committed — the phase therefore runs on the
+ * request that drives the saga forward.
+ *
  * `objectStorage` is here for the same reason: `storeAvatar` writes the
  * bytes *before* the transaction that records the file, and the delivery
  * route reads them back — both request-path work that no unit of work
@@ -290,6 +296,7 @@ export type RequestContainer = SharedDeps &
     scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
     scopeRouter: ScopeRouter;
     noteRouteStore: NoteRouteStore;
+    publicNoteProjectionWriter: PublicNoteProjectionWriter;
     identityUniqueDirectory: IdentityUniqueDirectory;
     loginAttemptStore: LoginAttemptStore;
     oauthStateStore: OAuthStateStore;

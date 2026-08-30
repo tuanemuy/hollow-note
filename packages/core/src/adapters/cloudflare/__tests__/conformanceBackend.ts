@@ -200,6 +200,8 @@ export async function makeCloudflareConformanceBackend(
           storageQuotaRepository: scoped.storageQuotaRepository,
           llmUsageRepository: scoped.llmUsageRepository,
           storedFileRepository: scoped.storedFileRepository,
+          tagAssignmentRepository: scoped.tagAssignmentRepository,
+          backupRecordRepository: scoped.backupRecordRepository,
           workspaceRepository: scoped.workspaceRepository,
           membershipRepository: scoped.membershipRepository,
           invitationRepository: scoped.invitationRepository,

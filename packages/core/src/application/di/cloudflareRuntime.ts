@@ -23,6 +23,7 @@ import { createD1WorkspaceDirectoryBatchReader } from "../../adapters/cloudflare
 import { createD1WorkspaceDirectoryProjectionWriter } from "../../adapters/cloudflare/d1/repositories/workspaceDirectoryProjectionWriter";
 import { createD1WorkspaceSlugReservationStore } from "../../adapters/cloudflare/d1/repositories/workspaceSlugReservationStore";
 import { createCloudflareAppliedOperationStore } from "../../adapters/cloudflare/do/repositories/appliedOperationStore";
+import { createCloudflareBackupRecordRepository } from "../../adapters/cloudflare/do/repositories/backupRecordRepository";
 import { createCloudflareInvitationRepository } from "../../adapters/cloudflare/do/repositories/invitationRepository";
 import { createCloudflareLlmUsageRepository } from "../../adapters/cloudflare/do/repositories/llmUsageRepository";
 import { createCloudflareMembershipRemovalPreparationStore } from "../../adapters/cloudflare/do/repositories/membershipRemovalPreparationStore";
@@ -37,6 +38,7 @@ import { createCloudflareScopeCleanupAdmissionStore } from "../../adapters/cloud
 import { createCloudflareScopeTaskScheduler } from "../../adapters/cloudflare/do/repositories/scopeTaskScheduler";
 import { createCloudflareStorageQuotaRepository } from "../../adapters/cloudflare/do/repositories/storageQuotaRepository";
 import { createCloudflareStoredFileRepository } from "../../adapters/cloudflare/do/repositories/storedFileRepository";
+import { createCloudflareTagAssignmentRepository } from "../../adapters/cloudflare/do/repositories/tagAssignmentRepository";
 import { createCloudflareWorkspaceDeletionManifestStore } from "../../adapters/cloudflare/do/repositories/workspaceDeletionManifestStore";
 import { createCloudflareWorkspaceOperationLockStore } from "../../adapters/cloudflare/do/repositories/workspaceOperationLockStore";
 import { createCloudflareWorkspaceRepository } from "../../adapters/cloudflare/do/repositories/workspaceRepository";
@@ -328,6 +330,12 @@ export function createCloudflareRuntime(
         }),
         llmUsageRepository: createCloudflareLlmUsageRepository({ session }),
         storedFileRepository: createCloudflareStoredFileRepository({ session }),
+        tagAssignmentRepository: createCloudflareTagAssignmentRepository({
+          session,
+        }),
+        backupRecordRepository: createCloudflareBackupRecordRepository({
+          session,
+        }),
         workspaceRepository: createCloudflareWorkspaceRepository({ session }),
         membershipRepository: createCloudflareMembershipRepository({ session }),
         invitationRepository: createCloudflareInvitationRepository({ session }),
@@ -389,6 +397,7 @@ export function createCloudflareRuntime(
           namespace: objectNamespace,
         }),
         noteRouteStore: createD1NoteRouteStore({ session, clock }),
+        publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         identityUniqueDirectory: createD1IdentityUniqueDirectory({
           session,
           clock,

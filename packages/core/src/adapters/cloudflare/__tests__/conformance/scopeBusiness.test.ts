@@ -1,9 +1,11 @@
 import { describeAppliedOperationStoreContract } from "../../../conformance/appliedOperationStore";
+import { describeBackupRecordRepositoryContract } from "../../../conformance/backupRecordRepository";
 import { describeLlmUsageRepositoryContract } from "../../../conformance/llmUsageRepository";
 import { describeNoteRepositoryContract } from "../../../conformance/noteRepository";
 import { describeNoteRevisionRepositoryContract } from "../../../conformance/noteRevisionRepository";
 import { describeStorageQuotaRepositoryContract } from "../../../conformance/storageQuotaRepository";
 import { describeStoredFileRepositoryContract } from "../../../conformance/storedFileRepository";
+import { describeTagAssignmentRepositoryContract } from "../../../conformance/tagAssignmentRepository";
 import { makeCloudflareConformanceBackend } from "../conformanceBackend";
 
 // Suites for the scope Durable Object business ports
@@ -22,6 +24,14 @@ describeNoteRevisionRepositoryContract(
 );
 describeLlmUsageRepositoryContract(BACKEND, makeCloudflareConformanceBackend);
 describeAppliedOperationStoreContract(
+  BACKEND,
+  makeCloudflareConformanceBackend,
+);
+describeTagAssignmentRepositoryContract(
+  BACKEND,
+  makeCloudflareConformanceBackend,
+);
+describeBackupRecordRepositoryContract(
   BACKEND,
   makeCloudflareConformanceBackend,
 );

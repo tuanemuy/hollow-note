@@ -55,6 +55,7 @@ const REQUEST_PORTS = [
   "scopeUnitOfWorkProvider",
   "scopeRouter",
   "noteRouteStore",
+  "publicNoteProjectionWriter",
   "identityUniqueDirectory",
   "loginAttemptStore",
   "oauthStateStore",

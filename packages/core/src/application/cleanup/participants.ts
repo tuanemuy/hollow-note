@@ -43,8 +43,12 @@ export const personalCleanupParticipants = {
   usage: { kind: "participant", taskKind: USAGE_USER_CLEANUP_TASK_KIND },
   job: absent("The Job aggregate does not exist", "#5"),
   note: absent("`deleteNotesForOwner` does not exist", "editing / curation"),
-  tag: absent("The Tag aggregate does not exist", "curation"),
-  backup: absent("BackupRecord does not exist", "#4"),
+  // Both aggregates exist only on their delete side, which the
+  // `note.purged` fan-out drives one note at a time. Neither has the
+  // scope-wide sweep a barrier can wait on — `deleteTagsForScope` and
+  // the per-user record cleanup — so neither may acknowledge here.
+  tag: absent("Nothing sweeps a whole scope's tags", "curation"),
+  backup: absent("Nothing sweeps a user's backup records", "#4"),
   localProjection: absent(
     "Nothing enqueues deletion-driven local projection tasks; author redaction is counted as a manifest item ack instead",
     "editing / curation",

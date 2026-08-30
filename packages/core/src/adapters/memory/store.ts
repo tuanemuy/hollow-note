@@ -5,6 +5,7 @@ import type { Identity } from "@repo/core/domain/identity/identity";
 import type { Session } from "@repo/core/domain/identity/session";
 import type { User } from "@repo/core/domain/identity/user";
 import type { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
+import type { BackupRecord } from "@repo/core/domain/integration/backupRecord";
 import type { Note } from "@repo/core/domain/note/note";
 import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type {
@@ -12,6 +13,7 @@ import type {
   ProjectedTagName,
 } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
 import type { StoredFile } from "@repo/core/domain/storage/storedFile";
+import type { TagAssignment } from "@repo/core/domain/tag/tagAssignment";
 import type { LlmUsage } from "@repo/core/domain/usage/llmUsage";
 import type { StorageQuota } from "@repo/core/domain/usage/storageQuota";
 import type { Invitation } from "@repo/core/domain/workspace/invitation";
@@ -573,6 +575,8 @@ export type ScopeStore = Readonly<{
   storageQuotas: MemTable<StorageQuota>;
   llmUsages: MemTable<LlmUsage>;
   storedFiles: MemTable<StoredFile>;
+  tagAssignments: MemTable<TagAssignment>;
+  backupRecords: MemTable<BackupRecord>;
 }>;
 
 export type MemoryBackendOptions = Readonly<{
@@ -684,6 +688,8 @@ export class MemoryBackend {
       storageQuotas: this.table<StorageQuota>(),
       llmUsages: this.table<LlmUsage>(),
       storedFiles: this.table<StoredFile>(),
+      tagAssignments: this.table<TagAssignment>(),
+      backupRecords: this.table<BackupRecord>(),
     };
     this.scopes.set(key, created);
     return created;

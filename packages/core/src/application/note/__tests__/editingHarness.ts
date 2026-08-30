@@ -11,7 +11,12 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { createBlankNote } from "../createBlankNote";
-import type { ActiveNoteJob, NoteEditingJobs, NoteJobScope } from "../jobs";
+import type {
+  ActiveNoteJob,
+  NoteEditingJobs,
+  NoteJobScope,
+  NoteTrashJobs,
+} from "../jobs";
 
 /**
  * Shared seeding for the note-editing usecase tests
@@ -138,7 +143,25 @@ export type NoteSeedOverrides = Readonly<{
   contentStatus?: "processing" | "awaitingIntegration" | "failed";
   title?: string;
   titleOrigin?: "auto" | "manual";
+  visibility?: "private" | "unlisted" | "public";
 }>;
+
+/**
+ * Share-token hash of the link {@link reseedNote} gives an unlisted
+ * note. Exported because the only way to observe "the share URL stops
+ * working" without `getSharedNote` — which belongs to a later slice — is
+ * to present this hash to `NoteAccessPolicy` directly.
+ */
+export const SHARE_TOKEN_HASH = "share-token-hash";
+
+const seededShareLink = (issuedAt: Date) => ({
+  tokenHash: SHARE_TOKEN_HASH,
+  cipherText: "share-token-cipher",
+  keyVersion: 1,
+  passwordHash: null,
+  passwordUpdatedAt: null,
+  issuedAt,
+});
 
 /**
  * Rewrites the stored note through `Note.reconstruct` — the persisted
@@ -158,6 +181,7 @@ export function reseedNote(
   }
   const contentStatus = overrides.contentStatus ?? note.content.status;
   const ready = note.content.status === "ready" ? note.content : null;
+  const visibilityStatus = overrides.visibility ?? note.visibility.status;
   h.backend.scope(scope).notes.set(
     noteId,
     Note.reconstruct({
@@ -174,7 +198,12 @@ export function reseedNote(
       text: ready?.text ?? null,
       excerpt: ready?.excerpt ?? null,
       headings: ready?.headings ?? [],
-      visibilityStatus: note.visibility.status,
+      visibilityStatus,
+      publishedAt: visibilityStatus === "public" ? note.createdAt : null,
+      shareLink:
+        visibilityStatus === "unlisted"
+          ? seededShareLink(note.createdAt)
+          : null,
       styleMode: note.styleMode,
       lifecycle: note.lifecycle,
       version: note.version,
@@ -291,5 +320,46 @@ export function recordingJobs(
     },
   };
 }
+
+export type RecordingTrashJobs = NoteTrashJobs &
+  Readonly<{
+    /** Job ids handed to `cancelAll`, in the order they were swept. */
+    canceled: string[];
+    /** How many times the sweep was read, so "not read at all" is visible. */
+    sweeps: () => number;
+  }>;
+
+/**
+ * Stand-in for the Job half of the trash path, for the reason
+ * {@link recordingJobs} gives. It records what the usecase asked to
+ * cancel instead of applying `Job.cancel`, which has no aggregate to
+ * apply to yet.
+ */
+export function recordingTrashJobs(
+  active: readonly ActiveNoteJob[] = [],
+): RecordingTrashJobs {
+  const canceled: string[] = [];
+  let sweeps = 0;
+  return {
+    canceled,
+    sweeps: () => sweeps,
+    async listActiveForNote(): Promise<readonly ActiveNoteJob[]> {
+      sweeps += 1;
+      return active;
+    },
+    async cancelAll(_ctx, params): Promise<void> {
+      canceled.push(...params.jobs.map((job) => job.jobId));
+    },
+  };
+}
+
+export const scheduledTasks = (
+  h: TestHarness,
+  scope: ScopeKey = userScope,
+): readonly Readonly<{
+  kind: string;
+  operationId: string;
+  payload: Readonly<Record<string, unknown>>;
+}>[] => h.backend.scope(scope).scheduledTasks.values();
 
 export { createTestHarness, type TestHarness };

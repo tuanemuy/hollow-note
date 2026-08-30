@@ -1,0 +1,162 @@
+import { ConflictError } from "../../../../application/errors";
+import type { NoteId } from "../../../../domain/note/valueObject";
+import type { TagAssignmentRepository } from "../../../../domain/tag/ports/tagAssignmentRepository";
+import { TagAssignment } from "../../../../domain/tag/tagAssignment";
+import { type RowMutation, remove, upsert } from "../../execution/writeSet";
+import { classifySqlError, throwTranslated } from "../../sql/errors";
+import { date, text, toTimestamp } from "../../sql/row";
+import type { SqlSession } from "../../sql/session";
+import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
+import { SCOPE_TABLES } from "../schema";
+
+const TABLE = SCOPE_TABLES.tagAssignments;
+
+const COLUMNS = [
+  "id",
+  "tag_id",
+  "note_id",
+  "scope_type",
+  "scope_id",
+  "assigned_by",
+  "assigned_at",
+] as const;
+
+const SELECTION = COLUMNS.join(", ");
+const INSERT_SQL = `INSERT INTO ${TABLE} (${SELECTION}) VALUES (${COLUMNS.map(() => "?").join(", ")})`;
+
+const toRow = (assignment: TagAssignment): SqlRow => ({
+  id: assignment.id,
+  tag_id: assignment.tagId,
+  note_id: assignment.noteId,
+  scope_type: assignment.scope.type,
+  scope_id:
+    assignment.scope.type === "user"
+      ? assignment.scope.userId
+      : assignment.scope.workspaceId,
+  assigned_by: assignment.assignedBy,
+  assigned_at: toTimestamp(assignment.assignedAt),
+});
+
+const fromRow = (row: SqlRow): TagAssignment =>
+  TagAssignment.reconstruct({
+    id: text(row, "id"),
+    tagId: text(row, "tag_id"),
+    noteId: text(row, "note_id"),
+    scopeType: text(row, "scope_type"),
+    scopeId: text(row, "scope_id"),
+    assignedBy: text(row, "assigned_by"),
+    assignedAt: date(row, "assigned_at"),
+  });
+
+const valuesOf = (row: SqlRow): readonly SqlValue[] =>
+  COLUMNS.map((column) => row[column] ?? null);
+
+const compareText = (a: string, b: string): number =>
+  a < b ? -1 : a > b ? 1 : 0;
+
+const byId = (a: SqlRow, b: SqlRow): number =>
+  compareText(text(a, "id"), text(b, "id"));
+
+const pairConflict = (assignment: TagAssignment): ConflictError =>
+  new ConflictError(
+    "ASSIGNMENT_ALREADY_EXISTS",
+    `Tag ${assignment.tagId} is already assigned to note ${assignment.noteId}`,
+  );
+
+export type CloudflareTagAssignmentRepositoryDeps = Readonly<{
+  session: SqlSession;
+}>;
+
+/**
+ * `tag_assignments` of one scope object. Assignments are immutable, so
+ * there is no OCC here — only inserts, the per-note read, and the
+ * bounded delete the note purge walks.
+ */
+export function createCloudflareTagAssignmentRepository(
+  deps: CloudflareTagAssignmentRepositoryDeps,
+): TagAssignmentRepository {
+  const { session } = deps;
+
+  const write = async (
+    mutations: readonly RowMutation[],
+    context: string,
+  ): Promise<void> => {
+    try {
+      await session.write(mutations);
+    } catch (cause) {
+      throwTranslated(context, cause);
+    }
+  };
+
+  const rowsOfNote = (
+    noteId: NoteId,
+    limit?: number,
+  ): Promise<readonly SqlRow[]> => {
+    const spec = {
+      table: TABLE,
+      statement: statement(
+        `SELECT ${SELECTION} FROM ${TABLE} WHERE note_id = ?
+           ORDER BY id${limit === undefined ? "" : " LIMIT ?"}`,
+        ...(limit === undefined ? [noteId] : [noteId, limit]),
+      ),
+      keyOf: (row: SqlRow) => text(row, "id"),
+      matches: (row: SqlRow) => text(row, "note_id") === noteId,
+      compare: byId,
+    };
+    return session.readRows(limit === undefined ? spec : { ...spec, limit });
+  };
+
+  return {
+    async insert(assignment: TagAssignment): Promise<void> {
+      const row = toRow(assignment);
+      try {
+        await session.write([
+          upsert({
+            table: TABLE,
+            key: assignment.id,
+            row,
+            statement: statement(INSERT_SQL, ...valuesOf(row)),
+          }),
+        ]);
+      } catch (cause) {
+        if (classifySqlError(cause) === "unique") {
+          throw pairConflict(assignment);
+        }
+        throwTranslated(`${TABLE} row ${assignment.id}`, cause);
+      }
+    },
+
+    async listByNote(noteId: NoteId): Promise<readonly TagAssignment[]> {
+      return (await rowsOfNote(noteId)).map(fromRow);
+    },
+
+    async deleteByNote(noteId: NoteId, limit: number): Promise<number> {
+      const bounded = Math.max(0, limit);
+      if (bounded === 0) {
+        return 0;
+      }
+      const rows = await rowsOfNote(noteId, bounded);
+      if (rows.length === 0) {
+        return 0;
+      }
+      // One statement per row rather than a bulk `DELETE … LIMIT`: a
+      // `remove` is also the overlay entry that stops a later read in the
+      // same unit of work from seeing a row this one deleted, and the
+      // page is bounded by the caller's budget.
+      await write(
+        rows.map((row) =>
+          remove({
+            table: TABLE,
+            key: text(row, "id"),
+            statement: statement(
+              `DELETE FROM ${TABLE} WHERE id = ?`,
+              text(row, "id"),
+            ),
+          }),
+        ),
+        `${TABLE} rows of note ${noteId}`,
+      );
+      return rows.length;
+    },
+  };
+}

@@ -362,3 +362,181 @@ spec の手順どおり 3 つを合成し、version が 2〜3 進むことを受
 - 良い点: 版・スタイル・タイトルの規則が 1 か所（各ドメイン遷移）にとどまる
 - トレードオフ: 画面は復元の応答が返す `version` を次の保存の `expectedVersion` に使う必要がある。差分を数えて予測すると外れる
 - トレードオフ: `note.styleModeChanged` は復元のたびに発行される（値が同じでも）。`changeNoteStyleMode` が同値でも発行する既存の判断（TC-note-022）と揃えた結果で、投影は現在の状態からの上書きなので結果は変わらない
+
+---
+
+## ADR-015: 削除側の 2 段の門は `editing.ts` を capability でパラメーター化して共有する
+
+### Context
+
+ADR-013 は編集系の 5 ユースケースが入口（`resolveEditableNote`）と transaction 内（`claimNoteForEdit`）の 2 段の門を共有する形を決めた。ゴミ箱の 2 経路（`trashNote` / `restoreNote`）は同じ手順を踏むが、要求する権限が `canEdit` ではなく `canDelete` で、真ん中の「ゴミ箱の壁」の意味も逆になる — `trashNote` は既にゴミ箱にあるものを成功として返し、`restoreNote` はゴミ箱にないものを `NOTE_NOT_TRASHED` で拒む。
+
+選択肢は 2 つ。門を削除側にもう 1 組複製するか、既存の門を capability でパラメーター化して共有するか。
+
+### Decision
+
+共有する。`editing.ts` の内部を `resolveNoteFor(container, input, capability)` / `claimNote(ctx, { …, capability })` に切り出し、`resolveDeletableNote` / `claimNoteForDelete` を足した。既存の `resolveEditableNote` / `claimNoteForEdit` は同じ内部を `"canEdit"` で呼ぶ薄い包みになり、振る舞いは変わらない。
+
+ライフサイクルと版の判定だけは共有しない。`claimNoteForDelete` は権限までを見て返し、ゴミ箱の壁と `ensureExpectedVersion`（新たに export した OCC の拒否）は呼び出し側が順に当てる。ADR-013 が固定した拒否順（権限 → ゴミ箱 → 版）は保つが、真ん中が経路ごとに違う以上、共有できるのはその前後だけである。
+
+複製しない理由は ADR-013 が門を 1 か所に置いた理由と同じで、「片方だけが判定を落とす形にならない」ことが目的だから。7 経路のうち 2 経路だけが自前の門を持つと、除名の検出（ADR-013 の主眼）が削除側で静かに抜けうる。
+
+### Consequences
+
+- 良い点: 除名・降格が保存直前に起きたときの拒否が、編集と削除で同じコードから出る
+- 良い点: `purgeNote` 以降（ステップ 8・9）も同じ 2 つを呼ぶだけで済み、3 つ目の形が生えない
+- トレードオフ: `capability` という分岐が門の内部に 1 つ増える。`WorkspaceAuthorization` の表では `editNote` と `deleteNote` がともに `editor` なので、この分岐は**現時点のテストでは判別できない**（両者に差が出るのは表が変わったときで、`NoteAccessPolicy.ensureCanDelete` の JSDoc が既にその前提を書いている）
+- トレードオフ: `ensureExpectedVersion` が export された。呼び忘れれば OCC が黙って外れる。呼び出し側は 7 つに収まるうちは目視で足りる
+
+---
+
+## ADR-016: `trashNote` の Job 依存は ctx を取る `NoteTrashJobs` で表し、継続要求は scope task として積む
+
+### Context
+
+ADR-012 は編集経路の Job 不在を `NoteEditingJobs`（`container` を引数に取る 2 メソッド）で表した。`trashNote` が Job に触るのは別の 2 点である — 手順 2 の `listActiveByTarget` と、そこで引いたジョブへの `Job.cancel`。spec はこの 2 つを**ゴミ箱への移動と同一 UoW** で行うことを明記している（「手順 2 の `listActiveByTarget` も UoW の内側で引く」）。
+
+加えて手順 2 は「網が 100 件に達したら同じ UoW で継続要求 `job.terminationContinued` を積む」を要求する。`application/workspace/membershipMutation.ts` は同じ継続要求を**あえて積まない**と決めており（`continuationSubscribers` が継続種別に対して網羅的で、購読者のない継続は「無視されるイベント」ではなく「止まった鎖」になるため）、その判断と衝突しうる。
+
+### Decision
+
+**継ぎ目は `NoteEditingJobs` に足さず、`NoteTrashJobs` として別に定義する。** メンバーは `listActiveForNote(ctx, noteId)` と `cancelAll(ctx, { jobs, now })` の 2 つで、どちらも `RequestContainer` ではなく `ScopeUnitOfWorkContext` を取る。`JobRepository` は scope-local なので、ctx を取る形のほうが Job のスライスが入ったときの実装に近く、「UoW の内側で引く」という spec の要求が型に現れる。編集側の継ぎ目と混ぜないのは、編集側の 2 メソッドが transaction の外で呼ばれる（本文の保存が commit した後に取り込みジョブを登録する）という逆の性質を持つためである。
+
+後始末の手順 1（`processing` のままの本文の回復）は継ぎ目のメンバーにしない。書き換える対象は `Note` であり、`Note.trash` より先に当てるという順序も呼び出し元が握るからである。手順 2（生成物の回収）は `listActiveByTarget({ type: "note" })` が batch 親を返さないことから**この経路では恒等的に空**なので、コードとしては書かず JSDoc で理由を残す（TC-note-674 / 676 がその空を検証する）。
+
+**継続要求は `ScopeTaskScheduler.schedule` で積む。** `membershipMutation.ts` が省いたのは outbox 継続イベントで、`continuationSubscribers` の網羅性が「購読者なし = コンパイルエラー」を作る場所である。scope task はそうではなく、`scopeTaskRunner` の `scopeTaskHandlers` に kind が無い行は「due のまま残し報告する」と明示的に決めてある — 止まった鎖ではなく、見える停滞になる。加えて、この行を積める唯一の条件（網が 100 件返る）は既定の `noNoteTrashJobs` では起こりえないので、Job のスライスが入るまで本番で armed になることがない。`operationId` は `noteId`（1 ノートにつき 1 掃き）で、応答を失った再実行が同じ行を上書きする。
+
+### Consequences
+
+- 良い点: `runBulkNoteOperationItem`（#5 / #6）が `excludingJobId` を渡す形と、その除外が継続の 2 巡目まで運ばれる形が、Job の実体を待たずに固定される
+- 良い点: 掃き出しと本文の回復とゴミ箱への移動が 1 transaction であることをテストで示せる（UoW を薄く包んで commit 直前に落とす窓）
+- トレードオフ: 継ぎ目が 2 つ（`NoteEditingJobs` / `NoteTrashJobs`）になった。Job のスライスは実装を 2 つ書くことになるが、どちらも `JobRepository` の薄い包みである
+- 既知の制限: `Job.cancel` の適用そのもの（未終端のジョブだけが返る、終端遷移がリースを解放する）は継ぎ目に対してしか検証されていない。実体の検証は #5 / #6 の持ち分（TC-note-665 / 666 / 669 / 670 / 673 / 675）
+- 既知の制限: `job.terminationContinued` を受け取る `continueForcedTermination` は本スライスに無い。行が armed になった状態で Job のスライスが未着なら、`scopeTaskRunner` が停滞として報告し続ける
+
+---
+
+## ADR-017: `purgeNote` は public projection の除去と tombstone を自分で駆動し、`PublicNoteProjectionWriter` を `RequestContainer` に載せる
+
+### Context
+
+`spec/usecases/note.md#purgeNote` の手順 6 は「global consumer が `PublicNoteProjectionWriter.removeForPurge` を呼び、その確定後だけ `finishPurge` で 30 日 tombstone にする」と書く。つまり手順 6 は `note.purged` の out-of-band な受け手である。
+
+しかし本リポジトリでこの受け手を成立させる部品が揃っていない。
+
+- `WorkerContainer` は `publicNoteProjectionWriter` を持つが `NoteRouteStore` は `Pick<…, "resolve">`（`noteRouteResolver`）しか持たないので `finishPurge` に届かない
+- `RequestContainer` は `noteRouteStore` を丸ごと持つが `publicNoteProjectionWriter` を持たない
+- 購読者の登録先 `application/workers/subscribers.ts` は本スライスの別担当の持ち分で、手順 6 の受け手は 5 購読者のどれでもない（6 つ目にあたる）
+
+このまま手順 6 を誰も駆動しないと、purge した route は永久に `purging` のまま残り、public 行も消えない。TC-note-354 / 355 は検証不能になる。
+
+### Decision
+
+**手順 6 を `purgeNote` 自身が local delete の直後に駆動する。** そのために `PublicNoteProjectionWriter` を `RequestContainer` に足し、両ランタイム（memory / Cloudflare）で配線した。
+
+`moveNote` の先例がそのまま当てはまる — route saga の全 phase を要求経路で駆動し、switch 後に失敗したら「forward-only で止まった」ことをログに残す。purge も同じ形で、local delete が commit した瞬間から forward-only になり、`removeForPurge` → `finishPurge` の順序（ack の後だけ tombstone）はこの 1 か所で守られる。
+
+`publicNoteProjectionWriter` を `RequestContainer` に置くのは、そこに載っている他のポートと同じ理由による — public projection は global で、どの scope の UoW にも属さない。`noteRouteStore` が「transaction の外にある saga」として同じ場所に載っているのと対になる。
+
+### Consequences
+
+- 良い点: purge が 1 回の呼び出しで終端まで到達する。route が `purging` のまま取り残されるのは、プロセスが落ちたときだけになる
+- 良い点: 「public 削除の確定後だけ tombstone」が 1 つの関数の中の 2 行になり、順序を守る主体が分散しない（TC-note-353 の変異テストがこの順序を検出する）
+- トレードオフ: spec の「global consumer」という担当分けから外れる。Cloudflare へ行くときは、この 2 行を `note.purged` の consumer へ移し、`WorkerContainer` の `noteRouteResolver` を `finishPurge` まで広げるのが移行手順になる
+- トレードオフ: `RequestContainer` のポートが 1 つ増えたので、`adapters/cloudflare/__tests__/runtimeComposition.test.ts` のキー一覧にも 1 行足した
+
+---
+
+## ADR-018: 内部 operation ID は cleanup では派生、利用者要求では採番し、再開は `beginPurge` 自身を route の読み取りに使う
+
+### Context
+
+`purgeNote` 手順 2 は「`scopeCleanup` なら `sha256("ownerPurge:" + deletionOperationId + ":" + noteId)`、`userRequest` なら新規採番。ただし route が既に `purging` なら新規採番せず保存済み operation ID / phase を返して forward recovery を再開する」と決める。
+
+ところが `NoteRouteStore` には `purging` の route を読む手段がない。`resolve` は契約として `reserved` / `purging` を返さず（ポートの JSDoc と両バックエンドが一致）、`NoteRouteFanOutReader` が返す `NoteRoute` には `operationId` が無い。つまり「route に保存済みの operation ID を読み戻す」経路そのものが存在しない。
+
+### Decision
+
+3 つに分けた。
+
+1. **`scopeCleanup` の ID は spec のとおり sha256 で派生する。** 再配送が正常系である経路なので、同じ命令が同じ purge を必ず再開する
+2. **`userRequest` の ID は spec のとおり `IdGenerator.next()` で採番する。** 同じノートに 2 つの要求が同時に来たとき、両者は 1 つの saga ではなく 2 人の競合者として route を取り合わなければならない（TC-note-370 の「片方は成功、もう片方は `NotFoundError`」）。派生 ID にすると `beginPurge` の冪等分岐で両方が成功してしまう
+3. **再開時の route 読み取りは `beginPurge` 自身で行う。** `beginPurge` は「同じ operation の `purging` 行」を世代比較より先に返すので、ありえない世代（`RESUME_CLAIM = -1`）を渡した claim が、そのまま「この operation が握っている route を読む」操作になる。他人の route はその state か世代で必ず拒まれるので、この番兵で誤って奪うことはない。返ってきた `NoteRoute` から scope と routeVersion が復元でき、以降は「Note が残っていれば再検査して abort、消えていれば public remove から再開」を spec どおり進められる
+
+`beginPurge` の CAS が拒否されたら、その理由（他の purge・move・tombstone）に関わらず `NOTE_NOT_FOUND` に畳む。呼び出し側から見れば、読んだノートは自分の手の届かないところへ行きつつあり、競合として返すと再試行を誘うだけだからである。
+
+### Consequences
+
+- 良い点: 中断・再送の窓（abort 応答喪失・local delete 後の停止・tombstone 応答喪失）が、実装に分岐を足さずポートを 1 回だけ落とすテストで全部塞げる（TC-note-352 / 353 / 355）
+- 良い点: 完了済みの purge に再配送が届いても、`resolve` が返す `tombstone` を見て無操作で成功する。再配送が永久に失敗し続けることがない
+- 既知の制限: **TC-note-361（利用者要求の purge が `purging` 切替後に応答を失い、再送する）は満たせない。** 入口の門は route を `resolve` するので `NOTE_NOT_FOUND` になり、採番済みの operation ID には誰も到達できない。塞ぐには `NoteRouteStore` に `purging` 行を読む契約（例: `resolveForRecovery`）を足し、両バックエンドと conformance スイートを揃える必要がある — ポートの契約変更なので本スライスの持ち分を越える
+- 既知の制限: 停止した operation を走査する recovery driver（TC-note-371 / 372 の global recovery Cron）は本リポジトリに無い。`DistributedOperationStore` にも due operation を列挙する手段はなく、`moveNote` が同じ状態に置かれているのと同じ
+
+---
+
+## ADR-019: 完全削除の後始末は `note.purged` に載せ、`purgeNote` は local projection も使用量も触らない
+
+### Context
+
+`purgeNote` 手順 4 は「Note を削除し `note.purged` を収集する」までで、タグ付与・保管ファイル・バックアップ記録・読み取りモデル（`projectNoteChanges`）・使用量（`applyStorageDelta`）はすべて手順 5 の購読者に委ねる。一方 `moveNote` の `retireSource` は、同じ scope の中にある `localNoteProjectionWriter.remove` と `storageQuotaRepository` を transaction の内側で直接触っている。purge でも同じようにできてしまうため、どちらに寄せるかを決める必要があった。
+
+### Decision
+
+spec に従い、`purgeNote` は Note 本体と `NoteRevision` だけを消し、残りは `note.purged` の購読者に渡す。`localNoteProjectionWriter.remove` も `storageQuotaRepository` も呼ばない。
+
+`moveNote` と分かれるのは、移動が「同じ 1 要求の中で source を退役させる」のに対し、完全削除は 5 つの独立した後始末が結果整合で追随する設計（[ADR 008](../../spec/adr/008-domain-boundaries.md)）だからである。片方を usecase に取り込むと、同じ後始末が「usecase 側」と「購読者側」の 2 か所に生えて、どちらが権威か決められなくなる。
+
+`NoteRevision` だけは例外として transaction の内側で消す。spec の TC は「DB の FK CASCADE で同時に削除される」と書くが、本リポジトリのスキーマは FOREIGN KEY を宣言しない方針（`0001_global_schema.sql` の冒頭）で、CASCADE 相当は「それを起こした書き込み」か「イベント」が担う。版は Note と同じ scope・同じ transaction にあるので前者に寄せた（`moveNote.retireSource` と同じ形）。
+
+### Consequences
+
+- 良い点: 後始末の権威が購読者側の 1 か所に集まる。`emptyTrash` が 50 件を 1 transaction に束ねない理由（結果整合で後始末する以上まとめても保証は増えない）と整合する
+- 既知の制限: `note.purged` の購読者が揃うまで、local projection の行と使用量の減算は残る。本スライスの `listNotes` は `NoteRepository` を直接読むので画面には出ないが、読み取りモデルを読む経路が増える前に埋める必要がある
+- 既知の制限: TC-note-357 / 358 / 359 / 365 / 366 / 367（タグ付与・保管ファイル・バックアップ記録・読み取りモデル・使用量・Drive 上のファイル）は購読者側の持ち分で、`purgeNote` のテストは「`note.purged` が正しい形で 1 回だけ収集される」までしか見ない
+
+---
+
+## ADR-020: `note.purged` の 3 購読者は同じ継続の形を共有し、task の `operationId` に purge の operation ID を使う
+
+### Context
+
+`deleteFilesForNote` / `deleteAssignmentsForNote` / `deleteBackupRecordsForNote` は、いずれも「1 ターンで有界のページを消し、満ページなら自分を再登録する」同じ形をとる（spec の各節）。継続要求の名前は `storage.noteDeleteContinued` / `tag.noteDeleteContinued` / `integration.noteDeleteContinued` で、payload は 3 つとも `{ noteId, deletionOperationId }`（`spec/domains/index.md` の継続要求表）。
+
+一方 `ScopeTaskScheduler` の行は `(kind, operationId)` で一意になる。spec は payload の形は定めるが、この `operationId` に何を使うかは書いていない。加えて priority（0〜3）についても、note purge の追随がどの階級に属するかの記述がない。
+
+### Decision
+
+- **task の `operationId` は `note.purged` の `operationId`（purge の内部 operation ID、ADR-018）をそのまま使う。** kind が 3 つに分かれているので 3 購読者は衝突せず、同じイベントが再配送されても `schedule` が同じ 1 行を上書きするだけで継続が増えない
+- **priority は 3 つとも `securityCleanup`（0）。** `deletionOperationId` の有無で分けない。完全削除が回収するのは「利用者が消えたことにしてくれと言ったデータ」であり、account / workspace deletion 由来のときは同じ行がその barrier の後始末でもある。分岐を入れると、同じ行が由来によって別の階級で走ることになる
+- **共有部分は `application/cleanup/notePurgeFanOut.ts` に置く。** 3 購読者が共有するのは turn の型・payload の読み取り・継続の再登録・`NoteOwner → ScopeKey` の写像だけで、ページの読み書きは各ユースケースが自分のポートに対して行う
+- **継続 kind のハンドラは `application/workers/scopeTaskRunner.ts` の `scopeTaskHandlers` に登録する。** 未登録の kind は「due のまま warn を出し続ける」扱いになり、250 件のノートの 101 件目以降が永久に残る
+
+### Consequences
+
+- 良い点: 3 購読者が同じ形なので、レビューと再開の挙動が 1 か所を読めば分かる。継続の増殖・取りこぼしの原因が payload と `operationId` の 2 つに閉じる
+- 良い点: 購読者ごとに独立して冪等なので、1 つが失敗して再配送されても他は 0 件で終わる（TC-storage-061 / TC-tag-030 / TC-integration-021 が購読者単位で押さえている）
+- トレードオフ: `scopeTaskRunner.ts` はステップ 9 も触るファイルで、本ステップは 3 エントリを足すだけだが衝突しうる
+- 既知の制限: `deleteFilesForNote` の spec 手順 3 後半（`ReferenceImportRecordRepository.deleteByNote` による取得記録・要約の削除）は実装していない。当該ポートも `reference_import_attempts` / `reference_import_summaries` も本リポジトリに存在せず、取り込みスライス（#6）の持ち分だからである。保管ファイル側の回収だけが本スライスの実装で、記録側は #6 が同じ継続 task に足す
+
+---
+
+## ADR-021: Tag / BackupRecord は削除側だけを生やし、`participants.ts` の `absent` は動かさない
+
+### Context
+
+ADR-002 は「`participants.ts` の `absent(...)` は実装した分だけ `participant` へ移す」と書いていた。実装フェーズで `application/ports/scopeCleanupAdmissionStore.ts` と `application/cleanup/participants.ts` を読むと、`PersonalCleanupComponent` の `tag` / `backup` が指しているのは **scope 全体を掃く後始末**（`deleteTagsForScope` と利用者単位のバックアップ記録回収）であって、ノート 1 件ごとに走る `note.purged` の購読者ではないことが分かる。
+
+`participant` へ移すと `REQUIRED_PERSONAL_CLEANUP_COMPONENTS` に載り、`markCompleted` がその ack を待つようになる。ack する実装が無いまま移せば、退会したアカウントが `deleting` のまま二度と完了しない。
+
+### Decision
+
+- **`tag` / `backup` は `absent` のまま残し、理由の文面だけ現状に合わせる。** 「集約が存在しない」から「scope 全体を掃く後始末が無い」へ書き換える。`participant` への昇格は `deleteTagsForScope`（#8）と利用者単位の記録回収（#4）が入るときに行う
+- **足すのは削除側の最小形だけ。** `TagAssignment` / `BackupRecord` は `reconstruct` だけを持ち、`create` / `record` / `replace` とそれらが出すイベント（`tag.assigned` / `integration.backupCompleted`）は作らない。`TagRepository`（タグ語彙）と `BackupRecordRepository` の OCC 半分（`findById` / `save` / `delete`）も作らない。ポートに載せるのは `insert` / `listByNote` / `deleteByNote` の 3 つで、`insert` は conformance と usecase テストが行を置くために要る
+- **`TagName` の正規化は作らない。** 小文字化・全角半角・空白畳みは語彙の同一判定の規則で、`assignTag` / `renameTag` / `mergeTags` を持つ #8 が決める。削除側は `tagId` を不透明な ID として扱う
+
+### Consequences
+
+- 良い点: 退会の barrier が壊れない。`REQUIRED_PERSONAL_CLEANUP_COMPONENTS` は「実際に ack する実装がある」ものだけを列挙し続ける
+- 良い点: #8 / #4 は既存の行の形（テーブル定義・`reconstruct`・conformance スイート）を引き継いで書き込み側を足すだけでよく、削除側を書き直す必要がない
+- トレードオフ: TC-tag-024（「タグ本体は残る」）は `tags` テーブルがまだ無いため直接は書けない。代わりに「このユースケースは scope の中で `tag_assignments` 以外のどのテーブルも増減させない」を検証している。語彙の残存そのものは #8 が `TagRepository` を入れた時点で直接書ける
+- 既知の制限: TC-storage-074（`applyStorageDelta` との重複排除）は `applyStorageDelta` が未実装のため書けない。TC-storage-063 / 066 / 067 / 073 は、`deleteStoredObjects` の実装が spec の「1 配送分のまとまりを受け取り `deletedCount` / `failed` を返す」形ではなく `storage.fileDeleted` を 1 件ずつ受ける形になっているため、購読者を 1 件ずつ回して「失敗した鍵だけが残り、他は回収される」を検証する形に読み替えている。署名を spec に合わせるかは、本ステップの担当範囲（実装は変えない）の外

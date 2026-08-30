@@ -8,6 +8,7 @@ import { StorageUrlPolicy } from "@repo/core/domain/storage/services/storageUrlP
 import { ObjectKey } from "@repo/core/domain/storage/valueObject";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
+import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 
 /**
  * The `JobScope` of a job registered for a note: the note's *owning*
@@ -78,6 +79,49 @@ export const noNoteEditingJobs: NoteEditingJobs = {
   async requestReferenceImport(): Promise<string | null> {
     return null;
   },
+};
+
+/**
+ * Cap on one forced-termination sweep, shared by all nine paths
+ * (spec/usecases/job.md「共通: 強制終端の後始末」). A sweep that comes
+ * back full leaves the rest to a continuation rather than growing one
+ * transaction without bound.
+ */
+export const ACTIVE_JOB_SWEEP_LIMIT = 100;
+
+/**
+ * Seam for the Job half of the trash path, split from
+ * {@link NoteEditingJobs} because both of its members belong **inside**
+ * the transaction that trashes the note (spec/usecases/note.md#trashnote:
+ * 「手順 2 の `listActiveByTarget` も UoW の内側で引く」). A
+ * `JobRepository` is scope-local, so the seam takes the scope's unit-of-
+ * work context rather than the request container.
+ *
+ * The recovery of a `processing` body is *not* a member: it rewrites the
+ * `Note`, which the caller owns and which it must sequence before
+ * `Note.trash`. Neither is the artifact reclamation of the shared
+ * cleanup's step 2, which is provably empty on this path —
+ * `listActiveByTarget({ type: "note" })` never returns a batch parent.
+ */
+export interface NoteTrashJobs {
+  /** `JobRepository.listActiveByTarget({ type: "note", noteId }, limit: 100)`. */
+  listActiveForNote(
+    ctx: ScopeUnitOfWorkContext,
+    noteId: NoteId,
+  ): Promise<readonly ActiveNoteJob[]>;
+  /** `Job.cancel` applied to each of `jobs`, saved in the same transaction. */
+  cancelAll(
+    ctx: ScopeUnitOfWorkContext,
+    params: Readonly<{ jobs: readonly ActiveNoteJob[]; now: Date }>,
+  ): Promise<void>;
+}
+
+/** The seam's only implementation until the Job slice lands. */
+export const noNoteTrashJobs: NoteTrashJobs = {
+  async listActiveForNote(): Promise<readonly ActiveNoteJob[]> {
+    return [];
+  },
+  async cancelAll(): Promise<void> {},
 };
 
 /** Jobs that hold the body still while they rewrite it. */
