@@ -1,0 +1,1123 @@
+"use client";
+
+import type {
+  PendingInvitationView,
+  WorkspaceMemberView,
+  WorkspaceRoleView,
+} from "@repo/core/application/workspace/view";
+import { Link, useRouter } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
+import {
+  useActionState,
+  useId,
+  useOptimistic,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { emailFormatError } from "@/components/auth/fieldValidation";
+import {
+  fieldErrorClass,
+  inputClass,
+  inputInvalidClass,
+} from "@/components/auth/formStyles";
+import {
+  dangerButtonClass,
+  errorTextClass,
+  ghostButtonClass,
+  panelClass,
+  panelNoteClass,
+  panelTitleClass,
+  primaryButtonClass,
+  subtleButtonClass,
+} from "@/components/settings/panelStyles";
+import { Alert } from "@/components/ui/Alert";
+import { displayError } from "@/presentation/errorDisplay";
+import {
+  changeMemberRoleFn,
+  inviteMemberFn,
+  leaveWorkspaceFn,
+  removeMemberFn,
+  resendInvitationFn,
+  revokeInvitationFn,
+} from "@/routes/workspaces/$workspaceId/settings/-action";
+import { loadMoreMembersFn, loadMorePendingInvitationsFn } from "./action";
+import {
+  applyRoster,
+  canLeave,
+  PENDING_INVITATION_ID,
+  rosterOf,
+  selfIsLastOwner,
+  selfOf,
+} from "./roster";
+
+/**
+ * P-32 の操作を持つ島（モック P32-workspace-members.html、
+ * PAGE-p32-001..008）。
+ *
+ * 招待の発行・取り消し・メンバーの除名・脱退はいずれも**一覧メンバー
+ * シップの変更**なので、CLAUDE.md の所有権の規則どおり 2 つの一覧をこの
+ * 親が所有する。特に取り消し・除名・脱退は、楽観的除去が行を先に
+ * アンマウントするため行側に持たせるとエラー表示ごと消えてしまう。
+ * ロール変更と再送は行の中で完結する変更なので、それぞれの葉が自分の
+ * `useOptimistic` と失敗表示を持つ。
+ *
+ * 2 つの一覧はどちらも 50 件ずつのページで、先頭ページをサーバー
+ * コンポーネントが渡し、以降の継ぎ足しはこの島が持つ。件数と最後の owner
+ * の判定に使う総数は、ページから数え直さずサーバーの `count` /
+ * `ownerCount` に楽観的な差分を足し引きして求める（`roster.ts`）。
+ *
+ * 脱退（WS-06 手順 1「ワークスペース設定の下部から『脱退する』を選ぶ」）は
+ * 一覧の中ではなくパネル下部の独立した節に置く。一覧は `joinedAt` 昇順で
+ * 1 ページ 50 件なので、後から参加した閲覧者ほど自分の行が後ろのページに
+ * 来る — 行の中に導線を置くと、その利用者は自分の行を手繰るまで脱退でき
+ * ない。可否の判定材料（`viewerRole` / `ownerCount`）もページの外から取る。
+ *
+ * 最後の owner の保護はサーバー（`MembershipPolicy`）が正本で、ここでは
+ * その総数で自分の脱退を先に閉じるだけである。ロール変更は行の中で完結
+ * する楽観状態なので降格はこの数に届かず、降格直後の 1 往復だけ古い数が
+ * 残る。判定の正本はサーバー側にあり、`router.invalidate()` で揃う。
+ *
+ * この保護が画面に出るのは**自分の脱退だけ**である。ロール変更・除名を
+ * 出せるのは `canManage`（= owner）の閲覧者に限られ、その閲覧者自身が
+ * owner を 1 人数えてしまうので、「他人が唯一の owner」は成立しない。
+ * 他人の行に降格・除名の禁止を描いても到達しないため、置いていない。
+ */
+
+const ROLES: readonly WorkspaceRoleView[] = ["owner", "editor", "viewer"];
+
+const ROLE_LABEL: Readonly<Record<WorkspaceRoleView, string>> = {
+  owner: "owner",
+  editor: "editor",
+  viewer: "viewer",
+};
+
+/**
+ * 先頭ページはサーバーコンポーネントが渡し、以降の継ぎ足しだけをこの島が
+ * 持つ。サーバーが先頭ページを配り直したら（各ミューテーションの
+ * `router.invalidate()`）継ぎ足しは古い集合を指すので捨て、1 ページ目へ
+ * 戻す。
+ */
+function useLoadedPages<T>(firstPage: readonly T[]) {
+  const [seed, setSeed] = useState(firstPage);
+  const [extra, setExtra] = useState<readonly T[]>([]);
+  const [page, setPage] = useState(1);
+  if (seed !== firstPage) {
+    setSeed(firstPage);
+    setExtra([]);
+    setPage(1);
+  }
+  return {
+    items: extra.length === 0 ? firstPage : [...firstPage, ...extra],
+    page,
+    append: (items: readonly T[], loadedPage: number) => {
+      setExtra((current) => [...current, ...items]);
+      setPage(loadedPage);
+    },
+  };
+}
+
+/**
+ * `mailSent` が false のときは招待そのものは成立していて、メールだけが
+ * 出ていない。招待者がリンクを自分で渡す必要がある状態なので、成功の
+ * 文言ではなく注意へ切り替える（`IssuedInvitationView.mailSent`）。
+ */
+type IssuedInvitation = Readonly<{
+  email: string;
+  url: string;
+  mailSent: boolean;
+}>;
+
+/**
+ * 送信の要求（`<form action>` が渡す `FormData`）と、owner の確認に対する
+ * 返事を 1 つの入口に束ねる。確認は送信そのものの一段であって別の状態
+ * ではないので、`useActionState` の外に持つと pending が二重になる。
+ */
+type InvitePayload = FormData | "confirmOwner" | "cancelOwner";
+
+type InviteState = Readonly<{
+  /** 判断の対象になったアドレス。入力が変わったら失効させるために持つ。 */
+  email: string;
+  error: string | null;
+  issued: IssuedInvitation | null;
+  /** owner ロールの重さを説明する確認の待ち（WS-03 異常系）。 */
+  ownerConfirmEmail: string | null;
+}>;
+
+const IDLE_INVITE: InviteState = {
+  email: "",
+  error: null,
+  issued: null,
+  ownerConfirmEmail: null,
+};
+
+/** 再送の応答。`mailSent` の意味は {@link IssuedInvitation} と同じ。 */
+type ResentInvitation = Readonly<{ url: string; mailSent: boolean }>;
+
+type Confirming =
+  | Readonly<{ kind: "removeMember"; membershipId: string }>
+  | Readonly<{ kind: "revokeInvitation"; invitationId: string }>
+  | Readonly<{ kind: "leave" }>
+  | null;
+
+export function WorkspaceMembersBoard({
+  workspaceId,
+  viewerUserId,
+  viewerRole,
+  members,
+  memberCount,
+  ownerCount,
+  invitations,
+  invitationCount,
+  canManage,
+}: {
+  workspaceId: string;
+  viewerUserId: string;
+  /** 閲覧者自身のロール（`listMembers.viewerRole`）。 */
+  viewerRole: WorkspaceRoleView;
+  /** メンバー一覧の先頭ページ。 */
+  members: readonly WorkspaceMemberView[];
+  /** ワークスペース全体のメンバー数（`listMembers.count`）。 */
+  memberCount: number;
+  /** ワークスペース全体の owner 数（`listMembers.ownerCount`）。 */
+  ownerCount: number;
+  /** 保留中の招待の先頭ページ。 */
+  invitations: readonly PendingInvitationView[];
+  /** 保留中の招待の総数（`listPendingInvitations.count`）。 */
+  invitationCount: number;
+  canManage: boolean;
+}) {
+  const router = useRouter();
+  const inviteMember = useServerFn(inviteMemberFn);
+  const revokeInvitation = useServerFn(revokeInvitationFn);
+  const removeMember = useServerFn(removeMemberFn);
+  const leaveWorkspace = useServerFn(leaveWorkspaceFn);
+  const loadMoreMembers = useServerFn(loadMoreMembersFn);
+  const loadMoreInvitations = useServerFn(loadMorePendingInvitationsFn);
+
+  const memberPages = useLoadedPages(members);
+  const invitationPages = useLoadedPages(invitations);
+  const [roster, dispatchRoster] = useOptimistic(
+    rosterOf(memberPages.items, invitationPages.items),
+    applyRoster,
+  );
+  const [isMutating, startMutating] = useTransition();
+  const [isLoadingMembers, startLoadingMembers] = useTransition();
+  const [isLoadingInvitations, startLoadingInvitations] = useTransition();
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<Confirming>(null);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+
+  const [email, setEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<WorkspaceRoleView>("editor");
+  const emailId = useId();
+  const roleId = useId();
+  const inviteErrorId = useId();
+  const membersHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const invitationsHeadingRef = useRef<HTMLHeadingElement | null>(null);
+
+  const totalMembers = memberCount + roster.memberDelta;
+  const totalOwners = ownerCount + roster.ownerDelta;
+  const totalInvitations = invitationCount + roster.invitationDelta;
+  const isLastOwner = selfIsLastOwner(roster, viewerRole, ownerCount);
+  const leaveAvailable = canLeave(roster, viewerRole, ownerCount);
+
+  const reconcile = () =>
+    router.invalidate().catch(() => {
+      console.error("Workspace members reconcile failed");
+    });
+
+  const [inviteState, submitInvite, isInviting] = useActionState(
+    async (
+      _previous: InviteState,
+      payload: InvitePayload,
+    ): Promise<InviteState> => {
+      if (payload === "cancelOwner") return IDLE_INVITE;
+      const address = email.trim();
+      // 形式は送る前に弾く（WS-03）。転送境界も同じパターンで閉じている
+      // ので、ここを抜けた値だけがユースケースに届く。
+      const formatError = emailFormatError(address);
+      if (formatError !== null) {
+        return {
+          email: address,
+          error: formatError,
+          issued: null,
+          ownerConfirmEmail: null,
+        };
+      }
+      if (inviteRole === "owner" && payload !== "confirmOwner") {
+        return {
+          email: address,
+          error: null,
+          issued: null,
+          ownerConfirmEmail: address,
+        };
+      }
+      dispatchRoster({
+        kind: "addInvitation",
+        email: address,
+        role: inviteRole,
+      });
+      let issued: IssuedInvitation;
+      try {
+        const view = await inviteMember({
+          data: { workspaceId, email: address, role: inviteRole },
+        });
+        issued = {
+          email: view.email,
+          url: view.invitationUrl,
+          mailSent: view.mailSent,
+        };
+      } catch (error) {
+        return {
+          email: address,
+          error: displayError(error),
+          issued: null,
+          ownerConfirmEmail: null,
+        };
+      }
+      setEmail("");
+      // 招待はもう成立しているので、再取得の失敗を「送れなかった」と
+      // 見せない（再送で 2 通目を出させないため try の外に置く）。
+      await reconcile();
+      return { email: address, error: null, issued, ownerConfirmEmail: null };
+    },
+    IDLE_INVITE,
+  );
+
+  // 入力中の形式の指摘。空欄は「まだ書いていない」なので指摘しない
+  // （送信ボタンの活性は空欄でも閉じる）。
+  const emailProblem = email.trim() === "" ? null : emailFormatError(email);
+  // サーバーの指摘は、判断の対象になったアドレスが残っているあいだだけ
+  // 効く（スラッグ側と同じ形）。
+  const staleInvite = inviteState.email !== email.trim();
+  const inviteProblem =
+    emailProblem ?? (staleInvite ? null : inviteState.error);
+
+  const copyInvitationUrl = (url: string) => {
+    navigator.clipboard
+      .writeText(url)
+      .then(() => setCopyNotice("招待リンクをコピーしました"))
+      .catch(() =>
+        setCopyNotice(
+          "コピーできませんでした。リンクを選択してコピーしてください",
+        ),
+      );
+  };
+
+  const onRevokeInvitation = (invitationId: string) => {
+    setConfirming(null);
+    startMutating(async () => {
+      setNotice(null);
+      dispatchRoster({ kind: "revokeInvitation", invitationId });
+      try {
+        await revokeInvitation({ data: { workspaceId, invitationId } });
+      } catch (error) {
+        setRosterError(displayError(error));
+        return;
+      }
+      setRosterError(null);
+      setNotice("招待を取り消しました。");
+      // 押した「取り消し」は楽観的除去で行ごと消えるので、焦点をこの
+      // 一覧の見出しへ引き取らないと `document.body` へ落ちる。
+      invitationsHeadingRef.current?.focus();
+      await reconcile();
+    });
+  };
+
+  const onRemoveMember = (member: WorkspaceMemberView) => {
+    const membershipId = member.membershipId;
+    setConfirming(null);
+    startMutating(async () => {
+      setNotice(null);
+      dispatchRoster({ kind: "removeMember", membershipId, role: member.role });
+      try {
+        await removeMember({ data: { workspaceId, membershipId } });
+      } catch (error) {
+        setRosterError(displayError(error));
+        return;
+      }
+      setRosterError(null);
+      setNotice("メンバーを除名しました。");
+      membersHeadingRef.current?.focus();
+      await reconcile();
+    });
+  };
+
+  const onLeave = () => {
+    setConfirming(null);
+    startMutating(async () => {
+      setNotice(null);
+      dispatchRoster({
+        kind: "leave",
+        membershipId: selfOf(roster, viewerUserId)?.membershipId ?? null,
+        role: viewerRole,
+      });
+      try {
+        await leaveWorkspace({ data: { workspaceId } });
+      } catch (error) {
+        setRosterError(displayError(error));
+        return;
+      }
+      setRosterError(null);
+      // 脱退した文脈はもう開けない。個人のノートへ戻す（WS-06 手順 4）。
+      // 遷移の前に整合を取るのは、この match が `staleTime` 無限で、履歴の
+      // 戻るが古い名簿ごと甦らせるため（`InvitationActions` と同じ理由）。
+      await reconcile();
+      await router.navigate({ to: "/notes", search: {} }).catch(() => {
+        console.error("Navigation to the personal notes failed");
+      });
+    });
+  };
+
+  const onLoadMoreMembers = () => {
+    const next = memberPages.page + 1;
+    startLoadingMembers(async () => {
+      let page: Awaited<ReturnType<typeof loadMoreMembers>>;
+      try {
+        page = await loadMoreMembers({ data: { workspaceId, page: next } });
+      } catch (error) {
+        setLoadError(displayError(error));
+        return;
+      }
+      setLoadError(null);
+      memberPages.append(page.members, next);
+    });
+  };
+
+  const onLoadMoreInvitations = () => {
+    const next = invitationPages.page + 1;
+    startLoadingInvitations(async () => {
+      let page: Awaited<ReturnType<typeof loadMoreInvitations>>;
+      try {
+        page = await loadMoreInvitations({ data: { workspaceId, page: next } });
+      } catch (error) {
+        setLoadError(displayError(error));
+        return;
+      }
+      setLoadError(null);
+      invitationPages.append(page.invitations, next);
+    });
+  };
+
+  return (
+    <>
+      {canManage ? null : (
+        <Alert tone="info" title="読み取り専用です" role="note">
+          メンバーの招待・ロール変更・除名ができるのは owner だけです。
+        </Alert>
+      )}
+
+      {canManage ? (
+        <section className={panelClass}>
+          <h2 className={panelTitleClass}>メンバーを招待</h2>
+          <p className={panelNoteClass}>
+            招待メールを送ります。まだ Hollow
+            のアカウントがない相手も、そのまま登録して参加できます。
+          </p>
+
+          <form action={submitInvite} noValidate>
+            <div className="flex flex-wrap gap-2">
+              <label className="sr-only" htmlFor={emailId}>
+                メールアドレス
+              </label>
+              <input
+                id={emailId}
+                type="email"
+                autoComplete="off"
+                placeholder="メールアドレス"
+                className={`${inputClass} h-10 min-w-50 flex-1 text-sm ${
+                  inviteProblem === null ? "" : inputInvalidClass
+                }`}
+                value={email}
+                disabled={isInviting}
+                aria-invalid={inviteProblem !== null}
+                aria-describedby={inviteErrorId}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+              <label className="sr-only" htmlFor={roleId}>
+                ロール
+              </label>
+              <select
+                id={roleId}
+                className={selectClass}
+                value={inviteRole}
+                disabled={isInviting}
+                onChange={(event) =>
+                  setInviteRole(event.target.value as WorkspaceRoleView)
+                }
+              >
+                {ROLES.map((role) => (
+                  <option key={role} value={role}>
+                    {ROLE_LABEL[role]}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                className={primaryButtonClass}
+                disabled={
+                  isInviting || email.trim() === "" || emailProblem !== null
+                }
+                aria-busy={isInviting}
+              >
+                {isInviting ? "送信中..." : "招待を送る"}
+              </button>
+            </div>
+
+            <p
+              className={fieldErrorClass}
+              id={inviteErrorId}
+              aria-live="polite"
+            >
+              {inviteProblem}
+            </p>
+            <p className="mt-2 text-xs text-ink-tertiary">
+              editor はノートの取り込み・編集・公開ができます。viewer
+              は閲覧とダウンロードのみです。
+            </p>
+          </form>
+
+          {inviteState.ownerConfirmEmail === null || staleInvite ? null : (
+            <Alert
+              tone="warning"
+              role="note"
+              title="owner として招待しますか"
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    disabled={isInviting}
+                    aria-busy={isInviting}
+                    onClick={() => submitInvite("confirmOwner")}
+                  >
+                    {isInviting ? "送信中..." : "owner として招待する"}
+                  </button>
+                  <button
+                    type="button"
+                    className={ghostButtonClass}
+                    disabled={isInviting}
+                    onClick={() => submitInvite("cancelOwner")}
+                  >
+                    やめる
+                  </button>
+                </>
+              }
+            >
+              owner
+              はメンバーの招待・ロール変更・除名に加えて、ワークスペースの設定・公開・削除まで行えます。
+              <b className="font-medium text-ink">
+                {inviteState.ownerConfirmEmail}
+              </b>{" "}
+              に同じ権限を渡すことになります。
+            </Alert>
+          )}
+
+          {inviteState.issued !== null ? (
+            <div className="mt-4 border-t border-hairline pt-4">
+              {inviteState.issued.mailSent ? (
+                <p className="mb-2 text-sm text-ink-secondary">
+                  <b className="font-medium text-ink">
+                    {inviteState.issued.email}
+                  </b>{" "}
+                  に招待を送りました。リンクを直接渡すこともできます。
+                </p>
+              ) : (
+                <Alert
+                  tone="warning"
+                  role="status"
+                  title="招待メールを送れませんでした"
+                >
+                  <b className="font-medium text-ink">
+                    {inviteState.issued.email}
+                  </b>{" "}
+                  への招待は作成できています。下のリンクをコピーして直接渡してください。
+                </Alert>
+              )}
+              <button
+                type="button"
+                className={subtleButtonClass}
+                onClick={() => {
+                  if (inviteState.issued !== null) {
+                    copyInvitationUrl(inviteState.issued.url);
+                  }
+                }}
+              >
+                招待リンクをコピー
+              </button>
+            </div>
+          ) : null}
+
+          <p
+            className="text-xs text-ink-tertiary not-empty:mt-2"
+            role="status"
+            aria-live="polite"
+          >
+            {copyNotice}
+          </p>
+        </section>
+      ) : null}
+
+      <section className={panelClass}>
+        <h2
+          ref={membersHeadingRef}
+          tabIndex={-1}
+          className={`${panelTitleClass} focus-visible:shadow-none`}
+        >
+          メンバー{" "}
+          <span className="text-sm font-normal text-ink-tertiary">
+            {totalMembers} 人（owner {totalOwners} 人）
+          </span>
+        </h2>
+
+        <ul>
+          {roster.members.map((member) => (
+            <MemberRow
+              key={member.membershipId}
+              workspaceId={workspaceId}
+              member={member}
+              isSelf={member.userId === viewerUserId}
+              canManage={canManage}
+              busy={isMutating}
+              confirming={
+                confirming?.kind === "removeMember" &&
+                confirming.membershipId === member.membershipId
+              }
+              onConfirmRemove={() =>
+                setConfirming({
+                  kind: "removeMember",
+                  membershipId: member.membershipId,
+                })
+              }
+              onCancel={() => setConfirming(null)}
+              onRemove={() => onRemoveMember(member)}
+              onChanged={reconcile}
+            />
+          ))}
+        </ul>
+
+        {roster.members.length < totalMembers ? (
+          <LoadMoreButton
+            busy={isLoadingMembers}
+            label="メンバーをさらに読み込む"
+            onClick={onLoadMoreMembers}
+          />
+        ) : null}
+      </section>
+
+      {canManage ? (
+        <section className={panelClass}>
+          <h2
+            ref={invitationsHeadingRef}
+            tabIndex={-1}
+            className={`${panelTitleClass} focus-visible:shadow-none`}
+          >
+            保留中の招待{" "}
+            <span className="text-sm font-normal text-ink-tertiary">
+              {totalInvitations} 件
+            </span>
+          </h2>
+
+          {roster.invitations.length === 0 ? (
+            <p className="text-sm text-ink-tertiary">
+              返事を待っている招待はありません。
+            </p>
+          ) : (
+            <ul>
+              {roster.invitations.map((invitation) => (
+                <PendingRow
+                  key={invitation.invitationId}
+                  workspaceId={workspaceId}
+                  invitation={invitation}
+                  sending={invitation.invitationId === PENDING_INVITATION_ID}
+                  busy={isMutating}
+                  confirming={
+                    confirming?.kind === "revokeInvitation" &&
+                    confirming.invitationId === invitation.invitationId
+                  }
+                  onConfirm={() =>
+                    setConfirming({
+                      kind: "revokeInvitation",
+                      invitationId: invitation.invitationId,
+                    })
+                  }
+                  onCancel={() => setConfirming(null)}
+                  onRevoke={() => onRevokeInvitation(invitation.invitationId)}
+                  onCopy={copyInvitationUrl}
+                  onResent={reconcile}
+                />
+              ))}
+            </ul>
+          )}
+
+          {roster.invitations.length < totalInvitations ? (
+            <LoadMoreButton
+              busy={isLoadingInvitations}
+              label="招待をさらに読み込む"
+              onClick={onLoadMoreInvitations}
+            />
+          ) : null}
+        </section>
+      ) : null}
+
+      <LeaveSection
+        workspaceId={workspaceId}
+        isLastOwner={isLastOwner}
+        available={leaveAvailable}
+        busy={isMutating}
+        confirming={confirming?.kind === "leave"}
+        onConfirm={() => setConfirming({ kind: "leave" })}
+        onCancel={() => setConfirming(null)}
+        onLeave={onLeave}
+      />
+
+      {/* 常設の live region。一覧を変える操作の失敗と成功はここだけに出る。 */}
+      <p className={errorTextClass} role="status" aria-live="polite">
+        {rosterError}
+      </p>
+      <p className={errorTextClass} role="status" aria-live="polite">
+        {loadError}
+      </p>
+      <p className="text-xs text-success not-empty:mt-2" aria-live="polite">
+        {notice}
+      </p>
+    </>
+  );
+}
+
+function LoadMoreButton({
+  busy,
+  label,
+  onClick,
+}: {
+  busy: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-busy={busy}
+      onClick={onClick}
+      className="mt-3 block w-full rounded-md border border-hairline px-4 py-2.5 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
+    >
+      {busy ? "読み込み中..." : label}
+    </button>
+  );
+}
+
+/**
+ * 脱退（PAGE-p32-008 / WS-06 手順 1）。一覧の外に置くので、閲覧者自身の行が
+ * 読み込み済みのページに載っているかに依存しない。
+ */
+function LeaveSection({
+  workspaceId,
+  isLastOwner,
+  available,
+  busy,
+  confirming,
+  onConfirm,
+  onCancel,
+  onLeave,
+}: {
+  workspaceId: string;
+  /** 自分が唯一の owner のときだけ立つ（脱退の禁止）。 */
+  isLastOwner: boolean;
+  available: boolean;
+  busy: boolean;
+  confirming: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onLeave: () => void;
+}) {
+  const hintId = useId();
+
+  return (
+    <section className={panelClass}>
+      <h2 className={panelTitleClass}>このワークスペースから脱退</h2>
+      {isLastOwner ? (
+        <p className={panelNoteClass} id={hintId}>
+          最後の owner は脱退できません。別のメンバーを owner
+          にするか、ワークスペースごと必要なくなった場合は{" "}
+          <Link
+            to="/workspaces/$workspaceId/settings/danger"
+            params={{ workspaceId }}
+            className="text-ink underline underline-offset-2"
+          >
+            ワークスペースを削除
+          </Link>
+          してください。
+        </p>
+      ) : (
+        <p className={panelNoteClass} id={hintId}>
+          脱退すると、このワークスペースのノートには一切アクセスできなくなります。あなたが作成したノートはワークスペースに残るので、手元に残したいものは脱退前にノート一覧・ノート詳細のメニューから個人へ移してください。再び参加するには招待が必要です。
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {confirming ? (
+          <>
+            <button
+              type="button"
+              className={dangerButtonClass}
+              disabled={busy}
+              aria-describedby={hintId}
+              onClick={onLeave}
+            >
+              脱退する
+            </button>
+            <button
+              type="button"
+              className={ghostButtonClass}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              やめる
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={ghostButtonClass}
+            disabled={busy || !available}
+            aria-describedby={hintId}
+            onClick={onConfirm}
+          >
+            脱退する
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function MemberRow({
+  workspaceId,
+  member,
+  isSelf,
+  canManage,
+  busy,
+  confirming,
+  onConfirmRemove,
+  onCancel,
+  onRemove,
+  onChanged,
+}: {
+  workspaceId: string;
+  member: WorkspaceMemberView;
+  isSelf: boolean;
+  canManage: boolean;
+  busy: boolean;
+  confirming: boolean;
+  onConfirmRemove: () => void;
+  onCancel: () => void;
+  onRemove: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const changeMemberRole = useServerFn(changeMemberRoleFn);
+  // ロール変更は行の中で完結する（一覧の増減にならない）ので、葉が自分で
+  // 楽観的な値と失敗表示を持つ。
+  const [role, setRole] = useOptimistic(
+    member.role,
+    (_current: WorkspaceRoleView, next: WorkspaceRoleView) => next,
+  );
+  const [isChanging, startChanging] = useTransition();
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const roleId = useId();
+  const confirmNoteId = useId();
+
+  const onSelectRole = (next: WorkspaceRoleView) => {
+    startChanging(async () => {
+      setRole(next);
+      try {
+        await changeMemberRole({
+          data: { workspaceId, membershipId: member.membershipId, role: next },
+        });
+      } catch (error) {
+        setRoleError(displayError(error));
+        return;
+      }
+      setRoleError(null);
+      await onChanged();
+    });
+  };
+
+  const name = member.displayName ?? "退会した利用者";
+
+  return (
+    <li className="grid grid-cols-[auto_1fr] items-center gap-3 border-t border-hairline py-3 first:border-t-0 first:pt-0 min-[520px]:grid-cols-[auto_1fr_auto]">
+      <span
+        aria-hidden="true"
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-surface text-[11px] font-medium text-ink-secondary"
+      >
+        {initials(name)}
+      </span>
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-2 text-sm">
+          {name}
+          {isSelf ? (
+            <span className="rounded-xs border border-hairline px-1.5 text-xs text-ink-tertiary">
+              あなた
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-ink-tertiary">
+          {member.email ?? "メールアドレス非公開"} ·{" "}
+          {formatDate(member.joinedAt)}に参加
+        </span>
+        <span className={fieldErrorClass} role="status" aria-live="polite">
+          {roleError}
+        </span>
+      </span>
+      <span className="col-start-2 flex shrink-0 flex-wrap items-center gap-2 min-[520px]:col-start-3">
+        {canManage && !isSelf ? (
+          <>
+            <label className="sr-only" htmlFor={roleId}>
+              {name} のロール
+            </label>
+            <select
+              id={roleId}
+              className={`${selectClass} h-7.5 px-2 text-xs`}
+              value={role}
+              disabled={busy || isChanging}
+              aria-busy={isChanging}
+              onChange={(event) =>
+                onSelectRole(event.target.value as WorkspaceRoleView)
+              }
+            >
+              {ROLES.map((option) => (
+                <option key={option} value={option}>
+                  {ROLE_LABEL[option]}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          // 自分のロールは自分では変えられない（`CannotChangeOwnRole`）。
+          // 選べない選択肢を出さず、現在のロールだけを示す。
+          <span className="text-xs text-ink-tertiary">{ROLE_LABEL[role]}</span>
+        )}
+
+        {confirming ? (
+          <>
+            <button
+              type="button"
+              className={dangerButtonClass}
+              disabled={busy}
+              aria-describedby={confirmNoteId}
+              onClick={onRemove}
+            >
+              除名する
+            </button>
+            <button
+              type="button"
+              className={ghostButtonClass}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              やめる
+            </button>
+          </>
+        ) : canManage && !isSelf ? (
+          <button
+            type="button"
+            className={dangerButtonClass}
+            disabled={busy}
+            onClick={onConfirmRemove}
+          >
+            除名
+          </button>
+        ) : null}
+      </span>
+      {confirming ? (
+        <span
+          id={confirmNoteId}
+          className="col-start-2 text-xs text-ink-secondary"
+        >
+          {`除名すると、${name} はこのワークスペースのノートに一切アクセスできなくなります。${name} が作成したノートはワークスペースに残ります。`}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+function PendingRow({
+  workspaceId,
+  invitation,
+  sending,
+  busy,
+  confirming,
+  onConfirm,
+  onCancel,
+  onRevoke,
+  onCopy,
+  onResent,
+}: {
+  workspaceId: string;
+  invitation: PendingInvitationView;
+  sending: boolean;
+  busy: boolean;
+  confirming: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  onRevoke: () => void;
+  onCopy: (url: string) => void;
+  onResent: () => Promise<void>;
+}) {
+  const resendInvitation = useServerFn(resendInvitationFn);
+  // 再送は行の中で完結する。新しい 14 日の窓が張り直されるので、期限切れ
+  // の表示は先に消してよい（失敗すればトランジションの終了で戻る）。
+  const [expired, setExpired] = useOptimistic(
+    invitation.expired,
+    (_current: boolean, next: boolean) => next,
+  );
+  const [isResending, startResending] = useTransition();
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resent, setResent] = useState<ResentInvitation | null>(null);
+
+  const onResend = () => {
+    startResending(async () => {
+      setExpired(false);
+      let sent: ResentInvitation;
+      try {
+        const view = await resendInvitation({
+          data: { workspaceId, invitationId: invitation.invitationId },
+        });
+        sent = { url: view.invitationUrl, mailSent: view.mailSent };
+      } catch (error) {
+        setResendError(displayError(error));
+        return;
+      }
+      setResendError(null);
+      setResent(sent);
+      await onResent();
+    });
+  };
+
+  return (
+    <li className="grid grid-cols-[auto_1fr] items-center gap-3 border-t border-hairline py-3 first:border-t-0 first:pt-0 min-[520px]:grid-cols-[auto_1fr_auto]">
+      <span
+        aria-hidden="true"
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-surface text-ink-tertiary"
+      >
+        <MailIcon />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm">{invitation.email}</span>
+        <span
+          className={`mt-0.5 block text-xs ${
+            expired ? "text-warning" : "text-ink-tertiary"
+          }`}
+        >
+          {sending
+            ? `${ROLE_LABEL[invitation.role]} として招待を送信中...`
+            : expired
+              ? `${ROLE_LABEL[invitation.role]} として招待 · 期限切れ（${formatDate(invitation.expiresAt)}）`
+              : `${ROLE_LABEL[invitation.role]} として招待 · ${formatDate(invitation.expiresAt)}まで有効`}
+        </span>
+        <span className={fieldErrorClass} role="status" aria-live="polite">
+          {resendError}
+        </span>
+        <span
+          className="block text-xs text-warning not-empty:mt-1"
+          role="status"
+          aria-live="polite"
+        >
+          {resent !== null && !resent.mailSent
+            ? "招待メールを送れませんでした。リンクをコピーして直接渡してください。"
+            : null}
+        </span>
+      </span>
+      <span className="col-start-2 flex shrink-0 flex-wrap items-center gap-2 min-[520px]:col-start-3">
+        {sending ? null : confirming ? (
+          <>
+            <button
+              type="button"
+              className={dangerButtonClass}
+              disabled={busy}
+              onClick={onRevoke}
+            >
+              取り消す
+            </button>
+            <button
+              type="button"
+              className={ghostButtonClass}
+              disabled={busy}
+              onClick={onCancel}
+            >
+              やめる
+            </button>
+          </>
+        ) : (
+          <>
+            {resent === null ? null : (
+              <button
+                type="button"
+                className={ghostButtonClass}
+                onClick={() => onCopy(resent.url)}
+              >
+                リンクをコピー
+              </button>
+            )}
+            <button
+              type="button"
+              className={expired ? subtleButtonClass : ghostButtonClass}
+              disabled={busy || isResending}
+              aria-busy={isResending}
+              onClick={onResend}
+            >
+              {isResending ? "送信中..." : expired ? "招待し直す" : "再送"}
+            </button>
+            <button
+              type="button"
+              className={dangerButtonClass}
+              disabled={busy || isResending}
+              onClick={onConfirm}
+            >
+              取り消し
+            </button>
+          </>
+        )}
+      </span>
+    </li>
+  );
+}
+
+const selectClass =
+  "h-10 rounded-md border border-hairline-strong bg-bg px-3 text-sm text-ink transition-colors focus:border-transparent focus:shadow-focus focus:outline-none disabled:cursor-not-allowed disabled:opacity-55";
+
+const initials = (name: string): string => name.trim().slice(0, 2) || "?";
+
+// 時間帯を明示する。この島は SSR で 1 度描かれてからハイドレートされる
+// ので、既定（実行環境の時間帯）のままだとサーバーとブラウザーで日付が
+// 1 日ずれ、その差がハイドレーション不一致として出る。
+const dateFormat = new Intl.DateTimeFormat("ja-JP", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+const formatDate = (value: Date): string => dateFormat.format(value);
+
+function MailIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <polyline points="22 6 12 13 2 6" />
+    </svg>
+  );
+}

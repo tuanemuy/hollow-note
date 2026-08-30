@@ -10,6 +10,7 @@ import { runAccountDeletionGlobalCleanup } from "../identity/deleteAccount/globa
 import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
+import { projectMembershipRole } from "../workspace/membershipRoleProjection";
 import type { AllDomainEvents } from "./eventRelayWorker";
 
 type SubscriberFor<TType extends AllDomainEvents["type"]> = Readonly<{
@@ -158,6 +159,11 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
     eventType: "storage.fileDeleted",
     consumerName: "storage.deleteStoredObjects",
     handle: deleteStoredObjects,
+  },
+  {
+    eventType: "workspace.membership.roleChanged",
+    consumerName: "workspace.membershipRoleProjection",
+    handle: projectMembershipRole,
   },
 ];
 

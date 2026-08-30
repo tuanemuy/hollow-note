@@ -188,7 +188,7 @@ Note = ActiveNote | TrashedNote
 | `updateBody` | `note: ActiveNote, processed: ProcessedHtml, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 編集による本文差し替え。`content` を `ready` に更新。`note.contentUpdated` を発行 |
 | `rename` | `note: ActiveNote, title: string, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `NoteTitle.create` で正規化。`note.renamed` を発行 |
 | `changeStyleMode` | `note: ActiveNote, mode: string, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `StyleMode.create` で検証して更新。`note.styleModeChanged` を発行 |
-| `moveTo` | `note: ActiveNote, owner: NoteOwner, routeVersion: number, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 同じ所有者なら変更もイベントもなし。異なれば更新し `note.moved`（旧所有者と `routeVersion` を含む）を発行。`routeVersion` は `NoteRouteStore` の移動サガが決める値で集約は導出できないため、引数で受ける |
+| `withOwner` | `note: ActiveNote, owner: NoteOwner, now: Date` | `ActiveNote` | 同じ所有者なら何も変えずそのまま返す。異なれば所有者と版を更新する。`note.moved` はこのメソッドの成果物ではない — 所有権が読み手にとって真になる瞬間は route の切替であり、この書き込みより後に来る。順序を持つ移動サガが発行の主体を兼ねる（[usecases/note.md](../usecases/note.md) の `moveNote` 手順 8）。イベントを返さないことが型でそれを言う |
 | `makePrivate` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | 現在の共有リンクを休眠として保持したまま `private` へ。`note.visibilityChanged` を発行 |
 | `makeUnlisted` | `note: ActiveNote, newLink: ShareLink \| null, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content.status !== "ready"` なら `BusinessRuleError(CannotPublishEmptyNote)`。休眠リンクがあれば復活させ、なければ `newLink` を使う。どちらもなければ `BusinessRuleError(ShareLinkRequired)`。`note.visibilityChanged` を発行 |
 | `makePublic` | `note: ActiveNote, now: Date` | `WithEventDrafts<ActiveNote, NoteEvent>` | `content.status !== "ready"` なら `BusinessRuleError(CannotPublishEmptyNote)`。共有リンクのパスワードを解除して休眠させる。`note.visibilityChanged` と `note.published` を発行 |
@@ -284,11 +284,9 @@ NoteAccess =
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `ensureMovable` | `note: Note, from: NoteAccess, to: TargetOwnerAccess` | `void` | 移動元で編集不可、または移動先で作成不可なら `BusinessRuleError(AccessDenied)`。`note.content.status` が `processing` なら `BusinessRuleError(CannotMoveWhileProcessing)` |
+| `ensureMovable` | `note: Note, from: NoteAccess` | `void` | 移動元で編集不可なら `BusinessRuleError(AccessDenied)`。`note.content.status` が `processing` なら `BusinessRuleError(CannotMoveWhileProcessing)` |
 
-```
-TargetOwnerAccess = { owner: NoteOwner; canCreate: boolean }
-```
+移動先は引数に取らない。そこで作成できるかはワークスペースのロールの判定であり、このドメインには評価できない。移動先を名指しできた時点で呼び出し側が `WorkspaceAuthorization.ensureCan(role, "createNote")` で答えを出しているので（拒否は `InsufficientRole`。[usecases/note.md](../usecases/note.md#movenote)）、`canCreate` を受け取っても呼び出し側の主張を写すだけの、強制力のない約束になる。
 
 **依存するポート**: なし
 
@@ -623,6 +621,8 @@ type NoteProjectionEntry = Readonly<{
 
 ### NoteRouteStore / NoteMovePort（application ports）
 
+移動の 5 相（freeze → stage → switch → activate → retire）の**オーケストレーションはユースケースが持つ**。`moveNote` が相ごとに scope の Unit of Work を 1 つずつ開き、各相の `AppliedOperationStore` の receipt をその相の効果と同じ transaction に入れる — アダプターの内側へ入れると「1 相 = 1 transaction」の対応が型で言えなくなる。`NoteMovePort` はそれを実装するポートではなく、**相を自分の 1 transaction へ畳めるバックエンドが現れた日の契約**として据え置いてある。今日この 5 メソッドを実装するアダプターも、それを実行する適合スイートも無い（[ADR 026](../adr/026-port-contract-and-conformance.md) が言う「契約の正典」を持つのは、実装されているポートだけである）。
+
 ```ts
 interface NoteRouteStore {
   resolve(noteId: NoteId): Promise<NoteRoute | null>;
@@ -677,13 +677,21 @@ interface NoteMovePort {
 
 列挙対象は**作成が commit 済みの route すべて** — `active` / `moving` / `purging` — であり、除外するのは `reserved`（対応するノートが存在しないまま終わりうる）だけである。これは `NoteRouteStore.resolve`（`reserved` に加えて `purging` も隠す）より**意図的に広い**。`resolve` は「外部の読み取りがこのノートに到達してよいか」を答える口で、fan-out は「scope 全体の修正がどの route に触れなければならないか」を答える口であり、移動中・完全削除中のノートも著者 route の redaction の義務を負ったままだからである。ここを `active` だけに絞ると、それらのノートが account deletion の manifest から落ち、永久に未処理のまま残る。`tombstone` の扱いは unspecified で、アダプターは失効まで残しても物理的に回収してもよく、呼び出し側はどちらも許容しなければならない。
 
-moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。完了後に`abortMove`が同じmigration IDの`moving → active(source)`をCASする。routeが既にtargetならabortを拒否する。
+moveはroute switch前だけabortでき、switch後は必ずforward recoveryする。abortはまず`abortMove`が同じmigration IDの`moving → active(source)`をCASし、**通ったときにだけ**補償へ進む。routeが既にtargetならCASが拒否し、何も補償せず停止する — switchがcommitした瞬間からstaged行がノートの唯一の複製になるので、解体してよいのはrouteがまだsourceの同じ世代を指しているあいだだけである。CASが通った後の`abortBeforeSwitch`はtarget creditの逆仕訳、staged Note/metadataの破棄、move authorization lock解放、source thawをmigration IDで冪等に行う。
+
+**補償の可否は route が source の同じ世代を指しているかだけで決め、誰が今それを保持しているかは問わない。** この thaw が返した route を別の migration が既に掴んでいても、その route は source を指しているので補償は走ってよい。掴んだ相手を理由に降りると、この migration 自身の move lock と operation が取り残され、回復可能な停止が恒久的な停止に変わる。
+
+**解体してよい行の識別子は、この migration の staged import の receipt（`AppliedOperationStore` の `(migrationId, stageTarget)`）である** — target に note 行があることではない。receipt は自分が置いた行と同じ transaction で commit するので、「この scope が今持っているものは自分のものか」に答えられる唯一の権威になる。thaw は解体の transaction を開く前に route を手放すため、その時点で target が持っているのは別 migration の staged 複製でありうる（そちらだけが switch も返却もできる）。行の存在だけを根拠に消すと、その migration が switch した瞬間にノートがどこにも無くなる。move lock の解放だけはこの判定の外で行う — staged import に届かずに失敗した abort も lock は返さなければならない。
 
 `ShareTokenProtector` は版付き鍵で共有トークンを暗号化する application port である。新規暗号化には現行版、復号には `keyVersion` が指す旧版を含む鍵束を使う。鍵はデータベースへ置かず、供給とローテーションはアダプターの責務とする。復号は所有者に共有 URL を返す経路だけで使い、共有リンクからの読み取りでは使わない。
 
 **エラーケース**（`ShareTokenProtector`）: `SystemError(DataIntegrityError)`（未知の `keyVersion`、ciphertext の破損）
 
-`NoteMoveSnapshot` は Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage deltaを含む。R2 bytes は移動しない。同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
+`NoteMoveSnapshot` は `NoteMovePort` がそう受け取るであろう凍結後の転送物の**不透明な宣言**で、Note / Revision、tag の表示名・正規化名、source / media / reference の StoredFile metadata、BackupRecord、Usage delta を指す。フィールドの並びを型で固定しないのは、相を 1 transaction へ畳むバックエンドが自分のアダプターと一緒にそれを決めるためである。R2 bytes は移動しない。
+
+**今日動いている移動が運ぶのはこの型ではない。** サガが持つのは `application/note/moveNote.ts` に閉じた `MoveSnapshot` で、中身は Note / Revision / StoredFile metadata と、その metadata が指す bytes の付け替えだけである — tag の名前と BackupRecord はまだ存在しないスライス（[usecases/tag.md](../usecases/tag.md) の `relocateAssignmentsForNote` と Integration のバックアップ記録）の持ち分なので、凍結する対象そのものが無い。
+
+同じ migration ID の再適用は保存済み result を返す。source / target command は actor と期待Membership versionをlocal transactionで再検査し、target prepareはmove authorization lockを保持する。対象Membershipの除名・降格はlockと競合し、activate / abortで解放する。
 
 ## ドメインイベント
 

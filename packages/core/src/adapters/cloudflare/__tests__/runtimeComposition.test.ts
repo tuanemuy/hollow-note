@@ -68,6 +68,15 @@ const REQUEST_PORTS = [
   "deletionOperationReader",
   "noteReaderFor",
   "usageReaderFor",
+  "workspaceReaderFor",
+  "userBatchReader",
+  "userWorkspaceDirectory",
+  "workspaceDirectoryBatchReader",
+  "publicWorkspaceDirectoryReader",
+  "workspaceDirectoryProjectionWriter",
+  "workspaceSlugReservationStore",
+  "invitationRouteStore",
+  "membershipDirectoryReservationStore",
   "mailSender",
   "passwordHasher",
   "secureTokenGenerator",
@@ -92,6 +101,10 @@ const WORKER_PORTS = [
   "publicNoteProjectionWriter",
   "scopeTaskQueue",
   "objectStorage",
+  "workspaceDirectoryProjectionWriter",
+  "workspaceSlugReservationStore",
+  "invitationRouteStore",
+  "membershipDirectoryReservationStore",
   "routingGenerations",
   "authStateSweeps",
 ] as const satisfies readonly (keyof WorkerContainer)[];
@@ -167,7 +180,7 @@ describe("createCloudflareRuntime", () => {
     ]);
     // Every table a default `authStatePrune` run names is one this
     // deployment can actually sweep; the reverse would be skipped with a
-    // single error log (ADR 062).
+    // single error log.
     expect(new Set(DEFAULT_MAINTENANCE_TABLES.authStatePrune)).toEqual(
       new Set(Object.keys(container.authStateSweeps)),
     );

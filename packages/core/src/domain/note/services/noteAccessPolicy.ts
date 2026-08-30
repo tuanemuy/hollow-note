@@ -45,13 +45,12 @@ export interface NoteAccessPolicy {
 
 const NO_CREDENTIAL: ShareCredential = { tokenHash: null, pass: null };
 
-// Constant-time equality over token hashes (spec/domains/note.md:
-// "復号せずに入力全体のハッシュを定数時間比較する"). Both sides are
-// hashes, so a timing leak could only reveal the stored hash — not
-// amplifiable into a token without a preimage — but the spec mandates
-// constant time, and a pure loop keeps the domain framework-free
-// (no node:crypto). The early length exit only leaks the hash length,
-// which is fixed by the hashing scheme.
+// Constant-time equality over token hashes. Both sides are hashes, so a
+// timing leak could only reveal the stored hash — not amplifiable into a
+// token without a preimage — but the comparison stays constant time
+// regardless, and a pure loop avoids pulling node:crypto into the domain.
+// The early length exit only leaks the hash length, which is fixed by the
+// hashing scheme.
 const constantTimeHashEquals = (a: TokenHash, b: TokenHash): boolean => {
   if (a.length !== b.length) {
     return false;
@@ -71,11 +70,10 @@ const READ_ONLY_ACCESS: NoteAccess = {
 };
 
 /**
- * Decides what a viewer may do with a note. Evaluation order
- * (spec/domains/note.md): ownership → trash barrier → public → unlisted
- * with a matching token → denied. Only the ownership path can reach a
- * trashed note. `WorkspaceAuthorization` is injected as a domain service;
- * in the walking-skeleton slice every call takes the personal path.
+ * Decides what a viewer may do with a note. Evaluation order: ownership →
+ * trash barrier → public → unlisted with a matching token → denied. Only
+ * the ownership path can reach a trashed note. `WorkspaceAuthorization` is injected as a domain service
+ * so the role table stays the single source of truth for every action.
  */
 export function createNoteAccessPolicy(
   authorization: WorkspaceAuthorization,

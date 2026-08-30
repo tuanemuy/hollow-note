@@ -15,11 +15,14 @@ import type {
   ManifestHeaderRow,
   ManifestItemRow,
   ManifestMembershipItemRow,
+  MembershipDirectoryRow,
   MemoryBackend,
 } from "../store";
 import { clone, compareStrings } from "../support";
 
 const PAGE_LIMIT = 100;
+
+type SettledEdge = ManifestMembershipItemRow["edgeState"];
 
 const ALL_FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
@@ -167,8 +170,13 @@ export function createMemoryAccountDeletionManifestStore(
       const edges = backend.membershipEdges
         .values()
         .filter(
-          (edge) =>
+          // `activating` edges are excluded by the contract, not by
+          // convenience: a deletion drains them to zero through
+          // `listActivatingByUser` before it fixes its manifest, so an
+          // edge still claimed by a join has no settled state to record.
+          (edge): edge is MembershipDirectoryRow & { edgeState: SettledEdge } =>
             edge.userId === header.userId &&
+            edge.edgeState !== "activating" &&
             (afterEdgeKey === null || edge.edgeKey > afterEdgeKey),
         )
         .sort((a, b) => compareStrings(a.edgeKey, b.edgeKey));

@@ -10,11 +10,13 @@ import type { RelayTrigger } from "../../../application/ports/relayTrigger";
 import type { ScopeKey } from "../../../application/scope";
 import { type DomainEvent, EventId } from "../../../domain/common/event";
 import type { UserId } from "../../../domain/identity/valueObject";
+import type { WorkspaceId } from "../../../domain/workspace/valueObject";
 import type {
   ConformanceBackend,
   ConformanceBackendOptions,
   MembershipEdgeSeedInput,
   ScopedConformancePorts,
+  WorkspaceDirectorySeedInput,
 } from "../../conformance/backend";
 import { createTestClock } from "../../conformance/testClock";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
@@ -41,6 +43,11 @@ import {
 import { createRoutePorts } from "./ports/route";
 import { createScopeBusinessPorts } from "./ports/scopeBusiness";
 import { createScopeInfraPorts } from "./ports/scopeInfra";
+import {
+  createWorkspaceDirectoryPorts,
+  createWorkspaceReservationPorts,
+  createWorkspaceScopePorts,
+} from "./ports/workspace";
 
 /**
  * `MakeConformanceBackend` for the Cloudflare adapters, running against
@@ -99,6 +106,7 @@ export async function makeCloudflareConformanceBackend(
       ...DEFAULT_MAINTENANCE_TABLES,
       ...options.maintenanceTablesByKind,
     },
+    workspaceDirectoryOutages: new Set<string>(),
     requiredCleanupComponents: options.requiredCleanupComponents,
     requiredFinalizeReceipts: options.requiredFinalizeReceipts,
   };
@@ -109,6 +117,8 @@ export async function makeCloudflareConformanceBackend(
   const directory = createDirectoryPorts(globalDeps);
   const route = createRoutePorts(globalDeps);
   const projection = createGlobalProjectionPorts(globalDeps);
+  const workspaceDirectory = createWorkspaceDirectoryPorts(globalDeps);
+  const workspaceReservations = createWorkspaceReservationPorts(globalDeps);
 
   const scopeExecutorFor = (scope: ScopeKey) =>
     createScopeStubExecutor(env.SCOPE_OBJECT, scope, namespace);
@@ -122,6 +132,7 @@ export async function makeCloudflareConformanceBackend(
       ...createScopeBusinessPorts(scopeDeps),
       ...createScopeInfraPorts(scopeDeps),
       ...createScopeProjectionPorts(scopeDeps),
+      ...createWorkspaceScopePorts(scopeDeps),
     };
   };
 
@@ -148,6 +159,9 @@ export async function makeCloudflareConformanceBackend(
         const staged = { ...deps, session };
         const stagedIdentity = createIdentityPorts(staged);
         const stagedDirectory = createDirectoryPorts(staged);
+        const stagedWorkspaceDirectory = createWorkspaceDirectoryPorts(staged);
+        const stagedWorkspaceReservations =
+          createWorkspaceReservationPorts(staged);
         return {
           userRepository: stagedIdentity.userRepository,
           identityRepository: stagedIdentity.identityRepository,
@@ -159,6 +173,10 @@ export async function makeCloudflareConformanceBackend(
           distributedOperationStore: stagedDirectory.distributedOperationStore,
           accountDeletionManifestStore:
             stagedDirectory.accountDeletionManifestStore,
+          settledMembershipReader:
+            stagedWorkspaceDirectory.userWorkspaceDirectory,
+          activatingMembershipReader:
+            stagedWorkspaceReservations.membershipDirectoryReservationStore,
         };
       },
       stageOutbox,
@@ -182,6 +200,13 @@ export async function makeCloudflareConformanceBackend(
           storageQuotaRepository: scoped.storageQuotaRepository,
           llmUsageRepository: scoped.llmUsageRepository,
           storedFileRepository: scoped.storedFileRepository,
+          workspaceRepository: scoped.workspaceRepository,
+          membershipRepository: scoped.membershipRepository,
+          invitationRepository: scoped.invitationRepository,
+          membershipRemovalPreparationStore:
+            scoped.membershipRemovalPreparationStore,
+          workspaceOperationLockStore: scoped.workspaceOperationLockStore,
+          workspaceDeletionManifestStore: scoped.workspaceDeletionManifestStore,
         };
       },
       stageOutbox,
@@ -214,6 +239,18 @@ export async function makeCloudflareConformanceBackend(
     publicNoteProjectionWriter: projection.publicNoteProjectionWriter,
     publicNoteQueryService: projection.publicNoteQueryService,
     objectStorage: projection.objectStorage,
+    userWorkspaceDirectory: workspaceDirectory.userWorkspaceDirectory,
+    workspaceDirectoryBatchReader:
+      workspaceDirectory.workspaceDirectoryBatchReader,
+    publicWorkspaceDirectoryReader:
+      workspaceDirectory.publicWorkspaceDirectoryReader,
+    workspaceDirectoryProjectionWriter:
+      workspaceDirectory.workspaceDirectoryProjectionWriter,
+    invitationRouteStore: workspaceReservations.invitationRouteStore,
+    membershipDirectoryReservationStore:
+      workspaceReservations.membershipDirectoryReservationStore,
+    workspaceSlugReservationStore:
+      workspaceReservations.workspaceSlugReservationStore,
     forScope(scope: ScopeKey): ScopedConformancePorts {
       return scopePortsOver(
         createAutocommitSession(scopeExecutorFor(scope)),
@@ -221,11 +258,81 @@ export async function makeCloudflareConformanceBackend(
       );
     },
     /**
-     * Writes `membership_directory` rows directly: the Workspace domain
-     * has no ports yet, so there is no repository to go through, but the
-     * table is real (`d1/migrations/0001_global_schema.sql`) and
-     * `AccountDeletionManifestStore.appendMembershipPage` reads it exactly
-     * as it will in production. The seed's `edgeKey` is the row's
+     * Writes `workspace_directory` rows directly, for the reason
+     * `ConformanceBackend` gives: the readers' cases pin columns
+     * `WorkspaceDirectoryProjectionWriter` derives, and combine states it
+     * would never produce together. The table itself is real
+     * (`d1/migrations/0002_workspace_directory.sql`) and the readers go
+     * through it exactly as they will in production.
+     */
+    async seedWorkspaceDirectory(
+      entries: readonly WorkspaceDirectorySeedInput[],
+    ): Promise<void> {
+      if (entries.length === 0) {
+        return;
+      }
+      await globalExecutor.apply([
+        statement(
+          insertRowsFromJson({
+            table: GLOBAL_TABLES.workspaceDirectory,
+            columns: [
+              "workspace_id",
+              "name",
+              "slug",
+              "publication",
+              "lifecycle",
+              "deletion_operation_id",
+              "avatar_url",
+              "source_version",
+              "updated_at",
+            ],
+            conflictKey: ["workspace_id"],
+            conflict: [
+              "name",
+              "slug",
+              "publication",
+              "lifecycle",
+              "deletion_operation_id",
+              "avatar_url",
+              "source_version",
+              "updated_at",
+            ],
+          }),
+          jsonRows(
+            entries.map((entry) => ({
+              workspace_id: entry.workspaceId,
+              name: entry.name,
+              slug: entry.slug,
+              publication: entry.publication,
+              lifecycle: entry.lifecycle,
+              deletion_operation_id:
+                entry.lifecycle === "deleting"
+                  ? (entry.deletionOperationId ??
+                    `deletion-${entry.workspaceId}`)
+                  : null,
+              avatar_url: entry.avatarUrl,
+              source_version: entry.sourceVersion,
+              updated_at: entry.updatedAt.getTime(),
+            })),
+          ),
+        ),
+      ]);
+    },
+    async makeWorkspaceDirectoryUnreadable(
+      ids: readonly WorkspaceId[],
+    ): Promise<void> {
+      for (const id of ids) {
+        deps.workspaceDirectoryOutages.add(id);
+      }
+    },
+    /**
+     * Writes `membership_directory` rows directly: the writer is
+     * `MembershipDirectoryReservationStore`, which is not part of the two
+     * contracts that read these rows, but the table is real
+     * (`d1/migrations/0001_global_schema.sql`) and both
+     * `AccountDeletionManifestStore.appendMembershipPage` and
+     * `UserWorkspaceDirectory.listActiveByUser` read it exactly as they
+     * will in production. The seed's `edgeKey` is the row's
      * `operation_id`, which is the key that page walks.
      */
     async seedMembershipEdges(
@@ -260,11 +367,13 @@ export async function makeCloudflareConformanceBackend(
               user_id: userId,
               workspace_id: edge.workspaceId,
               membership_id: edge.membershipId,
-              role: "member",
+              role: edge.role ?? "viewer",
               state: edge.edgeState,
               reservation_expires_at:
-                edge.edgeState === "pending" ? now + HOUR_MS : null,
-              created_at: now,
+                edge.edgeState === "pending" || edge.edgeState === "activating"
+                  ? now + HOUR_MS
+                  : null,
+              created_at: edge.createdAt?.getTime() ?? now,
               updated_at: now,
             })),
           ),
@@ -277,7 +386,7 @@ export async function makeCloudflareConformanceBackend(
     ): Promise<void> {
       // Written in place, exactly as a mid-run deploy would: a run
       // snapshots the set when it is created, so only runs created after
-      // this call see the change (ADR 061).
+      // this call see the change.
       deps.maintenanceTablesByKind[kind] = tables;
     },
   };

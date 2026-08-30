@@ -50,13 +50,20 @@ export type DistributedOperation = Readonly<{
  * not leave each other behind — and is a no-op on an operation that is
  * already gone, so re-running the prune succeeds.
  *
- * `markState` records the state its caller decided on and rejects only
- * an unknown operation: the store is not the state machine, so ordering
- * the transitions (and not re-running a terminal operation) belongs to
- * the caller. `terminalAt` follows the state it is given.
+ * `markState` records the state its caller decided on: the store is not
+ * the state machine, so ordering the transitions belongs to the caller,
+ * and `terminalAt` follows the state it is given. Marking `running`
+ * reopens a terminal row, which is how a caller that replayed one by its
+ * request key gets a row it can still close — a saga driven on a terminal
+ * row has no way to record where it stopped. The partition's
+ * one-live-operation rule stays the store's, so a reopen is refused with
+ * `DISTRIBUTED_OPERATION_ALREADY_RUNNING` while any *other* operation of
+ * the same kind and partition is running, and the caller reports that as
+ * its own "already in progress".
  *
- * Error contract: `ConflictError` (`markState` on an unknown operation,
- * `deleteTerminal` on a non-terminal one), `SystemError(DatabaseError)`.
+ * Error contract: `ConflictError` (`markState` on an unknown operation or
+ * on a reopen the partition refuses, `deleteTerminal` on a non-terminal
+ * one), `SystemError(DatabaseError)`.
  */
 export interface DistributedOperationStore {
   beginOrResume(

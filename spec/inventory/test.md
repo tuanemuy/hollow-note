@@ -1,8 +1,8 @@
 # Inventory — test
 
-生成元: `spec/testcases/`（最終同期: 2026-08-26）
+生成元: `spec/testcases/`（最終同期: 2026-08-30）
 
-**1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
+**1 行 = 1 テストケース**。`spec/testcases/*/*.md` の表に TC ID は書かれておらず、ID は本ファイルの行が持つ。**新規テストケースには各ドメイン群の末尾に採番し、ファイル名の辞書順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。**退役したテストケースの ID は欠番のまま残し、別の内容に再利用しない** — ID は識別子であり、再利用すると過去の参照（レビュー・コミット・コード中の `it` 名）が別のケースを指すことになる。したがって群の中に飛びがあっても採番ミスではなく、次に採番する者はその番号を埋めずに末尾へ足す。TC ID をテストコードの `it` 名に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 |----|------|---------|------------------------------|
@@ -488,6 +488,10 @@
 | TC-identity-347 | pruneExpiredAuthState: runの表集合がこの配備の既定の表集合と順序も内容も違う（表構成を変えたデプロイをまたいでresumeする） — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | runのスナップショットの順に最後まで進み、順序ずれで停滞しない |
 | TC-identity-348 | pruneExpiredAuthState: shard数が同時claim上限（6）を超える — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | ackが返す次laneをそのまま処理し、解放して取り直す往復をしない |
 | TC-identity-349 | pruneExpiredAuthState: runの表集合にこの配備がsweepを持たない表が含まれる — Cronを実行する | spec/testcases/identity/pruneExpiredAuthState.md#テストケース-pruneexpiredauthstate | その表を飛ばしてrunを完走させ、飛ばした事実をrun / laneを特定できる形でログに残し、失敗には数えない |
+| TC-identity-350 | deleteAccount: 参加中のワークスペースがある — 削除を要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | `ConflictError("WORKSPACE_MEMBERSHIPS_REMAIN")`で受理されず、Userは`active`のまま、operation行もbarrierもmanifestも作られない |
+| TC-identity-351 | deleteAccount: 全ワークスペースを脱退したあと — 同じ利用者が削除を要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 受理され、finalizeまで完走してUserがtombstone（`deleted`・PIIなし）になり、manifestが`completed`になる |
+| TC-identity-352 | deleteAccount: 参加サガがedgeをclaim済みでまだsettleしていない（`activating`） — 削除を要求する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 同じく`WORKSPACE_MEMBERSHIPS_REMAIN`で受理されず、edgeはそのまま残り、operation行もbarrierもmanifestも作られない |
+| TC-identity-353 | deleteAccount: 受理のtransactionの最中に同じ利用者のjoinが着地する — 並行して実行する | spec/testcases/identity/deleteAccount.md#テストケース-deleteaccount | 判定より前に着地したjoinは判定に捕まって受理がtransactionごと巻き戻り、判定より後に着地したjoinは公開済みの`deleting`遷移を見て自分で拒否される。受理された削除の後ろにedgeが残らない |
 | TC-integration-001 | completeIntegrationOAuth: 有効な `state` と未連携の OpenRouter — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 連携が作られ、既定のモデル設定が入り、`reconnected: false` が返る |
 | TC-integration-002 | completeIntegrationOAuth: 既に連携済み — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | 資格情報が差し替わり、既存の設定が維持され、`reconnected: true` が返る |
 | TC-integration-003 | completeIntegrationOAuth: 失効した連携がある — 認可コードを交換する | spec/testcases/integration/completeIntegrationOAuth.md#テストケース-completeintegrationoauth | `status: "active"` に戻り、設定が維持される |
@@ -1214,7 +1218,7 @@
 | TC-note-248 | moveNote: 元ファイルとメディアを持つノート — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 保管ファイルの所有者も移動先に移り、使用量が付け替わる |
 | TC-note-249 | moveNote: 移動が成功した — snapshotを確認する | spec/testcases/note/moveNote.md#テストケース-movenote | Note・Revision・Tag assignment・StoredFile metadata・Backup・Usage deltaを1つのmigration snapshotとしてtarget scopeへ取り込み、target local projectionも同じscopeで作る |
 | TC-note-250 | moveNote: 移動先の使用量が既に容量クォータを超えている — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功する（移動時に容量クォータを検査しないのは意図的な設計。クォータの強制は取り込み時のみ） |
-| TC-note-251 | moveNote: 移動によって移動先がクォータを超える — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功し、以後の新規アップロードが拒否されるだけになる（`applyStorageDelta` は消費量を付け替えるが判定はしない） |
+| TC-note-251 | moveNote: 移動によって移動先がクォータを超える — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 移動は成功し、以後の新規アップロードが拒否されるだけになる（サガは消費量を付け替えるが判定はしない） |
 | TC-note-252 | moveNote: 移動の確定時点で移動元のワークスペースから除名されていた — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`ensureMovable` の `AccessDenied` には到達しない） |
 | TC-note-253 | moveNote: 移動の確定時点で移動先のワークスペースから除名されていた — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-note-254 | moveNote: 事前確認後・source freeze前に移動元Membership versionが変わる — freezeする | spec/testcases/note/moveNote.md#テストケース-movenote | actorと期待Membership versionをlocal transactionで再検査し、移動を中止する |
@@ -1723,6 +1727,24 @@
 | TC-note-757 | verifySharePassword: 存在しない共有トークン — 照合する | spec/testcases/note/verifySharePassword.md#テストケース-verifysharepassword | `NotFoundError("NOTE_NOT_FOUND")` が投げられる |
 | TC-note-758 | verifySharePassword: 通過証を取得した後に所有者がパスワードを変更した — その通過証で閲覧する | spec/testcases/note/verifySharePassword.md#テストケース-verifysharepassword | 再度パスワードが求められる |
 | TC-note-759 | verifySharePassword: 通過証を取得した後に所有者がパスワードを解除した — その通過証で閲覧する | spec/testcases/note/verifySharePassword.md#テストケース-verifysharepassword | パスワードなしで閲覧できる |
+| TC-note-760 | moveNote: 事前確認とclaimの間にノートが別のscopeへ移った — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | claimせず `ConflictError("STALE_SCOPE_ROUTE")` が返り、誰も使わない `moving` を残さない |
+| TC-note-761 | moveNote: route切替の応答だけを失い、プロセスは生きている — abortが走る | spec/testcases/note/moveNote.md#テストケース-movenote | routeのCASが拒否するので何も補償せず停止する。targetのNote・Revision・staged file metadata・creditはどれも消えない |
+| TC-note-762 | moveNote: 同じワークスペースの別のeditorが、失敗した移動と同じ移動を要求する — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 走行中operationに合流せず、そのメンバー自身のMembershipで認可される（`requestKey` がactorを含むため） |
+| TC-note-763 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceへファイルが増えた — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | retireするのはtargetが実際に受け取った集合だけで、増えた metadata はsourceに残る |
+| TC-note-764 | moveNote: 移動先にクォータの行がまだない — 移動する | spec/testcases/note/moveNote.md#テストケース-movenote | 初期値を作ってから加算する |
+| TC-note-765 | moveNote: 前の試行がstagingを残しており、再開した試行がrouteのclaimに失敗する — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | routeをactive sourceへ戻すだけでなく、前の試行のstaged複製・credit・両scopeのmove lockも同じ補償で戻す（恒久的に残るlockを作らない） |
+| TC-note-766 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのノートが編集された — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製が今回freezeした版へ引き上げられ、switch後にsourceのNoteとRevisionを消しても編集が失われない |
+| TC-note-767 | moveNote: switchがcommitして応答だけを失い、その後rollbackが走る — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） |
+| TC-note-768 | moveNote: routeを手放した後、同じtarget scopeを別のmigrationがstageした — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 自分のstaged importのreceiptが立っていないので何も解体せず、別migrationの複製・credit・file metadataを残したまま両scopeのlockだけ返す |
+| TC-note-769 | moveNote: 中止のthawが返したrouteを別のmigrationが既にclaimしている — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | routeがsourceの同じ世代を指す限り補償は走り、このmigration自身のstaged複製・credit・lockが戻る |
+| TC-note-770 | moveNote: 前の試行のstagingがreceiptで飛ばされ、その間にsourceのRevisionだけが増えた — 同じmigration IDで再開する | spec/testcases/note/moveNote.md#テストケース-movenote | staged複製のRevisionも今回のsnapshotへ同期され、switch後にsourceのRevisionを消しても失われない |
+| TC-note-771 | moveNote: operationを開く呼び出し自体が応答を失う — 別の編集者が同じノートの移動を要求する | spec/testcases/note/moveNote.md#テストケース-movenote | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しいoperationを開いて移動を完了できる |
+| TC-note-772 | moveNote: 前の試行が staged 複製・credit・両scopeのmove lockと `moving` な route を残しており、再開した試行が operation を開く呼び出しの応答を失う — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | 引き直した行が claim を保持しているので素の `rejected` にはせず、手順 4〜6 の補償を通してから閉じる（恒久的に残る move lock を作らない） |
+| TC-note-773 | moveNote: switch 前の中止で target の解体が失敗する — 中止する | spec/testcases/note/moveNote.md#テストケース-movenote | 両 scope の move lock の解放は解体の失敗に道連れにされず、どちらのワークスペースも削除とメンバー変更を続けられる。lock の解放だけが単独で落ちたときは、解体の cause に隠されずログに残る |
+| TC-note-774 | moveNote: 同一 requestKey の並行要求が switch を着地させた直後に claim の応答を失う — 修復する | spec/testcases/note/moveNote.md#テストケース-movenote | 修復が switch 済みと判明したら operation を終端させず停止として記録し、両 scope の move lock を恒久化しない |
+| TC-note-775 | moveNote: 一度失敗して `rejected` で閉じた移動を同じ actor が同じ移動先へやり直す — route switch 後に停止する | spec/testcases/note/moveNote.md#テストケース-movenote | 引き直した終端行を駆動前に `running` へ開き直すので、停止が `running` のまま記録され両 scope の move lock を解放できる主体が残る |
+| TC-note-776 | moveNote: 自分の行が終端しているあいだに別の編集者の移動が走り始めた — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | 終端行の開き直しが「partition ごとに running は 1 件」に阻まれ `NOTE_MOVE_IN_PROGRESS` になる。走行中の行も終端した行もそのまま残る |
+| TC-note-777 | moveNote: 終端した行の payload が読めない — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | plan を読むのが開き直しより先なので、decode に失敗した行は終端したまま残り、誰も閉じない `running` を作らない |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -1969,6 +1991,10 @@
 | TC-storage-244 | storeUpload: scope-local file / Note / Job commit後にactivation応答を失う — recoveryを実行する | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 同じoperation IDでrouteをactiveにし、file・Note・Jobを二重登録しない |
 | TC-storage-245 | storeUpload: scope SQLite使用率が60%以上 — bulk uploadする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | sharding完了まで新規bulkを抑制し、削除・export・security cleanupは継続する |
 | TC-storage-246 | storeUpload: scope SQLite使用率が70%以上 — 新規uploadする | spec/testcases/storage/storeUpload.md#テストケース-storeupload | 容量エラーで拒否し、hard limit到達前に書込みを止める |
+| TC-storage-247 | storeAvatar: ワークスペースの非メンバー — ワークスペースのアイコンをアップロードする | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-storage-248 | storeAvatar: 存在しないワークスペース — ワークスペースのアイコンをアップロードする | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-storage-249 | storeAvatar: ワークスペースの owner が、解決のあと書き込みの前に editor へ降格される — ワークスペースのアイコンを差し替える | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `BusinessRuleError(InsufficientRole)` が投げられ、`StoredFile` の行は増えない |
+| TC-storage-250 | storeAvatar: ワークスペースが削除を受理済み — ワークスペースのアイコンを差し替える | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `ConflictError("WORKSPACE_DELETING")` が投げられる |
 | TC-tag-001 | assignTag: 編集できるノート、同名タグなし — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | タグが新規作成され付与され、`created: true` が返る |
 | TC-tag-002 | assignTag: 同じスコープに同名タグがある — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 既存のタグが使われ、`created: false` が返る |
 | TC-tag-003 | assignTag: 既に同じタグが付いている — 再度付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 重複した付与は作られず成功する |
@@ -2117,14 +2143,8 @@
 | TC-usage-002 | applyStorageDelta: local fileDeleted event — 処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | current scopeから減算し、0未満にしない |
 | TC-usage-003 | applyStorageDelta: artifact event — 処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | quotaに算入しない |
 | TC-usage-004 | applyStorageDelta: note.created / note.purged — 処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | current scopeのNote件数を増減する |
-| TC-usage-005 | applyStorageDelta: move snapshotが100 bytesを含む — sourceDebitを処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | source scopeで100 bytesとNote 1件を減算する |
-| TC-usage-006 | applyStorageDelta: 同じmove — targetCreditを処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | target scopeで100 bytesとNote 1件を加算する。上限超過でもmoveを拒否しない |
-| TC-usage-007 | applyStorageDelta: 同じmigration ID + phaseを2回処理 — 実行する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | current scopeの処理済み記録により二重増減しない |
-| TC-usage-008 | applyStorageDelta: targetCreditの応答を失う — 再実行する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | 2回目は保存済み結果を返し二重加算しない |
-| TC-usage-009 | applyStorageDelta: targetCredit後・route switch前 — upload判定を確認する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | sourceは未減算、targetは加算済みで安全側の二重計上になる |
-| TC-usage-010 | applyStorageDelta: route switch後・sourceDebit前 — recoveryする | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | sourceは過剰計上のままで、新規uploadを過剰に許可しない。sourceDebitを冪等に再試行する |
-| TC-usage-011 | applyStorageDelta: quota行のないtarget — targetCredit | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | 初期値をinsertして加算する |
-| TC-usage-012 | applyStorageDelta: quota削除済みsource — sourceDebit | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | quota行を復活させず成功する |
+| TC-usage-005 | applyStorageDelta: ノートの移動による増減 — 購読を確認する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | このユースケースには届かない（移動の増減はサガの各 phase の transaction が直接適用する） |
+| TC-usage-007 | applyStorageDelta: 同じ local event を2回処理 — 実行する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | current scopeの処理済み記録により二重増減しない |
 | TC-usage-013 | applyStorageDelta: 処理済み記録後にquota更新が失敗 — 処理する | spec/testcases/usage/applyStorageDelta.md#テストケース-applystoragedelta | 同じscope-local UoWで両方rollbackし再試行できる |
 | TC-usage-014 | consumeLlmCall: 残りが 10 回 — 1 回消費する | spec/testcases/usage/consumeLlmCall.md#テストケース-consumellmcall | 消費が 1 増え、`headroom: 9` が返る |
 | TC-usage-015 | consumeLlmCall: 残りが 1 回 — 1 回消費する | spec/testcases/usage/consumeLlmCall.md#テストケース-consumellmcall | 通り、`headroom: 0` になる（境界値） |
@@ -2163,7 +2183,7 @@
 | TC-usage-048 | getUsageSnapshot: owner のワークスペースが 2 件ある — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | それぞれの使用量が返る |
 | TC-usage-049 | getUsageSnapshot: editor として参加しているワークスペースがある — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 含まれる（対象は `owner` と `editor`） |
 | TC-usage-050 | getUsageSnapshot: owner のワークスペースと editor のワークスペースが 1 件ずつある — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `workspaces` に 2 件とも返る |
-| TC-usage-051 | getUsageSnapshot: editor として参加するワークスペースが 45 件ある — 先頭ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | workspace RPC は20件以下、同時実行は6以下で、`nextWorkspaceCursor` が返る |
+| TC-usage-051 | getUsageSnapshot: editor として参加するワークスペースが 45 件ある — 先頭ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | workspace RPC は20件以下、同時実行はちょうど6（上限いっぱいまで広げ、超えない）で、`nextWorkspaceCursor` が返る |
 | TC-usage-052 | getUsageSnapshot: 先頭ページのうち1 scopeが一時的に応答しない — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その要素だけ `{ state: "unavailable" }`、他は `{ state: "available" }` で返り、要求全体は成功する |
 | TC-usage-053 | getUsageSnapshot: `nextWorkspaceCursor` を指定する — 次ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 前ページと重複せず最大20件を返す |
 | TC-usage-054 | getUsageSnapshot: viewer としてのみ参加しているワークスペース — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 含まれない |
@@ -2186,6 +2206,19 @@
 | TC-usage-071 | recalculateStorageUsage: 2 回続けて実行する — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | 結果が変わらない |
 | TC-usage-072 | recalculateStorageUsage: ワークスペースを対象にする — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | そのワークスペースの分だけが計算される |
 | TC-usage-073 | recalculateStorageUsage: user 主体が実行者と一致しない — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
+| TC-usage-074 | recalculateStorageUsage: workspace 主体の非メンバー — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
+| TC-usage-075 | recalculateStorageUsage: 存在しない workspace 主体 — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-usage-076 | getUsageSnapshot: `workspaceLimit: 21` — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `ValidationError("INVALID_PAGINATION")` が投げられる（20 にクランプしない） |
+| TC-usage-077 | recalculateStorageUsage: workspace 主体のメンバーが、解決のあと書き込みの前に除名される — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない |
+| TC-usage-078 | recalculateStorageUsage: workspace 主体が削除を受理済み — 再計算する | spec/testcases/usage/recalculateStorageUsage.md#テストケース-recalculatestorageusage | `ConflictError("WORKSPACE_DELETING")` が投げられる |
+| TC-usage-079 | getUsageSnapshot: ページの後段で行が削られる（viewer のみ / directory が deleted） — 次ページを引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 削られた行を読み直さず、ページ全体の末尾の次から返る（表示が 0 件のページでも `nextWorkspaceCursor` は進む） |
+| TC-usage-080 | getUsageSnapshot: 当月の LLM 実行回数が上限の 80 % — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | LLM 側に `level: "warning"` と消費・上限・期間が返る（境界値） |
+| TC-usage-081 | getUsageSnapshot: ワークスペースの消費が上限の 80 % / 上限超過 — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | ワークスペースの行も `QuotaEnforcement.describe` の導出をそのまま返し、`level` が `warning` / `exceeded` になる（境界値） |
+| TC-usage-082 | getUsageSnapshot: `workspace_directory` が名前を答えられないワークスペースがページに含まれる — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その行は `state: "unavailable"` かつ `workspaceName: null` で残り、他の行は影響を受けない |
+| TC-usage-083 | getUsageSnapshot: directory がワークスペースを `deleted` と判定する — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | その行は一覧から落ち、`unavailable` としても残らない |
+| TC-usage-084 | getUsageSnapshot: ワークスペースのクォータが個人の記録より後に更新されている — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `updatedAt` は個人の `StorageQuota` / `LlmUsage` のままで、ワークスペース行を畳み込まない |
+| TC-usage-085 | getUsageSnapshot: 参加中だが一度も消費していないワークスペース — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | `StorageQuota.initialize` の値が返り、そのワークスペースにクォータのレコードは作られない |
+| TC-usage-086 | getUsageSnapshot: scope は答えたが、その答えから値を導く純関数が不変条件違反で落ちる — 引く | spec/testcases/usage/getUsageSnapshot.md#テストケース-getusagesnapshot | 呼び出し全体が失敗する。縮退の対象は scope への RPC だけで、壊れた不変条件を `unavailable` へ畳まない |
 | TC-workspace-001 | acceptInvitation: activeなinvitation routeがある — preview/acceptする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `resolveActive`で1つのworkspace scopeだけを解決する |
 | TC-workspace-002 | acceptInvitation: local受諾とmembership edge activationが完了 — 完了する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `consume`でrouteがrevokedになり、同じtokenは再利用できない |
 | TC-workspace-003 | acceptInvitation: consumeの応答を失う — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDで再試行し、既にrevokedなら成功する |
@@ -2194,7 +2227,7 @@
 | TC-workspace-006 | acceptInvitation: 存在しないトークン — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `NotFoundError("INVITATION_NOT_FOUND")` が投げられる |
 | TC-workspace-007 | acceptInvitation: 期限切れの招待 — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `BusinessRuleError(InvitationExpired)` が投げられる |
 | TC-workspace-008 | acceptInvitation: 取り消し済みの招待 — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `ValidationError("INVITATION_NOT_PENDING")` が投げられる |
-| TC-workspace-009 | acceptInvitation: 既にメンバー — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 招待は `accepted` になり、既存のロールは変更されない |
+| TC-workspace-009 | acceptInvitation: 既にメンバーの利用者が、まだ `pending` の招待リンクを開く — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 招待は `pending` のまま・route も `active` のままで、保持しているロールがそのまま返る。招待先の利用者は後からそのリンクで参加できる |
 | TC-workspace-010 | acceptInvitation: ワークスペースが削除済み — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
 | TC-workspace-011 | acceptInvitation: 同じ招待で 2 つの要求が同時に走る — 両方が受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | `Membership` は 1 件だけ作られる |
 | TC-workspace-012 | acceptInvitation: 受諾後 — そのワークスペースのノート一覧を開く | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | ロールに応じた操作が可能になる |
@@ -2205,7 +2238,7 @@
 | TC-workspace-017 | acceptInvitation: activation claim後にworkerが停止してleaseが切れる — recoveryする | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | operation IDでworkspace正データを照合し、commit済みならactive、未commitならabandonedへ100件以下で収束する |
 | TC-workspace-018 | acceptInvitation: account deletion開始とactivation claimが同時 — 実行する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | UserId shardで直列化され、activation成功→削除がactive edgeを固定、または削除成功→activation拒否のどちらかになる |
 | TC-workspace-019 | acceptInvitation: pending edge作成後にlocal commit失敗 — recoveryを実行する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | edgeを解放しInvitationはpendingのまま |
-| TC-workspace-020 | acceptInvitation: local commit後にactivation応答を失う — 再試行する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDでedgeをactiveにしMembershipを二重作成しない |
+| TC-workspace-020 | acceptInvitation: local commit後にactivation応答を失う — 再試行する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 同じoperation IDでedgeをactiveにしMembershipを二重作成しない。恒久的に失った場合はリンクを開き直すと、既存メンバー判定が招待の status より先に立ち `activating` edge を settle する |
 | TC-workspace-021 | changeMemberRole: owner で、対象が editor — viewer に変更する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | ロールが変わり、`membership.roleChanged` が旧ロールつきで発行される |
 | TC-workspace-022 | changeMemberRole: owner が 1 名で、その owner を対象にする — editor に変更する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | `BusinessRuleError(LastOwnerCannotLeave)` が投げられる |
 | TC-workspace-023 | changeMemberRole: owner が 2 名で、片方を対象にする — editor に変更する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 変更が成功する |
@@ -2233,13 +2266,13 @@
 | TC-workspace-045 | changeMemberRole: role変更eventがdirectoryへ順不同に届く — 更新する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | source versionが最大のroleだけが残り、古い降格/昇格eventで戻らない |
 | TC-workspace-046 | changeWorkspaceSlug: owner で非公開のワークスペース — 未使用のスラッグに変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | スラッグが更新され、`workspace.slugChanged` が旧スラッグつきで発行される |
 | TC-workspace-047 | changeWorkspaceSlug: 公開中のワークスペース — スラッグを `null` にする | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | `BusinessRuleError(PublishedWorkspaceRequiresSlug)` が投げられる |
-| TC-workspace-048 | changeWorkspaceSlug: 非公開のワークスペース — スラッグを `null` にする | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 成功する |
+| TC-workspace-048 | changeWorkspaceSlug: 非公開のワークスペース — スラッグを `null` にする | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 成功する。旧slugの `release` は 1 度だけ再試行され、恒久的に失った場合も同じ要求の再送が `workspace_directory` の広告から旧slugを拾って回収する（解放は投影より先） |
 | TC-workspace-049 | changeWorkspaceSlug: 他のワークスペースが使用中のスラッグ — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | `ConflictError("SLUG_ALREADY_USED")` が投げられる |
 | TC-workspace-050 | changeWorkspaceSlug: 自分と同じスラッグ — 同じ値に変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 変更もイベントも起きず成功する |
 | TC-workspace-051 | changeWorkspaceSlug: owner でない — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-052 | changeWorkspaceSlug: 公開中でスラッグを変更した — 旧スラッグの公開ページを開く | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 「見つかりません」が返る |
-| TC-workspace-053 | changeWorkspaceSlug: 新slug予約後にlocal更新が失敗 — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 新reservationを解放し、旧slugを維持する |
-| TC-workspace-054 | changeWorkspaceSlug: local更新後にglobal切替応答を失う — recoveryを実行する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | operation IDで新slugをactiveにしてから旧slugを解放する |
+| TC-workspace-053 | changeWorkspaceSlug: 新slug予約後にlocal更新が失敗 — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | この試行が保持する新reservationだけを解放し、旧slugを維持する。自分の理由（降格・バリア拒否）で落ちた試行も勝った試行の予約を落とさない |
+| TC-workspace-054 | changeWorkspaceSlug: local更新後にglobal切替応答を失う — recoveryを実行する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | operation IDで新slugをactiveにしてから旧slugを解放する。恒久的に失った場合は同じ slug の再送が、globalがscopeと食い違うときだけ予約と投影を打ち直す |
 | TC-workspace-055 | createWorkspace: ワークスペースを 0 件所有 — 名前とスラッグを指定して作成する | spec/testcases/workspace/createWorkspace.md#テストケース-createworkspace | 非公開のワークスペースが作られ、作成者が owner の `Membership` を持つ |
 | TC-workspace-056 | createWorkspace: — — スラッグを省略して作成する | spec/testcases/workspace/createWorkspace.md#テストケース-createworkspace | 作成が成功し、`slug: null` になる |
 | TC-workspace-057 | createWorkspace: 既に使われているスラッグ — 作成する | spec/testcases/workspace/createWorkspace.md#テストケース-createworkspace | `ConflictError("SLUG_ALREADY_USED")` が投げられる |
@@ -2262,7 +2295,7 @@
 | TC-workspace-074 | deleteMembershipsForUser: local ack後にglobal更新が失敗 — recoveryを実行する | spec/testcases/workspace/deleteMembershipsForUser.md#テストケース-deletemembershipsforuser | local権限は既に失われ、directory edgeだけをoperation IDで削除する |
 | TC-workspace-075 | deleteMembershipsForUser: pending edgeでlocal membershipがない — commandを処理する | spec/testcases/workspace/deleteMembershipsForUser.md#テストケース-deletemembershipsforuser | 0件でackし、global pending edgeを削除できる |
 | TC-workspace-076 | deleteWorkspace: owner である — 正しいワークスペース名を入力して削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | operation IDとacceptedが返り、manifest/cleanup完了後にワークスペースが削除されてoperation ID付き`workspace.deleted`が発行される |
-| TC-workspace-077 | deleteWorkspace: `beginDeletion`をcommitする — acceptedを返す | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | 同じUoWで最初の`workspace.deletionLocalContinued { operationId }`が保存され、accepted後に停止してもAlarmから開始できる |
+| TC-workspace-077 | deleteWorkspace: `beginDeletion`をcommitする — acceptedを返す | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | 同じUoWで最初の`workspace.deletionLocalContinued`が保存され、accepted後に停止してもAlarmから開始できる |
 | TC-workspace-078 | deleteWorkspace: — — 誤った名前を入力して削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | `ValidationError("CONFIRMATION_MISMATCH")` が投げられ、削除されない |
 | TC-workspace-079 | deleteWorkspace: editor である — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-080 | deleteWorkspace: 実行中の変換ジョブがある — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | ジョブがキャンセルされてから削除される |
@@ -2320,7 +2353,7 @@
 | TC-workspace-132 | inviteMember: owner である — owner ロールで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | 招待が作られる |
 | TC-workspace-133 | inviteMember: editor である — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-134 | inviteMember: 既にメンバーのメールアドレス — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ConflictError("ALREADY_MEMBER")` が投げられる |
-| TC-workspace-135 | inviteMember: 同じメールアドレスに保留中の招待がある — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `resendInvitation` を呼ぶ末尾呼び出しになり、トークンと期限が更新される。`inviteMember` は手順 5 までに書き込みを行わないため `run` の入れ子は生じず、新しい招待行は作られない |
+| TC-workspace-135 | inviteMember: 同じメールアドレスに保留中の招待がある — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `resendInvitation` を呼ぶ末尾呼び出しになり、トークンと期限が更新される。`inviteMember` は手順 4 までに書き込みを行わないため `run` の入れ子は生じず、新しい招待行は作られない |
 | TC-workspace-136 | inviteMember: 保留中の招待が editor で、owner を指定して再度招待する — 再度招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | ロールは editor のまま変わらない（変えたい場合は取り消してから招待し直す）。返る `role` も既存の招待の値 |
 | TC-workspace-137 | inviteMember: — — 形式が不正なメールアドレスで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InvalidEmail)` が投げられる |
 | TC-workspace-138 | inviteMember: — — 未知のロールで招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `BusinessRuleError(InvalidRole)` が投げられる |
@@ -2351,7 +2384,7 @@
 | TC-workspace-163 | leaveWorkspace: 脱退後 — `listUserWorkspaces` を呼ぶ | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | そのワークスペースが一覧に現れない |
 | TC-workspace-164 | leaveWorkspace: 脱退後 — `resolveWorkspaceAccess` を呼ぶ | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | `role: null` が返る（再参加には新しい招待の受諾が必要） |
 | TC-workspace-165 | leaveWorkspace: 脱退後 — 保留中の招待なしで `acceptInvitation` を試みる | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | 有効な招待トークンがないため `NotFoundError("INVITATION_NOT_FOUND")` が投げられる |
-| TC-workspace-166 | leaveWorkspace: local脱退commit後にdirectory更新が失敗 — 再試行する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | scopeでは既に権限なしで、global edgeはoperation IDで後から削除される |
+| TC-workspace-166 | leaveWorkspace: local脱退commit後にdirectory更新が失敗 — 再試行する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | scopeでは既に権限なしで、global edgeは再要求が `MEMBERSHIP_NOT_FOUND` を返す前に `completeRemoval` を再発行して削除する |
 | TC-workspace-167 | leaveWorkspace: Membership削除後にJob履歴正データまたはBackupRecordが残る — cleanupを確認する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | edgeは`removing`のまま、scope Alarmでresidueを削除し `job.removed` を発行する |
 | TC-workspace-168 | leaveWorkspace: residue cleanupがackした — directoryを確認する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | edgeを削除し、以後account deletionがこのscopeを列挙しなくても利用者所有データは残らない |
 | TC-workspace-169 | listMembers: owner で 3 名のメンバーがいる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | 3 件が表示名・メール・ロール・参加日つきで返り、`canManage: true` になる |
@@ -2363,7 +2396,7 @@
 | TC-workspace-175 | listMembers: 削除済みの利用者がメンバーに残っている — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | その行は表示名を解決できない旨を示して返る（エラーにしない） |
 | TC-workspace-176 | listMembers: 1pageの100メンバーが32 User shardへ分散する — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | UserIdでgroupingし、最大6接続のwaveで現在の利用者表示を解決する |
 | TC-workspace-177 | listPendingInvitations: owner で保留中の招待が 2 件ある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 2 件が返る |
-| TC-workspace-178 | listPendingInvitations: 受諾済み・取り消し済みの招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | それらは含まれない |
+| TC-workspace-178 | listPendingInvitations: 受諾済み・取り消し済みの招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | それらは含まれず、`count` は保留中の総数になる |
 | TC-workspace-179 | listPendingInvitations: 期限切れの保留中の招待がある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 含まれ、`expired: true` になる |
 | TC-workspace-180 | listPendingInvitations: editor である — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-workspace-181 | listPendingInvitations: 保留中の招待が 0 件 — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 空配列と `count: 0` が返る |
@@ -2460,4 +2493,59 @@
 | TC-workspace-272 | updateWorkspaceProfile: ワークスペース所有のノートがある — 名前は変えず説明だけを更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `workspace.profileUpdated` は発行されず、読み取りモデルは更新されない |
 | TC-workspace-273 | updateWorkspaceProfile: — — 名前を空文字列にする | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `BusinessRuleError(InvalidName)` が投げられる |
 | TC-workspace-274 | updateWorkspaceProfile: 同時に別の要求が更新した — 更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる |
+| TC-workspace-275 | getWorkspaceSettings: owner のメンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `name` / `description` / `avatarUrl` / `slug` / `publication` / `role` が返り、`canManage` / `canPublish` / `canDelete` がすべて `true` になる |
+| TC-workspace-276 | getWorkspaceSettings: viewer のメンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | 同じ射影が返り、3 つの可否フラグがすべて `false` になる |
+| TC-workspace-277 | getWorkspaceSettings: 説明とアイコンが設定済み — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `description` と `avatarUrl` が保存された値のまま返る |
+| TC-workspace-278 | getWorkspaceSettings: スラッグ未設定 — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `slug: null` が返る |
+| TC-workspace-279 | getWorkspaceSettings: 非メンバー — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-280 | getWorkspaceSettings: ワークスペースが不在・削除済み — 設定を読む | spec/testcases/workspace/getWorkspaceSettings.md#テストケース-getworkspacesettings | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-workspace-281 | checkWorkspaceSlugAvailability: どのワークスペースも使っていないスラッグ — 利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: true` / `ownedBySelf: false` が返る |
+| TC-workspace-282 | checkWorkspaceSlugAvailability: 自分のワークスペースが使っているスラッグ — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: true` / `ownedBySelf: true` が返る |
+| TC-workspace-283 | checkWorkspaceSlugAvailability: 別のワークスペースが使っているスラッグ — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: false` / `ownedBySelf: false` が返る |
+| TC-workspace-284 | checkWorkspaceSlugAvailability: 別のワークスペースが使っているスラッグ — `workspaceId` なしで利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `available: false` / `ownedBySelf: false` が返る |
+| TC-workspace-285 | checkWorkspaceSlugAvailability: 自分のワークスペースが使っているスラッグを大文字を含む表記で指定する — `workspaceId` を添えて利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | 入力を正規化してから判定し、`available: true` / `ownedBySelf: true` が返る |
+| TC-workspace-286 | checkWorkspaceSlugAvailability: 他の operation が予約しただけで確定していない（`reserved`）スラッグ — 利用可否を問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | 空きとして返る（勝者は `createWorkspace` / `changeWorkspaceSlug` の予約が決める） |
+| TC-workspace-287 | checkWorkspaceSlugAvailability: — — 形式が不正なスラッグで問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `BusinessRuleError(InvalidSlug)` が投げられる |
+| TC-workspace-288 | checkWorkspaceSlugAvailability: — — 予約語のスラッグで問い合わせる | spec/testcases/workspace/checkWorkspaceSlugAvailability.md#テストケース-checkworkspaceslugavailability | `BusinessRuleError(SlugReserved)` が投げられる |
+| TC-workspace-289 | getWorkspacePublication: 非公開・スラッグ未設定 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publication: "private"` / `slug: null` / `publicUrl: null` が返る |
+| TC-workspace-290 | getWorkspacePublication: 非公開・スラッグ設定済み — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `slug` は返るが `publicUrl: null` になる |
+| TC-workspace-291 | getWorkspacePublication: 公開中 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publication: "published"` と、アプリ URL とスラッグから組み立てた `publicUrl` が返る |
+| TC-workspace-292 | getWorkspacePublication: 公開ノートが 3 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 3` が返る |
+| TC-workspace-293 | getWorkspacePublication: 公開ノートが 0 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 0` が返る |
+| TC-workspace-294 | getWorkspacePublication: 非公開で公開ノートが 2 件 — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `publicNoteCount: 2` が返る（非公開でも数える） |
+| TC-workspace-295 | getWorkspacePublication: viewer のメンバー — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | 射影は返り、`canPublish: false` になる |
+| TC-workspace-296 | getWorkspacePublication: 非メンバー — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-297 | getWorkspacePublication: ワークスペースが不在・削除済み — 公開設定を読む | spec/testcases/workspace/getWorkspacePublication.md#テストケース-getworkspacepublication | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-workspace-298 | getWorkspaceDeletionStatus: 削除が開始されていない、owner のメンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "none"` / `operationId: null` / `canDelete: true` が返る |
+| TC-workspace-299 | getWorkspaceDeletionStatus: 削除が開始されていない、viewer のメンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "none"` / `canDelete: false` が返る |
+| TC-workspace-300 | getWorkspaceDeletionStatus: `deleteWorkspace` が受理済みで Workspace はまだ残っている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "inProgress"` と受理時の `operationId` が返る |
+| TC-workspace-301 | getWorkspaceDeletionStatus: 削除サガが Workspace 行を消し終えている — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `status: "completed"` / `operationId: null` / `canDelete: false` が返る |
+| TC-workspace-302 | getWorkspaceDeletionStatus: ワークスペースは存在するが非メンバー — 削除状況を読む | spec/testcases/workspace/getWorkspaceDeletionStatus.md#テストケース-getworkspacedeletionstatus | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-workspace-303 | listPendingInvitations: 終端状態の招待が 1 ページ分より多くある — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | 保留中の招待が隠れず、1 ページ目に返る |
+| TC-workspace-304 | listPendingInvitations: 保留中の招待が 3 件あり 2 件目のページを引く — 一覧する | spec/testcases/workspace/listPendingInvitations.md#テストケース-listpendinginvitations | そのページの行数ではなく保留中の総数が `count` になる |
+| TC-workspace-305 | acceptInvitation: activation を恒久的に失った後、招待リンクを開き直す — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | 既存メンバーの判定が招待の status より先に立ち、`activating` のまま残った edge を settle して成功で返る |
+| TC-workspace-306 | changeWorkspaceSlug: 同じ slug を狙う 2 つの要求のうち、片方が自分の理由（降格・バリア拒否）で落ちる — 同時に変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 落ちた試行は勝った試行の予約を落とさない |
+| TC-workspace-307 | changeWorkspaceSlug: 切替を恒久的に失った後、同じ slug をもう一度送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | global が scope と食い違うときだけ予約と投影を打ち直し、新しい公開 URL が解決するようになる |
+| TC-workspace-308 | leaveWorkspace: edge を落とし損ねたまま、もう一度脱退を要求する — 脱退する | spec/testcases/workspace/leaveWorkspace.md#テストケース-leaveworkspace | `MEMBERSHIP_NOT_FOUND` を返す前に `completeRemoval` を再発行し、`(userId, workspaceId)` の組を解放する |
+| TC-workspace-309 | resendInvitation: メール送信基盤が失敗する — 再送する | spec/testcases/workspace/resendInvitation.md#テストケース-resendinvitation | 再送は成立し、送信失敗が記録され、`mailSent: false` が返る |
+| TC-workspace-310 | listMembers: 閲覧者自身の行がページに載らない — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` に閲覧者自身のロールが返る |
+| TC-workspace-311 | listMembers: 閲覧者と先頭行のロールが異なる — 一覧する | spec/testcases/workspace/listMembers.md#テストケース-listmembers | `viewerRole` は先頭行ではなく閲覧者自身のロールになる |
+| TC-workspace-312 | changeMemberRole: 除名して再入会した利用者に、前の membership のロール変更が後から届く — 更新する | spec/testcases/workspace/changeMemberRole.md#テストケース-changememberrole | 消えた membership の変更は新しい edge を汚さず、新しい membership の最初の変更（版 1）はそのまま届く |
+| TC-workspace-313 | inviteMember: 直近 24 時間に 49 件招待済みで、事前検査のあと発行の transaction に入るまでに別の招待が 1 件着地する — 招待する | spec/testcases/workspace/inviteMember.md#テストケース-invitemember | `ValidationError("INVITATION_LIMIT_REACHED")` が投げられ、未処理は 50 件を超えず、token route もメールも残らない |
+| TC-workspace-314 | changeWorkspaceSlug: 切替を恒久的に失った後、**別の** slug を送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 手放す鍵を 1 つに決めず scope の現在値と広告値の両方を解放するので、旧鍵が `active` のまま取り残されない |
+| TC-workspace-315 | changeWorkspaceSlug: 切替を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく両候補を `release` し、投影が広告値を消す前に解放する |
+| TC-workspace-316 | changeWorkspaceSlug: 改名が commit も切替も終えたあとで投影を恒久的に失う — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | scope と鍵は新 slug へ進み、`workspace_directory` は誰も保持していない旧 slug を広告したまま残る |
+| TC-workspace-317 | changeWorkspaceSlug: 投影を恒久的に失った後、**第 3 の**スラッグを送る — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 取り残される側が広告値ではなく scope の現在値になる逆向きの窓で、両候補を解放する形だけが鍵を回収する |
+| TC-workspace-318 | changeWorkspaceSlug: 投影を恒久的に失った後、スラッグを `null` にする — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 同じく scope が保持していた鍵が `release` され、予約が 1 件も残らない |
+| TC-workspace-319 | deleteWorkspace: 改名の切替を恒久的に失った workspace を削除する — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | global cleanup が turn の運ぶ候補 2 つ（`slug` / `advertisedSlug`）の両方を `release` する |
+| TC-workspace-320 | createWorkspace: 作成の最後の投影を恒久的に失う — 作成する | spec/testcases/workspace/createWorkspace.md#テストケース-createworkspace | Workspace と `active` な予約は残り directory 行だけが無い状態になり、次の保存がその行を作る |
+| TC-workspace-321 | publishWorkspace: commit 後の投影を恒久的に失う — 公開する | spec/testcases/workspace/publishWorkspace.md#テストケース-publishworkspace | scope は公開済み・directory は非公開のままになり、同じ要求の再送が二重公開なしに投影を打ち直す |
+| TC-workspace-322 | unpublishWorkspace: commit 後の投影を恒久的に失う — 非公開に戻す | spec/testcases/workspace/unpublishWorkspace.md#テストケース-unpublishworkspace | directory が下げたはずのページを広告し続け、同じ要求の再送が投影を打ち直す |
+| TC-workspace-323 | updateWorkspaceProfile: commit 後の投影を恒久的に失う — 更新する | spec/testcases/workspace/updateWorkspaceProfile.md#テストケース-updateworkspaceprofile | directory が 1 版前に残り、次の保存が両方の変更を載せた snapshot で追いつく |
+| TC-workspace-324 | changeWorkspaceSlug: 切替を失った改名のあと、投影も失った改名が新 slug を `active` にした — 同じ slug をもう一度送る | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 再予約はスキップされるが広告値の解放はスキップの外なので毎回評価され、もう一方の鍵が回収される |
+| TC-workspace-325 | deleteWorkspace: directory tombstone の shard が答えない — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | global turn はそこで止まって backoff し、slug 予約を保持したまま directory 行を `active` のまま残す。shard が答え直せば同じ task 行が最後まで運ぶ |
+| TC-workspace-326 | deleteWorkspace: `workspace_directory` が広告値を答えられない — 削除する | spec/testcases/workspace/deleteWorkspace.md#テストケース-deleteworkspace | 受理せず `ConflictError("WORKSPACE_DIRECTORY_UNAVAILABLE")` を返し、scope も継続 task も動かさない。答えられるようになってからの受理が取り残された鍵まで解放する |
+| TC-workspace-327 | changeWorkspaceSlug: 鍵を 2 つ保持し広告値だけが公開 URL を解決している — 第 3 のスラッグへ変更し、その切替も失う | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 広告値の単独 `release` は `activate` の後段なので、交換が着地するまで生きた公開 URL を手放さない |
+| TC-workspace-328 | changeWorkspaceSlug: scope の commit と鍵の取得の間に削除が受理される（主経路・修復経路の両方） — 変更する | spec/testcases/workspace/changeWorkspaceSlug.md#テストケース-changeworkspaceslug | 鍵を取った直後にも削除バリアを読み、拒まれたら候補鍵を解放してから `WORKSPACE_DELETING` を返す。そのスラッグは再び取得できる |
+| TC-workspace-329 | acceptInvitation: edge の claim が commit してから応答を失う — 受諾する | spec/testcases/workspace/acceptInvitation.md#テストケース-acceptinvitation | claim は補償区間の中にあるので `activating` な edge が abandon され、招待は `pending` のまま残る。同じ利用者の再試行が参加できる |
 

@@ -27,3 +27,4 @@
 | 取り消した `kind: "conversion"` のジョブの対象ノートが `processing` のまま | 降格する | 「共通: 強制終端の後始末」に従い `Note.markConversionFailed("canceled")` が同一 UoW で保存され、ノートが `failed(canceled)` になる | |
 | 取り消したジョブ | 破棄された生成物を確認する | 「共通: 強制終端の後始末」の 2 を規則どおり適用するが、この経路の回収対象は実際には空になる。取り消すのは editor を要する `kind` だけで、生成物（`purpose: "artifact"`）を持つのは viewer でも実行できる `pdfExport` / `bulkExport` だからである（降格した利用者は閲覧・ダウンロードの権限を保つため、生成済みの ZIP・PDF が手元に残っても差し支えない）。取り消し対象に `bulkBackup` の batch 親が含まれる場合も、規則 2 が引く成功済みの子（`runBackup`）は Drive 上にファイルを作るだけで `artifact` を持たないため回収対象は空のままである | |
 | role変更eventがdirectoryへ順不同に届く | 更新する | source versionが最大のroleだけが残り、古い降格/昇格eventで戻らない | |
+| 除名して再入会した利用者に、前の membership のロール変更が後から届く | 更新する | 消えた membership の変更は新しい edge を汚さず、新しい membership の最初の変更（版 1）はそのまま届く | |

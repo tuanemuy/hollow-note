@@ -8,8 +8,13 @@ import {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type { RequestContainer } from "../di/types";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
+import { ensureActorCan } from "../workspace/membershipMutation";
+import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { deleteStoredFiles } from "./deleteFiles";
 import type { StoreAvatarView } from "./view";
 
@@ -41,23 +46,50 @@ const insufficientRole = () =>
   );
 
 /**
- * Stores a profile / workspace icon (UC-storage-004,
- * spec/usecases/storage.md#storeavatar).
+ * Resolves the subject the icon belongs to and refuses an actor who may
+ * not set it: a user subject must be the actor themselves, a workspace
+ * subject needs `manageWorkspace`.
+ *
+ * For a workspace subject this is the early refusal only, taken before
+ * any byte is written. The decision that admits the write is re-taken
+ * inside the unit of work, because a Membership change does not move the
+ * Workspace's version and would otherwise not be seen at all.
+ */
+async function resolveAvatarOwner(
+  container: RequestContainer,
+  input: StoreAvatarInput,
+  userId: UserId,
+): Promise<StorageOwner> {
+  if (input.subjectType === "user") {
+    if (input.subjectId !== userId) {
+      throw insufficientRole();
+    }
+    return StorageOwner.user(userId);
+  }
+  const access = await resolveWorkspaceAccess({
+    container,
+    input: { workspaceId: input.subjectId, userId: input.userId },
+  });
+  if (access.role === null) {
+    throw insufficientRole();
+  }
+  WorkspaceAuthorization.ensureCan(access.role, "manageWorkspace");
+  return StorageOwner.workspace(WorkspaceId.create(access.workspaceId));
+}
+
+/**
+ * Stores a profile / workspace icon.
  *
  * Deliberately **does not** check the storage quota: an icon is capped at
  * 5 MB and every replacement deletes the one it replaces, so a subject
  * can never accumulate them — checking would only lock a full account out
- * of a replacement that does not grow its usage (spec, same section). The
+ * of a replacement that does not grow its usage. The
  * bytes still count toward `sumSizeByOwner`, so `recalculateStorageUsage`
  * reconciles them.
  *
  * Size and content type are both measured from the body rather than
  * declared by the caller: the policy has to bind the bytes actually
  * stored, and a declaration can disagree with them.
- *
- * Workspace subjects are refused outright until `WorkspaceAuthorization`
- * exists — "cannot evaluate the permission" is answered as "does not have
- * it", with the same error the real check will raise.
  */
 export async function storeAvatar({
   container,
@@ -67,12 +99,11 @@ export async function storeAvatar({
     container;
 
   const userId = UserId.create(input.userId);
-  if (input.subjectType === "workspace" || input.subjectId !== userId) {
-    throw insufficientRole();
-  }
-
-  const owner = StorageOwner.user(userId);
-  const scope = ScopeKey.user(userId);
+  const owner = await resolveAvatarOwner(container, input, userId);
+  const scope =
+    owner.type === "user"
+      ? ScopeKey.user(owner.userId)
+      : ScopeKey.workspace(owner.workspaceId);
   const { mimeType, size } = UploadValidationPolicy.ensureAcceptable({
     purpose: "avatar",
     body: input.body,
@@ -96,6 +127,10 @@ export async function storeAvatar({
     await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
+      await ctx.workspaceOperationLockStore.assertWritable();
+      if (owner.type === "workspace") {
+        await ensureActorCan(ctx, owner.workspaceId, userId, "manageWorkspace");
+      }
 
       // Read the icons to replace *before* inserting the new row, or the
       // replacement would be in its own list of things to delete.

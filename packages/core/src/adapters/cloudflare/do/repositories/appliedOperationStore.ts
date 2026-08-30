@@ -1,6 +1,6 @@
 import type { AppliedOperationStore } from "../../../../application/ports/appliedOperationStore";
 import type { Clock } from "../../../../application/ports/clock";
-import { type RowMutation, upsert } from "../../execution/writeSet";
+import { type RowMutation, remove, upsert } from "../../execution/writeSet";
 import { throwTranslated } from "../../sql/errors";
 import { toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
@@ -11,8 +11,8 @@ const TABLE = SCOPE_TABLES.appliedOperations;
 
 /**
  * Rows this port owns. `applied_operations` is shared with
- * `ScopeCleanupAdmissionStore`, which owns `kind = 'accountDeletionBarrier'`
- * (`spec/database/index.md#applied_operations`, ADR 045).
+ * `ScopeCleanupAdmissionStore`, which owns
+ * `kind = 'accountDeletionBarrier'`.
  */
 const KIND = "command";
 
@@ -27,10 +27,10 @@ const hex = (bytes: ArrayBuffer): string =>
 
 /**
  * The two-part key folded into the single `operation_id` primary key
- * (`spec/database/index.md`: 列は 2 つに分けず 1 つへ畳む). The digest is
- * what keeps a second command of the same operation from colliding with
- * the first while the table still has one key column, which it must
- * because the barrier receipts live in it too.
+ * rather than split across two columns. The digest is what keeps a second
+ * command of the same operation from colliding with the first while the
+ * table still has one key column, which it must because the barrier
+ * receipts live in it too.
  */
 const appliedOperationId = async (
   operationId: string,
@@ -100,6 +100,28 @@ export function createCloudflareAppliedOperationStore(
         throwTranslated(`${TABLE} row ${key}`, cause);
       }
       return true;
+    },
+
+    async clearApplied(
+      input: Readonly<{ operationId: string; commandKey: string }>,
+    ): Promise<void> {
+      const key = await appliedOperationId(input.operationId, input.commandKey);
+      // The `kind` predicate keeps a compensation from ever reaching a
+      // barrier receipt, which shares this table under a key of its own.
+      const mutation: RowMutation = remove({
+        table: TABLE,
+        key,
+        statement: statement(
+          `DELETE FROM ${TABLE} WHERE operation_id = ? AND kind = ?`,
+          key,
+          KIND,
+        ),
+      });
+      try {
+        await session.write([mutation]);
+      } catch (cause) {
+        throwTranslated(`${TABLE} row ${key}`, cause);
+      }
     },
   };
 }

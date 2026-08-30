@@ -3,13 +3,22 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ConflictError } from "../../../application/errors";
 import type { PublicNoteProjectionWriter } from "../../../domain/note/ports/publicNoteProjectionWriter";
 import {
+  WorkspaceName,
+  WorkspaceSlug,
+} from "../../../domain/workspace/valueObject";
+import {
   makeProjectionEntry,
   noteId,
   scopeOf,
   userId,
+  workspaceId,
 } from "../../conformance/fixtures";
+import { createTestClock } from "../../conformance/testClock";
 import { createD1PublicNoteProjectionWriter } from "../d1/repositories/publicNoteProjection";
 import { createD1PublicNoteQueryService } from "../d1/repositories/publicNoteQueryService";
+import { createD1PublicWorkspaceDirectoryReader } from "../d1/repositories/publicWorkspaceDirectoryReader";
+import { createD1WorkspaceDirectoryBatchReader } from "../d1/repositories/workspaceDirectoryBatchReader";
+import { createD1WorkspaceDirectoryProjectionWriter } from "../d1/repositories/workspaceDirectoryProjectionWriter";
 import { GLOBAL_TABLES, GLOBAL_WIPE_STATEMENTS } from "../d1/schema";
 import { createScopeNoteProjectionRevisionStore } from "../do/repositories/noteProjection";
 import { createScopeStubExecutor } from "../do/scopeStub";
@@ -28,9 +37,9 @@ import { statement } from "../sql/statement";
  * the body row: the FTS index is contentless, so a withdrawal names the
  * tokens of the row that was read, and a stale withdrawal both leaves the
  * winner's tokens standing over the loser's body and cancels tokens that
- * were already gone. `'rebuild'` is unavailable on a contentless index
- * (ADR 017), so every case searches for the keywords of all three
- * revisions rather than only reading the row back.
+ * were already gone. `'rebuild'` is unavailable on a contentless index, so
+ * every case searches for the keywords of all three revisions rather than
+ * only reading the row back.
  *
  * `interposeOnce` stages the race rather than hoping for it: the rival
  * commits between the observed writer's read and its apply.
@@ -54,6 +63,18 @@ const interposeOnce = (
       await session.write(mutations);
     },
   };
+};
+
+const conflictCode = async (call: Promise<unknown>): Promise<string> => {
+  try {
+    await call;
+  } catch (error) {
+    if (error instanceof ConflictError) {
+      return error.code;
+    }
+    throw error;
+  }
+  throw new Error("expected a ConflictError");
 };
 
 const snapshotOf = (body: string) =>
@@ -221,6 +242,154 @@ describe("cloudflare public projection concurrency", () => {
     // The redelivery reads that newer row and settles on the no-op.
     expect(await writer.redactAuthor(REDACTION)).toBe(false);
     expect(await authors()).toEqual(["山田 太郎"]);
+  });
+});
+
+/**
+ * `workspace_directory` is written by `events-workspace-projection`, whose
+ * consumers hold no lock: `applySnapshotIfNewer` reads the row, decides
+ * its branch, and applies a guarded upsert a round trip later. The apply
+ * carries a slug release for whichever other row still projects the slug,
+ * and the two must agree — a release that survived a rejected upsert
+ * leaves a third workspace with no slug and no one holding it, silently
+ * out of the sitemap until its own next event.
+ *
+ * `tombstone` reads over the same window, and its branch is one the port
+ * promises to refuse rather than to absorb: a row a *different* deletion
+ * owns is a `ConflictError`, so the guard has to make the loser say so
+ * instead of reporting the silent no-op its `ON CONFLICT … WHERE` leaves.
+ *
+ * The memory backend decides and writes in one synchronous step, so the
+ * shared suite can only reach the serial half of this (a stale snapshot
+ * releasing nothing); the interleaving lives here.
+ */
+describe("cloudflare workspace directory projection concurrency", () => {
+  const executor = createD1Executor(env.GLOBAL_DB);
+  const session = createAutocommitSession(executor);
+  const clock = createTestClock();
+  const deps = { session, clock };
+  const writer = createD1WorkspaceDirectoryProjectionWriter(deps);
+  const batchReader = createD1WorkspaceDirectoryBatchReader({ session });
+  const publicReader = createD1PublicWorkspaceDirectoryReader({ session });
+
+  const racing = (rival: () => Promise<unknown>) =>
+    createD1WorkspaceDirectoryProjectionWriter({
+      ...deps,
+      session: interposeOnce(session, rival),
+    });
+
+  const snapshot = (
+    n: number,
+    sourceVersion: number,
+    slug: string | null,
+    publication: "private" | "published" = "private",
+  ) => ({
+    workspaceId: workspaceId(n),
+    name: WorkspaceName.create(`Workspace ${n}`),
+    slug: slug === null ? null : WorkspaceSlug.create(slug),
+    avatarUrl: null,
+    publication,
+    sourceVersion,
+  });
+
+  const slugOf = async (n: number): Promise<string | null | "notActive"> => {
+    const resolved = (await batchReader.resolveMany([workspaceId(n)])).get(
+      workspaceId(n),
+    );
+    return resolved?.state === "active"
+      ? resolved.entry.entity.slug
+      : "notActive";
+  };
+
+  const published = async (): Promise<readonly string[]> =>
+    (await publicReader.listPublished(null, 200)).items.map(
+      (item) => item.workspaceId,
+    );
+
+  beforeAll(async () => {
+    await applyD1Migrations(env.GLOBAL_DB, env.MIGRATIONS);
+  });
+
+  beforeEach(async () => {
+    await executor.apply(GLOBAL_WIPE_STATEMENTS.map((sql) => statement(sql)));
+  });
+
+  it("leaves a third workspace's slug alone when a rival's newer snapshot rejects the apply", async () => {
+    await writer.applySnapshotIfNewer(snapshot(1, 1, "alpha"));
+    await writer.applySnapshotIfNewer(
+      snapshot(3, 1, "shared-slug", "published"),
+    );
+
+    // Reads workspace 1 at version 1 and decides to apply, then the
+    // rival's version 3 lands before the write-set does.
+    await racing(() =>
+      writer.applySnapshotIfNewer(snapshot(1, 3, "gamma")),
+    ).applySnapshotIfNewer(snapshot(1, 2, "shared-slug"));
+
+    expect(await slugOf(1)).toBe(WorkspaceSlug.create("gamma"));
+    expect(await slugOf(3)).toBe(WorkspaceSlug.create("shared-slug"));
+    expect(await published()).toEqual([workspaceId(3)]);
+  });
+
+  it("leaves it alone when a tombstone lands between the read and the apply", async () => {
+    await writer.applySnapshotIfNewer(snapshot(1, 1, "alpha"));
+    await writer.applySnapshotIfNewer(
+      snapshot(3, 1, "shared-slug", "published"),
+    );
+
+    await racing(() =>
+      writer.tombstone({
+        workspaceId: workspaceId(1),
+        operationId: "deletion-1",
+      }),
+    ).applySnapshotIfNewer(snapshot(1, 2, "shared-slug"));
+
+    expect(await slugOf(1)).toBe("notActive");
+    expect(await slugOf(3)).toBe(WorkspaceSlug.create("shared-slug"));
+    expect(await published()).toEqual([workspaceId(3)]);
+  });
+
+  it("refuses a tombstone whose row a rival deletion claimed after it was read", async () => {
+    await writer.applySnapshotIfNewer(snapshot(1, 1, "alpha", "published"));
+
+    // Reads a row no deletion owns, so the foreign-tombstone branch is
+    // decided against — then the rival's tombstone lands before the
+    // write-set does.
+    expect(
+      await conflictCode(
+        racing(() =>
+          writer.tombstone({
+            workspaceId: workspaceId(1),
+            operationId: "deletion-rival",
+          }),
+        ).tombstone({
+          workspaceId: workspaceId(1),
+          operationId: "deletion-observed",
+        }),
+      ),
+    ).toBe("WORKSPACE_DIRECTORY_CONFLICT");
+
+    // Deletion is single-owner: the rival's operation is the one the
+    // tombstone carries, and the loser's redelivery keeps being refused
+    // rather than taking the row over.
+    const rows = await executor.query(
+      statement(
+        `SELECT deletion_operation_id FROM ${GLOBAL_TABLES.workspaceDirectory}
+          WHERE workspace_id = ?`,
+        workspaceId(1),
+      ),
+    );
+    expect(rows).toEqual([{ deletion_operation_id: "deletion-rival" }]);
+    expect(
+      await conflictCode(
+        writer.tombstone({
+          workspaceId: workspaceId(1),
+          operationId: "deletion-observed",
+        }),
+      ),
+    ).toBe("WORKSPACE_DIRECTORY_CONFLICT");
+    expect(await slugOf(1)).toBe("notActive");
+    expect(await published()).toEqual([]);
   });
 });
 

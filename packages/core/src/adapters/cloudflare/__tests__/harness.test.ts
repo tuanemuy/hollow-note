@@ -13,6 +13,7 @@ import {
   noteId,
   scopeOf,
   userId,
+  workspaceId,
 } from "../../conformance/fixtures";
 import { GLOBAL_TABLES, GLOBAL_TABLES_TO_WIPE } from "../d1/schema";
 import { SCOPE_TABLES } from "../do/schema";
@@ -129,15 +130,31 @@ describe("cloudflare test harness", () => {
   });
 
   /**
-   * The suites skip the cases an optional backend member feeds rather
-   * than failing them, so a harness that stopped offering one would take
-   * three contract cases out of the run and stay green. This backend can
-   * seed membership edges — the D1 directory table is right there — so
-   * the run has to keep spending them.
+   * The seed has to reach real storage, not a stub: the suites assert on
+   * reads issued afterwards through the ports themselves, and the states
+   * it writes — a `pending` edge, an edge naming no membership — are ones
+   * no port method produces.
    */
-  it("offers the optional membership-edge seed the suites need", async () => {
+  it("seeds membership edges the ports then read back", async () => {
     const backend = await makeCloudflareConformanceBackend();
-    expect(backend.seedMembershipEdges).toBeDefined();
+    await backend.seedMembershipEdges(userId(1), [
+      {
+        edgeKey: "edge-1",
+        workspaceId: workspaceId(1),
+        edgeState: "active",
+        membershipId: "membership-1",
+        role: "owner",
+      },
+    ]);
+
+    const page = await backend.userWorkspaceDirectory.listActiveByUser(
+      userId(1),
+      null,
+      20,
+    );
+    expect(page.items).toEqual([
+      { workspaceId: workspaceId(1), role: "owner" },
+    ]);
   });
 
   /**

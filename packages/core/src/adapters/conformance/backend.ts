@@ -46,7 +46,25 @@ import type { PublicNoteQueryService } from "../../domain/note/ports/publicNoteQ
 import type { StoredFileRepository } from "../../domain/storage/ports/storedFileRepository";
 import type { LlmUsageRepository } from "../../domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "../../domain/usage/ports/storageQuotaRepository";
-import type { WorkspaceId } from "../../domain/workspace/valueObject";
+import type { InvitationRepository } from "../../domain/workspace/ports/invitationRepository";
+import type { InvitationRouteStore } from "../../domain/workspace/ports/invitationRouteStore";
+import type { MembershipDirectoryReservationStore } from "../../domain/workspace/ports/membershipDirectoryReservationStore";
+import type { MembershipRemovalPreparationStore } from "../../domain/workspace/ports/membershipRemovalPreparationStore";
+import type { MembershipRepository } from "../../domain/workspace/ports/membershipRepository";
+import type { PublicWorkspaceDirectoryReader } from "../../domain/workspace/ports/publicWorkspaceDirectoryReader";
+import type { UserWorkspaceDirectory } from "../../domain/workspace/ports/userWorkspaceDirectory";
+import type { WorkspaceDeletionManifestStore } from "../../domain/workspace/ports/workspaceDeletionManifestStore";
+import type { WorkspaceDirectoryBatchReader } from "../../domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceDirectoryProjectionWriter } from "../../domain/workspace/ports/workspaceDirectoryProjectionWriter";
+import type { WorkspaceOperationLockStore } from "../../domain/workspace/ports/workspaceOperationLockStore";
+import type { WorkspaceRepository } from "../../domain/workspace/ports/workspaceRepository";
+import type { WorkspaceSlugReservationStore } from "../../domain/workspace/ports/workspaceSlugReservationStore";
+import type {
+  WorkspaceId,
+  WorkspaceName,
+  WorkspaceRole,
+  WorkspaceSlug,
+} from "../../domain/workspace/valueObject";
 import type { TestClock } from "./testClock";
 
 export type ConformanceBackendOptions = Readonly<{
@@ -71,6 +89,12 @@ export type ScopedConformancePorts = Readonly<{
   noteProjectionSnapshotReader: NoteProjectionSnapshotReader;
   noteProjectionRevisionStore: NoteProjectionRevisionStore;
   localNoteQueryService: LocalNoteQueryService;
+  workspaceRepository: WorkspaceRepository;
+  membershipRepository: MembershipRepository;
+  invitationRepository: InvitationRepository;
+  membershipRemovalPreparationStore: MembershipRemovalPreparationStore;
+  workspaceOperationLockStore: WorkspaceOperationLockStore;
+  workspaceDeletionManifestStore: WorkspaceDeletionManifestStore;
   scopeTaskScheduler: ScopeTaskScheduler;
   appliedOperationStore: AppliedOperationStore;
   storageQuotaRepository: StorageQuotaRepository;
@@ -81,8 +105,43 @@ export type ScopedConformancePorts = Readonly<{
 export type MembershipEdgeSeedInput = Readonly<{
   edgeKey: string;
   workspaceId: WorkspaceId;
-  edgeState: "active" | "removing" | "pending";
+  edgeState: "active" | "removing" | "pending" | "activating";
   membershipId: string | null;
+  /** Projected role. Defaults to `viewer` when the seed omits it. */
+  role?: WorkspaceRole;
+  /**
+   * Keyset position of the edge in `listActiveByUser`. Defaults to the
+   * backend clock's current instant, which leaves the id tiebreak as the
+   * only order — seed it explicitly to pin the primary key.
+   */
+  createdAt?: Date;
+}>;
+
+/**
+ * One `workspace_directory` projection row, written straight into the
+ * table rather than through `WorkspaceDirectoryProjectionWriter`.
+ *
+ * The readers' cases pin `sourceVersion` and `updatedAt` per row and
+ * combine states the writer would never produce together — a `deleting`
+ * row that still carries a slug is what pins the public enumeration's
+ * lifecycle predicate — so the seed writes the row as given.
+ */
+export type WorkspaceDirectorySeedInput = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: "private" | "published";
+  /** A tombstoned workspace stays `deleting`. */
+  lifecycle: "active" | "deleting";
+  /**
+   * Deletion that owns a tombstone. Backends derive one from the
+   * workspace id when a `deleting` seed omits it, since the column is
+   * required on such a row and no reader discriminates on its value.
+   */
+  deletionOperationId?: string;
+  sourceVersion: number;
+  updatedAt: Date;
 }>;
 
 /**
@@ -124,13 +183,42 @@ export type ConformanceBackend = Readonly<{
   globalMaintenanceRunStore: GlobalMaintenanceRunStore;
   publicNoteProjectionWriter: PublicNoteProjectionWriter;
   publicNoteQueryService: PublicNoteQueryService;
+  userWorkspaceDirectory: UserWorkspaceDirectory;
+  workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
+  publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+  workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
+  invitationRouteStore: InvitationRouteStore;
+  membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
+  workspaceSlugReservationStore: WorkspaceSlugReservationStore;
   forScope(scope: ScopeKey): ScopedConformancePorts;
+  /** Seeds `workspace_directory` rows for the two directory readers. */
+  seedWorkspaceDirectory(
+    entries: readonly WorkspaceDirectorySeedInput[],
+  ): Promise<void>;
   /**
-   * Seeds workspace membership edges for `appendMembershipPage` until the
-   * Workspace domain exists. Optional — suites skip the page-content
-   * cases when a backend cannot seed.
+   * Puts the directory shards holding `ids` out of reach, standing in for
+   * a shard a fan-out read cannot open. Both halves of the contract hang
+   * on it: `WorkspaceDirectoryBatchReader.resolveMany` must degrade only
+   * the affected ids to `unavailable`, while
+   * `PublicWorkspaceDirectoryReader.listPublished` must fail rather than
+   * return a page short of the dead shard's rows.
+   *
+   * It must really take effect — the suites assert on reads issued after
+   * the call, so a stub that swallows its argument fails them.
    */
-  seedMembershipEdges?(
+  makeWorkspaceDirectoryUnreadable(ids: readonly WorkspaceId[]): Promise<void>;
+  /**
+   * Seeds workspace membership edges straight into the directory table.
+   *
+   * Required, because the states it reaches are ones no port method
+   * leaves behind: `reserveAndClaimActivation` inserts and claims in one
+   * transaction, so a `pending` edge — the account deletion half's only
+   * subject — and an edge naming no membership exist for a suite only if
+   * the backend can write one. A backend that could not would take the
+   * prepare / commit / release lock clauses, the removal state machine's
+   * refusals and both directory counts out of its run and stay green.
+   */
+  seedMembershipEdges(
     userId: UserId,
     edges: readonly MembershipEdgeSeedInput[],
   ): Promise<void>;

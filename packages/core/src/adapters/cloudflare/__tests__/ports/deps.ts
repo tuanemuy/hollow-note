@@ -32,9 +32,17 @@ export type CloudflareBackendDeps = Readonly<{
    * Mutable on purpose: `ConformanceBackend.setMaintenanceTables`
    * replaces one kind's set after the backend was built, standing in for
    * a deploy that changes the configuration mid-run. Only runs created
-   * *after* the call may see it (ADR 061).
+   * *after* the call may see it.
    */
   maintenanceTablesByKind: Record<MaintenanceKind, readonly string[]>;
+  /**
+   * WorkspaceIds `ConformanceBackend.makeWorkspaceDirectoryUnreadable`
+   * has put out of reach. Mutable for the same reason
+   * `maintenanceTablesByKind` is: the suites induce the outage *after*
+   * the ports were built, and the directory readers hold this very set.
+   * Production wires an empty one and never adds to it.
+   */
+  workspaceDirectoryOutages: Set<string>;
   requiredCleanupComponents: readonly PersonalCleanupComponent[] | undefined;
   requiredFinalizeReceipts: readonly AccountDeletionReceipt[] | undefined;
 }>;

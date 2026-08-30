@@ -10,7 +10,7 @@
 | 存在しないトークン | 受諾する | `NotFoundError("INVITATION_NOT_FOUND")` が投げられる | |
 | 期限切れの招待 | 受諾する | `BusinessRuleError(InvitationExpired)` が投げられる | |
 | 取り消し済みの招待 | 受諾する | `ValidationError("INVITATION_NOT_PENDING")` が投げられる | |
-| 既にメンバー | 受諾する | 招待は `accepted` になり、既存のロールは変更されない | |
+| 既にメンバーの利用者が、まだ `pending` の招待リンクを開く | 受諾する | 招待は `pending` のまま・route も `active` のままで、保持しているロールがそのまま返る。招待先の利用者は後からそのリンクで参加できる（署名者と `invitation.email` を照合しない設計なので、既存メンバーが開いただけで第三者宛ての招待を消さない） | |
 | ワークスペースが削除済み | 受諾する | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる | |
 | 同じ招待で 2 つの要求が同時に走る | 両方が受諾する | `Membership` は 1 件だけ作られる | |
 | 受諾後 | そのワークスペースのノート一覧を開く | ロールに応じた操作が可能になる | |
@@ -22,3 +22,5 @@
 | account deletion開始とactivation claimが同時 | 実行する | UserId shardで直列化され、activation成功→削除がactive edgeを固定、または削除成功→activation拒否のどちらかになる | |
 | pending edge作成後にlocal commit失敗 | recoveryを実行する | edgeを解放しInvitationはpendingのまま | |
 | local commit後にactivation応答を失う | 再試行する | 同じoperation IDでedgeをactiveにしMembershipを二重作成しない | |
+| activationを恒久的に失った後、招待リンクを開き直す | 受諾する | 既存メンバーの判定が招待の status より先に立ち、`activating` のまま残った edge を settle して成功で返る | |
+| edge の claim が commit してから応答を失う | 受諾する | claim は補償区間の中にあるので `activating` な edge が abandon され、招待は `pending` のまま残る。同じ利用者の再試行がそのまま参加できる | |

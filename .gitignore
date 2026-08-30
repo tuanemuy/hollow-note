@@ -29,3 +29,6 @@ data/
 *.db
 *.db-shm
 *.db-wal
+
+.thread/*/review/
+.thread/*/plan-review/

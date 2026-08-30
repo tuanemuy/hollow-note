@@ -13,7 +13,13 @@ import type { Clock } from "../../../../application/ports/clock";
 import { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import { WorkspaceId } from "../../../../domain/workspace/valueObject";
-import { opaque, upsert } from "../../execution/writeSet";
+import {
+  opaque,
+  type RowMutation,
+  removeMany,
+  upsert,
+  upsertMany,
+} from "../../execution/writeSet";
 import { classifySqlError, databaseError } from "../../sql/errors";
 import {
   deleteRowsFromJson,
@@ -21,9 +27,11 @@ import {
   insertRowsFromJson,
   jsonList,
   jsonRows,
+  notInJsonList,
 } from "../../sql/json";
 import { occGuard } from "../../sql/occGuard";
 import {
+  compositeKey,
   dateOrNull,
   enumOf,
   int,
@@ -55,7 +63,7 @@ const STATUSES: readonly AccountDeletionManifestStatus[] = [
 /**
  * Receipts finalize waits for when a deployment declares nothing. The
  * strictest reading on purpose: a deployment that forgets to declare its
- * participants stalls rather than finalizing early (ADR 039).
+ * participants stalls rather than finalizing early.
  */
 const ALL_FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
@@ -122,6 +130,125 @@ const toItem = (row: SqlRow): AccountDeletionManifestItem =>
         publicRedactionAckedAt: dateOrNull(row, "public_redaction_acked_at"),
       };
 
+/** The write-set key of an item row: its `(operation_id, key)` primary key. */
+const itemOverlayKey = (row: SqlRow): string =>
+  compositeKey(text(row, "operation_id"), text(row, "key"));
+
+const byItemKey = (a: SqlRow, b: SqlRow): number => {
+  const left = text(a, "key");
+  const right = text(b, "key");
+  return left < right ? -1 : left > right ? 1 : 0;
+};
+
+/**
+ * Every optional item column, unset. A staged image has to carry the
+ * whole row: the predicates below run over the image rather than over
+ * storage, so a column the image omits reads as `undefined` and quietly
+ * drops the row from the page.
+ */
+const ITEM_NULLS: SqlRow = {
+  workspace_id: null,
+  edge_state: null,
+  membership_id: null,
+  prepare_command_key: null,
+  prepare_dispatched_at: null,
+  prepare_acked_at: null,
+  release_command_key: null,
+  release_dispatched_at: null,
+  release_acked_at: null,
+  cleanup_acked_at: null,
+  note_id: null,
+  route_version: null,
+  local_redaction_acked_at: null,
+  public_redaction_acked_at: null,
+};
+
+/**
+ * One item selection, in the two forms an overlay-aware read needs it in:
+ * the SQL appended after `operation_id = ?`, and the same predicate
+ * evaluated over a staged row image.
+ */
+type ItemFilter = Readonly<{
+  sql: string;
+  params?: readonly SqlValue[];
+  matches: (row: SqlRow) => boolean;
+}>;
+
+const isMembership = (row: SqlRow): boolean =>
+  text(row, "kind") === "membership";
+
+const unset = (row: SqlRow, column: string): boolean =>
+  intOrNull(row, column) === null;
+
+const ALL_ITEMS: ItemFilter = { sql: "", matches: () => true };
+
+const RELEASE_OUTSTANDING: ItemFilter = {
+  sql: "AND kind = 'membership' AND prepare_dispatched_at IS NOT NULL AND release_acked_at IS NULL",
+  matches: (row) =>
+    isMembership(row) &&
+    !unset(row, "prepare_dispatched_at") &&
+    unset(row, "release_acked_at"),
+};
+
+const OPEN_ITEMS: ItemFilter = {
+  sql: `AND (
+         (kind = 'membership' AND (prepare_acked_at IS NULL OR cleanup_acked_at IS NULL))
+         OR (kind = 'authorRoute' AND (local_redaction_acked_at IS NULL OR public_redaction_acked_at IS NULL))
+       )`,
+  matches: (row) =>
+    isMembership(row)
+      ? unset(row, "prepare_acked_at") || unset(row, "cleanup_acked_at")
+      : unset(row, "local_redaction_acked_at") ||
+        unset(row, "public_redaction_acked_at"),
+};
+
+const CLAIMABLE: Record<AccountDeletionPhase, ItemFilter> = {
+  prepare: {
+    sql: "AND kind = 'membership' AND prepare_acked_at IS NULL",
+    matches: (row) => isMembership(row) && unset(row, "prepare_acked_at"),
+  },
+  release: RELEASE_OUTSTANDING,
+  cleanup: {
+    sql: "AND kind = 'membership' AND cleanup_acked_at IS NULL",
+    matches: (row) => isMembership(row) && unset(row, "cleanup_acked_at"),
+  },
+  redaction: {
+    sql: "AND kind = 'authorRoute' AND (local_redaction_acked_at IS NULL OR public_redaction_acked_at IS NULL)",
+    matches: (row) =>
+      !isMembership(row) &&
+      (unset(row, "local_redaction_acked_at") ||
+        unset(row, "public_redaction_acked_at")),
+  },
+};
+
+const withKeys = (keys: ReadonlySet<string>): ItemFilter => ({
+  sql: `AND ${inJsonList("key")}`,
+  params: [jsonList([...keys])],
+  matches: (row) => keys.has(text(row, "key")),
+});
+
+const withoutKeys = (keys: ReadonlySet<string>): ItemFilter =>
+  keys.size === 0
+    ? ALL_ITEMS
+    : {
+        sql: `AND ${notInJsonList("key")}`,
+        params: [jsonList([...keys])],
+        matches: (row) => !keys.has(text(row, "key")),
+      };
+
+const ackable = (
+  kind: string,
+  column: string,
+  keys: ReadonlySet<string>,
+): ItemFilter => ({
+  sql: `AND kind = ? AND ${column} IS NULL AND ${inJsonList("key")}`,
+  params: [kind, jsonList([...keys])],
+  matches: (row) =>
+    text(row, "kind") === kind &&
+    unset(row, column) &&
+    keys.has(text(row, "key")),
+});
+
 export type D1AccountDeletionManifestStoreDeps = Readonly<{
   session: SqlSession;
   clock: Clock;
@@ -139,9 +266,19 @@ export type D1AccountDeletionManifestStoreDeps = Readonly<{
  * Every page — membership, author route, claim, ack, compaction, prune —
  * is one multi-row statement built with `json_each` rather than a
  * statement per row: a page is up to 100 items and both planes cap a
- * statement at 100 bound parameters (`spec/database/index.md` の共通の規約).
- * The consequence is that those writes are `opaque`, so a unit of work
- * that appends a page does not read it back before it commits.
+ * statement at 100 bound parameters. Each of those statements still names
+ * the item rows it touches (`upsertMany` / `removeMany`), so a unit of
+ * work reads its own page back exactly as the memory backend does: the two
+ * acks of one redaction turn compose, and `markCompleted` counts what the
+ * same turn compacted.
+ * The terminal prune is the one exception — it drops whole manifests by
+ * operation rather than by item key, so the item keys are not enumerable
+ * at staging time.
+ *
+ * The one read the overlay cannot repair is a `LIMIT`-ed page ordered by
+ * key whose rows this unit already wrote — the session refuses it rather
+ * than returning a short page — which is no constraint on the saga:
+ * every turn claims its page at the head and writes last.
  */
 export function createD1AccountDeletionManifestStore(
   deps: D1AccountDeletionManifestStoreDeps,
@@ -170,56 +307,58 @@ export function createD1AccountDeletionManifestStore(
     return found;
   };
 
-  // Item pages are read through `query`, not `readRows`: every item write
-  // is a multi-row `json_each` statement with no single-row image, so the
-  // write-set overlay has nothing to contribute here.
-  const itemRows = (
+  /**
+   * Every item read goes through here so the rows this unit of work has
+   * already staged are merged in. `ordered` is what a page needs and what
+   * an existence check must not ask for: the session refuses a full
+   * `LIMIT`-ed page ordered over rows this unit rewrote, since the new
+   * values could move one past the page boundary.
+   */
+  const readItems = (
     operationId: string,
-    where: string,
-    limit?: number,
+    filter: ItemFilter,
+    page: Readonly<{ ordered?: true; limit?: number }> = {},
   ): Promise<readonly SqlRow[]> =>
-    session.query(
-      statement(
-        `SELECT * FROM ${ITEMS} WHERE operation_id = ? ${where} ORDER BY key${
-          limit === undefined ? "" : ` LIMIT ${limit}`
-        }`,
-        operationId,
-      ),
-    );
+    session.readRows({
+      table: ITEMS,
+      statement: {
+        sql: `SELECT * FROM ${ITEMS} WHERE operation_id = ? ${filter.sql}${
+          page.ordered === true ? " ORDER BY key" : ""
+        }${page.limit === undefined ? "" : ` LIMIT ${page.limit}`}`,
+        params: [operationId, ...(filter.params ?? [])],
+      },
+      keyOf: itemOverlayKey,
+      matches: (row) =>
+        text(row, "operation_id") === operationId && filter.matches(row),
+      ...(page.ordered === true ? { compare: byItemKey } : {}),
+      ...(page.limit === undefined ? {} : { limit: page.limit }),
+    });
 
-  const countItems = async (
+  /** Which of `keys` this manifest already holds, staged pages included. */
+  const fixedAmong = async (
     operationId: string,
-    where: string,
-  ): Promise<number> => {
-    const rows = await session.query(
-      statement(
-        `SELECT COUNT(*) AS item_count FROM ${ITEMS} WHERE operation_id = ? ${where}`,
-        operationId,
-      ),
-    );
-    const row = rows[0];
-    return row === undefined ? 0 : int(row, "item_count");
+    keys: readonly string[],
+  ): Promise<ReadonlySet<string>> => {
+    if (keys.length === 0) {
+      return new Set();
+    }
+    const rows = await readItems(operationId, withKeys(new Set(keys)));
+    return new Set(rows.map((row) => text(row, "key")));
   };
 
   const rollbackReleased = async (operationId: string): Promise<boolean> =>
-    (await countItems(
-      operationId,
-      "AND kind = 'membership' AND prepare_dispatched_at IS NOT NULL AND release_acked_at IS NULL",
-    )) === 0;
+    (await readItems(operationId, RELEASE_OUTSTANDING)).length === 0;
 
   const requiredAcknowledged = async (
     operationId: string,
   ): Promise<boolean> => {
     const { header } = await requireHeader(operationId);
-    const openItems = await countItems(
-      operationId,
-      `AND (
-         (kind = 'membership' AND (prepare_acked_at IS NULL OR cleanup_acked_at IS NULL))
-         OR (kind = 'authorRoute' AND (local_redaction_acked_at IS NULL OR public_redaction_acked_at IS NULL))
-       )`,
-    );
+    // Unbounded on purpose: the compaction that empties the manifest may
+    // share this unit of work, so the answer has to come from the
+    // overlay-merged set rather than a `COUNT(*)` over storage.
+    const openItems = await readItems(operationId, OPEN_ITEMS);
     return (
-      openItems === 0 &&
+      openItems.length === 0 &&
       requiredReceipts.every((receipt) => header.receipts.includes(receipt))
     );
   };
@@ -351,11 +490,31 @@ export function createD1AccountDeletionManifestStore(
           ? text(last, "edge_key")
           : null;
 
-      const mutations = [];
+      const mutations: RowMutation[] = [];
       if (page.length > 0) {
+        const images: readonly SqlRow[] = page.map((edge) => ({
+          ...ITEM_NULLS,
+          operation_id: operationId,
+          key: `membership:${text(edge, "edge_key")}`,
+          kind: "membership",
+          workspace_id: text(edge, "workspace_id"),
+          edge_state: text(edge, "state"),
+          membership_id: textOrNull(edge, "membership_id"),
+        }));
+        // The insert is `DO NOTHING` on conflict, so a replayed page
+        // leaves the existing row untouched: only the keys this call
+        // actually creates get an overlay image.
+        const alreadyFixed = await fixedAmong(
+          operationId,
+          images.map((image) => text(image, "key")),
+        );
         mutations.push(
-          opaque(
-            statement(
+          upsertMany({
+            table: ITEMS,
+            rows: images
+              .filter((image) => !alreadyFixed.has(text(image, "key")))
+              .map((image) => [itemOverlayKey(image), image] as const),
+            statement: statement(
               insertRowsFromJson({
                 table: ITEMS,
                 columns: [
@@ -369,18 +528,9 @@ export function createD1AccountDeletionManifestStore(
                 conflictKey: ["operation_id", "key"],
                 conflict: "ignore",
               }),
-              jsonRows(
-                page.map((edge) => ({
-                  operation_id: operationId,
-                  key: `membership:${text(edge, "edge_key")}`,
-                  kind: "membership",
-                  workspace_id: text(edge, "workspace_id"),
-                  edge_state: text(edge, "state"),
-                  membership_id: textOrNull(edge, "membership_id"),
-                })),
-              ),
+              jsonRows(images),
             ),
-          ),
+          }),
         );
       }
       mutations.push(
@@ -415,11 +565,27 @@ export function createD1AccountDeletionManifestStore(
           "author-route pages require building",
         );
       }
-      const mutations = [];
+      const mutations: RowMutation[] = [];
       if (routes.length > 0) {
+        const images: readonly SqlRow[] = routes.map((route) => ({
+          ...ITEM_NULLS,
+          operation_id: operationId,
+          key: `authorRoute:${route.noteId}`,
+          kind: "authorRoute",
+          note_id: route.noteId,
+          route_version: route.routeVersion,
+        }));
+        const alreadyFixed = await fixedAmong(
+          operationId,
+          images.map((image) => text(image, "key")),
+        );
         mutations.push(
-          opaque(
-            statement(
+          upsertMany({
+            table: ITEMS,
+            rows: images
+              .filter((image) => !alreadyFixed.has(text(image, "key")))
+              .map((image) => [itemOverlayKey(image), image] as const),
+            statement: statement(
               insertRowsFromJson({
                 table: ITEMS,
                 columns: [
@@ -432,17 +598,9 @@ export function createD1AccountDeletionManifestStore(
                 conflictKey: ["operation_id", "key"],
                 conflict: "ignore",
               }),
-              jsonRows(
-                routes.map((route) => ({
-                  operation_id: operationId,
-                  key: `authorRoute:${route.noteId}`,
-                  kind: "authorRoute",
-                  note_id: route.noteId,
-                  route_version: route.routeVersion,
-                })),
-              ),
+              jsonRows(images),
             ),
-          ),
+          }),
         );
       }
       mutations.push(
@@ -509,22 +667,11 @@ export function createD1AccountDeletionManifestStore(
       if (effectiveLimit === 0) {
         return [];
       }
-      if (phase === "redaction") {
-        const rows = await itemRows(
-          operationId,
-          "AND kind = 'authorRoute' AND (local_redaction_acked_at IS NULL OR public_redaction_acked_at IS NULL)",
-          effectiveLimit,
-        );
-        return rows.map(toItem);
-      }
-      const pending =
-        phase === "prepare"
-          ? "AND kind = 'membership' AND prepare_acked_at IS NULL"
-          : phase === "release"
-            ? "AND kind = 'membership' AND prepare_dispatched_at IS NOT NULL AND release_acked_at IS NULL"
-            : "AND kind = 'membership' AND cleanup_acked_at IS NULL";
-      const rows = await itemRows(operationId, pending, effectiveLimit);
-      if (rows.length === 0 || phase === "cleanup") {
+      const rows = await readItems(operationId, CLAIMABLE[phase], {
+        ordered: true,
+        limit: effectiveLimit,
+      });
+      if (rows.length === 0 || phase === "cleanup" || phase === "redaction") {
         return rows.map(toItem);
       }
 
@@ -534,7 +681,7 @@ export function createD1AccountDeletionManifestStore(
       const now = toTimestamp(clock.now());
       const column = phase === "prepare" ? "prepare" : "release";
       const keys = rows.map((row) => text(row, "key"));
-      const claimed = rows.map((row) => ({
+      const claimed: readonly SqlRow[] = rows.map((row) => ({
         ...row,
         [`${column}_command_key`]:
           textOrNull(row, `${column}_command_key`) ??
@@ -544,8 +691,10 @@ export function createD1AccountDeletionManifestStore(
       }));
       try {
         await session.write([
-          opaque(
-            statement(
+          upsertMany({
+            table: ITEMS,
+            rows: claimed.map((row) => [itemOverlayKey(row), row] as const),
+            statement: statement(
               `UPDATE ${ITEMS}
                   SET ${column}_command_key = COALESCE(${column}_command_key, ? || key),
                       ${column}_dispatched_at = COALESCE(${column}_dispatched_at, ?)
@@ -555,7 +704,7 @@ export function createD1AccountDeletionManifestStore(
               operationId,
               jsonList(keys),
             ),
-          ),
+          }),
         ]);
       } catch (cause) {
         throw databaseError("the account deletion manifest store", cause);
@@ -582,18 +731,30 @@ export function createD1AccountDeletionManifestStore(
               : phase === "localRedaction"
                 ? (["local_redaction_acked_at", "authorRoute"] as const)
                 : (["public_redaction_acked_at", "authorRoute"] as const);
+      const at = toTimestamp(clock.now());
+      // `IS NULL` keeps the first ack, and a key this manifest does not
+      // hold matches nothing rather than being resurrected. The staged
+      // images repeat both rules so the overlay agrees with the statement.
+      const stamped = await readItems(
+        operationId,
+        ackable(kind, column, new Set(itemKeys)),
+      );
       try {
         await session.write([
-          opaque(
-            statement(
+          upsertMany({
+            table: ITEMS,
+            rows: stamped.map(
+              (row) => [itemOverlayKey(row), { ...row, [column]: at }] as const,
+            ),
+            statement: statement(
               `UPDATE ${ITEMS} SET ${column} = ?
                 WHERE operation_id = ? AND kind = ? AND ${column} IS NULL AND ${inJsonList("key")}`,
-              toTimestamp(clock.now()),
+              at,
               operationId,
               kind,
               jsonList([...itemKeys]),
             ),
-          ),
+          }),
         ]);
       } catch (cause) {
         throw databaseError("the account deletion manifest store", cause);
@@ -675,27 +836,35 @@ export function createD1AccountDeletionManifestStore(
         );
       }
       const effectiveLimit = cap(limit);
-      const total = await countItems(operationId, "");
       const rows =
         effectiveLimit === 0
           ? []
-          : await itemRows(operationId, "", effectiveLimit);
+          : await readItems(operationId, ALL_ITEMS, {
+              ordered: true,
+              limit: effectiveLimit,
+            });
+      const doomed = new Set(rows.map((row) => text(row, "key")));
       if (rows.length > 0) {
         try {
           await session.write([
-            opaque(
-              statement(
+            removeMany({
+              table: ITEMS,
+              keys: rows.map(itemOverlayKey),
+              statement: statement(
                 `DELETE FROM ${ITEMS} WHERE operation_id = ? AND ${inJsonList("key")}`,
                 operationId,
-                jsonList(rows.map((row) => text(row, "key"))),
+                jsonList([...doomed]),
               ),
-            ),
+            }),
           ]);
         } catch (cause) {
           throw databaseError("the account deletion manifest store", cause);
         }
       }
-      return { removed: rows.length, remaining: total > rows.length };
+      const rest = await readItems(operationId, withoutKeys(doomed), {
+        limit: 1,
+      });
+      return { removed: rows.length, remaining: rest.length > 0 };
     },
 
     async markCompleted(
@@ -793,18 +962,23 @@ export function createD1AccountDeletionManifestStore(
           : null;
       try {
         await session.write([
+          // The only item write whose keys are not enumerable: a prune
+          // drops whole manifests, and the items are named by the
+          // operation they belong to rather than one by one.
           opaque(
             statement(
               deleteRowsFromJson(ITEMS, "operation_id"),
               jsonList(operationIds),
             ),
           ),
-          opaque(
-            statement(
+          removeMany({
+            table: HEADERS,
+            keys: operationIds,
+            statement: statement(
               deleteRowsFromJson(HEADERS, "operation_id"),
               jsonList(operationIds),
             ),
-          ),
+          }),
         ]);
       } catch (cause) {
         throw databaseError("the account deletion manifest store", cause);

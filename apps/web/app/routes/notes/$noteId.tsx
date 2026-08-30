@@ -1,5 +1,6 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { type ReactNode, Suspense } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import { Suspense } from "react";
+import { ReaderShell } from "@/components/layout/ReaderShell";
 import { NoteDetailSkeleton } from "@/components/note/NoteDetailSkeleton";
 import { Deferred } from "@/components/ui/Deferred";
 import { NotFoundState, ServerErrorState } from "@/components/ui/ErrorState";
@@ -51,41 +52,6 @@ export const Route = createFileRoute("/notes/$noteId")({
     );
   },
 });
-
-/**
- * P-11 の読むシェル: 上部バーは前の文脈へ戻る導線だけの最小形
- * （spec/pages/index.md#L-01 読む画面の変形）。パレットは未機能のため
- * トリガーごと出さない — 一覧側と違い、この画面はバーの要素が導線
- * 1 つでも成立する。
- */
-function ReaderShell({ children }: { children: ReactNode }) {
-  return (
-    <div className="min-h-dvh">
-      <header className="sticky top-0 z-40 flex h-[var(--bar-height)] items-center gap-2 bg-[var(--bar-bg)] px-4 backdrop-blur-xl backdrop-saturate-150 sm:px-6">
-        <Link
-          to="/notes"
-          className="inline-flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-sm text-ink-secondary transition-colors hover:bg-surface hover:text-ink"
-        >
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          <span className="truncate">ノート一覧</span>
-        </Link>
-      </header>
-      {children}
-    </div>
-  );
-}
 
 function NoteDetailPage() {
   const { NoteDetail } = Route.useLoaderData();

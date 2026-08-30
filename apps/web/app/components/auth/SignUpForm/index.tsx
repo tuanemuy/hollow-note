@@ -31,7 +31,13 @@ import { signUpFn } from "./action";
 /**
  * P-01 サインアップ（spec/pages/index.md#P-01、モック P01-signup.html）。
  * 状態: 入力 / 項目エラー（入力中に検出し送信を抑止）/ 送信中 / 送信完了 /
- * 全体エラー。招待経由は本スライス外のため出さない。
+ * 全体エラー。
+ *
+ * `redirectTo` は `/signin` と同じ同一オリジンの復帰先で、ルートが
+ * `safeRedirectPath` を通したものだけが届く。外部プロバイダーの登録は
+ * その場でセッションが立つので `OAuthButton` がそのまま復帰先に使い、
+ * メール + パスワードの登録は復帰先を `/signin` のリンクへ引き継ぐ
+ * （このフォームは確認メールの送信までで、セッションを立てない）。
  */
 
 type Fields = Readonly<{
@@ -58,7 +64,7 @@ function displayNameError(value: string): string | null {
 
 type FormState = { error: SerializedError | null; done: boolean };
 
-export function SignUpForm() {
+export function SignUpForm({ redirectTo }: { redirectTo: string }) {
   const signUp = useServerFn(signUpFn);
   const [fields, setFields] = useState<Fields>(initialFields);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -127,7 +133,11 @@ export function SignUpForm() {
           24 時間で無効になります。
         </p>
         <p className="text-center text-sm text-ink-secondary">
-          <Link to="/signin" className={footLinkClass}>
+          <Link
+            to="/signin"
+            search={{ redirect: redirectTo }}
+            className={footLinkClass}
+          >
             サインインへ
           </Link>
         </p>
@@ -279,11 +289,15 @@ export function SignUpForm() {
         </button>
       </form>
 
-      <OAuthButton provider="google" redirectTo={null} />
+      <OAuthButton provider="google" redirectTo={redirectTo} />
 
       <p className="mt-8 text-center text-sm text-ink-secondary">
         アカウントをお持ちですか？{" "}
-        <Link to="/signin" className={footLinkClass}>
+        <Link
+          to="/signin"
+          search={{ redirect: redirectTo }}
+          className={footLinkClass}
+        >
           サインイン
         </Link>
       </p>

@@ -4,8 +4,8 @@ import type { ScopeStore } from "../store";
 
 /**
  * The two-part key folds into one column, mirroring the single
- * `operation_id` primary key of spec/database's `applied_operations`, so
- * a SQL backend keeps the same shape.
+ * `operation_id` primary key of the `applied_operations` table, so a SQL
+ * backend keeps the same shape.
  */
 const appliedOperationId = (operationId: string, commandKey: string): string =>
   createHash("sha256")
@@ -24,6 +24,9 @@ export function createMemoryAppliedOperationStore(
       }
       table.set(key, true);
       return true;
+    },
+    async clearApplied(input): Promise<void> {
+      table.delete(appliedOperationId(input.operationId, input.commandKey));
     },
   };
 }

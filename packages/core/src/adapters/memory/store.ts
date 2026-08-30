@@ -4,7 +4,7 @@ import type { AuthToken } from "@repo/core/domain/identity/authToken";
 import type { Identity } from "@repo/core/domain/identity/identity";
 import type { Session } from "@repo/core/domain/identity/session";
 import type { User } from "@repo/core/domain/identity/user";
-import type { UserId } from "@repo/core/domain/identity/valueObject";
+import type { TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 import type { Note } from "@repo/core/domain/note/note";
 import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type {
@@ -14,7 +14,17 @@ import type {
 import type { StoredFile } from "@repo/core/domain/storage/storedFile";
 import type { LlmUsage } from "@repo/core/domain/usage/llmUsage";
 import type { StorageQuota } from "@repo/core/domain/usage/storageQuota";
-import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import type { Invitation } from "@repo/core/domain/workspace/invitation";
+import type { Membership } from "@repo/core/domain/workspace/membership";
+import type {
+  InvitationId,
+  MembershipId,
+  WorkspaceId,
+  WorkspaceName,
+  WorkspaceRole,
+  WorkspaceSlug,
+} from "@repo/core/domain/workspace/valueObject";
+import type { Workspace } from "@repo/core/domain/workspace/workspace";
 import type { AccountDeletionReceipt } from "../../application/ports/accountDeletionManifestStore";
 import { type Clock, SystemClock } from "../../application/ports/clock";
 import type { DistributedOperation } from "../../application/ports/distributedOperationStore";
@@ -100,6 +110,15 @@ export class MemoryTransactionController {
  */
 export class MemTable<V> {
   private readonly rows = new Map<string, V>();
+  /**
+   * Row images as they stood when the open transaction first touched
+   * each key. `committedValues` replays them to reconstruct the state the
+   * transaction started from; the entry dies with the transaction.
+   */
+  private readonly originals = new WeakMap<
+    MemoryTransaction,
+    Map<string, V | undefined>
+  >();
 
   constructor(private readonly tx: MemoryTransactionController) {}
 
@@ -116,6 +135,7 @@ export class MemTable<V> {
     if (transaction !== null) {
       const had = this.rows.has(key);
       const previous = this.rows.get(key);
+      this.remember(transaction, key);
       transaction.undoLog.push(() => {
         if (had) {
           this.rows.set(key, previous as V);
@@ -131,11 +151,54 @@ export class MemTable<V> {
     const transaction = this.tx.current();
     if (transaction !== null && this.rows.has(key)) {
       const previous = this.rows.get(key);
+      this.remember(transaction, key);
       transaction.undoLog.push(() => {
         this.rows.set(key, previous as V);
       });
     }
     return this.rows.delete(key);
+  }
+
+  /**
+   * The rows as of the start of the open transaction — this backend's
+   * answer for the reads whose port contract says they do not observe
+   * their own unit of work (the offset listings, which cannot be
+   * recomputed from uncommitted changes without re-reading the whole
+   * set). Outside a transaction it is simply `values()`.
+   *
+   * Writes here apply immediately rather than being buffered, so without
+   * this the reference backend would answer such a read from the staged
+   * state while a backend that buffers answers from storage — the same
+   * call, two verdicts, and no conformance case able to say which is
+   * contractual.
+   */
+  committedValues(): readonly V[] {
+    const transaction = this.tx.current();
+    const images =
+      transaction === null ? undefined : this.originals.get(transaction);
+    if (images === undefined) {
+      return this.values();
+    }
+    const committed = new Map(this.rows);
+    for (const [key, image] of images) {
+      if (image === undefined) {
+        committed.delete(key);
+      } else {
+        committed.set(key, image);
+      }
+    }
+    return [...committed.values()];
+  }
+
+  private remember(transaction: MemoryTransaction, key: string): void {
+    let images = this.originals.get(transaction);
+    if (images === undefined) {
+      images = new Map<string, V | undefined>();
+      this.originals.set(transaction, images);
+    }
+    if (!images.has(key)) {
+      images.set(key, this.rows.get(key));
+    }
   }
 
   keys(): readonly string[] {
@@ -275,17 +338,158 @@ export type ManifestItemRow =
   | ManifestAuthorRouteItemRow;
 
 /**
- * Placeholder source for `AccountDeletionManifestStore.appendMembershipPage`
- * until the Workspace domain lands. The table key is opaque:
- * the page scan filters on the `userId` field and orders by `edgeKey`, so
- * a seeder may key rows however it likes as long as keys stay unique.
+ * One row of the global `membership_directory`: which workspaces a user
+ * belongs to, and in which projected role.
+ *
+ * `edgeKey` is the row's own operation id, the key
+ * `AccountDeletionManifestStore.appendMembershipPage` walks in ascending
+ * order. The table key is opaque — the page scan filters on the `userId`
+ * field and orders by `edgeKey`, so a writer may key rows however it
+ * likes as long as keys stay unique.
+ *
+ * `activating` is the join saga's claim, held between
+ * `reserveAndClaimActivation` and the workspace-local commit. Account
+ * deletion drains those to zero before it fixes its manifest, which is
+ * why the manifest's own item type knows only the three settled states.
  */
-export type MembershipEdgeSeed = Readonly<{
+export type MembershipDirectoryRow = Readonly<{
   userId: UserId;
   edgeKey: string;
   workspaceId: WorkspaceId;
-  edgeState: "active" | "removing" | "pending";
+  edgeState: "pending" | "activating" | "active" | "removing";
   membershipId: string | null;
+  role: WorkspaceRole;
+  /**
+   * Membership version `role` was projected from, `null` while it is
+   * still the role the reservation carried. Orders the role projection
+   * against out-of-order delivery.
+   */
+  roleSourceVersion: number | null;
+  /** Account-deletion prepare lock owner of a `pending` edge. */
+  deletionPrepareOperationId: string | null;
+  deletionPrepareExpiresAt: Date | null;
+  /** Set while the edge is `pending` / `activating`; null once settled. */
+  reservationExpiresAt: Date | null;
+  createdAt: Date;
+}>;
+
+/**
+ * One row of the global `invitation_routes`. The token hash is the row's
+ * primary key, so the table doubles as the token's uniqueness
+ * reservation; `revoked` is the single terminal state both `revoke` and
+ * `consume` reach.
+ */
+export type InvitationRouteRow = Readonly<{
+  tokenHash: TokenHash;
+  workspaceId: WorkspaceId;
+  invitationId: InvitationId;
+  operationId: string;
+  state: "reserved" | "active" | "revoked";
+  expiresAt: Date;
+}>;
+
+/**
+ * One row of the global `workspace_slug_reservations`. Only a `reserved`
+ * row carries an expiry — an `active` claim is freed by its owner, never
+ * by the clock. `attemptId` names the attempt that reserved the row last,
+ * which is who may abandon it.
+ */
+export type SlugReservationRow = Readonly<{
+  slug: WorkspaceSlug;
+  workspaceId: WorkspaceId;
+  operationId: string;
+  attemptId: string;
+  state: "reserved" | "active";
+  expiresAt: Date | null;
+}>;
+
+/**
+ * One row of a workspace scope's `membership_removal_locks`. A
+ * `committed` lock carries no expiry: it is past the point of no return
+ * and only `release` removes it.
+ */
+export type MembershipRemovalLockRow = Readonly<{
+  operationId: string;
+  userId: UserId;
+  membershipId: MembershipId;
+  expectedMembershipVersion: number;
+  state: "prepared" | "committed";
+  expiresAt: Date | null;
+}>;
+
+/**
+ * One row of a scope's `move_authorization_locks`. The row's existence
+ * *is* the lock — there is no `activated` state and no expiry, so a move
+ * that died mid-flight keeps blocking until it is settled.
+ */
+export type MoveAuthorizationLockRow = Readonly<{
+  migrationId: string;
+  actorUserId: UserId;
+}>;
+
+/**
+ * Header of a workspace scope's `workspace_deletion_manifests`.
+ *
+ * Only three of the spec's header states are reachable through
+ * `WorkspaceDeletionManifestStore`, because those are the only
+ * transitions it exposes: `beginDeletion` creates `building`, `markReady`
+ * moves to `ready`, and `markCompleted` stamps the tombstone. The phases
+ * in between are told apart by the items' two acknowledgement columns,
+ * not by the header.
+ */
+export type WorkspaceDeletionManifestHeaderRow = Readonly<{
+  operationId: string;
+  workspaceId: WorkspaceId;
+  state: "building" | "ready" | "completed";
+  membershipCursor: MembershipId | null;
+  invitationCursor: InvitationId | null;
+}>;
+
+export type WorkspaceDeletionManifestMembershipItemRow = Readonly<{
+  operationId: string;
+  key: string;
+  kind: "membership";
+  userId: UserId;
+  membershipId: MembershipId;
+  localDeletedAt: Date | null;
+  globalAckedAt: Date | null;
+}>;
+
+export type WorkspaceDeletionManifestInvitationItemRow = Readonly<{
+  operationId: string;
+  key: string;
+  kind: "invitation";
+  tokenHash: TokenHash;
+  invitationId: InvitationId;
+  localDeletedAt: Date | null;
+  globalAckedAt: Date | null;
+}>;
+
+export type WorkspaceDeletionManifestItemRow =
+  | WorkspaceDeletionManifestMembershipItemRow
+  | WorkspaceDeletionManifestInvitationItemRow;
+
+/**
+ * One row of the global `workspace_directory` projection. `avatarUrl`
+ * stays a raw string for the reason `WorkspaceDirectoryEntry` gives: it
+ * was validated on write and rehydrating it would need the app origin.
+ *
+ * A deletion tombstone keeps `lifecycle: "deleting"` with its display
+ * fields redacted, which is what makes "gone" a durable verdict the
+ * batch reader can report as `deleted` after the row's workspace scope
+ * is unreachable.
+ */
+export type WorkspaceDirectoryRow = Readonly<{
+  workspaceId: WorkspaceId;
+  name: WorkspaceName;
+  slug: WorkspaceSlug | null;
+  avatarUrl: string | null;
+  publication: "private" | "published";
+  lifecycle: "active" | "deleting";
+  /** Owner of the tombstone; null while the row is `active`. */
+  deletionOperationId: string | null;
+  sourceVersion: number;
+  updatedAt: Date;
 }>;
 
 export type MaintenanceLaneRow = Readonly<{
@@ -351,9 +555,16 @@ export type ScheduledTaskRow =
 export type ScopeStore = Readonly<{
   key: string;
   scope: ScopeKey;
+  workspaces: MemTable<Workspace>;
+  memberships: MemTable<Membership>;
+  invitations: MemTable<Invitation>;
   notes: MemTable<Note>;
   noteRevisions: MemTable<NoteRevision>;
   cleanupReceipts: MemTable<CleanupReceiptRow>;
+  membershipRemovalLocks: MemTable<MembershipRemovalLockRow>;
+  moveAuthorizationLocks: MemTable<MoveAuthorizationLockRow>;
+  deletionManifestHeaders: MemTable<WorkspaceDeletionManifestHeaderRow>;
+  deletionManifestItems: MemTable<WorkspaceDeletionManifestItemRow>;
   actorLocks: MemTable<true>;
   localProjection: MemTable<LocalProjectionRow>;
   projectionRevisions: MemTable<number>;
@@ -416,7 +627,19 @@ export class MemoryBackend {
   readonly noteRoutes = this.table<NoteRouteRow>();
   readonly manifestHeaders = this.table<ManifestHeaderRow>();
   readonly manifestItems = this.table<ManifestItemRow>();
-  readonly membershipEdges = this.table<MembershipEdgeSeed>();
+  readonly membershipEdges = this.table<MembershipDirectoryRow>();
+  readonly invitationRoutes = this.table<InvitationRouteRow>();
+  readonly slugReservations = this.table<SlugReservationRow>();
+  readonly workspaceDirectory = this.table<WorkspaceDirectoryRow>();
+  /**
+   * WorkspaceIds whose directory shard is currently unreadable. This
+   * backend keeps one process-local shard that cannot fail on its own,
+   * so the partial-failure halves of the directory contracts — one dead
+   * shard degrades a single row for `WorkspaceDirectoryBatchReader` but
+   * fails the whole page for `PublicWorkspaceDirectoryReader` — have no
+   * executable form unless an outage can be induced.
+   */
+  readonly workspaceDirectoryOutages = new Set<string>();
   readonly maintenanceRuns = this.table<MaintenanceRunRow>();
   readonly publicProjection = this.table<PublicProjectionRow>();
   readonly publicPurgeAcks = this.table<true>();
@@ -443,9 +666,16 @@ export class MemoryBackend {
     const created: ScopeStore = {
       key,
       scope,
+      workspaces: this.table<Workspace>(),
+      memberships: this.table<Membership>(),
+      invitations: this.table<Invitation>(),
       notes: this.table<Note>(),
       noteRevisions: this.table<NoteRevision>(),
       cleanupReceipts: this.table<CleanupReceiptRow>(),
+      membershipRemovalLocks: this.table<MembershipRemovalLockRow>(),
+      moveAuthorizationLocks: this.table<MoveAuthorizationLockRow>(),
+      deletionManifestHeaders: this.table<WorkspaceDeletionManifestHeaderRow>(),
+      deletionManifestItems: this.table<WorkspaceDeletionManifestItemRow>(),
       actorLocks: this.table<true>(),
       localProjection: this.table<LocalProjectionRow>(),
       projectionRevisions: this.table<number>(),

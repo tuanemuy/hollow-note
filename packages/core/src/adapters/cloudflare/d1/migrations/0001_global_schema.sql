@@ -1,21 +1,12 @@
 -- Global D1 schema, migration version 1.
 --
--- Scope: the tables of `spec/database/index.md` の「物理配置」 that have a
--- port today, plus `membership_directory`, which has no port of its own
--- but is read by `AccountDeletionManifestStore.appendMembershipPage`.
--- `workspace_slug_reservations`, `invitation_routes`, `job_slots`,
--- `workspace_directory`, `job_history*` and `external_connections` are
--- deliberately absent — the domains that own them have no ports yet, and
--- a later slice adds them as its own migration file.
---
 -- No FOREIGN KEY declarations. The port contract is the canon of a
--- persistence port (ADR 026) and it nowhere requires referential
--- enforcement: the conformance suites insert an `Identity` for a user
--- row that was never written, and the reference backend accepts it. A
--- schema that enforced the reference would fail suites the reference
--- backend passes, which ADR 046 resolves in favour of the contract. The
--- cross-row cleanup the spec calls `ON DELETE CASCADE` is carried by
--- domain events instead.
+-- persistence port and it nowhere requires referential enforcement: the
+-- conformance suites insert an `Identity` for a user row that was never
+-- written, and the reference backend accepts it. A schema that enforced
+-- the reference would fail suites the reference backend passes, and the
+-- contract wins. The cross-row cleanup the spec calls `ON DELETE CASCADE`
+-- is carried by domain events instead.
 
 CREATE TABLE _occ_guard (
   id integer PRIMARY KEY,
@@ -153,9 +144,11 @@ CREATE TABLE identity_unique_reservations (
   CHECK (state <> 'reserved' OR expires_at IS NOT NULL)
 );
 
--- `membership_id` is nullable because a `pending` edge is a reservation
--- taken before the workspace-local Membership exists, so it has no id to
--- carry yet; the CHECK still demands one from every settled edge.
+-- `membership_id` is left nullable because the CHECK below is where the
+-- requirement lives and it binds settled edges only. No writer takes that
+-- latitude: `reserveAndClaimActivation` supplies the id, so an edge names
+-- its membership from the state it is first inserted in, and a row that
+-- names none is refused by the role projection rather than projected onto.
 -- `(user_id, operation_id)` exists because `operation_id` is the edge key
 -- an account-deletion manifest pages by, and neither of the other two
 -- indexes can walk that order.
@@ -235,9 +228,8 @@ CREATE TABLE distributed_operations (
 );
 
 -- Every uniqueness rule is scoped to the kind as well as the partition
--- key (`spec/database/index.md#distributed_operations`): `beginOrResume`
--- starts a `noteMove` on a partition that already has a running
--- `accountDeletion`, and replays a request key per kind.
+-- key: `beginOrResume` starts a `noteMove` on a partition that already
+-- has a running `accountDeletion`, and replays a request key per kind.
 CREATE UNIQUE INDEX distributed_operations_request_uq
   ON distributed_operations (kind, partition_key, request_key);
 CREATE UNIQUE INDEX distributed_operations_active_uq
@@ -299,8 +291,8 @@ CREATE TABLE global_maintenance_runs (
   kind text NOT NULL CHECK (kind IN ('authStatePrune', 'jobTombstonePrune', 'accountManifestPrune')),
   status text NOT NULL CHECK (status IN ('running', 'completed')),
   -- Fixed when the run is created and never re-read from the deployment's
-  -- configuration afterwards (ADR 061): a lane holds an index into this
-  -- JSON array, not a table name.
+  -- configuration afterwards: a lane holds an index into this JSON array,
+  -- not a table name.
   tables text NOT NULL,
   as_of integer NOT NULL,
   lease_owner text NOT NULL,
@@ -373,9 +365,8 @@ CREATE TABLE public_note_search_tags (
 
 CREATE INDEX public_note_search_tags_note_idx ON public_note_search_tags (note_id);
 
--- Contentless: the bigram-preprocessed text exists only inside the index
--- (ADR 011 / ADR 017), and rowids are inserted explicitly from
--- `public_note_search.rowid`.
+-- Contentless: the bigram-preprocessed text exists only inside the index,
+-- and rowids are inserted explicitly from `public_note_search.rowid`.
 CREATE VIRTUAL TABLE public_note_search_fts USING fts5(
   title_fts,
   text_fts,

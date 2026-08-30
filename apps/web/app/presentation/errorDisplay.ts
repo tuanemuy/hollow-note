@@ -9,6 +9,13 @@ import {
 const NOTE_INACCESSIBLE_MESSAGE =
   "このノートは見つかりません。URL が変わったか、削除された可能性があります。";
 
+// 「開けないワークスペース」の文言。壊れた ID（`WORKSPACE_INVALID_ID`）と
+// 不在・除名（`WORKSPACE_NOT_FOUND`）を同一表示に収斂させる —
+// `presentation/scope.ts:workspaceUnavailability` が両方を「開けない」に
+// 畳むので、辞書だけが両者を区別すると同じ失敗が経路ごとに違って見える。
+const WORKSPACE_INACCESSIBLE_MESSAGE =
+  "このワークスペースは開けません。削除されたか、メンバーから外れた可能性があります。";
+
 /**
  * 認可の往復が途中で切れたときの文言。P-05 は `SerializedError` を伴わ
  * ない失敗（プロバイダーが `code` / `state` を返さない）も同じ状態に畳む
@@ -114,11 +121,69 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
   STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
+  WORKSPACE_NOT_FOUND: WORKSPACE_INACCESSIBLE_MESSAGE,
+  WORKSPACE_INVALID_ID: WORKSPACE_INACCESSIBLE_MESSAGE,
+  WORKSPACE_INVALID_NAME:
+    "ワークスペース名は 1〜80 文字です。入力内容を確認してもう一度お試しください。",
+  WORKSPACE_INVALID_DESCRIPTION:
+    "説明は 500 文字までです。短くしてからもう一度お試しください。",
+  WORKSPACE_INVALID_SLUG:
+    "スラッグは英小文字・数字・ハイフン・アンダースコアの 3〜30 文字です。入力内容を確認してもう一度お試しください。",
+  WORKSPACE_SLUG_RESERVED:
+    "このスラッグは予約されていて使えません。別のスラッグでお試しください。",
+  SLUG_ALREADY_USED:
+    "このスラッグは使われています。別のスラッグでお試しください。",
+  WORKSPACE_SLUG_REQUIRED_TO_PUBLISH:
+    "公開するにはスラッグの設定が必要です。一般設定でスラッグを決めてからお試しください。",
+  WORKSPACE_PUBLISHED_REQUIRES_SLUG:
+    "公開中はスラッグを解除できません。先に非公開に戻してからお試しください。",
+  WORKSPACE_QUOTA_EXCEEDED:
+    "作成できるワークスペースは 20 件までです。使っていないワークスペースを削除してからお試しください。",
+  WORKSPACE_DELETING:
+    "このワークスペースは削除処理中です。操作は受け付けられません。",
+  WORKSPACE_DIRECTORY_UNAVAILABLE:
+    "ワークスペースの情報を確認できませんでした。少し待ってからもう一度お試しください。",
+  WORKSPACE_MOVE_IN_PROGRESS:
+    "ノートの移動が進行中です。完了してからもう一度お試しください。",
+  // 移動サガが返す 4 コード。`conflict` の共通文言（「もう一度お試し
+  // ください」）は、ロックが解けるまで成功しない再試行を勧めてしまう。
+  NOTE_MOVE_IN_PROGRESS:
+    "このノートは別の移動が進行中です。その移動が終わるまで待ってから、画面を再読み込みしてください。",
+  MOVE_AUTHORIZATION_LOCK_CONFLICT:
+    "このワークスペースで別の移動が進行中です。その移動が終わるまで待ってから、画面を再読み込みしてください。",
+  STALE_MEMBERSHIP:
+    "移動の途中でメンバーの状態が変わりました。画面を再読み込みして、権限を確かめてからお試しください。",
+  STALE_SCOPE_ROUTE:
+    "このノートは別の場所へ移されました。画面を再読み込みして、移動先をご確認ください。",
+  WORKSPACE_INVALID_ROLE:
+    "ロールの指定が正しくありません。owner・editor・viewer から選んでください。",
+  ALREADY_MEMBER:
+    "このメールアドレスはすでにメンバーです。招待は必要ありません。",
+  INVITATION_LIMIT_REACHED:
+    "返事待ちの招待が上限に達しました。不要な招待を取り消してからお試しください。",
+  INVITATION_NOT_FOUND:
+    "この招待は使えません。招待した人にもう一度送ってもらってください。",
+  INVITATION_NOT_PENDING:
+    "この招待はすでに使われたか、取り消されています。招待した人にもう一度送ってもらってください。",
+  WORKSPACE_INVITATION_EXPIRED:
+    "この招待は期限が切れています。招待した人にもう一度送ってもらってください。",
+  MEMBERSHIP_NOT_FOUND:
+    "このメンバーは見つかりません。画面を再読み込みしてもう一度お試しください。",
+  MEMBERSHIP_ALREADY_EXISTS:
+    "すでにこのワークスペースのメンバーです。そのまま開けます。",
+  WORKSPACE_LAST_OWNER_CANNOT_LEAVE:
+    "最後の owner は降格・除名・脱退ができません。別のメンバーを owner にしてからお試しください。",
+  WORKSPACE_CANNOT_CHANGE_OWN_ROLE:
+    "自分のロールは変更できません。他の owner に変更してもらってください。",
+  WORKSPACE_CANNOT_REMOVE_SELF:
+    "自分を除名することはできません。抜けるときは「脱退」をお使いください。",
 
   OPTIMISTIC_LOCK_FAILURE: "他の操作と競合しました。もう一度お試しください。",
 
   CONFIRMATION_MISMATCH:
     "メールアドレスが一致しません。アカウントのメールアドレスをそのまま入力してください。",
+  WORKSPACE_MEMBERSHIPS_REMAIN:
+    "参加中のワークスペースがあるため、アカウントを削除できません。ワークスペースから脱退するか、owner を他のメンバーに譲るか、ワークスペースを削除してからもう一度お試しください。",
   INVALID_REQUEST_ID:
     "削除の要求を組み立てられませんでした。画面を再読み込みしてもう一度お試しください。",
   IDENTITY_ACCOUNT_DELETION_RETRY_LIMIT_EXCEEDED:

@@ -173,19 +173,19 @@
   <form>
     <div class="field">
       <label class="field-label" for="wsName">名前</label>
-      <input class="input" id="wsName" type="text" placeholder="例: デザインチーム" maxlength="50" autofocus>
+      <input class="input" id="wsName" type="text" placeholder="例: デザインチーム" maxlength="80" autofocus>
     </div>
 
     <div class="field">
       <label class="field-label" for="wsDesc">説明<span style="font-weight:var(--weight-regular);color:var(--color-ink-tertiary)">（任意）</span></label>
-      <textarea class="textarea" id="wsDesc" maxlength="300" placeholder="どんな資料を集めるか"></textarea>
+      <textarea class="textarea" id="wsDesc" maxlength="500" placeholder="どんな資料を集めるか"></textarea>
     </div>
 
     <div class="field">
       <label class="field-label" for="wsSlug">公開スラッグ<span style="font-weight:var(--weight-regular);color:var(--color-ink-tertiary)">（任意）</span></label>
       <div class="prefixed">
         <span class="prefix">hollow.app/w/</span>
-        <input class="input invalid" id="wsSlug" type="text" value="design-team" aria-describedby="slugErr">
+        <input class="input invalid" id="wsSlug" type="text" value="design-team" maxlength="30" aria-describedby="slugErr">
       </div>
       <p class="field-error" id="slugErr">このスラッグは使われています</p>
       <div class="suggest">
@@ -193,7 +193,7 @@
         <button type="button">hollow-design</button>
         <button type="button">design-team-jp</button>
       </div>
-      <p class="field-hint">あとから設定できます。ノートを公開するときに必要になります。</p>
+      <p class="field-hint">半角英小文字・数字・ハイフン・アンダースコア · 3〜30 文字。あとから設定できます。ノートを公開するときに必要になります。</p>
     </div>
 
     <div class="form-actions">

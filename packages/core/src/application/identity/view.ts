@@ -36,11 +36,22 @@ export type SignInView = Readonly<{
   sessionToken: string;
 }>;
 
+/**
+ * The session probe's projection. `email` is PII, and it is safe here for
+ * one structural reason: the only input this view is reachable through is
+ * a session token, so the address it carries is always the caller's own.
+ * It is projected because the invitation screen has to tell "the invited
+ * address" from "the signed-in account". The transport boundary
+ * owns a shell type that declares `email` absent, so any payload typed as
+ * that shell rejects this view rather than quietly carrying the address:
+ * narrowing is checked, not remembered.
+ */
 export type AuthenticatedUserView = Readonly<{
   userId: string;
   displayName: string;
   handle: string | null;
   avatarUrl: string | null;
+  email: string;
 }>;
 
 export const toAuthenticatedUserView = (
@@ -50,6 +61,7 @@ export const toAuthenticatedUserView = (
   displayName: user.displayName,
   handle: user.handle,
   avatarUrl: user.avatarUrl,
+  email: user.email,
 });
 
 export type StartOAuthFlowView = Readonly<{
@@ -167,10 +179,10 @@ export type AddPasswordIdentityView = Readonly<{
   identityId: string;
 }>;
 
-/** Deliberately empty — the spec gives `changePassword` no output. */
+/** Deliberately empty — `changePassword` reports nothing. */
 export type ChangePasswordView = Readonly<Record<string, never>>;
 
-/** Deliberately empty — the spec gives `removeIdentity` no output. */
+/** Deliberately empty — `removeIdentity` reports nothing. */
 export type RemoveIdentityView = Readonly<Record<string, never>>;
 
 export type LinkOAuthIdentityView = Readonly<{

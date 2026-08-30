@@ -25,6 +25,7 @@ describe("authenticateSession", () => {
       displayName: "Alice",
       handle: null,
       avatarUrl: null,
+      email: "user@example.com",
     });
   });
 

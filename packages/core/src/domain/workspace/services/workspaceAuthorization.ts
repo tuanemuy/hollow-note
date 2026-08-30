@@ -1,4 +1,6 @@
-import type { WorkspaceRole } from "../valueObject";
+import { BusinessRuleError } from "@repo/core/domain/error";
+import { WorkspaceErrorCode } from "../errorCode";
+import { WorkspaceRole } from "../valueObject";
 
 export type WorkspaceAction =
   | "viewNote"
@@ -16,14 +18,12 @@ export type WorkspaceAction =
   | "deleteWorkspace";
 
 /**
- * Interface-only contract for the Workspace authorization domain service
- * (spec/domains/workspace.md#WorkspaceAuthorization). The implementation —
- * the single action → minimum-role table — ships with the Workspace slice
- * (#3); this slice only injects the type into `NoteAccessPolicy`, whose
- * calls all take the personal-ownership path.
+ * Role-based authorization for workspace actions.
  *
  * Outward entry points are `can` / `ensureCan` only; usecases never call
- * `minimumRoleFor` directly.
+ * `minimumRoleFor` or `WorkspaceRole.atLeast` directly. The interface is
+ * kept so a container can inject the service, and
+ * `WorkspaceAuthorization` below is the single implementation.
  */
 export interface WorkspaceAuthorization {
   /** Single source of truth for the action → minimum-role table. */
@@ -35,3 +35,45 @@ export interface WorkspaceAuthorization {
    */
   ensureCan(role: WorkspaceRole, action: WorkspaceAction): void;
 }
+
+/**
+ * Backing up a note deliberately reuses `editNote` instead of getting its
+ * own action: a `BackupRecord` is shared state attached to the note, so
+ * writing one is the same decision `editNote` already guards. Splitting
+ * them would let the two rows drift. Generating a download likewise reuses
+ * `downloadNote`.
+ */
+const MINIMUM_ROLE: Readonly<Record<WorkspaceAction, WorkspaceRole>> = {
+  viewNote: "viewer",
+  downloadNote: "viewer",
+  createNote: "editor",
+  editNote: "editor",
+  deleteNote: "editor",
+  changeNoteVisibility: "editor",
+  moveNote: "editor",
+  manageTags: "editor",
+  viewTrash: "editor",
+  manageMembers: "owner",
+  manageWorkspace: "owner",
+  publishWorkspace: "owner",
+  deleteWorkspace: "owner",
+};
+
+const minimumRoleFor = (action: WorkspaceAction): WorkspaceRole =>
+  MINIMUM_ROLE[action];
+
+const can = (role: WorkspaceRole, action: WorkspaceAction): boolean =>
+  WorkspaceRole.atLeast(role, minimumRoleFor(action));
+
+export const WorkspaceAuthorization: WorkspaceAuthorization = {
+  minimumRoleFor,
+  can,
+  ensureCan: (role, action) => {
+    if (!can(role, action)) {
+      throw new BusinessRuleError(
+        WorkspaceErrorCode.InsufficientRole,
+        `Role ${role} cannot perform ${action}`,
+      );
+    }
+  },
+};

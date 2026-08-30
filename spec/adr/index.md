@@ -29,7 +29,7 @@
 | 024 | [in-memory 永続化を正規のバックエンドとして扱い、トランザクションを undo ログで実装する](./024-in-memory-adapter-as-first-class-backend.md) |
 | 025 | [参照ランタイムを Node + in-memory の 1 つに絞る](./025-single-reference-runtime.md) |
 | 026 | [ポート契約の正本はポート定義に置き、共有適合スイートで検証する](./026-port-contract-and-conformance.md) |
-| 027 | [投影世代と route 版は UoW 内で採番し、ドメインへは引数で渡す](./027-projection-revision-numbering.md) |
+| 027 | [投影世代は UoW 内で採番してドメインへ引数で渡し、route 版を運ぶ `note.moved` は移動サガが発行する](./027-projection-revision-numbering.md) |
 | 028 | [認証の応答は登録の有無で差を作らない](./028-account-enumeration-resistance.md) |
 | 029 | [メール確認はセッションの発行を確認要求元のブラウザーに束縛する](./029-verification-session-binding.md) |
 | 030 | [認証状態を変える経路は POST に限り、サインアウトはフル遷移で行う](./030-auth-state-transition-transport.md) |

@@ -476,6 +476,8 @@ export type UserReader = Pick<UserRepository, "findById">;
 export type NoteReader = Pick<NoteRepository, "findById" | "listByOwner" | "countByOwner">;
 ```
 
+The same `Pick` cuts finer than "reads only". What a request-path field exposes is decided by whether an operation **may** be called from the request path, not by whether it happens to have a caller today — three axes decide it: a saga's terminal operation, a write only the worker face drives, and a read that is correct only inside a transaction (an invitation quota counted outside the transaction that issues the invitation reopens the very window the count exists to close). The worker container keeps the whole port; the composition root still hands both containers the same instance, so narrowing a field costs no wiring. Write the reason for each cut in the field's JSDoc, since the constraint is invisible from the call site and the next person to add a method has to be able to read why the neighbouring one is missing — and note that "it is a terminal transition" is not on its own the criterion, because terminal transitions the request path legitimately drives (`completeRemoval` for `removeMember` / `leaveWorkspace`) stay on the request field.
+
 `createMemoryRuntime(options)` (`application/di/memoryRuntime.ts`) is the composition root: one `MemoryBackend` shared by every adapter of the process, plus `createRequestContainer(config)` / `createWorkerContainer()`. `application/di/serverNode.ts` wraps it for the Node entry (env schema → runtime options → process-wide singleton), and `application/di/containerStore.ts` publishes the request-scoped container to framework code through a `globalThis` slot that SSR and RSC share.
 
 Two wiring rules are easy to get wrong:

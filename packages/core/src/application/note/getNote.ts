@@ -18,8 +18,7 @@ const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
 
 /**
- * Reads a note for the detail view (UC-note-002,
- * spec/usecases/note.md#getnote). Viewer-context resolution: route →
+ * Reads a note for the detail view. Viewer-context resolution: route →
  * scope-bound read → `NoteAccessPolicy.evaluate`; absence, someone
  * else's private note, and missing permission all collapse to
  * `NotFoundError("NOTE_NOT_FOUND")` so existence is never leaked.
@@ -44,7 +43,7 @@ export async function getNote({
   }
   const note = versioned.entity;
 
-  const viewer = viewerFor(input.userId);
+  const viewer = await viewerFor(container, note.owner, input.userId);
   const access = noteAccessPolicy.evaluate(
     note,
     viewer,

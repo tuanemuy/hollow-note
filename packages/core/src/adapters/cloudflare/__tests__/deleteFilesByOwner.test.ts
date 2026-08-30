@@ -49,14 +49,12 @@ function unusedPort<T extends object>(name: string): T {
 /**
  * How many SQL statements one `deleteFilesByOwner` turn issues.
  *
- * `spec/platform/index.md` の「実行予算と分割単位」→「Scope DO」 sets the
- * design goal for a scope-local bulk delete: the writes collapse into a
- * single atomic apply whatever the batch size, carrying the outbox as one
- * multi-row INSERT, while the statement total and the read-side round
- * trips stay proportional to the count. That document carries the
- * Cloudflare figure itself — `4n + 3` statements per turn — as a design
- * goal rather than a cap (ADR 056 決定 2), and this file is the
- * measurement that pins it.
+ * The design goal for a scope-local bulk delete: the writes collapse into
+ * a single atomic apply whatever the batch size, carrying the outbox as
+ * one multi-row INSERT, while the statement total and the read-side round
+ * trips stay proportional to the count. The Cloudflare figure itself —
+ * `4n + 3` statements per turn — is a design goal rather than a cap, and
+ * this file is the measurement that pins it.
  *
  * What is reproduced here is the storage half of
  * `application/storage/deleteFilesByOwner.ts`: the `listByOwner`
@@ -229,6 +227,14 @@ const repositories = (session: SqlSession): ScopePlaneRepositories => ({
   storageQuotaRepository: unusedPort("StorageQuotaRepository"),
   llmUsageRepository: unusedPort("LlmUsageRepository"),
   storedFileRepository: createCloudflareStoredFileRepository({ session }),
+  workspaceRepository: unusedPort("WorkspaceRepository"),
+  membershipRepository: unusedPort("MembershipRepository"),
+  invitationRepository: unusedPort("InvitationRepository"),
+  membershipRemovalPreparationStore: unusedPort(
+    "MembershipRemovalPreparationStore",
+  ),
+  workspaceOperationLockStore: unusedPort("WorkspaceOperationLockStore"),
+  workspaceDeletionManifestStore: unusedPort("WorkspaceDeletionManifestStore"),
 });
 
 const runOneTurn = async (
@@ -310,10 +316,9 @@ describe("deleteFilesByOwner statement budget [cloudflare]", () => {
     // token (`TransactionalRepository`'s JSDoc), and the re-read `delete`
     // makes so a stale token is refused at the call site rather than at
     // commit — plus two staged statements, an `_occ_guard` trip wire and
-    // the `DELETE` it protects. The port has no bulk delete
-    // (`spec/domains/storage.md` rules one out so every removed file
-    // emits its own `storage.fileDeleted`), so no adapter can fold these
-    // into one statement while keeping OCC.
+    // the `DELETE` it protects. The port has no bulk delete (every removed
+    // file emits its own `storage.fileDeleted`), so no adapter can fold
+    // these into one statement while keeping OCC.
     expect(large.counts.reads - small.counts.reads).toBe(60);
     expect(large.counts.commitStatements - small.counts.commitStatements).toBe(
       60,

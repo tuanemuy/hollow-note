@@ -4,12 +4,17 @@ import type { NoteId } from "@repo/core/domain/note/valueObject";
 import type { ScopeKey } from "../scope";
 
 /**
- * Frozen transfer payload of a move: Note / revisions, tag names
- * (display + normalized), source / media / reference StoredFile
- * metadata, BackupRecord, and the Usage delta. R2 bytes never move.
- * Declared opaque here — the concrete field layout is fixed by the move
- * slice together with its adapter; this slice only pins the port
- * signatures (DOM-note-066..070).
+ * Frozen transfer payload of a move, as this port would take it: Note /
+ * revisions, tag names (display + normalized), source / media /
+ * reference StoredFile metadata, BackupRecord, and the Usage delta. R2
+ * bytes never move. Declared opaque, since a backend that folds a phase
+ * into one transaction fixes the field layout together with its
+ * adapter.
+ *
+ * Not the type the shipped move carries: that one is `MoveSnapshot`,
+ * local to `application/note/moveNote.ts`, and it holds what this
+ * deployment actually transfers (Note, revisions, file metadata, bytes) —
+ * tags and BackupRecord belong to slices that do not exist yet.
  */
 export interface NoteMoveSnapshot {
   readonly migrationId: string;
@@ -25,8 +30,16 @@ export interface NoteMoveSnapshot {
  * may only abort before the route switch — afterwards recovery is
  * forward-only.
  *
- * Port definition only in the walking-skeleton slice — implementation
- * ships with the move slice.
+ * **Nothing implements this port and nothing calls it.** The move that
+ * ships drives the phases from the usecase
+ * (`application/note/moveNote.ts`), one scope unit of work per phase,
+ * because that is what keeps each phase's `AppliedOperationStore` receipt
+ * inside the very transaction whose effects it claims — behind an adapter
+ * the phase-to-transaction correspondence stops being something the type
+ * can state. The port stays as the contract for the day a backend does
+ * fold a phase into one transaction of its own; until then its five
+ * signatures are a design intent, not a contract anyone is held to (no
+ * conformance suite executes them).
  *
  * Error contract: `ConflictError` (stale membership / lock conflicts),
  * `SystemError(DatabaseError)`.

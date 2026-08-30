@@ -16,3 +16,4 @@
 | slug / membership reservation後にworkspace commitが失敗 | 作成する | operation IDでglobal reservationを解放し、directoryにactive workspaceを残さない | |
 | local commit後にglobal activation応答を失う | recoveryを実行する | 同じoperation IDでedge / slug / directoryをactiveにし、Workspaceを二重作成しない | |
 | pending workspaceを含め所有数20件 | 作成する | quota回避を防ぐため `WorkspaceQuotaExceeded` | |
+| 作成の最後の投影を恒久的に失う | 作成する | scope の Workspace と slug の予約は残り `workspace_directory` に行が無い状態になる。誰も再送しないので、次の保存（改名）がその行を作る | |

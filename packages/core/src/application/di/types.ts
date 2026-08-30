@@ -7,11 +7,23 @@ import type { PasswordHasher } from "@repo/core/domain/identity/ports/passwordHa
 import type { SecureTokenGenerator } from "@repo/core/domain/identity/ports/secureTokenGenerator";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
+import type { UserBatchReader } from "@repo/core/domain/identity/ports/userBatchReader";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { PublicNoteProjectionWriter } from "@repo/core/domain/note/ports/publicNoteProjectionWriter";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
+import type { InvitationRepository } from "@repo/core/domain/workspace/ports/invitationRepository";
+import type { InvitationRouteStore } from "@repo/core/domain/workspace/ports/invitationRouteStore";
+import type { MembershipDirectoryReservationStore } from "@repo/core/domain/workspace/ports/membershipDirectoryReservationStore";
+import type { MembershipRepository } from "@repo/core/domain/workspace/ports/membershipRepository";
+import type { PublicWorkspaceDirectoryReader } from "@repo/core/domain/workspace/ports/publicWorkspaceDirectoryReader";
+import type { UserWorkspaceDirectory } from "@repo/core/domain/workspace/ports/userWorkspaceDirectory";
+import type { WorkspaceDirectoryBatchReader } from "@repo/core/domain/workspace/ports/workspaceDirectoryBatchReader";
+import type { WorkspaceDirectoryProjectionWriter } from "@repo/core/domain/workspace/ports/workspaceDirectoryProjectionWriter";
+import type { WorkspaceOperationLockStore } from "@repo/core/domain/workspace/ports/workspaceOperationLockStore";
+import type { WorkspaceRepository } from "@repo/core/domain/workspace/ports/workspaceRepository";
+import type { WorkspaceSlugReservationStore } from "@repo/core/domain/workspace/ports/workspaceSlugReservationStore";
 import type {
   GlobalUnitOfWorkProvider,
   ScopeUnitOfWorkProvider,
@@ -96,8 +108,8 @@ export type UserReader = Pick<UserRepository, "findById">;
 export type IdentityReader = Pick<IdentityRepository, "listByUserId">;
 /**
  * `deleteById` is included because expired-session cleanup during
- * `authenticateSession` is spec'd as a best-effort delete outside any
- * unit of work (the row is create/delete-only and carries no OCC).
+ * `authenticateSession` is a best-effort delete outside any unit of work
+ * (the row is create/delete-only and carries no OCC).
  */
 export type SessionReader = Pick<
   SessionRepository,
@@ -143,6 +155,92 @@ export type UsageReader = Readonly<{
   storageQuota: Pick<StorageQuotaRepository, "find" | "listBySubjects">;
   llmUsage: Pick<LlmUsageRepository, "find">;
 }>;
+/**
+ * Scope-bound read view over one workspace's three aggregates: access
+ * resolution, member and pending-invitation listings, and the token /
+ * email lookups the invitation flow starts from.
+ *
+ * Every write method is dropped, which is what forces a mutation through
+ * `scopeUnitOfWorkProvider.run` — including the ones that only look like
+ * reads, since `findById` yields the OCC token a save would consume.
+ *
+ * Two invitation reads are dropped for a second reason, unrelated to
+ * writes. `countPendingIssuedSince` is the invitation quota check, and the
+ * count is only sound while it shares the transaction that inserts the
+ * row: read outside one, two requests that each see 49 both pass and the
+ * workspace lands at 51. Not
+ * offering it here is how that stays true by type rather than by
+ * convention. `listByWorkspace` returns invitations in every state, which
+ * only the scope's own deletion sweep enumerates; the pending listing
+ * screen reads `listPendingByWorkspace`.
+ *
+ * `admission` is the one deletion check a request may make outside a
+ * transaction: the three invitation sagas reserve a global row *before*
+ * their scope commit, and refusing a scope that is already closed keeps
+ * them from claiming a token or an edge they would only have to abandon.
+ * It is a pure read; the binding refusal is the second `assertWritable`
+ * inside the commit.
+ */
+export type WorkspaceReader = Readonly<{
+  admission: Pick<WorkspaceOperationLockStore, "assertWritable">;
+  workspace: Pick<WorkspaceRepository, "findById">;
+  membership: Pick<
+    MembershipRepository,
+    "findByWorkspaceAndUser" | "listByWorkspace" | "countByRole"
+  >;
+  invitation: Pick<
+    InvitationRepository,
+    | "findByTokenHash"
+    | "findPendingByWorkspaceAndEmail"
+    | "listPendingByWorkspace"
+  >;
+}>;
+
+/**
+ * Request-path half of the workspace directory projection: the snapshot
+ * publish that the profile / slug / publication usecases run after their
+ * scope-local commit.
+ *
+ * `tombstone` is dropped for the same reason the readers above drop their
+ * writes. It is terminal — a second operation's tombstone is a
+ * `ConflictError` and no later snapshot ever resumes the row — and its
+ * only caller is the worker-plane deletion cleanup, so the request path
+ * is given no way to reach it.
+ */
+export type WorkspaceDirectoryProjector = Pick<
+  WorkspaceDirectoryProjectionWriter,
+  "applySnapshotIfNewer"
+>;
+
+/**
+ * Request-path half of the membership directory reservation: the join
+ * saga's reserve → activate / abandon, the removal saga's three turns, and
+ * the read `acceptInvitation` uses to see the edges a user is already
+ * activating.
+ *
+ * Two groups are dropped. The four account-deletion lock turns
+ * (`prepareAccountDeletion` / `renewAccountDeletion` /
+ * `commitAccountDeletion` / `releaseAccountDeletion`) belong to a prepare
+ * wave this deployment does not have, so the request path has no caller
+ * for any of them. `applyRoleIfNewer` is the role-projection subscriber's
+ * write, reached from the worker plane. `WorkerContainer` keeps the whole
+ * port.
+ *
+ * Terminality is not the criterion here, unlike
+ * `WorkspaceDirectoryProjector` above: `completeRemoval` deletes the edge
+ * outright and is kept, because `removeMember` / `leaveWorkspace` reach it
+ * from the request path.
+ */
+export type MembershipDirectoryReservations = Pick<
+  MembershipDirectoryReservationStore,
+  | "reserveAndClaimActivation"
+  | "activate"
+  | "abandon"
+  | "listActivatingByUser"
+  | "beginRemoval"
+  | "abandonRemoval"
+  | "completeRemoval"
+>;
 
 /**
  * Request-path container. Provided to usecases (mutations must run
@@ -150,7 +248,7 @@ export type UsageReader = Readonly<{
  * layer for SSR head/meta via `config`.
  *
  * Ports that live here *outside* the UoW contexts are exactly the ones
- * the spec places outside the transaction: the uniqueness-reservation
+ * the design places outside the transaction: the uniqueness-reservation
  * saga (`identityUniqueDirectory`), the note-route saga
  * (`noteRouteStore`), the atomic login-attempt counter
  * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
@@ -160,6 +258,15 @@ export type UsageReader = Readonly<{
  * bytes *before* the transaction that records the file, and the delivery
  * route reads them back — both request-path work that no unit of work
  * may enclose.
+ *
+ * The workspace ports here are exactly the global-plane half of that
+ * group: the three directories a scope cannot answer on its own, and the
+ * three service-wide reservations (slug, invitation token, membership
+ * edge) whose reserve → scope commit → activate saga straddles the
+ * transaction by design. The scope-local half lives on
+ * `ScopeUnitOfWorkContext`. `userBatchReader` joins them because a member
+ * listing resolves its display names across UserId shards, which no
+ * workspace scope can reach.
  *
  * `oauthDevMode` is not a port but the one flag the composition root
  * publishes about its own OAuth wiring: the dev consent route reads it
@@ -190,6 +297,15 @@ export type RequestContainer = SharedDeps &
     deletionOperationReader: DeletionOperationReader;
     noteReaderFor: (scope: ScopeKey) => NoteReader;
     usageReaderFor: (scope: ScopeKey) => UsageReader;
+    workspaceReaderFor: (scope: ScopeKey) => WorkspaceReader;
+    userBatchReader: UserBatchReader;
+    userWorkspaceDirectory: UserWorkspaceDirectory;
+    workspaceDirectoryBatchReader: WorkspaceDirectoryBatchReader;
+    publicWorkspaceDirectoryReader: PublicWorkspaceDirectoryReader;
+    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjector;
+    workspaceSlugReservationStore: WorkspaceSlugReservationStore;
+    invitationRouteStore: InvitationRouteStore;
+    membershipDirectoryReservationStore: MembershipDirectoryReservations;
     mailSender: MailSender;
     passwordHasher: PasswordHasher;
     secureTokenGenerator: SecureTokenGenerator;
@@ -198,12 +314,11 @@ export type RequestContainer = SharedDeps &
   }>;
 
 /**
- * Sweep tables owned by `pruneExpiredAuthState`
- * (spec/usecases/identity.md). Every table with an `expiresAt` retention
- * window belongs here: a missing registration is a type error on every
- * call routed through this union, but a table that reaches the usecase
- * through a run's own table set (`readonly string[]`) is skipped at
- * runtime instead of being collected (spec/adr/062).
+ * Sweep tables owned by `pruneExpiredAuthState`. Every table with an
+ * `expiresAt` retention window belongs here: a missing registration is a
+ * type error on every call routed through this union, but a table that
+ * reaches the usecase through a run's own table set (`readonly string[]`)
+ * is skipped at runtime instead of being collected.
  */
 export type AuthStateTable =
   | "sessions"
@@ -238,8 +353,8 @@ export type ExpirySweep = Readonly<{
  * Intentionally does NOT carry `config` or the unit-of-work providers:
  * `config` is SSR-only metadata, and worker code that reads/writes the
  * outbox or sweeps expiry tables does so through the ports directly
- * without a unit of work (spec: the per-table deletes must not share a
- * cross-cutting transaction).
+ * without a unit of work — the per-table deletes must not share a
+ * cross-cutting transaction.
  *
  * Both unit-of-work providers are here because the subscriber registry
  * (`application/workers/subscribers.ts`) runs real consumers whose
@@ -266,6 +381,19 @@ export type ExpirySweep = Readonly<{
  * each scope's unit of work. `objectStorage` is here because reclaiming
  * an object is the subscriber's job, after the metadata row it belonged
  * to is already gone.
+ *
+ * The four workspace ports are the global half of the workspace-deletion
+ * saga: its cleanup
+ * turns run on the worker plane, and the directory tombstone, the slug
+ * release, the membership edges and the invitation routes they delete all
+ * live on the control plane, outside any scope's unit of work. The request
+ * container carries the same ports for the reservation sagas; a deletion
+ * reaches them from the worker side instead.
+ *
+ * `membershipDirectoryReservationStore` has a second worker-side user: the
+ * `workspace.membership.roleChanged` subscriber writes the same edge to
+ * project a role change onto the directory, so the port stays on this plane
+ * even without the deletion saga.
  */
 export type WorkerContainer = SharedDeps &
   Readonly<{
@@ -282,6 +410,10 @@ export type WorkerContainer = SharedDeps &
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
+    workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
+    workspaceSlugReservationStore: WorkspaceSlugReservationStore;
+    invitationRouteStore: InvitationRouteStore;
+    membershipDirectoryReservationStore: MembershipDirectoryReservationStore;
     routingGenerations: readonly string[];
     authStateSweeps: Readonly<Record<AuthStateTable, ExpirySweep>>;
   }>;

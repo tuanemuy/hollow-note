@@ -105,7 +105,7 @@ export async function acknowledgePersonalCleanup(
 }
 
 /**
- * Runs the cleanup wave of a deletion (spec/usecases/identity.md 手順 4).
+ * Runs the cleanup wave of a deletion.
  *
  * Only components that have not acknowledged yet are commanded, so a
  * re-driven wave is cheap and a completed barrier degenerates to
@@ -113,9 +113,11 @@ export async function acknowledgePersonalCleanup(
  * one turn re-arm the scope's own task row and finish there; this
  * function does not wait for them.
  *
- * The workspace cleanup wave is not dispatched here: membership items
- * exist only once the workspace slice fixes them, and its `claimPending`
- * page belongs with the receiver that acknowledges it.
+ * The workspace cleanup wave is not dispatched here. Membership edges
+ * exist, but admission refuses a user who still holds one
+ * (`WORKSPACE_MEMBERSHIPS_REMAIN`), so no manifest carries a membership
+ * item to command; and when the wave arrives, its `claimPending` page
+ * belongs with the receiver that acknowledges it rather than here.
  */
 export async function dispatchAccountDeletionCleanup(
   container: WorkerContainer,

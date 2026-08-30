@@ -1,36 +1,38 @@
 import type { ReactNode } from "react";
 import { AccountMenu } from "@/components/layout/AccountMenu";
+import {
+  PERSONAL_SHELL_SCOPE,
+  ScopeToken,
+  type ShellScope,
+} from "@/components/layout/ScopeToken";
 import { BrandMark } from "@/components/ui/BrandMark";
 
 /**
- * L-01 アプリシェル（最小形、spec/pages/index.md#L-01）。上部バーに
- * マーク・スコープトークン（本スライスは個人固定）・パレットトリガー
- * （未機能のため disabled で置く）・アカウントメニューを載せる。
- * アップロード・ティッカーは対応機能が本スライス外。
+ * L-01 アプリシェル（spec/pages/index.md#L-01）。上部バーに
+ * マーク・スコープトークン・パレットトリガー（未機能のため disabled で
+ * 置く）・アカウントメニューを載せる。アップロード・ティッカーは対応機能が
+ * 本スライス外。
+ *
+ * スコープは各ルートが渡す — 文脈の正本は URL なので、シェルが自分で
+ * 決めることはしない。既定は個人で、`/notes` や `/settings/*` のように
+ * 文脈を持たない画面はそのまま使う。
  */
 export function AppShell({
   displayName,
   avatarUrl = null,
+  scope = PERSONAL_SHELL_SCOPE,
   children,
 }: {
   displayName: string;
   avatarUrl?: string | null;
+  scope?: ShellScope;
   children: ReactNode;
 }) {
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-40 flex h-[var(--bar-height)] items-center gap-2 bg-[var(--bar-bg)] px-4 backdrop-blur-xl backdrop-saturate-150 sm:px-6">
         <BrandMark className="shrink-0 text-ink" />
-        <span className="inline-flex h-[30px] max-w-[46vw] min-w-0 items-center gap-1 rounded-pill bg-surface pr-2 pl-[5px] text-sm">
-          <span className="sr-only">現在のスコープ:</span>
-          <span
-            aria-hidden="true"
-            className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm bg-ink-secondary text-[9px] font-medium text-bg"
-          >
-            個
-          </span>
-          <span className="truncate">個人</span>
-        </span>
+        <ScopeToken scope={scope} />
         <div className="min-w-2 flex-1" />
         <button
           type="button"

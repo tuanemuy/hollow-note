@@ -15,16 +15,26 @@ import appCss from "../styles/index.css?url";
 // Server fns only reachable from `"use client"` components miss the
 // rsc manifest (frozen before the client build phase). Pull their
 // provider modules into a server-rendered route to register them.
+// `app/__tests__/serverFunctionRegistration.test.ts` holds this list
+// against every provider module a client island imports.
 import "@/components/auth/SignUpForm/action";
 import "@/components/auth/SignInForm/action";
 import "@/components/auth/VerifyEmailPanel/action";
 import "@/components/auth/ResendVerificationForm/action";
 import "@/components/auth/ResetPasswordPanel/action";
 import "@/components/layout/AccountMenu/action";
+import "@/components/layout/ScopeToken/action";
 import "@/components/note/CreateNoteButton/action";
+import "@/components/settings/DeleteAccountPanel/action";
+import "@/components/settings/UsagePanel/action";
+import "@/components/workspace/WorkspaceMembersPanel/action";
 import "@/routes/auth/-action";
 import "@/routes/dev/-action";
+import "@/routes/invitations/-action";
+import "@/routes/notes/-action";
 import "@/routes/settings/-action";
+import "@/routes/workspaces/-action";
+import "@/routes/workspaces/$workspaceId/settings/-action";
 
 const SITE_ASSET_LINKS = [
   { rel: "icon", href: "/favicon.ico", sizes: "any" },

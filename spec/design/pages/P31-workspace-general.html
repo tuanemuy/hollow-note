@@ -206,19 +206,19 @@
         <span class="ws-icon" aria-hidden="true">DT</span>
         <button class="btn sm">画像を選ぶ</button>
         <button class="btn sm ghost">削除</button>
-        <span class="field-hint">PNG / JPEG / WebP · 2 MB まで</span>
+        <span class="field-hint">PNG / JPEG / WebP · 5 MB まで</span>
       </div>
     </div>
 
     <div class="field">
       <label class="field-label" for="wsName">名前</label>
-      <input class="input" id="wsName" type="text" value="デザインチーム" maxlength="50">
+      <input class="input" id="wsName" type="text" value="デザインチーム" maxlength="80">
     </div>
 
     <div class="field">
       <label class="field-label" for="wsDesc">説明</label>
-      <textarea class="textarea" id="wsDesc" maxlength="300" placeholder="どんな資料を集めているか">プロダクトのデザイン資料・議事録・調査メモを集約しています。</textarea>
-      <p class="field-hint">300 文字まで</p>
+      <textarea class="textarea" id="wsDesc" maxlength="500" placeholder="どんな資料を集めているか">プロダクトのデザイン資料・議事録・調査メモを集約しています。</textarea>
+      <p class="field-hint">500 文字まで</p>
     </div>
   </section>
 
@@ -238,9 +238,9 @@
       <label class="field-label" for="wsSlug">スラッグ</label>
       <div class="prefixed">
         <span class="prefix">hollow.app/w/</span>
-        <input class="input" id="wsSlug" type="text" value="design-team">
+        <input class="input" id="wsSlug" type="text" value="design-team" maxlength="30">
       </div>
-      <p class="field-hint">半角英数字とハイフン · 3〜32 文字</p>
+      <p class="field-hint">半角英小文字・数字・ハイフン・アンダースコア · 3〜30 文字</p>
     </div>
   </section>
 </main>

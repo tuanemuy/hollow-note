@@ -1,20 +1,21 @@
 import type {
   LlmUsageView,
   PersonalUsageView,
-  UsageLevelView,
 } from "@repo/core/application/usage/view";
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
 import { ghostButtonClass } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { loadUsageSnapshot } from "./action";
+import { WorkspaceUsageBoard } from "./board";
+import { formatBytes, ratioOf, ScopeBadge, UsageSection } from "./section";
 
 /**
  * P-24 使用量（モック P24-settings-usage.html）。
  *
- * 読み取りだけの画面なので島を持たない。ワークスペースの行と「さらに
- * 読み込む」は本スライスでは常に空なので出さない（PAGE-p24-002 は別
- * スライス。無効ボタンの placeholder も置かない）。
+ * 個人と LLM の数値はここで描き、ワークスペース別の内訳と「20 件ずつ
+ * 読み込む」導線は `WorkspaceUsageBoard` が所有する（追加読み込みが
+ * 一覧メンバーシップの変更だから）。並び順はモックどおり
+ * 個人 → ワークスペース → 追加読み込み → AI 実行回数。
  */
 export async function UsagePanel({ userId }: { userId: string }) {
   const usage = await loadUsageSnapshot(userId);
@@ -27,13 +28,7 @@ export async function UsagePanel({ userId }: { userId: string }) {
       <UsageSection
         name={
           <>
-            <span
-              aria-hidden="true"
-              className="inline-flex size-5 items-center justify-center rounded-sm bg-ink-secondary text-[9px] font-medium text-bg"
-            >
-              個
-            </span>
-            個人
+            <ScopeBadge>個</ScopeBadge>個人
           </>
         }
         figure={`${formatBytes(usage.personal.consumedBytes)} / ${formatBytes(usage.personal.limitBytes)}`}
@@ -49,6 +44,10 @@ export async function UsagePanel({ userId }: { userId: string }) {
               ]
             : [`${usage.personal.noteCount} 件のノート`]
         }
+      />
+      <WorkspaceUsageBoard
+        initialWorkspaces={usage.workspaces}
+        initialCursor={usage.nextWorkspaceCursor}
       />
       <UsageSection
         name="AI 実行回数（今月）"
@@ -99,92 +98,6 @@ function StorageAlert({ personal }: { personal: PersonalUsageView }) {
       上限に達すると新しいアップロードを受け付けられなくなります。読み終えたノートを削除するか、ゴミ箱を空にすると空きが増えます。
     </Alert>
   );
-}
-
-const FIGURE_CLASS_BY_LEVEL: Record<UsageLevelView, string> = {
-  none: "text-ink-secondary",
-  warning: "text-warning",
-  exceeded: "text-error",
-};
-
-const METER_CLASS_BY_LEVEL: Record<UsageLevelView, string> = {
-  none: "bg-accent",
-  warning: "bg-warning",
-  exceeded: "bg-error",
-};
-
-function UsageSection({
-  name,
-  figure,
-  level,
-  ratio,
-  notes,
-}: {
-  name: ReactNode;
-  figure: string;
-  level: UsageLevelView;
-  ratio: number;
-  notes: readonly ReactNode[];
-}) {
-  return (
-    <section className="border-t border-hairline py-5">
-      <div className="mb-3 flex flex-wrap items-baseline gap-3">
-        <span className="inline-flex items-center gap-2 text-sm font-medium">
-          {name}
-        </span>
-        <span
-          className={`ml-auto text-sm tabular-nums ${FIGURE_CLASS_BY_LEVEL[level]}`}
-        >
-          {figure}
-        </span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-surface">
-        <span
-          aria-hidden="true"
-          className={`block h-full rounded-full ${METER_CLASS_BY_LEVEL[level]}`}
-          style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
-        />
-      </div>
-      <p className="mt-2 flex flex-wrap gap-2 text-xs text-ink-tertiary">
-        {notes.map((note, index) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: 表示順そのものが同一性
-          <span key={index} className="flex gap-2">
-            {index > 0 ? (
-              <span aria-hidden="true" className="text-hairline-strong">
-                ·
-              </span>
-            ) : null}
-            {note}
-          </span>
-        ))}
-      </p>
-    </section>
-  );
-}
-
-const KIB = 1024;
-const MIB = 1024 * KIB;
-const GIB = 1024 * MIB;
-
-const BYTE_UNITS = [
-  { scale: GIB, suffix: "GB" },
-  { scale: MIB, suffix: "MB" },
-  { scale: KIB, suffix: "KB" },
-] as const;
-
-function formatBytes(bytes: number): string {
-  for (const unit of BYTE_UNITS) {
-    if (bytes >= unit.scale) {
-      const value = (bytes / unit.scale).toFixed(1);
-      return `${value.endsWith(".0") ? value.slice(0, -2) : value} ${unit.suffix}`;
-    }
-  }
-  return `${bytes} B`;
-}
-
-/** A zero limit admits nothing, so it reads as full rather than empty. */
-function ratioOf(consumed: number, limit: number): number {
-  return limit <= 0 ? 1 : consumed / limit;
 }
 
 // 同じパネルに並ぶリセット日と基準を揃える（下の `resetDateFormat` と

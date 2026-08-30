@@ -17,8 +17,6 @@ import { NoteOwner, ShareLink, SharePass } from "../valueObject";
 const T0 = new Date(0);
 const at = (ms: number) => new Date(ms);
 
-// The workspace path is out of this slice; the stub only satisfies the
-// injected interface and must never be reached by these personal-path tests.
 const unreachableAuthorization: WorkspaceAuthorization = {
   minimumRoleFor: () => {
     throw new Error("workspace path must not be reached");
@@ -210,22 +208,21 @@ describe("NoteOwnershipPolicy.ensureMovable", () => {
     canDelete: true,
     canChangeVisibility: true,
   } as const;
-  const target = { owner, canCreate: true };
 
-  it("passes when editable, creatable, and not processing", () => {
+  it("passes when editable and not processing", () => {
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), granted, target),
+      NoteOwnershipPolicy.ensureMovable(blank(), granted),
     ).not.toThrow();
   });
 
-  it("rejects when the source access lacks edit or the target lacks create", () => {
+  it("rejects when the source access lacks edit", () => {
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), { kind: "denied" }, target),
+      NoteOwnershipPolicy.ensureMovable(blank(), { kind: "denied" }),
     ).toThrowError();
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(blank(), granted, {
-        owner,
-        canCreate: false,
+      NoteOwnershipPolicy.ensureMovable(blank(), {
+        ...granted,
+        canEdit: false,
       }),
     ).toThrowError();
   });
@@ -236,7 +233,7 @@ describe("NoteOwnershipPolicy.ensureMovable", () => {
       content: { status: "processing" } as const,
     };
     expect(() =>
-      NoteOwnershipPolicy.ensureMovable(processing, granted, target),
+      NoteOwnershipPolicy.ensureMovable(processing, granted),
     ).toThrowError(/processing/i);
   });
 });

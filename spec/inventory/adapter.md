@@ -1,8 +1,10 @@
 # Inventory — adapter
 
-生成元: `spec/domains/`（最終同期: 2026-08-26）
+生成元: `spec/domains/`（最終同期: 2026-08-30）
 
 **1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、ケース名（`it` の第 1 引数）の先頭に ADP ID を置く命名規約で追う（複数メソッドを拘束するケースは ID を短縮せず並べる）。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの ADP 行と `domain.md` の DOM 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
+
+**掲載範囲**: `domain/*/ports/` のポートは全メソッドを載せる。`application/ports/` のポートは、**`spec/domains/` がメソッド単位で契約を書いているもの**（interface 定義ブロック、またはメソッド名を主語にした本文）だけを載せる。書いていないポート — `DistributedOperationStore` / `OutboxRepository` / `ScopeTaskScheduler` / `ScopeTaskQueue` / `IdentityRemovalReceiptStore` と、cross-cutting の `Clock` / `Logger` / `IdGenerator` / `RelayTrigger` / `ScopeTaskTrigger` — は台帳の対象外で、契約の正典はポート JSDoc と適合スイートが持つ（[ADR 026](../adr/026-port-contract-and-conformance.md)）。別のポートの契約を説明する文の中でメソッド名が挙がるだけ（例: `DistributedOperationStore.deleteTerminal`）では掲載条件を満たさない。
 
 | ID | 要素 | 定義場所 | 実装されるべき振る舞いの要点 |
 | --- | --- | --- | --- |
@@ -47,6 +49,8 @@
 | ADP-common-039 | `IdempotencyStore.markProcessed` | `spec/domains/index.md#IdempotencyStoreapplicationportsidempotencyStorets` | consumer と EventId を原子的に記録し重複なら false を返す |
 | ADP-common-040 | `ScopeCleanupAdmissionStore.describePersonalCleanup` | `spec/domains/index.md#ScopeKey-と永続化境界` | personal barrier がまだ running か・どの component が ack 済みかを読み、receipt が無い場合と別 operation が scope を持つ場合は null を返す |
 | ADP-common-041 | `AccountDeletionManifestStore.describe` | `spec/domains/index.md#ScopeKey-と永続化境界` | manifest header の読み取り射影（2 つの build cursor と所有 user）を返し、既に消えていれば null を返す |
+| ADP-common-042 | `AppliedOperationStore.markApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | operation の `(operationId, commandKey)` を記録し、初回は true・再配送は false を返す。記録はガードするコマンドと同じ UoW に入る |
+| ADP-common-043 | `AppliedOperationStore.clearApplied` | `spec/domains/index.md#ScopeKey-と永続化境界` | 効果を打ち消す補償トランザクションと同じ UoW で記録を消す。存在しない記録の消去は no-op |
 | ADP-identity-001 | `UserRepository.insert` | `spec/domains/identity.md#ポート` | 新規 User を保存する |
 | ADP-identity-002 | `UserRepository.findById` | `spec/domains/identity.md#ポート` | UserId で OCC token 付き User を取得する |
 | ADP-identity-003 | `UserRepository.save` | `spec/domains/identity.md#ポート` | 期待版一致時だけ User を更新する |
@@ -101,8 +105,8 @@
 | ADP-workspace-010 | `MembershipRepository.save` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を更新する |
 | ADP-workspace-011 | `MembershipRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Membership を削除する |
 | ADP-workspace-012 | `MembershipRepository.findByWorkspaceAndUser` | `spec/domains/workspace.md#ポート` | workspace・user の membership を取得する |
-| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする |
-| ADP-workspace-014 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を数える |
+| ADP-workspace-013 | `MembershipRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の membership をページングする。自 UoW の insert も `deleteByIds` も見えず、両バックエンドが同じ答えを返す |
+| ADP-workspace-014 | `MembershipRepository.countByRole` | `spec/domains/workspace.md#ポート` | 指定 role の人数を、自 transaction の変更を含めて数える |
 | ADP-workspace-015 | `MembershipRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 MembershipId を削除する |
 | ADP-workspace-016 | `InvitationRepository.insert` | `spec/domains/workspace.md#ポート` | 新規 Invitation を保存する |
 | ADP-workspace-017 | `InvitationRepository.findById` | `spec/domains/workspace.md#ポート` | InvitationId で OCC token 付き集約を取得する |
@@ -110,23 +114,23 @@
 | ADP-workspace-019 | `InvitationRepository.delete` | `spec/domains/workspace.md#ポート` | 期待版一致時だけ Invitation を削除する |
 | ADP-workspace-020 | `InvitationRepository.findByTokenHash` | `spec/domains/workspace.md#ポート` | token hash で招待を取得する |
 | ADP-workspace-021 | `InvitationRepository.findPendingByWorkspaceAndEmail` | `spec/domains/workspace.md#ポート` | workspace・email の pending 招待を取得する |
-| ADP-workspace-022 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする |
-| ADP-workspace-023 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す |
+| ADP-workspace-022 | `InvitationRepository.listByWorkspace` | `spec/domains/workspace.md#ポート` | workspace の招待をページングする。自 UoW の書き込みを観測せず、両バックエンドが同じ答えを返す |
+| ADP-workspace-023 | `InvitationRepository.countPendingIssuedSince` | `spec/domains/workspace.md#ポート` | 期間内の未処理招待数を返す。listing と違い自 UoW の書き込みを数える |
 | ADP-workspace-024 | `InvitationRepository.deleteByIds` | `spec/domains/workspace.md#ポート` | 最大 100 InvitationId を削除する |
-| ADP-workspace-025 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を解決する |
+| ADP-workspace-025 | `InvitationRouteStore.resolveActive` | `spec/domains/workspace.md#ポート` | token hash の active route を期限に関わらず解決する |
 | ADP-workspace-026 | `InvitationRouteStore.reserve` | `spec/domains/workspace.md#ポート` | 新規 token route を TTL 付き予約する |
 | ADP-workspace-027 | `InvitationRouteStore.activate` | `spec/domains/workspace.md#ポート` | operation の route を有効化する |
 | ADP-workspace-028 | `InvitationRouteStore.reserveReplacement` | `spec/domains/workspace.md#ポート` | 再送用の旧新 token route 交換を予約する |
-| ADP-workspace-029 | `InvitationRouteStore.activateReplacement` | `spec/domains/workspace.md#ポート` | 旧新 route の交換を原子的に有効化する |
+| ADP-workspace-029 | `InvitationRouteStore.activateReplacement` | `spec/domains/workspace.md#ポート` | 旧新 route の交換を原子的に有効化する。replacement が既に閉じられている場合も、同じ招待の旧 route が `active` ならそれを閉じてから成功する（別の招待に結び付いた旧 route は触らない） |
 | ADP-workspace-030 | `InvitationRouteStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定 token route を破棄する |
 | ADP-workspace-031 | `InvitationRouteStore.revoke` | `spec/domains/workspace.md#ポート` | invitation route を取消済みにする |
 | ADP-workspace-032 | `InvitationRouteStore.consume` | `spec/domains/workspace.md#ポート` | invitation route を受諾済みにする |
 | ADP-workspace-033 | `MembershipDirectoryReservationStore.reserveAndClaimActivation` | `spec/domains/workspace.md#ポート` | User active 検査と pending edge activation claim を原子的に行う |
 | ADP-workspace-034 | `MembershipDirectoryReservationStore.activate` | `spec/domains/workspace.md#ポート` | membership directory edge を active にする |
-| ADP-workspace-035 | `MembershipDirectoryReservationStore.abandon` | `spec/domains/workspace.md#ポート` | activation edge を破棄する |
+| ADP-workspace-035 | `MembershipDirectoryReservationStore.abandon` | `spec/domains/workspace.md#ポート` | activation edge を破棄する。`active` / `removing` に加えて account deletion の prepare lock が付いた edge も触らない |
 | ADP-workspace-036 | `MembershipDirectoryReservationStore.prepareAccountDeletion` | `spec/domains/workspace.md#ポート` | account deletion 用 edge prepare を開始する |
 | ADP-workspace-037 | `MembershipDirectoryReservationStore.renewAccountDeletion` | `spec/domains/workspace.md#ポート` | prepare lease を更新する |
-| ADP-workspace-038 | `MembershipDirectoryReservationStore.commitAccountDeletion` | `spec/domains/workspace.md#ポート` | edge removal を committed にする |
+| ADP-workspace-038 | `MembershipDirectoryReservationStore.commitAccountDeletion` | `spec/domains/workspace.md#ポート` | edge removal を committed にする。edge を**除去する**唯一の遷移なので、呼び出し後は `(userId, workspaceId)` が解放され同じ利用者が再参加できる。冪等 |
 | ADP-workspace-039 | `MembershipDirectoryReservationStore.releaseAccountDeletion` | `spec/domains/workspace.md#ポート` | deletion prepare lock を解放する |
 | ADP-workspace-040 | `MembershipDirectoryReservationStore.listActivatingByUser` | `spec/domains/workspace.md#ポート` | 利用者の activating edge を有界列挙する |
 | ADP-workspace-041 | `MembershipRemovalPreparationStore.prepare` | `spec/domains/workspace.md#ポート` | membership version を検査して removal lock を取る |
@@ -142,13 +146,29 @@
 | ADP-workspace-051 | `WorkspaceOperationLockStore.assertMaintenanceAllowed` | `spec/domains/workspace.md#ポート` | 削除後に許可された maintenance 種別だけを通す |
 | ADP-workspace-052 | `WorkspaceDeletionManifestStore.appendMembershipPage` | `spec/domains/workspace.md#ポート` | membership page と cursor を manifest に固定する |
 | ADP-workspace-053 | `WorkspaceDeletionManifestStore.appendInvitationPage` | `spec/domains/workspace.md#ポート` | invitation page と cursor を manifest に固定する |
-| ADP-workspace-054 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする |
+| ADP-workspace-054 | `WorkspaceDeletionManifestStore.markReady` | `spec/domains/workspace.md#ポート` | manifest を対象固定済みにする。判定は自 transaction が直前に固定した最終ページを観測する |
 | ADP-workspace-055 | `WorkspaceDeletionManifestStore.listLocalPending` | `spec/domains/workspace.md#ポート` | local 未完了 item を有界列挙する |
 | ADP-workspace-056 | `WorkspaceDeletionManifestStore.acknowledgeLocal` | `spec/domains/workspace.md#ポート` | local deletion 完了を記録する |
 | ADP-workspace-057 | `WorkspaceDeletionManifestStore.listItems` | `spec/domains/workspace.md#ポート` | manifest item を cursor 付きで列挙する |
-| ADP-workspace-058 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する |
-| ADP-workspace-059 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する |
-| ADP-workspace-060 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする |
+| ADP-workspace-058 | `WorkspaceDeletionManifestStore.acknowledge` | `spec/domains/workspace.md#ポート` | global cleanup 完了を記録する。最初のタイムスタンプが勝ち、未知の item key は黙って無視する |
+| ADP-workspace-059 | `WorkspaceDeletionManifestStore.compactAcknowledged` | `spec/domains/workspace.md#ポート` | local・global ack 済み item を有界縮約する。縮約が引くページは同 transaction の書き込みより前に読む |
+| ADP-workspace-060 | `WorkspaceDeletionManifestStore.markCompleted` | `spec/domains/workspace.md#ポート` | item が空の manifest を完了 tombstone にする。残件の判定は同 transaction の縮約を観測する |
+| ADP-workspace-061 | `WorkspaceSlugReservationStore.resolveActive` | `spec/domains/workspace.md#ポート` | active な slug 予約から WorkspaceId を解決する |
+| ADP-workspace-062 | `WorkspaceSlugReservationStore.reserve` | `spec/domains/workspace.md#ポート` | slug を operation ID 付きで予約し、行を `attemptId` の試行の保持にする |
+| ADP-workspace-063 | `WorkspaceSlugReservationStore.activate` | `spec/domains/workspace.md#ポート` | 予約を有効化し、手放す slug を同じ transaction で解放する |
+| ADP-workspace-064 | `WorkspaceSlugReservationStore.abandon` | `spec/domains/workspace.md#ポート` | 未確定の slug 予約を破棄する。打てるのは行を保持する試行（`attemptId`）だけで、後続の試行が取った行は残す |
+| ADP-workspace-065 | `WorkspaceSlugReservationStore.release` | `spec/domains/workspace.md#ポート` | workspace が持つ active な slug 予約を解放する。解放するのは `active` 行だけで、同じ workspace 自身の `reserved` 行は残す（走行中の改名の予約を奪わない。回収は expiry が行う） |
+| ADP-workspace-066 | `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` | `spec/domains/workspace.md#ポート` | source version が新しい snapshot だけを directory へ投影する。slug の剥がしは適用と同じ述語を持ち、何も書かない snapshot は slug を奪わない |
+| ADP-workspace-067 | `WorkspaceDirectoryProjectionWriter.tombstone` | `spec/domains/workspace.md#ポート` | directory 行を削除 tombstone にし、slug と表示 PII を落とす |
+| ADP-workspace-068 | `UserWorkspaceDirectory.countOwnedByUser` | `spec/domains/workspace.md#ポート` | 所有上限判定用に owner edge を limit まで数える |
+| ADP-workspace-069 | `MembershipDirectoryReservationStore.beginRemoval` | `spec/domains/workspace.md#ポート` | 除名・脱退で `active` / `activating` の directory edge を removing にし、`pending` は拒否する |
+| ADP-workspace-070 | `MembershipDirectoryReservationStore.completeRemoval` | `spec/domains/workspace.md#ポート` | 後始末の ack 後に removing edge を削除する。`removing` を経ていない edge（`activating` は join の claim、`pending` は削除の prepare 対象）は `ConflictError` にし、行を触らない |
+| ADP-workspace-071 | `WorkspaceOperationLockStore.stageMove` | `spec/domains/workspace.md#ポート` | move authorization lock を actor 付きで冪等に張る |
+| ADP-workspace-072 | `WorkspaceOperationLockStore.releaseMove` | `spec/domains/workspace.md#ポート` | move authorization lock を無条件・冪等に解放する |
+| ADP-workspace-073 | `MembershipDirectoryReservationStore.applyRoleIfNewer` | `spec/domains/workspace.md#ポート` | edge が名指す membership と一致し、かつ source version が大きい role 変更だけを directory edge へ投影する。不在の edge は復活させず、再入会が置き換えた membership の変更は新しい edge に届かないまま、新 membership の最初の変更は通る。どの membership も名指していない edge は投影を受けない（fail closed） |
+| ADP-workspace-074 | `MembershipDirectoryReservationStore.abandonRemoval` | `spec/domains/workspace.md#ポート` | 拒否された除名の `removing` edge を `active` へ戻し、`pending` / `activating` は拒否する |
+| ADP-workspace-075 | `InvitationRepository.listPendingByWorkspace` | `spec/domains/workspace.md#ポート` | store 側で `pending` を絞り、`count` をワークスペースの保留中総数にする。自 UoW の書き込みは観測しない |
+| ADP-workspace-076 | `UserWorkspaceDirectory.countSettledByUser` | `spec/domains/workspace.md#ポート` | ロールを問わず settled な edge（`active` / `pending` / `removing`）を limit まで数え、`activating` は数えず、範囲外の limit を拒否する |
 | ADP-storage-001 | `StoredFileRepository.insert` | `spec/domains/storage.md#ポート` | 新規 StoredFile を保存する |
 | ADP-storage-002 | `StoredFileRepository.findById` | `spec/domains/storage.md#ポート` | StoredFileId で OCC token 付き集約を取得する |
 | ADP-storage-003 | `StoredFileRepository.save` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を更新する |

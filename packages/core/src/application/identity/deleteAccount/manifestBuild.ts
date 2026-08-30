@@ -7,7 +7,7 @@ import type {
   AccountDeletionManifestBuildContinuedInput,
 } from "./input";
 
-/** Targets fixed per turn (spec/domains/index.md: at most 100). */
+/** Targets fixed per turn. */
 export const MANIFEST_PAGE_LIMIT = 100;
 
 /**
@@ -22,15 +22,18 @@ export const MANIFEST_PAGE_LIMIT = 100;
 const PHASE_AFTER_MEMBERSHIPS: AccountDeletionBuildPhase = "authorRoutes";
 
 /**
- * Dispatch phase the built manifest hands over to. `prepare` is empty in
- * this deployment (no membership items exist), so the chain starts at
- * the personal cleanup wave; the slice that adds membership prepare
- * moves the entry point back to `prepare`.
+ * Dispatch phase the built manifest hands over to. Membership edges do
+ * exist, but admission refuses a user who still holds one
+ * (`WORKSPACE_MEMBERSHIPS_REMAIN`), so no manifest ever fixes a
+ * membership item and `prepare` stays empty: the chain starts at the
+ * personal cleanup wave. The slice that adds the membership prepare /
+ * cleanup wave drops that refusal and moves the entry point back to
+ * `prepare`.
  */
 const FIRST_DISPATCH_PHASE: AccountDeletionDispatchPhase = "cleanup";
 
 /**
- * Opens the manifest and asks for its first page (手順 3). Runs after
+ * Opens the manifest and asks for its first page. Runs after
  * the barrier ack, so the targets it fixes are exactly the ones the
  * barrier closed writes against.
  */
@@ -55,7 +58,7 @@ export async function startAccountDeletionManifestBuild(
 
 /**
  * Fixes one page of deletion targets and stores the next continuation in
- * the same transaction (TC-identity-095 / 096 / 100 / 101).
+ * the same transaction.
  *
  * A turn is fully described by its own `(phase, cursor)`: a replay
  * re-fixes exactly the targets it fixed before — appends are idempotent
@@ -65,8 +68,8 @@ export async function startAccountDeletionManifestBuild(
  * the build reached.
  *
  * The author-route scan reads the routing catalog, which the manifest's
- * transaction may not enclose (spec: D1 and a DO never share one), so it
- * runs before the unit of work opens.
+ * transaction may not enclose — D1 and a DO never share one — so it runs
+ * before the unit of work opens.
  */
 export async function continueAccountDeletionManifestBuild(
   container: WorkerContainer,

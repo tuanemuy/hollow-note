@@ -17,6 +17,20 @@ import {
 import { ScopeKey } from "../scope";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
 import { deleteQuota } from "../usage/deleteQuota";
+import {
+  continueRemovalEdgeSettlement,
+  MEMBERSHIP_REMOVAL_EDGE_TASK_KIND,
+} from "../workspace/membershipMutation";
+import {
+  WORKSPACE_DELETION_COMPACT_TASK_KIND,
+  WORKSPACE_DELETION_GLOBAL_TASK_KIND,
+  WORKSPACE_DELETION_LOCAL_TASK_KIND,
+} from "../workspace/workspaceDeletion";
+import {
+  compactWorkspaceDeletionManifest,
+  continueWorkspaceDeletionGlobalCleanup,
+} from "../workspace/workspaceDeletionGlobal";
+import { continueWorkspaceDeletionLocal } from "../workspace/workspaceDeletionLocal";
 
 /** Due rows one tick takes on. */
 export const SCOPE_TASK_TICK_LIMIT = 100;
@@ -104,6 +118,31 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     await settleCleanupTurn(container, task, turn);
   },
   [PERSONAL_CLEANUP_HANDOVER_TASK_KIND]: handOverPersonalCleanup,
+  // The workspace deletion settles its own rows: every turn either
+  // re-arms the row it was claimed for or completes it, in the same
+  // transaction as the work it did.
+  [WORKSPACE_DELETION_LOCAL_TASK_KIND]: (container, task) =>
+    continueWorkspaceDeletionLocal(container, {
+      scope: task.scope,
+      payload: task.payload,
+    }),
+  [WORKSPACE_DELETION_GLOBAL_TASK_KIND]: (container, task) =>
+    continueWorkspaceDeletionGlobalCleanup(container, {
+      scope: task.scope,
+      payload: task.payload,
+    }),
+  [WORKSPACE_DELETION_COMPACT_TASK_KIND]: (container, task) =>
+    compactWorkspaceDeletionManifest(container, {
+      scope: task.scope,
+      payload: task.payload,
+    }),
+  // The removal settles its own row too: the turn drops the directory
+  // edge and completes the row only once nothing is left to drop.
+  [MEMBERSHIP_REMOVAL_EDGE_TASK_KIND]: (container, task) =>
+    continueRemovalEdgeSettlement(container, {
+      scope: task.scope,
+      payload: task.payload,
+    }),
   [PERSONAL_BARRIER_PRUNE_TASK_KIND]: async (container, task) => {
     await prunePersonalCleanupBarriers(container, {
       scope: task.scope,

@@ -8,20 +8,61 @@ import {
   type UsageWarningLevel,
 } from "../valueObject";
 
-export type UsageSnapshot = Readonly<{
-  storage: Readonly<{
-    consumedBytes: number;
-    limitBytes: number;
-    noteCount: number;
-    level: UsageWarningLevel;
-  }>;
-  llm: Readonly<{
-    consumedCalls: number;
-    limitCalls: number;
-    period: BillingPeriod;
-    level: UsageWarningLevel;
-  }> | null;
+export type DescribedStorageUsage = Readonly<{
+  consumedBytes: number;
+  limitBytes: number;
+  noteCount: number;
+  level: UsageWarningLevel;
 }>;
+
+export type DescribedLlmUsage = Readonly<{
+  consumedCalls: number;
+  limitCalls: number;
+  period: BillingPeriod;
+  level: UsageWarningLevel;
+}>;
+
+export type UsageSnapshot<
+  TLlm extends DescribedLlmUsage | null = DescribedLlmUsage | null,
+> = Readonly<{
+  storage: DescribedStorageUsage;
+  llm: TLlm;
+}>;
+
+/**
+ * Both halves of what a usage screen shows, derived here and nowhere
+ * else. The first overload is what keeps that true: a caller that has
+ * already resolved "no row yet" into an initialized period gets the LLM
+ * half back non-null, so it never has to re-derive the four figures just
+ * to escape the null the second overload carries.
+ */
+function describe(
+  params: Readonly<{ storage: StorageQuota; llm: LlmUsage }>,
+): UsageSnapshot<DescribedLlmUsage>;
+function describe(
+  params: Readonly<{ storage: StorageQuota; llm: LlmUsage | null }>,
+): UsageSnapshot;
+function describe(
+  params: Readonly<{ storage: StorageQuota; llm: LlmUsage | null }>,
+): UsageSnapshot {
+  return {
+    storage: {
+      consumedBytes: params.storage.consumedBytes,
+      limitBytes: params.storage.quota.limit,
+      noteCount: params.storage.noteCount,
+      level: StorageQuota.warningLevel(params.storage),
+    },
+    llm:
+      params.llm === null
+        ? null
+        : {
+            consumedCalls: params.llm.consumedCalls,
+            limitCalls: params.llm.quota.limit,
+            period: params.llm.period,
+            level: LlmUsage.warningLevel(params.llm),
+          },
+  };
+}
 
 /**
  * Joint check of capacity and LLM allowance, applied at intake only.
@@ -60,23 +101,5 @@ export const QuotaEnforcement = {
     }
   },
 
-  describe: (
-    params: Readonly<{ storage: StorageQuota; llm: LlmUsage | null }>,
-  ): UsageSnapshot => ({
-    storage: {
-      consumedBytes: params.storage.consumedBytes,
-      limitBytes: params.storage.quota.limit,
-      noteCount: params.storage.noteCount,
-      level: StorageQuota.warningLevel(params.storage),
-    },
-    llm:
-      params.llm === null
-        ? null
-        : {
-            consumedCalls: params.llm.consumedCalls,
-            limitCalls: params.llm.quota.limit,
-            period: params.llm.period,
-            level: LlmUsage.warningLevel(params.llm),
-          },
-  }),
+  describe,
 };

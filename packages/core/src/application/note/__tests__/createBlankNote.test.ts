@@ -5,21 +5,81 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
+import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
+import { Membership } from "@repo/core/domain/workspace/membership";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
+import { Workspace } from "@repo/core/domain/workspace/workspace";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { createBlankNote, recoverBlankNoteCreation } from "../createBlankNote";
 
 const USER = "user-1";
+const WORKSPACE = "workspace-1";
 const scope = ScopeKey.user(UserId.create(USER));
+const workspaceScope = ScopeKey.workspace(WorkspaceId.create(WORKSPACE));
 
 const create = (h: TestHarness, title: string | null = null) =>
   createBlankNote({
     container: h.container,
-    input: { userId: USER, ownerType: "user", ownerWorkspaceId: null, title },
+    input: { userId: USER, ownerType: "user", title },
+  });
+
+const createInWorkspace = (h: TestHarness) =>
+  createBlankNote({
+    container: h.container,
+    input: {
+      userId: USER,
+      ownerType: "workspace",
+      ownerWorkspaceId: WORKSPACE,
+      title: null,
+    },
   });
 
 const storedNote = (h: TestHarness, noteId: string) =>
   h.backend.scope(scope).notes.get(noteId) ?? null;
+
+/** Seeds a workspace holding one membership, without its saga. */
+async function seedWorkspaceMember(
+  h: TestHarness,
+  role: "owner" | "editor" | "viewer" | null,
+): Promise<void> {
+  const workspaceId = WorkspaceId.create(WORKSPACE);
+  const now = h.clock.now();
+  await h.container.scopeUnitOfWorkProvider.run(workspaceScope, async (ctx) => {
+    await ctx.workspaceRepository.insert(
+      Workspace.create(
+        {
+          id: WORKSPACE,
+          ownerId: UserId.create("founder-1"),
+          name: "Workspace",
+          description: "",
+          slug: null,
+        },
+        now,
+      ).entity,
+    );
+    if (role !== null) {
+      await ctx.membershipRepository.insert(
+        Membership.create(
+          {
+            id: "membership-1",
+            workspaceId,
+            userId: UserId.create(USER),
+            role,
+          },
+          now,
+        ).entity,
+      );
+    }
+  });
+}
+
+const expectInsufficientRole = (promise: Promise<unknown>) =>
+  expect(promise).rejects.toSatisfy(
+    (error) =>
+      isBusinessRuleError(error) &&
+      error.code === WorkspaceErrorCode.InsufficientRole,
+  );
 
 describe("createBlankNote", () => {
   it("TC-note-054: creates a private, empty-ready note and emits note.created", async () => {
@@ -55,6 +115,42 @@ describe("createBlankNote", () => {
     expect(route?.state).toBe("active");
   });
 
+  it("TC-note-055: an editor creates a workspace-owned note in the workspace scope", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, "editor");
+
+    const view = await createInWorkspace(h);
+
+    expect(view).toMatchObject({ ownerType: "workspace", ownerId: WORKSPACE });
+    const note = h.backend.scope(workspaceScope).notes.get(view.noteId);
+    expect(note?.owner).toEqual({ type: "workspace", workspaceId: WORKSPACE });
+    expect(h.backend.scope(scope).notes.size).toBe(0);
+
+    const route = await h.container.noteRouteStore.resolve(
+      NoteId.create(view.noteId),
+    );
+    expect(route?.state).toBe("active");
+    // The route keeps the author, not the owning workspace.
+    expect(route?.createdBy).toBe(USER);
+  });
+
+  it("TC-note-056: a viewer cannot create a workspace-owned note", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, "viewer");
+
+    await expectInsufficientRole(createInWorkspace(h));
+    expect(h.backend.noteRoutes.size).toBe(0);
+    expect(h.backend.scope(workspaceScope).notes.size).toBe(0);
+  });
+
+  it("TC-note-057: a non-member cannot create a workspace-owned note", async () => {
+    const h = createTestHarness();
+    await seedWorkspaceMember(h, null);
+
+    await expectInsufficientRole(createInWorkspace(h));
+    expect(h.backend.noteRoutes.size).toBe(0);
+  });
+
   it("TC-note-058: an omitted title becomes 無題 with an auto origin", async () => {
     const h = createTestHarness();
     const view = await create(h, null);
@@ -81,7 +177,6 @@ describe("createBlankNote", () => {
       (error) =>
         isBusinessRuleError(error) && error.code === NoteErrorCode.InvalidTitle,
     );
-    // No saga state was created.
     expect(h.backend.noteRoutes.size).toBe(0);
   });
 
@@ -123,7 +218,6 @@ describe("createBlankNote", () => {
         input: {
           userId: USER,
           ownerType: "user",
-          ownerWorkspaceId: null,
           title: null,
         },
       }),
@@ -159,7 +253,6 @@ describe("createBlankNote", () => {
       input: {
         userId: USER,
         ownerType: "user",
-        ownerWorkspaceId: null,
         title: null,
       },
     });

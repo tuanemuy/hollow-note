@@ -9,7 +9,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
  *
  * 個人設定の 4 タブのみを出す。spec のタブ列にある「連携」は遷移先 P-23
  * が別スライスのため置かない（無効タブの placeholder も作らない）。
- * ワークスペース設定のタブ列も別スライス。
+ * ワークスペース設定のタブ列は別の画面の持ち物なので
+ * `components/layout/WorkspaceSettingsTabs` が持つ。
  */
 export const SETTINGS_TABS = [
   { href: "/settings/profile", label: "プロフィール" },

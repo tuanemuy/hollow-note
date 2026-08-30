@@ -1,6 +1,6 @@
 "use client";
 
-import { useLoaderData } from "@tanstack/react-router";
+import { Link, useLoaderData } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import {
@@ -9,6 +9,15 @@ import {
   inputClass,
   inputInvalidClass,
 } from "@/components/auth/formStyles";
+import { listRemainingWorkspacesFn } from "@/components/settings/DeleteAccountPanel/action";
+import {
+  type RemainingListing,
+  remainingListing,
+} from "@/components/settings/DeleteAccountPanel/remaining";
+import {
+  type SubmitFailure,
+  submitFailure,
+} from "@/components/settings/DeleteAccountPanel/submit";
 import {
   canRestoreTicket,
   forgetTicket,
@@ -22,6 +31,7 @@ import {
   ghostButtonClass,
   panelNoteClass,
   primaryButtonClass,
+  subtleButtonClass,
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { renderErrorMessage } from "@/presentation/errorDisplay";
@@ -41,8 +51,11 @@ import {
  * とローダーが `UNAUTHENTICATED` で落ちて進捗表示ごと消える。再基底化の
  * 役割は、完了表示に到達したあとのフル遷移が担う。
  *
- * 唯一 owner による実行不可（PAGE-p25-004）は別スライスなので、その導線
- * も無効ボタンの placeholder も置かない。
+ * 実行不可（PAGE-p25-004）は**拒否されて初めて分かる状態**として扱う。
+ * この画面はセッション無しでも開ける都合で loader を持たないので、参加中
+ * のワークスペースを先読みできず、判定の権威も `deleteAccount` の受理側に
+ * ある。拒否は Cookie を破棄しないのでセッションはそのまま残り、片づける
+ * 先はその場で引ける。
  */
 
 const POLL_INTERVAL_MS = 1500;
@@ -61,23 +74,20 @@ type Phase =
   | Readonly<{ kind: "settled"; message: string; resumeTicket: string | null }>;
 
 /**
- * 提出の失敗はどこに出すかまで持つ。項目エラー欄はメールアドレス不一致
- * の専用枠で、認証切れのような入力と無関係な失敗をそこへ出すと、無関係
- * な欄に `aria-invalid` が付く。
+ * 実行不可だけは、片づける先（P-32 / P-34）を添えて初めて導線になるので、
+ * 拒否の直後に引いた一覧を失敗そのものに畳んで持つ。
  */
-type SubmitError = Readonly<{ target: "field" | "panel"; message: string }>;
+type BlockedFailure = Readonly<{
+  target: "blocked";
+  message: string;
+  listing: RemainingListing;
+}>;
 
-type SubmitState = Readonly<{ error: SubmitError | null }>;
+type Failure = Exclude<SubmitFailure, { target: "blocked" }> | BlockedFailure;
+
+type SubmitState = Readonly<{ error: Failure | null }>;
 
 const IDLE_SUBMIT_STATE: SubmitState = { error: null };
-
-const submitError = (error: unknown): SubmitError => {
-  const serialized = extractSerializedError(error);
-  return {
-    target: serialized.code === "CONFIRMATION_MISMATCH" ? "field" : "panel",
-    message: renderErrorMessage(serialized),
-  };
-};
 
 /**
  * `crypto.randomUUID` はセキュアコンテキスト限定なので、LAN の IP で開いた
@@ -107,6 +117,7 @@ const leave = (): void => {
 export function DeleteAccountPanel() {
   const requestDeletion = useServerFn(deleteAccountFn);
   const readStatus = useServerFn(getDeletionStatusFn);
+  const listRemaining = useServerFn(listRemainingWorkspacesFn);
   // 未サインインでも開ける画面なので `user` は null になりうる。
   const { user } = useLoaderData({ from: "/settings" });
   const currentUserId = user?.userId ?? null;
@@ -138,7 +149,14 @@ export function DeleteAccountPanel() {
         setPhase({ kind: "accepted", ticket });
         persistTicket({ ticket, userId: currentUserId });
       } catch (error) {
-        return { error: submitError(error) };
+        const failure = submitFailure(error);
+        if (failure.target !== "blocked") {
+          return { error: failure };
+        }
+        // 一覧が引けなくても実行不可の事実と理由は伝える。導線が消えるだけ
+        // で、拒否そのものを「一時的な障害」に見せ替えない。
+        const remaining = await listRemaining({}).catch(() => null);
+        return { error: { ...failure, listing: remainingListing(remaining) } };
       }
       return IDLE_SUBMIT_STATE;
     },
@@ -234,10 +252,13 @@ export function DeleteAccountPanel() {
   const failure = submitState.error;
   const fieldError = failure?.target === "field" ? failure.message : null;
   const panelError = failure?.target === "panel" ? failure.message : null;
+  const blocked = failure?.target === "blocked" ? failure : null;
 
   return (
     <section className={dangerPanelClass}>
       <h2 className={dangerPanelTitleClass}>アカウントを削除</h2>
+
+      {blocked === null ? null : <BlockedByWorkspaces blocked={blocked} />}
 
       <div className="mb-5 grid gap-5 sm:grid-cols-2 sm:gap-6">
         <ConsequenceList
@@ -304,6 +325,85 @@ export function DeleteAccountPanel() {
         </button>
       </form>
     </section>
+  );
+}
+
+/**
+ * 実行不可の表示と、片づける先への導線（PAGE-p25-004）。
+ *
+ * 譲渡も脱退もメンバー管理（P-32）で行い、ワークスペースごと消すのは
+ * P-34。どちらも owner 限定なので、owner でない行には脱退しか出さない
+ * （L-01 と同じく、使えない行き先は並べずに消す）。
+ *
+ * ただし `isOwner` の元になる `UserWorkspaceEdge.role` は購読者が書く
+ * 射影であって認可の事実ではないので、昇格・降格から 1 往復ぶん遅れうる
+ * （`domain/workspace/ports/userWorkspaceDirectory.ts`）。遅れても片づけ
+ * 手段は消えない — どちらの行も P-32 へは行けて、その設定タブが P-34 を
+ * 常に並べ、可否は行き先の画面が workspace scope の `Membership` で
+ * 判定し直す。
+ *
+ * 一覧が空・取得不能のときに何も出さないと、拒否の根拠（settled な edge
+ * の数）と一覧の出所（`active` な edge）が別集合であることが「片づける先
+ * が無いのに拒否された」に化ける。3 つの状態を別の文言で出し分ける
+ * （`remaining.ts`）。
+ */
+function BlockedByWorkspaces({ blocked }: { blocked: BlockedFailure }) {
+  const listing = blocked.listing;
+  return (
+    <Alert tone="error" title="参加中のワークスペースがあります">
+      {blocked.message}
+      {listing.kind !== "listed" ? (
+        <p className="mt-2 text-xs text-ink-tertiary">
+          {listing.kind === "settling"
+            ? "反映待ちのワークスペースがあります。少し待ってからもう一度お試しください。"
+            : "参加中のワークスペースの一覧を取得できませんでした。時間をおいてからもう一度お試しください。"}
+        </p>
+      ) : (
+        <ul className="mt-3 grid gap-2">
+          {listing.workspaces.map((workspace) => (
+            <li
+              key={workspace.workspaceId}
+              className="flex flex-wrap items-center gap-2"
+            >
+              {workspace.status === "active" ? (
+                <>
+                  <span className="min-w-0 flex-1 truncate text-ink">
+                    {workspace.name}
+                  </span>
+                  <Link
+                    to="/workspaces/$workspaceId/settings/members"
+                    params={{ workspaceId: workspace.workspaceId }}
+                    className={subtleButtonClass}
+                  >
+                    {workspace.isOwner ? "owner を譲る・脱退する" : "脱退する"}
+                  </Link>
+                  {workspace.isOwner ? (
+                    <Link
+                      to="/workspaces/$workspaceId/settings/danger"
+                      params={{ workspaceId: workspace.workspaceId }}
+                      className={subtleButtonClass}
+                    >
+                      削除する
+                    </Link>
+                  ) : null}
+                </>
+              ) : (
+                // 一時的に読めないだけの行を落とすと、残っているものが全部
+                // 並んでいるように見える（L-01 と同じ扱い）。
+                <span className="text-ink-tertiary">
+                  読み込めないワークスペースがあります
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {listing.kind === "listed" && listing.hasMore ? (
+        <p className="mt-2 text-xs text-ink-tertiary">
+          参加中のワークスペースはこれ以外にもあります。ここに並ぶものを片づけてから、もう一度お試しください。
+        </p>
+      ) : null}
+    </Alert>
   );
 }
 

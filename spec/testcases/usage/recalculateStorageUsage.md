@@ -11,3 +11,7 @@
 | 2 回続けて実行する | 再計算する | 結果が変わらない | |
 | ワークスペースを対象にする | 再計算する | そのワークスペースの分だけが計算される | |
 | user 主体が実行者と一致しない | 再計算する | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない | |
+| workspace 主体の非メンバー | 再計算する | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない | |
+| 存在しない workspace 主体 | 再計算する | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる | |
+| workspace 主体のメンバーが、解決のあと書き込みの前に除名される | 再計算する | `BusinessRuleError(InsufficientRole)` が投げられ、`StorageQuota` は書き換わらない | |
+| workspace 主体が削除を受理済み | 再計算する | `ConflictError("WORKSPACE_DELETING")` が投げられる | |
