@@ -1,4 +1,5 @@
 import type { Note } from "@repo/core/domain/note/note";
+import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
 
 /**
  * DTO projections for the note usecases. Primitives only — branded value
@@ -90,6 +91,72 @@ export type NoteListItemView = Readonly<{
 export type NoteListView = Readonly<{
   items: readonly NoteListItemView[];
   count: number;
+}>;
+
+/**
+ * One allow-list removal, as the editor lists them after a save. The
+ * `kind` is what lets the screen fold the report by category
+ * (spec/testcases/note/updateNoteBody.md).
+ */
+export type RemovedNodeView = Readonly<{
+  kind: "element" | "attribute" | "url" | "css";
+  name: string;
+  reason: string;
+}>;
+
+export type UpdatedNoteBodyView = Readonly<{
+  noteId: string;
+  version: number;
+  removed: readonly RemovedNodeView[];
+  referenceImportJobId: string | null;
+}>;
+
+export type SkippedTextNodeEditView = Readonly<{
+  path: string;
+  reason: string;
+}>;
+
+export type AppliedTextNodeEditsView = Readonly<{
+  noteId: string;
+  version: number;
+  skipped: readonly SkippedTextNodeEditView[];
+}>;
+
+export type RenamedNoteView = Readonly<{
+  noteId: string;
+  title: string;
+  version: number;
+}>;
+
+export type NoteStyleModeView = Readonly<{
+  noteId: string;
+  styleMode: "default" | "preserve";
+  version: number;
+}>;
+
+/**
+ * One entry of the revision list. `createdByName` is nullable because
+ * `UserBatchReader.resolveMany` omits ids it cannot answer — an author
+ * whose account is gone still has to render as a row. `excerpt` carries
+ * the body, never the whole HTML: the list is a picker, and 20 full
+ * bodies would be the note's size budget twenty times over.
+ */
+export type NoteRevisionView = Readonly<{
+  revisionId: string;
+  createdAt: Date;
+  createdBy: string;
+  createdByName: string | null;
+  reason: RevisionReason;
+  excerpt: string;
+}>;
+
+export type NoteRevisionListView = Readonly<{
+  revisions: readonly NoteRevisionView[];
+}>;
+
+export type RestoredNoteRevisionView = Readonly<{
+  noteId: string;
+  version: number;
 }>;
 
 export const ownerOf = (

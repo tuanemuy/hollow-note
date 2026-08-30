@@ -13,3 +13,16 @@ export type StoreAvatarView = Readonly<{
   fileId: string;
   url: string;
 }>;
+
+/**
+ * `mimeType` and `size` are what the store actually holds, not what the
+ * client sent: the type is read from the leading bytes and the size is
+ * measured after SVG sanitization, so the editor builds its `img` /
+ * `video` element from the same figures the metadata row carries.
+ */
+export type StoreMediaView = Readonly<{
+  fileId: string;
+  url: string;
+  mimeType: string;
+  size: number;
+}>;
