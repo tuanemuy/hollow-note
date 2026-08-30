@@ -83,6 +83,80 @@ export function describeDistributedOperationStoreContract(
       expect(second.operation.id).not.toBe(first.operation.id);
     });
 
+    it("reopens a terminal operation so its replay can be driven again", async () => {
+      const first = await begin("request-1");
+      await backend.distributedOperationStore.markState(
+        first.operation.id,
+        "rejected",
+        backend.clock.now(),
+      );
+      backend.clock.advance(DAY_MS);
+
+      const at = backend.clock.now();
+      await backend.distributedOperationStore.markState(
+        first.operation.id,
+        "running",
+        at,
+      );
+
+      const reopened =
+        await backend.distributedOperationStore.findByOperationId(
+          first.operation.id,
+        );
+      expect(reopened).toMatchObject({ state: "running", terminalAt: null });
+      expect(reopened?.updatedAt.getTime()).toBe(at.getTime());
+      // The row is live again on every count the partition rule reads:
+      // it stops counting as retained, and it joins the next request.
+      expect(
+        await backend.distributedOperationStore.countTerminalSince(
+          "accountDeletion",
+          userId(1),
+          new Date(0),
+        ),
+      ).toBe(0);
+      expect((await begin("request-2")).operation.id).toBe(first.operation.id);
+    });
+
+    it("refuses to reopen a terminal operation while another one runs", async () => {
+      const first = await begin("request-1");
+      await backend.distributedOperationStore.markState(
+        first.operation.id,
+        "rejected",
+        backend.clock.now(),
+      );
+      const second = await begin("request-2");
+      expect(second.resumed).toBe(false);
+
+      // One live operation per partition is the store's rule, not the
+      // caller's, so the reopen answers to it exactly as the insert does.
+      await expectConflict(
+        backend.distributedOperationStore.markState(
+          first.operation.id,
+          "running",
+          backend.clock.now(),
+        ),
+        "DISTRIBUTED_OPERATION_ALREADY_RUNNING",
+      );
+      expect(
+        await backend.distributedOperationStore.findByOperationId(
+          first.operation.id,
+        ),
+      ).toMatchObject({ state: "rejected" });
+
+      // A row that is already running is not a reopen, so re-marking the
+      // live one is still the plain no-op record it always was.
+      await backend.distributedOperationStore.markState(
+        second.operation.id,
+        "running",
+        backend.clock.now(),
+      );
+      expect(
+        await backend.distributedOperationStore.findByOperationId(
+          second.operation.id,
+        ),
+      ).toMatchObject({ state: "running" });
+    });
+
     it("separates partitions", async () => {
       const mine = await begin("request-1", {}, userId(1));
       const theirs = await begin("request-1", {}, userId(2));

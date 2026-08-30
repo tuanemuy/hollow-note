@@ -1102,6 +1102,20 @@ export async function moveNote({
   if (operation.requestKey !== requestKey) {
     throw moveInProgress();
   }
+  // `beginOrResume` is idempotent on the `requestKey` and replays the row
+  // that key names *whatever state it is in*, and a failed attempt settled
+  // `rejected` leaves `routeVersion` alone — so the row handed back here
+  // can already be terminal. The saga must not run on one: a stop after
+  // the route switch only logs, so the row would stay terminal while both
+  // scopes keep a move lock that carries no lease and that only a caller
+  // holding this migration id can release. No such caller could exist
+  // again (a re-request lands on the target and returns the no-op
+  // success), and both workspaces would lose deletion and membership
+  // management for good. Reopening before the first phase is what keeps
+  // the terminal table's four ends the only ways this row can close.
+  if (operation.state !== "running") {
+    await reopen(container, operation.id);
+  }
   const plan: MovePlan = {
     ...readPlan(operation.id, operation.payload),
     // Pinned per attempt rather than per operation: the pin detects a
@@ -1473,6 +1487,44 @@ async function settleQuietly(
       settleError,
       migrationId: plan.migrationId,
     });
+  }
+}
+
+/**
+ * Puts a replayed terminal row back where the terminal table expects the
+ * saga to start. Unlike the settles around it this one is *not* swallowed:
+ * leaving the row terminal is the very thing it exists to prevent, so an
+ * attempt that cannot reopen must not go on to take the route and the two
+ * move locks. Failing here costs nothing the next retry cannot redo — no
+ * phase has run yet, and whatever an earlier attempt left behind stays
+ * reachable under the same `requestKey`.
+ *
+ * The store refuses the reopen while another move of this note runs: our
+ * row went terminal, and while it was, a different request key was free to
+ * start its own. That is the same answer `beginOrResume` gives when it
+ * joins a request to somebody else's operation, so it is reported the same
+ * way.
+ */
+async function reopen(
+  container: RequestContainer,
+  migrationId: string,
+): Promise<void> {
+  try {
+    await container.globalUnitOfWorkProvider.run((ctx) =>
+      ctx.distributedOperationStore.markState(
+        migrationId,
+        "running",
+        container.clock.now(),
+      ),
+    );
+  } catch (cause) {
+    if (
+      isConflictError(cause) &&
+      cause.code === "DISTRIBUTED_OPERATION_ALREADY_RUNNING"
+    ) {
+      throw moveInProgress();
+    }
+    throw cause;
   }
 }
 

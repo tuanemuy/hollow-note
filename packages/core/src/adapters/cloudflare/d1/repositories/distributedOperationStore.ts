@@ -54,6 +54,12 @@ const notFound = (operationId: string): ConflictError =>
     `No distributed operation ${operationId}`,
   );
 
+const alreadyRunning = (kind: string, partitionKey: string): ConflictError =>
+  new ConflictError(
+    "DISTRIBUTED_OPERATION_ALREADY_RUNNING",
+    `Partition ${partitionKey} already has a running ${kind} operation`,
+  );
+
 const toOperation = (row: SqlRow): DistributedOperation => ({
   id: text(row, "id"),
   kind: enumOf(row, "kind", KINDS),
@@ -80,7 +86,9 @@ export type D1DistributedOperationStoreDeps = Readonly<{
  * what makes "one running operation per partition" true under
  * concurrency; the read-then-branch here decides *which* answer a caller
  * gets, and the guard in front of the insert turns a lost race into a
- * refused batch rather than a second running operation.
+ * refused batch rather than a second running operation. A `markState`
+ * that reopens a terminal row is the other way into `running`, so it
+ * carries the same guard.
  */
 export function createD1DistributedOperationStore(
   deps: D1DistributedOperationStoreDeps,
@@ -188,10 +196,7 @@ export function createD1DistributedOperationStore(
           if (replay !== undefined) {
             return { operation: replay, resumed: true };
           }
-          throw new ConflictError(
-            "DISTRIBUTED_OPERATION_ALREADY_RUNNING",
-            `Partition ${input.partitionKey} already has a running ${input.kind} operation`,
-          );
+          throw alreadyRunning(input.kind, input.partitionKey);
         }
         throw databaseError("the distributed operation store", cause);
       }
@@ -235,8 +240,28 @@ export function createD1DistributedOperationStore(
       const terminalAt = TERMINAL_STATES.includes(state)
         ? toTimestamp(at)
         : null;
+      // Reopening a terminal row is the second way into `state =
+      // 'running'`, so it answers to `distributed_operations_active_uq`
+      // like the insert does. The guard states the rule in the same batch
+      // as the update, and the index refuses a reopen that lost the race
+      // to a concurrent one.
+      const reopening = state === "running" && text(row, "state") !== "running";
       try {
         await session.write([
+          ...(reopening
+            ? [
+                opaque(
+                  occGuard(
+                    statement(
+                      `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${TABLE} WHERE kind = ? AND partition_key = ? AND state = 'running' AND id <> ?)`,
+                      text(row, "kind"),
+                      text(row, "partition_key"),
+                      operationId,
+                    ),
+                  ),
+                ),
+              ]
+            : []),
           upsert({
             table: TABLE,
             key: operationId,
@@ -256,6 +281,10 @@ export function createD1DistributedOperationStore(
           }),
         ]);
       } catch (cause) {
+        const failure = classifySqlError(cause);
+        if (reopening && (failure === "occGuard" || failure === "unique")) {
+          throw alreadyRunning(text(row, "kind"), text(row, "partition_key"));
+        }
         throw databaseError("the distributed operation store", cause);
       }
     },

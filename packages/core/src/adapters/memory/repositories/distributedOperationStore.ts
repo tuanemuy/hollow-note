@@ -19,6 +19,15 @@ const notFound = (operationId: string): ConflictError =>
     `No distributed operation ${operationId}`,
   );
 
+const alreadyRunning = (
+  kind: DistributedOperationKind,
+  partitionKey: string,
+): ConflictError =>
+  new ConflictError(
+    "DISTRIBUTED_OPERATION_ALREADY_RUNNING",
+    `Partition ${partitionKey} already has a running ${kind} operation`,
+  );
+
 export function createMemoryDistributedOperationStore(
   backend: MemoryBackend,
 ): DistributedOperationStore {
@@ -84,6 +93,18 @@ export function createMemoryDistributedOperationStore(
       const row = table.get(operationId);
       if (row === undefined) {
         throw notFound(operationId);
+      }
+      // The same partial unique index that stops `beginOrResume` from
+      // opening a second operation: reopening a terminal row is the other
+      // way into `state = 'running'`, and it has to answer to it too.
+      if (
+        state === "running" &&
+        row.state !== "running" &&
+        inPartition(row.kind, row.partitionKey).some(
+          (sibling) => sibling.id !== row.id && sibling.state === "running",
+        )
+      ) {
+        throw alreadyRunning(row.kind, row.partitionKey);
       }
       table.set(operationId, {
         ...row,

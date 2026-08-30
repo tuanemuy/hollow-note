@@ -2397,48 +2397,9 @@ describe("moveNote", () => {
     await seedMovePair(h);
     const noteId = await seedWholeNote(h);
 
-    // A second migration takes the route this one just thawed and stages
-    // its own copy, then dies before its own compensation reaches the
-    // target. From here on the target's contents are the rival's.
-    const stageRival = async (): Promise<void> => {
-      let rivalRuns = 0;
-      const stranded: RequestContainer = {
-        ...h.container,
-        noteRouteStore: {
-          ...h.container.noteRouteStore,
-          switchMove: () => Promise.reject(failure("rival switch failed")),
-        },
-        scopeUnitOfWorkProvider: {
-          run: <T>(
-            scope: ScopeKey,
-            fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
-          ): Promise<T> => {
-            rivalRuns += 1;
-            // 0 freeze, 1 stage, 2 the rollback's release of the target's
-            // move lock, 3 its teardown of what the target holds.
-            return rivalRuns === 4
-              ? Promise.reject(failure("rival rollback died"))
-              : h.container.scopeUnitOfWorkProvider.run(scope, fn);
-          },
-        },
-      };
-      await expect(
-        move(h, {
-          noteId,
-          workspaceId: TARGET_WS,
-          userId: OTHER,
-          expectedVersion: null,
-          container: stranded,
-        }),
-      ).rejects.toThrow("rival switch failed");
-    };
-
-    // The attempt that aborts below resumes an operation that is already
-    // terminal — the shape a re-request takes after a failure settled its
-    // own row (`beginOrResume` matches the request key whatever the state
-    // says). That is what lets a second migration exist at the same time:
-    // while any operation of this note is `running`, every other request
-    // joins it and is refused.
+    // The first attempt settles its own row, and that is what lets a
+    // second migration of this note exist at all: while any operation of
+    // it is `running`, every other request joins that one and is refused.
     await expect(
       move(h, {
         noteId,
@@ -2456,46 +2417,59 @@ describe("moveNote", () => {
     expect(operations(h)[0]).toMatchObject({ state: "rejected" });
     expect(notesIn(h, targetScope)).toHaveLength(0);
 
-    let runs = 0;
-    let rivalStaged = false;
-    const container: RequestContainer = {
+    // A second migration takes the route the first one just thawed and
+    // stages its own copy, then dies before its own compensation reaches
+    // the target. From here on the target's contents are the rival's.
+    let rivalRuns = 0;
+    const stranded: RequestContainer = {
       ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("rival switch failed")),
+      },
       scopeUnitOfWorkProvider: {
-        run: async <T>(
+        run: <T>(
           scope: ScopeKey,
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
-          const index = runs;
-          runs += 1;
-          // 0 freeze, 1 the rollback's undo of the target — and the thaw
-          // that precedes it has already handed the route back, so the
-          // window the rival claims in is between the two.
-          if (index === 1 && !rivalStaged) {
-            rivalStaged = true;
-            await stageRival();
-          }
-          const result = await h.container.scopeUnitOfWorkProvider.run(
-            scope,
-            fn,
-          );
-          if (index === 0) {
-            throw failure("snapshotSource response lost");
-          }
-          return result;
+          rivalRuns += 1;
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds.
+          return rivalRuns === 4
+            ? Promise.reject(failure("rival rollback died"))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
       },
     };
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        userId: OTHER,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("rival switch failed");
+    expect(notesIn(h, targetScope)).toHaveLength(1);
 
+    // The original actor retries. Its request key still names the row it
+    // settled above, so the attempt reopens that row and drives the very
+    // migration that never staged anything — and then aborts.
     await expect(
       move(h, {
         noteId,
         workspaceId: TARGET_WS,
         expectedVersion: null,
-        container,
+        container: withScopeRunHooks(h, {
+          after: (_scope, index) => {
+            if (index === 0) {
+              throw failure("snapshotSource response lost");
+            }
+          },
+        }),
       }),
     ).rejects.toThrow("snapshotSource response lost");
 
-    expect(rivalStaged).toBe(true);
     // Two migrations, and the target's contents belong to the other one.
     expect(operations(h)).toHaveLength(2);
     // Nothing in the target was put there by this migration, so nothing
@@ -2927,6 +2901,138 @@ describe("moveNote", () => {
     expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
     expect(moveLocksIn(h, targetScope)).toHaveLength(1);
     await expectWholeAndReachable(h, noteId);
+  });
+
+  it("TC-note-775: a resumed attempt that stops after the switch leaves the operation running, not the terminal row it replayed", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // An ordinary transient failure before anything is staged: the
+    // attempt compensates and settles its own row `rejected`. `beginMove`
+    // leaves `routeVersion` alone, so the retry below derives the same
+    // request key and is handed that very row back.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withScopeRunHooks(h, {
+          before: (_scope, index) => {
+            if (index === 1) {
+              throw failure("staging response lost");
+            }
+          },
+        }),
+      }),
+    ).rejects.toThrow("staging response lost");
+    const migrationId = operations(h)[0]?.id;
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
+
+    // The retry lands the switch and then stops. Driven on the terminal
+    // row it replayed, the stop would have nowhere to record itself — the
+    // post-switch catch only logs — and both scopes would keep a move lock
+    // that carries no lease and answers to nobody but this migration id.
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withScopeRunHooks(h, {
+          before: (_scope, index) => {
+            if (index === 2) {
+              throw failure("activateTarget failed");
+            }
+          },
+        }),
+      }),
+    ).rejects.toThrow("activateTarget failed");
+
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({
+      id: migrationId,
+      state: "running",
+    });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: targetScope,
+    });
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+    await expectNoStrandedMoveLocks(h, noteId, [sourceWsScope, targetScope]);
+    await expectWholeAndReachable(h, noteId);
+  });
+
+  it("TC-note-776: a replayed terminal row is not reopened while another migration of the note runs", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withScopeRunHooks(h, {
+          before: (_scope, index) => {
+            if (index === 1) {
+              throw failure("staging response lost");
+            }
+          },
+        }),
+      }),
+    ).rejects.toThrow("staging response lost");
+    const settled = operations(h)[0]?.id;
+
+    // A second editor's request is free to start its own migration while
+    // that row is terminal, and this one stops holding everything: the
+    // route, both move locks and a `running` row of its own.
+    let switchTried = false;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => {
+          switchTried = true;
+          return Promise.reject(failure("switch failed"));
+        },
+        abortMove: () => Promise.reject(failure("route store down")),
+      },
+      globalUnitOfWorkProvider: {
+        run: <T>(
+          fn: (ctx: GlobalUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> =>
+          switchTried
+            ? Promise.reject(failure("settle response lost"))
+            : h.container.globalUnitOfWorkProvider.run(fn),
+      },
+    };
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        userId: OTHER,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+    const rival = operations(h).find((row) => row.id !== settled)?.id;
+    expect(rival).toBeDefined();
+
+    // The first editor asks again. Its key still names the settled row, so
+    // reopening it is the only way this attempt could proceed — and one
+    // live operation per note is the store's rule, not the caller's, so
+    // the refusal is the same "another move is running" the join gives.
+    await expectConflict(
+      move(h, { noteId, workspaceId: TARGET_WS, expectedVersion: null }),
+      "NOTE_MOVE_IN_PROGRESS",
+    );
+
+    expect(operations(h)).toHaveLength(2);
+    expect(operations(h).map((row) => [row.id, row.state])).toEqual([
+      [settled, "rejected"],
+      [rival, "running"],
+    ]);
   });
 
   const MOVE_SEAMS: readonly MoveSeam[] = [

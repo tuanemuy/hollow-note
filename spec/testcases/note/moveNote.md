@@ -49,3 +49,5 @@
 | 前の試行が staged 複製・credit・両scopeのmove lockと `moving` な route を残しており、再開した試行が operation を開く呼び出しの応答を失う | 同じ入力で再試行する | 引き直した行が claim を保持しているので素の `rejected` にはせず、手順 4〜6 の補償を通してから閉じる（期限も所有者も持たない move lock を恒久的に残さない） | |
 | switch 前の中止で target の解体が失敗する | 中止する | 両 scope の move lock の解放は解体の失敗に道連れにされず、どちらのワークスペースも削除とメンバー変更を続けられる。残るのは target 側の staged 複製と credit だけで、lock の解放だけが単独で落ちたときは解体の cause に隠されずログに残る | |
 | 同一 requestKey の並行要求が switch を着地させた直後に claim の応答を失う | 修復する | 修復が switch 済みと判明したら operation を終端させず `running` のまま停止として記録し、両 scope の move lock を恒久化しない | |
+| 一度失敗して `rejected` で閉じた移動を、同じ actor が同じ移動先へやり直す | route switch 後に停止する | 引き直した終端行が駆動前に `running` へ開き直され、停止は `running` のまま記録される（両 scope の move lock を解放できる主体が残る） | |
+| 自分の行が終端しているあいだに別の編集者の移動が走り始めた | 同じ入力で再試行する | 終端行の開き直しは「partition ごとに running は 1 件」に阻まれ、`ConflictError("NOTE_MOVE_IN_PROGRESS")` が返る。走行中の行も終端した行もそのまま残る | |
