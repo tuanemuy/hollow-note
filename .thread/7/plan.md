@@ -26,12 +26,18 @@ Issue #7 は `<!-- spec-slice -->` 付きの縦スライスで、要件の正典
 | AC-7 | **ED-07**: ノート詳細および編集画面でタイトルをインラインで書き換えると自動保存され、一覧・詳細の表示に反映される。空は「無題」、200 文字超は拒否される | `spec/scenario/editing.md#ED-07` | 4, 10, 11 |
 | AC-8 | **ED-08**: 編集中は自動保存され「保存中 / 保存済み / 未保存」が表示される。明示保存・破棄ができ、保存のたびに版が記録されて直近 20 版から復元できる。競合・権限喪失・通信エラーはそれぞれ専用の状態として提示される | `spec/scenario/editing.md#ED-08` | 3, 5, 10 |
 | AC-9 | **ED-09**: ノート詳細のメニューから削除するとゴミ箱に移り、一覧から消え、直後は「元に戻す」で取り消せる。公開中のノートは警告が出て、削除後は公開・共有 URL からアクセスできなくなる | `spec/scenario/editing.md#ED-09` | 7, 11 |
-| AC-10 | **ED-10**: `/notes/trash` を開くと削除日時の新しい順に一覧と残り日数が並び、個別の復元・完全削除と「ゴミ箱を空にする」ができる。完全削除で元ファイル・メディア・版・タグ付与・バックアップ記録が消え、51 件以上は一括削除ジョブとして予約され文言が分かれる。空状態・権限なしを表示する | `spec/scenario/editing.md#ED-10` | 7, 8, 9, 11 |
+| AC-10 | **ED-10**: `/notes/trash`（およびワークスペース文脈の `/workspaces/:workspaceId/notes/trash`）を開くと削除日時の新しい順に一覧と残り日数が並び、個別の復元・完全削除と「ゴミ箱を空にする」ができる。完全削除で元ファイル・メディア・版・タグ付与・バックアップ記録が消え、51 件以上は一括削除ジョブとして予約され文言が分かれる。空状態・権限なしを表示する | `spec/scenario/editing.md#ED-10` | 7, 8, 9, 11 |
 | AC-11 | **ED-11**: ノート詳細のメニューから表示スタイル（既定スタイルを適用 / 元の装飾のみ）を切り替えられ、その場で表示が変わり、一覧・公開ページ・書き出しに反映される。編集権限がなければ表示のみになる | `spec/scenario/editing.md#ED-11` | 4, 11 |
 | AC-12 | `pnpm typecheck && pnpm lint:fix && pnpm format` が通り、`pnpm test` が両プロジェクト green | Issue #7「検証」 | 12 |
 | AC-13 | `spec/manual-tests/editing.md` の TC-04〜TC-34 のうち本スライスの対象シナリオに属する手順が実機で PASS する | Issue #7「検証」 | 12 |
 
+AC-2〜AC-11 は**個人文脈とワークスペース文脈の双方**で成立することを含む。`spec/pages/index.md#URL の割り当て` が `/workspaces/:workspaceId/...` を「ワークスペース文脈の同構成（`notes` / `tags` / `trash`）」と定め、「以下では文脈によらない 1 つの画面として記述する」と明記しているため、画面の基準を文脈ごとに分けない（adr.md ADR-003）。
+
 ## スコープ
+
+### 含まれるもの
+
+- **個人文脈とワークスペース文脈の両方の編集ページ・ゴミ箱ページ** — Issue #3（PR #58）が着地し、`apps/web/app/routes/workspaces/$workspaceId/notes/{index,$noteId}.tsx` が実在して個人側と同じコンポーネント（`components/note/NoteList` / `NoteDetail`）を文脈プロップ付きで共有する形が確立した。`application/note/accessControl.ts` も実在の `WorkspaceAuthorization`（`domain/workspace/services/workspaceAuthorization`）を使っている。したがって本スライスは `/notes/new`・`/notes/:noteId/edit`・`/notes/trash` と、対応する `/workspaces/:workspaceId/notes/{new,:noteId/edit,trash}` を揃えて実装する。→ 扱いは adr.md ADR-003
 
 ### 含まれないもの
 
@@ -40,7 +46,6 @@ Issue #7 は `<!-- spec-slice -->` 付きの縦スライスで、要件の正典
 - **検索・タグ管理・一括操作の UI**（P-10 の検索、P-16、OR-09）— Issue #8 の持ち分。本スライスが触れるのは `note.purged` に追随する `deleteAssignmentsForNote` の 1 行だけ
 - **共有・公開の設定変更**（SH-xx / `changeNoteVisibility` / `setSharePassword`）— Issue #9。本スライスは trash / purge が公開・共有経路を閉じることだけを保証する
 - **書き出し**（EX-xx / `exportNote` 以降）— Issue #10
-- **ワークスペース文脈**（`/workspaces/:workspaceId/...` 配下の同構成）— `application/note/accessControl.ts` の `WorkspaceAuthorization` は現在プレースホルダで Issue #3 の持ち分。本スライスは個人所有ノートの経路を正とし、ワークスペースの分岐は既存のプレースホルダの形を崩さずに残す
 
 ## リスクと注意点
 
@@ -51,9 +56,9 @@ Issue #7 は `<!-- spec-slice -->` 付きの縦スライスで、要件の正典
 - **`purgeNote` は本スライス中もっとも重い。** route CAS（`NoteRouteStore.beginPurge` / `abortPurge` / `finishPurge`）、内部 operation ID の決定的採番、forward recovery、public projection の `removeForPurge` まで含み、TC-note-348〜372 の大半が中断・再送・回収の窓を突く。既存の `deleteFilesByOwner.ts` の `ScopeCleanupTurn` と、`identity` の削除サガが唯一の参考実装になる
 - **`StoredFileRepository` のポートが本スライスの必要を満たしていない。** JSDoc に「the import slice adds the note / artifact / expiry listings」とあり、現在は `listByIds` / `listByOwner` / `sumSizeByOwner` のみ。`deleteFilesForNote` と `collectOrphanMedia` はノート単位・期限切れの列挙を要求するため、ポート追加 → memory / cloudflare 両アダプター → conformance スイートの 3 点セットが要る（[ADR 026](../../spec/adr/026-port-contract-and-conformance.md)）
 - **`UploadValidationPolicy` の `RULES` に `media` 行がない**（`avatar` のみ）。マジックバイト判定も PNG / JPEG / WebP のみで、GIF / SVG / MP4 / WebM が未対応。SVG サニタイズは実装が一切ない（TC-storage-176〜178）
-- **`note.purged` の購読者が 1 件も登録されていない。** `application/workers/subscribers.ts` の `domainEventSubscribers` は `identity.identity.removed` と `storage.fileDeleted` の 2 件のみで、`dispatchDomainEvent` は未購読イベントを warn ログだけで ack する。したがって購読者を足し忘れても既存テストは緑のまま通る
+- **`note.purged` の購読者が 1 件も登録されていない。** `application/workers/subscribers.ts` の `domainEventSubscribers` は `identity.identity.removed` / `storage.fileDeleted` / `workspace.membership.roleChanged` の 3 件（3 件目は #3 が追加）で、`note.*` はどれも購読されていない。`dispatchDomainEvent` は未購読イベントを warn ログだけで ack する。したがって購読者を足し忘れても既存テストは緑のまま通る
 - **`NoteAccessPolicy` に `ensureCanDelete` がない。** `ensureCanEdit` はあるが、trash / purge / emptyTrash が要求する削除権限の判定は追加になる
-- **フロントは P-12 / P-14 とも 0 から。** 既存のノート系コンポーネントは閲覧専用の最小形で、エディタ・アップローダー・版一覧・ゴミ箱一覧はいずれも存在しない。3 モードのエディタは本スライス最大の UI 実装で、ビジュアルモードはアダプターの `path` 規約（body ルートからのドット区切り 0 始まり子インデックス）とクライアント側の DOM 走査が一致していないと編集が全件 `pathNotFound` に落ちる
+- **フロントは P-12 / P-14 とも 0 から。** 既存のノート系コンポーネントは閲覧と移動だけの最小形（#3 が `NoteDetail` / `NoteList` に操作メニューと文脈プロップを入れた）で、エディタ・アップローダー・版一覧・ゴミ箱一覧はいずれも存在しない。加えて ADR-003 により**ルートは個人とワークスペースの 2 本ずつ**になる（P-12 / P-14 で計 6 ルート）。3 モードのエディタは本スライス最大の UI 実装で、ビジュアルモードはアダプターの `path` 規約（body ルートからのドット区切り 0 始まり子インデックス）とクライアント側の DOM 走査が一致していないと編集が全件 `pathNotFound` に落ちる
 - **自動保存 × 楽観ロック × React 19 プリミティブ。** `CLAUDE.md` の「Frontend」節どおり、保存は server component → `"use client"` 島 → `useActionState` / `useOptimistic` の三層で、`ConflictError("OPTIMISTIC_LOCK_FAILURE")` は握り潰さず競合状態として提示する必要がある。`version` を握るのは編集画面の所有者側であり、リーフに持たせると自動保存のたびに版がずれる
 
 ## テスト方針
