@@ -8,8 +8,8 @@ import type { Workspace } from "../workspace";
  *
  * `avatarUrl` stays a raw string rather than `AvatarUrl`: the value was
  * validated when it was written, and rehydrating it would need the app
- * origin, which no read path may reach for (ADR 051 — the same reasoning
- * `Workspace.reconstruct` applies to its own `avatarUrl`).
+ * origin, which no read path may reach for — the same reasoning
+ * `Workspace.reconstruct` applies to its own `avatarUrl`.
  */
 export type WorkspaceDirectoryEntry = Readonly<{
   workspaceId: WorkspaceId;
@@ -29,8 +29,7 @@ export type WorkspaceDirectoryEntry = Readonly<{
  * one shard was briefly unreachable.
  *
  * `entry` carries the projection's source version so a caller comparing
- * it against a scope read can tell a stale projection from a current one
- * (spec/usecases/workspace.md `getPublicWorkspace` step 3).
+ * it against a scope read can tell a stale projection from a current one.
  * `retryAfterSeconds` is a hint; `null` means the backend has no estimate.
  */
 export type WorkspaceDirectoryResolution =

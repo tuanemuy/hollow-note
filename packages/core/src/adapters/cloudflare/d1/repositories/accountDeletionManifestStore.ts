@@ -63,7 +63,7 @@ const STATUSES: readonly AccountDeletionManifestStatus[] = [
 /**
  * Receipts finalize waits for when a deployment declares nothing. The
  * strictest reading on purpose: a deployment that forgets to declare its
- * participants stalls rather than finalizing early (ADR 039).
+ * participants stalls rather than finalizing early.
  */
 const ALL_FINALIZE_RECEIPTS: readonly AccountDeletionReceipt[] = [
   "personalCleanup",
@@ -266,11 +266,11 @@ export type D1AccountDeletionManifestStoreDeps = Readonly<{
  * Every page — membership, author route, claim, ack, compaction, prune —
  * is one multi-row statement built with `json_each` rather than a
  * statement per row: a page is up to 100 items and both planes cap a
- * statement at 100 bound parameters (`spec/database/index.md` の共通の規約).
- * Each of those statements still names the item rows it touches
- * (`upsertMany` / `removeMany`), so a unit of work reads its own page
- * back exactly as the memory backend does: the two acks of one redaction
- * turn compose, and `markCompleted` counts what the same turn compacted.
+ * statement at 100 bound parameters. Each of those statements still names
+ * the item rows it touches (`upsertMany` / `removeMany`), so a unit of
+ * work reads its own page back exactly as the memory backend does: the two
+ * acks of one redaction turn compose, and `markCompleted` counts what the
+ * same turn compacted.
  * The terminal prune is the one exception — it drops whole manifests by
  * operation rather than by item key, so the item keys are not enumerable
  * at staging time.

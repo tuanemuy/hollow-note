@@ -5,8 +5,7 @@ import { retryOnce } from "./invitation";
 
 /**
  * Publishes a workspace's display row to the global `workspace_directory`
- * after its scope-local commit (spec/usecases/workspace.md
- * `createWorkspace` 手順 4 / `changeWorkspaceSlug` 手順 4).
+ * after its scope-local commit.
  *
  * The whole row goes out rather than a patch, and `sourceVersion` is the
  * only order the projection knows: a snapshot at or below the stored
@@ -15,9 +14,9 @@ import { retryOnce } from "./invitation";
  * writer's job — `workspace_slug_reservations` is the authority on who
  * owns it — so the caller has no separate directory step for a rename.
  *
- * Retried once because nothing else repairs this projection today: a lost
- * response would leave the public route and every member's list showing a
- * state the scope has already moved past.
+ * Retried once because a lost response leaves the public route and every
+ * member's list showing a state the scope has already moved past, and
+ * nothing re-sends the snapshot until the next commit on this workspace.
  */
 export async function projectWorkspaceDirectory(
   container: RequestContainer,

@@ -26,8 +26,7 @@ export type ResendInvitationInput = Readonly<{
 }>;
 
 /**
- * Mints a fresh token and a fresh 14-day window for a pending invitation
- * (UC-workspace-009, spec/usecases/workspace.md#resendinvitation).
+ * Mints a fresh token and a fresh 14-day window for a pending invitation.
  *
  * Saga: read the live invitation → `reserveReplacement` (global, the new
  * token is claimed while the old one keeps resolving) → scope commit of
@@ -74,7 +73,7 @@ export async function resendInvitation({
 
   const pending = await scopeUnitOfWorkProvider.run(scope, async (ctx) => {
     // Refused before the replacement token is claimed globally, and again
-    // inside the commit below (spec/usecases/workspace.md#deleteworkspace).
+    // inside the commit below.
     await ctx.workspaceOperationLockStore.assertWritable();
     const stored = await ctx.invitationRepository.findById(invitationId);
     if (stored === null || stored.entity.workspaceId !== workspaceId) {

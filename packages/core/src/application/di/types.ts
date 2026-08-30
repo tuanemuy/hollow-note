@@ -108,8 +108,8 @@ export type UserReader = Pick<UserRepository, "findById">;
 export type IdentityReader = Pick<IdentityRepository, "listByUserId">;
 /**
  * `deleteById` is included because expired-session cleanup during
- * `authenticateSession` is spec'd as a best-effort delete outside any
- * unit of work (the row is create/delete-only and carries no OCC).
+ * `authenticateSession` is a best-effort delete outside any unit of work
+ * (the row is create/delete-only and carries no OCC).
  */
 export type SessionReader = Pick<
   SessionRepository,
@@ -168,7 +168,7 @@ export type UsageReader = Readonly<{
  * writes. `countPendingIssuedSince` is the invitation quota check, and the
  * count is only sound while it shares the transaction that inserts the
  * row: read outside one, two requests that each see 49 both pass and the
- * workspace lands at 51 (spec/usecases/workspace.md `inviteMember`). Not
+ * workspace lands at 51. Not
  * offering it here is how that stays true by type rather than by
  * convention. `listByWorkspace` returns invitations in every state, which
  * only the scope's own deletion sweep enumerates; the pending listing
@@ -177,9 +177,9 @@ export type UsageReader = Readonly<{
  * `admission` is the one deletion check a request may make outside a
  * transaction: the three invitation sagas reserve a global row *before*
  * their scope commit, and refusing a scope that is already closed keeps
- * them from claiming a token or an edge they would only have to abandon
- * (spec/usecases/workspace.md#deleteworkspace). It is a pure read; the
- * binding refusal is the second `assertWritable` inside the commit.
+ * them from claiming a token or an edge they would only have to abandon.
+ * It is a pure read; the binding refusal is the second `assertWritable`
+ * inside the commit.
  */
 export type WorkspaceReader = Readonly<{
   admission: Pick<WorkspaceOperationLockStore, "assertWritable">;
@@ -248,7 +248,7 @@ export type MembershipDirectoryReservations = Pick<
  * layer for SSR head/meta via `config`.
  *
  * Ports that live here *outside* the UoW contexts are exactly the ones
- * the spec places outside the transaction: the uniqueness-reservation
+ * the design places outside the transaction: the uniqueness-reservation
  * saga (`identityUniqueDirectory`), the note-route saga
  * (`noteRouteStore`), the atomic login-attempt counter
  * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
@@ -314,12 +314,11 @@ export type RequestContainer = SharedDeps &
   }>;
 
 /**
- * Sweep tables owned by `pruneExpiredAuthState`
- * (spec/usecases/identity.md). Every table with an `expiresAt` retention
- * window belongs here: a missing registration is a type error on every
- * call routed through this union, but a table that reaches the usecase
- * through a run's own table set (`readonly string[]`) is skipped at
- * runtime instead of being collected (spec/adr/062).
+ * Sweep tables owned by `pruneExpiredAuthState`. Every table with an
+ * `expiresAt` retention window belongs here: a missing registration is a
+ * type error on every call routed through this union, but a table that
+ * reaches the usecase through a run's own table set (`readonly string[]`)
+ * is skipped at runtime instead of being collected.
  */
 export type AuthStateTable =
   | "sessions"
@@ -354,8 +353,8 @@ export type ExpirySweep = Readonly<{
  * Intentionally does NOT carry `config` or the unit-of-work providers:
  * `config` is SSR-only metadata, and worker code that reads/writes the
  * outbox or sweeps expiry tables does so through the ports directly
- * without a unit of work (spec: the per-table deletes must not share a
- * cross-cutting transaction).
+ * without a unit of work — the per-table deletes must not share a
+ * cross-cutting transaction.
  *
  * Both unit-of-work providers are here because the subscriber registry
  * (`application/workers/subscribers.ts`) runs real consumers whose
@@ -384,7 +383,7 @@ export type ExpirySweep = Readonly<{
  * to is already gone.
  *
  * The four workspace ports are the global half of the workspace-deletion
- * saga (spec/usecases/workspace.md `deleteWorkspace` 手順 7): its cleanup
+ * saga: its cleanup
  * turns run on the worker plane, and the directory tombstone, the slug
  * release, the membership edges and the invitation routes they delete all
  * live on the control plane, outside any scope's unit of work. The request

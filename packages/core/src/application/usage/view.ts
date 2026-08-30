@@ -34,8 +34,7 @@ export type AvailableWorkspaceUsageView = Readonly<{
 /**
  * A workspace whose figures could not be read for this request. Kept in
  * the list rather than dropped: one unreachable scope object must degrade
- * a single row, not the whole screen
- * (spec/usecases/usage.md#getusagesnapshot 手順 3).
+ * a single row, not the whole screen.
  *
  * `workspaceName` is nullable because the display name comes from the
  * global `workspace_directory`, and that read degrades per row too — a

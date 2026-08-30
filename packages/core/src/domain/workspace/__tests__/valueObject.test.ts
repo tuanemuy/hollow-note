@@ -11,10 +11,6 @@ import {
   WorkspaceSlug,
 } from "../valueObject";
 
-/**
- * DOM-workspace-001〜007 (spec/domains/workspace.md#値オブジェクト).
- */
-
 const codeOf = (fn: () => unknown): string | null => {
   try {
     fn();

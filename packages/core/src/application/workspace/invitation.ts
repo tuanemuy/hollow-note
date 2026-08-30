@@ -7,10 +7,7 @@ import type { RequestContainer } from "../di/types";
 import { NotFoundError, ValidationError } from "../errors";
 import type { Logger } from "../ports/logger";
 
-/**
- * Pieces the six invitation usecases share
- * (spec/usecases/workspace.md `inviteMember` 〜 `listPendingInvitations`).
- */
+/** Pieces the six invitation usecases share. */
 
 export const invitationNotFound = (): NotFoundError =>
   new NotFoundError("INVITATION_NOT_FOUND", "Invitation not found");
@@ -37,16 +34,16 @@ export const ensureCanManageMembers = (role: WorkspaceRole | null): void => {
   WorkspaceAuthorization.ensureCan(role, "manageMembers");
 };
 
-/** The link the recipient opens (`/invitations/:token`, P-06). */
+/** The link the recipient opens (`/invitations/:token`). */
 export const invitationUrl = (appUrl: string, token: string): string =>
   `${appUrl}/invitations/${encodeURIComponent(token)}`;
 
 /**
  * Sends the invitation mail and reports whether it left. A send failure
  * never fails the operation — the invitation is already durable and its
- * URL is returned to the inviter, who can share the link directly (WS-03)
- * — but the inviter is the one who has to do that sharing, so the outcome
- * is answered rather than only logged (`mailSent` in view.ts).
+ * URL is returned to the inviter, who can share the link directly — but
+ * the inviter is the one who has to do that sharing, so the outcome is
+ * answered rather than only logged (`mailSent` in view.ts).
  */
 export async function sendInvitationMail(
   container: RequestContainer,

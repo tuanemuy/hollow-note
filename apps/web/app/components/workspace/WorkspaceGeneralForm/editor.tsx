@@ -200,7 +200,6 @@ export function WorkspaceGeneralEditor({
         body.set("file", file);
         body.set("workspaceId", workspace.workspaceId);
         const { url } = await uploadAvatar({ data: body });
-        // 2 段目。ここまで通って初めてワークスペースに残る。
         await updateProfile({
           data: { workspaceId: workspace.workspaceId, avatarUrl: url },
         });

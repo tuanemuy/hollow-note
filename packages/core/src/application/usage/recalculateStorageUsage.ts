@@ -18,8 +18,7 @@ export type RecalculateStorageUsageInput = Readonly<{
 }>;
 
 /**
- * Rebuilds a subject's storage totals from the real rows (UC-usage-005,
- * spec/usecases/usage.md#recalculatestorageusage).
+ * Rebuilds a subject's storage totals from the real rows.
  *
  * The scan result — not a delta — is the authority, so the aggregate is
  * overwritten through `StorageQuota.replaceTotals`. `artifact` bytes are
@@ -31,8 +30,7 @@ export type RecalculateStorageUsageInput = Readonly<{
  * whoever asked for the stocktake, and a workspace subject is recomputed
  * by a member. A user subject is therefore bound to the actor
  * — the two are the same person or the actor has no standing over that
- * scope at all — and a workspace subject is bound to a membership in it
- * (spec/usecases/usage.md#recalculatestorageusage 手順 1).
+ * scope at all — and a workspace subject is bound to a membership in it.
  *
  * Membership alone is the bar, with no action from the role table: the
  * stocktake writes nothing a member cannot already see, and it only ever

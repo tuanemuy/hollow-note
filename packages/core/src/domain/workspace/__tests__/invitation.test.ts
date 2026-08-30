@@ -5,8 +5,6 @@ import { WorkspaceErrorCode } from "../errorCode";
 import { Invitation, type PendingInvitation } from "../invitation";
 import { WorkspaceId } from "../valueObject";
 
-/** DOM-workspace-010 (spec/domains/workspace.md#エンティティ). */
-
 const T0 = new Date("2026-01-01T00:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TTL_MS = 14 * DAY_MS;

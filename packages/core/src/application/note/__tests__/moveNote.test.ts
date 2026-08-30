@@ -326,7 +326,7 @@ async function deleteNoteRow(
   });
 }
 
-/** Edits a note in place; the editing usecases land with Issue #6 / #7. */
+/** Edits a note in place; the editing usecases land in a later slice. */
 async function renameNoteRow(
   h: TestHarness,
   scope: ScopeKey,
@@ -477,8 +477,8 @@ const withMembershipReadHook = (
 const TAG_COMMAND = "tag.moveRelocateAssignments";
 
 /**
- * The tag seam as Issue #8 will write it: a receipt of its own in the
- * target scope, declared so an abort clears it with the note's.
+ * The tag seam as the tag slice will write it: a receipt of its own in
+ * the target scope, declared so an abort clears it with the note's.
  */
 const recordingTagRelocation = (stagings: string[]): NoteMoveTagRelocation => ({
   targetScopeCommandKeys: [TAG_COMMAND],
@@ -528,7 +528,7 @@ const GLOBAL_PHASE_OF: Readonly<Partial<Record<MoveSeam, number>>> = {
  * A container in which `seam` commits for real and then loses its
  * response, exactly once.
  *
- * The process stays alive, which is the whole point. `TC-note-266` kills
+ * The process stays alive, which is the whole point. The crash case kills
  * it right after the switch, so nothing the saga decides to do about the
  * loss ever runs; here every compensation runs in full, and what it does
  * to a phase that already committed becomes observable.
@@ -680,10 +680,9 @@ const operationTarget = (row: DistributedOperation): ScopeKey | null => {
  * Whether anything can still drive `row` forward.
  *
  * `running` on its own does not say so, and reading it that way is what
- * lets a permanent stop pass as a benign middle state. Canon leaves an
- * operation `running` in exactly one place — a stop *after* the switch,
- * where the move is real and only forward steps remain
- * (spec/usecases/note.md#movenote の終端表, 4 行目) — and every point
+ * lets a permanent stop pass as a benign middle state. An operation is
+ * left `running` in exactly one place — a stop *after* the switch,
+ * where the move is real and only forward steps remain — and every point
  * before it must reach a terminal state. So a `running` row counts as
  * live only while it holds the claim (`moving` under its own migration)
  * or the route has already moved to the destination its payload names.
@@ -751,11 +750,10 @@ const expectNoStrandedMoveLocks = async (
  *
  * The rest is conditional on whether anything can still drive the move
  * (`stillDrivable`), because what a stopped move may leave behind depends
- * on it (spec/usecases/note.md#movenote 手順 4・8 and the five-row table
- * of terminal states):
+ * on it:
  *
- * - a move nobody drives may not be `running`. Canon puts the switch-less
- *   ends of the saga at `rejected`, for the reason it states there: an
+ * - a move nobody drives may not be `running`. Every switch-less end of
+ *   the saga settles `rejected`, because an
  *   operation left `running` makes `beginOrResume` join every later
  *   request to a dead one, so this note can never be moved again;
  * - the route may not be left `moving` either. `beginMove` refuses a
@@ -765,10 +763,10 @@ const expectNoStrandedMoveLocks = async (
  *   (`expectNoStrandedMoveLocks`, which states why);
  * - the charge follows the route, since the two scopes' quotas are moved
  *   by the phases themselves; a stopped move is allowed to double-count
- *   but never to under-count, so mid-flight the floor is asserted, with
- *   the ceiling canon gives it (手順 8: at worst counted in both scopes);
- * - a staged copy across from the route is the abort's leftover, and the
- *   spec's 「完全」 is that no trace of this migration stays in the scope
+ *   but never to under-count, so mid-flight the floor is asserted, with a
+ *   ceiling of the charge standing in both scopes at once;
+ * - a staged copy across from the route is the abort's leftover, and a
+ *   complete abort leaves no trace of this migration in the scope
  *   the note did not end up in. That includes the `applied_operations`
  *   receipts: `beginOrResume` replays a terminal operation under the same
  *   request key, so a staging receipt that outlived the rows it asserts
@@ -2773,7 +2771,8 @@ describe("moveNote", () => {
     expect(
       h.logger.byLevel("error").map((entry) => entry.message),
     ).not.toContain("[moveNote] a move lock was left standing");
-    // The teardown really did fail — this is the leftover #28 collects.
+    // The teardown really did fail — this is the leftover a recovery
+    // entry point would collect.
     // It is rows and a credit, not a lock: no scope has stopped accepting
     // deletions or membership changes on their account.
     expect(notesIn(h, targetScope)).toHaveLength(1);
@@ -3068,7 +3067,7 @@ describe("moveNote", () => {
     const noteId = await createNote(h, { workspaceId: SOURCE_WS });
     const id = NoteId.create(noteId);
     // A rival move that completes in the window between this request's
-    // pre-flight read and 手順 4's re-read of the route.
+    // pre-flight read and the claim's re-read of the route.
     const rivalMove = async (): Promise<void> => {
       const moved = await h.container.scopeUnitOfWorkProvider.run(
         sourceWsScope,

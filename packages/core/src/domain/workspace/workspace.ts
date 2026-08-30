@@ -113,7 +113,7 @@ export const Workspace = {
   /**
    * `avatarUrl` arrives as a constructed value object because
    * `AvatarUrl.create` needs the app origin and an aggregate never reads
-   * configuration (ADR 051).
+   * configuration.
    */
   updateProfile: (
     workspace: Workspace,
@@ -226,7 +226,7 @@ export const Workspace = {
         name: WorkspaceName.create(input.name),
         description: WorkspaceDescription.create(input.description),
         // Trusted as validated on write: `AvatarUrl.create` needs the app
-        // origin, which a rehydration must not reach for (ADR 051).
+        // origin, which a rehydration must not reach for.
         avatarUrl: (input.avatarUrl ?? null) as AvatarUrl | null,
         slug:
           input.slug !== undefined && input.slug !== null

@@ -36,8 +36,7 @@ const PUBLISHED =
   "publication = 'published' AND lifecycle = 'active' AND slug IS NOT NULL";
 
 /**
- * Sitemap enumeration of `workspace_directory`
- * (`spec/database/index.md#workspace_directory`).
+ * Sitemap enumeration of `workspace_directory`.
  *
  * The predicate is re-applied on every read whatever cursor arrives — a
  * cursor decides where a page starts, never what it may contain — and a

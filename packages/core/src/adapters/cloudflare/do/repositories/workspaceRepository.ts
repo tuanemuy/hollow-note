@@ -67,7 +67,7 @@ const fromRow = (row: SqlRow): Workspace =>
     updatedAt: date(row, "updated_at"),
   });
 
-/** `workspaces` of one scope object (`spec/database/index.md#workspaces`). */
+/** `workspaces` of one scope object. */
 export function createCloudflareWorkspaceRepository(
   deps: Readonly<{ session: SqlSession }>,
 ): WorkspaceRepository {

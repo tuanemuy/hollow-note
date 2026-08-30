@@ -66,8 +66,8 @@ describe("defaultEventDecoderRegistry", () => {
     }
   });
 
-  // Every workspace event has to survive the wire, including the ones
-  // spec/domains/workspace.md marks 監査 with no subscriber: the relay
+  // Every workspace event has to survive the wire, including the
+  // audit-only ones with no subscriber: the relay
   // decodes before it dispatches, so a missing decoder quarantines the row
   // instead of being acknowledged with a "no subscriber" warning.
   it("round-trips every workspace event, subscribed or not", () => {

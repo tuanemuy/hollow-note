@@ -477,7 +477,7 @@ export type WorkspaceDeletionManifestItemRow =
  * A deletion tombstone keeps `lifecycle: "deleting"` with its display
  * fields redacted, which is what makes "gone" a durable verdict the
  * batch reader can report as `deleted` after the row's workspace scope
- * is unreachable (spec/database/index.md `workspace_directory`).
+ * is unreachable.
  */
 export type WorkspaceDirectoryRow = Readonly<{
   workspaceId: WorkspaceId;

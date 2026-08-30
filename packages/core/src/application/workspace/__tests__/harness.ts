@@ -57,12 +57,12 @@ import { projectWorkspaceDirectory } from "../directoryProjection";
  *
  * Everything here runs against the memory reference adapters through the
  * production DI of `createTestHarness` — the memory backend is a real
- * backend, not a fake ([ADR 024](../../../../../../spec/adr/024-in-memory-adapter-as-first-class-backend.md)),
- * so a seed goes through the same ports a request would use. The two
- * exceptions are the states no usecase in this slice can produce (an
- * invitation whose window has already closed, a workspace row the saga has
- * already removed); those are written straight to `harness.backend` through
- * the domain `reconstruct` factories, which is what `docs/test.md` asks for.
+ * backend, not a fake, so a seed goes through the same ports a request
+ * would use. The two exceptions are the states no usecase in this slice
+ * can produce (an invitation whose window has already closed, a workspace
+ * row the saga has already removed); those are written straight to
+ * `harness.backend` through the domain `reconstruct` factories, which is
+ * what `docs/test.md` asks for.
  */
 
 export const DEFAULT_WORKSPACE_ID = "workspace-1";
@@ -89,8 +89,6 @@ export function createWorkspaceHarness(
 }
 
 export type { TestHarness, TestHarnessOptions };
-
-// --- identity-plane seeding -------------------------------------------
 
 export type UserSeed = Readonly<{
   userId: string;
@@ -133,8 +131,6 @@ export function seedUser(h: TestHarness, seed: UserSeed): UserId {
 export function markUserDeleted(h: TestHarness, userId: string): void {
   markDeleted(h, userId);
 }
-
-// --- workspace seeding -------------------------------------------------
 
 export type MemberSeed = Readonly<{
   userId: string;
@@ -392,8 +388,6 @@ export async function seedWorkspaceNotes(
   );
 }
 
-// --- invitation seeding ------------------------------------------------
-
 export type InvitationSeed = Readonly<{
   invitationId?: string;
   email?: string;
@@ -517,8 +511,6 @@ export async function seedInvitation(
 export const tokenOfInvitationUrl = (invitationUrl: string): string =>
   decodeURIComponent(invitationUrl.slice(invitationUrl.lastIndexOf("/") + 1));
 
-// --- persisted-state reads --------------------------------------------
-
 export const storedWorkspace = (
   h: TestHarness,
   workspaceId: string,
@@ -565,8 +557,6 @@ export const invitationRoutes = (h: TestHarness) =>
 
 export const slugReservations = (h: TestHarness) =>
   h.backend.slugReservations.values();
-
-// --- state no usecase in this slice produces --------------------------
 
 /**
  * Flips the workspace to `deleting` under `operationId` without running
@@ -709,8 +699,6 @@ export function withFailingDirectoryTombstone(
   };
 }
 
-// --- outbox and continuations -----------------------------------------
-
 export const outboxRows = (
   h: TestHarness,
   type?: string,
@@ -787,8 +775,6 @@ export async function drainScopeTasks(
   throw new Error(`scope tasks did not settle within ${maxRounds} rounds`);
 }
 
-// --- fan-out observation ----------------------------------------------
-
 /**
  * A container whose `userBatchReader` records the id lists it is asked
  * for. The fan-out contract is "group by id, one bounded read" — the call
@@ -832,8 +818,6 @@ export function recordWorkspaceDirectoryReads(
     },
   };
 }
-
-// --- error assertions --------------------------------------------------
 
 export const expectBusinessRule = (
   promise: Promise<unknown>,

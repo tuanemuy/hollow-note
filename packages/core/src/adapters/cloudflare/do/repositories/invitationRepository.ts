@@ -83,8 +83,7 @@ const fromRow = (row: SqlRow): Invitation =>
   });
 
 /**
- * `invitations` of one workspace scope
- * (`spec/database/index.md#invitations`).
+ * `invitations` of one workspace scope.
  *
  * A status predicate is applied only in the methods that name it, and an
  * expiry one never is: a lapsed invitation still resolves and still

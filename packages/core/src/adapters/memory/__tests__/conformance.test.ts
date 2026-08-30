@@ -43,8 +43,6 @@ import { describeWorkspaceRepositoryContract } from "../../conformance/workspace
 import { describeWorkspaceSlugReservationStoreContract } from "../../conformance/workspaceSlugReservationStore";
 import { makeMemoryConformanceBackend } from "./conformanceBackend";
 
-// The full shared port-conformance suite run against the in-memory
-// backend. A D1/DO backend imports the same suites with its own factory.
 const BACKEND = "memory";
 
 describeUnitOfWorkContract(BACKEND, makeMemoryConformanceBackend);

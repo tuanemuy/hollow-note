@@ -158,7 +158,7 @@ export type CloudflareRuntime = AppRuntime;
  * otherwise. Typing the `authStatePrune` sequence as `AuthStateTable`
  * ties it to the union `authStateSweeps` is keyed by, so a misspelled
  * table name is a type error rather than a row that is quietly never
- * swept (ADR 062).
+ * swept.
  */
 export const DEFAULT_MAINTENANCE_TABLES: Readonly<
   Record<MaintenanceKind, readonly string[]> & {

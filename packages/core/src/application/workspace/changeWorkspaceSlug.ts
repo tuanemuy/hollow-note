@@ -344,8 +344,7 @@ async function abandonSlugReservation(
 }
 
 /**
- * Changes the public slug of a workspace (UC-workspace-004,
- * spec/usecases/workspace.md#changeworkspaceslug, WS-07).
+ * Changes the public slug of a workspace.
  *
  * Saga: reserve the new slug globally → the scope-local commit →
  * `activate` with the key being given up as `releasing`, which frees it in

@@ -31,10 +31,8 @@ export type GetUsageSnapshotInput = Readonly<{
 const DEFAULT_WORKSPACE_LIMIT = 20;
 
 /**
- * Ceiling on the scope fan-out of one page
- * (spec/usecases/usage.md#getusagesnapshot 手順 3). Twenty scope objects
- * live on twenty different shards, so the width has to be capped
- * somewhere; the spec puts it at six.
+ * Ceiling on the scope fan-out of one page. Twenty scope objects live on
+ * twenty different shards, so the width has to be capped somewhere.
  */
 const MAX_CONCURRENT_SCOPE_READS = 6;
 
@@ -121,8 +119,7 @@ async function readWorkspaceUsage(
  * directory could not resolve carries no name: the display name comes
  * only from the directory, and `WorkspaceDirectoryBatchReader` contracts
  * that a shard it cannot read does *not* fail the call, so such an edge
- * is kept nameless rather than dropped
- * (spec/usecases/usage.md#getusagesnapshot 手順 2).
+ * is kept nameless rather than dropped.
  */
 async function listWorkspaceUsage(
   container: RequestContainer,
@@ -147,8 +144,7 @@ async function listWorkspaceUsage(
 }
 
 /**
- * Reads the viewer's own usage for the settings screen (UC-usage-001,
- * spec/usecases/usage.md#getusagesnapshot).
+ * Reads the viewer's own usage for the settings screen.
  *
  * Opens no unit of work: a missing quota / LLM row is answered with its
  * initialized values and is deliberately **not** created, so opening the

@@ -562,8 +562,7 @@ describe("deleteWorkspace", () => {
     expect(before).toMatchObject({ slug: SLUG });
 
     await accept(h);
-    // local half only: the Workspace row is gone, the directory row and
-    // the slug reservation are untouched.
+    // local half only
     await drive(h, 4);
     expect(storedWorkspace(h, WORKSPACE)).toBeNull();
     expect(directoryRow(h, WORKSPACE)?.lifecycle).toBe("active");

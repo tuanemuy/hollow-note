@@ -62,8 +62,8 @@ describe("listNotes", () => {
     expect(view).toEqual({ items: [], count: 0 });
   });
 
-  // The workspace context (ADR-060) is an authorization boundary: WS-02
-  // reaches it by opening `/workspaces/:id/notes` directly.
+  // The workspace context is an authorization boundary, reached by
+  // opening `/workspaces/:id/notes` directly.
   it("lists the workspace's notes for a member, not the member's personal ones", async () => {
     const h = createTestHarness();
     await seedWorkspace(h, {

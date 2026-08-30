@@ -17,8 +17,6 @@ import { NoteOwner, ShareLink, SharePass } from "../valueObject";
 const T0 = new Date(0);
 const at = (ms: number) => new Date(ms);
 
-// The workspace path is out of this slice; the stub only satisfies the
-// injected interface and must never be reached by these personal-path tests.
 const unreachableAuthorization: WorkspaceAuthorization = {
   minimumRoleFor: () => {
     throw new Error("workspace path must not be reached");

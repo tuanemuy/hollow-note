@@ -16,9 +16,7 @@ export type GetWorkspaceSettingsInput = Readonly<{
 }>;
 
 /**
- * Reads a workspace's own settings for the three settings screens
- * (UC-workspace-022, spec/usecases/workspace.md#getworkspacesettings,
- * P-31 / P-33 / P-34, WS-07).
+ * Reads a workspace's own settings for the three settings screens.
  *
  * The write-free counterpart of `updateWorkspaceProfile`, in the same
  * relation `getProfile` has to `updateProfile` on the identity plane: it

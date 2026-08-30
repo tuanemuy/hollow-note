@@ -12,10 +12,7 @@ export type CheckWorkspaceSlugAvailabilityInput = Readonly<{
 
 /**
  * Tells the creation and general-settings forms whether a slug is free
- * before it is saved (UC-workspace-023,
- * spec/usecases/workspace.md#checkworkspaceslugavailability, WS-01 の
- * 「スラッグが既に使われている場合、入力中に検出して代替候補を示す」,
- * P-30 / P-31).
+ * before it is saved, so a taken slug is detected while typing.
  *
  * An **advisory** read, not a claim, exactly like `checkHandleAvailability`
  * on the identity plane: only the reservation taken by `createWorkspace` /
@@ -28,9 +25,9 @@ export type CheckWorkspaceSlugAvailabilityInput = Readonly<{
  * `workspaceId` is the slug the caller already holds: passing it keeps a
  * form that re-submits its current slug from reporting a conflict with
  * itself. Slugs are public URL segments, so answering about one is not the
- * kind of oracle spec/adr/028-account-enumeration-resistance.md guards
- * against; the caller is still an authenticated session, which the
- * transport boundary enforces.
+ * kind of oracle account-enumeration resistance guards against; the caller
+ * is still an authenticated session, which the transport boundary
+ * enforces.
  */
 export async function checkWorkspaceSlugAvailability({
   container,

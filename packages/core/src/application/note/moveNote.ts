@@ -43,7 +43,7 @@ import { ownerOf } from "./view";
  * Destination of a move. The workspace id belongs to the workspace member
  * alone: an id-less workspace target would otherwise reach
  * `WorkspaceId.create("")` and surface as `InvalidId`, which is not one of
- * the outcomes spec/testcases/note/moveNote.md defines.
+ * the move's defined outcomes.
  */
 export type MoveNoteTarget =
   | Readonly<{ targetOwnerType: "user" }>
@@ -70,15 +70,14 @@ export type MovedNoteView = Readonly<{
 }>;
 
 /**
- * Seam for the tag half of a move (UC-tag-012
- * `relocateAssignmentsForNote`, spec/usecases/tag.md).
+ * Seam for the tag half of a move.
  *
- * The tag domain does not exist yet — it lands with Issue #8 — so this
+ * The tag domain does not exist yet, so this
  * slice ships the call sites and no implementation. The three members are
  * the same phases the note itself moves through: `plan` runs before the
  * operation is created, so its answer can be fixed into the operation
  * payload, and the names the move reports are read back from that payload
- * on every attempt (spec/usecases/note.md#movenote 手順 3) — `plan` itself
+ * on every attempt — `plan` itself
  * is called once per *attempt*, and a resume discards what it returns, so
  * an implementation must be a pure read; `stageTarget` and `retireSource`
  * receive the unit of work of the phase they belong to, so an assignment
@@ -107,7 +106,7 @@ export interface NoteMoveTagRelocation {
   ): Promise<void>;
 }
 
-/** The seam's only implementation until the tag slice lands (Issue #8). */
+/** The seam's only implementation until the tag slice lands. */
 export const noTagRelocation: NoteMoveTagRelocation = {
   targetScopeCommandKeys: [],
   async plan(): Promise<readonly string[]> {
@@ -169,8 +168,7 @@ const moveInProgress = (): ConflictError =>
  * Input the move's state machine is fixed on. It is written into the
  * `distributed_operations` payload at creation and read back on every
  * resume, so a re-request never re-derives values that may have moved
- * since ([ADR 041](spec/adr/041-deterministic-continuation-event-id.md)
- * applied to a saga's own control row).
+ * since.
  *
  * `routeVersion` is deliberately absent: it is the one value a resume
  * must re-read, because the route is what a competing operation moves.
@@ -315,8 +313,8 @@ const readPlan = (
 /**
  * The actor's Membership in one scope, read exactly once: the role an
  * authorization decision rests on and the version pinned for the
- * commit-time re-check must come from the *same* read
- * (spec/usecases/note.md#movenote 手順 1・2). Read twice, a demotion that
+ * commit-time re-check must come from the *same* read. Read twice, a
+ * demotion that
  * commits in between is pinned after the fact, and `ensurePinnedMembership`
  * — which compares versions, not roles — then confirms a role nobody
  * checked.
@@ -383,8 +381,8 @@ async function ensurePinnedMembership(
 /**
  * Applies a storage delta to a scope's quota. Notes and bytes move
  * together, so both are one write; the quota limit is deliberately not
- * consulted (spec/usecases/note.md#movenote: quota is enforced on intake
- * only, and a move that overshoots merely blocks the next upload).
+ * consulted — quota is enforced on intake only, and a move that overshoots
+ * merely blocks the next upload.
  */
 async function applyStorageDelta(
   ctx: ScopeUnitOfWorkContext,
@@ -412,8 +410,8 @@ async function applyStorageDelta(
 }
 
 /**
- * 手順 5 — freezes the source side into a transferable snapshot and
- * stages the source half of the move authorization lock.
+ * Freezes the source side into a transferable snapshot and stages the
+ * source half of the move authorization lock.
  *
  * Nothing is deleted here: the route still points at the source, so a
  * reader that arrives before the switch must still find the whole note.
@@ -439,7 +437,7 @@ async function snapshotSource(
       plan.actorUserId,
       plan.sourceMembershipVersion,
       // A member removed mid-move learns nothing about the note that is
-      // no longer theirs (spec error table: 移動元の権限不足).
+      // no longer theirs.
       noteNotFound,
     );
     await ctx.workspaceOperationLockStore.stageMove({
@@ -474,7 +472,7 @@ async function snapshotSource(
 }
 
 /**
- * 手順 6 (spec/usecases/note.md#movenote) — one target-local transaction,
+ * One target-local transaction,
  * which is what makes "the target admits this actor", "the target's move
  * lock stands" and "the target now holds the data" inseparable.
  * `note.moved` belongs to `retireSource`: nothing has changed hands until
@@ -616,7 +614,7 @@ async function adoptStagedCopy(
 }
 
 /**
- * 手順 8 前半 — activates the target by releasing its move lock.
+ * Activates the target by releasing its move lock.
  *
  * It runs after the switch because the lock's whole purpose is to keep
  * the target from being deleted, and its actor from being demoted, while
@@ -637,7 +635,7 @@ async function activateTarget(
 }
 
 /**
- * 手順 8 後半 / 9 — retires the source rows and publishes `note.moved`.
+ * Retires the source rows and publishes `note.moved`.
  *
  * Forward-only: the route already points at the target, so this phase
  * asks no admission question it could be refused on. It is deduplicated
@@ -778,17 +776,16 @@ async function runIndependently(
 }
 
 /**
- * The 中止 of 手順 4〜6 (spec/usecases/note.md#movenote), or `"switched"`
- * when the switch turns out to have landed and there is nothing left to
- * compensate.
+ * The pre-switch abort, or `"switched"` when the switch turns out to have
+ * landed and there is nothing left to compensate.
  *
- * Three things the spec's "完全に" rests on, and none of them is optional.
+ * Three things a complete reversal rests on, and none of them is optional.
  * The applied-operation keys go with the rows they assert — the note's own
  * and every key the tag seam declares — or a resumed `stageTarget` skips
  * into an empty target. What is torn down is identified by *this*
  * migration's `STAGE_TARGET_COMMAND` receipt and never by the mere
- * presence of a note row in the target (spec/domains/note.md: the abort is
- * idempotent on the migration id): the thaw hands the route back before
+ * presence of a note row in the target — the abort is idempotent on the
+ * migration id: the thaw hands the route back before
  * the teardown opens its transaction, so what the target holds by then may
  * be a rival migration's staged copy — the only party that may switch to
  * it or give it back — and deleting it loses the note the instant that
@@ -908,12 +905,11 @@ async function abortBeforeSwitch(
 }
 
 /**
- * 手順 4 — claims the route for this migration.
+ * Claims the route for this migration.
  *
  * A route that moved between the pre-flight read and the claim is re-read
- * once and the claim retried, which is the spec's "route を1回引き直して
- * 既存 operation を再開" — a second conflict is answered rather than
- * looped on.
+ * exactly once and the claim retried; a second conflict is answered rather
+ * than looped on.
  *
  * Each read is checked against the plan's source before it is claimed.
  * `beginMove` compares only the route *version*, so a note that moved in
@@ -959,10 +955,9 @@ async function claimRoute(
 }
 
 /**
- * Moves a note to another owner (UC-note-013,
- * spec/usecases/note.md#movenote, OR-12). The phase order, the abort rule
- * and the request key are canon there; this is what the implementation
- * adds to them.
+ * Moves a note to another owner. The phase order, the abort rule and the
+ * request key are fixed by the design; what follows is what the
+ * implementation adds to them.
  *
  * The migration id is the `distributed_operations` row's id, so every
  * phase's `AppliedOperationStore` key resolves to the same command across
@@ -988,15 +983,15 @@ async function claimRoute(
  * released only once the activation lands, the source's only once the
  * retirement does — and the operation `running`, which blocks either
  * scope's membership management, its deletion, and every later move of
- * this note until a recovery entry point exists (Issue #28) — the failure
+ * this note until a recovery entry point exists — the failure
  * is logged with the migration id and both scopes so an operator can find
  * it. And the local / public note projections are not rebuilt for the new
  * owner: the target's generation counter is prepared, but no `note.moved`
  * subscriber exists yet.
  *
- * One piece of 手順 5 is **absent in this slice**: terminating the
- * source's unfinished jobs, because the Job aggregate does not exist
- * (Issue #5). The gap is recorded rather than papered over, the same way
+ * One piece of the freeze is **absent in this slice**: terminating the
+ * source's unfinished jobs, because the Job aggregate does not exist.
+ * The gap is recorded rather than papered over, the same way
  * `application/cleanup/participants.ts` records the Job gap for account
  * deletion.
  */
@@ -1194,7 +1189,7 @@ export async function moveNote({
  * Forward-only from here, and nothing drives the retry yet: the note
  * already belongs to the target, while the source keeps its rows and its
  * move lock. Logged with both scopes because that lock is what stops the
- * source's membership management and its deletion (Issue #28).
+ * source's membership management and its deletion.
  */
 function logStuckAfterSwitch(
   container: RequestContainer,
@@ -1365,9 +1360,8 @@ async function releaseUnusedClaim(
  * joins every later request for this note to that row, so from here on
  * every move of it is refused (`NOTE_MOVE_IN_PROGRESS`) for everyone
  * except a request deriving the very same key — and the moment the user
- * picks another destination even that key is gone. Canon settles every
- * switch-less end of the saga `rejected` for exactly this reason
- * (spec/usecases/note.md#movenote 手順 4).
+ * picks another destination even that key is gone. Every switch-less end
+ * of the saga is settled `rejected` for exactly this reason.
  *
  * The id is the only thing the loss took, and the request key derives it
  * again: the call is idempotent on that key, so re-issuing the identical
@@ -1375,7 +1369,7 @@ async function releaseUnusedClaim(
  * committed.
  *
  * What comes back is *not* necessarily a row that holds nothing, which is
- * the premise canon's "補償: 無し" rests on. The key is idempotent on
+ * the premise a compensation-free close would rest on. The key is idempotent on
  * state as well, and a failed attempt leaves `routeVersion` alone, so the
  * same key is derivable — and returns the same row — while an earlier
  * attempt's claim, both scopes' move locks and a staged copy are still
@@ -1385,8 +1379,7 @@ async function releaseUnusedClaim(
  * table this is: a claim still held under this operation is given back
  * through the pre-switch compensation before the row is closed, a route
  * that already names the destination is a post-switch stop and is left
- * `running` (spec/usecases/note.md#movenote の終端表, 4 行目), and only a
- * row holding nothing is settled outright.
+ * `running`, and only a row holding nothing is settled outright.
  *
  * Only a row this request authored may be closed. A different
  * `requestKey` means the store joined us to an operation somebody else
@@ -1495,7 +1488,7 @@ async function settle(
 }
 
 /**
- * 手順 2 — decides the destination and pins the Membership that decision
+ * Decides the destination and pins the Membership that decision
  * rests on. `NoteOwnershipPolicy.ensureMovable` judges the source side and
  * takes this answer as given, since the target's refusal is a
  * workspace-role verdict (`InsufficientRole`) the note domain cannot

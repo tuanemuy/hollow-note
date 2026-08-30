@@ -53,8 +53,7 @@ const toEntry = (row: SqlRow): Versioned<WorkspaceDirectoryEntry> => {
 };
 
 /**
- * Shard-spanning batch read of `workspace_directory`
- * (`spec/database/index.md#workspace_directory`).
+ * Shard-spanning batch read of `workspace_directory`.
  *
  * Routing is direct from the input ids — one `json_each` expansion, never
  * a scan — and every distinct id comes back as a key whatever the read

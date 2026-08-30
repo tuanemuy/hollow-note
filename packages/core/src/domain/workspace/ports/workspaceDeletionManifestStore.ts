@@ -36,8 +36,8 @@ export type WorkspaceDeletionManifestItem =
 
 /**
  * The work list of a workspace deletion, held in the **current workspace
- * scope** (`workspace_deletion_manifests` of spec/database/index.md). Its
- * header is created by `WorkspaceOperationLockStore.beginDeletion` in the
+ * scope**. Its header is created by
+ * `WorkspaceOperationLockStore.beginDeletion` in the
  * same transaction that closes the scope, so the manifest exists from the
  * moment mutation stops.
  *

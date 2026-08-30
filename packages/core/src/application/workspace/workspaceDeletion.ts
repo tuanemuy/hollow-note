@@ -8,46 +8,43 @@ import {
 import type { ScopeKey } from "../scope";
 
 /**
- * Transport of the workspace-deletion saga
- * (spec/usecases/workspace.md#deleteworkspace).
+ * Transport of the workspace-deletion saga.
  *
  * Every turn rides the **scope plane's** `scheduled_tasks` rather than the
- * global outbox, as 手順 3 / 5 / 7 require: the manifest, the admission
- * state and the rows being deleted all live in the workspace scope, and a
- * task row is stored in the same transaction as the turn that produced it,
- * so a lost response cannot drop the rest of the work
- * ([ADR 040](spec/adr/040-continuation-transport.md)).
+ * global outbox: the manifest, the admission state and the rows being
+ * deleted all live in the workspace scope, and a task row is stored in the
+ * same transaction as the turn that produced it, so a lost response cannot
+ * drop the rest of the work.
  *
  * A row is keyed `(kind, operationId)` and `schedule` upserts on that key,
- * which is this transport's form of the deterministic continuation id
- * ([ADR 041](spec/adr/041-deterministic-continuation-event-id.md)): a turn
- * replayed after a lost response re-writes its own row instead of forking
- * the chain in two. The payload carries the deletion's `operationId` as
- * 手順 6 demands, and every turn re-enters through `assertDeletionOwner`
+ * which is this transport's form of the deterministic continuation id: a
+ * turn replayed after a lost response re-writes its own row instead of
+ * forking the chain in two. The payload carries the deletion's
+ * `operationId`, and every turn re-enters through `assertDeletionOwner`
  * with it, so a foreign or terminal operation is refused rather than
  * admitted past a closed scope.
  *
- * The three kinds are the phases the spec separates, in order: local
+ * The three kinds are the phases of the deletion, in order: local
  * (manifest build → local edge deletion → the Workspace row itself),
  * global cleanup (directory tombstone, slug release, directory edges and
  * invitation routes), then compaction of the acknowledged manifest.
  */
 
-/** 手順 5 / 6 — the local half, resumed from its own payload. */
+/** The local half, resumed from its own payload. */
 export const WORKSPACE_DELETION_LOCAL_TASK_KIND =
   "workspace.deletionLocalContinued";
 /**
- * 手順 7's global orchestrator. It is driven as a scope task because the
- * manifest it walks is scope-local and a task row is the only durable,
+ * The global cleanup orchestrator. It is driven as a scope task because
+ * the manifest it walks is scope-local and a task row is the only durable,
  * leased driver this runtime has that is keyed by the deletion operation.
  */
 export const WORKSPACE_DELETION_GLOBAL_TASK_KIND =
   "workspace.deletionGlobalCleanupContinued";
-/** 手順 7's ack compaction, up to `markCompleted`. */
+/** The ack compaction, up to `markCompleted`. */
 export const WORKSPACE_DELETION_COMPACT_TASK_KIND =
   "workspace.deletionManifestCompactContinued";
 
-/** Targets one turn advances (spec/domains/index.md: at most 100). */
+/** Targets one turn advances. */
 export const WORKSPACE_DELETION_PAGE_LIMIT = 100;
 
 export type WorkspaceDeletionLocalPhase =
@@ -214,16 +211,15 @@ export const scheduleCompactTurn = (
   });
 
 /**
- * Admits one turn of the deletion (手順 6: a continuation is accepted only
- * while its operation id matches the Workspace lifecycle or the surviving
- * manifest header).
+ * Admits one turn of the deletion: a continuation is accepted only while
+ * its operation id matches the Workspace lifecycle or the surviving
+ * manifest header.
  *
  * A refusal settles the row instead of failing the turn. Once the manifest
  * reaches its completed tombstone — or if a row were ever stranded by
  * another operation — there is nothing left to continue, and leaving the
- * row due would re-enter this same refusal on every tick. This is the
- * boundary catch a worker is allowed (CLAUDE.md "Cross-layer catch
- * policy"); anything that is not an admission conflict propagates.
+ * row due would re-enter this same refusal on every tick. Anything that is
+ * not an admission conflict propagates.
  */
 export async function admitDeletionTurn(
   ctx: ScopeUnitOfWorkContext,

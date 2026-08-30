@@ -18,14 +18,12 @@ export type GetWorkspacePublicationInput = Readonly<{
 }>;
 
 /**
- * Reads the publication state of a workspace for the publication screen
- * (UC-workspace-024, spec/usecases/workspace.md#getworkspacepublication,
- * P-33, WS-08).
+ * Reads the publication state of a workspace for the publication screen.
  *
  * The write-free counterpart of `publishWorkspace` /
- * `unpublishWorkspace`, and the only way P-33 can show the public URL and
- * the note count on first render: `publishWorkspace` answers both, but
- * only to the request that flipped the switch.
+ * `unpublishWorkspace`, and the only way the screen can show the public
+ * URL and the note count on first render: `publishWorkspace` answers both,
+ * but only to the request that flipped the switch.
  *
  * The count comes from the same scope walk that usecase uses, with the
  * same caveat (see `countPublicNotes`), and it is reported while private

@@ -31,8 +31,7 @@ const parseSlug = (raw: string): WorkspaceSlug | null => {
 };
 
 /**
- * Reads a published workspace by its public slug (UC-workspace-020,
- * spec/usecases/workspace.md#getpublicworkspace).
+ * Reads a published workspace by its public slug.
  *
  * Slug → workspace goes through the global reservation, which resolves
  * only `active` rows, so a create or a rename still in flight answers

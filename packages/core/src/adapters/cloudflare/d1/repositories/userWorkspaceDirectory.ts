@@ -25,9 +25,8 @@ const MAX_COUNT_LIMIT = 100;
 const ROLES = ["owner", "editor", "viewer"] as const;
 
 /**
- * Keyset enumeration of the active edges of `membership_directory`
- * (`spec/database/index.md#membership_directory`), served by the
- * `(user_id, state, created_at DESC, workspace_id)` index.
+ * Keyset enumeration of the active edges of `membership_directory`, served
+ * by the `(user_id, state, created_at DESC, workspace_id)` index.
  *
  * Only `active` edges surface: a `pending` edge belongs to a membership
  * whose scope-local commit has not landed, and a `removing` one is being

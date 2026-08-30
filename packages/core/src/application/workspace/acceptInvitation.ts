@@ -33,11 +33,10 @@ export type AcceptInvitationInput = Readonly<{
 const EDGE_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Accepts an invitation and joins the workspace
- * (UC-workspace-012, spec/usecases/workspace.md#acceptinvitation).
+ * Accepts an invitation and joins the workspace.
  *
  * The link itself is the authorization, so the signed-in address need not
- * match the invited one (WS-04).
+ * match the invited one.
  *
  * Saga across two planes: `reserveAndClaimActivation` on the invitee's
  * UserId shard (which inserts the edge, checks the User is active, and
@@ -145,7 +144,7 @@ export async function acceptInvitation({
   const role = stored.entity.role;
 
   // Refused before the edge is claimed on the invitee's shard, and again
-  // inside the commit below (spec/usecases/workspace.md#deleteworkspace).
+  // inside the commit below.
   await reader.admission.assertWritable();
 
   const operationId = idGenerator.next();
@@ -197,8 +196,8 @@ export async function acceptInvitation({
  * invitation `accepted` by the caller — the commit that created the
  * Membership settled the invitation in the same transaction. A `pending`
  * invitation reached from there is therefore somebody else's: the
- * signed-in address is never matched against `invitation.email` (WS-04),
- * so a member who merely opens a live link would otherwise settle it and
+ * signed-in address is never matched against `invitation.email`, so a
+ * member who merely opens a live link would otherwise settle it and
  * `consume` the only route the invitee has. Nothing is written either
  * way; the answer only decides whether the route may be closed.
  *

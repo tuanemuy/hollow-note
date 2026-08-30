@@ -105,7 +105,7 @@ export async function acknowledgePersonalCleanup(
 }
 
 /**
- * Runs the cleanup wave of a deletion (spec/usecases/identity.md 手順 4).
+ * Runs the cleanup wave of a deletion.
  *
  * Only components that have not acknowledged yet are commanded, so a
  * re-driven wave is cheap and a completed barrier degenerates to

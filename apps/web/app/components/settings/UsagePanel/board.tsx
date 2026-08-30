@@ -32,7 +32,6 @@ export function WorkspaceUsageBoard({
   initialCursor: string | null;
 }) {
   const loadMore = useServerFn(loadMoreWorkspaceUsageFn);
-  // 先頭ページはサーバーコンポーネントが渡し、継ぎ足しだけをこの島が持つ。
   // サーバーが先頭ページを配り直したら継ぎ足しは古い集合を指すので捨てる
   // （`WorkspaceMembersPanel/board.tsx:useLoadedPages` と同じ形）。
   const [seed, setSeed] = useState(initialWorkspaces);

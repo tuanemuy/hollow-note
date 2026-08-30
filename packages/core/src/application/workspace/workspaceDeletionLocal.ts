@@ -20,8 +20,7 @@ import {
 } from "./workspaceDeletion";
 
 /**
- * The scope-local half of a workspace deletion
- * (spec/usecases/workspace.md#deleteworkspace 手順 5 / 6).
+ * The scope-local half of a workspace deletion.
  *
  * Three phases run one page per turn, each landing its work, its cursor
  * and the task row of the next turn in a single transaction: fix the

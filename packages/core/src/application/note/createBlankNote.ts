@@ -34,7 +34,7 @@ export type CreateBlankNoteInput = Readonly<{
 const CREATE_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Creates a blank note (UC-note-001, spec/usecases/note.md#createblanknote).
+ * Creates a blank note.
  *
  * Saga: `NoteRouteStore.reserveCreate` (global) → scope UoW
  * (`assertWritable` / `assertActorWritable` → projection-revision bump →
@@ -62,7 +62,7 @@ export async function createBlankNote({
   const scope = scopeOf(owner);
   const rawTitle = input.title ?? "";
   // Validate before reserving the route so an invalid title never
-  // creates saga state (spec flow: title construction precedes step 3).
+  // creates saga state.
   NoteTitle.manual(rawTitle);
 
   const now = clock.now();
@@ -145,9 +145,9 @@ export type RecoverBlankNoteCreationView = Readonly<{
 }>;
 
 /**
- * Reconciles an expired `reserved` route (spec/usecases/note.md
- * createBlankNote 手順5の回復): when the scope object holds the note the
- * commit was durable and the route is activated with the same operation
+ * Reconciles an expired `reserved` route: when the scope object holds the
+ * note the commit was durable and the route is activated with the same
+ * operation
  * id; otherwise the reservation is abandoned. The cron that feeds this
  * function expired reservations is wired in a later slice — here it is
  * invoked with the reservation's own values.

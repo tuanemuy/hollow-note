@@ -63,8 +63,7 @@ export type D1WorkspaceSlugReservationStoreDeps = Readonly<{
 }>;
 
 /**
- * `workspace_slug_reservations` on global D1
- * (`spec/database/index.md#workspace_slug_reservations`).
+ * `workspace_slug_reservations` on global D1.
  *
  * A `WorkspaceSlug` is lower-cased by its own constructor, so the value
  * handed in *is* `normalized_slug` and nothing here normalizes again.

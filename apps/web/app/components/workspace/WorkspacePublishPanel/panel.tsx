@@ -79,7 +79,6 @@ export function WorkspacePublishBoard({
   const run = (next: "publish" | "unpublish") => {
     setConfirming(null);
     startTransition(async () => {
-      // 楽観的な反映。失敗すればトランジションの終了で元の値へ戻る。
       applyPublication({ published: next === "publish" });
       try {
         if (next === "publish") {

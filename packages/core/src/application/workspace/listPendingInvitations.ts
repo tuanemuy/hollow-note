@@ -19,8 +19,7 @@ export type ListPendingInvitationsInput = Readonly<{
 const DEFAULT_LIMIT = 50;
 
 /**
- * Lists the invitations still awaiting an answer
- * (UC-workspace-014, spec/usecases/workspace.md#listpendinginvitations).
+ * Lists the invitations still awaiting an answer.
  *
  * Only `manageMembers` may read it: a pending invitation names an address
  * that has not joined, which is not part of the member roster every

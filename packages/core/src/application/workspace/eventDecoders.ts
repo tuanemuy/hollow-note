@@ -32,8 +32,7 @@ import { buildEventDecoder } from "../events/buildDecoder";
  * `SystemError(DataIntegrityError)` instead of passing silently.
  *
  * Every one of the twelve is registered even though all but
- * `membership.roleChanged` are audit-only
- * (`spec/domains/workspace.md` ドメインイベント) and have no subscriber: the
+ * `membership.roleChanged` are audit-only and have no subscriber: the
  * relay decodes before it dispatches, so an unregistered type is
  * quarantined at `maxAttempts` rather than acknowledged with a warning.
  */

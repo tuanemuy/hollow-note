@@ -8,8 +8,7 @@ import type { WorkspaceId, WorkspaceRole } from "../valueObject";
  *
  * The role is a projection, never an authorization fact. A caller may
  * render it, but every permission decision re-reads `Membership` in the
- * workspace scope (spec/usecases/workspace.md `listUserWorkspaces`
- * step 2).
+ * workspace scope.
  */
 export type UserWorkspaceEdge = Readonly<{
   workspaceId: WorkspaceId;
@@ -56,7 +55,7 @@ export interface UserWorkspaceDirectory {
   ): Promise<ShardPage<UserWorkspaceEdge>>;
   /**
    * How many workspaces the user owns, for the ownership quota
-   * (spec/usecases/workspace.md `createWorkspace` 手順 1).
+   * `createWorkspace` applies.
    *
    * Counts `owner` edges that are `active` **or** still reserved
    * (`pending` / `activating`) — the enumeration above deliberately shows

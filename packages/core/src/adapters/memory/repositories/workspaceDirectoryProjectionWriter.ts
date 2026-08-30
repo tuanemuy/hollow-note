@@ -13,8 +13,7 @@ import type { MemoryBackend, WorkspaceDirectoryRow } from "../store";
 /**
  * Display name a tombstone keeps. The row survives the workspace so the
  * batch reader can answer `deleted`, and that answer carries no fields,
- * so nothing the workspace was named has to stay behind
- * (spec/database/index.md `workspace_directory`).
+ * so nothing the workspace was named has to stay behind.
  */
 const REDACTED_NAME = WorkspaceName.create("(deleted)");
 

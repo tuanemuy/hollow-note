@@ -62,7 +62,7 @@ const barrier = (h: TestHarness, userId: string) =>
     .scope(ScopeKey.user(UserId.create(userId)))
     .cleanupReceipts.values()[0];
 
-/** Credentials of the live generation, at the scale TC-identity-040 names. */
+/** Credentials of the live generation, planted at a given scale. */
 const plantCredentials = (
   h: TestHarness,
   userId: string,
@@ -270,8 +270,7 @@ describe("deleteAccount admission", () => {
     );
     // Revocation is the generation, not the rows: acceptance costs the
     // same at 10,000 credentials as at one. The rows are reclaimed 100 at
-    // a time afterwards (TC-identity-041), and finalize waits for that
-    // acknowledgement (TC-identity-090).
+    // a time afterwards, and finalize waits for that acknowledgement.
     expect(h.backend.sessions.size).toBe(sessionsBefore + 10_000);
     expect(h.backend.authTokens.size).toBe(tokensBefore + 10_000);
   });
@@ -373,8 +372,8 @@ describe("deleteAccount admission", () => {
     });
     // The seam a judgement taken before the operation would miss: the
     // edge lands after the operation exists and before the transaction
-    // ends, which is precisely the window that used to admit a deletion
-    // an edge then settles behind.
+    // ends, which is precisely the window in which an edge could settle
+    // behind an admitted deletion.
     const race = withRacingJoin(h, userId, "afterOperation");
 
     await expectConflict(

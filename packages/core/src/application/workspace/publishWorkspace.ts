@@ -24,8 +24,7 @@ export type PublishWorkspaceInput = Readonly<{
 }>;
 
 /**
- * Publishes a workspace's public page (UC-workspace-005,
- * spec/usecases/workspace.md#publishworkspace, WS-08).
+ * Publishes a workspace's public page.
  *
  * The slug is already claimed globally by the time this runs — publishing
  * flips the aggregate, and the aggregate refuses to publish without one —

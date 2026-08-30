@@ -63,8 +63,7 @@ async function abandonReservations(
 }
 
 /**
- * Creates a workspace and joins its creator as owner (UC-workspace-002,
- * spec/usecases/workspace.md#createworkspace, WS-01).
+ * Creates a workspace and joins its creator as owner.
  *
  * Saga: quota check → reserve the slug and the owner's directory edge on
  * the global plane → the workspace scope's unit of work (`Workspace` +

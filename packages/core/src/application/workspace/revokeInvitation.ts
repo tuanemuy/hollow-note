@@ -22,8 +22,7 @@ export type RevokeInvitationInput = Readonly<{
 }>;
 
 /**
- * Cancels a pending invitation
- * (UC-workspace-010, spec/usecases/workspace.md#revokeinvitation).
+ * Cancels a pending invitation.
  *
  * The scope commit comes first and the global route is closed after it,
  * the opposite order from issuing. That is deliberate: between the two,

@@ -24,8 +24,7 @@ export type UpdateWorkspaceProfileInput = Readonly<{
 }>;
 
 /**
- * Updates a workspace's name, description and icon (UC-workspace-003,
- * spec/usecases/workspace.md#updateworkspaceprofile, WS-07).
+ * Updates a workspace's name, description and icon.
  *
  * The write is scope-local — the profile names nothing the global plane
  * owns, so no reservation saga is involved — and the committed state is

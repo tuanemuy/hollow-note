@@ -9,8 +9,7 @@ export type ListPublicWorkspacesInput = Readonly<{
 const DEFAULT_LIMIT = 100;
 
 /**
- * Enumerates published workspaces for sitemap generation
- * (UC-workspace-019, spec/usecases/workspace.md#listpublicworkspaces).
+ * Enumerates published workspaces for sitemap generation.
  *
  * No total count at any width: the generator iterates `nextCursor` until
  * it is `null`, which is the only signal the enumeration is exhausted.

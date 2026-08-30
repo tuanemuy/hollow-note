@@ -11,9 +11,8 @@ import {
 } from "../workspace";
 
 /**
- * DOM-workspace-008 (spec/domains/workspace.md#エンティティ): the
- * private / published × active / deleting state space and the transitions
- * between its members.
+ * Covers the private / published × active / deleting state space and the
+ * transitions between its members.
  */
 
 const T0 = new Date("2026-01-01T00:00:00.000Z");

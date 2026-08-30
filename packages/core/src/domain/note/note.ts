@@ -217,7 +217,7 @@ export const Note = {
   ): WithEventDrafts<ActiveNote, NoteEvent> => {
     // An omitted title takes the "無題" placeholder with an `auto` origin
     // so a later conversion result may still rename it; a supplied title
-    // is a user decision and stays `manual` (spec/usecases/note.md).
+    // is a user decision and stays `manual`.
     const trimmedTitle = params.title.trim();
     const note: ActiveNote = {
       lifecycle: "active",
@@ -517,7 +517,6 @@ export const Note = {
       ...note,
       visibility: {
         status: "unlisted",
-        // Token is replaced; the existing password survives.
         shareLink: { ...newLink, password: note.visibility.shareLink.password },
       },
       version: Version.next(note.version),

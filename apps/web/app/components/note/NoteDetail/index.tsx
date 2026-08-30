@@ -11,9 +11,10 @@ import { NoteDetailMenu } from "./menu";
 import { NoteUrlNormalizer } from "./normalize";
 
 /**
- * P-11 ノート詳細（閲覧のみの最小形、モック P11-note.html）。本文の
- * Shadow DOM 描画・タイトル・公開ステータス・見出しの折りたたみを持つ。
- * 操作メニュー・タグ・共有パネル・ダウンロードは後続スライス。
+ * P-11 ノート詳細（最小形、モック P11-note.html）。本文の Shadow DOM
+ * 描画・タイトル・公開ステータス・見出しの折りたたみと、編集できる閲覧者
+ * だけに出す操作メニュー（移動）を持つ。タグ・共有パネル・ダウンロードは
+ * 後続スライス。
  *
  * 個人（`/notes/:noteId`）とワークスペース
  * （`/workspaces/:workspaceId/notes/:noteId`）で同じ画面。文脈は呼び出し側

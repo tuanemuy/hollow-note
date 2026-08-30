@@ -22,8 +22,7 @@ const CONTEXT = "the workspace directory projection";
 /**
  * Display name a tombstone keeps. The row survives the workspace so the
  * batch reader can answer `deleted`, and that answer carries no fields,
- * so nothing the workspace was named has to stay behind
- * (spec/database/index.md `workspace_directory`).
+ * so nothing the workspace was named has to stay behind.
  */
 const REDACTED_NAME = WorkspaceName.create("(deleted)");
 
@@ -55,8 +54,7 @@ export type D1WorkspaceDirectoryProjectionWriterDeps = Readonly<{
 }>;
 
 /**
- * Writer of the `workspace_directory` projection on global D1
- * (`spec/database/index.md#workspace_directory`).
+ * Writer of the `workspace_directory` projection on global D1.
  *
  * Both methods decide their branch from the row they just read and stage
  * a statement that repeats the predicate, so a concurrent projection of a

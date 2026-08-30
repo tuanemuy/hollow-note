@@ -10,8 +10,7 @@ import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 export const noteAccessPolicy = createNoteAccessPolicy(WorkspaceAuthorization);
 
 /**
- * Builds the viewer context a note is evaluated against
- * (spec/usecases/note.md 共通: 閲覧者コンテキストの解決 手順 4).
+ * Builds the viewer context a note is evaluated against.
  *
  * The role is read from the note's own workspace scope, never from the
  * global membership directory: the directory's role is a projection, and

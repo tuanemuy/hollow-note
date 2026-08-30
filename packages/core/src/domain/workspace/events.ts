@@ -66,7 +66,7 @@ export type MembershipAddedEvent = DomainEventBase<
  * is what orders the projection onto the global `membership_directory`
  * edge: delivery is at-least-once with no ordering guarantee, so the
  * consumer needs the payload itself to say which of two role changes is
- * the later one (spec/domains/workspace.md `ドメインイベント`).
+ * the later one.
  *
  * `membershipId` names the generation that version counts in. A version
  * is only comparable within one Membership — a removal and a rejoin of

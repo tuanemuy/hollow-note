@@ -6,9 +6,8 @@ import type {
 } from "@repo/core/domain/workspace/workspace";
 
 /**
- * DTO projections for the workspace usecases
- * (spec/usecases/workspace.md). Fields are primitives only; branded value
- * objects widen naturally, so projection needs no casts.
+ * DTO projections for the workspace usecases. Fields are primitives only;
+ * branded value objects widen naturally, so projection needs no casts.
  */
 
 export type WorkspaceRoleView = "owner" | "editor" | "viewer";
@@ -47,11 +46,10 @@ export type WorkspaceProfileView = Readonly<{
 }>;
 
 /**
- * What the three settings screens read before they edit anything
- * (P-31 / P-33 / P-34). It is the read counterpart of
- * `updateWorkspaceProfile`, so it carries every field that screen writes —
- * rendering the description empty because the read did not supply it would
- * erase it on the next save.
+ * What the three settings screens read before they edit anything. It is
+ * the read counterpart of `updateWorkspaceProfile`, so it carries every
+ * field that screen writes — rendering the description empty because the
+ * read did not supply it would erase it on the next save.
  *
  * The three capability flags are separate because the three screens gate
  * on three different actions; that they share a minimum role today is the
@@ -83,8 +81,8 @@ export type WorkspaceSlugAvailabilityView = Readonly<{
 }>;
 
 /**
- * The publication screen's initial read (P-33), giving before the fact
- * what `publishWorkspace` only answers after it. `publicUrl` is non-null
+ * The publication screen's initial read, giving before the fact what
+ * `publishWorkspace` only answers after it. `publicUrl` is non-null
  * exactly while the workspace is published — a slug held by a private
  * workspace resolves to no page.
  */
@@ -98,7 +96,7 @@ export type WorkspacePublicationStatusView = Readonly<{
 }>;
 
 /**
- * Progress of a workspace deletion (P-34 の「実行中 / 完了」).
+ * Progress of a workspace deletion.
  *
  * `completed` is reported from the absence of the Workspace row, which is
  * what the saga deletes at the end of its local phase; the global cleanup
@@ -128,8 +126,7 @@ export type WorkspacePublishedView = Readonly<{
 
 /**
  * No public note count, unlike {@link WorkspacePublishedView}: once the
- * page is gone the number has nothing to describe
- * (spec/usecases/workspace.md `unpublishWorkspace`).
+ * page is gone the number has nothing to describe.
  */
 export type WorkspaceUnpublishedView = Readonly<{
   workspaceId: string;
@@ -144,9 +141,8 @@ export type WorkspaceDeletionAcceptedView = Readonly<{
 /**
  * `mailSent` is false when the mail could not be handed to `MailSender`.
  * The invitation itself is already durable — the send is deliberately not
- * allowed to fail it (spec/usecases/workspace.md#invitemember) — so the
- * flag is what lets P-32 warn that the recipient has no mail and that
- * `invitationUrl` has to be shared by hand.
+ * allowed to fail it — so the flag is what lets the screen warn that the
+ * recipient has no mail and that `invitationUrl` has to be shared by hand.
  */
 export type IssuedInvitationView = Readonly<{
   invitationId: string;
@@ -210,8 +206,7 @@ export type MemberDisplay = Readonly<{
 /**
  * Display fields are nullable for the same reason as
  * {@link InvitationPreviewView}: a membership outlives the moment its
- * user row becomes a PII-free tombstone, and the row still has to render
- * (spec/testcases/workspace/listMembers.md).
+ * user row becomes a PII-free tombstone, and the row still has to render.
  */
 export type WorkspaceMemberView = Readonly<{
   membershipId: string;
@@ -228,7 +223,7 @@ export type WorkspaceMemberView = Readonly<{
  * `members` because the page need not contain the reader's row: the list
  * is ordered by `joinedAt`, so a member who joined after the first page
  * was filled is absent from it. A screen that gates the reader's own
- * actions (leaving, WS-06) on their role therefore cannot read it out of
+ * actions (leaving) on their role therefore cannot read it out of
  * `members`. It is non-null because a non-member gets no list at all.
  */
 export type WorkspaceMemberListView = Readonly<{
@@ -267,8 +262,8 @@ export type ActiveUserWorkspaceView = Readonly<{
 /**
  * A workspace whose directory shard could not answer. Kept in the list
  * in degraded form rather than dropped — dropping it would make a brief
- * shard outage look like a removal
- * (`WorkspaceDirectoryBatchReader` の `unavailable`).
+ * shard outage look like a removal (`WorkspaceDirectoryBatchReader` の
+ * `unavailable`).
  */
 export type UnavailableUserWorkspaceView = Readonly<{
   status: "unavailable";
@@ -305,8 +300,7 @@ export type PublicWorkspaceListView = Readonly<{
 
 /**
  * The public workspace page. Carries nothing about the workspace's
- * members — the page is served to anonymous visitors
- * (spec/testcases/workspace/getPublicWorkspace.md).
+ * members — the page is served to anonymous visitors.
  */
 export type PublicWorkspaceView = Readonly<{
   workspaceId: string;

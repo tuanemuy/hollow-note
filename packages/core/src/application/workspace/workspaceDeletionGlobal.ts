@@ -15,8 +15,7 @@ import {
 } from "./workspaceDeletion";
 
 /**
- * The global half of a workspace deletion
- * (spec/usecases/workspace.md#deleteworkspace 手順 7).
+ * The global half of a workspace deletion.
  *
  * Two lanes, both driven a page at a time off the scope-local manifest:
  * this file's cleanup turns delete the global rows the manifest names, and

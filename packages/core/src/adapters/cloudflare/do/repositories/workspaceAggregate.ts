@@ -35,10 +35,9 @@ import {
  *
  * Scope binding is not re-checked here. A workspace scope object holds
  * exactly its own workspace and that workspace's children, so a foreign
- * id simply matches no row — none of these tables is a scope key in the
- * sense `spec/database/index.md` の「共通の規約」 gives the term, which is
- * why the check `noteRepository` performs on `owner_type` / `owner_id` has
- * no counterpart here.
+ * id simply matches no row — none of these tables carries a scope key,
+ * which is why the check `noteRepository` performs on `owner_type` /
+ * `owner_id` has no counterpart here.
  */
 export type AggregateSpec<TEntity> = Readonly<{
   table: string;
@@ -206,9 +205,9 @@ export function createAggregateStore<
  * neither the answer nor the write can come from the driver here — a
  * scope object reaches its storage over RPC and reports no affected-row
  * count, and inside the deletion saga's unit of work the write has not
- * run yet at all. The delete itself stays one `json_each` statement
- * (`spec/database/index.md` の「共通の規約」) and names the ids it removes,
- * so a read later in the same unit no longer sees the rows it deleted.
+ * run yet at all. The delete itself stays one `json_each` statement and
+ * names the ids it removes, so a read later in the same unit no longer
+ * sees the rows it deleted.
  */
 export async function deleteAggregatesByIds<TId extends string>(
   session: SqlSession,

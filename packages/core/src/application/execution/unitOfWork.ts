@@ -65,8 +65,8 @@ export type ActivatingMembershipReader = Pick<
  *
  * `identityRemovalReceiptStore` lives here because removing an identity
  * has to write the row deletion, the retention receipt, and the outbox
- * event in one transaction (spec/usecases/identity.md `removeIdentity`
- * 手順 3). The two account-deletion stores are here for the same reason:
+ * event in one transaction. The two account-deletion stores are here for
+ * the same reason:
  * admission creates the operation in the transaction that moves the user
  * to `deleting`, and the terminal prune drops the manifest header and
  * the operation together.
@@ -103,11 +103,10 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * entry point calls `assertWritable` (and `assertActorWritable` where an
  * actor is involved) before mutating.
  *
- * `noteProjectionRevisionStore` lives on the context because the spec
- * requires `bump(noteId)` to share the transaction with the
- * authoritative-data write whose event carries the revision
- * (spec/usecases/note.md 共通節). `scopeTaskScheduler` is here for the
- * same reason: a continuation must be stored in the transaction of the
+ * `noteProjectionRevisionStore` lives on the context because
+ * `bump(noteId)` must share the transaction with the authoritative-data
+ * write whose event carries the revision. `scopeTaskScheduler` is here
+ * for the same reason: a continuation must be stored in the transaction of the
  * turn it follows, or a lost response drops the rest of the work.
  * `localNoteProjectionWriter` is the scope's own read model, so its
  * writes belong to the transaction of the change they project.
@@ -118,8 +117,8 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
  * is scope-local business data or the admission state guarding it: the
  * three aggregates, the account-deletion prepare lock on a membership,
  * the move locks and deletion admission, and the deletion manifest whose
- * page, cursor and continuation task must land in one transaction
- * (spec/usecases/workspace.md `deleteWorkspace`). Their global
+ * page, cursor and continuation task must land in one transaction.
+ * Their global
  * counterparts — the directories and the three service-wide reservations
  * — sit on the request container instead, since the design deliberately
  * places those writes outside any unit of work.
@@ -146,7 +145,7 @@ export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
 /**
  * Global-plane unit of work.
  *
- * Shared rules for both planes (spec/usecases/identity.md "共通の約束"):
+ * Shared rules for both planes:
  * - **Never nest `run`** — not inside another global UoW, not inside a
  *   scope UoW, and vice versa. One transactional step runs in exactly
  *   one transaction on one plane.

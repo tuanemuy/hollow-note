@@ -1,9 +1,8 @@
 import type { WorkspaceId, WorkspaceSlug } from "../valueObject";
 
 /**
- * Global uniqueness reservation for workspace slugs
- * (`workspace_slug_reservations` of spec/database/index.md), held on the
- * control plane. `WorkspaceRepository` is bound to one workspace scope
+ * Global uniqueness reservation for workspace slugs, held on the control
+ * plane. `WorkspaceRepository` is bound to one workspace scope
  * and sees a single row, so the slug's service-wide uniqueness — and
  * therefore `ConflictError("SLUG_ALREADY_USED")` — belongs here rather
  * than to the aggregate's repository.
@@ -35,10 +34,8 @@ import type { WorkspaceId, WorkspaceSlug } from "../valueObject";
  *
  * Idempotency is keyed on `(slug, operationId)` throughout: every method
  * may be re-issued any number of times for the same operation and
- * converges on the same row. The one exception is deliberate and is what
- * the spec's "same operation id **or** the workspace's own current slug
- * may re-use an existing reservation" clause asks for: a row already
- * `active` for the same `workspaceId` is re-keyed to the reserving
+ * converges on the same row. The one exception is deliberate: a row
+ * already `active` for the same `workspaceId` is re-keyed to the reserving
  * operation and stays `active`, so a workspace re-reserving a slug it
  * already holds succeeds without the key ever ceasing to resolve.
  *

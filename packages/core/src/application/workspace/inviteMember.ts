@@ -37,8 +37,7 @@ const QUOTA_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PENDING_INVITATION_QUOTA = 50;
 
 /**
- * Issues an invitation and mails the link
- * (UC-workspace-008, spec/usecases/workspace.md#invitemember).
+ * Issues an invitation and mails the link.
  *
  * Saga: `InvitationRouteStore.reserve` (global, the token hash is its own
  * uniqueness reservation) → scope commit of `Invitation.issue` →
@@ -58,7 +57,7 @@ const PENDING_INVITATION_QUOTA = 50;
  * keeps one live token per address, and nothing has been written here
  * yet, so no unit of work is open when that usecase opens its own. The
  * existing invitation's role is deliberately preserved — changing it
- * means revoking and inviting again (WS-03).
+ * means revoking and inviting again.
  */
 export async function inviteMember({
   container,
@@ -150,7 +149,7 @@ export async function inviteMember({
   const expiresAt = issued.entity.expiresAt;
 
   // Refused before the token is claimed globally, and again inside the
-  // commit below (spec/usecases/workspace.md#deleteworkspace).
+  // commit below.
   await reader.admission.assertWritable();
 
   // The route row carries a single expiry that serves both phases, so it

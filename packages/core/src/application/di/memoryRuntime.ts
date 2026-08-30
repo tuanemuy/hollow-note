@@ -118,7 +118,7 @@ const ephemeralKeyRing = (): ShareTokenKeyRing => ({
 });
 
 /**
- * Composition root for the in-memory reference runtime (spec/adr/024): one
+ * Composition root for the in-memory reference runtime: one
  * `MemoryBackend` shared by every adapter of the process, the same
  * wiring for `pnpm dev` and the usecase tests. Data lives for the
  * process lifetime only — a restart starts blank by design.
@@ -137,8 +137,7 @@ export function createMemoryRuntime(
 
   // The key ring must share the backend's lifetime: minting it per
   // request would bind "version 1" to a fresh key on every request, so
-  // a value protected in one request could never be revealed in another
-  // (the 版→鍵 mapping of spec/presentation/index.md).
+  // a value protected in one request could never be revealed in another.
   const keyRing = shareTokenKeyRing ?? ephemeralKeyRing();
   // A separate ring, not a second use of the share-token one: the two
   // secrets protect different things and rotate independently.

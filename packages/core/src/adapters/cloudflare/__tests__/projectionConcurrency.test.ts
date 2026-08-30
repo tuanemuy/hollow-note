@@ -37,9 +37,9 @@ import { statement } from "../sql/statement";
  * the body row: the FTS index is contentless, so a withdrawal names the
  * tokens of the row that was read, and a stale withdrawal both leaves the
  * winner's tokens standing over the loser's body and cancels tokens that
- * were already gone. `'rebuild'` is unavailable on a contentless index
- * (ADR 017), so every case searches for the keywords of all three
- * revisions rather than only reading the row back.
+ * were already gone. `'rebuild'` is unavailable on a contentless index, so
+ * every case searches for the keywords of all three revisions rather than
+ * only reading the row back.
  *
  * `interposeOnce` stages the race rather than hoping for it: the rival
  * commits between the observed writer's read and its apply.

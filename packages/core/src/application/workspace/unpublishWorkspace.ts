@@ -20,8 +20,7 @@ export type UnpublishWorkspaceInput = Readonly<{
 }>;
 
 /**
- * Takes a workspace's public page down (UC-workspace-006,
- * spec/usecases/workspace.md#unpublishworkspace, WS-08).
+ * Takes a workspace's public page down.
  *
  * The slug survives, and so does its global reservation: re-publishing has
  * to land on the same public URL, and giving the key up is

@@ -75,9 +75,8 @@ export type D1MembershipDirectoryReservationStoreDeps = Readonly<{
 }>;
 
 /**
- * The reservation side of `membership_directory` on global D1
- * (`spec/database/index.md#membership_directory`), bound to the UserId
- * shard the session opens.
+ * The reservation side of `membership_directory` on global D1, bound to
+ * the UserId shard the session opens.
  *
  * The edge key is `operation_id`, which is also the primary key, so every
  * operation-keyed method is a single-row read. The join's claim and the

@@ -19,8 +19,7 @@ import type { MembershipId, WorkspaceId, WorkspaceRole } from "../valueObject";
  *
  * This is the authorization source of truth. The global
  * `membership_directory` projects roles for listing purposes only, and
- * every permission decision resolves the role through this repository
- * (spec/domains/workspace.md#ドメインイベント).
+ * every permission decision resolves the role through this repository.
  *
  * `insert` enforces the `(workspaceId, userId)` uniqueness invariant —
  * the aggregate cannot see its siblings, so the store is the only place
@@ -79,10 +78,9 @@ export interface MembershipRepository
    * or a cached projection.
    *
    * The last-owner invariant rests on it, so the count must be read in
-   * the same transaction as the change it guards
-   * (spec/usecases/workspace.md `deleteMembershipsForUser` step 2); a
-   * value read outside that transaction can go stale between the check
-   * and the write and let the final owner leave.
+   * the same transaction as the change it guards; a value read outside
+   * that transaction can go stale between the check and the write and let
+   * the final owner leave.
    */
   countByRole(workspaceId: WorkspaceId, role: WorkspaceRole): Promise<number>;
   /**

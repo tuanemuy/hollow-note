@@ -32,7 +32,7 @@ export type CloudflareBackendDeps = Readonly<{
    * Mutable on purpose: `ConformanceBackend.setMaintenanceTables`
    * replaces one kind's set after the backend was built, standing in for
    * a deploy that changes the configuration mid-run. Only runs created
-   * *after* the call may see it (ADR 061).
+   * *after* the call may see it.
    */
   maintenanceTablesByKind: Record<MaintenanceKind, readonly string[]>;
   /**

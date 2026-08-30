@@ -123,8 +123,8 @@ export interface InvitationRepository
    * How many invitations are **currently** `pending` and were created at
    * or after `since` (the boundary is inclusive).
    *
-   * Both halves are load-bearing for the issuance quota
-   * (spec/usecases/workspace.md `inviteMember`): the quota counts
+   * Both halves are load-bearing for the issuance quota `inviteMember`
+   * applies: the quota counts
    * outstanding stock, so an invitation that has since been accepted or
    * revoked frees its slot immediately, and `since` bounds the window in
    * which the stock was issued. A resend does not move `createdAt`, so a

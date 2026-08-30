@@ -27,8 +27,7 @@ const membershipNotFound = (): NotFoundError =>
   new NotFoundError("MEMBERSHIP_NOT_FOUND", "Membership not found");
 
 /**
- * Changes one member's role (UC-workspace-016,
- * spec/usecases/workspace.md#changememberrole).
+ * Changes one member's role.
  *
  * The owner count, the last-owner rule and the write all live in one
  * scope transaction: a count read outside it can go stale between the

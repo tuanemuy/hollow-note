@@ -1,24 +1,16 @@
 -- Global D1 schema, migration version 4: the `workspace_directory`
 -- tombstone constraint.
 --
--- `0002_workspace_directory.sql` declared `deletion_operation_id` but
--- constrained only one direction — an `active` row must not carry one —
--- because no port wrote the table and requiring it on a `deleting` row
--- would have made every tombstone unrepresentable.
--- `WorkspaceDirectoryProjectionWriter` now supplies it, so the column can
--- be held to what `spec/database/index.md#workspace_directory` asks of it:
--- a tombstone names the deletion that made it, and that name is what
--- `tombstone` is idempotent on and what a second deletion collides with.
+-- `deletion_operation_id` is bound in both directions: a tombstone names
+-- the deletion that made it, and that name is what `tombstone` is
+-- idempotent on and what a second deletion collides with.
 --
--- SQLite cannot add a CHECK in place, so the table is rebuilt, as
--- `0003_workspace_saga.sql` rebuilt `membership_directory`. Its index goes
--- with the old table and is recreated unchanged. Rows already projected as
--- `deleting` without an operation id predate any writer, so the copy
--- derives one from the workspace id rather than dropping them: a lost
--- tombstone would resurrect a deleted workspace in every member's list.
---
--- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
--- as UNIX milliseconds, enumerations as `text` with a `CHECK`.
+-- SQLite cannot add a CHECK in place, so the table is rebuilt. Its index
+-- goes with the old table and is recreated unchanged. Rows already
+-- projected as `deleting` without an operation id predate any writer, so
+-- the copy derives one from the workspace id rather than dropping them: a
+-- lost tombstone would resurrect a deleted workspace in every member's
+-- list.
 
 CREATE TABLE workspace_directory_v4 (
   workspace_id text PRIMARY KEY,

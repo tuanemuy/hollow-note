@@ -14,15 +14,14 @@ export const workspaceNotFound = (): NotFoundError =>
   new NotFoundError("WORKSPACE_NOT_FOUND", "Workspace not found");
 
 /**
- * Resolves one user's role in one workspace (UC-workspace-001,
- * spec/usecases/workspace.md#resolveworkspaceaccess). Every operation
- * under a workspace calls this first.
+ * Resolves one user's role in one workspace. Every operation under a
+ * workspace calls this first.
  *
  * A non-member resolves to `role: null` rather than an error — the
  * caller decides whether that is fatal, since a public workspace page is
  * readable without a membership. An absent workspace is the one failure:
  * a workspace removed by the deletion saga leaves no row, so opening its
- * URL directly answers `WORKSPACE_NOT_FOUND` (WS-02).
+ * URL directly answers `WORKSPACE_NOT_FOUND`.
  *
  * The membership read is the authorization source of truth; the global
  * `membership_directory` projection is never consulted here.

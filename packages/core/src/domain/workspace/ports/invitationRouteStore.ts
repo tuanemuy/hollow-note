@@ -12,9 +12,8 @@ export type InvitationRouteTarget = Readonly<{
 
 /**
  * Global routing table from an invitation token hash to the workspace
- * scope that owns the invitation (`invitation_routes` of
- * spec/database/index.md). The token hash is the row's primary key, so
- * the table doubles as the token's global uniqueness reservation.
+ * scope that owns the invitation. The token hash is the row's primary
+ * key, so the table doubles as the token's global uniqueness reservation.
  *
  * Issue is a two-phase saga: `reserve` writes the row `reserved` for an
  * operation, the workspace-local `Invitation.issue` commits, and
@@ -49,7 +48,7 @@ export type InvitationRouteTarget = Readonly<{
  * judged against, and a route that stopped resolving would collapse
  * "expired" into "never existed" — `getInvitationPreview` could not
  * answer `expired` and `acceptInvitation` could not raise
- * `InvitationExpired` (spec/testcases/workspace/). A `reserved` row past
+ * `InvitationExpired`. A `reserved` row past
  * its expiry is the opposite case: the reservation lapsed, so `activate`
  * refuses it and recovery must `abandon` instead. Nothing turns an
  * expired token into a live one.

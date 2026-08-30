@@ -5,18 +5,15 @@
 -- halves of the two Workspace sagas: a slug and an invitation token are
 -- unique service-wide, while the Workspace and the Invitation themselves
 -- live in one scope object and can only see their own row. Both carry the
--- reservation state machine `spec/database/index.md` gives them, and both
--- are keyed so the row *is* the uniqueness claim.
---
--- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
--- as UNIX milliseconds, enumerations as `text` with a `CHECK`.
+-- same reservation state machine, and both are keyed so the row *is* the
+-- uniqueness claim.
 
--- `releasing` is in the CHECK because `spec/database/index.md` names it,
--- but no adapter ever writes it and none should: the slug exchange is
--- atomic (`activate` publishes the new key and frees the old one in one
--- transaction), so the state it would name is never observable. Keeping
--- it in the enumeration costs nothing and keeps the DDL readable next to
--- the canon; dropping it would make the two disagree.
+-- `releasing` is in the CHECK because the canon names it, but no adapter
+-- ever writes it and none should: the slug exchange is atomic (`activate`
+-- publishes the new key and frees the old one in one transaction), so the
+-- state it would name is never observable. Keeping it in the enumeration
+-- costs nothing and keeps the DDL readable next to the canon; dropping it
+-- would make the two disagree.
 CREATE TABLE workspace_slug_reservations (
   normalized_slug text PRIMARY KEY,
   workspace_id text NOT NULL,
@@ -58,8 +55,8 @@ CREATE TABLE invitation_routes (
 -- edge that reached `pending` without a membership id therefore becomes an
 -- `active` row with `membership_id IS NULL`, which the reference backend
 -- accepts and this CHECK rejected. The port contract is the canon of a
--- persistence port (ADR 026), so the schema yields to it — the same
--- resolution ADR 046 applies to the FOREIGN KEYs `0001` also dropped.
+-- persistence port, so the schema yields to it — the same resolution
+-- applies to the FOREIGN KEYs `0001` also dropped.
 --
 -- SQLite cannot drop a constraint in place, so the table is rebuilt. Its
 -- indexes go with the old table and are recreated unchanged.

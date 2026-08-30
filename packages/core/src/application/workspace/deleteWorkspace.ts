@@ -37,12 +37,11 @@ const confirmationMismatch = (): ValidationError =>
   );
 
 /**
- * Accepts a workspace deletion (UC-workspace-007,
- * spec/usecases/workspace.md#deleteworkspace, WS-10).
+ * Accepts a workspace deletion.
  *
- * The request path stops at "accepted" (手順 3): one workspace-local
- * transaction confirms the name, refuses a staged note move, flips the
- * scope to `deleting` under a fresh operation id, and stores the first
+ * The request path stops at "accepted": one workspace-local transaction
+ * confirms the name, refuses a staged note move, flips the scope to
+ * `deleting` under a fresh operation id, and stores the first
  * `workspace.deletionLocalContinued` turn. Those land together, which is
  * what makes "the scope is closed" and "something is driving the cleanup"
  * inseparable — and why accepted is only returned after that commit.
@@ -64,11 +63,11 @@ const confirmationMismatch = (): ValidationError =>
  * row the first request armed, which no turn removes until the phase it
  * belongs to is finished.
  *
- * One step of 手順 4 is **absent in this slice**: the forced termination of
- * the workspace's unfinished jobs, collected 100 at a time through
- * `JobRepository.listActiveByScope`. The Job aggregate does not exist yet
- * (Issue #5), so there is no repository to sweep and no `Job.cancel` to
- * apply; the gap is recorded rather than papered over, the same way
+ * One step of the flow is **absent in this slice**: the forced termination
+ * of the workspace's unfinished jobs, collected 100 at a time through
+ * `JobRepository.listActiveByScope`. The Job aggregate does not exist yet,
+ * so there is no repository to sweep and no `Job.cancel` to apply; the gap
+ * is recorded rather than papered over, the same way
  * `application/cleanup/participants.ts` records it for account deletion.
  * When the Job slice lands, the sweep belongs in the local turns below —
  * ahead of the manifest build, so no job outlives the scope it ran in.

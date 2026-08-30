@@ -57,7 +57,7 @@ const fromRow = (row: SqlRow): Membership =>
 
 /**
  * `memberships` of one workspace scope — the authorization source of
- * truth (`spec/database/index.md#memberships`).
+ * truth.
  *
  * `insert` resolves the `(workspace_id, user_id)` pair through the same
  * overlay-aware read the port's own `findByWorkspaceAndUser` uses, so a

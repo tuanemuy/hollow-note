@@ -5,11 +5,11 @@ import { describe, expect, it } from "vitest";
 
 /**
  * The shared port-conformance suites are the executable form of the port
- * contracts (ADR 026), and "every backend passes them identically" is
- * only worth as much as the call sites make it. Two ways to break it
- * silently: a backend quietly stops calling a suite, or a suite is
- * written and never wired to any backend at all. Both are invisible in a
- * green run, so they are pinned here.
+ * contracts, and "every backend passes them identically" is only worth
+ * as much as the call sites make it. Two ways to break it silently: a
+ * backend quietly stops calling a suite, or a suite is written and never
+ * wired to any backend at all. Both are invisible in a green run, so
+ * they are pinned here.
  *
  * The check is textual on purpose — importing the suites would run them —
  * and it counts only calls at the start of a line, so commenting one out
@@ -176,10 +176,10 @@ describe("port-conformance suite coverage", () => {
    * An optional member is the third way to lose a contract silently: a
    * suite that needs one has to skip itself when a backend does not offer
    * it, so a harness that drops it stays green with fewer cases —
-   * "identically" (ADR 026) then means whatever each backend chose to
-   * answer. Every member is therefore required, and the type system is
-   * what holds the harnesses to them; reintroducing an optional one has
-   * to be a decision that fails here first.
+   * "identically" then means whatever each backend chose to answer.
+   * Every member is therefore required, and the type system is what
+   * holds the harnesses to them; reintroducing an optional one has to be
+   * a decision that fails here first.
    */
   it("declares no optional backend member", () => {
     const source = readFileSync(join(CONFORMANCE_DIR, "backend.ts"), "utf8");

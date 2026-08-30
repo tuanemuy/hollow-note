@@ -55,8 +55,7 @@ export type CloudflareMembershipRemovalPreparationDeps = Readonly<{
 }>;
 
 /**
- * `membership_removal_locks` of one workspace scope object
- * (`spec/database/index.md#membership_removal_locks`).
+ * `membership_removal_locks` of one workspace scope object.
  *
  * `user_id` carries a UNIQUE, so "at most one lock per user in a scope"
  * is the schema's job and a second deletion loses on the read that

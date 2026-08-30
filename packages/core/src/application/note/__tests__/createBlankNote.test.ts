@@ -130,7 +130,7 @@ describe("createBlankNote", () => {
       NoteId.create(view.noteId),
     );
     expect(route?.state).toBe("active");
-    // TC-note-066: the route keeps the author, not the owning workspace.
+    // The route keeps the author, not the owning workspace.
     expect(route?.createdBy).toBe(USER);
   });
 
@@ -177,7 +177,6 @@ describe("createBlankNote", () => {
       (error) =>
         isBusinessRuleError(error) && error.code === NoteErrorCode.InvalidTitle,
     );
-    // No saga state was created.
     expect(h.backend.noteRoutes.size).toBe(0);
   });
 

@@ -47,9 +47,8 @@ const insufficientRole = () =>
 
 /**
  * Resolves the subject the icon belongs to and refuses an actor who may
- * not set it (spec/usecases/storage.md#storeavatar 手順 1): a user
- * subject must be the actor themselves, a workspace subject needs
- * `manageWorkspace`.
+ * not set it: a user subject must be the actor themselves, a workspace
+ * subject needs `manageWorkspace`.
  *
  * For a workspace subject this is the early refusal only, taken before
  * any byte is written. The decision that admits the write is re-taken
@@ -79,13 +78,12 @@ async function resolveAvatarOwner(
 }
 
 /**
- * Stores a profile / workspace icon (UC-storage-004,
- * spec/usecases/storage.md#storeavatar).
+ * Stores a profile / workspace icon.
  *
  * Deliberately **does not** check the storage quota: an icon is capped at
  * 5 MB and every replacement deletes the one it replaces, so a subject
  * can never accumulate them — checking would only lock a full account out
- * of a replacement that does not grow its usage (spec, same section). The
+ * of a replacement that does not grow its usage. The
  * bytes still count toward `sumSizeByOwner`, so `recalculateStorageUsage`
  * reconciles them.
  *

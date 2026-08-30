@@ -385,7 +385,6 @@ export const resendInvitationFn = createServerFn({ method: "POST" })
     });
   });
 
-/** PAGE-p32-005。 */
 export const revokeInvitationFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(invitationRefSchema))
@@ -408,7 +407,6 @@ export const revokeInvitationFn = createServerFn({ method: "POST" })
     return { revoked: true };
   });
 
-/** PAGE-p32-006。 */
 export const changeMemberRoleFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(changeMemberRoleSchema))
@@ -431,7 +429,6 @@ export const changeMemberRoleFn = createServerFn({ method: "POST" })
     });
   });
 
-/** PAGE-p32-007。 */
 export const removeMemberFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
   .validator(validateInput(membershipRefSchema))

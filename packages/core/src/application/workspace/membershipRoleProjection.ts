@@ -3,7 +3,7 @@ import type { WorkerContainer } from "../di/types";
 
 /**
  * Projects `workspace.membership.roleChanged` onto the global
- * `membership_directory` edge (spec/domains/workspace.md `ドメインイベント`).
+ * `membership_directory` edge.
  *
  * The edge is the only place `listUserWorkspaces` reads a role from, so
  * without this the switcher keeps rendering the role the join was created

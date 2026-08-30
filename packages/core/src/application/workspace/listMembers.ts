@@ -33,8 +33,7 @@ const displayOf = (user: User | undefined): MemberDisplay | null =>
       };
 
 /**
- * Lists a workspace's members for the member management screen
- * (UC-workspace-013, spec/usecases/workspace.md#listmembers).
+ * Lists a workspace's members for the member management screen.
  *
  * Any member may read the list; `canManage` tells the screen whether to
  * offer the role / removal controls, so the read and the permission to

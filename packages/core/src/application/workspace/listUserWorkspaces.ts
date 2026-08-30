@@ -13,8 +13,7 @@ const DEFAULT_LIMIT = 20;
 
 /**
  * Lists the workspaces the signed-in user belongs to, for the workspace
- * switcher (UC-workspace-015,
- * spec/usecases/workspace.md#listuserworkspaces).
+ * switcher.
  *
  * One keyset page of the user's own UserId shard, then a single
  * shard-spanning batch read for the page's display data — never a join

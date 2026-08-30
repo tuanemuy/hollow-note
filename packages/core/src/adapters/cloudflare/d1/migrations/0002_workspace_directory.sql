@@ -10,16 +10,6 @@
 -- suites still seed rows straight into it (`seedWorkspaceDirectory`),
 -- which is the only way to pin the column combinations a writer would
 -- never produce together.
---
--- Same conventions as `0001_global_schema.sql`: no FOREIGN KEY, instants
--- as UNIX milliseconds, enumerations as `text` with a `CHECK`.
---
--- `deletion_operation_id` is constrained in one direction only at this
--- version — an `active` row must not carry one.
--- `spec/database/index.md#workspace_directory` also requires it on a
--- `deleting` row; that half arrives with
--- `0004_workspace_directory_tombstone.sql`, which rebuilds the table once
--- the writer supplies the id.
 
 CREATE TABLE workspace_directory (
   workspace_id text PRIMARY KEY,

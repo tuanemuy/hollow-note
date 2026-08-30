@@ -14,8 +14,8 @@ const MINUTE_MS = 60 * 1000;
  * Shared conformance suite for `WorkspaceDirectoryProjectionWriter`
  * (ADP-workspace-066..067).
  *
- * Every assertion reads back through the three directory readers rather
- * than through a private hook: what the projection is for is what those
+ * Every assertion reads back through the directory readers rather than
+ * through a private hook: what the projection is for is what those
  * readers show, and a writer that stored something they cannot see would
  * be indistinguishable from one that stored nothing.
  */

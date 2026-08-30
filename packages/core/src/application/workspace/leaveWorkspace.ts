@@ -21,8 +21,7 @@ export type LeaveWorkspaceInput = Readonly<{
 }>;
 
 /**
- * Lets a member leave a workspace on their own (UC-workspace-018,
- * spec/usecases/workspace.md#leaveworkspace).
+ * Lets a member leave a workspace on their own.
  *
  * No role is required — leaving is not an act of management — so the
  * membership lookup is both the authorization and the target: a
@@ -111,7 +110,7 @@ export async function leaveWorkspace({
   await settleRemovalEdge(container, "[leaveWorkspace]", userId, workspaceId);
 }
 
-/** 手順 1〜2: the leaver's membership, once it is known to be removable. */
+/** The leaver's membership, once it is known to be removable. */
 async function requireRemovableMembership(
   ctx: ScopeUnitOfWorkContext,
   workspaceId: WorkspaceId,

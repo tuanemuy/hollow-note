@@ -20,8 +20,7 @@ import type { Workspace } from "../workspace";
  * deletion saga has removed it, which is what makes the saga's forward
  * recovery re-entrant. `delete` is the saga's last local write: the
  * children (`Membership` / `Invitation`) go first via their repositories'
- * `deleteByIds`, and the workspace row only after they are gone
- * (spec/usecases/workspace.md `deleteWorkspace`).
+ * `deleteByIds`, and the workspace row only after they are gone.
  *
  * Deletion admission itself is not this port's concern. Whether a write
  * may happen at all while `lifecycle.state === "deleting"` is decided by
@@ -31,9 +30,8 @@ import type { Workspace } from "../workspace";
  *
  * Global slug uniqueness is likewise outside this port. The claim on a
  * slug is taken in the global slug reservation before the scope UoW runs,
- * so `ConflictError("SLUG_ALREADY_USED")` — listed in the group's error
- * contract in spec/domains/workspace.md#ポート — reaches a caller from
- * that claim, never from `insert` / `save` here. A scope-bound row has no
+ * so `ConflictError("SLUG_ALREADY_USED")` reaches a caller from that
+ * claim, never from `insert` / `save` here. A scope-bound row has no
  * global view and must not pretend to enforce a service-wide invariant.
  *
  * Error contract: `ConflictError("OPTIMISTIC_LOCK_FAILURE")` when the

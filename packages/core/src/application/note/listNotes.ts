@@ -32,18 +32,18 @@ const MAX_LIMIT = 100;
 
 /**
  * Minimal internal read of the active notes of one owner scope for the
- * walking-skeleton note list (P-10). This deliberately does NOT preempt
- * the canonical `searchNotes` (UC-note-006) of a later slice: it reads
+ * walking-skeleton note list. This deliberately does NOT preempt the
+ * canonical `searchNotes` of a later slice: it reads
  * straight through `NoteRepository.listByOwner` and offers no keyword,
  * tag, month or sort. It takes the same owner pair as `searchNotes`
  * (`ownerType` / `ownerWorkspaceId`) so a caller written against it moves
  * over unchanged, and defaults to the personal scope.
  *
- * Authorization for the workspace context follows `searchNotes` 手順1:
+ * Authorization for the workspace context mirrors `searchNotes`:
  * `resolveWorkspaceAccess` for the role, then `viewNote` — every role
- * clears it, so this is where a non-member is turned away (WS-02 の
- * 「除名された・削除済みのワークスペースを URL で直接開いた」; a deleted
- * workspace is `WORKSPACE_NOT_FOUND` from the access resolution itself).
+ * clears it, so this is where a non-member opening the workspace URL
+ * directly is turned away (a deleted workspace is `WORKSPACE_NOT_FOUND`
+ * from the access resolution itself).
  */
 export async function listNotes({
   container,

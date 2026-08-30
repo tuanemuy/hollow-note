@@ -12,12 +12,11 @@ export type GetInvitationPreviewInput = Readonly<{
 }>;
 
 /**
- * Shows what an invitation link leads to before it is accepted
- * (UC-workspace-011, spec/usecases/workspace.md#getinvitationpreview).
+ * Shows what an invitation link leads to before it is accepted.
  *
  * Readable signed out — the page states the terms first and asks for a
- * session only at acceptance (WS-04). Only the token hash ever leaves
- * this function's scope, and the response carries no token at all.
+ * session only at acceptance. Only the token hash ever leaves this
+ * function's scope, and the response carries no token at all.
  *
  * A workspace the deletion saga has already removed still previews: the
  * invitation row outlives it inside the scope, and `workspaceMissing` is

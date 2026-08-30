@@ -5,8 +5,7 @@ import type { Membership } from "../membership";
 import type { WorkspaceRole } from "../valueObject";
 
 /**
- * Rules over the member set of a single workspace
- * (spec/domains/workspace.md#MembershipPolicy).
+ * Rules over the member set of a single workspace.
  *
  * The counts arrive as arguments because the policy is pure: the caller
  * reads them inside the same unit of work that applies the change, so the

@@ -19,8 +19,7 @@ import {
  *
  * TC-workspace-199 (reading both routing generations during a reshard) has
  * no executable form on the reference backend: it keeps a single logical
- * generation, so there is no old/new pair to deduplicate. It is covered by
- * the `workers` project's directory conformance instead.
+ * generation, so there is no old/new pair to deduplicate.
  */
 
 const USER = "user-1";

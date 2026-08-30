@@ -1,9 +1,8 @@
 import type { UserId } from "@repo/core/domain/identity/valueObject";
 
 /**
- * Workspace-local prepare lock of the account-deletion two-phase removal
- * (`membership_removal_locks` of spec/database/index.md), bound to the
- * **current workspace scope**.
+ * Workspace-local prepare lock of the account-deletion two-phase removal,
+ * bound to the **current workspace scope**.
  *
  * The global deletion orchestrator takes one lock per workspace the user
  * belongs to, keeps them alive while it collects the rest, and only then
@@ -103,8 +102,8 @@ export interface MembershipRemovalPreparationStore {
   release(operationId: string): Promise<void>;
   /**
    * Whether a lock exists for the user in this scope, in **either** state
-   * and **including a lapsed one**. Role changes, removals, departures
-   * and workspace deletion consult it and refuse while it is true.
+   * and **including a lapsed one**. Role changes, removals and departures
+   * consult it and refuse while it is true.
    *
    * Answering true for a lapsed `prepared` lock is the point: the
    * orchestrator may be mid-recovery and about to renew, and letting a

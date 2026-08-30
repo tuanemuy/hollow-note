@@ -8,8 +8,8 @@ import type { ScopeKey } from "../scope";
  * revisions, tag names (display + normalized), source / media /
  * reference StoredFile metadata, BackupRecord, and the Usage delta. R2
  * bytes never move. Declared opaque, since a backend that folds a phase
- * into one transaction fixes the field layout together with its adapter
- * (DOM-note-066..070).
+ * into one transaction fixes the field layout together with its
+ * adapter.
  *
  * Not the type the shipped move carries: that one is `MoveSnapshot`,
  * local to `application/note/moveNote.ts`, and it holds what this
@@ -39,7 +39,7 @@ export interface NoteMoveSnapshot {
  * can state. The port stays as the contract for the day a backend does
  * fold a phase into one transaction of its own; until then its five
  * signatures are a design intent, not a contract anyone is held to (no
- * conformance suite executes them — cf. ADR 026).
+ * conformance suite executes them).
  *
  * Error contract: `ConflictError` (stale membership / lock conflicts),
  * `SystemError(DatabaseError)`.

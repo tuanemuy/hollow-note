@@ -6,8 +6,7 @@ import { ScopeKey } from "../scope";
 const COUNT_PAGE_LIMIT = 100;
 
 /**
- * Public notes the workspace owns, for the "your page is empty" hint
- * (spec/usecases/workspace.md#publishworkspace 手順5, P-33).
+ * Public notes the workspace owns, for the "your page is empty" hint.
  *
  * Read from the workspace scope rather than the global public projection:
  * nothing projects a note's publication into the search read model yet, so

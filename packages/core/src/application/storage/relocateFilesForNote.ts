@@ -15,8 +15,7 @@ import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 
 /**
  * Purposes a note move carries. `artifact` stays behind in the Job scope
- * and is reclaimed by its TTL, and `avatar` belongs to no note at all
- * (spec/usecases/storage.md#relocatefilesfornote 手順 1).
+ * and is reclaimed by its TTL, and `avatar` belongs to no note at all.
  */
 export const RELOCATABLE_PURPOSES = ["source", "media", "reference"] as const;
 
@@ -170,8 +169,7 @@ async function listNoteFiles(
 }
 
 /**
- * Moves a note's stored-file metadata between scopes (UC-storage-011,
- * spec/usecases/storage.md#relocatefilesfornote).
+ * Moves a note's stored-file metadata between scopes.
  *
  * An internal command of the move saga, not a subscriber of `note.moved`:
  * it takes the enclosing phase's unit-of-work context rather than opening

@@ -27,8 +27,7 @@ export type RemoveMemberInput = Readonly<{
 }>;
 
 /**
- * Removes a member from a workspace (UC-workspace-017,
- * spec/usecases/workspace.md#removemember).
+ * Removes a member from a workspace.
  *
  * Removing oneself is refused with its own code rather than allowed: the
  * departure path is `leaveWorkspace`, which asks nothing of
@@ -52,7 +51,7 @@ export type RemoveMemberInput = Readonly<{
  * Notes the removed member created stay with the workspace — they belong
  * to the workspace, not to their author — so nothing here touches them.
  *
- * One step of the spec'd flow is absent in this slice: the forced
+ * One step of the flow is absent in this slice: the forced
  * termination of the member's jobs and the security cleanup of their job
  * and backup residue have no aggregates to act on yet (see
  * `./membershipMutation`).
@@ -130,7 +129,7 @@ export async function removeMember({
   );
 }
 
-/** 手順 2〜4: the target of the removal, once it is known to be allowed. */
+/** The target of the removal, once it is known to be allowed. */
 async function requireRemovableTarget(
   ctx: ScopeUnitOfWorkContext,
   params: Readonly<{

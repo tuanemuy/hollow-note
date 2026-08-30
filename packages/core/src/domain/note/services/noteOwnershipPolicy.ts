@@ -10,7 +10,7 @@ import type { NoteAccess } from "./noteAccessPolicy";
  * target is a workspace-role question this domain cannot evaluate, and the
  * caller has answered it before naming a target
  * (`WorkspaceAuthorization.ensureCan(role, "createNote")`, whose refusal is
- * `InsufficientRole` — spec/usecases/note.md#movenote).
+ * `InsufficientRole`).
  */
 export const NoteOwnershipPolicy = {
   ensureMovable: (note: Note, from: NoteAccess): void => {

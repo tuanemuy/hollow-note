@@ -132,7 +132,7 @@ export type WorkspaceDirectorySeedInput = Readonly<{
   slug: WorkspaceSlug | null;
   avatarUrl: string | null;
   publication: "private" | "published";
-  /** A tombstoned workspace stays `deleting` (spec/database/index.md). */
+  /** A tombstoned workspace stays `deleting`. */
   lifecycle: "active" | "deleting";
   /**
    * Deletion that owns a tombstone. Backends derive one from the

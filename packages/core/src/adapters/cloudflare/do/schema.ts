@@ -52,7 +52,7 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   // checked against it on both restore and save. The attribution columns
   // of `stored_files` / `storage_quotas` / `llm_usages` are not scope
   // keys and are not checked; the physical separation rests on this pin
-  // alone (`spec/database/index.md` の「共通の規約」: scope 検証).
+  // alone.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.scopeIdentity} (
      id integer PRIMARY KEY CHECK (id = 0),
      scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),
@@ -105,7 +105,7 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   // invariant to `inviteMember`, which folds a second invite into a
   // resend, and gives `insert` no conflict code to raise. A schema that
   // rejected the second pending invitation would fail where the
-  // reference backend succeeds (ADR 046).
+  // reference backend succeeds.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.invitations} (
      id text PRIMARY KEY,
      workspace_id text NOT NULL,
@@ -145,8 +145,8 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
    )`,
 
   // Only the two columns the Workspace domain discriminates on. The
-  // remaining columns of `spec/database/index.md#move_authorization_locks`
-  // — the pinned membership, its version, the note being moved — belong to
+  // remaining columns of `move_authorization_locks` — the pinned
+  // membership, its version, the note being moved — belong to
   // the move slice that writes the table; nothing here reads them, and a
   // column no writer can fill would only be a NULL nobody may trust.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.moveAuthorizationLocks} (
@@ -413,8 +413,8 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
      PRIMARY KEY (kind, operation_id),
      CHECK ((status = 'running') = (lease_expires_at IS NOT NULL))
    )`,
-  // The three partial indexes of `spec/database/index.md#scheduled_tasks`:
-  // the alarm's wake time, the dequeue walk, and the lease-expiry scan.
+  // The three partial indexes of `scheduled_tasks`: the alarm's wake time,
+  // the dequeue walk, and the lease-expiry scan.
   // `failed` rows pile up in none of them.
   `CREATE INDEX IF NOT EXISTS scheduled_tasks_due_idx
      ON ${SCOPE_TABLES.scheduledTasks} (due_at, priority, kind, operation_id) WHERE status = 'pending'`,
@@ -423,7 +423,7 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS scheduled_tasks_lease_idx
      ON ${SCOPE_TABLES.scheduledTasks} (lease_expires_at) WHERE status = 'running'`,
 
-  // One table, two ports, split by the meaning of the key (ADR 045):
+  // One table, two ports, split by the meaning of the key:
   // `AppliedOperationStore` folds `(operationId, commandKey)` into
   // `operation_id`, while `ScopeCleanupAdmissionStore` owns the rows with
   // `kind = 'accountDeletionBarrier'`.

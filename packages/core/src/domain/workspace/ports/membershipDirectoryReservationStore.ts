@@ -15,7 +15,7 @@ export type ActivatingMembershipEdge = Readonly<{
  * Reservation side of the global `membership_directory`, bound to the
  * **current UserId shard**. It exists so a membership can be announced to
  * the cross-user directory before the workspace scope commits it, without
- * the two planes sharing a unit of work ([ADR 023](spec/adr/023-two-plane-unit-of-work.md)).
+ * the two planes sharing a unit of work.
  *
  * Join is a three-step saga per `operationId`:
  * `reserveAndClaimActivation` → workspace-local `Invitation.accept` +
@@ -200,8 +200,7 @@ export interface MembershipDirectoryReservationStore {
   ): Promise<readonly ActivatingMembershipEdge[]>;
   /**
    * Projects a role change onto the edge, so the workspace list shows the
-   * role the scope actually holds
-   * (spec/usecases/workspace.md `changeMemberRole`). The edge is the only
+   * role the scope actually holds. The edge is the only
    * place `listActiveByUser` reads a role from, so without this the list
    * keeps rendering the role the join was created with.
    *
@@ -266,9 +265,8 @@ export interface MembershipDirectoryReservationStore {
   ): Promise<void>;
   /**
    * Opens the tear-down of a settled edge: `active → removing`, before
-   * the workspace-local Membership is deleted
-   * (spec/usecases/workspace.md `removeMember` 手順 5 /
-   * `leaveWorkspace` 手順 4).
+   * the workspace-local Membership is deleted by `removeMember` /
+   * `leaveWorkspace`.
    *
    * A `removing` edge leaves `listActiveByUser` at once — the workspace
    * stops appearing in the member's list the moment the removal is

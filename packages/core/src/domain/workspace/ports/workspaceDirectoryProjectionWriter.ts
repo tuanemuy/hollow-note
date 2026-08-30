@@ -22,10 +22,9 @@ export type WorkspaceDirectorySnapshot = Readonly<{
 }>;
 
 /**
- * Writer of the global `workspace_directory` projection
- * (`spec/database/index.md#workspace_directory`), the counterpart of the
- * three readers that serve the workspace list, the batch display read and
- * the sitemap.
+ * Writer of the global `workspace_directory` projection, the counterpart
+ * of the three readers that serve the workspace list, the batch display
+ * read and the sitemap.
  *
  * Both methods are called by name, never by a subscriber: no event drives
  * this projection. `applySnapshotIfNewer` is sent synchronously by the
@@ -54,9 +53,8 @@ export type WorkspaceDirectorySnapshot = Readonly<{
  * `slug` is unique across the projection, and the writer takes it rather
  * than failing: applying a snapshot that carries a slug first clears that
  * slug from any **other** row still holding it, in the same write.
- * `workspace_slug_reservations` is the authority on who owns a slug
- * (spec/domains/workspace.md `WorkspaceSlugReservationStore`), so a
- * projection row still showing one that another workspace has since
+ * `WorkspaceSlugReservationStore` is the authority on who owns a slug, so
+ * a projection row still showing one that another workspace has since
  * reserved is stale by definition, and a projection write that could fail
  * on it would stall on a row nothing is going to send again.
  *
@@ -91,8 +89,7 @@ export interface WorkspaceDirectoryProjectionWriter {
    * Turns the row into the deletion tombstone: `lifecycle = 'deleting'`
    * under `operationId`, with the slug released and the display fields
    * redacted, so the public route stops resolving immediately while the
-   * `deleted` verdict survives for the batch reader
-   * (spec/usecases/workspace.md `deleteWorkspace` 手順 7).
+   * `deleted` verdict survives for the batch reader.
    *
    * Inserts the tombstone when no row was ever projected, so a workspace
    * deleted before its creation snapshot landed still answers `deleted`

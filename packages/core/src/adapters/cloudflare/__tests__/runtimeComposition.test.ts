@@ -180,7 +180,7 @@ describe("createCloudflareRuntime", () => {
     ]);
     // Every table a default `authStatePrune` run names is one this
     // deployment can actually sweep; the reverse would be skipped with a
-    // single error log (ADR 062).
+    // single error log.
     expect(new Set(DEFAULT_MAINTENANCE_TABLES.authStatePrune)).toEqual(
       new Set(Object.keys(container.authStateSweeps)),
     );

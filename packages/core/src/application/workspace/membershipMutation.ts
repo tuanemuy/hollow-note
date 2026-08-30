@@ -25,9 +25,8 @@ import { ScopeKey } from "../scope";
 import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
 
 /**
- * Guards the three membership mutations share
- * (spec/usecases/workspace.md `changeMemberRole` / `removeMember` /
- * `leaveWorkspace`).
+ * Guards the three membership mutations share (`changeMemberRole` /
+ * `removeMember` / `leaveWorkspace`).
  *
  * One step of those flows is **absent in this slice**: the forced
  * termination of the target's unfinished jobs, swept 100 at a time and
@@ -35,8 +34,7 @@ import { resolveWorkspaceAccess } from "./resolveWorkspaceAccess";
  * not exist yet, so there is no `JobRepository` to sweep, no `Job.cancel`
  * to apply, and no `continueForcedTermination` to hand a full page to.
  * The gap is recorded rather than papered over, the same way
- * `application/cleanup/participants.ts` records it for account deletion
- * (`job: absent("The Job aggregate does not exist", "#5")`).
+ * `application/cleanup/participants.ts` records it for account deletion.
  *
  * Emitting the continuation anyway would be worse than omitting it:
  * `continuationSubscribers` is exhaustive over the continuation types, so
@@ -73,10 +71,9 @@ export async function requireManageMembers(
 
 /**
  * Re-decides the actor's permission **inside** the transaction that is
- * about to write (spec/usecases/workspace.md 冒頭: the local permission
- * check taken immediately before a mutation is what makes a lagging
- * `membership_directory` projection a display gap rather than a
- * privilege).
+ * about to write: the local permission check taken immediately before a
+ * mutation is what makes a lagging `membership_directory` projection a
+ * display gap rather than a privilege.
  *
  * Every workspace write also resolves the actor outside the transaction,
  * which is what answers a request with no permission before any global
@@ -124,8 +121,7 @@ export async function ensureActorCan(
  * The scope-wide barrier comes first and is the coarsest of the three: a
  * workspace that has accepted a deletion takes no further membership of
  * any kind, so a member added or demoted behind the manifest cursor
- * cannot outlive the scope (`WorkspaceOperationLockStore.assertWritable`,
- * spec/usecases/workspace.md#deleteworkspace 手順 3).
+ * cannot outlive the scope (`WorkspaceOperationLockStore.assertWritable`).
  *
  * All three reads happen inside the caller's unit of work, so the answer
  * and the write it admits share one transaction. None of the locks lapses
@@ -155,7 +151,7 @@ export async function ensureMembershipMutable(
 
 /**
  * Everything that has to hold before a membership is torn down
- * (`removeMember` 手順 3–4 / `leaveWorkspace` 手順 2).
+ * (`removeMember` / `leaveWorkspace`).
  *
  * Both removals run it twice: once before the global edge is announced
  * `removing`, and once inside the transaction that deletes the row.
@@ -250,10 +246,7 @@ export async function settleStrandedRemovalEdge(
   await settleRemovalEdge(container, label, userId, workspaceId);
 }
 
-/**
- * Scope-task kind that carries a removal's edge drop
- * ([ADR 040](spec/adr/040-continuation-transport.md)).
- */
+/** Scope-task kind that carries a removal's edge drop. */
 export const MEMBERSHIP_REMOVAL_EDGE_TASK_KIND =
   "workspace.membershipRemovalEdgeContinued";
 
@@ -261,10 +254,9 @@ export const MEMBERSHIP_REMOVAL_EDGE_TASK_KIND =
  * Row key of one removal's obligation. The directory edge carries no
  * operation id a removal could re-derive — it is keyed on the pair itself
  * (`MembershipDirectoryReservationStore.beginRemoval`) — so the pair is
- * also this continuation's deterministic id
- * ([ADR 041](spec/adr/041-deterministic-continuation-event-id.md)): two
- * concurrent removals of one membership arm the same row, and a turn
- * replayed after a lost response rewrites it instead of forking.
+ * also this continuation's deterministic id: two concurrent removals of
+ * one membership arm the same row, and a turn replayed after a lost
+ * response rewrites it instead of forking.
  */
 const removalEdgeTaskId = (userId: UserId, workspaceId: WorkspaceId): string =>
   `${workspaceId}:${userId}`;
@@ -301,9 +293,8 @@ export const armRemovalEdgeSettlement = (
   });
 
 /**
- * Drops the global directory edge once the removal's residue is settled
- * (`removeMember` 手順 5 / `leaveWorkspace` 手順 4), then settles the row
- * that stood behind it.
+ * Drops the global directory edge once the removal's residue is settled,
+ * then settles the row that stood behind it.
  *
  * Called straight after the local commit because this slice leaves no
  * residue behind: the Job aggregate and the BackupRecord the spec waits

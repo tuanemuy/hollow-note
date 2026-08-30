@@ -8,15 +8,14 @@ import {
 /**
  * `json_each` expansion — the only sanctioned way to bind a list.
  *
- * Both planes cap a statement at 100 bound parameters
- * (`spec/platform/index.md` 実上限), while `NoteRouteStore.resolveMany`
- * takes up to 500 ids and `UserBatchReader.resolveMany` up to 100. The
- * rule in `spec/database/index.md` の「共通の規約」 is therefore absolute:
+ * Both planes cap a statement at 100 bound parameters, while
+ * `NoteRouteStore.resolveMany` takes up to 500 ids and
+ * `UserBatchReader.resolveMany` up to 100. The rule is therefore absolute:
  * **ID の並びで引く / 消す / 入れるクエリは `?` を件数ぶん並べない** — pass
  * one JSON array as a single binding and expand it with `json_each`.
  * Multi-row INSERT and DELETE follow the same shape, which is also what
- * lets a bulk delete collapse its writes into the single atomic apply
- * `spec/platform/index.md` の「実行予算と分割単位」 asks for.
+ * lets a bulk delete collapse its writes into the single atomic apply the
+ * execution budget asks for.
  *
  * @example Read a list of ids
  * ```ts

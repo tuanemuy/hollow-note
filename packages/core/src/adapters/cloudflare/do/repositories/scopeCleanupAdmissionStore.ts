@@ -22,7 +22,7 @@ import { SCOPE_TABLES } from "../schema";
 /**
  * Every component the enum knows. It is the **default** required set, not
  * the contract: a deployment that declares nothing must stall short of
- * completion rather than complete early ([ADR 039](../../../../../../spec/adr/039-cleanup-participants-declaration.md)).
+ * completion rather than complete early.
  */
 const ALL_COMPONENTS: readonly PersonalCleanupComponent[] = [
   "job",
@@ -37,7 +37,7 @@ const ALL_COMPONENTS: readonly PersonalCleanupComponent[] = [
 
 /**
  * `applied_operations.kind` of the barrier receipt. The table carries two
- * ports told apart by the meaning of their key (ADR 045), and this value
+ * ports told apart by the meaning of their key, and this value
  * is the whole of that separation: every statement here filters on it, so
  * an `AppliedOperationStore` row can never be mistaken for a receipt.
  */
@@ -47,7 +47,7 @@ const TABLE = SCOPE_TABLES.appliedOperations;
 
 const CONTEXT = "applied_operations";
 
-/** `result` of a barrier row (`spec/database/index.md#applied_operations`). */
+/** `result` of a barrier row. */
 type BarrierResult = Readonly<{
   state: "running" | "completed";
   userId: string;
@@ -59,7 +59,7 @@ export type CloudflareScopeCleanupAdmissionDeps = Readonly<{
   clock: Clock;
   /**
    * Components the deployment declares. `undefined` falls back to the
-   * whole enum, which stalls — the safe direction (ADR 039).
+   * whole enum, which stalls — the safe direction.
    */
   requiredComponents?: readonly PersonalCleanupComponent[] | undefined;
 }>;
@@ -159,12 +159,11 @@ export function createCloudflareScopeCleanupAdmissionStore(
     },
 
     async assertActorWritable(_actorUserId: UserId): Promise<void> {
-      // The membership removal prepare lock lives in
-      // `membership_removal_locks` and is read through
+      // The actor is not consulted: the membership removal prepare lock
+      // lives in `membership_removal_locks` and is read through
       // `MembershipRemovalPreparationStore.hasConflict`, which the
       // Workspace write paths consult themselves. This store is the
-      // personal scope's barrier and is not that lock's reader on either
-      // backend — the reference backend answers the same here.
+      // personal scope's barrier alone.
       if ((await receipt()) !== null) {
         throw barrierClosed();
       }

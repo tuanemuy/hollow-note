@@ -79,8 +79,7 @@ export type D1InvitationRouteStoreDeps = Readonly<{
 }>;
 
 /**
- * `invitation_routes` on global D1
- * (`spec/database/index.md#invitation_routes`).
+ * `invitation_routes` on global D1.
  *
  * The token hash is the primary key, so the row *is* the token's global
  * uniqueness reservation and a collision surfaces as the same

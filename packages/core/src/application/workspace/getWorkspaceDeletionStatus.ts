@@ -13,17 +13,15 @@ export type GetWorkspaceDeletionStatusInput = Readonly<{
 }>;
 
 /**
- * Reads how far a workspace deletion has got (UC-workspace-025,
- * spec/usecases/workspace.md#getworkspacedeletionstatus, P-34 の
- * 「実行中 / 完了」, WS-10).
+ * Reads how far a workspace deletion has got.
  *
  * The saga's own state is the answer, read from where it already lives:
  * `beginDeletion` moves the aggregate's lifecycle to
  * `deleting(operationId)` and the last local turn deletes the row, so
- * `active` / `deleting` / absent are exactly the three states P-34 draws.
- * No port is added and no manifest is consulted — the phases after the
- * Workspace row disappears (global cleanup, manifest compaction) are
- * invisible to a member who has already lost the workspace.
+ * `active` / `deleting` / absent are exactly the three states the deletion
+ * screen draws. No port is added and no manifest is consulted — the phases
+ * after the Workspace row disappears (global cleanup, manifest compaction)
+ * are invisible to a member who has already lost the workspace.
  *
  * The absent case answers `completed` without a membership check, because
  * by then there is no membership left anywhere to check: the manifest has

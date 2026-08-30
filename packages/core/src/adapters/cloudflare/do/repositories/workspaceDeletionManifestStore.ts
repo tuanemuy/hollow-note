@@ -136,7 +136,7 @@ export type CloudflareWorkspaceDeletionManifestDeps = Readonly<{
 
 /**
  * `workspace_deletion_manifests` and its items, in one workspace scope
- * object (`spec/database/index.md#workspace_deletion_manifests`).
+ * object.
  *
  * Every page — the two target walks, the acknowledgements, the compaction
  * — is one multi-row statement built with `json_each` rather than a

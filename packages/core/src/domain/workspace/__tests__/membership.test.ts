@@ -5,8 +5,6 @@ import { WorkspaceErrorCode } from "../errorCode";
 import { Membership } from "../membership";
 import { WorkspaceId } from "../valueObject";
 
-/** DOM-workspace-009 (spec/domains/workspace.md#エンティティ). */
-
 const T0 = new Date("2026-01-01T00:00:00.000Z");
 const T1 = new Date("2026-01-02T00:00:00.000Z");
 const WORKSPACE = WorkspaceId.create("ws-1");

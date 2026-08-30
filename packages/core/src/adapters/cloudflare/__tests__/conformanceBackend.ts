@@ -386,7 +386,7 @@ export async function makeCloudflareConformanceBackend(
     ): Promise<void> {
       // Written in place, exactly as a mid-run deploy would: a run
       // snapshots the set when it is created, so only runs created after
-      // this call see the change (ADR 061).
+      // this call see the change.
       deps.maintenanceTablesByKind[kind] = tables;
     },
   };

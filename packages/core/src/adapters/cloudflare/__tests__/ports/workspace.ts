@@ -27,8 +27,7 @@ import { createCloudflareWorkspaceRepository } from "../../do/repositories/works
 import type { GlobalPortDeps, ScopePortDeps } from "./deps";
 
 /**
- * The Workspace ports, split by the plane that holds their table
- * (`spec/database/index.md` の「物理配置」, ADR 021 / ADR 023).
+ * The Workspace ports, split by the plane that holds their table.
  *
  * The scope Durable Object holds everything that is one workspace's own
  * business data and never spans scopes: the three aggregates, the

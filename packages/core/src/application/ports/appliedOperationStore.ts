@@ -1,8 +1,7 @@
 /**
  * Duplicate suppression for the **operation commands** delivered to the
  * current scope (account-deletion cleanup today; note move and
- * membership commands later) — `applied_operations` of
- * spec/database/index.md.
+ * membership commands later).
  *
  * `markApplied` records `(operationId, commandKey)` and returns `true`
  * the first time, `false` for a redelivery of the same command, so a

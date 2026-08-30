@@ -18,8 +18,7 @@ export type WorkspaceAction =
   | "deleteWorkspace";
 
 /**
- * Role-based authorization for workspace actions
- * (spec/domains/workspace.md#WorkspaceAuthorization, ADR 004).
+ * Role-based authorization for workspace actions.
  *
  * Outward entry points are `can` / `ensureCan` only; usecases never call
  * `minimumRoleFor` or `WorkspaceRole.atLeast` directly. The interface is
@@ -42,7 +41,7 @@ export interface WorkspaceAuthorization {
  * own action: a `BackupRecord` is shared state attached to the note, so
  * writing one is the same decision `editNote` already guards. Splitting
  * them would let the two rows drift. Generating a download likewise reuses
- * `downloadNote` (spec/domains/workspace.md#WorkspaceAuthorization).
+ * `downloadNote`.
  */
 const MINIMUM_ROLE: Readonly<Record<WorkspaceAction, WorkspaceRole>> = {
   viewNote: "viewer",

@@ -10,11 +10,6 @@ import {
 } from "../services/workspaceAuthorization";
 import { WorkspaceId, type WorkspaceRole } from "../valueObject";
 
-/**
- * DOM-workspace-011 / DOM-workspace-012
- * (spec/domains/workspace.md#ドメインサービス, ADR 004).
- */
-
 const T0 = new Date("2026-01-01T00:00:00.000Z");
 const WORKSPACE = WorkspaceId.create("ws-1");
 const ACTOR = UserId.create("owner-1");
@@ -36,7 +31,7 @@ const membership = (userId: UserId, role: WorkspaceRole) =>
     .entity;
 
 describe("WorkspaceAuthorization", () => {
-  /** The whole table of spec/domains/workspace.md#WorkspaceAuthorization. */
+  /** The whole action → minimum-role table. */
   const MINIMUM: Readonly<Record<WorkspaceAction, WorkspaceRole>> = {
     viewNote: "viewer",
     downloadNote: "viewer",
@@ -105,7 +100,7 @@ describe("WorkspaceAuthorization", () => {
 
   it("keeps backup and PDF download on the actions they share a decision with", () => {
     // No `backupNote` / `downloadPdf` action exists — the decision is
-    // `editNote` / `downloadNote` (spec/domains/workspace.md).
+    // `editNote` / `downloadNote`.
     expect(actions).not.toContain("backupNote");
     expect(actions).toHaveLength(13);
   });

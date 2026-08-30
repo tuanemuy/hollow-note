@@ -78,7 +78,6 @@ const listed = async (
   }));
 };
 
-/** owner-1 (owner), editor-1 (editor), viewer-1 (viewer). */
 const seed = (h: TestHarness) =>
   seedWorkspace(h, {
     workspaceId: WORKSPACE,
