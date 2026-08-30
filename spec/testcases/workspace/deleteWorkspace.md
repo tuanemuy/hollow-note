@@ -3,7 +3,7 @@
 | 前提条件 | 操作 | 期待結果 | 実装ステータス |
 |---|---|---|---|
 | owner である | 正しいワークスペース名を入力して削除する | operation IDとacceptedが返り、manifest/cleanup完了後にワークスペースが削除されてoperation ID付き`workspace.deleted`が発行される | |
-| `beginDeletion`をcommitする | acceptedを返す | 同じUoWで最初の`workspace.deletionLocalContinued { operationId }`が保存され、accepted後に停止してもAlarmから開始できる | |
+| `beginDeletion`をcommitする | acceptedを返す | 同じUoWで最初の`workspace.deletionLocalContinued`が保存され、accepted後に停止してもAlarmから開始できる | |
 | — | 誤った名前を入力して削除する | `ValidationError("CONFIRMATION_MISMATCH")` が投げられ、削除されない | |
 | editor である | 削除する | `BusinessRuleError(InsufficientRole)` が投げられる | |
 | 実行中の変換ジョブがある | 削除する | ジョブがキャンセルされてから削除される | |

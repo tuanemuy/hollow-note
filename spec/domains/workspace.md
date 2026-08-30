@@ -100,7 +100,7 @@ Membership = {
 **不変条件**
 
 - `(workspaceId, userId)` の組は一意
-- 1 つのワークスペースには常に 1 名以上の `owner` がいる（`MembershipPolicy` が検査する。アカウント削除の経路は [usecases/identity.md](../usecases/identity.md) の `deleteAccount` 手順 2 が `countByRole` の検査で `LastOwnerCannotLeave` を返すことで守る）
+- 1 つのワークスペースには常に 1 名以上の `owner` がいる（`MembershipPolicy` が検査する。アカウント削除の経路は [usecases/identity.md](../usecases/identity.md) の `deleteAccount` 手順 2 が守るが、その述語は `countByRole` ではない — `countSettledByUser` と `listActivatingByUser` の 2 本を読み、**参加中なら役割によらず一律** `ConflictError("WORKSPACE_MEMBERSHIPS_REMAIN")` で退ける。この配備には workspace の prepare / cleanup wave が無く、固定した membership item を ack する主体が居ないため、fail closed に倒している）
 
 **振る舞い**
 

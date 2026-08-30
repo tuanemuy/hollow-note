@@ -5,7 +5,7 @@ import { userId, workspaceId } from "./fixtures";
 
 const MINUTE_MS = 60 * 1000;
 
-/** Shared conformance suite for `UserWorkspaceDirectory` (ADP-workspace-005). */
+/** Shared conformance suite for `UserWorkspaceDirectory` (ADP-workspace-005, ADP-workspace-068, ADP-workspace-076). */
 export function describeUserWorkspaceDirectoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,

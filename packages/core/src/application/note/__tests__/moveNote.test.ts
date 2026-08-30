@@ -705,6 +705,37 @@ const stillDrivable = (
 };
 
 /**
+ * The one leftover that survives even a compensation which died halfway,
+ * so it is asserted separately from `expectWholeAndReachable` — that
+ * helper's other invariants are stated for a compensation that ran to its
+ * end, while this one is not conditional on that at all.
+ *
+ * A move authorization lock carries no lease and no expiry, and only a
+ * caller holding the migration id releases it — once no operation can be
+ * driven, no such caller can exist again, so a lock that outlives them
+ * closes both scopes' deletion and membership management for good. Rows
+ * and credits a failed teardown leaves behind are recoverable; a lock it
+ * took with it is not, which is why no half of a compensation may share a
+ * transaction with one.
+ */
+const expectNoStrandedMoveLocks = async (
+  h: TestHarness,
+  noteId: string,
+  scopes: readonly ScopeKey[],
+): Promise<void> => {
+  const route = await routeOf(h, noteId);
+  if (route === null) {
+    throw new Error(`the route for ${noteId} is gone`);
+  }
+  if (operations(h).some((row) => stillDrivable(row, route))) {
+    return;
+  }
+  for (const scope of scopes) {
+    expect(moveLocksIn(h, scope)).toHaveLength(0);
+  }
+};
+
+/**
  * The invariants no failure may break, over the pair `seedMovePair` sets
  * up. Stated for a move whose every compensation ran to its own end: one
  * injected fault, and whatever the saga decided to do about it completed.
@@ -730,10 +761,8 @@ const stillDrivable = (
  * - the route may not be left `moving` either. `beginMove` refuses a
  *   route another migration holds, so a terminal operation that left one
  *   behind locks the note out of every future move just as durably;
- * - a move authorization lock carries no lease and no expiry, and only a
- *   caller holding the migration id releases it — once no operation can
- *   be driven, no such caller can exist again, so a lock that outlives
- *   them closes both scopes' deletion and membership management for good;
+ * - neither scope may be left holding a move lock
+ *   (`expectNoStrandedMoveLocks`, which states why);
  * - the charge follows the route, since the two scopes' quotas are moved
  *   by the phases themselves; a stopped move is allowed to double-count
  *   but never to under-count, so mid-flight the floor is asserted, with
@@ -778,8 +807,7 @@ const expectWholeAndReachable = async (
 
   expect(operations(h).filter((row) => row.state === "running")).toEqual([]);
   expect(route.state).toBe("active");
-  expect(moveLocksIn(h, route.scope)).toHaveLength(0);
-  expect(moveLocksIn(h, across)).toHaveLength(0);
+  await expectNoStrandedMoveLocks(h, noteId, [route.scope, across]);
   expect(charged).toEqual({ consumedBytes: WHOLE_NOTE_BYTES, noteCount: 1 });
   expect(quotaTotals(h, across)).toEqual({ consumedBytes: 0, noteCount: 0 });
   expect(notesIn(h, across)).toHaveLength(0);
@@ -2124,8 +2152,9 @@ describe("moveNote", () => {
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
           runs += 1;
-          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
-          return runs === 3
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds.
+          return runs === 4
             ? Promise.reject(failure("rollback died"))
             : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
@@ -2161,6 +2190,7 @@ describe("moveNote", () => {
       consumedBytes: 0,
       noteCount: 0,
     });
+    await expectNoStrandedMoveLocks(h, noteId, [personalScope, targetScope]);
   });
 
   it("TC-note-257: a caller that holds no version moves the note without an optimistic check", async () => {
@@ -2386,8 +2416,9 @@ describe("moveNote", () => {
             fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
           ): Promise<T> => {
             rivalRuns += 1;
-            // 0 freeze, 1 stage, 2 the rollback's undo of the target.
-            return rivalRuns === 3
+            // 0 freeze, 1 stage, 2 the rollback's release of the target's
+            // move lock, 3 its teardown of what the target holds.
+            return rivalRuns === 4
               ? Promise.reject(failure("rival rollback died"))
               : h.container.scopeUnitOfWorkProvider.run(scope, fn);
           },
@@ -2485,6 +2516,7 @@ describe("moveNote", () => {
       scope: sourceWsScope,
     });
     expect(notesIn(h, sourceWsScope)).toHaveLength(1);
+    await expectNoStrandedMoveLocks(h, noteId, [sourceWsScope, targetScope]);
   });
 
   it("TC-note-769: a thaw whose route another migration has already claimed still gives this migration's own leftovers back", async () => {
@@ -2703,9 +2735,10 @@ describe("moveNote", () => {
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
           runs += 1;
-          // 0 freeze, 1 stage, 2 the rollback's undo of the target — and
-          // 3 the source lock it has to release whatever 2 answered.
-          return runs === 3
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds — and 4 the
+          // source lock, which it releases whatever 3 answered.
+          return runs === 4
             ? Promise.reject(failure("the target teardown failed"))
             : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
@@ -2721,29 +2754,180 @@ describe("moveNote", () => {
       }),
     ).rejects.toThrow("switch failed");
 
-    // The source's lock was staged by the freeze and says nothing about
-    // what the target holds, so the target's failure may not strand it:
-    // the operation is `rejected` right after, and nothing but this
-    // migration could ever have released it.
-    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(0);
+    // Neither lock belongs to the teardown. The source's was staged by the
+    // freeze and says nothing about what the target holds; the target's is
+    // released before the teardown opens its own transaction, because the
+    // thaw has already put the route back on the source. The operation is
+    // `rejected` right after, and nothing but this migration could ever
+    // have released either one.
     expect(operations(h)[0]).toMatchObject({ state: "rejected" });
     expect(await routeOf(h, noteId)).toMatchObject({
       state: "active",
       scope: sourceWsScope,
     });
+    await expectNoStrandedMoveLocks(h, noteId, [sourceWsScope, targetScope]);
+    // Both releases answered, so there is no second cause to keep: that
+    // line is reserved for a lock the teardown's diagnosis would otherwise
+    // hide, which is the only record of why a scope stopped accepting
+    // deletions.
+    expect(
+      h.logger.byLevel("error").map((entry) => entry.message),
+    ).not.toContain("[moveNote] a move lock was left standing");
     // The teardown really did fail — this is the leftover #28 collects.
+    // It is rows and a credit, not a lock: no scope has stopped accepting
+    // deletions or membership changes on their account.
     expect(notesIn(h, targetScope)).toHaveLength(1);
+    expect(quotaTotals(h, targetScope)).toEqual({
+      consumedBytes: WHOLE_NOTE_BYTES,
+      noteCount: 1,
+    });
+
+    for (const [workspaceId, actor] of [
+      [SOURCE_WS, BOSS],
+      [TARGET_WS, BOSS],
+    ] as const) {
+      const deleted = await deleteWorkspace({
+        container: h.container,
+        input: {
+          workspaceId,
+          userId: actor,
+          confirmationName: WORKSPACE_NAME,
+        },
+      });
+      expect(deleted.status).toBe("accepted");
+    }
+  });
+
+  it("TC-note-773: a lock release that fails on its own is recorded instead of being hidden by the teardown's cause", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    let runs = 0;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => Promise.reject(failure("switch failed")),
+      },
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: ScopeKey,
+          fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> => {
+          runs += 1;
+          // Storage is out from the teardown onwards, so the source's own
+          // release fails for its own reason rather than the teardown's.
+          return runs >= 4
+            ? Promise.reject(failure(`half ${runs} failed`))
+            : h.container.scopeUnitOfWorkProvider.run(scope, fn);
+        },
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+
+    // The teardown outranks it as the cause to raise, so the log line is
+    // the only place the second failure survives — and it is what says
+    // which scope stopped accepting deletions and why.
+    expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
+      "[moveNote] a move lock was left standing",
+    );
+    expect(moveLocksIn(h, targetScope)).toHaveLength(0);
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
+  });
+
+  it("TC-note-774: a claim repair that finds the switch already landed leaves the move something can still drive", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    // The first attempt stages the target and then loses the route store
+    // and the control row with it: the route stays `moving` under this
+    // migration, the staged copy, its credit and both move locks outlive
+    // the attempt, and the operation is left `running`.
+    let switchTried = false;
+    const stranded: RequestContainer = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        switchMove: () => {
+          switchTried = true;
+          return Promise.reject(failure("switch failed"));
+        },
+        abortMove: () => Promise.reject(failure("route store down")),
+        resolve: (id) =>
+          switchTried
+            ? Promise.reject(failure("route store down"))
+            : h.container.noteRouteStore.resolve(id),
+      },
+      globalUnitOfWorkProvider: {
+        run: <T>(
+          fn: (ctx: GlobalUnitOfWorkContext) => Promise<T>,
+        ): Promise<T> =>
+          switchTried
+            ? Promise.reject(failure("settle response lost"))
+            : h.container.globalUnitOfWorkProvider.run(fn),
+      },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: stranded,
+      }),
+    ).rejects.toThrow("switch failed");
+    expect(operations(h)[0]).toMatchObject({ state: "running" });
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
     expect(moveLocksIn(h, targetScope)).toHaveLength(1);
 
-    const deleted = await deleteWorkspace({
-      container: h.container,
-      input: {
-        workspaceId: SOURCE_WS,
-        userId: BOSS,
-        confirmationName: WORKSPACE_NAME,
+    // A twin of this request — same actor, same destination, same route
+    // generation, so the same key and the same migration — reaches the
+    // switch while this one is repairing its own lost claim. `beginMove`
+    // is idempotent on the migration id, so both hold the claim, and the
+    // repair's thaw arrives after the twin's switch has landed.
+    const lost = withLostResponseAt(h, "claimRoute");
+    const twin: RequestContainer = {
+      ...lost,
+      noteRouteStore: {
+        ...lost.noteRouteStore,
+        abortMove: async (input) => {
+          await h.container.noteRouteStore.switchMove(input);
+          return h.container.noteRouteStore.abortMove(input);
+        },
       },
+    };
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: twin,
+      }),
+    ).rejects.toThrow("claimRoute response lost");
+
+    // Nothing was compensated, so settling here would close the only party
+    // that can release either lock — the same permanent stop `rollBack`
+    // and `rejectLostOperation` already refuse to create.
+    expect(operations(h)).toHaveLength(1);
+    expect(operations(h)[0]).toMatchObject({ state: "running" });
+    expect(await routeOf(h, noteId)).toMatchObject({
+      state: "active",
+      scope: targetScope,
     });
-    expect(deleted.status).toBe("accepted");
+    expect(moveLocksIn(h, sourceWsScope)).toHaveLength(1);
+    expect(moveLocksIn(h, targetScope)).toHaveLength(1);
+    await expectWholeAndReachable(h, noteId);
   });
 
   const MOVE_SEAMS: readonly MoveSeam[] = [
@@ -2978,8 +3162,9 @@ describe("moveNote", () => {
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
           runs += 1;
-          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
-          return runs === 3
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds.
+          return runs === 4
             ? Promise.reject(failure("rollback died"))
             : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
@@ -3020,6 +3205,7 @@ describe("moveNote", () => {
     });
     expect(notesIn(h, targetScope)).toHaveLength(1);
     expect(notesIn(h, personalScope)).toHaveLength(0);
+    await expectNoStrandedMoveLocks(h, noteId, [personalScope, targetScope]);
   });
 
   it("TC-note-765: a resumed attempt that loses its claim gives back the staging the earlier attempt left, not just the route", async () => {
@@ -3125,8 +3311,9 @@ describe("moveNote", () => {
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
           runs += 1;
-          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
-          return runs === 3
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds.
+          return runs === 4
             ? Promise.reject(failure("rollback died"))
             : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
@@ -3160,6 +3347,7 @@ describe("moveNote", () => {
     });
     expect(notesIn(h, personalScope)).toHaveLength(0);
     expect(revisionsIn(h, personalScope)).toHaveLength(0);
+    await expectNoStrandedMoveLocks(h, noteId, [personalScope, targetScope]);
   });
 
   it("TC-note-770: a resume whose staged copy is already at the frozen version still carries the revisions the source gained", async () => {
@@ -3180,8 +3368,9 @@ describe("moveNote", () => {
           fn: (ctx: ScopeUnitOfWorkContext) => Promise<T>,
         ): Promise<T> => {
           runs += 1;
-          // 0 freeze, 1 stage, 2 the rollback's undo of the target.
-          return runs === 3
+          // 0 freeze, 1 stage, 2 the rollback's release of the target's
+          // move lock, 3 its teardown of what the target holds.
+          return runs === 4
             ? Promise.reject(failure("rollback died"))
             : h.container.scopeUnitOfWorkProvider.run(scope, fn);
         },
@@ -3208,5 +3397,6 @@ describe("moveNote", () => {
     ).toEqual(["revision-1", "revision-late"]);
     expect(revisionsIn(h, personalScope)).toHaveLength(0);
     expect(await read(h, noteId)).toMatchObject({ ownerId: TARGET_WS });
+    await expectNoStrandedMoveLocks(h, noteId, [personalScope, targetScope]);
   });
 });

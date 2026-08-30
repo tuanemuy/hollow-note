@@ -76,7 +76,7 @@ email、handle、provider accountのglobal uniquenessとlookupを、normalized v
 | `created_at` | integer | NOT NULL |
 | `updated_at` | integer | NOT NULL |
 
-- `membership_id` の**要求を持つのは書き手**であって schema ではない。**書き手はどの状態でも常に値を入れる** — `reserveAndClaimActivation` が `membership_id` を必須引数として受けるので、edge は最初に挿入された状態から自分の membership を名乗る。列が NULL 許容なのはその帰結であり、`state NOT IN ('active','removing') OR membership_id IS NOT NULL` の CHECK は**置かない**。`activate` は operation ID しか取らず、行が既に持っているものをそのまま確定させるので、membership を名乗らないまま `pending` に達した edge を CHECK が拒み、参照バックエンドが受け入れる状態を D1 だけが拒む形になる。永続化ポートの正典はポート契約なので schema が譲る（[ADR 026](../adr/026-port-contract-and-conformance.md) / [ADR 046](../adr/046-canon-follows-implementation.md)）。名乗らない行が万一あってもロール投影は届かない（`applyRoleIfNewer` が fail closed で落とす）
+- `membership_id` の**要求を持つのは書き手**であって schema ではない。**書き手はどの状態でも常に値を入れる** — `reserveAndClaimActivation` が `membership_id` を必須引数として受けるので、edge は最初に挿入された状態から自分の membership を名乗る。列が NULL 許容なのはその帰結であり、`state NOT IN ('active','removing') OR membership_id IS NOT NULL` の CHECK は**置かない**。`activate` は operation ID しか取らず、行が既に持っているものをそのまま確定させるので、membership を名乗らないまま `pending` に達した edge を CHECK が拒み、参照バックエンドが受け入れる状態を D1 だけが拒む形になる。永続化ポートの正典はポート契約なので schema が譲る（[ADR 026](../adr/026-port-contract-and-conformance.md) / [ADR 046](../adr/046-port-contract-divergence.md)）。名乗らない行が万一あってもロール投影は届かない（`applyRoleIfNewer` が fail closed で落とす）
 - UNIQUE (`user_id`, `workspace_id`)。`pending` / `activating` は所有 / 参加workspace数とaccount deletionに、`removing`は後始末完了待ちのaccount deletion / integration cleanup列挙に含める。`reserveAndClaimActivation`はpending INSERT、同じUserId shardのActive User検査、`activating`化を1 transactionで行い、DeletingならINSERTごとrollbackする。account deletionは先行`activating`を最大100件ずつ解決待ちし、0件確認後にpending edgeへdeletion prepare ownerを設定する。owner設定後のactivationは拒否し、rollback releaseはpendingを保ち、commitだけがedgeを取消す
 - indexes: (`user_id`, `state`, `created_at` DESC, `workspace_id`) は文脈一覧のkeyset、(`workspace_id`, `state`, `user_id`) は論理単一DB/移行監査用、(`user_id`, `operation_id`) は account deletion manifest の edge key 昇順ページング用。edge key は `operation_id` であり、前 2 本はどちらもその順序を走れないので専用の索引を持つ。UserId物理shard後のworkspace削除は 2 本目をscatterせずmanifest route keyを使う
 - `role`は`workspace.membership.roleChanged`の投影で、`applyRoleIfNewer`が`(user_id, workspace_id)`で引いた行を、`membership_id`がイベントの世代と一致し、かつ`role_source_version`より大きい版のときだけ更新する。配送はat-least-once・順不同なので、再配送は書かず、後着の古い変更はroleを巻き戻さない。版は1つのMembershipの中でしか比較できないので、別の世代（再入会が作り直した行、`membership_id`を持たない行）は照合で落とす。行が無いときはinsertせず、除名済みedgeを復活させない
@@ -413,7 +413,7 @@ RETURNING failure_count, last_failed_at;
 | `updated_at` | integer | NOT NULL |
 
 - `user_id` には外部キーを張らない（Identity は別ドメイン。利用者の削除はイベントで後始末する）
-- **インデックス**: `memberships_workspace_user_uq` UNIQUE (`workspace_id`, `user_id`)、`memberships_user_idx` (`user_id`)、`memberships_workspace_role_idx` (`workspace_id`, `role`) — owner の員数確認用
+- **インデックス**: `memberships_workspace_user_uq` UNIQUE (`workspace_id`, `user_id`)、`memberships_user_idx` (`user_id`)、`memberships_workspace_role_idx` (`workspace_id`, `role`) — owner の員数確認用、`memberships_workspace_joined_idx` (`workspace_id`, `joined_at`, `id`) — メンバー一覧が要求する `ORDER BY joined_at, id` の全順序を担う（[usecases/workspace.md](../usecases/workspace.md) の `listMembers`）
 
 ### invitations
 
@@ -1172,7 +1172,7 @@ prepared lockのTTLは10分で2分ごとにrenewする。期限切れをmembersh
 
 #### workspace_deletion_manifests
 
-workspace scopeだけに置く。headerは`operation_id` PK、`workspace_id` UNIQUE, `state` (`building` / `ready` / `localCleaning` / `globalCleaning` / `compacting` / `completed`), member/invitation cursorとtimestampsを持つ。`beginDeletion`はWorkspaceのlifecycle CASと同じtransactionでheaderを作る。itemsは(`operation_id`, `kind`, `route_key`) PKで、membership itemはuserIdとmembershipId、invitation itemはtokenHashとinvitationIdをpayloadに持ち、`local_deleted_at` / `global_acked_at`を別々に記録する。mutation lock下で各100件ずつ正データから固定し、local itemを100件ずつ削除してからRESTRICT下でWorkspaceを最後に消す。global orchestratorは1page100件・最大6接続でroute key shardへ直接deleteし、ack済みitemを再送してもno-opにする。完了時は`workspace.deletionManifestCompactContinued`がlocal/global双方のack済みitemsを1turn最大100件ずつ回収する。item 0件を確認した最後のtransactionだけがheaderを`completed` tombstoneへ移し、scope routingの保持期間以上残して遅延writeのadmissionを閉じ続ける。数千itemをheader遷移と同じtransactionで一括削除しない。
+workspace scopeだけに置く。headerは`operation_id` PK、`workspace_id` UNIQUE, `state` (`building` / `ready` / `localCleaning` / `globalCleaning` / `compacting` / `completed`), member/invitation cursorとtimestampsを持つ。`beginDeletion`はWorkspaceのlifecycle CASと同じtransactionでheaderを作る。itemsは(`operation_id`, `key`) PKで、`key`はglobal cleanupが宛先shardを引くための不透明なroute keyである（ポートも単一の不透明な`key`しか取らない）。`kind` (`membership` / `invitation`) は通常列で、PKの第 3 列には立てない（account 側と同じ形）。membership itemはuserIdとmembershipId、invitation itemはtokenHashとinvitationIdをpayloadに持ち、`local_deleted_at` / `global_acked_at`を別々に記録する。mutation lock下で各100件ずつ正データから固定し、local itemを100件ずつ削除してからRESTRICT下でWorkspaceを最後に消す。global orchestratorは1page100件・最大6接続でroute key shardへ直接deleteし、ack済みitemを再送してもno-opにする。完了時は`workspace.deletionManifestCompactContinued`がlocal/global双方のack済みitemsを1turn最大100件ずつ回収する。item 0件を確認した最後のtransactionだけがheaderを`completed` tombstoneへ移し、scope routingの保持期間以上残して遅延writeのadmissionを閉じ続ける。数千itemをheader遷移と同じtransactionで一括削除しない。
 
 #### tag_operations / tag_operation_locks
 

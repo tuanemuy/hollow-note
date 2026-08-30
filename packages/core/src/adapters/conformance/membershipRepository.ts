@@ -327,8 +327,8 @@ export function describeMembershipRepositoryContract(
       const removed = await scoped.membershipRepository.deleteByIds([
         membershipId(1),
         membershipId(2),
-        // Never existed, and one that belongs to another scope: both are
-        // skipped rather than raising, so a replayed page still succeeds.
+        // Never existed: skipped rather than raising, so a replayed page
+        // still succeeds.
         membershipId(9),
       ]);
       expect(removed).toBe(2);

@@ -1,5 +1,6 @@
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
 import { serializeError } from "@/presentation/errorResponse";
+import { workspaceUnavailability } from "@/presentation/scope";
 import { loadWorkspaceGeneral } from "./action";
 import { WorkspaceGeneralEditor } from "./editor";
 
@@ -17,15 +18,14 @@ export async function WorkspaceGeneralForm({
   workspaceId: string;
   userId: string;
 }) {
-  // 非メンバー（`InsufficientRole`）と削除済み（`WORKSPACE_NOT_FOUND`）は
-  // 同じ終端表示に畳む。断片の中で `throw` すると `kind` タグを失って
-  // ルート境界に届くので、ここで描き切る（`WorkspaceMembersPanel` と同じ）。
+  // 断片の中で `throw` すると `kind` タグを失ってルート境界に届くので、
+  // 「開けない」は終端表示としてここで描き切る（`WorkspaceMembersPanel` と
+  // 同じ）。どの失敗がそれに当たるかは `workspaceUnavailability` だけが決める。
   let general: Awaited<ReturnType<typeof loadWorkspaceGeneral>>;
   try {
     general = await loadWorkspaceGeneral(workspaceId, userId);
   } catch (error) {
-    const { kind } = serializeError(error);
-    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+    if (workspaceUnavailability(serializeError(error)) !== null) {
       return <WorkspaceUnavailable />;
     }
     throw error;

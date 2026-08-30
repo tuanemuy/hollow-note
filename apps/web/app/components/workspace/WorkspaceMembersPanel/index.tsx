@@ -4,6 +4,7 @@ import type {
 } from "@repo/core/application/workspace/view";
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
 import { serializeError } from "@/presentation/errorResponse";
+import { workspaceUnavailability } from "@/presentation/scope";
 import { loadMembers, loadPendingInvitations } from "./action";
 import { WorkspaceMembersBoard } from "./board";
 
@@ -22,9 +23,8 @@ export async function WorkspaceMembersPanel({
   workspaceId: string;
   userId: string;
 }) {
-  // 非メンバー（除名直後・削除済み）は `InsufficientRole` で来る。断片の
-  // 中で `throw` すると `kind` タグを失ってルート境界に届くので、終端表示を
-  // ここで描く（`WorkspacePublishPanel` と同じ理由）。
+  // 断片の中で `throw` すると `kind` タグを失ってルート境界に届くので、
+  // 「開けない」は終端表示をここで描く（`WorkspacePublishPanel` と同じ理由）。
   let members: WorkspaceMemberListView;
   let invitations: PendingInvitationListView;
   try {
@@ -36,8 +36,7 @@ export async function WorkspaceMembersPanel({
       ? await loadPendingInvitations(workspaceId, userId)
       : { invitations: [], count: 0 };
   } catch (error) {
-    const { kind } = serializeError(error);
-    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+    if (workspaceUnavailability(serializeError(error)) !== null) {
       return <WorkspaceUnavailable />;
     }
     throw error;

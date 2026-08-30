@@ -182,8 +182,8 @@ export type InvitationPreviewState =
  * one branch whose viewer already holds the workspace anyway: the preview
  * is readable signed out, so any other branch would hand a workspace
  * identifier to whoever holds the link. It is what sends a member who
- * re-opens a link they already used to the workspace itself, since a
- * consumed invitation can no longer be accepted.
+ * opens a live pending link to the workspace itself, since
+ * `acceptInvitation` returns their existing role without consuming it.
  */
 export type InvitationPreviewView = Readonly<{
   workspaceId: string | null;

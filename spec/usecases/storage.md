@@ -452,7 +452,7 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 | 条件 | 種類 |
 | --- | --- |
 | 対象のファイルがない（ノートが既に完全削除済みなど） | 何もせず成功として返る |
-| 版が競合する | 読み直して再適用し、それでも競合すれば `ConflictError`（再配送に委ねる） |
+| 版が競合する | 各 phase は読みと書きを同じ transaction に置くので、囲っている transaction の中では起きえない。競合が観測されるのは transaction ごとの再適用のときで、そこは `AppliedOperationStore` の receipt が二重適用を止める |
 
 ## deleteFilesForNote
 

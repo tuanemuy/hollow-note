@@ -13,7 +13,7 @@ const slug = (name: string): WorkspaceSlug => WorkspaceSlug.create(name);
 
 /**
  * Shared conformance suite for `WorkspaceSlugReservationStore`
- * (ADP-workspace-061..066): the two-phase claim behind
+ * (ADP-workspace-061..065): the two-phase claim behind
  * `ConflictError("SLUG_ALREADY_USED")`, the atomic exchange that keeps a
  * public URL live across a slug change, which attempt of a shared
  * operation may compensate, and the teardown a deletion runs — including

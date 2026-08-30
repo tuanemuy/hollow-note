@@ -55,10 +55,11 @@ export async function InvitationPreview({
   }
 
   if (preview.state === "alreadyMember") {
-    // 受諾済みのリンクを本人が再訪した経路。`acceptInvitation` は
-    // `INVITATION_NOT_PENDING` で落ちるので受諾は出さず、そのワークスペース
-    // のノート一覧へ直接送る（PAGE-p06-003、WS-04「参加済みである旨を示して
-    // ワークスペースへ遷移する」）。`workspaceId` を載せるのはこの分岐だけで
+    // 生きた pending 招待リンクを、既にそのワークスペースのメンバーである
+    // 利用者が開いた経路。`acceptInvitation` は落ちずに保持ロールを返す
+    // （招待は消費しない）ため受諾は出さず、そのワークスペースのノート一覧へ
+    // 直接送る（PAGE-p06-003、WS-04「参加済みである旨を示してワークスペースへ
+    // 遷移する」）。`workspaceId` を載せるのはこの分岐だけで
     // （`InvitationPreviewView` の JSDoc）、`null` なら状態を作れていないので
     // 個人のノート一覧へ倒す。
     return (

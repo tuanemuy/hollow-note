@@ -22,7 +22,7 @@ export type GetInvitationPreviewInput = Readonly<{
  * A workspace the deletion saga has already removed still previews: the
  * invitation row outlives it inside the scope, and `workspaceMissing` is
  * what tells the visitor the link led somewhere that no longer exists.
- * `alreadyMember` is decided last so a member who follows an old link is
+ * `alreadyMember` is decided last so a member who follows a live link is
  * sent to the workspace rather than told the invitation went stale — the
  * only branch whose response carries `workspaceId` (view.ts).
  */

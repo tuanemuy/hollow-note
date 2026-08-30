@@ -270,7 +270,15 @@ describe("acceptInvitation", () => {
     expect(storedMemberships(h, WORKSPACE)).toHaveLength(1);
   });
 
-  it("TC-workspace-009: an existing member settles the invitation and keeps the role they hold", async () => {
+  /**
+   * The signed-in address is never matched against the invited one
+   * (WS-04), so a member opening a live link is the ordinary way a third
+   * party's invitation is reached. Answering "you are already a member"
+   * must not spend it: settling the invitation and consuming the route
+   * would leave the invitee with a link that resolves to nothing and no
+   * way to get it back except a re-issue by the owner.
+   */
+  it("TC-workspace-009: an existing member keeps the role they hold and leaves a pending invitation alone", async () => {
     const h = createWorkspaceHarness();
     await seedWorkspace(h, {
       workspaceId: WORKSPACE,
@@ -288,13 +296,24 @@ describe("acceptInvitation", () => {
 
     expect(view).toEqual({ workspaceId: WORKSPACE, role: "viewer" });
     expect(storedInvitation(h, WORKSPACE, INVITATION)).toMatchObject({
-      status: "accepted",
+      status: "pending",
     });
     expect(storedMemberships(h, WORKSPACE)).toHaveLength(2);
     expect(
       storedMemberships(h, WORKSPACE).find((m) => m.userId === JOINER),
     ).toMatchObject({ id: "m-joiner", role: "viewer" });
-    expect(invitationRoutes(h).map((row) => row.state)).toEqual(["revoked"]);
+    expect(invitationRoutes(h).map((row) => row.state)).toEqual(["active"]);
+
+    // The invitee the link was issued for still gets in.
+    seedUser(h, { userId: "invitee-1", email: "invitee@example.com" });
+    await expect(accept(h, seeded.token, "invitee-1")).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      role: "owner",
+    });
+    expect(storedInvitation(h, WORKSPACE, INVITATION)).toMatchObject({
+      status: "accepted",
+      acceptedBy: "invitee-1",
+    });
   });
 
   it("TC-workspace-010: a workspace the deletion saga removed is WORKSPACE_NOT_FOUND", async () => {
@@ -474,6 +493,52 @@ describe("acceptInvitation", () => {
       status: "pending",
     });
     expect(invitationRoutes(h).map((row) => row.state)).toEqual(["active"]);
+  });
+
+  /**
+   * The claim's own response is the one nobody else can repair. Its
+   * operation id is minted per request and never persisted, so an edge
+   * left `activating` by a lost response holds `(user, workspace)` against
+   * every later attempt — `MEMBERSHIP_ALREADY_EXISTS` forever, with no
+   * removal path (the Membership was never created) and no account
+   * deletion either (the guard refuses while an `activating` edge stands).
+   */
+  it("TC-workspace-329: a claim that commits and then loses its response gives the edge back", async () => {
+    const h = createWorkspaceHarness();
+    const seeded = await seedJoinable(h);
+    const store = h.container.membershipDirectoryReservationStore;
+    const lost = new Error("claim response lost");
+    let dropped = false;
+
+    await expect(
+      accept(h, seeded.token, JOINER, {
+        ...h.container,
+        membershipDirectoryReservationStore: {
+          ...store,
+          reserveAndClaimActivation: async (input) => {
+            await store.reserveAndClaimActivation(input);
+            if (!dropped) {
+              dropped = true;
+              throw lost;
+            }
+          },
+        },
+      }),
+    ).rejects.toBe(lost);
+
+    expect(dropped).toBe(true);
+    expect(membershipEdges(h, JOINER)).toHaveLength(0);
+    expect(storedInvitation(h, WORKSPACE, INVITATION)).toMatchObject({
+      status: "pending",
+    });
+    expect(storedMemberships(h, WORKSPACE)).toHaveLength(1);
+
+    // The pair is free again, so the invitee's retry joins.
+    await expect(accept(h, seeded.token)).resolves.toEqual({
+      workspaceId: WORKSPACE,
+      role: "editor",
+    });
+    expect(membershipEdges(h, JOINER)[0]?.edgeState).toBe("active");
   });
 
   it("TC-workspace-020: a lost activate response settles the same edge without a second membership", async () => {

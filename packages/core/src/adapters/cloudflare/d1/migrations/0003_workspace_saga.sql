@@ -26,15 +26,12 @@ CREATE TABLE workspace_slug_reservations (
   CHECK ((state = 'reserved') = (expires_at IS NOT NULL))
 );
 
--- Nothing scans this table by `workspace_id`. Every read and write fixes
--- `normalized_slug`, which is the primary key: `release` takes the slug
--- it frees as an argument, and a caller that cannot recall which key it
--- holds names its candidates instead of asking the table
--- (`WorkspaceSlugReservationStore`). The index below therefore has no
--- reader today, and is the one a by-workspace teardown would need if that
--- reverse lookup is ever added to the port.
-CREATE INDEX workspace_slug_reservations_workspace_idx
-  ON workspace_slug_reservations (workspace_id, normalized_slug);
+-- No index on `workspace_id`: nothing scans this table by it. Every read
+-- and write fixes `normalized_slug`, which is the primary key — `release`
+-- takes the slug it frees as an argument, and a caller that cannot recall
+-- which key it holds names its candidates instead of asking the table
+-- (`WorkspaceSlugReservationStore`). Add one only together with the
+-- reverse lookup that would read it.
 
 CREATE TABLE invitation_routes (
   token_hash text PRIMARY KEY,

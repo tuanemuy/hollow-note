@@ -59,12 +59,14 @@ export type WorkspaceUnavailability = "gone" | "denied";
  * （誘導先の `/notes` も Cookie を書かないので自己修復しない）。
  *
  * `business` を丸ごと `denied` に寄せるのは、設定シェルと 4 つの断片が
- * 同じ 3 kind を 1 つの終端表示に畳んでいるためで、判定の広さをそちらと
+ * 同じ失敗を 1 つの終端表示に畳んでいるためで、判定の広さをそちらと
  * 揃えてある。**`kind` ごとの写像はこの関数だけが持つ** — Cookie を畳む
- * 側（`scopeCookie.ts`）と画面へ倒す側（`routes/workspaces/$workspaceId/
- * notes/index.tsx` の `errorComponent`）が同じ入力で違う結論を出さない
- * ようにするためで、どちらかが独自に `kind` / `code` を読み始めた時点で
- * この不変条件は失われる。
+ * 側（`scopeCookie.ts`）、画面へ倒す側（`routes/workspaces/$workspaceId/
+ * notes/index.tsx` の `errorComponent`）、そして終端表示を自分で描く 4 断片
+ * （`WorkspaceGeneralForm` / `WorkspaceMembersPanel` /
+ * `WorkspacePublishPanel` / `WorkspaceDangerPanel`）が同じ入力で違う結論を
+ * 出さないようにするためで、どれかが独自に `kind` / `code` を読み始めた
+ * 時点でこの不変条件は失われる。
  */
 export function workspaceUnavailability(
   failure: Readonly<{ kind: string }>,

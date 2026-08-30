@@ -9,7 +9,7 @@
 | owner のワークスペースが 2 件ある | 引く | それぞれの使用量が返る | |
 | editor として参加しているワークスペースがある | 引く | 含まれる（対象は `owner` と `editor`） | |
 | owner のワークスペースと editor のワークスペースが 1 件ずつある | 引く | `workspaces` に 2 件とも返る | |
-| editor として参加するワークスペースが 45 件ある | 先頭ページを引く | workspace RPC は20件以下、同時実行は6以下で、`nextWorkspaceCursor` が返る | |
+| editor として参加するワークスペースが 45 件ある | 先頭ページを引く | workspace RPC は20件以下、同時実行はちょうど6（上限いっぱいまで広げ、超えない）で、`nextWorkspaceCursor` が返る | |
 | 先頭ページのうち1 scopeが一時的に応答しない | 引く | その要素だけ `{ state: "unavailable" }`、他は `{ state: "available" }` で返り、要求全体は成功する | |
 | `nextWorkspaceCursor` を指定する | 次ページを引く | 前ページと重複せず最大20件を返す | |
 | viewer としてのみ参加しているワークスペース | 引く | 含まれない | |

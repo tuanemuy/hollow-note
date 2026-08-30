@@ -3799,3 +3799,228 @@ G1 が適合スイートへ足した新ケースは `ADP-workspace-066` と名�
 
 - `grep -rn "membership_id IS NOT NULL" spec packages/core/src/adapters` の 4 ヒットのうち、canon 側 1 行が実装と一致した。残りは `do/schema.ts:189`（DO 側の別テーブルの別制約）、`0001:176`（`0003` が落とす対象そのもの）、`0003:57`（落とすと宣言しているコメント）で、いずれも偽を述べていない。
 - ADR 027 を引く 2 箇所（`spec/adr/023` の本文リンク、`do/repositories/noteProjection.ts:82` の JSDoc）はどちらも本文の内容を引いており、見出しの変更で偽にならない。
+
+## ADR-197: 「既に参加している」状態は宛先ではなく**開いた本人**で作る — 手順書は発行できる前提だけを踏む
+
+### Context
+
+`review-009-general` の B-001。`.thread/3/testing.md` エッジケース 4 (2) と `spec/manual-tests/workspace.md` TC-31 手順 1 が、どちらも「**既にメンバーのアドレス宛**に招待を新しく発行し、そのリンクを本人が開く」を前提に置いていた。しかし `inviteMember.ts:96-108` は `identityUniqueDirectory.resolve("email", …)` → `findByWorkspaceAndUser` で既存メンバーを検出し `ConflictError("ALREADY_MEMBER")` で**発行そのものを拒否する**（WS-03 異常系どおりの正しい挙動で、同じ 2 文書の別の場所 — `testing.md` エッジ 5 (1) / TC-26 — が「招待されない」と正しく期待している）。手順どおりに実行すると手順 1 で必ず止まり、AC-5（WS-04）の既参加分岐が未検証のまま Phase 4 が閉じる。
+
+canon はラウンド 8 で既に直っている（`spec/scenario/workspace.md:84` / `spec/pages/index.md:210` が「**生きた招待リンク**を既にメンバーの利用者が開いた場合」）。取り残されたのは手順書 2 本だけだった。`fix-plan-008` は両行を「生きた招待での既参加なので正しい」と判定して触らなかったが、その判定は「リンクが生きているか」だけを見て「**そのリンクを発行できるか**」を見ていない。
+
+### Decision
+
+**実装は 1 行も変えず、手順書を canon へ寄せる（ADR-046 と同じ向き）。**
+
+- 判定の根拠は `getInvitationPreview.ts:94-99` にある: `alreadyMember` は `isMember`（**開いた利用者**がそのワークスペースのメンバーか）だけで決まり、`invitation.email` とは無関係である。したがって既参加の表示は「**参加していない第三者宛に発行した生きたリンクを、既にメンバーの利用者が開く**」で作れる。発行が拒否される経路（`ALREADY_MEMBER`）とは別の面を踏む。
+- `.thread/3/testing.md` エッジ 4 (2) を「未使用のアドレス（例 `bystander@example.com`）宛に、ユーザー B の現在のロールとは違うロールで招待を発行し、その生きたリンクをユーザー B のブラウザーで開く」へ。**期待結果は据え置き**（既参加の表示 / ワークスペースを開く導線 / ロールが書き換わらない）。注記に「宛先を第三者にする理由」と「この画面に受諾の操作が無いので招待は消費されない」を足した。
+- `spec/manual-tests/workspace.md` TC-31 手順 1 を同じ意味へ言い換え、`spec/manual-tests/index.md` の記述規約に沿って**逐語引用を持ち込まない**（状態は意味で書く）。あわせて手順 4「保留中の招待が残っている」と、宛先を第三者にする理由の確認ポイントを足した。手順 3 の「招待のロールに変更されていない」が意味を持つように、**招待のロールを開く本人の現在のロールと違えること**を手順 1 の前提として明記した。
+- 対応表 `spec/manual-tests/workspace.md`（`acceptInvitation` | 既にメンバー | TC-31）は言い換え後もそのまま成立するので触っていない。既参加の分岐は preview で畳まれ `acceptInvitation` まで到達しないが、この行は「そのユースケースの異常系をどの TC が観測するか」の写像であって呼び出しの有無を主張していない。
+
+### Consequences
+
+- 「既にメンバーの宛先へ発行する」前提は `.thread/3/testing.md` と `spec/manual-tests/**` から 0 件になった。逆向きの `ALREADY_MEMBER` を期待する 2 手順（`testing.md` エッジ 5 (1) / TC-26 手順 1）はそのまま残り、言い換え後の 2 手順と矛盾しない — 前者は「メンバーのアドレスへは発行できない」、後者は「第三者宛のリンクをメンバーが開くと参加済みになる」で、踏む面が違う。
+- `InvitationPreview/index.tsx:58` のコメントが `alreadyMember` を「受諾済みのリンクを本人が再訪した経路」と説明したままである（受諾済みリンクは route が閉じるので実際には `notFound` に倒れ、この分岐へは来ない）。実装コードは本群の担当外なので触っていない。**次に `InvitationPreview` を触る回で「開いた本人が既にメンバーの経路」へ直す口として残す。**
+
+## ADR-198: 索引と名乗りは「読み手／ケース」の側から数え、無いものは注釈ごと消す
+
+### Context
+
+`0003_workspace_saga.sql` の `workspace_slug_reservations_workspace_idx` は、注釈自身が「今日この索引には読み手が 1 つも無い」と述べたまま残っていた（ラウンド 8 の決定のうち注釈だけが適用され、索引が残った）。同じ形について 8 行下の `invitation_routes` は「索引を置かない」と正反対の判断を書いており、同一ファイル内で 2 つの結論が並んでいた。あわせて `conformance/workspaceSlugReservationStore.ts` の名乗りが `ADP-workspace-061..066` で、066 は `WorkspaceDirectoryProjectionWriter.applySnapshotIfNewer` の持ち分（ADR-195）と衝突していた。
+
+### Decision
+
+- **索引を落とし、注釈を `invitation_routes` と同じ「置かない理由」へ揃える。** canon（`spec/database/index.md:86-99`）に索引行は無いので、canon を足す向きは採らない。`0001` は本 PR で新規追加されたファイルではない（`git diff --name-status main...HEAD` は `M`）ので、`0003` が rebuild のために再作成している `membership_directory` の 5 索引は `0001` の決定であり、ここでは触らない。
+- **名乗りは `it()` ケースの側から全数で突き合わせる。** 台帳（`spec/inventory/adapter.md` の 368 行）から `ADP id → ポート` の写像を作り、`conformance/*.ts` 48 ファイルのファイル JSDoc が名乗る範囲を展開して、(a) 別ポートの ID を名乗っていないか、(b) `it()` が使う ID が名乗りの外に出ていないか、を両方向で数えた。「収まっているか」だけを見ると **狭すぎる名乗り**（`it()` が名乗りの外の ID を使う）が原理的に見えない — ADR-192 と同じ「ヒットしないものは数えられない」形である。
+
+### Consequences
+
+- 別ポートの ID を名乗るファイルは 0 件になった（`workspaceSlugReservationStore.ts` の 1 件のみ）。
+- 逆向きで 2 件が出た。どちらも**同じポートの範囲を狭く名乗っていた**もので、指摘には無い: `invitationRepository.ts`（016..024 と名乗るが `ADP-workspace-075` = `listPendingByWorkspace` の 3 ケースを持つ）、`userWorkspaceDirectory.ts`（005 と名乗るが 068 = `countOwnedByUser` / 076 = `countSettledByUser` の 4 ケースを持つ）。どちらも 1 行の JSDoc なので同単位で広げた。
+- 名乗りを持たない適合スイートは 4 件（`identityUniqueDirectory` / `oauthStateStore` / `appliedOperationStore` / `distributedOperationStore` ほか台帳対象外のもの）。**名乗りが無いことは偽ではない**ので足さない — 台帳の掲載範囲（`spec/inventory/adapter.md` 前書き）が対象外と定めたポートを含むため、ここに範囲を書くと逆に偽になる。
+- `0003` が再作成する `membership_directory` の 5 索引のうち、`user_edge_idx` / `workspace_idx` / `recovery_idx` の 3 本は D1 アダプターに読み手が無い（`recovery_idx` の読み手は `#28` の recovery で、まだ実装が無い）。**`0001` の持ち分なので本ラウンドでは落とさない**。次に `0001` を触る回の口として残す。
+
+## ADR-199: 「開けない」の写像は断片 4 本まで含めて 1 関数に寄せ、JSDoc の断言を実効にする
+
+### Context
+
+ADR-182 が置き ADR-191 が `notes` ルートへ広げた「`kind` ごとの写像はこの関数だけが持つ」という断言は、設定断片 4 本（`WorkspaceGeneralForm` / `WorkspaceMembersPanel` / `WorkspacePublishPanel` / `WorkspaceDangerPanel`）が同じ 3 kind を `if (kind === "business" || kind === "forbidden" || kind === "notFound")` としてインライン再実装したままだったので、依然として偽だった（レビュー 009 frontend W-002）。今日は集合が一致しているので挙動は同じだが、`workspaceUnavailability` を 1 kind 広げた瞬間に **Cookie は畳まれるのに断片だけが `ServerErrorState` を出す**（ADR-191 が `notes` ルートで直したのと同じ割れ）が 4 経路で復活する。
+
+### Decision
+
+**4 断片を `workspaceUnavailability(serializeError(error)) !== null` へ寄せる。** 断片は「開けないかどうか」しか要らないので、理由（`gone` / `denied`）は使わず null 判定だけを読む。断片が自分で終端表示を描く形（`throw` すると Flight ストリームで `kind` タグを失う）は変えていないので、`CLAUDE.md`「Frontend」の三層と所有権はそのまま。JSDoc 側の呼び出し元の列挙にも 4 断片を書き足し、断言の対象範囲を実態と一致させた。
+
+### Consequences
+
+- `apps/web/app` で SerializedError の `kind` を読む 22 行のうち、「このワークスペース文脈が開けるか」を決めているのは **`scope.ts` の 2 行（写像本体）＋ 6 つの呼び出し元**だけになった。写像を自前で持つ呼び出し元は 0 件。
+- 寄せなかった `kind` 読みは 15 行で、いずれも主題が違う: 転送境界の redaction / HTTP status（`errorResponse.ts` / `errorResponseMiddleware.ts` / `serverFragment.tsx`）、ログ欄（`serverErrorLog.ts`）、文言辞書（`errorDisplay.ts`）、**ノート**の不在（`notes/$noteId.tsx` ×2 / `NoteDetail`）、**招待**の不在（`InvitationPreview`）、**公開ページ**の不在（`PublicWorkspacePage` / `routes/w/-action.tsx`）、認証の `validation` / `business` + `code`（`SignInForm` / `OAuthCallbackPanel` / `VerifyEmailPanel` / `auth/-action.tsx`）。どれも「開こうとした文脈が開けるか」ではないので、同じ関数に寄せると意味が壊れる。
+- **検出力**: 新規テストは足していない（fix-plan-009 G6 の `defer`。断片はサーバーコンポーネントなので、拘束するには RSC のレンダリング文脈が要り、`docs/test.md` の層を越える）。代わりに既存の写像テストが効いていることを変異スポットチェック 2 件で確認した — (a) `business` 枝を落とすと `scope.test.ts` / `scopeCookie.test.ts` で 2 本 red、(b) `notFound → "gone"` を `"denied"` にすると 4 本 red。どちらも戻して緑、`git diff` に残留変異なし。
+- **残る穴**: 断片が再びインライン写像へ戻る変異は、どのテストも赤にしない。写像の集合そのものはテストが固定しているので、残るのは 4 断片の 1 行ずつの配線である（ADR-191 が `route.tsx` について申し送ったのと同じ性質の穴）。
+
+## ADR-200: 鍵は「取った後にバリアを読み、拒まれたら返す」で守る／予約の呼び出しは全部補償区間の中に置く
+
+### Context
+
+review-009-backend-workspace の B-001 / B-002 / W-001 は、いずれも「commit の後に global を触る 3 手順」の同じ側面である。
+
+- **B-001**: `changeWorkspaceSlug` は scope commit の**後**に `activate` で鍵を取る（主経路と `repairSettledSlug` の 2 か所）のに、その位置に削除バリアが 1 つも無い。ラウンド 8 が ADP-workspace-065（`release` は自分の `reserved` 行を触らない）を契約へ昇格させたため、commit と `activate` の間に受理された削除は、まだ `reserved` の行を素通りして終端する。その後に着地した `activate` が行を `active` へ flip すると、期限も掃除も逆引きも無く、解放できた唯一の主体（削除サガ）は終端済み — **その slug はサービス全体から恒久的に失われる**。
+- **B-002**: `acceptInvitation` は `reserveAndClaimActivation` を補償区間の**外**で呼ぶ。`operationId` は要求ごとの採番で、どこにも永続化されない。応答を失うと `(userId, workspaceId)` の `activating` edge が残り、再試行は別 id なので `MEMBERSHIP_ALREADY_EXISTS` が恒久化する。除名は Membership が無いので届かず、`settleStrandedEdge` は「既にメンバー」枝からしか呼ばれず、`deleteAccount` も `listActivatingByUser` が非空の間は受理されない。**同じ呼び出しを `createWorkspace.ts` は補償付きで包んでいる。**
+- **W-001**: 「既にメンバー」枝の `acceptIfPending` が `pending` の招待も settle し、route を `consume` する。署名者と `invitation.email` を照合しない設計（WS-04）なので、**そのワークスペースのメンバーがリンクを開くだけで第三者宛ての招待が消える**。`TC-workspace-009` がこの挙動を意図として固定していた。
+
+### Decision
+
+**1. 鍵は「取った後にバリアを読み、拒まれたら返す」（B-001）。**
+
+`releaseKeysUnlessWritable` を置き、`activate` が返った直後に `workspaceReaderFor(scope).admission.assertWritable()` を読む。拒まれたら候補鍵（主経路は `[nextSlug, previousSlug, advertised]`、修復経路は `[slug, advertised]`）を `releaseKeys` で解放してから、バリアの拒否をそのまま送出する。
+
+- **「取る前に読む」だけでは閉じない。** `activate` は commit の後に走るので、読みと取得の間は必ず開く。この窓を閉じられるのは「取った鍵を返せる位置」だけであり、その位置は行が自分の `active` になった直後 — `release` が効く唯一の状態 — に限られる。既存の予約前バリア（`repairSettledSlug` の `reserve` 前、招待サガの予約前）は残したうえで、後段の読みを足す形にした（ADR-050 の置き場所を広げるのであって、動かすのではない）。
+- 候補を選ばず全部名指すのは ADR-186 の理由（条件付き解放なので外れた候補には何も書かれない）。
+- **バリアの読み自体が落ちたときも解放側へ倒す**。誤って手放した鍵は同じ slug の再送で戻る（ADR-118 / ADR-143）が、誤って握った鍵を戻す経路は 1 つも無い。
+- **鍵を手放すだけの経路（`nextSlug === null`）にはバリアを置かない** — ADR-143 の 4 をそのまま維持。
+
+**2. 予約サガの呼び出しは補償区間の中（B-002）。**
+
+`reserveAndClaimActivation` を `try` の内側へ移し、既存の `compensate(… abandon(operationId))` に通す。`createWorkspace.ts:137-149` と同じ形。
+
+- **`operationId` を `(userId, workspaceId)` から導出する案は採らない。** `reserveAndClaimActivation` は同 operation の再入で `membershipId` を書き換えないので、再試行は edge が記録する membershipId を読めないまま別 id で Membership を作り、`applyRoleIfNewer` の世代照合（`domain/workspace/events.ts`）が壊れる。
+- 残るのは「プロセスが窓の中で死ぬ」場合だけで、これは本スライスのどの saga 手順も持つ残余。ユースケースの JSDoc に規定として書き残した。
+
+**3. 「既にメンバー」枝は自分の join の後始末しかしない（W-001）。**
+
+`acceptIfPending` を廃し、2 つに割った。
+
+- `redeemedByCaller` — `status === "accepted" && acceptedBy === userId` を**読むだけ**。membership がある状態は必ず「同じ transaction が招待を settle した後」なので、この枝が招待を**書く**必要は最初から無かった。
+- `acceptPending` — join 経路の本来の形（`pending` でなければ `INVITATION_NOT_PENDING`）。
+
+`pending` の招待は素通し（何も書かない・route も `consume` しない）。**route の consume も `redeemedByCaller` で条件づける** — 招待行を残したまま route だけ閉じると、招待先のリンクは同じように恒久的に死ぬからである。edge の `settleStrandedEdge` だけは無条件に走らせる（自分の `activating` edge しか触らないので、他人の招待には届かない）。
+
+削除バリア 3 本はこの枝に残した。書くのは global 側（edge activate / route consume）だけになったが、削除を受理した scope へ edge を戻す理由は無い。
+
+`existing` を UoW の外で読んでいること（除名と併発すると「参加していないのに参加していると答える」）は、今回は閉じない既存の残余として JSDoc に助言的な読みであることだけを書き残した。
+
+### Consequences
+
+- 正常系のコストは、鍵を取る 2 経路が読みを 1 回ずつ増やすだけ（`assertWritable`）。招待の「既にメンバー」枝は書き込み 1 本（招待の save）と route の consume が消え、読みだけになった。
+- **`TC-workspace-009` の期待値を差し替えた**: 招待は `pending` のまま、route は `active` のまま、招待先が後から同じリンクで参加できる。題名も「settles the invitation」→「leaves a pending invitation alone」へ。`spec/testcases/workspace/acceptInvitation.md` と `spec/inventory/test.md` の追随は G4 の持ち分。
+- ポート契約・適合スイート・状態機械は 1 行も変えていない（ラウンド 9 の「新しい契約面を開かない」を維持）。
+- 新規ケース: **TC-workspace-328**（2 本 — 主経路と修復経路。commit と `activate` の間に削除が受理されると鍵が戻り、削除が完走しても slug は誰でも取れる）/ **TC-workspace-329**（claim が commit してから応答を失うと edge が返り、招待先の再試行が参加できる）。台帳登録は G4 の持ち分。
+- 変異スポットチェック（5 件、いずれも red を確認して戻した。`git diff` に残留なし）:
+  - 主経路の `releaseKeysUnlessWritable` を落とす → **TC-workspace-328（主経路）** が red
+  - `repairSettledSlug` の `releaseKeysUnlessWritable` を落とす → **TC-workspace-328（修復経路）** が red
+  - `reserveAndClaimActivation` を `try` の外へ戻す → **TC-workspace-329** が red
+  - `redeemedByCaller` を「`pending` なら accept して true」へ戻す（ラウンド 8 の形） → **TC-workspace-009** が red
+  - route consume の `if (redeemed)` だけを外す → **TC-workspace-009** が red（招待行と route の 2 半分が別々に拘束されていることの確認）
+
+### 網羅の宣言
+
+**(a)「scope commit の後に global の鍵・予約を取る」経路** — 「バリアが有るか」ではなく「global を書く呼び出し」の側から引いた。
+
+- パターン: `grep -rn "workspaceSlugReservationStore\.\(reserve\|activate\|release\|abandon\)\|reservations\.\(reserve\|activate\|release\|abandon\)\|membershipDirectoryReservationStore\.\(reserveAndClaimActivation\|activate\|abandon\|beginRemoval\|abandonRemoval\|completeRemoval\|applyRoleIfNewer\)\|invitationRouteStore\.\(reserve\|reserveReplacement\|activate\|activateReplacement\|abandon\|revoke\|consume\)\|workspaceDirectoryProjectionWriter\." packages/core/src/application/workspace --include="*.ts" | grep -v "__tests__"`
+- 対象範囲: `application/workspace/` の実装 36 ファイル全数。ヒット **37 行**、うち鍵を**取る**側 **16 行**、うち **commit 後 8 行（7 site）**。
+- 直した: **2 site（3 行）** — `changeWorkspaceSlug` 主経路（`activate` 2 行＝再試行）と `repairSettledSlug`。
+- 直さなかった 5 site と理由:
+  - `createWorkspace:167` / `:176` — `workspaceId` はこの呼び出しの中で採番され、応答を返すまで誰にも開示されない。窓の中で削除を受理できる主体が存在しない（ADR-050 が `createWorkspace` をバリアの対象外にしたのと同じ理由）。
+  - `inviteMember:195`（route `activate`）— ポート契約が「この operation が既に閉じた行は**開き直さずに**成功する」と定めるので、削除の `revoke` が先に着地した route を復活させない。
+  - `resendInvitation:128`（`activateReplacement`）— 同上（「revoke が閉じた replacement はもう開けない」）。
+  - `acceptInvitation:183`（edge `activate`）— ポート契約が「不在の edge は `ConflictError`」なので、削除の `beginRemoval` → `completeRemoval` が落とした行を復活させない。**恒久化する鍵は slug 予約だけ**で、その理由は `activate` が `reserved` 行を `active` へ flip する唯一の遷移であることによる。
+
+**(b)「予約サガの呼び出しが補償区間の外にある」経路**
+
+- パターン: `grep -rn "\.reserveAndClaimActivation(\|\.reserve(\|\.reserveReplacement(\|\.beginRemoval(" packages/core/src/application/workspace --include="*.ts" | grep -v "__tests__"`
+- 対象範囲: 同上。ヒット **10 行**。`try` の内外で全数分類 — 内側 **2**（`createWorkspace:138` / `acceptInvitation:155`（本 ADR で移した））、外側 **8**。
+- 直した: **1 件**（`acceptInvitation`）。
+- 直さなかった 8 件と理由:
+  - `createWorkspace:129`（slug `reserve`）— 直後の 2 つの `catch` が `abandonReservations` で slug も落とすので、実効上は補償区間の内側。
+  - `changeWorkspaceSlug:286` / `:442`（slug `reserve`）— operation ID が `(workspaceId, slug)` から決定的に導出される（ADR-030）ので、応答喪失後の再送が同じ行へ収束する。行は `reserved` で TTL を持つ。
+  - `inviteMember:159` / `resendInvitation:96` — 予約する鍵は試行ごとに新しく発行するトークンハッシュなので、失われた行が再試行を塞がない。行は招待自身の期限で回収される。
+  - `removeMember:89` / `leaveWorkspace:80` / `workspaceDeletionGlobal:114`（`beginRemoval`）— `(userId, workspaceId)` を鍵にし目標状態で冪等（ADR-037）なので、応答喪失は同じ呼び出しの反復で直る。補償は `abandonRemoval` が別に持つ。
+
+## ADR-201: 補償の後片づけは「解体 1 つと lock 解放 2 つ」の 3 独立 half にし、両 scope を対称に扱う
+
+### Context
+
+ADR-190 は `abortBeforeSwitch` の 2 つの scope transaction を直列から独立へ変えたが、独立化したのは **source の `releaseMove` だけ**だった。target の `releaseMove` は解体（receipt 判定・行削除・credit 逆仕訳・`clearApplied`）と**同じ transaction の先頭**に残っており、解体の失敗が target の move lock を必ず道連れにする（review-009-backend-note B-001）。直後に `rollBack` が `rejected` で閉じるので、`migrationId` を握れる主体が消える — move lock は lease も期限も持たず、`#28` の recovery は `running` を走査条件にするので `rejected` 行を拾えない。**target ワークスペースは削除もメンバー管理も恒久的に失う。**
+
+同じ形が `releaseUnusedClaim` にも残っていた。`abortBeforeSwitch` の 3 呼び出し元のうち `rollBack`（ADR-173）と `rejectLostOperation`（ADR-189）は `"switched"` を「終端させない」へ倒したのに、`releaseUnusedClaim` だけ戻り値を捨てて無条件に `settleQuietly(rejected)` へ落ちる（W-001）。到達には同一 `requestKey` の並行要求が要るが、`beginMove` は `migrationId` について冪等なので 2 本とも claim に成功し、片方が switch した瞬間にもう片方がこの窓に入る。落ちた先は B-001 と同じ恒久化である。
+
+あわせて `const failed = teardown ?? released;` は 2 本目の cause を完全に捨てていた（W-003）。「source のワークスペースがなぜ削除できないのか」を後から辿る手がかりが 0 になる。
+
+**ラウンド 7 → 8 → 9 で「片側だけ直す」が 3 回続いた**ため、本 ADR では対称性を件数で確認することを判断の一部に含める。
+
+### Decision
+
+**(1) half を 2 → 3 に割り、lock 解放を解体から完全に外す。**
+
+`releaseMoveIn(scope)` を 1 つ持ち、`(1) target の releaseMove` → `(2) target の解体` → `(3) source の releaseMove` を 3 つの `runIndependently` で回す。解体の transaction に `releaseMove` は 1 行も残らない。
+
+- 解放を解体より**先**に打ってよい根拠: `thawRoute` が既に route を source へ戻しているので、staged 複製へ到達する経路は lock の有無と無関係に無い。`releaseMove` はポート契約で冪等なので二重実行の害も無い。
+- 投げる cause の優先順は「解体 → target の解放 → source の解放」で ADR-190 の意図（診断を置き換えない）を保つ。
+
+**(2) `releaseUnusedClaim` を `Promise<"released" | "switched">` にする。**
+
+`"switched"` なら `logStuckAfterSwitch` を打って `settleQuietly` を飛ばす。`rollBack` / `rejectLostOperation` と同型になり、**`abortBeforeSwitch` の 3 呼び出し元すべてが `"switched"` を終端させない**側で揃った。ADR-173 の Consequences が述べた「`releaseUnusedClaim` は `"switched"` に落ちない」は**本 ADR で無効**になる — `thawRoute` の fallback は route を読み直すので、並行 twin の switch がこの答えを作る。
+
+**(3) 投げない側の cause をログに残す。**
+
+`failed` に選ばれなかった lock 解放の失敗を `[moveNote] a move lock was left standing` として `migrationId` / noteId / 当該 scope / 両 scope 付きで 1 行記録する。**投げる cause は 3 呼び出し元がいずれも記録する**ので、二重に出さない（`result !== failed` の条件）。
+
+`W-002`（`resumed` を使って「掴んでいるかもしれない行」を閉じない）は **defer**。代わりに `releaseUnusedClaim` の JSDoc に「route を読めなかったときは**閉じる側**に倒れる」ことを規定として書き残した（canon の `spec/usecases/note.md:559` は終端表 2 行目の話で、こちらは 1 行目である）。
+
+### Consequences
+
+- `TC-note-773` の期待値を `moveLocksIn(targetScope) === 0` へ改めた。従来の `=== 1` は同ファイルの `expectWholeAndReachable` の JSDoc が禁じている状態そのものを固定していた（テストが自分の suite の不変条件を上書きしていた）。あわせて `TARGET_WS` の削除も受理されることまで見る。
+- **不変条件を 1 つ切り出した**: `expectNoStrandedMoveLocks(h, noteId, scopes)`。`expectWholeAndReachable` は「補償が最後まで走った軌道」について述べるので、補償が途中で死ぬ 6 ケースには丸ごと課せない。lock だけは補償の成否に依らず課してよい（rows と credit は回収可能、lock は回収不能）ので、この 1 本を helper から切り出して**補償が死ぬ 6 ケース全部**に課した。`expectWholeAndReachable` 自身もこの関数を呼ぶので、不変条件の記述は 1 か所に留まる。
+- 補償の scope transaction が 2 本から 3 本に増えるので、`scopeUnitOfWorkProvider.run` の回数で障害を注入している 6 テストの添字を +1 した（`runs === 3` → `runs === 4`）。
+- canon（`spec/usecases/note.md:573`）は残留物から target の move lock を落とす必要がある。G4 へ申し送り。
+
+### 網羅の宣言
+
+- **(a)「補償の中で 2 つ以上の後片づけを直列に行っている」箇所**
+  - パターン: `grep -rn "releaseMove(" packages/core/src --include="*.ts" | grep -v "__tests__"` / `grep -rn "runIndependently\|compensate(" packages/core/src/application --include="*.ts" | grep -v "__tests__"` / `grep -rn "} catch" packages/core/src/application --include="*.ts" | grep -v "__tests__"`
+  - 対象範囲: `packages/core/src` 全 `.ts`（テスト除く）＋ `application/` の catch 全数
+  - ヒット件数: `releaseMove(` **10 行**（application の呼び出しは 3 行 = `activateTarget:635` / `retireSource:669` / `releaseMoveIn:834`、残りは 2 アダプター実装・適合スイート 4 行・ポート宣言 1 行）。補償ヘルパー **7 行**（`runIndependently` 定義 1・呼び出し 3、`compensate` 定義 1・呼び出し 3）。`} catch` **75 行**。
+  - 直した件数: **1 件**（`abortBeforeSwitch`）。**解体と同じ UoW に居る `releaseMove` は 0 件**になった。
+  - 直さなかったものと理由: `activateTarget:635` / `retireSource:669` は成功経路で解体と直列でない。`compensate` の 3 呼び出し元（`inviteMember` / `resendInvitation` / `acceptInvitation`）はいずれも後片づけを 1 つしか持たない。`moveNote.ts:1132` の catch は `releaseUnusedClaim` → `settleQuietly` の 2 段だが、前者は throw しない契約（ADR-133）なので後者は必ず走る。`rejectLostOperation` の「修復が落ちたら settle しない」は ADR-189 の意図。`identity/{signUpWithPassword:184,uniqueness:284,pruneExpiredAuthState:346,deleteAccount/terminalPrune:196,signInWithPassword:161}` と `workspace/changeWorkspaceSlug:492` は後片づけ 1 つ＋再試行連鎖またはワーカーの back-off で、担当外かつ同型でない。
+- **(b)「`abortBeforeSwitch` の戻り値を扱う呼び出し元」全部**
+  - パターン: `grep -rn "abortBeforeSwitch" packages/core/src --include="*.ts"`
+  - 対象範囲: `packages/core/src` 全 `.ts`。ヒット **9 行** — 定義 1・呼び出し **3**・JSDoc 参照 3・`ports/noteMovePort.ts` の未実装署名 2。
+  - 呼び出し 3 件の `"switched"` の扱い（**修正後は 3 件とも「終端させない」で対称**）:
+
+| 呼び出し元 | 行 | `"switched"` の扱い | 揃った時期 |
+| --- | --- | --- | --- |
+| `rollBack` | `:1267` | `logStuckAfterSwitch` して return（settle しない） | ラウンド 6（ADR-173） |
+| `releaseUnusedClaim` | `:1341` | 戻り値で `"switched"` を返し、呼び出し元が `logStuckAfterSwitch` して settle を飛ばす | **本ラウンド** |
+| `rejectLostOperation` | `:1442` | `logStuckAfterSwitch` して return（settle しない） | ラウンド 8（ADR-189） |
+
+  - 直した件数: **1 件**。`settleQuietly` へ落ちる `"switched"` 経路は **0 件**。
+- **「両側が揃った」ことの件数**: 補償の scope transaction **3 本**のうち、解体と同じ UoW に居る lock 解放 **0 本**（source 1・target 1 とも独立）。`"switched"` を捨てる呼び出し元 **0 件 / 3 件**。
+- **`runIndependently` の cause の全経路**（3 half × 落ちる / 落ちない = 8 通り）: 投げるのは `teardown ?? targetReleased ?? sourceReleased`、投げなかった lock 解放の失敗は全部ログ。**ログにも cause にも現れない組み合わせは 0 件**。
+- **「補償が途中で死ぬのに `expectWholeAndReachable` を通していない」テスト全数**: `TC-note-260(2097)` / `-763` / `-766` / `-768` / `-770` / `-773` の **6 件**。このラウンドで **6 件すべてに `expectNoStrandedMoveLocks` を課した**。`expectWholeAndReachable` 自体は 6 件とも通していない — 通らない理由は「解体が落ちた軌道には staged 複製・credit・receipt が残る」で、これは helper の JSDoc が最初から前提から外している（「補償が最後まで走った軌道について述べる」）ものであり、lock だけがその前提に依らない不変条件だからである。
+
+### 変異スポットチェック
+
+3 件。いずれも戻して `git diff` で残留無しを確認した。
+
+1. **B-001**: target の `releaseMove` を解体 transaction の先頭へ戻す（half の数は 3 のまま、1 本目を空の UoW にして添字を保つ）→ `TC-note-773`（target の lock が残る）と `TC-note-768`（rival の lock が残る）の **2 本が red**。
+2. **W-001**: `releaseUnusedClaim` が `abortBeforeSwitch` の答えを捨てて常に `"released"` を返す → `TC-note-774` が red（operation が `running` ではなく `rejected` になる）。
+3. **W-003**: ログの条件を `result !== failed` から `result === failed` へ反転（＝投げる cause だけ記録し、消える方を捨てる）→ `TC-note-773`（2 本目）が red。
+
+## ADR-202: canon は「主張の中身」で掃き出し、台帳の分布表と相対リンクは機械で全数を検算する
+
+### Context
+
+ラウンド 9 が canon に見つけた偽は 13 箇所あり、内訳は「実装が先に動いて canon が追随しなかった」もの（削除の edge 方向・継続 payload・削除バリアの述語・索引・PK・P-32 の状態）と、「ラウンド 8 の改訂そのものが混入させた」もの（壊れた ADR リンク 1 本）と、「台帳が伸びたのに要約表が据え置かれた」もの（ユースケース分布 3 セル）である。8 ラウンド続いた形は毎回同じで、**指摘された 1 箇所だけを直し、同じ主張を述べている他の箇所を探さない**ことだった。
+
+### Decision
+
+**canon の修正は、指摘された行ではなく「主張の中身」で引く。** 今回は `countByRole` / `deletionLocalContinued` / `route_key` / 「どちらも 0」/ 「降格・除名」/ `memberships_workspace_joined_idx` / 「読み直して再適用」の 7 語で `spec/` と `docs/` を全数走査し、指摘の 13 箇所に加えて**レビューが挙げていない 4 箇所**（`spec/usecases/workspace.md` の継続 payload 略記 2 か所、`spec/testcases/workspace/deleteWorkspace.md` と台帳の同じ略記、`spec/scenario/workspace.md:101` の「降格・除名も操作を無効化して理由を示す」）を同じ単位で閉じた。
+
+**要約値と相対リンクは目視で数えない。** 分布表・台帳 ID の重複／欠番・`spec/testcases/**` と台帳の 1:1・相対リンクの解決可否は、いずれもスクリプトで全数を出してから直す。今回の実測は relative-links 1070 / broken 0、TC 2539 行（重複 0・欠番は `TC-usage-006,008〜012` の退役 6 件のみ）、testcase ファイル 151 / データ行 2539 で台帳と一致、分布表は 9 行 + 合計とも台帳の実測に一致。
+
+**逆に、実装側へ寄せる修正は 1 行も行わない**（ADR-046 の向き）。`spec/database/index.md:83` の「どちらも 0 件であることを条件にする」は受理条件として述べており真なので触らない — 直したのは `spec/usecases/identity.md:814` の「どちらも 0 でなければ退ける」という**拒否条件としては両義に読める**言い回しのほうだけで、「いずれかが 1 件以上なら退ける」へ一意化した。
+
+### Consequences
+
+- `spec/` が「実装について真」であることを、今回に限り機械で言える範囲（リンク・ID・件数・1:1 対応）については全数で確認した。**主張の中身の一致は依然として人手の走査**であり、ここを機械化する検査面（台帳 ID とスイート JSDoc の突き合わせ、分布表の自動検算）は次スライスの持ち分として残る。
+- `spec/domains/index.md` の継続要求の表が `workspace.deletionGlobalCleanupContinued` を持つようになり、workspace 削除の 3 相がすべて表に載った。同文書の「継続要求は続きを引き直すのに必要な情報をすべて運ぶ」という規約と、payload が `slug` / `advertisedSlug` を運ぶ実装が、表の上で初めて整合する。
+- `spec/scenario/workspace.md:101` を狭めたことで、WS-05 の受け入れ基準から「他人の行に降格・除名の無効化と理由を出す」が外れた。`spec/manual-tests/workspace.md` TC-22 と `.thread/3/testing.md` 項目 11 は元から「他人の行には出ない」と書いているので、Phase 4 の判定は変わらない。

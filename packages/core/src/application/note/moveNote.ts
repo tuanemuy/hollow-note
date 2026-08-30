@@ -798,13 +798,19 @@ async function runIndependently(
  * snapshot: an attempt that failed before it froze the source must still
  * reverse whatever an *earlier* attempt of this same migration staged.
  *
- * The two scopes' halves run independently rather than in sequence. The
- * source's move lock was staged by the freeze and says nothing about what
- * the target holds, so one target-side failure must not strand it: a lock
- * carries no lease and no expiry, only this migration releases one, and
- * the operation is settled `rejected` right after — which is what would
- * make the leftover permanent. Whatever failed is still what the caller is
- * told about, since a compensation never replaces a diagnosis.
+ * The teardown and the two lock releases are three independent halves
+ * rather than one sequence, and neither lock shares a transaction with the
+ * teardown. A lock carries no lease and no expiry, only this migration
+ * releases one, and the operation is settled `rejected` right after — so a
+ * lock a failing teardown took with it is permanent, and it closes its
+ * scope's deletion and membership management for good. Releasing the
+ * target's before the teardown is safe for the same reason the teardown
+ * needs no lock of its own: the thaw has already put the route back on the
+ * source, so nothing reaches the staged copy through it either way.
+ * Whatever failed is still what the caller is told about, since a
+ * compensation never replaces a diagnosis; a lock failure the teardown's
+ * cause outranks is logged rather than dropped, because it is the only
+ * record of why a scope stopped accepting deletions.
  */
 async function abortBeforeSwitch(
   container: RequestContainer,
@@ -820,9 +826,17 @@ async function abortBeforeSwitch(
     ...TARGET_SCOPE_COMMANDS,
     ...tagRelocation.targetScopeCommandKeys,
   ];
+  const releaseMoveIn = (
+    scope: ScopeKey,
+  ): Promise<Readonly<{ cause: unknown }> | null> =>
+    runIndependently(() =>
+      container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+        ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
+      ),
+    );
+  const targetReleased = await releaseMoveIn(plan.target);
   const teardown = await runIndependently(() =>
     container.scopeUnitOfWorkProvider.run(plan.target, async (ctx) => {
-      await ctx.workspaceOperationLockStore.releaseMove(plan.migrationId);
       // The receipt commits with the rows it asserts, so it is the only
       // authority on "is what this scope holds mine?". `markApplied`
       // answering `true` means the key was not there — this migration
@@ -869,12 +883,24 @@ async function abortBeforeSwitch(
       await applyStorageDelta(ctx, plan.target, -totalBytes(files), -1, now);
     }),
   );
-  const released = await runIndependently(() =>
-    container.scopeUnitOfWorkProvider.run(plan.source, (ctx) =>
-      ctx.workspaceOperationLockStore.releaseMove(plan.migrationId),
-    ),
-  );
-  const failed = teardown ?? released;
+  const sourceReleased = await releaseMoveIn(plan.source);
+  const failed = teardown ?? targetReleased ?? sourceReleased;
+  const releases = [
+    { scope: plan.target, result: targetReleased },
+    { scope: plan.source, result: sourceReleased },
+  ] as const;
+  for (const { scope, result } of releases) {
+    if (result !== null && result !== failed) {
+      container.logger.error("[moveNote] a move lock was left standing", {
+        cause: result.cause,
+        migrationId: plan.migrationId,
+        noteId: plan.noteId,
+        scope: serializeScope(scope),
+        source: serializeScope(plan.source),
+        target: serializeScope(plan.target),
+      });
+    }
+  }
   if (failed !== null) {
     throw failed.cause;
   }
@@ -1107,8 +1133,13 @@ export async function moveNote({
     // This attempt staged nothing, but an earlier one under the same
     // migration may have — and a claim whose response was lost, or an
     // operation left `running`, would block every later move of this note.
-    await releaseUnusedClaim(container, plan, tagRelocation);
-    await settleQuietly(container, plan, "rejected", cause);
+    if (
+      (await releaseUnusedClaim(container, plan, tagRelocation)) === "switched"
+    ) {
+      logStuckAfterSwitch(container, plan, cause);
+    } else {
+      await settleQuietly(container, plan, "rejected", cause);
+    }
     throw cause;
   }
 
@@ -1278,13 +1309,26 @@ async function rollBack(
  * halves are expected to fail together. Neither may replace the caller's
  * diagnosis, and neither may keep the operation from being settled — left
  * `running`, it would refuse every later move of this note instead of
- * merely leaving a route parked.
+ * merely leaving a route parked. A repair that could not read the route at
+ * all therefore falls on the *closing* side, unlike the repair in
+ * `rejectLostOperation`: what reached this catch is a claim attempt, so
+ * this request is the party that would have created anything worth
+ * keeping open, and a `running` row here blocks every later move.
+ *
+ * `"switched"` is the one answer that forbids closing. A concurrent
+ * request deriving the identical key claims the same migration
+ * (`beginMove` is idempotent on the migration id), so the route may have
+ * been switched by that twin between this claim's failure and the read
+ * below — and then nothing was compensated, both scopes still hold their
+ * move locks, and settling would remove the only party that can release
+ * them. The stop is recorded and left `running` instead, exactly as
+ * `rollBack` and `rejectLostOperation` do with the same answer.
  */
 async function releaseUnusedClaim(
   container: RequestContainer,
   plan: MovePlan,
   tagRelocation: NoteMoveTagRelocation,
-): Promise<void> {
+): Promise<"released" | "switched"> {
   try {
     const route = await container.noteRouteStore.resolve(plan.noteId);
     if (
@@ -1292,15 +1336,23 @@ async function releaseUnusedClaim(
       route.state !== "moving" ||
       route.migrationId !== plan.migrationId
     ) {
-      return;
+      return "released";
     }
-    await abortBeforeSwitch(container, plan, route.routeVersion, tagRelocation);
+    return (await abortBeforeSwitch(
+      container,
+      plan,
+      route.routeVersion,
+      tagRelocation,
+    )) === "switched"
+      ? "switched"
+      : "released";
   } catch (releaseError) {
     container.logger.error("[moveNote] the claimed route was left moving", {
       releaseError,
       migrationId: plan.migrationId,
       noteId: plan.noteId,
     });
+    return "released";
   }
 }
 

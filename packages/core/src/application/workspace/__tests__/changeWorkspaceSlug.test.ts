@@ -7,11 +7,13 @@ import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
 import { changeMemberRole } from "../changeMemberRole";
 import { changeWorkspaceSlug } from "../changeWorkspaceSlug";
 import { checkWorkspaceSlugAvailability } from "../checkWorkspaceSlugAvailability";
+import { deleteWorkspace } from "../deleteWorkspace";
 import { getPublicWorkspace } from "../getPublicWorkspace";
 import {
   clearDirectoryOutages,
   createWorkspaceHarness,
   directoryRow,
+  drainScopeTasks,
   expectBusinessRule,
   expectConflict,
   expectNotFound,
@@ -1034,6 +1036,120 @@ describe("changeWorkspaceSlug", () => {
     ]);
     expect(storedWorkspace(h, WORKSPACE)).toMatchObject({
       slug: "team-alpha",
+    });
+  });
+
+  /**
+   * The exchange takes its key *after* the commit, so a deletion admitted
+   * in between passes the reservation while it is still `reserved` —
+   * which `release` leaves alone by contract — and the activation then
+   * flips it to `active` for a workspace that no longer exists. An
+   * `active` reservation has no expiry, no sweep and no reverse lookup,
+   * and the deletion is terminal by then, so the slug would be lost to
+   * every workspace in the service. The request is the last holder able
+   * to name it.
+   */
+  it("TC-workspace-328: a deletion admitted between the commit and the activation gets the key back", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    let deleted = false;
+    const container: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        activate: async (input) => {
+          if (!deleted) {
+            deleted = true;
+            await deleteWorkspace({
+              container: h.container,
+              input: {
+                workspaceId: WORKSPACE,
+                userId: OWNER,
+                confirmationName: "Team Alpha",
+              },
+            });
+          }
+          await inner.activate(input);
+        },
+      },
+    };
+
+    await expectConflict(
+      change(h, "team-alpha", OWNER, container),
+      "WORKSPACE_DELETING",
+    );
+
+    expect(deleted).toBe(true);
+    await drainScopeTasks(h);
+    expect(slugReservations(h)).toEqual([]);
+    await expect(availability(h, "team-alpha")).resolves.toEqual({
+      slug: "team-alpha",
+      available: true,
+      ownedBySelf: false,
+    });
+  });
+
+  /**
+   * The repair path takes its key in the same position, so the barrier it
+   * reads before re-reserving covers only the window that ends there.
+   */
+  it("TC-workspace-328: a repair whose scope is deleted while it re-takes the key gives it back", async () => {
+    const h = createWorkspaceHarness();
+    await seed(h);
+
+    const inner = h.container.workspaceSlugReservationStore;
+    const activateFailure = new Error("reservation shard unreachable");
+    await expect(
+      change(h, "team-alpha", OWNER, {
+        ...h.container,
+        workspaceSlugReservationStore: {
+          ...inner,
+          activate: () => Promise.reject(activateFailure),
+        },
+      }),
+    ).rejects.toBe(activateFailure);
+    // The scope moved to `team-alpha` while the key stayed `reserved`, so
+    // re-sending the same slug drives the repair.
+    expect(
+      slugReservations(h).map((row) => [row.slug, row.state]),
+    ).toContainEqual(["team-alpha", "reserved"]);
+
+    let deleted = false;
+    const container: RequestContainer = {
+      ...h.container,
+      workspaceSlugReservationStore: {
+        ...inner,
+        activate: async (input) => {
+          if (!deleted) {
+            deleted = true;
+            await deleteWorkspace({
+              container: h.container,
+              input: {
+                workspaceId: WORKSPACE,
+                userId: OWNER,
+                confirmationName: "Team Alpha",
+              },
+            });
+          }
+          await inner.activate(input);
+        },
+      },
+    };
+
+    await expectConflict(
+      change(h, "team-alpha", OWNER, container),
+      "WORKSPACE_DELETING",
+    );
+
+    expect(deleted).toBe(true);
+    await drainScopeTasks(h);
+    expect(slugReservations(h)).toEqual([]);
+    await expect(availability(h, "team-alpha")).resolves.toEqual({
+      slug: "team-alpha",
+      available: true,
+      ownedBySelf: false,
     });
   });
 

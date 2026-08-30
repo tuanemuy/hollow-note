@@ -7,6 +7,7 @@ import {
 } from "@/components/settings/panelStyles";
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
 import { serializeError } from "@/presentation/errorResponse";
+import { workspaceUnavailability } from "@/presentation/scope";
 import { loadWorkspaceDeletionStatus, loadWorkspaceSettings } from "./action";
 import { WorkspaceDeletionForm } from "./panel";
 
@@ -36,9 +37,8 @@ export async function WorkspaceDangerPanel({
     }
     settings = await loadWorkspaceSettings(workspaceId, userId);
   } catch (error) {
-    // 非メンバー・削除済みの畳み方は `WorkspaceGeneralForm` と同じ。
-    const { kind } = serializeError(error);
-    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+    // 「開けない」の畳み方は `WorkspaceGeneralForm` と同じ。
+    if (workspaceUnavailability(serializeError(error)) !== null) {
       return <WorkspaceUnavailable />;
     }
     throw error;

@@ -190,6 +190,45 @@ async function releaseKeys(
 }
 
 /**
+ * Hands the keys back when the scope accepted a deletion while the
+ * exchange was in flight, and re-raises the barrier's refusal.
+ *
+ * The barrier every write entry runs inside its own transaction cannot
+ * reach this: `activate` runs after that commit, and a deletion admitted
+ * in the meantime frees the row while it is still `reserved`, which
+ * `release` leaves alone by contract
+ * (`WorkspaceSlugReservationStore.release`). The activation then flips it
+ * to `active` for a workspace whose deletion has already gone past it —
+ * and an `active` reservation carries no expiry, no sweep and no reverse
+ * lookup, so that slug would be unobtainable by every workspace in the
+ * service. Reading the barrier *after* the key is taken is what makes the
+ * key giveable-back: the caller is the last holder able to name it, and
+ * only here is the row `active` for this workspace, which is the one
+ * state `release` acts on.
+ *
+ * Every candidate is named for `resolveAdvertisedSlug`'s reason — a
+ * conditional release writes nothing when the guess is wrong — and a
+ * failure to read the barrier at all is treated as a refusal, since a key
+ * given up in error is recovered by re-sending the same slug while one
+ * kept in error is not recovered by anything.
+ */
+async function releaseKeysUnlessWritable(
+  container: RequestContainer,
+  params: Readonly<{
+    scope: ScopeKey;
+    workspaceId: WorkspaceId;
+    candidates: readonly (WorkspaceSlug | null)[];
+  }>,
+): Promise<void> {
+  try {
+    await container.workspaceReaderFor(params.scope).admission.assertWritable();
+  } catch (refusal) {
+    await releaseKeys(container, params.workspaceId, params.candidates);
+    throw refusal;
+  }
+}
+
+/**
  * Re-drives the global half of a change whose scope commit already
  * landed: the key this workspace's slug needs — taken or given up — and
  * the directory row that advertises it.
@@ -216,8 +255,10 @@ async function releaseKeys(
  * The deletion barrier is read before taking a key, for the reason the
  * invitation sagas read it: a scope that has accepted a deletion must not
  * have a global key claimed back for it, and the deletion frees exactly
- * this row. Giving a key up does not ask that question — it is the same
- * direction the deletion moves in.
+ * this row. It is read again once the key is taken, because a deletion
+ * admitted between the two reads passes the row while it is still
+ * `reserved` (`releaseKeysUnlessWritable`). Giving a key up does not ask
+ * that question at all — it is the same direction the deletion moves in.
  *
  * Which keys are given up, and in what order against the projection, is
  * `resolveAdvertisedSlug`'s rule.
@@ -257,6 +298,11 @@ async function repairSettledSlug(
         releasing: advertised,
       }),
     );
+    await releaseKeysUnlessWritable(container, {
+      scope: params.scope,
+      workspaceId,
+      candidates: [slug, advertised],
+    });
   }
   await releaseKeys(container, workspaceId, [advertised]);
   await projectWorkspaceDirectory(
@@ -310,7 +356,10 @@ async function abandonSlugReservation(
  * Clearing the slug takes the other path: there is nothing to reserve, so
  * the key is freed by `release` after the commit. A published workspace
  * cannot get there — the aggregate refuses to drop the slug its public
- * page is served from.
+ * page is served from. Only the path that takes a key reads the deletion
+ * barrier after the exchange (`releaseKeysUnlessWritable`); the clearing
+ * path moves in the deletion's own direction and has nothing to give
+ * back.
  *
  * Which keys either path gives up, in what order against the exchange,
  * and why picking one of the two candidates is what strands the other
@@ -446,6 +495,11 @@ export async function changeWorkspaceSlug({
       });
       await workspaceSlugReservationStore.activate(exchange);
     }
+    await releaseKeysUnlessWritable(container, {
+      scope,
+      workspaceId,
+      candidates: [reservation.slug, previousSlug, advertised],
+    });
     // The advertised candidate is freed only once the exchange has
     // published the successor. Until then it may be the only key still
     // resolving to this workspace — an `activate` lost for good leaves

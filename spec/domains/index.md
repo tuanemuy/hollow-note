@@ -279,7 +279,8 @@ interface IdempotencyStore {
 | `tag.scopeDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
 | `tag.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteAssignmentsForNote`](../usecases/tag.md) |
 | `integration.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteBackupRecordsForNote`](../usecases/integration.md) |
-| `workspace.deletionLocalContinued` | `{ operationId }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のJob終端・manifest build・local edge削除phase |
+| `workspace.deletionLocalContinued` | `{ operationId, phase ("memberships" / "invitations" / "localDelete"), cursor, slug, advertisedSlug }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のmanifest build・local edge削除・Workspace行削除phase |
+| `workspace.deletionGlobalCleanupContinued` | `{ operationId, cursor, slug, advertisedSlug }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のglobal cleanup phase（directory tombstone・slug解放・directory edge / invitation route削除） |
 | `workspace.deletionManifestCompactContinued` | `{ operationId }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のack済みmanifest縮約phase |
 | `projection.reprojectRequested` | `{ noteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
 | `projection.tagFanOutContinued` | `{ tagId, afterNoteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
@@ -326,8 +327,8 @@ scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operatio
 
 | ドメイン | ユースケース数 |
 | --- | --- |
-| Identity | 24 |
-| Workspace | 21 |
+| Identity | 25 |
+| Workspace | 25 |
 | Note | 36 |
 | Tag | 14 |
 | Storage | 13 |
@@ -335,6 +336,6 @@ scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operatio
 | Integration | 15 |
 | Job | 12 |
 | Usage | 7 |
-| 合計 | 146 |
+| 合計 | 151 |
 
 詳細は `spec/usecases/${domain}.md` に定義する。

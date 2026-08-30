@@ -19,7 +19,7 @@ import {
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Shared conformance suite for `InvitationRepository` (ADP-workspace-016..024). */
+/** Shared conformance suite for `InvitationRepository` (ADP-workspace-016..024, ADP-workspace-075). */
 export function describeInvitationRepositoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,

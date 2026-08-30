@@ -1,5 +1,6 @@
 import { WorkspaceUnavailable } from "@/components/workspace/WorkspaceUnavailable";
 import { serializeError } from "@/presentation/errorResponse";
+import { workspaceUnavailability } from "@/presentation/scope";
 import { loadWorkspacePublication } from "./action";
 import { WorkspacePublishBoard } from "./panel";
 
@@ -17,13 +18,12 @@ export async function WorkspacePublishPanel({
   workspaceId: string;
   userId: string;
 }) {
-  // 非メンバー・削除済みの畳み方は `WorkspaceGeneralForm` と同じ。
+  // 「開けない」の畳み方は `WorkspaceGeneralForm` と同じ。
   let publication: Awaited<ReturnType<typeof loadWorkspacePublication>>;
   try {
     publication = await loadWorkspacePublication(workspaceId, userId);
   } catch (error) {
-    const { kind } = serializeError(error);
-    if (kind === "business" || kind === "forbidden" || kind === "notFound") {
+    if (workspaceUnavailability(serializeError(error)) !== null) {
       return <WorkspaceUnavailable />;
     }
     throw error;

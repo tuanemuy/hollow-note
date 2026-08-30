@@ -47,4 +47,5 @@
 | switchがcommitして応答だけを失い、その後rollbackが走る | 中止する | 何も補償せず停止し、operationは `running` のまま終端しない（両scopeのmove lockを解放できる主体が残る） | |
 | operationを開く呼び出し自体が応答を失う（commitはしている） | 別の編集者が同じノートの移動を要求する | 先の要求は `rejected` で終端しているので、別の編集者の要求が新しい operation を開いて移動を完了できる | |
 | 前の試行が staged 複製・credit・両scopeのmove lockと `moving` な route を残しており、再開した試行が operation を開く呼び出しの応答を失う | 同じ入力で再試行する | 引き直した行が claim を保持しているので素の `rejected` にはせず、手順 4〜6 の補償を通してから閉じる（期限も所有者も持たない move lock を恒久的に残さない） | |
-| switch 前の中止で target の解体が失敗する | 中止する | source の move lock の解放は道連れにされず、source のワークスペースは削除もメンバー変更も続けられる。target 側の staged 複製と credit だけが残る | |
+| switch 前の中止で target の解体が失敗する | 中止する | 両 scope の move lock の解放は解体の失敗に道連れにされず、どちらのワークスペースも削除とメンバー変更を続けられる。残るのは target 側の staged 複製と credit だけで、lock の解放だけが単独で落ちたときは解体の cause に隠されずログに残る | |
+| 同一 requestKey の並行要求が switch を着地させた直後に claim の応答を失う | 修復する | 修復が switch 済みと判明したら operation を終端させず `running` のまま停止として記録し、両 scope の move lock を恒久化しない | |
