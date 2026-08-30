@@ -9,6 +9,7 @@ import type { SessionRepository } from "@repo/core/domain/identity/ports/session
 import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
 import type { UserBatchReader } from "@repo/core/domain/identity/ports/userBatchReader";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
+import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { PublicNoteProjectionWriter } from "@repo/core/domain/note/ports/publicNoteProjectionWriter";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
@@ -273,6 +274,11 @@ export type MembershipDirectoryReservations = Pick<
  * instead of `process.env`, so no request-path code inspects the
  * environment directly.
  *
+ * `htmlProcessor` is here rather than inside a unit-of-work context
+ * because sanitizing is a pure computation over a string: every body-write
+ * usecase runs it *before* opening its transaction, on input it has not
+ * yet decided to keep.
+ *
  * Intentionally does NOT carry `outboxRepository` or `idempotencyStore`:
  * those are worker concerns. A request that needs to enqueue a domain
  * event uses the UoW's `collectEvents`.
@@ -288,6 +294,7 @@ export type RequestContainer = SharedDeps &
     loginAttemptStore: LoginAttemptStore;
     oauthStateStore: OAuthStateStore;
     objectStorage: ObjectStorage;
+    htmlProcessor: HtmlProcessor;
     signInOAuthClient: SignInOAuthClient;
     oauthDevMode: boolean;
     userReader: UserReader;

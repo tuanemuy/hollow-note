@@ -16,28 +16,86 @@ export const AVATAR_ALLOWED_MIME_TYPES = [
 ] as const;
 export const AVATAR_MAX_BYTES = 5 * MB;
 
-type PurposeRule = Readonly<{
-  allowedMimeTypes: readonly string[];
-  limitBytes: number;
-}>;
+export const MEDIA_IMAGE_MAX_BYTES = 20 * MB;
+export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
+
+const MEDIA_LIMIT_BYTES = {
+  "image/png": MEDIA_IMAGE_MAX_BYTES,
+  "image/jpeg": MEDIA_IMAGE_MAX_BYTES,
+  "image/gif": MEDIA_IMAGE_MAX_BYTES,
+  "image/webp": MEDIA_IMAGE_MAX_BYTES,
+  "image/svg+xml": MEDIA_IMAGE_MAX_BYTES,
+  "video/mp4": MEDIA_VIDEO_MAX_BYTES,
+  "video/webm": MEDIA_VIDEO_MAX_BYTES,
+} as const;
+
+/** The editor's counterpart of `AVATAR_ALLOWED_MIME_TYPES`. */
+export const MEDIA_ALLOWED_MIME_TYPES: readonly string[] =
+  Object.keys(MEDIA_LIMIT_BYTES);
 
 /**
- * Per-purpose intake rules. Only the `avatar` row is filled in: the
- * other purposes belong to usecases of the import slice, and inventing
- * their tables here would fix limits nobody exercises.
+ * Per-purpose intake rules. The ceiling table doubles as the allow list,
+ * so a type cannot be accepted without a limit to judge it by. The
+ * purposes still missing belong to usecases of the import slice, and
+ * inventing their tables here would fix limits nobody exercises.
  */
-const RULES: Partial<Record<FilePurpose, PurposeRule>> = {
-  avatar: {
-    allowedMimeTypes: AVATAR_ALLOWED_MIME_TYPES,
-    limitBytes: AVATAR_MAX_BYTES,
-  },
+const RULES: Partial<Record<FilePurpose, Readonly<Record<string, number>>>> = {
+  avatar: Object.fromEntries(
+    AVATAR_ALLOWED_MIME_TYPES.map((mimeType) => [mimeType, AVATAR_MAX_BYTES]),
+  ),
+  media: MEDIA_LIMIT_BYTES,
 };
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
+const GIF87A_SIGNATURE = [0x47, 0x49, 0x46, 0x38, 0x37, 0x61];
+const GIF89A_SIGNATURE = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
 const RIFF_SIGNATURE = [0x52, 0x49, 0x46, 0x46];
 const WEBP_SIGNATURE = [0x57, 0x45, 0x42, 0x50];
 const WEBP_FORM_OFFSET = 8;
+const FTYP_SIGNATURE = [0x66, 0x74, 0x79, 0x70];
+const FTYP_OFFSET = 4;
+const FTYP_BRAND_OFFSET = 8;
+const FTYP_BRAND_LENGTH = 4;
+const EBML_SIGNATURE = [0x1a, 0x45, 0xdf, 0xa3];
+
+/**
+ * ISO base media brands that mean "an MP4 a browser will play". The
+ * `ftyp` box alone does not: HEIC, 3GP and QuickTime carry the same box
+ * with their own brand, and accepting them would store a file the
+ * `video/mp4` we serve it as cannot decode.
+ */
+const MP4_BRANDS = new Set([
+  "isom",
+  "iso2",
+  "iso4",
+  "iso5",
+  "iso6",
+  "avc1",
+  "mp41",
+  "mp42",
+  "mmp4",
+  "dash",
+]);
+
+/**
+ * How far into an EBML header the `webm` DocType is looked for. The
+ * signature is shared with Matroska, and only the DocType tells the two
+ * apart; a real header carries it within the first few dozen bytes.
+ */
+const EBML_DOCTYPE_SCAN_BYTES = 64;
+const WEBM_DOCTYPE = [0x77, 0x65, 0x62, 0x6d];
+
+/** Prefix of a text upload read to decide whether it opens as SVG. */
+const SVG_SCAN_BYTES = 4096;
+const BOM = 0xfeff;
+
+/** What an XML prologue may hold before the root element. */
+const PROLOGUE_PARTS = [
+  { open: "<!--", close: "-->" },
+  { open: "<?", close: "?>" },
+  { open: "<!", close: ">" },
+] as const;
 
 const carries = (
   body: Uint8Array,
@@ -47,11 +105,81 @@ const carries = (
   body.length >= offset + signature.length &&
   signature.every((byte, index) => body[offset + index] === byte);
 
+const containsWithin = (
+  body: Uint8Array,
+  signature: readonly number[],
+  limit: number,
+): boolean => {
+  const last = Math.min(body.length, limit) - signature.length;
+  for (let offset = 0; offset <= last; offset += 1) {
+    if (carries(body, signature, offset)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const asciiAt = (body: Uint8Array, offset: number, length: number): string =>
+  body.length < offset + length
+    ? ""
+    : String.fromCharCode(...body.subarray(offset, offset + length));
+
+const isSpace = (character: string): boolean =>
+  character === " " ||
+  character === "\t" ||
+  character === "\n" ||
+  character === "\r" ||
+  character === "\f";
+
+/**
+ * Whether the bytes open as an SVG document. SVG carries no signature,
+ * so the prologue is walked instead: a BOM, an XML declaration, comments
+ * and a doctype may precede the root element, and the root element must
+ * then be `svg`. A doctype with an internal subset ends the walk early
+ * and the upload is refused rather than guessed at — the guess would be
+ * about a construct no editor emits.
+ */
+const opensAsSvg = (body: Uint8Array): boolean => {
+  const decoded = new TextDecoder().decode(body.subarray(0, SVG_SCAN_BYTES));
+  const head = decoded.charCodeAt(0) === BOM ? decoded.slice(1) : decoded;
+  let index = 0;
+  for (;;) {
+    while (index < head.length && isSpace(head[index] ?? "")) {
+      index += 1;
+    }
+    // `<!--` has to be tried before `<!`, or a comment would end at the
+    // first `>` inside it.
+    const part = PROLOGUE_PARTS.find((candidate) =>
+      head.startsWith(candidate.open, index),
+    );
+    if (part === undefined) {
+      break;
+    }
+    const end = head.indexOf(part.close, index + part.open.length);
+    if (end === -1) {
+      return false;
+    }
+    index = end + part.close.length;
+  }
+  if (!head.startsWith("<svg", index)) {
+    return false;
+  }
+  const delimiter = head[index + "<svg".length];
+  return (
+    delimiter === ">" ||
+    delimiter === "/" ||
+    (delimiter !== undefined && isSpace(delimiter))
+  );
+};
+
 /**
  * The content type the bytes themselves claim, for the formats the
  * filled-in rules accept. `null` means the leading bytes match none of
  * them — which is the only answer this policy can act on, since it
- * refuses anything outside `allowedMimeTypes` anyway.
+ * refuses anything outside the rule table anyway.
+ *
+ * The textual test comes last because it is the only one that has to
+ * decode the body rather than compare bytes at a fixed offset.
  */
 const identifyContentType = (body: Uint8Array): MimeType | null => {
   if (carries(body, PNG_SIGNATURE, 0)) {
@@ -61,10 +189,31 @@ const identifyContentType = (body: Uint8Array): MimeType | null => {
     return MimeType.create("image/jpeg");
   }
   if (
+    carries(body, GIF87A_SIGNATURE, 0) ||
+    carries(body, GIF89A_SIGNATURE, 0)
+  ) {
+    return MimeType.create("image/gif");
+  }
+  if (
     carries(body, RIFF_SIGNATURE, 0) &&
     carries(body, WEBP_SIGNATURE, WEBP_FORM_OFFSET)
   ) {
     return MimeType.create("image/webp");
+  }
+  if (
+    carries(body, FTYP_SIGNATURE, FTYP_OFFSET) &&
+    MP4_BRANDS.has(asciiAt(body, FTYP_BRAND_OFFSET, FTYP_BRAND_LENGTH))
+  ) {
+    return MimeType.create("video/mp4");
+  }
+  if (
+    carries(body, EBML_SIGNATURE, 0) &&
+    containsWithin(body, WEBM_DOCTYPE, EBML_DOCTYPE_SCAN_BYTES)
+  ) {
+    return MimeType.create("video/webm");
+  }
+  if (opensAsSvg(body)) {
+    return MimeType.create("image/svg+xml");
   }
   return null;
 };
@@ -85,17 +234,23 @@ export type AcceptedUpload = Readonly<{
  * cannot record anything else: a declaration only ever describes what
  * the sender wanted the object to be taken for, and the defence against
  * a lie must not depend on how the object is later served.
+ *
+ * Accepting a type is not the same as trusting its content. An accepted
+ * `image/svg+xml` still carries whatever markup it was uploaded with;
+ * sanitizing it is `HtmlProcessor`'s job, which spec/adr/013 fixes as
+ * the single application point of that rule set, and `storeMedia` runs
+ * the bytes through it before they are stored.
  */
 export const UploadValidationPolicy = {
-  limitFor: (purpose: FilePurpose, _mimeType: MimeType): ByteSize => {
-    const rule = RULES[purpose];
-    if (rule === undefined) {
+  limitFor: (purpose: FilePurpose, mimeType: MimeType): ByteSize => {
+    const limit = RULES[purpose]?.[mimeType];
+    if (limit === undefined) {
       throw new BusinessRuleError(
         StorageErrorCode.UnsupportedMimeType,
-        `Uploads for purpose ${purpose} are not accepted yet`,
+        `Uploads of ${mimeType} for purpose ${purpose} are not accepted`,
       );
     }
-    return ByteSize.create(rule.limitBytes);
+    return ByteSize.create(limit);
   },
 
   ensureAcceptable: (
@@ -110,7 +265,7 @@ export const UploadValidationPolicy = {
     if (
       rule === undefined ||
       mimeType === null ||
-      !rule.allowedMimeTypes.includes(mimeType)
+      rule[mimeType] === undefined
     ) {
       throw new BusinessRuleError(
         StorageErrorCode.UnsupportedMimeType,

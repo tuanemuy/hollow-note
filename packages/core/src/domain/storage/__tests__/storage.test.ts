@@ -35,6 +35,27 @@ const RIFF_BYTES = [0x52, 0x49, 0x46, 0x46];
 const WEBP_BYTES = [0x57, 0x45, 0x42, 0x50];
 const GIF_BYTES = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
 
+const FTYP_BYTES = [0x66, 0x74, 0x79, 0x70];
+const EBML_BYTES = [0x1a, 0x45, 0xdf, 0xa3];
+
+const ascii = (value: string): readonly number[] =>
+  [...value].map((character) => character.charCodeAt(0));
+
+const mp4Body = (brand: string, totalBytes = 64): Uint8Array => {
+  const body = withSignature(FTYP_BYTES, totalBytes, 4);
+  body.set(ascii(brand), 8);
+  return body;
+};
+
+const matroskaBody = (docType: string, totalBytes = 64): Uint8Array => {
+  const body = withSignature(EBML_BYTES, totalBytes);
+  body.set(ascii(docType), 31);
+  return body;
+};
+
+const svgBody = (source: string): Uint8Array =>
+  new TextEncoder().encode(source);
+
 const imageBody = (
   format: "png" | "jpeg" | "webp",
   totalBytes = 64,
@@ -263,5 +284,70 @@ describe("UploadValidationPolicy: avatar", () => {
         }),
       ),
     ).toBe(StorageErrorCode.UnsupportedMimeType);
+  });
+});
+
+describe("UploadValidationPolicy: media", () => {
+  const accept = (body: Uint8Array) =>
+    UploadValidationPolicy.ensureAcceptable({ purpose: "media", body });
+  const refuse = (body: Uint8Array) => codeOf(() => accept(body));
+
+  it("TC-storage-175 / TC-storage-176: reads every accepted media format out of its own bytes", () => {
+    const cases: readonly (readonly [Uint8Array, string])[] = [
+      [imageBody("png"), "image/png"],
+      [imageBody("jpeg"), "image/jpeg"],
+      [imageBody("webp"), "image/webp"],
+      [withSignature(GIF_BYTES), "image/gif"],
+      [
+        svgBody('<svg xmlns="http://www.w3.org/2000/svg"><rect /></svg>'),
+        "image/svg+xml",
+      ],
+      [mp4Body("isom"), "video/mp4"],
+      [matroskaBody("webm"), "video/webm"],
+    ];
+    for (const [body, expected] of cases) {
+      expect(accept(body).mimeType).toBe(expected);
+    }
+  });
+
+  it("TC-storage-176: walks an SVG prologue — BOM, declaration, comment, doctype — before deciding", () => {
+    const source = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<!-- exported by a drawing tool -->",
+      '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "svg11.dtd">',
+      '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0" /></svg>',
+    ].join("\n");
+    expect(accept(svgBody(`\u{FEFF}${source}`)).mimeType).toBe("image/svg+xml");
+  });
+
+  it("TC-storage-179: refuses bytes that merely resemble an accepted format", () => {
+    const refused: readonly Uint8Array[] = [
+      // The root element is what makes an SVG, not the string appearing.
+      svgBody("<html><body><svg /></body></html>"),
+      svgBody("<!-- <svg /> -->"),
+      // An `ftyp` box with a brand no browser plays as video/mp4.
+      mp4Body("heic"),
+      // EBML is shared with Matroska; only the DocType tells them apart.
+      matroskaBody("matroska"),
+      withSignature([0x25, 0x50, 0x44, 0x46]),
+    ];
+    for (const body of refused) {
+      expect(refuse(body)).toBe(StorageErrorCode.UnsupportedMimeType);
+    }
+  });
+
+  it("TC-storage-181 / TC-storage-180: takes an image of exactly 20 MB and refuses one byte past it", () => {
+    expect(accept(imageBody("png", 20 * MB)).size).toBe(20 * MB);
+    expect(refuse(imageBody("png", 20 * MB + 1))).toBe(
+      StorageErrorCode.FileTooLarge,
+    );
+  });
+
+  it("TC-storage-182: measures a video against its own 200 MB ceiling, not the image one", () => {
+    expect(accept(matroskaBody("webm", 21 * MB)).mimeType).toBe("video/webm");
+    expect(accept(mp4Body("isom", 200 * MB)).size).toBe(200 * MB);
+    expect(refuse(mp4Body("isom", 200 * MB + 1))).toBe(
+      StorageErrorCode.FileTooLarge,
+    );
   });
 });

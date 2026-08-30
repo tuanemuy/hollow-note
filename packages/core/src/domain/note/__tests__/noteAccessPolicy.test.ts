@@ -3,7 +3,11 @@ import {
   TokenHash,
   UserId,
 } from "@repo/core/domain/identity/valueObject";
-import type { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
+import {
+  WorkspaceId,
+  type WorkspaceRole,
+} from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { Note } from "../note";
 import {
@@ -198,6 +202,76 @@ describe("NoteAccessPolicy.ensureCanEdit", () => {
     expect(() => policy.ensureCanEdit(blank(), ownerViewer)).not.toThrow();
     expect(() => policy.ensureCanEdit(publicNote(), strangerViewer)).toThrow();
     expect(() => policy.ensureCanEdit(blank(), anonymous)).toThrow();
+  });
+});
+
+describe("NoteAccessPolicy.ensureCanDelete", () => {
+  const workspacePolicy = createNoteAccessPolicy(WorkspaceAuthorization);
+  const workspaceNote = (lifecycle: "active" | "trashed" = "active") => {
+    const note = Note.createBlank(
+      {
+        id: "n2",
+        owner: NoteOwner.workspace(WorkspaceId.create("w1")),
+        createdBy: ownerId,
+        title: "",
+        projectionRevision: 1,
+      },
+      T0,
+    ).entity;
+    return lifecycle === "active" ? note : Note.trash(note, at(2)).entity;
+  };
+  const member = (role: WorkspaceRole): NoteViewer => ({
+    kind: "user",
+    userId: UserId.create("u3"),
+    workspaceRole: role,
+  });
+
+  it("passes for the personal owner and throws AccessDenied for everyone else", () => {
+    expect(() => policy.ensureCanDelete(blank(), ownerViewer)).not.toThrow();
+    expect(() =>
+      policy.ensureCanDelete(publicNote(), strangerViewer),
+    ).toThrow();
+    expect(() => policy.ensureCanDelete(blank(), anonymous)).toThrow();
+  });
+
+  it("reports AccessDenied naming the refused action", () => {
+    expect(() => policy.ensureCanDelete(blank(), anonymous)).toThrow(
+      /cannot delete this note/,
+    );
+    expect(() => policy.ensureCanEdit(blank(), anonymous)).toThrow(
+      /cannot edit this note/,
+    );
+  });
+
+  it("follows the workspace role table rather than the edit verdict", () => {
+    for (const role of ["owner", "editor"] as const) {
+      expect(() =>
+        workspacePolicy.ensureCanDelete(workspaceNote(), member(role)),
+      ).not.toThrow();
+    }
+    expect(() =>
+      workspacePolicy.ensureCanDelete(workspaceNote(), member("viewer")),
+    ).toThrow();
+  });
+
+  it("still passes on a trashed note, which is what purge needs", () => {
+    expect(() =>
+      policy.ensureCanDelete(Note.trash(blank(), at(2)).entity, ownerViewer),
+    ).not.toThrow();
+    expect(() =>
+      workspacePolicy.ensureCanDelete(
+        workspaceNote("trashed"),
+        member("editor"),
+      ),
+    ).not.toThrow();
+    // A viewer cannot even see the trash, so the trash barrier answers
+    // before the delete verdict does.
+    expect(() =>
+      workspacePolicy.ensureCanDelete(
+        workspaceNote("trashed"),
+        member("viewer"),
+      ),
+    ).toThrow();
   });
 });
 

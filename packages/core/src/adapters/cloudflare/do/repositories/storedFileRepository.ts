@@ -10,7 +10,10 @@ import type {
 import { Version } from "../../../../domain/common/version";
 import { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
-import type { StoredFileRepository } from "../../../../domain/storage/ports/storedFileRepository";
+import {
+  NOTE_DELETABLE_PURPOSES,
+  type StoredFileRepository,
+} from "../../../../domain/storage/ports/storedFileRepository";
 import type {
   EphemeralFile,
   PersistentFile,
@@ -210,6 +213,23 @@ const fromRow = (row: SqlRow): StoredFile => {
   return persistent;
 };
 
+const compareText = (a: string, b: string): number =>
+  a < b ? -1 : a > b ? 1 : 0;
+
+const byId = (a: SqlRow, b: SqlRow): number =>
+  compareText(text(a, "id"), text(b, "id"));
+
+/** Oldest first, `id` breaking a tie so the order is total. */
+const oldestFirst = (a: SqlRow, b: SqlRow): number =>
+  int(a, "created_at") - int(b, "created_at") || byId(a, b);
+
+const DELETABLE_PURPOSE_LIST = NOTE_DELETABLE_PURPOSES.map(
+  (purpose) => `'${purpose}'`,
+).join(", ");
+
+const isDeletablePurpose = (purpose: string): boolean =>
+  (NOTE_DELETABLE_PURPOSES as readonly string[]).includes(purpose);
+
 const objectKeyConflict = (objectKey: string): ConflictError =>
   new ConflictError(
     "OBJECT_KEY_ALREADY_USED",
@@ -389,6 +409,63 @@ export function createCloudflareStoredFileRepository(
         .map((id) => byId.get(id))
         .filter((row): row is SqlRow => row !== undefined)
         .map(fromRow);
+    },
+
+    async listDeletableByNote(
+      noteId: NoteId,
+      limit: number,
+    ): Promise<readonly StoredFile[]> {
+      const bounded = Math.max(0, limit);
+      if (bounded === 0) {
+        return [];
+      }
+      const rows = await session.readRows({
+        table: TABLE,
+        statement: statement(
+          `SELECT ${SELECTION} FROM ${TABLE}
+             WHERE note_id = ? AND purpose IN (${DELETABLE_PURPOSE_LIST})
+             ORDER BY id LIMIT ?`,
+          noteId,
+          bounded,
+        ),
+        keyOf: (row) => text(row, "id"),
+        matches: (row) =>
+          textOrNull(row, "note_id") === noteId &&
+          isDeletablePurpose(text(row, "purpose")),
+        compare: byId,
+        limit: bounded,
+      });
+      return rows.map(fromRow);
+    },
+
+    async listByPurposeOlderThan(
+      purpose: FilePurpose,
+      createdBefore: Date,
+      limit: number,
+    ): Promise<readonly StoredFile[]> {
+      const bounded = Math.max(0, limit);
+      if (bounded === 0) {
+        return [];
+      }
+      const threshold = toTimestamp(createdBefore);
+      const rows = await session.readRows({
+        table: TABLE,
+        statement: statement(
+          `SELECT ${SELECTION} FROM ${TABLE}
+             WHERE purpose = ? AND created_at <= ?
+             ORDER BY created_at, id LIMIT ?`,
+          purpose,
+          threshold,
+          bounded,
+        ),
+        keyOf: (row) => text(row, "id"),
+        matches: (row) =>
+          text(row, "purpose") === purpose &&
+          int(row, "created_at") <= threshold,
+        compare: oldestFirst,
+        limit: bounded,
+      });
+      return rows.map(fromRow);
     },
 
     async listByOwner(

@@ -58,6 +58,7 @@ import {
   createAutocommitSession,
   type SqlSession,
 } from "../../adapters/cloudflare/sql/session";
+import { createHtmlProcessor } from "../../adapters/html/htmlProcessor";
 import { createScryptPasswordHasher } from "../../adapters/memory/passwordHasher";
 import { createNodeSecureTokenGenerator } from "../../adapters/memory/secureTokenGenerator";
 import {
@@ -236,6 +237,9 @@ export function createCloudflareRuntime(
   });
 
   const passwordHasher = createScryptPasswordHasher();
+  // Stateless and provider-independent: the same adapter the reference
+  // runtime uses, so the sanitize policy cannot diverge between backends.
+  const htmlProcessor = createHtmlProcessor();
   const secureTokenGenerator = createNodeSecureTokenGenerator();
   const shareTokenProtector =
     createWebCryptoShareTokenProtector(shareTokenKeyRing);
@@ -393,6 +397,7 @@ export function createCloudflareRuntime(
         loginAttemptStore: createD1LoginAttemptStore({ session, clock }),
         oauthStateStore: createD1OAuthStateStore({ session, clock }),
         objectStorage,
+        htmlProcessor,
         signInOAuthClient: createSignInOAuthClient(oauth, config.appUrl),
         oauthDevMode: oauth.mode === "dev",
         userReader: createD1UserRepository({ session }),

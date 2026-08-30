@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Version } from "../../domain/common/version";
+import type { NoteId } from "../../domain/note/valueObject";
 import type {
   EphemeralFile,
   StoredFile,
@@ -26,8 +27,10 @@ const CHECKSUM = Checksum.sha256("a".repeat(64));
 
 /**
  * Shared conformance suite for `StoredFileRepository`
- * (ADP-storage-001..005, 011, 012): OCC over the file rows plus the
- * owner-scoped listing and total the avatar and cleanup paths need.
+ * (ADP-storage-001..005, 007, 010, 011, 012): OCC over the file rows,
+ * the owner-scoped listing and total the avatar and cleanup paths need,
+ * and the two bounded sweeps a note purge and the orphan-media
+ * collection walk.
  */
 export function describeStoredFileRepositoryContract(
   backendName: string,
@@ -89,10 +92,41 @@ export function describeStoredFileRepositoryContract(
         backend.clock.now(),
       ).entity;
 
+    const noteFile = (
+      n: number,
+      purpose: "source" | "media" | "reference",
+      note: NoteId,
+      createdAt: Date = backend.clock.now(),
+    ): StoredFile =>
+      StoredFileOps.register(
+        {
+          id: `file-${n}`,
+          owner,
+          objectKey: ObjectKey.build(
+            owner,
+            purpose,
+            StoredFileId.create(`file-${n}`),
+            "bin",
+          ),
+          fileName: `file-${n}.bin`,
+          mimeType: "application/octet-stream",
+          size: 10,
+          checksum: CHECKSUM,
+          purpose,
+          noteId: note,
+          uploadedBy: userId(1),
+        },
+        createdAt,
+      ).entity;
+
     // Artifacts are only created by the import slice's
     // `registerEphemeral`; the literal is what lets this suite pin the
     // exclusion `sumSizeByOwner` promises today.
-    const artifact = (n: number, size: number): EphemeralFile => ({
+    const artifact = (
+      n: number,
+      size: number,
+      note: NoteId | null = null,
+    ): EphemeralFile => ({
       id: StoredFileId.create(`file-${n}`),
       owner,
       objectKey: ObjectKey.build(
@@ -110,9 +144,9 @@ export function describeStoredFileRepositoryContract(
       updatedAt: backend.clock.now(),
       retention: "ephemeral",
       expiresAt: new Date(backend.clock.now().getTime() + 60_000),
-      purpose: "artifact",
-      noteId: null,
-      noteVersion: null,
+      ...(note === null
+        ? { purpose: "artifact", noteId: null, noteVersion: null }
+        : { purpose: "artifact", noteId: note, noteVersion: 1 }),
       uploadedBy: userId(1),
     });
 
@@ -189,6 +223,73 @@ export function describeStoredFileRepositoryContract(
       ]);
       expect(listed.map((file) => file.id)).toEqual(["file-1"]);
       expect(await repository.listByIds([])).toEqual([]);
+    });
+
+    it("ADP-storage-007: lists a note's source / media / reference files by id, leaving its artifacts and other notes out", async () => {
+      await repository.insert(noteFile(3, "reference", noteId(1)));
+      await repository.insert(noteFile(1, "source", noteId(1)));
+      await repository.insert(noteFile(2, "media", noteId(1)));
+      await repository.insert(noteFile(4, "media", noteId(2)));
+      // Reclaimed by its own `expiresAt`, not by the note's purge.
+      await repository.insert(artifact(5, 10, noteId(1)));
+      await repository.insert(avatar(6));
+
+      expect(
+        (await repository.listDeletableByNote(noteId(1), 100)).map(
+          (file) => file.id,
+        ),
+      ).toEqual(["file-1", "file-2", "file-3"]);
+      // A full page is what tells the caller to schedule another turn,
+      // so the bound has to cut exactly at `limit`.
+      expect(
+        (await repository.listDeletableByNote(noteId(1), 2)).map(
+          (file) => file.id,
+        ),
+      ).toEqual(["file-1", "file-2"]);
+      expect(await repository.listDeletableByNote(noteId(1), 0)).toEqual([]);
+      expect(await repository.listDeletableByNote(noteId(9), 100)).toEqual([]);
+    });
+
+    it("ADP-storage-010: lists one purpose oldest first, including the boundary instant and excluding anything newer", async () => {
+      const cutoff = new Date(backend.clock.now().getTime() + 60_000);
+      await repository.insert(
+        noteFile(1, "media", noteId(1), new Date(cutoff.getTime() + 1)),
+      );
+      await repository.insert(noteFile(2, "media", noteId(1), cutoff));
+      await repository.insert(
+        noteFile(3, "media", noteId(1), new Date(cutoff.getTime() - 2)),
+      );
+      await repository.insert(
+        noteFile(4, "reference", noteId(1), new Date(cutoff.getTime() - 2)),
+      );
+
+      // Oldest first — the ids run the other way, so an id order would
+      // answer `file-2, file-3` here.
+      expect(
+        (await repository.listByPurposeOlderThan("media", cutoff, 100)).map(
+          (file) => file.id,
+        ),
+      ).toEqual(["file-3", "file-2"]);
+      expect(
+        (await repository.listByPurposeOlderThan("media", cutoff, 1)).map(
+          (file) => file.id,
+        ),
+      ).toEqual(["file-3"]);
+      expect(
+        (await repository.listByPurposeOlderThan("reference", cutoff, 100)).map(
+          (file) => file.id,
+        ),
+      ).toEqual(["file-4"]);
+      expect(
+        await repository.listByPurposeOlderThan("media", cutoff, 0),
+      ).toEqual([]);
+      expect(
+        await repository.listByPurposeOlderThan(
+          "media",
+          new Date(cutoff.getTime() - 3),
+          100,
+        ),
+      ).toEqual([]);
     });
 
     it("ADP-storage-012: pages an owner's files and reports the total so a full page is not mistaken for the end", async () => {

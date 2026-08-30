@@ -59,11 +59,21 @@ export type ProcessedHtml = Readonly<{
  * External stylesheet traces use the three `data-stylesheet-*` states
  * (spec/adr/014); only `data-stylesheet-href` is extraction-eligible.
  *
- * Port definition only in the walking-skeleton slice — the adapter ships
- * with the import slice.
+ * `extractExternalReferences` reports the *resource* attributes (`src` /
+ * `srcset` / `poster`) and the stylesheet trace, not navigation targets
+ * (`a href`, `cite`): `importExternalReferences` stores and repoints
+ * everything it is handed, so a hyperlink in that set would be downloaded
+ * and rewritten to a copy of the linked page.
+ *
+ * Headings are indexed by `anchorId`, and the same call guarantees the id
+ * resolves in the returned `html` — a heading without a usable `id` is
+ * given a generated one, because nothing downstream re-derives it.
  *
  * Error contract: `SystemError(ExternalServiceError)` (unparseable);
- * broken HTML is repaired, not rejected.
+ * broken HTML is repaired, not rejected. The shipped adapter
+ * (`adapters/html/htmlProcessor.ts`) is backed by a total HTML5 fragment
+ * parser and therefore never reaches that branch; a backend whose parser
+ * can fail must translate into it rather than leak a driver error.
  */
 export interface HtmlProcessor {
   process(rawHtml: string): ProcessedHtml;

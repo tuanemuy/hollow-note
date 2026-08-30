@@ -59,6 +59,7 @@ const REQUEST_PORTS = [
   "loginAttemptStore",
   "oauthStateStore",
   "objectStorage",
+  "htmlProcessor",
   "signInOAuthClient",
   "oauthDevMode",
   "userReader",
