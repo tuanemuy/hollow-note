@@ -28,7 +28,7 @@ Issue #3 は spec-slice Issue であり、要件は本文の実装チェック�
 | AC-9 | WS-08 ワークスペースを公開する / 非公開に戻す が end-to-end で動く | `spec/scenario/workspace.md#WS-08` | 1〜8, 14, 17 |
 | AC-10 | WS-09 ワークスペースの公開ページを閲覧する が end-to-end で動く | `spec/scenario/workspace.md#WS-09` | 1〜7, 16, 17 |
 | AC-11 | DS-02 ワークスペースの公開タイムラインを確認する が end-to-end で動く | `spec/scenario/discovery.md#DS-02` | 1〜7, 14, 16, 17 |
-| AC-12 | WS-10 ワークスペースを削除する が end-to-end で動く。**ただしタグの掃除（`TC-workspace-096` / `-097`）を除く** — tag ドメインが本 Issue のスコープ外のため（後述「決定事項」）。ノート・メンバーシップ・招待・公開ページの消滅と、削除後の 404 で判定する | `spec/scenario/workspace.md#WS-10` | 1〜6, 11, 13, 14, 17 |
+| AC-12 | WS-10 ワークスペースを削除する が end-to-end で動く。**ただしタグの掃除（`TC-workspace-096` / `-097`）とノートの消滅（`TC-workspace-092` / `-094` / `-098`）を除く** — tag ドメインと `workspace.deleted` の購読者が本 Issue のスコープ外のため（後述「決定事項」D-001 / D-003）。メンバーシップ・招待・公開ページの消滅と、削除後の 404 で判定する | `spec/scenario/workspace.md#WS-10` | 1〜6, 11, 13, 14, 17 |
 | AC-13 | OR-12 ノートの所属先を移動する が end-to-end で動く。**ただしタグの付け替え（`TC-note-246` / `-247`）を除く** — 同上。所属先の切替・URL の維持・移動先での再認可・ファイルの再配置で判定する | `spec/scenario/organize.md#OR-12` | 1〜6, 12, 16, 18 |
 | AC-14 | `getUsageSnapshot` が `workspaceCursor` / `workspaceLimit` を受け、`workspaces` / `nextWorkspaceCursor` を返す（`spec/usecases/usage.md` 手順 2・3 の keyset・並行 RPC・部分失敗時 `unavailable` を含む） | Issue #3 コメント 1 | 13 |
 | AC-15 | `recalculateStorageUsage` の `subjectType === "workspace"` が membership を検査する（`storeAvatar` と縮退の向きが一致する） | Issue #3 コメント 2 | 13 |
@@ -92,3 +92,20 @@ Issue #3 は spec-slice Issue であり、要件は本文の実装チェック�
 **決定:** レイヤーごとに PR を分割せず、1 本の PR で提出する。
 
 **影響:** plan.md「リスクと注意点」冒頭の「単一 PR では収まらない可能性が高く、レイヤー境界で分割する前提で進める」は取り消す。代わりに、レビュー可能性を保つためコミットをレイヤー境界（steps.md のステップ単位）で切り、実装中も `pnpm typecheck` が常に通る順序で進める。
+
+### [D-003] `workspace.deleted` の購読者を見送り、ノートの消滅を AC-12 の判定から外す（決定済み）
+
+**背景:** `deleteWorkspace` は多段サガを完走して `workspace.deleted` を発行するが、このイベントを購読する使い手が 1 つも存在しない。`spec/testcases/workspace/deleteWorkspace.md` は後始末を「`workspace.deleted` の購読ユースケース（`deleteNotesForOwner` / `deleteTagsForScope` / `deleteFilesByOwner` / `deleteQuota`）」に委ねると述べており、そのどれも本スライスには無い。
+
+**決定:** `workspace.deleted` の購読者（`deleteNotesForOwner` 相当とその連鎖）を**本 Issue では見送る**。`TC-workspace-092`（公開ノートの URL が「見つかりません」）/ `-094`（ゴミ箱のノートも削除される）/ `-098`（バックアップ記録の削除）は**判定対象外**とする。実装は 1 行も足さない。
+
+**理由:** 消費者は Issue #8（tag）と Issue #7（ノート編集・ゴミ箱）側の持ち分であり、本スライスの範囲は `workspace.deleted` の**発行まで**である（`.thread/3/steps.md` ステップ 11 が既にそう書いている）。D-001 と同じ境界の引き方で、先取り実装は後発スライスでの作り直しを招く。
+
+**利用者から見た影響:** 今日はゼロ。ワークスペース削除後は membership が消えて認可が閉じるため、残ったノートは公開経路も含めてすべて 404 になる（公開投影へ書く経路自体が Issue #9 で未実装）。残るのは画面から到達できない不可視の残骸 — notes / revisions / 保管ファイル / quota 行である。
+
+**但し書き（後発スライスへの申し送り）:** `workspace.deleted` は**購読者不在のまま ack され、outbox 行は剪定される**。したがって後から `deleteNotesForOwner` を足しても、**本スライス期間中に行われた削除を再駆動することはできない**。retired scope を走査して残骸を回収する**一度きりの掃除**が別途必要になる。この申し送りは `deleteNotesForOwner` を引き取る Issue に明記すること。
+
+**影響:**
+
+- AC-12 の基準文から「ノートの消滅」を外し、`TC-workspace-092` / `-094` / `-098` を判定対象外として明記した。判定はメンバーシップ・招待・公開ページの消滅と削除後の 404 で行う。
+- `.thread/3/testing.md` の「本計画で扱わないもの」に同じ行を足し、項目 16 の確認ポイントに「手順 6 の 404 は認可が閉じた結果であって、ノート行が消えた証拠ではない」ことを明記した。
