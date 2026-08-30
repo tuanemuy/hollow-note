@@ -181,6 +181,23 @@ const operations = (h: TestHarness) => h.backend.distributedOperations.values();
 
 // --- state seeding no usecase in this slice produces -------------------
 
+/**
+ * Rewrites a control row into a payload no plan can be read from. Nothing
+ * in this slice writes one — the payload is fixed at creation and never
+ * rewritten — but a row that outlives a deploy that changed its shape
+ * would read the same way.
+ */
+function corruptPayload(h: TestHarness, migrationId: string): void {
+  const row = h.backend.distributedOperations.get(migrationId);
+  if (row === undefined) {
+    throw new Error(`no operation ${migrationId}`);
+  }
+  h.backend.distributedOperations.set(migrationId, {
+    ...row,
+    payload: { ...row.payload, source: "not-a-scope" },
+  });
+}
+
 /** Flips a note's body to `processing`, which only conversion can do. */
 async function markProcessing(
   h: TestHarness,
@@ -3033,6 +3050,39 @@ describe("moveNote", () => {
       [settled, "rejected"],
       [rival, "running"],
     ]);
+  });
+
+  it("TC-note-777: a replay whose payload cannot be read leaves the row as it found it", async () => {
+    const h = createTestHarness();
+    await seedMovePair(h);
+    const noteId = await seedWholeNote(h);
+
+    await expect(
+      move(h, {
+        noteId,
+        workspaceId: TARGET_WS,
+        expectedVersion: null,
+        container: withScopeRunHooks(h, {
+          before: (_scope, index) => {
+            if (index === 1) {
+              throw failure("staging response lost");
+            }
+          },
+        }),
+      }),
+    ).rejects.toThrow("staging response lost");
+    const settled = operations(h)[0];
+    expect(settled).toMatchObject({ state: "rejected" });
+    corruptPayload(h, settled?.id ?? "");
+
+    // The plan is read before the row is reopened, and this is the order
+    // that says so: opened first, a row nothing can decode would be left
+    // `running` with no caller to close it, and `beginOrResume` would join
+    // every later move of this note to it.
+    await expect(
+      move(h, { noteId, workspaceId: TARGET_WS, expectedVersion: null }),
+    ).rejects.toThrow("Note move operation");
+    expect(operations(h)[0]).toMatchObject({ state: "rejected" });
   });
 
   const MOVE_SEAMS: readonly MoveSeam[] = [

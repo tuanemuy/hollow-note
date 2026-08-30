@@ -1744,6 +1744,7 @@
 | TC-note-774 | moveNote: 同一 requestKey の並行要求が switch を着地させた直後に claim の応答を失う — 修復する | spec/testcases/note/moveNote.md#テストケース-movenote | 修復が switch 済みと判明したら operation を終端させず停止として記録し、両 scope の move lock を恒久化しない |
 | TC-note-775 | moveNote: 一度失敗して `rejected` で閉じた移動を同じ actor が同じ移動先へやり直す — route switch 後に停止する | spec/testcases/note/moveNote.md#テストケース-movenote | 引き直した終端行を駆動前に `running` へ開き直すので、停止が `running` のまま記録され両 scope の move lock を解放できる主体が残る |
 | TC-note-776 | moveNote: 自分の行が終端しているあいだに別の編集者の移動が走り始めた — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | 終端行の開き直しが「partition ごとに running は 1 件」に阻まれ `NOTE_MOVE_IN_PROGRESS` になる。走行中の行も終端した行もそのまま残る |
+| TC-note-777 | moveNote: 終端した行の payload が読めない — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | plan を読むのが開き直しより先なので、decode に失敗した行は終端したまま残り、誰も閉じない `running` を作らない |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |

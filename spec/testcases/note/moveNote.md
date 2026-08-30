@@ -51,3 +51,4 @@
 | 同一 requestKey の並行要求が switch を着地させた直後に claim の応答を失う | 修復する | 修復が switch 済みと判明したら operation を終端させず `running` のまま停止として記録し、両 scope の move lock を恒久化しない | |
 | 一度失敗して `rejected` で閉じた移動を、同じ actor が同じ移動先へやり直す | route switch 後に停止する | 引き直した終端行が駆動前に `running` へ開き直され、停止は `running` のまま記録される（両 scope の move lock を解放できる主体が残る） | |
 | 自分の行が終端しているあいだに別の編集者の移動が走り始めた | 同じ入力で再試行する | 終端行の開き直しは「partition ごとに running は 1 件」に阻まれ、`ConflictError("NOTE_MOVE_IN_PROGRESS")` が返る。走行中の行も終端した行もそのまま残る | |
+| 終端した行の payload が読めない（形が変わったまま残っている） | 同じ入力で再試行する | plan を読むのが開き直しより先なので、decode に失敗した行は終端したまま残る（誰も閉じない `running` を作らない） | |
