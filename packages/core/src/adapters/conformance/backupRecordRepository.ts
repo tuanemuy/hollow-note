@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { isSystemError } from "../../application/errors";
 import { BackupRecord } from "../../domain/integration/backupRecord";
 import type { NoteId } from "../../domain/note/valueObject";
 import { expectConflict } from "./asserts";
@@ -62,6 +63,23 @@ export function describeBackupRecordRepositoryContract(
       const rows = await repository.listByNote(noteId(1));
       expect(rows.map((r) => r.id)).toEqual(["backup-001", "backup-004"]);
       expect(rows[0]).toEqual(record(1, noteId(1), "file-1"));
+    });
+
+    it("ADP-integration-008: answers a re-used record id with a fault, not the source-file conflict", async () => {
+      await repository.insert(record(1, noteId(1), "file-1"));
+
+      // The two unique constraints of the table mean different things:
+      // losing the `(noteId, sourceFileId)` race is a conflict the
+      // caller can accept, while minting the same id twice is a fault it
+      // must fix. A backend that collapses them tells the caller to
+      // retry the one that will never succeed.
+      await expect(
+        repository.insert(record(1, noteId(2), "file-2")),
+      ).rejects.toSatisfy(isSystemError);
+      expect(await repository.listByNote(noteId(2))).toEqual([]);
+      expect((await repository.listByNote(noteId(1))).map((r) => r.id)).toEqual(
+        ["backup-001"],
+      );
     });
 
     it("ADP-integration-014: deletes at most `limit` records of one note, whoever owns them", async () => {

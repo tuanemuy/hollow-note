@@ -457,6 +457,11 @@ export function createCloudflareRuntime(
         ...sharedDeps,
         globalUnitOfWorkProvider: globalUnitOfWorkProvider(),
         scopeUnitOfWorkProvider: scopeUnitOfWorkProvider(),
+        // Global plane only. Each scope object also collects into an
+        // outbox of its own (`storage.fileDeleted`, `note.purged` and
+        // its fan-out), and this wiring has no reader for those —
+        // `application/cleanup/participants.ts` declares the gap, and
+        // spec/platform/index.md holds the design that closes it.
         outboxRepository: createD1OutboxRepository({ session, clock }),
         idempotencyStore: createD1IdempotencyStore({ session, clock }),
         maintenanceRunStore: createD1GlobalMaintenanceRunStore({

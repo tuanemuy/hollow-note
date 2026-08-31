@@ -1198,3 +1198,251 @@ ED-09 手順 1 は「ノート詳細**または一覧**のメニューから『�
 
 - 良い点: 他スライスの持ち分を先取りしない。`createBlankNote` に本文を渡す形にするのか、`updateNoteBody` に手順を足すのかは、実装する側が決めるべき設計判断として残る
 - トレードオフ: TC-02 は引き続き FAIL する
+
+---
+
+## ADR-048: `beginPurge` の「操作単位の冪等は CAS より先」をポート契約へ昇格する
+
+### Context
+
+`purgeNote` の forward recovery（`resumeInternal`）は、どの route も持ちえない世代 `-1`（`RESUME_CLAIM`）で `beginPurge` を呼び、自分の `purging` 行を読み戻して停止した purge を再開する。`resolve` が `purging` を隠す以上、これが scope と世代を知る唯一の経路である。
+
+ところが依存している「同一 `operationId` の `purging` 行は世代 CAS より**先**に返る」という順序は、ポートの JSDoc にも conformance にも無かった。memory / D1 の両実装がたまたま同じ順序で書かれているだけで、`checkVersion` を先に置いた 3 つ目のバックエンドはコンフォーマンス緑のまま、停止した purge を全て復旧不能（route は `purging` のまま = ノートは永久に到達不能）にできた。
+
+### Decision
+
+**契約側に書く。** `NoteRouteStore.beginPurge` の JSDoc に「同一 operation の `purging` 行は `expectedRouteVersion` を見ずに冪等に返す」「recovery がこれに依存して番兵世代で再 claim する」「他人の operation は state か CAS で拒まれるので番兵は route を奪えない」を明記し、`describeNoteRouteStoreContract` に ADP-note-043 の 2 ケースを足した（自分の claim は番兵世代でも同一の route を返す / まだ `purging` でない active route は番兵世代を CAS で拒む）。ADR 026 の 3 点セット（ポート JSDoc・memory・cloudflare が同じスイートを通る）を満たす。
+
+台帳 ID は `ADP-note-043`（`beginPurge`）を流用し、新しい ID は起こさない。冪等順序は `beginPurge` の一節であって別のポートメソッドではない。
+
+### Consequences
+
+- 良い点: 順序の破れが「アダプターを差し替えたときに初めて分かる」から「conformance が落ちる」に変わる。両バックエンドで変異（`checkVersion` を先頭へ移動）が red になることを確認済み
+- 良い点: `RESUME_CLAIM` の番兵が実装の小細工ではなく契約の一部として読める
+- トレードオフ: `spec/domains/note.md` の `NoteRouteStore` 節と `spec/inventory/adapter.md:ADP-note-043` の説明文に同じ一節を足す作業が残る（spec の更新は別ユニット）
+
+---
+
+## ADR-049: `emptyTrash` の同期削除が飛ばす失敗は spec のエラー表どおりに限る
+
+### Context
+
+`purgeEachNote` は `purgeNote` の例外を全部握り潰して次のノートへ進んでいた。`spec/usecases/note.md#emptyTrash` が飛ばしてよいと定めるのは「版が競合（`ConflictError`）」「既に削除済み（`NOTE_NOT_TRASHED` / 不在）」の 2 つだけで、実装は `SystemError(DatabaseError)` も同じ扱いにしていた。scope が丸ごと落ちていても `{ mode: "purged", purgedCount: 0 }` が返り、画面は「0 件を完全に削除しました」と表示する。要求経路なので CLAUDE.md の「broad try / catch は worker の per-row tolerance だけ」にも当たる。
+
+出力 DTO に失敗件数を足す案は採らなかった。`spec/usecases/note.md#emptyTrash` の出力 DTO は `mode` / `purgedCount` / `jobIds` の 3 つで、飛ばした件数は「数えた総数と `purgedCount` の差」として既に呼び出し側に見えている。飛ばせない失敗は件数ではなく**失敗そのもの**として報告されるべきで、DTO を増やすと spec の改訂が要る。
+
+### Decision
+
+`isConflictError` / `isNotFoundError` / `ValidationError("NOTE_NOT_TRASHED")` **だけ**を飛ばし、それ以外は再送出する。途中で投げると既に確定した purge は戻らないが、これは spec が「ゴミ箱を空にする操作は部分的に進んでも矛盾しない」と明記している性質そのものである。
+
+### Consequences
+
+- 良い点: 全滅が成功として返らない。到達不能な scope は要求ごと失敗し、画面は誤った完了通知を出さない
+- 良い点: DTO も spec も変えずに済む
+- トレードオフ: `spec/testcases/note/emptyTrash.md` / `spec/inventory/test.md` の TC-note-111（「一部の削除が失敗する → 他の削除は継続し、失敗件数が分かる」）は、飛ばせる失敗の行として読み直す必要があり、飛ばせない失敗の行が 1 つ足りない（spec の更新は別ユニット）
+
+---
+
+## ADR-050: ジョブ経路の列挙は `countByOwner` の結果で束縛する
+
+### Context
+
+`scheduleBulkPurge` の列挙は `for (let page = 1; ; page += 1)` で、終了条件が「満ページでなくなる」だけだった。直前に `countByOwner` で総数を知っているのに、1 要求の中の逐次読みに上限が無い。`listByOwner` のページングが壊れた場合は要求が返らない。`spec/platform/index.md`「実行予算と分割単位」は 1 実行の逐次量を上限で縛る設計であり、`EMPTY_TRASH_SYNCHRONOUS_LIMIT` の JSDoc（応答時間を束縛する）とも噛み合っていなかった。
+
+### Decision
+
+`total` を `scheduleBulkPurge` へ渡し、`Math.ceil(total / ENUMERATION_PAGE_SIZE)` ページまでで打ち切る（満たないページで早く抜けるのは従来どおり）。列挙の途中で新たにゴミ箱へ入ったノートは次の要求の持ち分とし、追いかけない。
+
+ページ数に絶対上限を置いて超過を `SystemError` にする案は採らなかった。上限を超えたゴミ箱が「空にできない」状態になり、分割・再開の設計（spec 側の判断）が要る。本スライスの指摘は「上限が無い」ことであって「総数に比例する」ことではない。
+
+### Consequences
+
+- 良い点: 逐次読みが、要求が既に支払って知っている数で束縛される。ページングのバグは「返らない要求」ではなく「足りない列挙」になる
+- 良い点: `purgedCount`（登録した件数）は実際に列挙できた件数のままで、嘘をつかない
+- トレードオフ: 巨大なゴミ箱の応答時間は依然として件数に比例する。定数上限と再開はジョブ集約のスライスの持ち分
+
+---
+
+## ADR-051: 保存後の正本は面を差し替える瞬間にサーバーから引き直す
+
+### Context
+
+編集画面は「確定済みの本文」を 1 つしか持っていなかった。モードを切り替えると `applyMode` がその値で面を再シードするが、その値は**サーバーが持っている本文ではない**。
+
+1. ビジュアルモードの保存（`applyTextNodeEdits`）は経路単位の書き換えなので、結果の HTML が画面の手元に無い。保存後に HTML / WYSIWYG へ切り替えると編集前の本文が面に載り、そこから保存すれば書き換えが消える
+2. `UpdatedNoteBodyView` は除去の一覧を返すがサニタイズ後の本文を返さない。「除去しました」と告げた直後の面には除去対象が残り、次の保存でまた送られる
+3. 「保存して切り替える」は `await commit(true)` のあとにクリック時の閉包から `applyMode` を呼ぶので、そこで読む state は保存前の値である。切り替えた瞬間に本文が巻き戻り、直後の自動保存がその巻き戻りをサーバーへ書き戻す
+
+保存の応答に本文を足す案（`UpdatedNoteBodyView` / `AppliedTextNodeEditsView` に `html` を追加）もあるが、`packages/core` の DTO を 2 つ広げ、自動保存のたびに本文をもう 1 往復ぶん運ぶ。
+
+### Decision
+
+正本の取得を**面を差し替える瞬間**に寄せる。`applyMode` は `readNoteEditStateFn` で `title` / `html` / `version` を引き直し、その値で `mode` と本文・`baseline` を同時に載せる。引き直しに失敗したらモードを切り替えず、エラーの状態だけを出す。
+
+`dirty` の基準は引き続き**送った内容**にする（`rememberSaved` が唯一の書き込み口）。サニタイズ後の本文を基準にすると入力欄との差が消えず、自動保存が同じ本文を延々と送り直す。
+
+閉包から読む値を断つため、確定済みの値は `savedRef` にも持つ。`applyMode` が非同期 transition の中から呼ばれる以上、state 側は必ず 1 世代古い。ノートがまだ無い（新規作成）ときだけ、この ref が再シードの出所になる。
+
+`commit` は成否を返す。「保存して切り替える」は `true` のときだけ切り替える — 切り替えは面を保存済みの内容へ戻す操作なので、失敗したまま進むと書きかけがそこで消える。
+
+### Consequences
+
+- 良い点: 3 つの巻き戻りが 1 か所の変更で消える。ビジュアルモードの保存もサニタイズも、切り替えた面に反映される
+- 良い点: 版も同時に引き直すので、切り替えを挟んだ次の保存が古い版で競合しない
+- トレードオフ: モードの切り替えが 1 往復ぶん遅くなる。往復の最中はモードのラジオを押せなくする（後着が勝つと面と `mode` が食い違う）
+- トレードオフ: サニタイズで除去された内容は、モードを切り替えるまで面に残ったままになる。除去の通知は出ているので誤解は生まないが、面と正本が一時的に食い違う
+
+---
+
+## ADR-052: HTML モードのプレビューは描く前にクライアント側でも落とす
+
+### Context
+
+プレビューは `NoteBody` に渡され、`shadowRoot.innerHTML = ...` で **live DOM** に入る。渡していたのは保存前の本文そのもので、`<img onerror=...>` のような属性はそこで実行される。コードのコメントは「実際の安全は保存時のサニタイズと CSP が担う」と書いていたが、`apps/web/app/server.node.ts` の CSP は `frame-ancestors` / `form-action` / `object-src` / `base-uri` だけで `script-src` を持たない。攻撃は自己 XSS に限られるものの、根拠が事実と食い違っていた。
+
+### Decision
+
+プレビュー用の HTML を作る時点で、`on*` 属性・`javascript:` の URL・`script` / `iframe` / `object` / `embed` / `link` / `meta` / `base` / `form` / `noscript` を落とす。`<template>` へのパースは構文補正の判定ですでに行っているので、同じ 1 回の解析で補正結果とプレビューの両方を作る。
+
+サーバー側の `HtmlProcessor` を呼ばないのは、プレビューが打鍵のたびに更新される描画であり、サニタイズだけを行う読み取り経路が無いためである。落とす対象は `HtmlProcessor` が落とすものの**部分集合**にしてあるので、プレビューが「実際に保存される形」から外れる向きには動かない。
+
+CSP に `script-src` を足すかどうかは配信側（`server.node.ts`）の判断で、ここでは前提にしない。
+
+### Consequences
+
+- 良い点: 保存前の本文を live DOM へ入れる経路が無くなる。防御が CSP の有無に依存しない
+- 良い点: プレビューが保存後の姿へ 1 歩近づく（許可リスト外の要素はサーバーでも落ちる）
+- トレードオフ: 走査が 1 回増える。打鍵から 500 ms の据え置きに載せてあるので描画のたびには走らない
+- トレードオフ: プレビューはサニタイズの完全な再現ではない。CSS 宣言・URL スキームの細かい規則はサーバー側にしかなく、除去の一覧は保存後にしか出ない
+
+## ADR-053: `media` を公開配信の鍵空間に入れ、配信・ポート契約・spec の 3 点を同時に動かす
+
+### Context
+
+`storeMedia` は `ObjectStorage.publicUrl(objectKey)` を返し、エディタはその URL を本文に挿す。ところが `/storage/$` は `purpose !== "avatar"` を 404 で弾いており、挿した画像・動画は必ず壊れていた（AC-6 / ED-06 が成立しない）。`collectOrphanMedia` の孤児判定も本文中の URL を `publicUrl` の戻り値と突き合わせるので、本文に載ることのない住所を正としていた。
+
+配信しない側に倒す案（`createDownloadUrl` 相当の期限つき URL を返す）は取れない。公開ノートの本文は匿名の閲覧者にも配信され、本文に埋め込まれた URL は**長命でなければならない**（期限つき URL は `spec/domains/storage.md` が「長命な参照には流用できない」と明記している）。
+
+### Decision
+
+`media` を `avatar` と並ぶ公開配信の purpose とする。読める条件は「鍵を知っていること」で、鍵は推測できないファイル ID を含み、列挙する経路も無い（avatar と同じ担保）。
+
+同じ決定が 3 か所に現れるので、3 つを同時に動かす規約にした。`apps/web/app/routes/storage.$.tsx` の `PUBLICLY_SERVED_PURPOSES`（適用点）、`application/ports/objectStorage.ts` の `publicUrl` の JSDoc（契約）、`spec/domains/storage.md`（正典）。`source` / `reference` / `artifact` は同じストアを共有するため、配信側が引き続き境界を自分で持つ。
+
+### Consequences
+
+- 良い点: 本文に挿した URL が実際に読め、`collectOrphanMedia` の突き合わせと配信が同じ 1 つの住所を見る
+- 良い点: `apps/web/app/routes/__tests__/storage.delivery.test.ts` が「media は 200、source / reference / artifact は 404」を押さえる（ルートの GET ハンドラーを直接呼ぶ）
+- トレードオフ: media は URL さえ知っていれば非公開ノートのものでも読める。ノート単位の権限を配信に持ち込むには鍵からメタデータ行を引く必要があり、公開ノートの匿名配信では引く先の scope も権限も無い。avatar と同じ「capability URL」の担保に揃えた
+- SVG を同一オリジンから配るので、`X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox; default-src 'none'` が media にも掛かることを配信側の担保として明記した
+
+## ADR-054: `image/svg+xml` の上限は 128 KB — サニタイズ後に本文上限を割れる値にする
+
+### Context
+
+`storeMedia` は SVG だけを `HtmlProcessor.process` に通す。`process` の戻り値は**ノート本文の値オブジェクト**（`NoteHtml`、800,000 バイト上限）なので、上限表の 20 MB は到達できない値だった。1 MB 級の SVG を上げると `NOTE_CONTENT_TOO_LARGE` が返り、画面には「内容が上限を超えています。分割してからもう一度お試しください。」という**ノート本文向けの文言**が出る。Storage の入口が Note の不変条件で落ちるのは責務の漏れでもある（ADR 008）。
+
+`HtmlProcessor` に単体文書用の入口（戻り値が `NoteHtml` でないもの）を足す案は、同じ PR で別の担当が触っているアダプターと衝突するため取らない。
+
+### Decision
+
+`image/svg+xml` の上限を 128 KB（131,072 バイト）とする。値の根拠は「どんな入力に対しても到達可能であること」: HTML の直列化で 1 バイトが増えるのは最大 6 倍（属性値中の `"` が `&quot;`）で、131,072 × 6 = 786,432 は 800,000 を超えない。したがって、この上限を通った SVG がサニタイズで本文上限に触れることはない。
+
+あわせて `storeMedia` は**実際に保管するバイト列**を同じ上限へ測り直す。容量に効くのも行に載るのもサニタイズ後の長さなので、受理判定の対象と保管される実体を一致させる。
+
+`spec/domains/storage.md` の上限表・`errorDisplay.ts` の文言・`.thread/7/testing.md` の TC-25 を同時に揃えた。
+
+### Consequences
+
+- 良い点: 上限が到達可能になり、超過は `STORAGE_FILE_TOO_LARGE`（「SVG は 128 KB まで」）で返る
+- 良い点: サニタイズで増えたバイトが容量計算から漏れなくなる
+- トレードオフ: 作図ツールが書き出す 1 MB 級の SVG は受け付けられない。上げるには `HtmlProcessor` に単体文書用の入口を足す（戻り値を `NoteHtml` にしない）必要があり、そのスライスの判断になる
+- `spec/usecases/storage.md#storeMedia` の手順 5 は「保管するサイズは手順 4 のあとのバイト長」までしか言っていないので、測り直しの一文を足す改訂が要る（本ユニットは `spec/domains/storage.md` しか触らないため、そちらに記した）
+
+## ADR-055: 孤児メディア掃引の起動は「初めての保管」ではなく「初めての流入」で行う
+
+### Context
+
+`armOrphanMediaSweepOnFirstMedia` は「この scope に media 行が 1 件も無い」を掃引 task 未登録の代用にしている。ノートを個人 → ワークスペースへ移すと `relocateFilesForNote` の `stageTarget` が target scope へ media 行だけを挿し、掃引は登録されない。以後その scope で `storeMedia` を呼んでも早期 return するため、**その scope の孤児 media は二度と回収されない**。
+
+レビューの推奨は `ScopeTaskScheduler` に「無ければ積む」入口を足す案だったが、ポート契約の変更は JSDoc・conformance スイート・memory / cloudflare の 4 点セット（ADR 026）になり、本ユニットが触ってよい範囲の外にアダプターが含まれる。
+
+### Decision
+
+`stageTarget` が media を 1 件でも運ぶときに `armOrphanMediaSweepOnFirstMedia` を呼ぶ。呼ぶ位置は**行を挿す前**である — 「media がまだ無い」は行そのものから読んでおり、staged 行は source 側の `createdAt` を持ち込むので、挿した後では常に「もう有る」になる。
+
+これで「scope に media が入る経路」＝「arm する経路」が 2 本とも揃い、既存の「2 回目以降は `dueAt` を押し出さない」性質もそのまま保たれる。
+
+### Consequences
+
+- 良い点: 移動で media が流入した scope も掃引される。ポート契約を変えずに済む
+- トレードオフ: 述語は依然「media 行の有無」の代用で、掃引行そのものを見てはいない。`scheduled_tasks` を直接読む入口が要るなら、ポートを広げるスライスがそこで正す
+- `spec/domains/storage.md` の該当段落（「`register` で `purpose: "media"` を初めて保存するとき…」）を「初めての流入」に改訂した
+
+---
+
+## ADR-056: `note.purged` の追随者は「完了済みの障壁も通す」形の所有権検査にする
+
+### Context
+
+3 つの追随者（`deleteFilesForNote` / `deleteAssignmentsForNote` / `deleteBackupRecordsForNote`）は `deletionOperationId` が非 null のとき毎ターン `ScopeCleanupAdmissionStore.assertOwner` を通していた。`assertOwner` の契約は「**完了済みの receipt は拒否**する」であり（`application/ports/scopeCleanupAdmissionStore.ts`）、その完了を起こすのは `deleteNotesForOwner` の最終ターン、すなわち `note` コンポーネント自身の ack である。
+
+一方 `note.purged` は各 purge のトランザクションで outbox に入り、リレーが**その後**非同期に配送する。したがって「障壁の完了」と「fan-out の配送・継続」は必ず競合し、完了が先に立った瞬間から初回配送も継続 task も毎回 `ConflictError` で落ちる。outbox 行は `maxAttempts` で隔離、継続 task は `SCOPE_TASK_MAX_ATTEMPTS` で `failed` になり、tag 付与とバックアップ記録は恒久的に取り残される（ADR-021 のとおり両者は participant ではなく、scope 全体を掃く経路も無い）。
+
+### Decision
+
+**共有ヘルパー `assertNotePurgeAdmission`（`application/cleanup/notePurgeFanOut.ts`）を 3 購読者すべてに入れ、`assertOwner` を置き換える。** 判定は `describePersonalCleanup(deletionOperationId)` 1 本で、
+
+- 自分の receipt がある（`running` / `completed` のどちらでも）→ 通す
+- `null`（receipt 不在・abort 済み・別 operation が所有・prune 済み）→ `ConflictError("CLEANUP_OPERATION_MISMATCH")`
+
+「検査自体を落とす」案（レビューの (b)）は採らなかった。`spec/usecases/{tag,integration,storage}.md` と `spec/testcases/` が「各 turn で deletion owner を再確認する」「cleanup owner receipt 一致時だけ削除する」と定めており、検査を消すと正典と実装が食い違う。本案は「一致するか」を毎ターン問い直す点でその記述を満たしたまま、**完了だけを通す**という最小の差にとどまる。
+
+完了を通してよい理由は、追随者が何も ack しないことにある。`assertOwner` が完了で false に転じるのは「`pruneCompleted` を過ぎた配送が barrier を `running` へ巻き戻す」ことを防ぐためだが、追随者は purge 済みノートの行を消すだけで receipt に触れない。
+
+### Consequences
+
+- 良い点: 障壁完了後の初回配送・継続の両方が通るようになり、恒久的な取り残しが無くなった。3 購読者ぶんのテスト（`TC-tag-028` / `TC-integration-024` / `TC-storage-059` の各「barrier completed」ケース）が直接それを守る
+- 良い点: 既存の拒否経路（別 operation の token、abort された障壁）は 1 件も緩んでいない。`TC-tag-027` / `TC-storage-060` / `TC-integration-024` はそのまま通る
+- トレードオフ: receipt が prune される 120 日後にはまた拒否側に倒れる。その時点で生きている配送は `maxAttempts` をとうに超えているので実害は無い
+- 既知の制限: 3 つのユースケースの JSDoc に「完了後も通る」ことを書き足したが、`spec/usecases/` 側の手順 1 は依然 `assertOwner` を名指ししている。文言の更新は spec を持つ担当が行う
+
+---
+
+## ADR-057: 1 イベントの複数購読者は、先頭の失敗でも全員を走らせてから最初の失敗を投げ直す
+
+### Context
+
+`dispatchDomainEvent` は同じ event type の購読者を登録順に直列で回し、途中の 1 件が throw するとそこで配送全体が終わっていた。`note.purged` の 3 購読者は互いに独立な集約を掃除するため、先頭の恒久失敗（片方の DB 障害など）が後続を**一度も呼ばないまま** outbox 行を隔離まで押し流す。
+
+### Decision
+
+**購読者ごとに `try / catch` で囲み、全員を走らせてから最初の失敗を投げ直す。** 失敗した購読者は `consumerName` 付きで `logger.error` に残す。CLAUDE.md の catch 方針でいう「worker の部分失敗許容」に当たる唯一の箇所である。
+
+投げ直しは残す。配送そのものは失敗させて再配送に委ねる必要があり、成功済みの購読者も再実行されるが、購読者は購読者単位で冪等なので結果は変わらない（ADR-020）。
+
+### Consequences
+
+- 良い点: 1 つの追随者の障害が兄弟の行を巻き添えにしなくなった。`subscribers.test.ts` の「runs the siblings of a failing subscriber」が順序・全実行・失敗の伝播を同時に固定する
+- 良い点: どの購読者が落ちたかがログに残る。従来は 1 本の例外しか見えなかった
+- トレードオフ: 1 回の配送で複数が落ちても投げ直すのは最初の 1 つだけ。残りはログにしか残らない
+
+---
+
+## ADR-058: Tag / BackupRecord の `insert` は 2 つの一意制約を別の種類のエラーに写す
+
+### Context
+
+Cloudflare の `tagAssignmentRepository` / `backupRecordRepository` は `classifySqlError(cause) === "unique"` だけで判定し、主キー衝突も業務上の対衝突と同じ `ConflictError` に写していた。memory は主キー衝突に `duplicateKey()`＝`SystemError(DatabaseError)` を投げるため、同一入力で 2 つのバックエンドが別の種類のエラーを返していた（ADR 026 違反）。conformance は対衝突しか突いていないので緑のまま通っていた。
+
+### Decision
+
+**2 つの制約は意味が違うので別のエラーにする。** `(tagId, noteId)` / `(noteId, sourceFileId)` の衝突は呼び手が受け入れられる `ConflictError`、`id` の再利用は呼び手が直すべき `SystemError(DatabaseError)`。ポート JSDoc にこの区別を書き、conformance に 1 本ずつケースを足した（`ADP-tag-010` / `ADP-integration-008` の追加ケース）。
+
+Cloudflare 側は `storedFileRepository` と同じ二段構えにした。業務キーと `id` を 1 回の pre-read で見て分岐し、駆動側の UNIQUE index は同時実行に対する fence としてだけ残す。fence 側は落ちた制約の列名（`tag_assignments.tag_id` / `backup_records.source_file_id`）を**肯定形**で見る — 判定できないメッセージ形式は `throwTranslated`（＝ `SystemError`）へ倒れるので、未知の形式が業務エラーに化けることがない。
+
+### Consequences
+
+- 良い点: 両バックエンドが同じ入力に同じ種類のエラーを返す。追加した conformance ケースは memory と cloudflare の両方から走る
+- 良い点: 書き込み側（#8 / #4）が `insert` を使い始めたとき、再試行してよい衝突と直すべき採番事故を型ではなく種類で見分けられる
+- トレードオフ: `insert` ごとに pre-read が 1 回増える。`storedFileRepository` が既に払っているコストと同じで、書き込み側が来るまでは conformance と usecase テストしか通らない経路である

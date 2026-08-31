@@ -59,6 +59,16 @@ export const updateNoteBodySchema = z.object({
   importReferences: z.boolean(),
 });
 
+/**
+ * 1 回の書き換えが運べる文字数の総量。個々のテキストノードは本文と同じ
+ * 上限まで伸びうる（本文全体が 1 つの段落でもよい）ので、要素ごとの上限
+ * では枠にならない — 効くのは**合計**のほうである。旧値・新値・経路の
+ * 3 列を合わせて本文 2 つ分に収める: 書き換えの前後どちらの本文も
+ * サニタイズ後 800 KB に収まる以上、その和を超える編集列は本文の不変
+ * 条件のほうと矛盾する。
+ */
+const TEXT_NODE_EDITS_TOTAL_MAX = 2 * NOTE_HTML_TRANSPORT_MAX;
+
 export const applyTextNodeEditsSchema = z.object({
   noteId,
   expectedVersion,
@@ -70,7 +80,19 @@ export const applyTextNodeEditsSchema = z.object({
         text: z.string().max(NOTE_HTML_TRANSPORT_MAX),
       }),
     )
-    .max(20_000),
+    .max(20_000)
+    .superRefine((edits, ctx) => {
+      let total = 0;
+      for (const edit of edits) {
+        total += edit.path.length + edit.expected.length + edit.text.length;
+      }
+      if (total > TEXT_NODE_EDITS_TOTAL_MAX) {
+        ctx.addIssue({
+          code: "custom",
+          message: `The edits carry more than ${TEXT_NODE_EDITS_TOTAL_MAX} characters in total`,
+        });
+      }
+    }),
 });
 
 export const renameNoteSchema = z.object({

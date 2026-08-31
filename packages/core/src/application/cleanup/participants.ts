@@ -60,8 +60,14 @@ export const personalCleanupParticipants = {
     "Nothing enqueues deletion-driven local projection tasks; author redaction is counted as a manifest item ack instead",
     "the slice that enqueues deletion-driven local projection tasks",
   ),
+  // Everything the scope plane collects rides this outbox: the
+  // `storage.fileDeleted` of each reclaimed file, and the `note.purged`
+  // that fans out to the three followers above. The reference runtime
+  // relays it because its outbox is one table; a deployment whose scope
+  // objects hold their own (spec/platform/index.md) needs a reader per
+  // scope before either of those arrives.
   outbox: absent(
-    "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`",
+    "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`, and the `note.purged` fan-out has no second path at all",
     "the slice adding a scope outbox read side",
   ),
 } as const satisfies Record<

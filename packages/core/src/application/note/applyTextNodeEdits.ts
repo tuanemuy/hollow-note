@@ -26,9 +26,6 @@ export type ApplyTextNodeEditsInput = Readonly<{
 export type ApplyTextNodeEditsArgs = ServiceArgs<ApplyTextNodeEditsInput> &
   Readonly<{ jobs?: NoteEditingJobs }>;
 
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
-
 const cannotCaptureEmptyContent = (): BusinessRuleError<NoteErrorCode> =>
   new BusinessRuleError(
     NoteErrorCode.CannotCaptureEmptyContent,
@@ -114,7 +111,7 @@ export async function applyTextNodeEdits({
     );
     await ctx.noteRevisionRepository.deleteOlderThanNewest(
       noteId,
-      REVISION_RETENTION,
+      NoteRevision.RETENTION,
     );
     const updated = Note.updateBody(
       claimed.note,

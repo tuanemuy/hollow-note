@@ -12,6 +12,7 @@ import type {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import { armOrphanMediaSweepOnFirstMedia } from "./collectOrphanMedia";
 
 /**
  * Purposes a note move carries. `artifact` stays behind in the Job scope
@@ -219,6 +220,14 @@ export async function relocateFilesForNote(
   }
 
   if (input.phase === "stageTarget") {
+    // A move is the other way media enters a scope, and the target may
+    // never have held any. Arming has to happen before the rows land:
+    // "no media yet" is read from the rows themselves, and a staged row
+    // carries the *source*'s `createdAt`, so afterwards the answer is
+    // already no.
+    if (files.some((meta) => meta.purpose === "media")) {
+      await armOrphanMediaSweepOnFirstMedia(ctx, input.now);
+    }
     for (const meta of files) {
       await ctx.storedFileRepository.insert(
         toStoredFile(meta, input.targetOwner, input.now),

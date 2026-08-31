@@ -119,6 +119,49 @@ describe("dispatchDomainEvent", () => {
     ).rejects.toThrow("boom");
   });
 
+  it("runs the siblings of a failing subscriber and still fails the delivery", async () => {
+    const h = createTestHarness();
+    const calls: string[] = [];
+    const registry: readonly EventSubscriber[] = [
+      {
+        eventType: "identity.user.deleted",
+        consumerName: "boom",
+        handle: async () => {
+          calls.push("boom");
+          throw new Error("boom");
+        },
+      },
+      {
+        eventType: "identity.user.deleted",
+        consumerName: "later",
+        handle: async () => {
+          calls.push("later");
+        },
+      },
+      {
+        eventType: "identity.user.deleted",
+        consumerName: "boom-2",
+        handle: async () => {
+          calls.push("boom-2");
+          throw new Error("boom-2");
+        },
+      },
+    ];
+
+    // The followers of one event clean up aggregates that know nothing
+    // of each other: letting the first failure skip the rest would
+    // strand their rows behind an unrelated fault until the outbox row
+    // quarantined.
+    await expect(
+      dispatchDomainEvent(userDeleted(), h.workerContainer, registry),
+    ).rejects.toThrow("boom");
+    expect(calls).toEqual(["boom", "later", "boom-2"]);
+    expect(h.logger.byLevel("error").map((entry) => entry.message)).toEqual([
+      "[subscribers] boom failed for identity.user.deleted",
+      "[subscribers] boom-2 failed for identity.user.deleted",
+    ]);
+  });
+
   it("reclaims the object of a deleted file through the default registry", async () => {
     const h = createTestHarness();
     const bytes = new TextEncoder().encode("avatar-bytes");

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { isSystemError } from "../../application/errors";
 import type { NoteId } from "../../domain/note/valueObject";
 import { TagAssignment } from "../../domain/tag/tagAssignment";
 import { expectConflict } from "./asserts";
@@ -53,6 +54,23 @@ export function describeTagAssignmentRepositoryContract(
 
       expect((await repository.listByNote(noteId(1))).map((a) => a.id)).toEqual(
         ["assignment-001", "assignment-004"],
+      );
+    });
+
+    it("ADP-tag-010: answers a re-used assignment id with a fault, not the pair conflict", async () => {
+      await repository.insert(assignment(1, 1, noteId(1)));
+
+      // The two unique constraints of the table mean different things:
+      // losing the `(tagId, noteId)` race is a conflict the caller can
+      // accept, while minting the same id twice is a fault it must fix.
+      // A backend that collapses them tells the caller to retry the one
+      // that will never succeed.
+      await expect(
+        repository.insert(assignment(1, 2, noteId(2))),
+      ).rejects.toSatisfy(isSystemError);
+      expect(await repository.listByNote(noteId(2))).toEqual([]);
+      expect((await repository.listByNote(noteId(1))).map((a) => a.id)).toEqual(
+        ["assignment-001"],
       );
     });
 

@@ -1,5 +1,5 @@
 import type { UserId } from "@repo/core/domain/identity/valueObject";
-import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type { ServiceArgs } from "../types";
 import { resolveEditableNote } from "./editing";
 import type { NoteRevisionListView } from "./view";
@@ -8,9 +8,6 @@ export type ListNoteRevisionsInput = Readonly<{
   noteId: string;
   userId: string;
 }>;
-
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
 
 /**
  * Lists the revisions a note can be restored from (ED-08).
@@ -42,7 +39,7 @@ export async function listNoteRevisions({
   const revisions = await scopeUnitOfWorkProvider.run(
     scope,
     (ctx): Promise<readonly NoteRevision[]> =>
-      ctx.noteRevisionRepository.listByNote(noteId, REVISION_RETENTION),
+      ctx.noteRevisionRepository.listByNote(noteId, NoteRevision.RETENTION),
   );
 
   const authorIds: UserId[] = [

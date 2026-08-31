@@ -1,4 +1,5 @@
 import {
+  isConflictError,
   isSystemError,
   SystemError,
   SystemErrorCode,
@@ -11,6 +12,7 @@ import { NoteId } from "@repo/core/domain/note/valueObject";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "../../cleanup/participants";
 import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
 import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import {
@@ -65,6 +67,26 @@ const openBarrier = (h: TestHarness) =>
       userId,
     ),
   );
+
+/**
+ * Drives the barrier to where `deleteNotesForOwner`'s last turn leaves
+ * it: every required component acknowledged and the receipt completed,
+ * with the `note.purged` of the notes it counted still queued for the
+ * relay.
+ */
+const completeBarrier = (h: TestHarness) =>
+  h.container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    for (const component of REQUIRED_PERSONAL_CLEANUP_COMPONENTS) {
+      await ctx.cleanupAdmission.acknowledgePersonalComponent(
+        DELETION_OPERATION,
+        component,
+      );
+    }
+    await ctx.cleanupAdmission.markCompleted(
+      DELETION_OPERATION,
+      new Date("2026-05-01T00:00:00.000Z"),
+    );
+  });
 
 const run = (
   h: TestHarness,
@@ -235,8 +257,35 @@ describe("deleteBackupRecordsForNote", () => {
       () => null,
       (thrown: unknown) => thrown,
     );
-    expect(refused).not.toBeNull();
+    expect(isConflictError(refused)).toBe(true);
     expect(recordIds(h)).toEqual(["backup-002"]);
+  });
+
+  it("TC-integration-024: still reclaims the rows once the deletion barrier it inherited has completed", async () => {
+    const h = createTestHarness();
+    await seed(
+      h,
+      Array.from({ length: NOTE_BACKUP_DELETE_BATCH_SIZE + 1 }, (_, n) =>
+        record(n + 1, NOTE),
+      ),
+    );
+    await openBarrier(h);
+    // The component that completes the barrier is `note` itself, so the
+    // barrier is already `completed` by the time the relay delivers the
+    // `note.purged` of the notes it counted. Refusing the follower here
+    // would quarantine the outbox row and fail the continuation task,
+    // and nothing else reclaims backup records.
+    await completeBarrier(h);
+
+    const first = await run(h, DELETION_OPERATION);
+    expect(first.deletedCount).toBe(NOTE_BACKUP_DELETE_BATCH_SIZE);
+    expect(tasks(h)).toHaveLength(1);
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    expect(round.processed).toBe(1);
+    expect(recordIds(h)).toEqual([]);
+    expect(tasks(h)).toEqual([]);
   });
 
   it("TC-integration-025: lets a write failure through so the relay redelivers", async () => {

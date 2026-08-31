@@ -1,7 +1,9 @@
+import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { Note } from "@repo/core/domain/note/note";
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
+import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import { UploadValidationPolicy } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { StoredFile } from "@repo/core/domain/storage/storedFile";
 import {
@@ -134,6 +136,13 @@ const asStandaloneSvg = (markup: string): string => {
  * held to the same allow list rather than to two that drift. What comes
  * back is parser output, which is also why the size is measured again
  * afterwards.
+ *
+ * `process` answers a note-body fragment, so its 800,000-byte cap is the
+ * real ceiling of anything that goes through here. That is what
+ * `MEDIA_SVG_MAX_BYTES` is chosen against: no input this policy accepts
+ * can serialize into a value the body's invariant refuses, so an
+ * oversized SVG is refused as `FileTooLarge` in Storage's own vocabulary
+ * rather than as a note that is too long.
  */
 const sanitizeSvg = (
   htmlProcessor: HtmlProcessor,
@@ -209,6 +218,22 @@ export async function storeMedia({
     mimeType === SVG_MIME_TYPE
       ? sanitizeSvg(htmlProcessor, input.body)
       : input.body;
+  // Sanitizing rewrites the bytes, so the size the policy accepted is no
+  // longer the size being stored. The stored bytes are what fills the
+  // subject's capacity and what the row records, so they are the ones
+  // the ceiling has to hold.
+  const storedSize = ByteSize.create(body.byteLength);
+  if (
+    ByteSize.exceeds(
+      storedSize,
+      UploadValidationPolicy.limitFor("media", mimeType),
+    )
+  ) {
+    throw new BusinessRuleError(
+      StorageErrorCode.FileTooLarge,
+      "File exceeds the media size limit once sanitized",
+    );
+  }
 
   const fileId = StoredFileId.create(idGenerator.next());
   const objectKey = ObjectKey.build(
@@ -222,7 +247,7 @@ export async function storeMedia({
     // The declared size, which `put` re-measures from what it stored:
     // declare the sanitized bytes' length rather than the accepted body's
     // so the two can never disagree.
-    size: ByteSize.create(body.byteLength),
+    size: storedSize,
     checksum: null,
   });
 

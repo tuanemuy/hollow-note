@@ -1,5 +1,6 @@
 "use client";
 
+import { MEDIA_ALLOWED_MIME_TYPES } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { useBlocker, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -7,7 +8,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useOptimistic,
   useRef,
   useState,
   useTransition,
@@ -168,6 +168,13 @@ export function NoteEditorIsland({
   const [body, setBody] = useState(savedBody);
   /** 書く面へ渡す値。差し替えたときだけ動かす（打鍵ごとに動かすと caret が飛ぶ）。 */
   const [baseline, setBaseline] = useState(savedBody);
+  /**
+   * 確定済みの値の ref 版。面の再シード（`applyMode`）は非同期の
+   * transition の中から呼ばれるので、閉包が捕まえた `savedTitle` /
+   * `savedBody` は必ず 1 世代古い。書き戻しの入口を `rememberSaved` に
+   * 絞って、state と ref が食い違わないようにしてある。
+   */
+  const savedRef = useRef({ title: savedTitle, body: savedBody });
 
   const [mode, setMode] = useState<EditorMode>("wysiwyg");
   const [status, setStatus] = useState<SaveStatus>(
@@ -177,7 +184,8 @@ export function NoteEditorIsland({
   const [removed, setRemoved] = useState<readonly RemovedEntry[]>([]);
   const [skipped, setSkipped] = useState<readonly string[]>([]);
   const [importReferences, setImportReferences] = useState(true);
-  const [visualAvailable, setVisualAvailable] = useState(false);
+  /** `null` は「まだ判定していない」。判定前はビジュアルを選ばせない。 */
+  const [visualAvailable, setVisualAvailable] = useState<boolean | null>(null);
   const [pendingMode, setPendingMode] = useState<EditorMode | null>(null);
   const [wysiwygWarning, setWysiwygWarning] = useState(false);
   const [draftOffer, setDraftOffer] = useState<Readonly<{
@@ -189,11 +197,13 @@ export function NoteEditorIsland({
     null,
   );
   const [revisionError, setRevisionError] = useState<string | null>(null);
+  /**
+   * 進行中・失敗したアップロード。楽観層は本文へ差し込む仮の要素
+   * （ADR-044）が担うので、この一覧に `useOptimistic` は重ねない —
+   * 保留中の action は**その時点の** passthrough state へ再適用される
+   * ので、同じ transition の中で実 state にも積むと同じ項目が 2 度並ぶ。
+   */
   const [uploads, setUploads] = useState<readonly UploadEntry[]>([]);
-  const [optimisticUploads, addOptimisticUpload] = useOptimistic(
-    uploads,
-    (list: readonly UploadEntry[], entry: UploadEntry) => [...list, entry],
-  );
 
   const [isSaving, startSaving] = useTransition();
   const [isBusy, startBusy] = useTransition();
@@ -203,6 +213,15 @@ export function NoteEditorIsland({
   const visualOriginal = useRef<ReadonlyMap<string, string>>(new Map());
   const visualCurrent = useRef<ReadonlyMap<string, string>>(new Map());
   const [visualDirty, setVisualDirty] = useState(false);
+  /** 代替テキストを編集する対象（ED-06 手順 4）。面を差し替えると外れる。 */
+  const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(
+    null,
+  );
+  /**
+   * 次の本文保存を「WYSIWYG への変換」として記録するか（ED-04）。版を
+   * 残したいのは変換の 1 回目だけで、そのあとの通常編集ではない。
+   */
+  const wysiwygConversionRef = useRef(false);
 
   const dirty = title !== savedTitle || body !== savedBody || visualDirty;
   const editable = status.kind !== "locked" && status.kind !== "blocked";
@@ -211,11 +230,20 @@ export function NoteEditorIsland({
   // 既定のモードは端末に持つ（ED-05）。新規作成だけは引き継がず常に
   // WYSIWYG で開く。読み出しを effect に置くのは、サーバー描画と初回の
   // クライアント描画を一致させるため。
+  //
+  // 適用は「ビジュアル不可」の判定が出てからにする。判定は本文を DOM に
+  // 展開する別の effect が出すので、同じ commit の中では間に合わず、
+  // 判定を待たずに復元すると編集欄が 1 つも無い面が開く。
+  const preferenceAppliedRef = useRef(false);
   useEffect(() => {
-    if (isNew) return;
+    if (isNew || preferenceAppliedRef.current || visualAvailable === null) {
+      return;
+    }
+    preferenceAppliedRef.current = true;
     const preferred = readPreferredMode();
-    if (preferred !== null) setMode(preferred);
-  }, [isNew]);
+    if (preferred === null) return;
+    setMode(preferred === "visual" && !visualAvailable ? "wysiwyg" : preferred);
+  }, [isNew, visualAvailable]);
 
   // 退避データの検出（ED-08 の「復元の提案」）。
   useEffect(() => {
@@ -281,10 +309,11 @@ export function NoteEditorIsland({
   const readBody = (): string =>
     mode === "wysiwyg" ? (wysiwygRef.current?.innerHTML ?? body) : body;
 
-  const commit = async (explicit: boolean): Promise<void> => {
+  /** 保存が確定したら `true`。呼び出し元はこれを見てから次へ進む。 */
+  const commit = async (explicit: boolean): Promise<boolean> => {
     const currentBody = readBody();
     const currentTitle = title;
-    if (!explicit && !dirty) return;
+    if (!explicit && !dirty) return true;
 
     setStatus({ kind: "saving" });
     try {
@@ -324,7 +353,7 @@ export function NoteEditorIsland({
           .catch(() => {
             console.error("Navigation to the created note failed");
           });
-        return;
+        return true;
       }
 
       // タイトルを先に確定する。どちらも版を 1 つ進めるので、応答の版を
@@ -364,17 +393,21 @@ export function NoteEditorIsland({
             noteId,
             rawHtml: currentBody,
             expectedVersion: versionRef.current,
-            reason: mode === "wysiwyg" ? "wysiwygConversion" : "manualEdit",
+            reason: wysiwygConversionRef.current
+              ? "wysiwygConversion"
+              : "manualEdit",
             importReferences,
           },
         });
         versionRef.current = saved.version;
+        wysiwygConversionRef.current = false;
         setRemoved(saved.removed);
       }
 
       settleSaved(currentTitle, currentBody);
       clearDraft(noteId);
       await reconcile();
+      return true;
     } catch (error) {
       const next = classify(error);
       setStatus(next);
@@ -385,12 +418,24 @@ export function NoteEditorIsland({
           savedAt: Date.now(),
         });
       }
+      return false;
     }
   };
 
-  const settleSaved = (nextTitle: string, nextBody: string): void => {
-    setSavedTitle((value) => (value === nextTitle ? value : nextTitle));
+  /**
+   * 確定済みの値の唯一の書き込み口。`dirty` の基準は**送った内容**で、
+   * サーバーが持っている正本ではない — サニタイズ後の本文を基準にすると
+   * 入力欄との差が消えず、自動保存が同じ本文を延々と送り直す。正本は
+   * 面を差し替えるとき（`applyMode`）にサーバーから引き直す。
+   */
+  const rememberSaved = (nextTitle: string, nextBody: string): void => {
+    savedRef.current = { title: nextTitle, body: nextBody };
+    setSavedTitle(nextTitle);
     setSavedBody(nextBody);
+  };
+
+  const settleSaved = (nextTitle: string, nextBody: string): void => {
+    rememberSaved(nextTitle, nextBody);
     setSavedAt(new Date());
     setStatus({ kind: "saved" });
   };
@@ -409,7 +454,9 @@ export function NoteEditorIsland({
     if (!dirty || !editable || isSaving || uploading) return;
     if (status.kind === "conflict" || status.kind === "failed") return;
     const timer = window.setTimeout(() => {
-      startSaving(() => commit(false));
+      startSaving(async () => {
+        await commit(false);
+      });
     }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [
@@ -455,27 +502,62 @@ export function NoteEditorIsland({
     applyMode(next);
   };
 
+  /**
+   * 面を差し替える（ED-05）。**サーバーが持っている本文を引き直してから**
+   * 載せる。ここが要るのは、確定済みの本文を画面だけでは組み立てられない
+   * ためである — ビジュアルモードの保存は経路単位の書き換えなので結果の
+   * HTML が手元に無く、HTML / WYSIWYG の保存が返すのも除去の一覧だけで
+   * サニタイズ後の本文ではない。手元の値で再シードすると、保存した編集が
+   * 画面上で巻き戻り、そのまま次の自動保存でサーバーへ書き戻される。
+   */
   const applyMode = (next: EditorMode): void => {
     setPendingMode(null);
     setWysiwygWarning(false);
+    if (noteId === null) {
+      seedMode(next, savedRef.current.title, savedRef.current.body);
+      return;
+    }
+    startBusy(async () => {
+      let latest: Awaited<ReturnType<typeof readEditState>>;
+      try {
+        latest = await readEditState({ data: { noteId } });
+      } catch (error) {
+        setStatus(classify(error));
+        return;
+      }
+      versionRef.current = latest.version;
+      seedMode(next, latest.title, latest.html);
+      setStatus((current) =>
+        current.kind === "locked" || current.kind === "blocked"
+          ? current
+          : { kind: "idle" },
+      );
+    });
+  };
+
+  const seedMode = (
+    next: EditorMode,
+    nextTitle: string,
+    nextBody: string,
+  ): void => {
+    // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。
+    wysiwygConversionRef.current = next === "wysiwyg" && mode !== "wysiwyg";
     setMode(next);
-    setBaseline(savedBody);
-    setBody(savedBody);
-    setVisualDirty(false);
+    replaceBody(nextTitle, nextBody);
     writePreferredMode(next);
   };
 
   const replaceBody = (nextTitle: string, nextBody: string): void => {
-    setSavedTitle(nextTitle);
-    setSavedBody(nextBody);
+    rememberSaved(nextTitle, nextBody);
     setTitle(nextTitle);
     setBody(nextBody);
     setBaseline(nextBody);
     setVisualDirty(false);
+    setSelectedImage(null);
   };
 
   const discard = (): void => {
-    replaceBody(savedTitle, savedBody);
+    replaceBody(savedRef.current.title, savedRef.current.body);
     setStatus({ kind: "idle" });
     if (noteId !== null) clearDraft(noteId);
   };
@@ -495,8 +577,7 @@ export function NoteEditorIsland({
       }
       versionRef.current = latest.version;
       if (keepLocal) {
-        setSavedTitle(latest.title);
-        setSavedBody(latest.html);
+        rememberSaved(latest.title, latest.html);
         setTitle(localTitle);
         setBody(localBody);
         setStatus({ kind: "dirty" });
@@ -567,22 +648,29 @@ export function NoteEditorIsland({
    * 挿入した仮の要素を、保管できた要素で置き換える（`markup` が空なら
    * 取り除く）。WYSIWYG の本文は DOM が正本で HTML モードは文字列なので、
    * 面が持っているほうを直してから本文の state を揃える。
+   *
+   * 差し込んだ要素を返すのは、画像なら代替テキストの編集対象にできる
+   * ようにするため（ED-06 手順 4）。
    */
-  const settlePlaceholder = (id: string, markup: string): void => {
+  const settlePlaceholder = (id: string, markup: string): Element | null => {
     const surface = wysiwygRef.current;
     const node = surface?.querySelector(`[data-hollow-upload="${id}"]`) ?? null;
     if (surface !== null && node !== null) {
-      if (markup.length === 0) {
+      const template = document.createElement("template");
+      template.innerHTML = markup;
+      const inserted = template.content.firstElementChild;
+      if (inserted === null) {
         node.remove();
       } else {
-        node.outerHTML = markup;
+        node.replaceWith(inserted);
       }
       setBody(surface.innerHTML);
       setStatus({ kind: "dirty" });
-      return;
+      return inserted;
     }
     setBody((value) => value.replace(placeholderPattern(id), markup));
     setStatus({ kind: "dirty" });
+    return null;
   };
 
   const upload = (file: File, retryOf: string | null = null): void => {
@@ -614,18 +702,19 @@ export function NoteEditorIsland({
     // ED-06 手順 2「アップロードの進捗がその場に表示される」。仮の要素を
     // 先に本文へ置き、成否が決まった時点で差し替えるか取り除く。
     insertMarkup(placeholderMarkup(id, file.name));
+    setUploads((list) => [...list, entry]);
     startBusy(async () => {
-      addOptimisticUpload(entry);
-      setUploads((list) => [...list, entry]);
       try {
         const payload = new FormData();
         payload.set("file", file);
         payload.set("noteId", noteId);
         const stored = await uploadMedia({ data: payload });
-        settlePlaceholder(
+        const inserted = settlePlaceholder(
           id,
           mediaMarkup(stored.url, stored.mimeType, file.name),
         );
+        // 続けて代替テキストを入れられるよう、入った画像を選んでおく。
+        if (inserted instanceof HTMLImageElement) setSelectedImage(inserted);
         // 成功したら失敗の履歴だけを残す（挿入された要素が結果を語る）。
         setUploads((list) => list.filter((item) => item.id !== id));
       } catch (error) {
@@ -638,6 +727,32 @@ export function NoteEditorIsland({
         );
       }
     });
+  };
+
+  /** ドロップは 1 件ずつ流す（ED-06 手順 1 の「本文にドロップする」）。 */
+  const uploadAll = (files: readonly File[]): void => {
+    for (const file of files) upload(file);
+  };
+
+  /**
+   * 代替テキストの編集（ED-06 手順 4）。WYSIWYG の本文は DOM が正本
+   * なので属性を直に書き換え、そのあとで本文の state を揃える。
+   */
+  const editAlternativeText = (): void => {
+    const surface = wysiwygRef.current;
+    if (selectedImage === null || surface === null) return;
+    if (!surface.contains(selectedImage)) {
+      setSelectedImage(null);
+      return;
+    }
+    const next = window.prompt(
+      "画像の代替テキスト",
+      selectedImage.getAttribute("alt") ?? "",
+    );
+    if (next === null) return;
+    selectedImage.setAttribute("alt", next);
+    setBody(surface.innerHTML);
+    setStatus({ kind: "dirty" });
   };
 
   const busy = isSaving || isSubmitting || isBusy;
@@ -658,8 +773,10 @@ export function NoteEditorIsland({
         <fieldset className="inline-flex rounded-md bg-surface p-0.5">
           <legend className="sr-only">編集モード</legend>
           {EDITOR_MODES.map((candidate) => {
+            // 切り替えは正本の引き直しを挟むので、往復の最中は受け付け
+            // ない（重ねて押すと後着が勝ち、面と `mode` が食い違う）。
             const disabled =
-              (candidate === "visual" && !visualAvailable) || !editable;
+              (candidate === "visual" && !visualAvailable) || !editable || busy;
             return (
               <label
                 key={candidate}
@@ -824,7 +941,11 @@ export function NoteEditorIsland({
                 type="button"
                 className={smallPrimaryClass}
                 disabled={busy}
-                onClick={() => startSaving(() => commit(true))}
+                onClick={() =>
+                  startSaving(async () => {
+                    await commit(true);
+                  })
+                }
               >
                 再試行
               </button>
@@ -888,8 +1009,10 @@ export function NoteEditorIsland({
                   disabled={busy}
                   onClick={() =>
                     startSaving(async () => {
-                      await commit(true);
-                      enterMode(pendingMode);
+                      // 保存が通らなかったら切り替えない。切り替えは面を
+                      // 保存済みの内容へ戻すので、失敗したまま進むと
+                      // 書きかけがそこで消える。
+                      if (await commit(true)) enterMode(pendingMode);
                     })
                   }
                 >
@@ -968,6 +1091,8 @@ export function NoteEditorIsland({
               }
             }}
             onPickMedia={upload}
+            hasImageSelection={selectedImage !== null}
+            onEditAlternativeText={editAlternativeText}
           />
         ) : null}
 
@@ -979,6 +1104,8 @@ export function NoteEditorIsland({
               setBody(html);
               setStatus({ kind: "dirty" });
             }}
+            onSelectImage={setSelectedImage}
+            onDropFiles={editable ? uploadAll : null}
           />
         ) : mode === "html" ? (
           <HtmlSurface
@@ -988,6 +1115,7 @@ export function NoteEditorIsland({
               setBody(html);
               setStatus({ kind: "dirty" });
             }}
+            onDropFiles={editable ? uploadAll : null}
           />
         ) : (
           <VisualSurface
@@ -1006,9 +1134,9 @@ export function NoteEditorIsland({
           />
         )}
 
-        {optimisticUploads.length > 0 ? (
+        {uploads.length > 0 ? (
           <ul className="mt-4 space-y-1" aria-live="polite">
-            {optimisticUploads.map((entry) => (
+            {uploads.map((entry) => (
               <li
                 key={entry.id}
                 className={`flex flex-wrap items-center gap-2 text-xs ${
@@ -1294,10 +1422,14 @@ function FormatBar({
   disabled,
   onCommand,
   onPickMedia,
+  hasImageSelection,
+  onEditAlternativeText,
 }: {
   disabled: boolean;
   onCommand: (command: string, value?: string) => void;
   onPickMedia: (file: File) => void;
+  hasImageSelection: boolean;
+  onEditAlternativeText: () => void;
 }) {
   return (
     <div
@@ -1328,12 +1460,22 @@ function FormatBar({
         リンク
       </button>
       <MediaButton disabled={disabled} onPick={onPickMedia} compact />
+      {/* ED-06 手順 4「画像は代替テキストを入力できる」。対象は本文で
+          選んでいる画像で、挿入した直後はその画像が選ばれている。 */}
+      <button
+        type="button"
+        disabled={disabled || !hasImageSelection}
+        onClick={onEditAlternativeText}
+        className="inline-flex h-[30px] items-center rounded-pill px-3 text-xs text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
+      >
+        代替テキスト
+      </button>
     </div>
   );
 }
 
-const MEDIA_ACCEPT =
-  "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,video/mp4,video/webm";
+/** 受理される形式はドメインの `UploadValidationPolicy` が持つ表が正典。 */
+const MEDIA_ACCEPT = MEDIA_ALLOWED_MIME_TYPES.join(",");
 
 function MediaButton({
   disabled,
@@ -1393,7 +1535,9 @@ const mediaMarkup = (
  */
 function downloadBody(title: string, html: string): void {
   const blob = new Blob(
-    [`<!doctype html><meta charset="utf-8"><title>${title}</title>${html}`],
+    [
+      `<!doctype html><meta charset="utf-8"><title>${escapeText(title)}</title>${html}`,
+    ],
     { type: "text/html" },
   );
   const url = URL.createObjectURL(blob);

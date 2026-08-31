@@ -253,6 +253,78 @@ const sanitizeCases: readonly SanitizeCase[] = [
     present: ["position:absolute"],
     noRemovals: true,
   },
+  // The browser resolves comments and identifier escapes before it reads a
+  // property name, so every spelling below is effectively the plain one that
+  // TC-note-705 / 706 / 707 cover.
+  {
+    tc: "TC-note-705 / B-001",
+    title: "drops position: fixed written with a comment inside the value",
+    input: '<p style="position:/**/fixed">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705 / B-001",
+    title: "drops position: fixed written with a comment before the colon",
+    input: '<p style="position/**/:fixed">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705 / B-001",
+    title: "drops position: fixed written with a comment hiding a colon",
+    input: '<p style="/*:*/position:fixed">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705 / B-001",
+    title: "drops a commented position: fixed inside a style element",
+    input: "<style>.a{position:/**/fixed;color:red}</style>",
+    present: ["color:red"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705 / B-001",
+    title: "drops position: fixed written with an identifier escape",
+    input: '<p style="position:\\66 ixed">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-708 / B-001",
+    title: "drops position: sticky whose !important is written escaped",
+    input: '<p style="position:sticky!\\69 mportant">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-706 / B-001",
+    title: "drops @import written with an identifier escape",
+    input: "<style>@\\69 mport url(evil.css); .a{color:red}</style>",
+    present: ["color:red"],
+    absent: ["mport"],
+    removed: [{ kind: "css", name: "@import" }],
+  },
+  {
+    tc: "TC-note-706 / B-001",
+    title: "drops @import written with a comment before its prelude",
+    input: "<style>@import/**/url(evil.css); .a{color:red}</style>",
+    present: ["color:red"],
+    absent: ["evil.css"],
+    removed: [{ kind: "css", name: "@import" }],
+  },
+  {
+    tc: "TC-note-709 / B-001",
+    title: "keeps a property a comment splits, which no browser resolves",
+    // A comment separates identifiers rather than joining them, so this is
+    // an unknown property and not `position` — over-removing here would eat
+    // decoration the preserve mode exists to keep.
+    input: '<p style="pos/**/ition:fixed">x</p>',
+    present: ["pos/**/ition:fixed"],
+    noRemovals: true,
+  },
   {
     tc: "TC-note-710",
     title: "keeps a style element and a style attribute with no banned rule",

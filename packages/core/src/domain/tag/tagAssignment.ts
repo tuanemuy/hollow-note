@@ -2,7 +2,7 @@ import { RehydrationError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
-import { AssignmentId, TagId, type TagScope } from "./valueObject";
+import { AssignmentId, TagId, TagScope } from "./valueObject";
 
 /**
  * One tag put on one note. Immutable — re-tagging is a delete plus an
@@ -44,11 +44,8 @@ export const TagAssignment = {
         noteId: NoteId.create(input.noteId),
         scope:
           input.scopeType === "user"
-            ? { type: "user", userId: UserId.create(input.scopeId) }
-            : {
-                type: "workspace",
-                workspaceId: WorkspaceId.create(input.scopeId),
-              },
+            ? TagScope.user(UserId.create(input.scopeId))
+            : TagScope.workspace(WorkspaceId.create(input.scopeId)),
         assignedBy: UserId.create(input.assignedBy),
         assignedAt: input.assignedAt,
       };

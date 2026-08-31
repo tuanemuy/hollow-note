@@ -3,7 +3,11 @@ import type { NoteId } from "../../../../domain/note/valueObject";
 import type { TagAssignmentRepository } from "../../../../domain/tag/ports/tagAssignmentRepository";
 import { TagAssignment } from "../../../../domain/tag/tagAssignment";
 import { type RowMutation, remove, upsert } from "../../execution/writeSet";
-import { classifySqlError, throwTranslated } from "../../sql/errors";
+import {
+  classifySqlError,
+  databaseError,
+  throwTranslated,
+} from "../../sql/errors";
 import { date, text, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
@@ -63,6 +67,15 @@ const pairConflict = (assignment: TagAssignment): ConflictError =>
     `Tag ${assignment.tagId} is already assigned to note ${assignment.noteId}`,
   );
 
+/**
+ * Re-using an assignment id is a caller fault, not "somebody already
+ * claimed this pair": the two unique constraints of this table mean
+ * different things, and mapping both to `ASSIGNMENT_ALREADY_EXISTS`
+ * would answer a different error kind than the other backends do.
+ */
+const duplicateId = (assignment: TagAssignment) =>
+  databaseError(`Duplicate primary key in ${TABLE}: ${assignment.id}`);
+
 export type CloudflareTagAssignmentRepositoryDeps = Readonly<{
   session: SqlSession;
 }>;
@@ -106,8 +119,39 @@ export function createCloudflareTagAssignmentRepository(
     return session.readRows(limit === undefined ? spec : { ...spec, limit });
   };
 
+  const clashOf = async (
+    assignment: TagAssignment,
+  ): Promise<"id" | "pair" | null> => {
+    const rows = await session.readRows({
+      table: TABLE,
+      statement: statement(
+        `SELECT ${SELECTION} FROM ${TABLE}
+           WHERE id = ? OR (tag_id = ? AND note_id = ?)`,
+        assignment.id,
+        assignment.tagId,
+        assignment.noteId,
+      ),
+      keyOf: (row: SqlRow) => text(row, "id"),
+      matches: (row: SqlRow) =>
+        text(row, "id") === assignment.id ||
+        (text(row, "tag_id") === assignment.tagId &&
+          text(row, "note_id") === assignment.noteId),
+    });
+    if (rows.some((row) => text(row, "id") === assignment.id)) {
+      return "id";
+    }
+    return rows.length > 0 ? "pair" : null;
+  };
+
   return {
     async insert(assignment: TagAssignment): Promise<void> {
+      const clash = await clashOf(assignment);
+      if (clash === "id") {
+        throw duplicateId(assignment);
+      }
+      if (clash === "pair") {
+        throw pairConflict(assignment);
+      }
       const row = toRow(assignment);
       try {
         await session.write([
@@ -119,7 +163,15 @@ export function createCloudflareTagAssignmentRepository(
           }),
         ]);
       } catch (cause) {
-        if (classifySqlError(cause) === "unique") {
+        // The pre-read settles the ordinary case; the UNIQUE index is
+        // the fence against a unit that claimed the same pair
+        // concurrently. Only that index means "already assigned" — a
+        // primary-key violation falls through to the database fault the
+        // other backends raise for it.
+        if (
+          classifySqlError(cause) === "unique" &&
+          String(cause).includes(`${TABLE}.tag_id`)
+        ) {
           throw pairConflict(assignment);
         }
         throwTranslated(`${TABLE} row ${assignment.id}`, cause);

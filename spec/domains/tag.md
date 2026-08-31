@@ -168,6 +168,8 @@ type TagAssignmentPage = Readonly<{
 }>;
 ```
 
+**`listByNote` は必ず `AssignmentId` の昇順で返す。** 順序が無ければ同じノートの読み取りがバックエンド間でも再読の間でも一致せず、比較できるのは集合だけになる。カーソルを持たないので昇順であること以外の要求はない。
+
 **`listByTag` は必ず `noteId` の昇順で返す。** 順序は契約であって実装の裁量ではない — 読み取りモデルのタグのファンアウト（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）が `afterNoteId` をカーソルにしてページを進めるため、順序が安定しないとノートを取りこぼす。索引は `tag_assignments_tag_note_uq` (`tag_id`, `note_id`) がそのまま使える（[database/index.md](../database/index.md)）。
 
 `listByTag` / delete / reassignはいずれも最大200件のpage/batchだけを扱う。全件を返す契約は提供しない。scope cleanup用`deleteByScope`もTagが同scopeであるassignmentを最大200件だけ消す。delete/reassign batchは影響Noteを返し、同じUoWでprojection revisionをbumpできるようにする。

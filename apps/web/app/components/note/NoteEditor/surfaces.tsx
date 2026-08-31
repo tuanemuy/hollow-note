@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type DragEvent,
   type RefObject,
   useEffect,
   useId,
@@ -46,15 +47,69 @@ const WYSIWYG_CSS = `
 [data-hollow-wysiwyg] th, [data-hollow-wysiwyg] td { border: 1px solid var(--color-hairline); padding: var(--space-2) var(--space-3); }
 `;
 
+/** 本文へファイルを落とせる面が持つハンドラー（ED-06 手順 1）。 */
+type DropHandlers = Readonly<{
+  onDragOver: (event: DragEvent<Element>) => void;
+  onDrop: (event: DragEvent<Element>) => void;
+}>;
+
+/**
+ * 既定の動作を止めるのは、ブラウザーがファイルをそのまま開くか `blob:`
+ * を指す要素を本文へ差し込むためで、どちらも保管を経ないので保存できない。
+ * 落ちたファイルは 1 件ずつ親の挿入経路へ流す。
+ */
+const dropHandlers = (
+  onDropFiles: ((files: readonly File[]) => void) | null,
+): DropHandlers | undefined =>
+  onDropFiles === null
+    ? undefined
+    : {
+        onDragOver: (event) => {
+          if (event.dataTransfer.types.includes("Files")) {
+            event.preventDefault();
+          }
+        },
+        onDrop: (event) => {
+          const files = Array.from(event.dataTransfer.files);
+          if (files.length === 0) return;
+          event.preventDefault();
+          onDropFiles(files);
+        },
+      };
+
+/**
+ * caret の位置にある画像。クリックは `event.target` で足りるが、
+ * キーボードだけで操作する利用者にも代替テキストの対象を選ばせる必要が
+ * あるので、caret の直前・直後の要素も見る。
+ */
+const imageAtCaret = (surface: HTMLElement): HTMLImageElement | null => {
+  const selection = document.getSelection();
+  if (selection === null || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  const { startContainer, startOffset } = range;
+  if (!surface.contains(startContainer)) return null;
+  if (!(startContainer instanceof Element)) return null;
+  const after = startContainer.childNodes[startOffset];
+  if (after instanceof HTMLImageElement) return after;
+  const before =
+    startOffset > 0 ? startContainer.childNodes[startOffset - 1] : undefined;
+  return before instanceof HTMLImageElement ? before : null;
+};
+
 export function WysiwygSurface({
   baseline,
   surfaceRef,
   onChange,
+  onSelectImage,
+  onDropFiles,
 }: {
   /** 外から本文が差し替わったときだけ変わる値（復元・破棄・版の復元）。 */
   baseline: string;
   surfaceRef: RefObject<HTMLDivElement | null>;
   onChange: (html: string) => void;
+  /** 代替テキストの編集対象。親が持つ（属性を書くのは本文の持ち主）。 */
+  onSelectImage: (image: HTMLImageElement | null) => void;
+  onDropFiles: ((files: readonly File[]) => void) | null;
 }) {
   // 本文は React の子ではなくブラウザーが持つ（contenteditable の DOM を
   // React に再描画させると caret が飛ぶ）。差し替えは baseline が変わった
@@ -86,6 +141,15 @@ export function WysiwygSurface({
         aria-label="本文"
         className={editorSurfaceClass}
         onInput={(event) => onChange(event.currentTarget.innerHTML)}
+        onClick={(event) =>
+          onSelectImage(
+            event.target instanceof HTMLImageElement
+              ? event.target
+              : imageAtCaret(event.currentTarget),
+          )
+        }
+        onKeyUp={(event) => onSelectImage(imageAtCaret(event.currentTarget))}
+        {...dropHandlers(onDropFiles)}
       />
     </>
   );
@@ -104,46 +168,114 @@ const TOKEN_CLASS: Readonly<Record<HtmlTokenKind, string>> = {
   comment: "text-[var(--code-comment)]",
 };
 
-/**
- * ブラウザーの HTML パーサーが直した結果。壊れた構文（閉じていないタグ、
- * 引用符の無い属性値）はここで補われる。
- *
- * サーバー側の `HtmlProcessor` とは別の実装だが、どちらも HTML の構文解析
- * 規則そのものを実装しているので、補正の結果は一致する。`null` は「補正が
- * 要らなかった」で、警告もプレビューの差し替えも起こさない。
- */
 const REPAIR_CHECK_DELAY_MS = 500;
 
-function repairMarkup(source: string): string | null {
+/**
+ * プレビューに出してよい形へ落とすときに消えるもの。**プレビューは live
+ * DOM**（`NoteBody` の shadow root）なので、保存前の本文をそのまま渡すと
+ * `<img onerror>` のようなハンドラーがこの画面で走る — Shadow DOM が
+ * 隔離するのはスタイルだけで、配信している CSP にも `script-src` は無い。
+ *
+ * 落とす対象は保存時のサニタイズ（`HtmlProcessor`）が落とすものの部分
+ * 集合なので、プレビューは「実際に保存される形」から外れる向きには
+ * 動かない。
+ */
+const UNSAFE_PREVIEW_ELEMENTS = new Set([
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "base",
+  "form",
+  "noscript",
+]);
+
+const URL_ATTRIBUTES = new Set([
+  "href",
+  "src",
+  "srcset",
+  "xlink:href",
+  "action",
+  "formaction",
+  "poster",
+]);
+
+const scrubForPreview = (root: ParentNode): void => {
+  for (const element of Array.from(root.querySelectorAll("*"))) {
+    if (UNSAFE_PREVIEW_ELEMENTS.has(element.localName)) {
+      element.remove();
+      continue;
+    }
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (
+        name.startsWith("on") ||
+        (URL_ATTRIBUTES.has(name) && /^\s*javascript:/i.test(attribute.value))
+      ) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+};
+
+type SourceAnalysis = Readonly<{
+  /**
+   * ブラウザーの HTML パーサーが直した結果。壊れた構文（閉じていない
+   * タグ、引用符の無い属性値）はここで補われる。サーバー側の
+   * `HtmlProcessor` とは別の実装だが、どちらも HTML の構文解析規則その
+   * ものを実装しているので、補正の結果は一致する。`null` は「補正が要ら
+   * なかった」で、警告を出さない。
+   */
+  repaired: string | null;
+  preview: string;
+}>;
+
+const analyzeMarkup = (source: string): SourceAnalysis => {
   const template = document.createElement("template");
   template.innerHTML = source;
-  const repaired = template.innerHTML;
-  return repaired === source ? null : repaired;
-}
+  const parsed = template.innerHTML;
+  scrubForPreview(template.content);
+  return {
+    repaired: parsed === source ? null : parsed,
+    preview: template.innerHTML,
+  };
+};
 
 export function HtmlSurface({
   value,
   onChange,
   textareaRef,
+  onDropFiles,
 }: {
   value: string;
   onChange: (html: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  onDropFiles: ((files: readonly File[]) => void) | null;
 }) {
   const sourceId = useId();
   const overlayRef = useRef<HTMLPreElement | null>(null);
 
-  // 構文の補正はブラウザーのパーサーに聞くので、描画のあとに走らせる
+  // 構文解析はブラウザーのパーサーに聞くので、描画のあとに走らせる
   // （サーバー側の描画には `document` が無い）。打鍵が止まってからにする
   // のは、書きかけのタグ（`<p` まで打った状態）がどれも「壊れている」に
-  // 当たり、打つそばから警告が出入りするためである。
-  const [repaired, setRepaired] = useState<string | null>(null);
+  // 当たり、打つそばから警告が出入りするためである。開いた直後の 1 回
+  // だけ待たないのは、待つとプレビューが空のまま始まるため。
+  const [analysis, setAnalysis] = useState<SourceAnalysis>({
+    repaired: null,
+    preview: "",
+  });
+  const analyzedRef = useRef(false);
   useEffect(() => {
+    const delay = analyzedRef.current ? REPAIR_CHECK_DELAY_MS : 0;
+    analyzedRef.current = true;
     const timer = window.setTimeout(() => {
-      setRepaired(repairMarkup(value));
-    }, REPAIR_CHECK_DELAY_MS);
+      setAnalysis(analyzeMarkup(value));
+    }, delay);
     return () => window.clearTimeout(timer);
   }, [value]);
+  const repaired = analysis.repaired;
 
   const tokens = useMemo(
     () => (value.length > HIGHLIGHT_MAX_LENGTH ? null : tokenizeHtml(value)),
@@ -197,6 +329,7 @@ export function HtmlSurface({
               }
             }}
             className={`relative block min-h-[220px] w-full resize-y bg-transparent p-3 text-transparent outline-none [caret-color:var(--color-ink)] ${sourceTypeClass}`}
+            {...dropHandlers(onDropFiles)}
           />
         </div>
       </div>
@@ -214,14 +347,7 @@ export function HtmlSurface({
           {repaired === null ? "プレビュー" : "プレビュー（補正後）"}
         </div>
         <div className="min-h-[220px] p-4 text-sm leading-relaxed">
-          {/* プレビューは保存前の本文なのでサニタイズを通っていない。
-              Shadow DOM の隔離は `NoteBody` と同じ扱いで、実際の安全は
-              保存時のサニタイズと CSP が担う。 */}
-          <NoteBody
-            html={repaired ?? value}
-            styleMode="default"
-            headings={[]}
-          />
+          <NoteBody html={analysis.preview} styleMode="default" headings={[]} />
         </div>
       </div>
     </div>
@@ -297,5 +423,15 @@ img, video { max-width: 100%; height: auto; }
     return () => root.removeEventListener("input", listener);
   }, [baseline]);
 
-  return <div ref={hostRef} className="relative min-h-[46vh]" />;
+  return (
+    <>
+      {/* ED-02 の制約は構造的に効いている（要素の追加・削除は操作として
+          存在しない）が、何が起きないのかは面を見ても分からない。 */}
+      <p className="mb-4 rounded-md bg-surface px-3 py-2 text-xs text-ink-secondary">
+        ビジュアルモードでは本文のテキストの書き換えだけを行えます。段落や画像の追加・削除・並べ替えはできません（構造を変えるときは
+        HTML か WYSIWYG モードに切り替えてください）。
+      </p>
+      <div ref={hostRef} className="relative min-h-[46vh]" />
+    </>
+  );
 }

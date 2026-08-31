@@ -169,7 +169,7 @@ StoredFile = PersistentFile | EphemeralFile
 
 削除はユースケースが `StorageEvents.fileDeleted` を直接発行する。
 
-application層は `registerEphemeral` の保存と同じscope-local UoWで最小`expiresAt`のartifact cleanup taskをupsertする。`register`で`purpose: "media"`を初めて保存するときも日次orphan-media taskを自己登録する。これらはStoredFile集約の状態遷移ではなくscope Alarmの起動責務なので、ドメインメソッドのeventへ暗黙に含めない。
+application層は `registerEphemeral` の保存と同じscope-local UoWで最小`expiresAt`のartifact cleanup taskをupsertする。scopeに`purpose: "media"`が初めて現れるときも日次orphan-media taskを自己登録する。**登録の起点は「初めての保管」ではなく「初めての流入」である** — `storeMedia`のほか、ノート移動の`relocateFilesForNote`（`stageTarget`）でもmediaがtarget scopeへ入るため、両方が同じ登録を行う（片方を欠くと、そのscopeの孤児mediaは二度と回収されない）。これらはStoredFile集約の状態遷移ではなくscope Alarmの起動責務なので、ドメインメソッドのeventへ暗黙に含めない。
 
 ## ドメインサービス
 
@@ -185,10 +185,14 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | 用途 | 許可する MIME | 上限 |
 | --- | --- | --- |
 | `source` | 取り込み対応形式（`text/html`, `text/markdown`, `text/plain`, Office 3 種, `application/pdf`, `image/*`, `audio/*`） | 音声 200 MB、その他 50 MB |
-| `media` | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `video/mp4`, `video/webm` | 画像 20 MB、動画 200 MB |
+| `media` | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `video/mp4`, `video/webm` | ラスタ画像 20 MB、`image/svg+xml` 128 KB、動画 200 MB |
 | `reference` | 任意（取得できたもの） | 1 件 20 MB |
 | `artifact` | `application/pdf`, `application/zip`, `text/html`, `text/markdown` | 1 GB |
 | `avatar` | `image/png`, `image/jpeg`, `image/webp` | 5 MB |
+
+**`image/svg+xml` だけがラスタ画像と別の上限を持つ。** SVG は保管前に書き換えられる唯一のメディアで、`storeMedia` が `HtmlProcessor.process` に通す（[usecases/storage.md](../usecases/storage.md) の手順 4）。`process` の戻り値は**本文の断片**であり、[domains/note.md](./note.md) の `NoteHtml` が持つ 800,000 バイトの上限に縛られる。したがってサニタイズ後にその上限を割れない値をここに置くと、Storage が受理すると言った形式が Note の不変条件で失敗する — 到達できない上限になる。
+
+128 KB は、**どんな入力に対しても**到達可能であるように選んだ値である。HTML の直列化で 1 バイトが増えるのは最大 6 倍（属性値中の `"` が `&quot;` になる場合）で、131,072 × 6 = 786,432 は 800,000 を超えない。さらに `storeMedia` は**サニタイズ後に実際に保管するバイト列**を同じ上限へ測り直す（保管するバイト列こそが容量に効き、行に載る値だから）。上限を上げるにはこの前提のどちらかを動かす必要がある。
 
 `ensureAcceptable` が判定できるのは、`media` と `avatar` が許可する 7 形式である。判定は次の順に行い、**先頭バイトを比べるものを先に、本文を復号するものを最後に**置く。
 
@@ -314,7 +318,11 @@ type ObjectBody = Readonly<{ bytes: Uint8Array; meta: ObjectMeta }>;
 type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
 ```
 
-`publicUrl` は公開配信するオブジェクトの読み取り先を組み立てる。**公開 URL の組み立てをポートに持たせ、配備ごとの形をアダプターに閉じる** — アプリ相対の配信パスを返す配備も、公開ドメインを持つストレージの URL を返す配備も、呼び出し側は戻り値をそのまま返すだけになる。**期限つき URL と公開 URL は別のメソッドとして型で分ける**（[ADR 049](../adr/049-object-storage-public-url.md)）。`createDownloadUrl` は短命なダウンロード用なので、プロフィールに埋め込むような長命な参照には流用できない。使ってよいのは公開してよい用途に限る（現時点では `avatar`）。
+`publicUrl` は公開配信するオブジェクトの読み取り先を組み立てる。**公開 URL の組み立てをポートに持たせ、配備ごとの形をアダプターに閉じる** — アプリ相対の配信パスを返す配備も、公開ドメインを持つストレージの URL を返す配備も、呼び出し側は戻り値をそのまま返すだけになる。**期限つき URL と公開 URL は別のメソッドとして型で分ける**（[ADR 049](../adr/049-object-storage-public-url.md)）。`createDownloadUrl` は短命なダウンロード用なので、プロフィールに埋め込むような長命な参照には流用できない。使ってよいのは公開してよい用途に限る — **`avatar` と `media` の 2 つ**である。
+
+`media` を公開側に置くのは、本文に挿した画像・動画の URL が本文にそのまま載り、**公開ノートを匿名の閲覧者が読むときにも解決できなければならない**ため。読める条件は「鍵を知っていること」で、鍵は推測できないファイル ID を含み、鍵を列挙する経路も持たない（`avatar` と同じ扱い）。`source` / `reference` / `artifact` は同じストアを共有するので、**配信側がこの境界を自分で保つ**（`ObjectStorage.publicUrl` の JSDoc と `apps/web/app/routes/storage.$.tsx` の許可集合が同じ決定の適用点で、3 か所を同時に動かす）。配信するときは `X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox; default-src 'none'` を付ける — SVG は保管時にサニタイズ済みだが、鍵空間に何が積まれても実行させないのは配信側の担保である。
+
+`collectOrphanMedia` が本文と突き合わせる住所も `publicUrl` の戻り値なので、配信経路と回収規則は同じ 1 つの住所を見る。片方だけを動かすと、挿した直後のメディアが孤児として回収されるか、配信できない URL を本文に配ることになる。
 
 `put` が受けるのはバイト列だけで、ストリーム受け（`ReadableStream<Uint8Array>`）は契約に持たない。受理判定を実体から行う形（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)）が「受理判定の時点で実体を握っていること」「ポートがバイト列だけを受ける形であること（ストリームを通す用途が現れた時点で、その要求とともに広げる）」を前提に置いているためで、**契約を弱めた側として責務の移転をここに残す**。**ストリームを入力に持つ要求元は設計上すでに実在する** — [usecases/storage.md](../usecases/storage.md) の `storeUpload` で、入力 DTO の `body: ReadableStream<Uint8Array>` と、**同ユースケース手順 2 の `UploadValidationPolicy.ensureAcceptable` 呼び出し**がそれに当たる（バイト列が手に入るのは手順 5 の `put` 以降なので、実体判定を手順 2 で行う形への手順の組み替えもそのスライスの仕事になる）。**この経路を実装するスライスが、上記の前提に従って `put` の入口を広げ、読み切る前に上限で切る形をそこで設計する。**
 

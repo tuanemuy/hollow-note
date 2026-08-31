@@ -1,5 +1,6 @@
 import {
   armNotePurgeContinuation,
+  assertNotePurgeAdmission,
   type NotePurgeFanOutTurn,
 } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
@@ -39,9 +40,18 @@ export type DeleteFilesForNoteArgs = Readonly<{
  * note. The objects themselves follow through `storage.fileDeleted`, so
  * this turn writes metadata only.
  *
+ * The second half of the spec's completion condition — reclaiming the
+ * reference import records and summaries of the same note
+ * (spec/usecases/storage.md#deletefilesfornote step 3) — is **not**
+ * here: `ReferenceImportRecordRepository` and the tables behind it
+ * arrive with the import slice, which adds its page to this same
+ * continuation. Until then the file set alone decides when the turn
+ * completes.
+ *
  * Idempotence (no `IdempotencyStore`): deleted rows do not come back in
  * `listDeletableByNote`, so a redelivered `note.purged` finds nothing
- * and answers `0`.
+ * and answers `0` — including after the deletion barrier that drove the
+ * purge has completed (`assertNotePurgeAdmission`).
  */
 export async function deleteFilesForNote({
   container,
@@ -50,9 +60,7 @@ export async function deleteFilesForNote({
   const now = container.clock.now();
 
   return container.scopeUnitOfWorkProvider.run(input.scope, async (ctx) => {
-    if (input.deletionOperationId !== null) {
-      await ctx.cleanupAdmission.assertOwner(input.deletionOperationId);
-    }
+    await assertNotePurgeAdmission(ctx, input.deletionOperationId);
 
     const files = await ctx.storedFileRepository.listDeletableByNote(
       input.noteId,

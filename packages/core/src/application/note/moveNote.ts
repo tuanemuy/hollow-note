@@ -2,7 +2,7 @@ import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteEvents } from "@repo/core/domain/note/events";
 import { type ActiveNote, Note } from "@repo/core/domain/note/note";
-import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import { NoteOwnershipPolicy } from "@repo/core/domain/note/services/noteOwnershipPolicy";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
 import { StorageOwner } from "@repo/core/domain/storage/valueObject";
@@ -120,9 +120,6 @@ export const noTagRelocation: NoteMoveTagRelocation = {
 
 export type MoveNoteArgs = ServiceArgs<MoveNoteInput> &
   Readonly<{ tagRelocation?: NoteMoveTagRelocation }>;
-
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
 
 const STAGE_TARGET_COMMAND = "note.moveStageTarget";
 const RETIRE_SOURCE_COMMAND = "note.moveRetireSource";
@@ -458,7 +455,7 @@ async function snapshotSource(
 
     const revisions = await ctx.noteRevisionRepository.listByNote(
       plan.noteId,
-      REVISION_RETENTION,
+      NoteRevision.RETENTION,
     );
     const { files } = await relocateFilesForNote(ctx, {
       migrationId: plan.migrationId,

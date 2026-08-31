@@ -1,4 +1,8 @@
-import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
+import {
+  ConflictError,
+  SystemError,
+  SystemErrorCode,
+} from "@repo/core/application/errors";
 import type { ScopeKey } from "@repo/core/application/scope";
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
@@ -251,6 +255,44 @@ describe("emptyTrash", () => {
     ).toBe(1200);
   });
 
+  it("TC-note-106: bounds the job path's enumeration by the count it already took", async () => {
+    const h = createTestHarness();
+    seedTrashedNotes(h, 1200);
+    const reader = h.container.noteReaderFor(userScope);
+    const pages: number[] = [];
+    const container = {
+      ...h.container,
+      noteReaderFor: () => ({
+        ...reader,
+        listByOwner: (
+          owner: NoteOwner,
+          lifecycle: "active" | "trashed" | "all",
+          pagination: Readonly<{ page: number; limit: number }>,
+        ) => {
+          pages.push(pagination.page);
+          // A pager that never runs short — the shape a paging bug
+          // takes. The walk has to end on the count the request already
+          // took, not on waiting for a partial page.
+          return reader.listByOwner(owner, lifecycle, {
+            ...pagination,
+            page: 1,
+          });
+        },
+      }),
+    };
+
+    const jobs = recordingBulkPurgeJobs();
+    const view = await emptyTrash({
+      container,
+      input: { userId: OWNER },
+      jobs,
+    });
+
+    expect(pages).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+    expect(view.purgedCount).toBe(1200);
+    expect(jobs.chunks).toHaveLength(3);
+  });
+
   it("TC-note-107: gives every split the source scope of the trash it came from", async () => {
     const h = createTestHarness();
     await seedWorkspace(h, [{ userId: OWNER, role: "owner" }]);
@@ -360,7 +402,71 @@ describe("emptyTrash", () => {
     ).toBe(1);
   });
 
-  it("TC-note-111: keeps going when one note cannot be purged, and does not count it", async () => {
+  it("TC-note-111: keeps going when one note has left the trash, and does not count it", async () => {
+    const h = createTestHarness();
+    const ids = await trashPersonalNotes(h, 3);
+    const doomed = ids[1];
+    const container = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        beginPurge: async (
+          params: Parameters<typeof h.container.noteRouteStore.beginPurge>[0],
+        ) => {
+          // A rival holding the route — the refusal `purgeNote` reports
+          // as "this note is on its way out of your reach".
+          if (params.noteId === doomed) {
+            throw new ConflictError(
+              "STALE_SCOPE_ROUTE",
+              "somebody else holds this route",
+            );
+          }
+          return h.container.noteRouteStore.beginPurge(params);
+        },
+      },
+    };
+
+    const view = await emptyTrash({
+      container,
+      input: { userId: OWNER },
+      jobs: recordingBulkPurgeJobs(),
+    });
+
+    expect(view.purgedCount).toBe(2);
+    expect(h.backend.scope(userScope).notes.keys()).toEqual([doomed]);
+  });
+
+  it("TC-note-111: reports a failure the skip rules do not cover instead of counting it as an empty trash", async () => {
+    const h = createTestHarness();
+    await trashPersonalNotes(h, 3);
+    const container = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        beginPurge: async () => {
+          throw new SystemError(
+            SystemErrorCode.DatabaseError,
+            "route store unavailable",
+          );
+        },
+      },
+    };
+
+    // spec/usecases/note.md#emptyTrash lets exactly two refusals be
+    // skipped; anything else reaching the caller as
+    // `{ purgedCount: 0 }` would read on screen as "0 件を完全に削除
+    // しました" while the trash is untouched.
+    await expect(
+      emptyTrash({
+        container,
+        input: { userId: OWNER },
+        jobs: recordingBulkPurgeJobs(),
+      }),
+    ).rejects.toBeInstanceOf(SystemError);
+    expect(await trashedCount(h)).toBe(3);
+  });
+
+  it("TC-note-111: stops at the first unskippable failure and keeps what it already purged", async () => {
     const h = createTestHarness();
     const ids = await trashPersonalNotes(h, 3);
     const doomed = ids[1];
@@ -382,14 +488,16 @@ describe("emptyTrash", () => {
       },
     };
 
-    const view = await emptyTrash({
-      container,
-      input: { userId: OWNER },
-      jobs: recordingBulkPurgeJobs(),
-    });
-
-    expect(view.purgedCount).toBe(2);
-    expect(h.backend.scope(userScope).notes.keys()).toEqual([doomed]);
+    await expect(
+      emptyTrash({
+        container,
+        input: { userId: OWNER },
+        jobs: recordingBulkPurgeJobs(),
+      }),
+    ).rejects.toBeInstanceOf(SystemError);
+    // The purge before it committed on its own, so the trash is
+    // partially emptied rather than rolled back.
+    expect(await trashedCount(h)).toBe(2);
   });
 
   it("TC-note-112: composes purgeNote and opens no unit of work of its own", async () => {

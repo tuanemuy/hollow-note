@@ -25,9 +25,6 @@ export type RestoreNoteRevisionInput = Readonly<{
 export type RestoreNoteRevisionArgs = ServiceArgs<RestoreNoteRevisionInput> &
   Readonly<{ jobs?: NoteEditingJobs }>;
 
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
-
 const revisionNotFound = (): NotFoundError =>
   new NotFoundError("REVISION_NOT_FOUND", "Revision not found");
 
@@ -96,7 +93,7 @@ export async function restoreNoteRevision({
     );
     await ctx.noteRevisionRepository.deleteOlderThanNewest(
       noteId,
-      REVISION_RETENTION,
+      NoteRevision.RETENTION,
     );
 
     const processed = htmlProcessor.process(revision.html);

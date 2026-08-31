@@ -6,6 +6,7 @@ import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
+import { isConflictError, isNotFoundError, isValidationError } from "../errors";
 import { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
@@ -97,7 +98,10 @@ export type EmptyTrashArgs = ServiceArgs<EmptyTrashInput> &
  * `restoreNote` that just took it out of the trash, and re-reading would
  * destroy the note the user has only now recovered. "Already gone" is
  * skipped for the same reason from the other side: it is not this
- * request's job to report someone else's completed deletion.
+ * request's job to report someone else's completed deletion. Those two
+ * are the whole of what is skipped; any other failure is reported, so a
+ * request that purged nothing because nothing could be reached does not
+ * come back as an emptied trash.
  */
 export async function emptyTrash({
   container,
@@ -127,15 +131,36 @@ export async function emptyTrash({
   return scheduleBulkPurge(container, jobs, {
     owner,
     scope,
+    total,
     requestedBy: UserId.create(input.userId),
   });
 }
 
 /**
- * The inline path's loop. Every refusal is contained to its own note:
- * the trash is a set of unrelated notes, so one that cannot be purged
+ * The two refusals this loop is allowed to swallow, and the only two:
+ * the note left the trash between the enumeration and its purge
+ * (`ConflictError` from the version that moved, `NOTE_NOT_TRASHED` from
+ * the barrier) or somebody else finished deleting it first
+ * (`NotFoundError`). Both mean "this note is no longer this request's
+ * to delete", which is a fact about one note and not about the trash.
+ *
+ * Everything else — a scope that will not answer, an invariant that
+ * broke — says nothing about the note it happened to arrive on, so it
+ * is reported rather than counted as a skip. Swallowing it would let a
+ * scope that is entirely unreachable return as "0 件を完全に削除しました"
+ * (spec/usecases/note.md#emptyTrash のエラーケース).
+ */
+const isSkippableRefusal = (cause: unknown): boolean =>
+  isConflictError(cause) ||
+  isNotFoundError(cause) ||
+  (isValidationError(cause) && cause.code === "NOTE_NOT_TRASHED");
+
+/**
+ * The inline path's loop. A skippable refusal is contained to its own
+ * note: the trash is a set of unrelated notes, so one that has left it
  * says nothing about the next, and the shortfall between the count and
- * `purgedCount` is what reports it to the caller.
+ * `purgedCount` is what reports it to the caller. Any other failure ends
+ * the request — see {@link isSkippableRefusal}.
  */
 async function purgeEachNote(
   container: RequestContainer,
@@ -158,7 +183,10 @@ async function purgeEachNote(
       });
       purgedCount += 1;
     } catch (cause) {
-      container.logger.warn("[emptyTrash] a note was skipped", {
+      if (!isSkippableRefusal(cause)) {
+        throw cause;
+      }
+      container.logger.warn("[emptyTrash] a note left the trash before it", {
         cause,
         noteId: note.id,
       });
@@ -174,6 +202,15 @@ async function purgeEachNote(
  * Nothing is deleted here, which is why the enumeration is stable under
  * offset paging — `listByOwner` orders totally (`updatedAt DESC, id
  * DESC`) and this walk removes nothing from under itself.
+ *
+ * The walk is bounded by the count the request has already taken rather
+ * than by "read until a page comes back short": the sequential reads of
+ * one request have to be bounded by something the request knows
+ * (spec/platform/index.md「実行予算と分割単位」), and a paging bug would
+ * otherwise mean a request that never returns instead of one that
+ * returns wrong. A note trashed after the count belongs to the next
+ * request, not to this one, which is why the shortfall is left rather
+ * than chased.
  */
 async function scheduleBulkPurge(
   container: RequestContainer,
@@ -181,6 +218,7 @@ async function scheduleBulkPurge(
   params: Readonly<{
     owner: NoteOwner;
     scope: ScopeKey;
+    total: number;
     requestedBy: UserId;
   }>,
 ): Promise<EmptyTrashView> {
@@ -206,7 +244,8 @@ async function scheduleBulkPurge(
     chunk = [];
   };
 
-  for (let page = 1; ; page += 1) {
+  const pageCount = Math.ceil(params.total / ENUMERATION_PAGE_SIZE);
+  for (let page = 1; page <= pageCount; page += 1) {
     const result = await reader.listByOwner(params.owner, "trashed", {
       page,
       limit: ENUMERATION_PAGE_SIZE,

@@ -35,9 +35,6 @@ export type UpdateNoteBodyInput = Readonly<{
 export type UpdateNoteBodyArgs = ServiceArgs<UpdateNoteBodyInput> &
   Readonly<{ jobs?: NoteEditingJobs }>;
 
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
-
 /**
  * Applies a save from the HTML / WYSIWYG editor (ED-03 / ED-04 / ED-08).
  *
@@ -109,7 +106,7 @@ export async function updateNoteBody({
       );
       await ctx.noteRevisionRepository.deleteOlderThanNewest(
         noteId,
-        REVISION_RETENTION,
+        NoteRevision.RETENTION,
       );
     }
     const updated = Note.updateBody(claimed.note, processed, now);

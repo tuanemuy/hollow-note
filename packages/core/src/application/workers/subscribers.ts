@@ -223,9 +223,17 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
 /**
  * The single entry point for events the relay delivered: the consumer
  * role of every runtime looks the event up here instead of holding its
- * own switch. Several subscribers may share an event type; they run in
- * registration order and a throw fails the whole delivery, so every
- * handler must be safe to re-run (delivery is at-least-once).
+ * own switch.
+ *
+ * Several subscribers may share an event type. They run in registration
+ * order, and **each one runs even when an earlier sibling threw**: the
+ * followers of one event clean up aggregates that know nothing of each
+ * other, so letting the first failure skip the rest would strand their
+ * rows behind an unrelated fault until the row quarantined. The first
+ * failure is re-thrown once every sibling has had its turn, so the
+ * delivery still fails and the relay redelivers it — which is why every
+ * handler must be safe to re-run (delivery is at-least-once), including
+ * the ones that already succeeded.
  */
 export const subscribers: readonly EventSubscriber[] = [
   ...domainEventSubscribers,
@@ -252,6 +260,7 @@ export async function dispatchDomainEvent(
     });
     return;
   }
+  let firstFailure: { error: unknown } | null = null;
   for (const subscriber of matched) {
     // The `eventType` match above is what pairs a handler with its own
     // event shape; TS cannot follow that narrowing across two separately
@@ -261,6 +270,17 @@ export async function dispatchDomainEvent(
       event: DomainEvent,
       deps: WorkerContainer,
     ) => Promise<void>;
-    await handle(event, deps);
+    try {
+      await handle(event, deps);
+    } catch (error) {
+      deps.logger.error(
+        `[subscribers] ${subscriber.consumerName} failed for ${event.type}`,
+        { eventId: event.id, eventType: event.type, cause: error },
+      );
+      firstFailure ??= { error };
+    }
+  }
+  if (firstFailure !== null) {
+    throw firstFailure.error;
   }
 }

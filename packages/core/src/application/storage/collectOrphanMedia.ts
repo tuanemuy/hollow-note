@@ -17,7 +17,7 @@ import { deleteStoredFiles } from "./deleteFiles";
 /**
  * Scope-task kind carrying the orphan-media sweep of one scope.
  *
- * The row is armed by the first media the scope ever stores
+ * The row is armed by the first media that appears in the scope
  * ({@link armOrphanMediaSweepOnFirstMedia}) and moved by every turn —
  * to immediately after while a full page is still yielding progress,
  * and to the next day otherwise. It is never completed: the sweep is
@@ -85,13 +85,19 @@ export type CollectOrphanMediaArgs = Readonly<{
 }>;
 
 /**
- * Arms the daily sweep the first time a scope stores media.
+ * Arms the daily sweep the first time media appears in a scope.
  *
  * Runs in the caller's transaction, before the row it is about to insert,
  * so "no media yet" and "this is the first one" are the same read. Arming
  * on *every* insertion would be worse than useless: `schedule` upserts on
  * `(kind, operationId)` and overwrites `dueAt`, so a scope whose editor
  * inserts an image a day would push its own sweep out of reach forever.
+ *
+ * Every path that puts a `media` row into a scope owes this call, since
+ * "the scope holds media" is what the presence of the sweep row stands
+ * for. There are two: `storeMedia`, and the `stageTarget` phase of
+ * `relocateFilesForNote`, which is how a moved note's media arrives in a
+ * scope that may never have held any.
  */
 export async function armOrphanMediaSweepOnFirstMedia(
   ctx: ScopeUnitOfWorkContext,

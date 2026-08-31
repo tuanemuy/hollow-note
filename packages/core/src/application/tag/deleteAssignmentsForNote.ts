@@ -1,5 +1,6 @@
 import {
   armNotePurgeContinuation,
+  assertNotePurgeAdmission,
   type NotePurgeFanOutTurn,
 } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
@@ -36,9 +37,10 @@ export type DeleteAssignmentsForNoteArgs = Readonly<{
  * `note.purged`, so announcing the unassignment would only race them.
  *
  * Idempotence (no `IdempotencyStore`): deleted rows do not come back, so
- * a redelivered `note.purged` answers `0`. The overlap with
- * `deleteTagsForScope` is harmless for the same reason — whichever runs
- * second deletes nothing.
+ * a redelivered `note.purged` answers `0` — including after the deletion
+ * barrier that drove the purge has completed
+ * (`assertNotePurgeAdmission`). The overlap with `deleteTagsForScope` is
+ * harmless for the same reason — whichever runs second deletes nothing.
  */
 export async function deleteAssignmentsForNote({
   container,
@@ -47,9 +49,7 @@ export async function deleteAssignmentsForNote({
   const now = container.clock.now();
 
   return container.scopeUnitOfWorkProvider.run(input.scope, async (ctx) => {
-    if (input.deletionOperationId !== null) {
-      await ctx.cleanupAdmission.assertOwner(input.deletionOperationId);
-    }
+    await assertNotePurgeAdmission(ctx, input.deletionOperationId);
 
     const deletedCount = await ctx.tagAssignmentRepository.deleteByNote(
       input.noteId,

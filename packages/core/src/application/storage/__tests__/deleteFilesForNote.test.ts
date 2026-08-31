@@ -19,6 +19,7 @@ import {
 } from "@repo/core/domain/storage/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "../../cleanup/participants";
 import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import {
   deleteFilesForNote,
@@ -133,6 +134,26 @@ const openBarrier = (h: TestHarness) =>
       userId,
     ),
   );
+
+/**
+ * Drives the barrier to where `deleteNotesForOwner`'s last turn leaves
+ * it: every required component acknowledged and the receipt completed,
+ * with the `note.purged` of the notes it counted still queued for the
+ * relay.
+ */
+const completeBarrier = (h: TestHarness) =>
+  h.container.scopeUnitOfWorkProvider.run(scope, async (ctx) => {
+    for (const component of REQUIRED_PERSONAL_CLEANUP_COMPONENTS) {
+      await ctx.cleanupAdmission.acknowledgePersonalComponent(
+        DELETION_OPERATION,
+        component,
+      );
+    }
+    await ctx.cleanupAdmission.markCompleted(
+      DELETION_OPERATION,
+      new Date("2026-05-01T00:00:00.000Z"),
+    );
+  });
 
 const run = (
   h: TestHarness,
@@ -372,6 +393,32 @@ describe("deleteFilesForNote", () => {
     expect(isConflictError(error)).toBe(true);
     expect(storedIds(h)).toEqual(["file-1"]);
     expect(deletionEvents(h)).toEqual([]);
+  });
+
+  it("TC-storage-059: still reclaims the rows once the deletion barrier it inherited has completed", async () => {
+    const h = createTestHarness();
+    for (let n = 0; n <= NOTE_FILE_DELETE_BATCH_SIZE; n += 1) {
+      await seedFile(h, {
+        id: `file-${String(n).padStart(3, "0")}`,
+        purpose: "media",
+      });
+    }
+    await openBarrier(h);
+    // The component that completes the barrier is `note` itself, so the
+    // barrier is already `completed` by the time the relay delivers the
+    // `note.purged` of the notes it counted. Refusing the follower here
+    // would quarantine the outbox row and fail the continuation task.
+    await completeBarrier(h);
+
+    const first = await run(h, DELETION_OPERATION);
+    expect(first.deletedCount).toBe(NOTE_FILE_DELETE_BATCH_SIZE);
+    expect(tasks(h)).toHaveLength(1);
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    expect(round.processed).toBe(1);
+    expect(storedIds(h)).toEqual([]);
+    expect(tasks(h)).toEqual([]);
   });
 
   it("TC-storage-061: is a no-op on redelivery, since deleted rows do not come back", async () => {

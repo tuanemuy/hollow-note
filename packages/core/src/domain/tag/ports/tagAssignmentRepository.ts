@@ -16,7 +16,8 @@ import type { TagAssignment } from "../tagAssignment";
  * only way a row appears and `deleteByNote` the only way one leaves.
  *
  * Error contract: `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`,
- * `SystemError(DatabaseError)`.
+ * `SystemError(DatabaseError)` (which is also what a re-used
+ * `AssignmentId` raises — see `insert`).
  */
 export interface TagAssignmentRepository {
   /**
@@ -24,9 +25,22 @@ export interface TagAssignmentRepository {
    * pair that already exists raises
    * `ConflictError("ASSIGNMENT_ALREADY_EXISTS")` rather than silently
    * duplicating it.
+   *
+   * The id is unique too, but for a different reason, so it answers a
+   * different error: re-using an `AssignmentId` is a minting fault, not
+   * a race two callers can lose, and it raises
+   * `SystemError(DatabaseError)`. A backend that collapsed the two
+   * constraints into one error would tell a caller to retry what it must
+   * fix.
    */
   insert(assignment: TagAssignment): Promise<void>;
-  /** Every assignment of `noteId`, ordered by id. */
+  /**
+   * Every assignment of `noteId`, ordered by id.
+   *
+   * The order is part of the contract, not a backend's discretion: it is
+   * what makes a listing comparable across backends and reproducible
+   * between two reads of the same unchanged note.
+   */
   listByNote(noteId: NoteId): Promise<readonly TagAssignment[]>;
   /**
    * Deletes at most `limit` assignments of `noteId` (`limit <= 0`

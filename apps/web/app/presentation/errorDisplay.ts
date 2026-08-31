@@ -142,7 +142,7 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   STORAGE_UNSUPPORTED_MIME_TYPE:
     "この形式のファイルは扱えません。アイコンは PNG / JPEG / WebP、本文に挿入する画像・動画は PNG / JPEG / GIF / WebP / SVG / MP4 / WebM が使えます。",
   STORAGE_FILE_TOO_LARGE:
-    "ファイルが大きすぎます。アイコンは 5 MB、画像は 20 MB、動画は 200 MB までです。",
+    "ファイルが大きすぎます。アイコンは 5 MB、画像は 20 MB（SVG は 128 KB）、動画は 200 MB までです。",
   USAGE_STORAGE_QUOTA_EXCEEDED:
     "保存できる容量の上限に達しました。不要なノートやファイルを削除してからもう一度お試しください。",
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",

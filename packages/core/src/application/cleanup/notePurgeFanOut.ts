@@ -1,5 +1,5 @@
 import { NoteId, type NoteOwner } from "@repo/core/domain/note/valueObject";
-import { SystemError, SystemErrorCode } from "../errors";
+import { ConflictError, SystemError, SystemErrorCode } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import type { ScopeTaskPayload } from "../ports/scopeTaskScheduler";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
@@ -57,6 +57,45 @@ export const readNotePurgeTurn = (
     deletionOperationId:
       typeof token === "string" && token.length > 0 ? token : null,
   };
+};
+
+/**
+ * Re-checks, on every turn, that the cleanup token the turn inherited
+ * still names **this scope's** barrier — and admits the turn when it
+ * does, whether that barrier is still running or already completed.
+ *
+ * `assertOwner` cannot be used here. It asks "may cleaning still
+ * proceed?", so it turns false the moment the receipt completes; but the
+ * component that completes the barrier is `note` itself, and the purges
+ * it acknowledges emit `note.purged` from their own transactions for the
+ * relay to deliver **afterwards**. Asking `assertOwner` would therefore
+ * reject the fan-out of every purge the barrier waited for, first
+ * delivery and continuation alike, until the outbox row quarantined and
+ * the scope task failed — and nothing else reclaims tag assignments or
+ * backup records (`./participants.ts`).
+ *
+ * Admitting a completed barrier is safe because a follower acknowledges
+ * nothing: it deletes rows of a note whose purge already committed, so
+ * it cannot walk a completed receipt back to `running`. What stays
+ * refused is a token that does not describe this scope at all — a
+ * foreign operation's barrier, or one that was withdrawn — which is the
+ * per-turn ownership re-check the usecases specify.
+ */
+export const assertNotePurgeAdmission = async (
+  ctx: ScopeUnitOfWorkContext,
+  deletionOperationId: string | null,
+): Promise<void> => {
+  if (deletionOperationId === null) {
+    return;
+  }
+  const progress =
+    await ctx.cleanupAdmission.describePersonalCleanup(deletionOperationId);
+  if (progress === null) {
+    throw new ConflictError(
+      "CLEANUP_OPERATION_MISMATCH",
+      `Operation ${deletionOperationId} does not own this scope's cleanup`,
+    );
+  }
 };
 
 /**

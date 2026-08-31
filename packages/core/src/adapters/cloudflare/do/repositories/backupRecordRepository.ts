@@ -3,7 +3,11 @@ import { BackupRecord } from "../../../../domain/integration/backupRecord";
 import type { BackupRecordRepository } from "../../../../domain/integration/ports/backupRecordRepository";
 import type { NoteId } from "../../../../domain/note/valueObject";
 import { type RowMutation, remove, upsert } from "../../execution/writeSet";
-import { classifySqlError, throwTranslated } from "../../sql/errors";
+import {
+  classifySqlError,
+  databaseError,
+  throwTranslated,
+} from "../../sql/errors";
 import { date, int, text, toTimestamp } from "../../sql/row";
 import type { SqlSession } from "../../sql/session";
 import { type SqlRow, type SqlValue, statement } from "../../sql/statement";
@@ -69,6 +73,15 @@ const sourceFileConflict = (record: BackupRecord): ConflictError =>
     `Note ${record.noteId} already records a backup of ${record.sourceFileId}`,
   );
 
+/**
+ * Re-using a record id is a caller fault, not "this source file is
+ * already recorded": the two unique constraints of this table mean
+ * different things, and mapping both to `BACKUP_RECORD_ALREADY_EXISTS`
+ * would answer a different error kind than the other backends do.
+ */
+const duplicateId = (record: BackupRecord) =>
+  databaseError(`Duplicate primary key in ${TABLE}: ${record.id}`);
+
 export type CloudflareBackupRecordRepositoryDeps = Readonly<{
   session: SqlSession;
 }>;
@@ -115,8 +128,39 @@ export function createCloudflareBackupRecordRepository(
     return session.readRows(limit === undefined ? spec : { ...spec, limit });
   };
 
+  const clashOf = async (
+    record: BackupRecord,
+  ): Promise<"id" | "sourceFile" | null> => {
+    const rows = await session.readRows({
+      table: TABLE,
+      statement: statement(
+        `SELECT ${SELECTION} FROM ${TABLE}
+           WHERE id = ? OR (note_id = ? AND source_file_id = ?)`,
+        record.id,
+        record.noteId,
+        record.sourceFileId,
+      ),
+      keyOf: (row: SqlRow) => text(row, "id"),
+      matches: (row: SqlRow) =>
+        text(row, "id") === record.id ||
+        (text(row, "note_id") === record.noteId &&
+          text(row, "source_file_id") === record.sourceFileId),
+    });
+    if (rows.some((row) => text(row, "id") === record.id)) {
+      return "id";
+    }
+    return rows.length > 0 ? "sourceFile" : null;
+  };
+
   return {
     async insert(record: BackupRecord): Promise<void> {
+      const clash = await clashOf(record);
+      if (clash === "id") {
+        throw duplicateId(record);
+      }
+      if (clash === "sourceFile") {
+        throw sourceFileConflict(record);
+      }
       const row = toRow(record);
       try {
         await session.write([
@@ -128,7 +172,15 @@ export function createCloudflareBackupRecordRepository(
           }),
         ]);
       } catch (cause) {
-        if (classifySqlError(cause) === "unique") {
+        // The pre-read settles the ordinary case; the UNIQUE index is
+        // the fence against a unit that recorded the same source file
+        // concurrently. Only that index means "already recorded" — a
+        // primary-key violation falls through to the database fault the
+        // other backends raise for it.
+        if (
+          classifySqlError(cause) === "unique" &&
+          String(cause).includes(`${TABLE}.source_file_id`)
+        ) {
           throw sourceFileConflict(record);
         }
         throwTranslated(`${TABLE} row ${record.id}`, cause);

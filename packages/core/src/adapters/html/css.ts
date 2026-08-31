@@ -12,6 +12,12 @@
  * at-rules are carried through rather than rejected, because the input is
  * arbitrary imported CSS and losing it is worse than keeping something
  * inert.
+ *
+ * Every classification runs on a canonical copy of the statement rather
+ * than on its source text, because a browser resolves comments and
+ * identifier escapes before it sees a property name: `position/**\/:fixed`,
+ * `position:\66 ixed` and `@\69 mport` are all effectively the two things
+ * this module exists to remove.
  */
 
 export type CssRemoval = Readonly<{ name: string; reason: string }>;
@@ -53,6 +59,91 @@ const skipString = (input: string, start: number): number => {
 const skipComment = (input: string, start: number): number => {
   const end = input.indexOf("*/", start + 2);
   return end === -1 ? input.length : end + 2;
+};
+
+const IDENT_CHAR = /^[-\w]$/;
+
+/**
+ * Stands in for an escape that resolved to something which is not an
+ * identifier character. The browser treats such a character as part of the
+ * identifier and never as syntax, so the canonical copy must not let it act
+ * as a colon, a quote, or a bracket either.
+ */
+const OPAQUE_ESCAPE = "\uFFFF";
+
+const isHexDigit = (char: string): boolean =>
+  (char >= "0" && char <= "9") ||
+  (char >= "a" && char <= "f") ||
+  (char >= "A" && char <= "F");
+
+const asIdentChar = (char: string): string =>
+  IDENT_CHAR.test(char) || (char.codePointAt(0) ?? 0) >= 0x80
+    ? char
+    : OPAQUE_ESCAPE;
+
+/** Resolves the escape starting at `start`, per CSS Syntax § consume-escape. */
+const readEscape = (
+  input: string,
+  start: number,
+): Readonly<{ text: string; next: number }> => {
+  let i = start + 1;
+  let hex = "";
+  while (i < input.length && hex.length < 6 && isHexDigit(input[i] as string)) {
+    hex += input[i];
+    i += 1;
+  }
+  if (hex.length > 0) {
+    // A single whitespace character terminates a hex escape and belongs to
+    // it, so `\66 ixed` is `fixed` and not `f ixed`.
+    if (i < input.length && isWhitespace(input[i] as string)) {
+      i += 1;
+    }
+    const codePoint = Number.parseInt(hex, 16);
+    const resolved =
+      codePoint === 0 || codePoint > 0x10ffff
+        ? "\uFFFD"
+        : String.fromCodePoint(codePoint);
+    return { text: asIdentChar(resolved), next: i };
+  }
+  const escaped = input[start + 1];
+  return escaped === undefined
+    ? { text: OPAQUE_ESCAPE, next: start + 1 }
+    : { text: asIdentChar(escaped), next: start + 2 };
+};
+
+/**
+ * Comment-free, escape-resolved copy of a statement, used only to classify
+ * it — never to emit it. Unescaping the emitted text would turn `\3c` into a
+ * real `<` and let a `</style>` out of the raw text node the CSS lives in.
+ */
+const canonicalize = (input: string): string => {
+  let out = "";
+  let i = 0;
+  while (i < input.length) {
+    const char = input[i] as string;
+    if (char === "/" && input[i + 1] === "*") {
+      // A comment separates tokens, it does not join them: `pos/**/ition`
+      // is two identifiers to the parser and must not collapse into one.
+      out += " ";
+      i = skipComment(input, i);
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const end = skipString(input, i);
+      out += input.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (char === "\\") {
+      const resolved = readEscape(input, i);
+      out += resolved.text;
+      i = resolved.next;
+      continue;
+    }
+    out += char;
+    i += 1;
+  }
+  return out;
 };
 
 /**
@@ -119,25 +210,29 @@ const findBlockEnd = (input: string, openBrace: number): number => {
   return -1;
 };
 
-const isRemovedDeclaration = (declaration: string): boolean => {
-  const colon = declaration.indexOf(":");
+const isImportAtRule = (canonical: string): boolean =>
+  AT_RULE_NAME.exec(canonical)?.[1]?.toLowerCase() === "import";
+
+/**
+ * The property of a viewport-anchoring declaration, or undefined when the
+ * canonical statement is not one. The separator is found with the same scan
+ * the statement splitter uses, so what counts as a colon here is what counts
+ * as one everywhere else in this module.
+ */
+const viewportAnchoringProperty = (canonical: string): string | undefined => {
+  const colon = scanTo(canonical, 0, ":");
   if (colon === -1) {
-    return false;
+    return undefined;
   }
-  const property = declaration.slice(0, colon).trim();
+  const property = canonical.slice(0, colon).trim();
   if (!POSITION_PROPERTY.test(property)) {
-    return false;
+    return undefined;
   }
-  const value = declaration
+  const value = canonical
     .slice(colon + 1)
     .replace(/!\s*important\s*$/i, "")
     .trim();
-  return VIEWPORT_ANCHORED_POSITION.test(value);
-};
-
-const declarationProperty = (declaration: string): string => {
-  const colon = declaration.indexOf(":");
-  return colon === -1 ? declaration.trim() : declaration.slice(0, colon).trim();
+  return VIEWPORT_ANCHORED_POSITION.test(value) ? property : undefined;
 };
 
 const pushStatement = (
@@ -148,19 +243,18 @@ const pushStatement = (
   if (text.length === 0) {
     return;
   }
-  if (text.startsWith("@")) {
-    if (AT_RULE_NAME.exec(text)?.[1]?.toLowerCase() === "import") {
+  const canonical = canonicalize(text).trim();
+  if (canonical.startsWith("@")) {
+    if (isImportAtRule(canonical)) {
       report({ name: "@import", reason: IMPORT_REASON });
       return;
     }
     parts.push(`${text};`);
     return;
   }
-  if (isRemovedDeclaration(text)) {
-    report({
-      name: declarationProperty(text),
-      reason: FIXED_POSITION_REASON,
-    });
+  const property = viewportAnchoringProperty(canonical);
+  if (property !== undefined) {
+    report({ name: property, reason: FIXED_POSITION_REASON });
     return;
   }
   parts.push(`${text};`);
@@ -203,12 +297,10 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
     const end = findBlockEnd(input, stop);
     const body = input.slice(stop + 1, end === -1 ? input.length : end);
     i = end === -1 ? input.length : end + 1;
-    if (prelude.startsWith("@")) {
-      const name = AT_RULE_NAME.exec(prelude)?.[1]?.toLowerCase();
-      if (name === "import") {
-        report({ name: "@import", reason: IMPORT_REASON });
-        continue;
-      }
+    const canonicalPrelude = canonicalize(prelude).trim();
+    if (canonicalPrelude.startsWith("@") && isImportAtRule(canonicalPrelude)) {
+      report({ name: "@import", reason: IMPORT_REASON });
+      continue;
     }
     parts.push(`${prelude}{${filterCss(body, report)}}`);
   }

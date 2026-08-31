@@ -93,12 +93,13 @@ export const PURGE_TOMBSTONE_MS = 30 * 24 * 60 * 60 * 1000;
  * *resumed* rather than taken.
  *
  * `beginPurge` answers a route already `purging` under the same
- * operation before it compares generations, so a value no route can
- * carry is what turns the claim into the read that recovery needs: the
- * port hides `purging` rows from `resolve`, and this is the only way
- * back to the scope and the generation a stopped purge was working on.
- * A route that is *not* ours refuses the claim on its state or its
- * generation, so the sentinel can never take one.
+ * operation before it compares generations — a contractual order, held
+ * by every backend through `describeNoteRouteStoreContract` — so a
+ * value no route can carry is what turns the claim into the read that
+ * recovery needs: the port hides `purging` rows from `resolve`, and
+ * this is the only way back to the scope and the generation a stopped
+ * purge was working on. A route that is *not* ours refuses the claim on
+ * its state or its generation, so the sentinel can never take one.
  */
 const RESUME_CLAIM = -1;
 

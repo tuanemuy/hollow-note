@@ -1,5 +1,6 @@
 import {
   armNotePurgeContinuation,
+  assertNotePurgeAdmission,
   type NotePurgeFanOutTurn,
 } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
@@ -38,7 +39,9 @@ export type DeleteBackupRecordsForNoteArgs = Readonly<{
  * no longer exists.
  *
  * Idempotence (no `IdempotencyStore`): deleted rows do not come back, so
- * a redelivered `note.purged` answers `0`.
+ * a redelivered `note.purged` answers `0` — including after the deletion
+ * barrier that drove the purge has completed
+ * (`assertNotePurgeAdmission`).
  */
 export async function deleteBackupRecordsForNote({
   container,
@@ -47,9 +50,7 @@ export async function deleteBackupRecordsForNote({
   const now = container.clock.now();
 
   return container.scopeUnitOfWorkProvider.run(input.scope, async (ctx) => {
-    if (input.deletionOperationId !== null) {
-      await ctx.cleanupAdmission.assertOwner(input.deletionOperationId);
-    }
+    await assertNotePurgeAdmission(ctx, input.deletionOperationId);
 
     const deletedCount = await ctx.backupRecordRepository.deleteByNote(
       input.noteId,

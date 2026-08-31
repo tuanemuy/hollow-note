@@ -328,7 +328,7 @@ interface CloudDriveClient {
 
 ```
 IntegrationErrorCode =
-  | "InvalidId" | "InvalidModelPreference" | "InvalidFolderRef"
+  | "InvalidId" | "InvalidModelPreference" | "InvalidFolderRef" | "InvalidFileRef"
   | "ProviderMismatch" | "SettingsProviderMismatch"
   | "BackupFolderRequired" | "ReauthorizationRequired"
 ```

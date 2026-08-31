@@ -171,6 +171,8 @@ bulk operation の対象上限（500 notes）と bulk upload（100 files）は�
 
 全 message は event / operation ID を持つ。Job message は `scope` と `jobId` を必ず持つ。scope object の outbox relay は送信成功後に row を完了するため、送信後・完了前の停止は重複になる。consumer は冪等に処理する。
 
+**scope object の outbox relay は、その scope でしか駆動できない後始末の唯一の経路である。** scope UoW が集める event — 回収した各ファイルの `storage.fileDeleted` と、ノートの完全削除の `note.purged`（tag 付与・バックアップ記録・保管ファイルの 3 購読者へ fan-out する）— は global outbox には載らないため、scope ごとの relay が無い配備ではこれらの後始末が一切走らない。global outbox の reader だけを配線した状態は、この relay を実装していない状態と同じである。
+
 private projection と scope cleanup continuation は Queue へ出さず、scope object の local task と Alarm で直列に処理する。public projection はroute・Note/tag・author・workspaceの世代ベクトル条件付き書き込みで競合を吸収するため、サービス全体の単一consumerにはしない。初期並行度4とし、D1 write latency / overloaded errorを見て下げるか、物理shardへ移す。
 
 全scope通常writeは共通admissionを通る。workspace scopeはWorkspace deletion state、personal scopeは`accountDeletionBarrier`を同じDOで検査する。personal barrier commandのcommit後はcleanup owner token以外を`ACCOUNT_DELETING`で拒否し、進行中receiptはpruneしない。全local cleanup ack後にcompletedへ縮約して120日保持する。

@@ -25,8 +25,10 @@ const REVISION_REASONS: ReadonlySet<string> = new Set([
 
 /**
  * Immutable snapshot of a note body taken on save. No OCC (never
- * updated). Retention — newest 20 per note — is enforced by the
- * usecases via `NoteRevisionRepository.deleteOlderThanNewest`.
+ * updated). Retention — {@link NoteRevision.RETENTION} per note — is
+ * enforced by the usecases via
+ * `NoteRevisionRepository.deleteOlderThanNewest`, and read back with the
+ * same bound by `listNoteRevisions`.
  */
 export type NoteRevision = Readonly<{
   id: RevisionId;
@@ -52,6 +54,16 @@ type ReconstructInput = Readonly<{
 }>;
 
 export const NoteRevision = {
+  /**
+   * The retention invariant itself: the newest 20 revisions per note.
+   *
+   * One number, because the writer's prune bound and the reader's cap
+   * being the same number *is* the invariant — a copy that drifts makes
+   * the list claim a depth the store no longer keeps (or hides one it
+   * does).
+   */
+  RETENTION: 20,
+
   capture: (
     params: Readonly<{
       id: string;

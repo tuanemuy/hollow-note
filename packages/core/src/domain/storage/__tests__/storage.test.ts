@@ -2,7 +2,10 @@ import { isBusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { StorageErrorCode } from "../errorCode";
-import { UploadValidationPolicy } from "../services/uploadValidationPolicy";
+import {
+  MEDIA_SVG_MAX_BYTES,
+  UploadValidationPolicy,
+} from "../services/uploadValidationPolicy";
 import { StoredFile } from "../storedFile";
 import {
   ByteSize,
@@ -340,6 +343,25 @@ describe("UploadValidationPolicy: media", () => {
     expect(accept(imageBody("png", 20 * MB)).size).toBe(20 * MB);
     expect(refuse(imageBody("png", 20 * MB + 1))).toBe(
       StorageErrorCode.FileTooLarge,
+    );
+  });
+
+  it("TC-storage-181 / TC-storage-180: measures an SVG against its own 128 KB ceiling, not the raster one", () => {
+    // The ceiling is low on purpose: `storeMedia` sanitizes an SVG
+    // through `HtmlProcessor`, whose result is bound by the note body's
+    // 800,000-byte cap, and a limit above what that can return would be
+    // unreachable (spec/domains/storage.md).
+    const padded = (bytes: number): Uint8Array =>
+      svgBody(
+        `<svg xmlns="http://www.w3.org/2000/svg"><!--${"a".repeat(bytes)}--></svg>`,
+      ).subarray(0, bytes);
+    expect(accept(padded(MEDIA_SVG_MAX_BYTES)).size).toBe(MEDIA_SVG_MAX_BYTES);
+    expect(refuse(padded(MEDIA_SVG_MAX_BYTES + 1))).toBe(
+      StorageErrorCode.FileTooLarge,
+    );
+    // A raster image of the same length stays well inside its own.
+    expect(accept(imageBody("png", MEDIA_SVG_MAX_BYTES + 1)).size).toBe(
+      MEDIA_SVG_MAX_BYTES + 1,
     );
   });
 

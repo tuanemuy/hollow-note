@@ -2,6 +2,7 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import type { FileStoredEvent } from "@repo/core/domain/storage/events";
+import { MEDIA_SVG_MAX_BYTES } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { ObjectKey } from "@repo/core/domain/storage/valueObject";
 import { UsageErrorCode } from "@repo/core/domain/usage/errorCode";
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
@@ -369,6 +370,45 @@ describe("storeMedia", () => {
       StorageErrorCode.FileTooLarge,
     );
     expect(filesIn(h, personalScope)).toHaveLength(0);
+  });
+
+  it("TC-storage-180: an SVG past its own ceiling is refused as FileTooLarge, not as a body that is too long", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    const oversized = `<svg xmlns="http://www.w3.org/2000/svg"><!--${"a".repeat(
+      MEDIA_SVG_MAX_BYTES,
+    )}--></svg>`;
+
+    // The sanitizer answers a note-body fragment, so an SVG whose limit
+    // sat above what that value object accepts used to fail as
+    // `NOTE_CONTENT_TOO_LARGE` — Note's invariant, for a Storage intake.
+    await expectBusinessRule(
+      upload(h, noteId, { body: svg(oversized), fileName: "huge.svg" }),
+      StorageErrorCode.FileTooLarge,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-181: an SVG that grows past the ceiling while being sanitized is refused before it is stored", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // Every `&` comes back as `&amp;`, so bytes the policy accepted turn
+    // into bytes it would not have. What is stored is what has to obey
+    // the limit.
+    const growing = `<svg xmlns="http://www.w3.org/2000/svg"><text>${"&".repeat(
+      MEDIA_SVG_MAX_BYTES / 2,
+    )}</text></svg>`;
+    expect(new TextEncoder().encode(growing).byteLength).toBeLessThan(
+      MEDIA_SVG_MAX_BYTES,
+    );
+
+    await expectBusinessRule(
+      upload(h, noteId, { body: svg(growing), fileName: "growing.svg" }),
+      StorageErrorCode.FileTooLarge,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 
   it("TC-storage-183: an upload larger than the remaining capacity is refused before any byte is written", async () => {

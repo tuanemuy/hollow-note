@@ -19,12 +19,30 @@ export const AVATAR_MAX_BYTES = 5 * MB;
 export const MEDIA_IMAGE_MAX_BYTES = 20 * MB;
 export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
 
+/**
+ * SVG's own ceiling, well below the raster one.
+ *
+ * An SVG is the one media format that is *rewritten* before it is
+ * stored: `storeMedia` runs it through `HtmlProcessor`, whose result is
+ * a note-body fragment and therefore bound by that value object's
+ * 800,000-byte cap. A limit above what the sanitizer can return would
+ * be unreachable — the upload would fail on the body's invariant, in
+ * Note's vocabulary, for a file Storage said it would accept.
+ *
+ * 128 KB is what makes the ceiling reachable for *any* input: HTML
+ * serialization expands a byte by at most six (`"` inside an attribute
+ * becoming `&quot;`), and 131,072 × 6 = 786,432 stays under 800,000. The
+ * bytes that are actually stored are measured against this same limit
+ * again, since the sanitizer's output is what the file becomes.
+ */
+export const MEDIA_SVG_MAX_BYTES = 128 * 1024;
+
 const MEDIA_LIMIT_BYTES = {
   "image/png": MEDIA_IMAGE_MAX_BYTES,
   "image/jpeg": MEDIA_IMAGE_MAX_BYTES,
   "image/gif": MEDIA_IMAGE_MAX_BYTES,
   "image/webp": MEDIA_IMAGE_MAX_BYTES,
-  "image/svg+xml": MEDIA_IMAGE_MAX_BYTES,
+  "image/svg+xml": MEDIA_SVG_MAX_BYTES,
   "video/mp4": MEDIA_VIDEO_MAX_BYTES,
   "video/webm": MEDIA_VIDEO_MAX_BYTES,
 } as const;
@@ -88,7 +106,6 @@ const WEBM_DOCTYPE = [0x77, 0x65, 0x62, 0x6d];
 
 /** Prefix of a text upload read to decide whether it opens as SVG. */
 const SVG_SCAN_BYTES = 4096;
-const BOM = 0xfeff;
 
 /** What an XML prologue may hold before the root element. */
 const PROLOGUE_PARTS = [
@@ -140,8 +157,11 @@ const isSpace = (character: string): boolean =>
  * about a construct no editor emits.
  */
 const opensAsSvg = (body: Uint8Array): boolean => {
-  const decoded = new TextDecoder().decode(body.subarray(0, SVG_SCAN_BYTES));
-  const head = decoded.charCodeAt(0) === BOM ? decoded.slice(1) : decoded;
+  // The BOM never reaches the walk below: `TextDecoder` defaults to
+  // `ignoreBOM: false`, which means it *consumes* a leading UTF-8 BOM
+  // rather than emitting U+FEFF. Only the rest of the prologue is left
+  // to skip here.
+  const head = new TextDecoder().decode(body.subarray(0, SVG_SCAN_BYTES));
   let index = 0;
   for (;;) {
     while (index < head.length && isSpace(head[index] ?? "")) {

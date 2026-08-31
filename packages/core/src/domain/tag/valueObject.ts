@@ -1,6 +1,5 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import type { UserId } from "@repo/core/domain/identity/valueObject";
-import type { NoteOwner } from "@repo/core/domain/note/valueObject";
 import type { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { TagErrorCode } from "./errorCode";
 
@@ -36,9 +35,13 @@ export const AssignmentId = {
 
 /**
  * Namespace a tag belongs to. A tag never moves between scopes, so this
- * is fixed at creation and mirrors `NoteOwner` in shape — which is what
- * lets `fromNoteOwner` derive an assignment's scope from the note it is
- * put on (spec/domains/tag.md).
+ * is fixed at creation and mirrors `NoteOwner` in shape — the scope of
+ * an assignment is the scope of the note it is put on
+ * (spec/domains/tag.md).
+ *
+ * Only the two constructors are here. Deriving a scope from a
+ * `NoteOwner` and comparing two scopes are tools of the write side, and
+ * arrive with the slice that owns tagging itself.
  */
 export type TagScope =
   | Readonly<{ type: "user"; userId: UserId }>
@@ -50,12 +53,4 @@ export const TagScope = {
     type: "workspace",
     workspaceId,
   }),
-  fromNoteOwner: (owner: NoteOwner): TagScope =>
-    owner.type === "user"
-      ? TagScope.user(owner.userId)
-      : TagScope.workspace(owner.workspaceId),
-  equals: (a: TagScope, b: TagScope): boolean =>
-    a.type === "user"
-      ? b.type === "user" && a.userId === b.userId
-      : b.type === "workspace" && a.workspaceId === b.workspaceId,
 };
