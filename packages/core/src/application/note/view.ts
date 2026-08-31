@@ -63,6 +63,16 @@ export type NotePermissionsView = Readonly<{
 export type NoteDetailView = Readonly<{
   noteId: string;
   title: string;
+  /**
+   * OCC token the editing screen holds. Every editing usecase
+   * (`updateNoteBody` / `applyTextNodeEdits` / `renameNote` /
+   * `changeNoteStyleMode` / `restoreNoteRevision` / `trashNote` /
+   * `restoreNote`) demands an `expectedVersion`, and this read is the
+   * only one a screen can learn the first one from — without it the
+   * editor's opening save has no version to send and the optimistic
+   * lock can never start.
+   */
+  version: number;
   content: NoteContentView;
   styleMode: "default" | "preserve";
   visibility: "private" | "unlisted" | "public";

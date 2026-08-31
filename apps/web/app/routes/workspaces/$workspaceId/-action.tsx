@@ -118,3 +118,66 @@ export const renderWorkspaceNoteDetail = createServerFn({ method: "GET" })
       ),
     };
   });
+
+/**
+ * P-12 のワークスペース版（`/workspaces/:workspaceId/notes/:noteId/edit`）。
+ * 個人の `/notes/:noteId/edit` と同じ `NoteEditor` を描き、文脈だけが
+ * URL から来る。
+ *
+ * 詳細と同じ理由でワークスペース自身は読まない — この画面が読むのは
+ * ノート 1 件だけで、その認可は `getNote` が持つ。非メンバーが URL を
+ * 直接開けば `NOTE_NOT_FOUND` に落ちる（`spec/manual-tests/editing.md`
+ * の TC-28 手順 3）。
+ *
+ * 保存・自動保存・メディア挿入・版の復元は `routes/notes/-action.tsx` の
+ * ミューテーションを両文脈で共有する（`noteId` で対象が定まるため）。
+ */
+export const renderWorkspaceNoteEditor = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceNoteDetailSchema))
+  .handler(async ({ data }) => {
+    const [{ NoteEditor }, { requireSessionOrRedirect }] = await Promise.all([
+      import("@/components/note/NoteEditor"),
+      import("@/presentation/sessionGuard"),
+    ]);
+    const user = await requireSessionOrRedirect(data.redirect);
+    return {
+      NoteEditor: renderServerFragment(() =>
+        NoteEditor({
+          noteId: data.noteId,
+          userId: user.userId,
+          context: { kind: "workspace", workspaceId: data.workspaceId },
+        }),
+      ),
+    };
+  });
+
+/**
+ * P-12 の新規作成のワークスペース版
+ * （`/workspaces/:workspaceId/notes/new`）。作成先は URL が決めるので
+ * 取り込み先セレクターは出さない（`CreateNoteButton` の `workspaceId`
+ * と同じ渡し方）。
+ *
+ * ここもワークスペースは読まない。viewer と非メンバーの拒否は
+ * `createBlankNote` が `createNote` 権限で行い、初回保存が
+ * `WORKSPACE_INSUFFICIENT_ROLE` で返る。
+ */
+export const renderWorkspaceNewNoteEditor = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceNoteListSchema))
+  .handler(async ({ data }) => {
+    const [{ NewNoteEditor }, { requireSessionOrRedirect }] = await Promise.all(
+      [
+        import("@/components/note/NoteEditor"),
+        import("@/presentation/sessionGuard"),
+      ],
+    );
+    await requireSessionOrRedirect(data.redirect);
+    return {
+      NoteEditor: renderServerFragment(() =>
+        NewNoteEditor({
+          context: { kind: "workspace", workspaceId: data.workspaceId },
+        }),
+      ),
+    };
+  });

@@ -1,0 +1,129 @@
+import type { NoteDetailView } from "@repo/core/application/note/view";
+import { NotFoundState } from "@/components/ui/ErrorState";
+import { serializeError } from "@/presentation/errorResponse";
+import {
+  loadNote,
+  type NoteDetailContext,
+  PERSONAL_NOTE_DETAIL_CONTEXT,
+} from "../NoteDetail/action";
+import { NoteEditorIsland } from "./editor";
+import { type BackTarget, EditorShell, StateNotice } from "./frame";
+
+/**
+ * P-12 ノート編集（PAGE-p12-001..008、モック P12-editor.html）。
+ *
+ * 新規作成（`/notes/new`）と既存ノートの編集（`/notes/:noteId/edit`）を
+ * 1 つの画面で担う。個人とワークスペースの 2 文脈で同じコンポーネントを
+ * 使い、文脈は呼び出し側がプロップで渡す（既定は個人） — `NoteDetail` /
+ * `NoteList` と同じ形で、URL からは読まない。
+ *
+ * 正規 URL への送り直しは持たない。所属先と URL の食い違いを直すのは
+ * `NoteDetail` の `NoteUrlNormalizer` 1 か所であり（OR-12）、編集画面が
+ * 同じ判断を二重に持つと 2 か所が別々に navigate しうる。
+ */
+export async function NoteEditor({
+  noteId,
+  userId,
+  context = PERSONAL_NOTE_DETAIL_CONTEXT,
+}: {
+  noteId: string;
+  userId: string;
+  context?: NoteDetailContext;
+}) {
+  // 不在・他人の非公開・権限なしは `NOTE_NOT_FOUND` に収斂して届く。
+  // 断片の中で終端状態を描くのは `NoteDetail` と同じ理由による
+  // （Flight ストリームに入ったあとの throw は kind を失う）。
+  let note: NoteDetailView;
+  try {
+    note = await loadNote(noteId, userId);
+  } catch (error) {
+    if (serializeError(error).kind === "notFound") {
+      return <NotFoundState />;
+    }
+    throw error;
+  }
+
+  const backTo = backTarget(note.noteId, context);
+
+  if (note.content.status !== "ready") {
+    return (
+      <EditorShell backTo={backTo}>
+        <StateNotice
+          tone={note.content.status === "failed" ? "error" : "warning"}
+          title={
+            note.content.status === "failed"
+              ? "このノートは取り込めませんでした"
+              : "処理中のため編集できません"
+          }
+          body={
+            note.content.status === "failed"
+              ? "本文が無いため編集できません。ノートの画面から取り込み直してください。"
+              : "変換または再生成が実行中です。完了するまで編集を受け付けません。進捗はノートの画面で確認できます。"
+          }
+        />
+      </EditorShell>
+    );
+  }
+
+  if (!note.permissions.canEdit) {
+    return (
+      <EditorShell backTo={backTo}>
+        <StateNotice
+          tone="warning"
+          title="このノートを編集する権限がありません"
+          body="閲覧はできますが、保存はできません。ノートの画面から内容を確認してください。"
+        />
+      </EditorShell>
+    );
+  }
+
+  return (
+    <NoteEditorIsland
+      backTo={backTo}
+      target={{
+        kind: "existing",
+        noteId: note.noteId,
+        title: note.title,
+        html: note.content.html ?? "",
+        version: note.version,
+        styleMode: note.styleMode,
+        // ED-04 の警告は「元が HTML ファイル由来のノート」に出す。取り込み
+        // 由来かどうかは元ファイルの有無で、装飾を保っている本文かどうかは
+        // `styleMode` で分かる（[ADR 007](spec/adr/007-default-style-isolation.md)）。
+        mayLoseDecoration:
+          note.sourceFileId !== null || note.styleMode === "preserve",
+      }}
+    />
+  );
+}
+
+/**
+ * 新規作成（PAGE-p12-002）。ノートはまだ存在しないので読み取りは無く、
+ * 島に渡すのは作成先だけになる。ワークスペース文脈では作成先が URL で
+ * 決まっているので選択させない（`CreateNoteButton` の `workspaceId` と
+ * 同じ渡し方）。
+ */
+export function NewNoteEditor({
+  context = PERSONAL_NOTE_DETAIL_CONTEXT,
+}: {
+  context?: NoteDetailContext;
+}) {
+  return (
+    <NoteEditorIsland
+      backTo={
+        context.kind === "workspace"
+          ? { kind: "workspaceNotes", workspaceId: context.workspaceId }
+          : { kind: "notes" }
+      }
+      target={{
+        kind: "new",
+        workspaceId: context.kind === "workspace" ? context.workspaceId : null,
+      }}
+    />
+  );
+}
+
+const backTarget = (noteId: string, context: NoteDetailContext): BackTarget =>
+  context.kind === "workspace"
+    ? { kind: "workspaceNote", noteId, workspaceId: context.workspaceId }
+    : { kind: "note", noteId };

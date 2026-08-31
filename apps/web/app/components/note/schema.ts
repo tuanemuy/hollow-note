@@ -23,3 +23,95 @@ export const moveNoteSchema = z.discriminatedUnion("targetOwnerType", [
     targetWorkspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH),
   }),
 ]);
+
+/**
+ * P-12（ノート編集）の転送境界スキーマ。
+ *
+ * ここが見るのは形と DoS 上限だけで、業務の上限はドメインが持つ —
+ * タイトルの 200 文字は `NoteTitle`、本文の 800 KB は `NoteHtml` である。
+ * 転送側の上限をドメインより**緩く**取ってあるのは意図で、ちょうどの値を
+ * 二重に持つと ED-03 の「800 KB 超は保存を拒否し、分割を促す」が転送の
+ * 形の不正（`INVALID_INPUT`）として返り、`NOTE_CONTENT_TOO_LARGE` の
+ * 文言に届かなくなる。
+ */
+const NOTE_TITLE_TRANSPORT_MAX = 1_000;
+
+// 800 KB は UTF-8 バイト数の上限。1 UTF-16 単位は最大 3 バイトなので、
+// バイト上限と同じ数の**文字数**を許せばドメインの判定より必ず緩い。
+const NOTE_HTML_TRANSPORT_MAX = 800_000;
+
+const expectedVersion = z.number().int().min(0);
+
+/** 版を跨いで安定する本文中のテキストノード位置（body ルートからのドット区切り 0 始まり子インデックス）。 */
+const textNodePath = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^\d+(\.\d+)*$/);
+
+export const updateNoteBodySchema = z.object({
+  noteId,
+  rawHtml: z.string().max(NOTE_HTML_TRANSPORT_MAX),
+  expectedVersion,
+  // 版の記録理由。WYSIWYG を通した本文は正規化を受けているので、
+  // 版一覧でそれと分かる必要がある（ED-04 の「元に戻す」）。
+  reason: z.enum(["manualEdit", "wysiwygConversion"]),
+  importReferences: z.boolean(),
+});
+
+export const applyTextNodeEditsSchema = z.object({
+  noteId,
+  expectedVersion,
+  edits: z
+    .array(
+      z.object({
+        path: textNodePath,
+        expected: z.string().max(NOTE_HTML_TRANSPORT_MAX),
+        text: z.string().max(NOTE_HTML_TRANSPORT_MAX),
+      }),
+    )
+    .max(20_000),
+});
+
+export const renameNoteSchema = z.object({
+  noteId,
+  title: z.string().max(NOTE_TITLE_TRANSPORT_MAX),
+  expectedVersion,
+});
+
+export const noteRefSchema = z.object({ noteId });
+
+export const restoreNoteRevisionSchema = z.object({
+  noteId,
+  revisionId: z.string().min(1).max(128),
+  expectedVersion,
+});
+
+/**
+ * 新規作成（`/notes/new`）の初回保存。白紙の作成と本文の反映を 1 往復に
+ * 束ねるのは、`createBlankNote` が版を返さず、画面が 2 本目の呼び出しに
+ * 渡す `expectedVersion` を持てないため（PAGE-p12-002）。
+ */
+export const createNoteWithBodySchema = z.object({
+  workspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH).nullable(),
+  title: z.string().max(NOTE_TITLE_TRANSPORT_MAX),
+  rawHtml: z.string().max(NOTE_HTML_TRANSPORT_MAX),
+  importReferences: z.boolean(),
+});
+
+/**
+ * 本文へ挿入するメディア（ED-06）。形式と上限の判定はバイト列を見る
+ * `UploadValidationPolicy` が持つので、ここは「送りつけ」を止める粗い枠
+ * だけを置く — 動画の上限 200 MB より緩い値にして、ドメインの拒否理由が
+ * 転送の形の不正に化けないようにする。
+ */
+const MEDIA_UPLOAD_TRANSPORT_MAX_BYTES = 256 * 1024 * 1024;
+
+export const noteMediaUploadSchema = z.object({
+  noteId,
+  file: z
+    .instanceof(File)
+    .refine(
+      (file) => file.size > 0 && file.size <= MEDIA_UPLOAD_TRANSPORT_MAX_BYTES,
+    ),
+});

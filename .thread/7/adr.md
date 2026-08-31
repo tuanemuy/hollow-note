@@ -754,3 +754,102 @@ ADR-026 と同じ形を採る。
 - 良い点: 実運用の駆動経路（最初の 1 件 → 翌日 → 残件があれば直後 → 翌日）が揃い、TC-storage-026 / 027 が実 backend の上で成立する
 - トレードオフ: media を 1 件でも持った scope には task 行が 1 本常駐する。runner の tick は 1 日 1 回しか当たらない
 - 既知の制限: カーソルが無いため、先頭 `limit` 件がすべて参照中のまま滞留すると、その後ろにある孤児へ到達できない。解消にはポートへキーセットを足す必要があり、本スライスの担当範囲の外
+
+---
+
+## ADR-031: `getNote` の出力 DTO に `version` を足す
+
+### Context
+
+P-12 の保存経路はすべて `expectedVersion: number` を要求する（`updateNoteBody` / `applyTextNodeEdits` / `renameNote` / `changeNoteStyleMode` / `restoreNoteRevision`、ゴミ箱側の `trashNote` / `restoreNote` も同じ）。応答は新しい版を返すので、**2 回目以降**の保存に渡す版は画面が持てる。持てないのは**最初の 1 回**である。
+
+読み取り側を全部当たったが、版を返す読み取りが 1 つも無い。`spec/usecases/note.md#getNote` の出力 DTO 表に `version` の行が無く、`listNotes` の `NoteListItemView` にも無い。`spec/usecases/identity.md` の「対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す」という規約はユースケース間の合成についてのもので、転送境界の向こうにいる画面には使えない。既存コード自身がこの穴を書き残していて、`apps/web/app/routes/notes/-action.tsx` の `moveNoteFn` の JSDoc は「`getNote` が版を返すようになったら、画面が見た版をここで受け取る形にする」と述べている（`moveNote` は `expectedVersion: number | null` を取れるので回避できていた）。
+
+つまり **P-12 は現状の読み取りだけでは 1 文字も保存できない**。選択肢は 3 つあった。
+
+1. `getNote` に `version` を足す
+2. 編集画面専用の読み取りユースケース（`getNoteForEdit` など）を新設する
+3. 保存のサーバー関数の中でコンテナのポート（`scopeRouter` / `noteReaderFor`）を直に引いて版を得る
+
+### Decision
+
+1 を採る。`NoteDetailView` に `version: number` を足し、`getNote` が `note.version` を載せる（2 行）。
+
+3 は却下。presentation が application を飛び越えてドメインのポートを駆動することになり、CLAUDE.md の依存方向（presentation → application → domain）を破る。2 は「同じ集約を同じ権限で読む」ユースケースが 2 本並ぶことになり、`getNote` の分岐（共有トークン・匿名閲覧）を複製する。`getNote` は現状 P-11 の認証済み経路からしか呼ばれておらず（公開ページは別経路）、版が漏れる範囲は「そのノートを読める者」に閉じている。値は単調増加のカウンターで、編集回数以上のことは語らない。
+
+### Consequences
+
+- 良い点: 編集画面が最初の保存から楽観ロックを効かせられる。ED-08 の「競合」が実際に検出される状態になる
+- 良い点: P-11 のタイトルインライン編集（PAGE-p11-002）と P-14 のゴミ箱（復元・完全削除）も同じ値を使える。後続スライスが同じ穴を再発見しなくて済む
+- トレードオフ: **`spec/usecases/note.md#getNote` の出力 DTO 表が実装より 1 行少ない状態になった。** spec 側の追記が要る（本スライスの担当範囲外なので実施していない）
+- トレードオフ: バックエンドは完成済みという前提のもとでフロントエンド側の作業として `packages/core` に触れた。追加は純粋に加算的で振る舞いを変えないが、レビューの対象にすべき変更である
+
+---
+
+## ADR-032: 編集ルートは `$noteId_.edit.tsx` にする（`$noteId.edit.tsx` は詳細の子になる）
+
+### Context
+
+steps.md のステップ 10 は「既存の `$noteId.tsx` と衝突しない命名（`$noteId.edit.tsx`）を守る」と指示している。実際に `routes/notes/$noteId.edit.tsx` を置いて route tree を生成すると、TanStack のフラットルーティングは `$noteId` を共通の親セグメントと見なし、
+
+```
+getParentRoute: () => NotesNoteIdRoute
+```
+
+を出す。`routes/notes/$noteId.tsx` は `<Outlet />` を持たない（P-11 は単独の画面である）ため、`/notes/:noteId/edit` を開くと**詳細がそのまま描かれ、編集画面は 1 度も描かれない**。ファイル名は衝突していないのに、ルーティングとしては衝突している。
+
+### Decision
+
+`$noteId_.edit.tsx` にする。末尾のアンダースコアは TanStack の「このセグメントで入れ子にしない」記法で、生成結果は `getParentRoute: () => rootRouteImport` / `path: '/notes/$noteId/edit'` になる。URL は steps.md が定めたものと同一で、変わったのはファイル名だけである。
+
+`$noteId.tsx` に `<Outlet />` を足して親にする案は採らない。P-11 と P-12 は共有するシェルを持たない（編集画面の上部バーはモード切替と保存状態を載せる別物）ので、親子にすると詳細の DOM が編集画面の上に必ず残る。
+
+### Consequences
+
+- 良い点: 個人・ワークスペースの 2 本とも同じ規則で置ける。`router.navigate({ to: "/notes/$noteId/edit" })` の型も URL も steps.md のとおり
+- トレードオフ: ファイル名が steps.md の字面と 1 文字違う。理由をここに残す
+
+---
+
+## ADR-033: 新規作成の初回保存は「作成 → 読み直し → 本文更新」を 1 つのサーバー関数に束ねる
+
+### Context
+
+PAGE-p12-002 は「初回 autosave で private blank note を作り、返った note ID の edit URL へ置換する」と定める。素直に組むと画面が `createBlankNote` → `updateNoteBody` の 2 本を続けて呼ぶことになるが、`createBlankNote` の出力 DTO（`CreatedNoteView`）に `version` が無いため、2 本目に渡す `expectedVersion` を画面が持てない。ADR-031 で `getNote` が版を返すようになっても、画面から呼ぶには往復がもう 1 つ増える。
+
+### Decision
+
+`createNoteWithBodyFn` 1 本に束ねる。ハンドラーの中で `createBlankNote` → `getNote`（版のためだけ）→ `updateNoteBody` を順に呼び、`{ noteId, workspaceId, version, removed }` を返す。本文が空のときは `updateNoteBody` を呼ばない。
+
+これは**ユースケースの合成ではなく呼び出しの連鎖**で、各ユースケースが自分の UoW を開いて独立に確定する（`spec/usecases/identity.md`「UoW の合成と、ユースケースどうしの呼び出し」）。転送境界の検証は 1 つのスキーマ（`createNoteWithBodySchema`）で足りる。
+
+読み直しと本文更新のあいだに他者が割り込む窓は理屈のうえでは残るが、作成直後の非公開ノートの存在を知る者は作成者しかいない。
+
+### Consequences
+
+- 良い点: 新規作成が 1 往復で確定し、画面はその応答の版から続けられる。空のまま離れた場合も白紙のノートが 1 件残るだけで、版も Revision も消費しない
+- トレードオフ: presentation が 3 つのユースケースを順に呼ぶ。部分的な失敗（作成は成功、本文が失敗）ではノートが白紙で残り、画面は「保存できませんでした」を出したまま `noteId` を持たない。次の自動保存がもう 1 件作る余地がある
+- 検証: `spec/manual-tests/editing.md` の新規作成の手順で、URL が `/notes/:noteId/edit` に置き換わることを確認する
+
+---
+
+## ADR-034: ビジュアルモードはテキストノードごとに編集ホストを分ける
+
+### Context
+
+ED-02 は「テキスト部分だけが編集可能」「要素の追加・削除・並べ替えはできない」を要求する。本文全体を 1 つの `contenteditable` にして操作を後から検査する形にすると、禁止された操作を**起きたあとで**拒む UI になり、ADR 013 の迂回（`<style>` の書き換え）も検査の網羅性に依存する。
+
+### Decision
+
+本文を DOM に展開し、`HtmlProcessor` と同じ規約（body ルートからのドット区切り 0 始まり子インデックス、`<style>` / `<script>` は不透明）で経路を数えたうえで、**各テキストノードを `contenteditable="plaintext-only"` の `span` に置き換える**。編集ホストが分かれるので、要素の追加・削除・並べ替えは操作として存在しない。`<style>` の中身は経路を持たないので `span` にもならず、編集面に現れない。
+
+経路は **`span` を差し込む前の DOM** で数える。差し込んだあとで数えると `childNodes` のインデックスがサーバー側の木とずれ、編集が全件 `pathNotFound` に落ちる。
+
+面は Shadow DOM に載せる（`NoteBody` と同じ隔離）。本文の装飾が編集中も効き、本文の CSS がアプリ側へ漏れない。
+
+### Consequences
+
+- 良い点: 「試みた場合はその旨を示す」を実装せずに済む。禁止された操作が発生しない
+- 良い点: 空白だけのテキストノードを編集面から外しても経路は動かない（インデックスは元の `childNodes` で数えるため）
+- トレードオフ: `contenteditable="plaintext-only"` に依存する。対応していないブラウザーでは `span` の中に要素を貼り付けられるが、送るのは `textContent` なので保存される内容は変わらない
+- トレードオフ: テキストノードをまたぐ選択・置換ができない。ビジュアルモードは「その場の文字を直す」ための面であり、書き換えは HTML / WYSIWYG が担う

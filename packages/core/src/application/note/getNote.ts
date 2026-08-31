@@ -64,6 +64,7 @@ export async function getNote({
   return {
     noteId: note.id,
     title: note.title.value,
+    version: note.version,
     content: toNoteContentView(note),
     styleMode: note.styleMode,
     visibility: note.visibility.status,

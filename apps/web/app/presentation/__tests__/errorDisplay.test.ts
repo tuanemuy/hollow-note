@@ -95,6 +95,58 @@ describe("renderErrorMessage", () => {
       "このノートは削除されています。ノート一覧からお探しください。",
     );
   });
+
+  // P-12 ノート編集 / P-14 ゴミ箱 が実際に到達するコード。共通文言に落ちる
+  // と「何をすればいいか」が消えるので、辞書に載っていること自体を押さえる。
+  const EDITING_CODES: readonly (readonly [SerializedErrorKind, string])[] = [
+    ["business", "NOTE_IS_TRASHED"],
+    ["business", "NOTE_CONTENT_TOO_LARGE"],
+    ["business", "NOTE_LOCKED_BY_JOB"],
+    ["business", "NOTE_INVALID_TITLE"],
+    ["business", "NOTE_INVALID_STYLE_MODE"],
+    ["business", "NOTE_CANNOT_CAPTURE_EMPTY_CONTENT"],
+    ["business", "USAGE_STORAGE_QUOTA_EXCEEDED"],
+    ["business", "STORAGE_UNSUPPORTED_MIME_TYPE"],
+    ["business", "STORAGE_FILE_TOO_LARGE"],
+    ["validation", "NOTE_NOT_TRASHED"],
+    ["notFound", "REVISION_NOT_FOUND"],
+    // `OPTIMISTIC_LOCK_FAILURE` はここに入れない。辞書の文言が conflict の
+    // 共通文言と同一で、それが正しい（競合はどの経路でも「もう一度」でよい）
+    // ため、この形の判定では区別できない。
+  ];
+
+  it("has a dictionary entry for every editing / trash code the slice reaches", () => {
+    for (const [kind, code] of EDITING_CODES) {
+      expect(renderErrorMessage(withKind(kind, code))).not.toBe(
+        renderErrorMessage(withKind(kind, null)),
+      );
+    }
+  });
+
+  it("tells the reader to wait rather than retry while a job holds the note", () => {
+    // 共通文言（「もう一度お試しください」）は、ジョブが終わるまで成功しない
+    // 再試行を勧めてしまう。移動サガの 4 コードと同じ判断。
+    const rendered = renderErrorMessage(
+      withKind("business", "NOTE_LOCKED_BY_JOB"),
+    );
+    expect(rendered).toContain("待って");
+    expect(rendered).not.toContain("もう一度お試しください");
+  });
+
+  it("names both upload purposes in the shared storage codes", () => {
+    // アイコンと本文のメディアは許す形式も上限も違うのに、ドメインが投げる
+    // コードは 1 つ。辞書は `code` しか読まないので、両方を書くほかない。
+    const unsupported = renderErrorMessage(
+      withKind("business", "STORAGE_UNSUPPORTED_MIME_TYPE"),
+    );
+    expect(unsupported).toContain("アイコン");
+    expect(unsupported).toContain("SVG");
+    const tooLarge = renderErrorMessage(
+      withKind("business", "STORAGE_FILE_TOO_LARGE"),
+    );
+    expect(tooLarge).toContain("5 MB");
+    expect(tooLarge).toContain("200 MB");
+  });
 });
 
 describe("extractSerializedError", () => {
