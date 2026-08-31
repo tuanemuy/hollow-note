@@ -55,7 +55,12 @@ export const readNotePurgeTurn = (
   payload: ScopeTaskPayload,
 ): NotePurgeFanOutTurn => {
   const noteId = payload.noteId;
-  if (typeof noteId !== "string" || noteId.length === 0) {
+  // Trimmed, not merely non-empty: `NoteId.create` accepts exactly the
+  // strings that survive a trim, so anything else has to be answered
+  // here. Letting it reach the value object would answer an unreadable
+  // payload with a `BusinessRuleError`, as if a caller had asked for
+  // something forbidden rather than a stored row being corrupt.
+  if (typeof noteId !== "string" || noteId.trim().length === 0) {
     throw corrupt("payload carries no noteId");
   }
   const token = payload.deletionOperationId;

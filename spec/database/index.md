@@ -473,7 +473,7 @@ RETURNING failure_count, last_failed_at;
   - `uploaded_by IS NULL` なら `purpose = 'artifact'`
   - `purpose = 'artifact'` なら `retention = 'ephemeral'`
   - `retention = 'ephemeral'` なら `expires_at IS NOT NULL AND expires_at > created_at`
-- **インデックス**: `stored_files_owner_idx` (`owner_type`, `owner_id`, `purpose`)、`stored_files_expires_idx` (`expires_at`) WHERE `retention = 'ephemeral'` — 期限切れの回収、`stored_files_purpose_created_idx` (`purpose`, `created_at`) — 孤児メディアの走査、`stored_files_note_idx` (`note_id`) WHERE `note_id IS NOT NULL` — `listByNote`（`note.purged` 後の回収・所有者付け替え）と `findArtifactByNoteAndVersion`（`note_id` + `note_version` + `purpose` + 期限内判定。1 ノートあたりの行数は少ないためインデックスは `note_id` のみで足りる）
+- **インデックス**: `stored_files_owner_idx` (`owner_type`, `owner_id`, `purpose`)、`stored_files_expires_idx` (`expires_at`) WHERE `retention = 'ephemeral'` — 期限切れの回収、`stored_files_purpose_created_idx` (`purpose`, `created_at`, `id`) — 孤児メディアの走査（keyset は `(created_at, id)` で並べて `created_at = ? AND id > ?` から再開するため、同一時刻の同着を索引で解けるよう `id` を鍵に含める）、`stored_files_note_idx` (`note_id`) WHERE `note_id IS NOT NULL` — `listByNote`（`note.purged` 後の回収・所有者付け替え）と `findArtifactByNoteAndVersion`（`note_id` + `note_version` + `purpose` + 期限内判定。1 ノートあたりの行数は少ないためインデックスは `note_id` のみで足りる）
 
 `checksum_value` に索引は張らない。チェックサムによる重複保管の回避は行わず（`FileProvenance` が `note_id` を必須で持つため、同一内容でも 1 行を複数ノートで共有できない。[domains/storage.md](../domains/storage.md)）、値から行を引く経路が存在しないため。チェックサムは行を読んだあとの完全性の検証と、外部バックアップの同一判定（`backup_records.checksum_value` との比較）にだけ使う。
 

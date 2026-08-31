@@ -11,12 +11,7 @@ import {
 } from "@/components/settings/panelStyles";
 import { Alert } from "@/components/ui/Alert";
 import { displayError } from "@/presentation/errorDisplay";
-import {
-  moveNoteFn,
-  readNoteEditStateFn,
-  restoreNoteFn,
-  trashNoteFn,
-} from "@/routes/notes/-action";
+import { moveNoteFn, restoreNoteFn, trashNoteFn } from "@/routes/notes/-action";
 import {
   type MoveTarget,
   moveNotePayload,
@@ -53,7 +48,7 @@ export type NoteRowView = Readonly<{
 type TrashedState = Readonly<{
   noteId: string;
   title: string;
-  restoreVersion: number | null;
+  restoreVersion: number;
 }>;
 
 /** 行を開く先は文脈で変わる（PAGE-p10-005「current scope 用 P-11 URL」）。 */
@@ -101,7 +96,6 @@ export function NoteListBoard({
   const moveNote = useServerFn(moveNoteFn);
   const trashNote = useServerFn(trashNoteFn);
   const restoreNote = useServerFn(restoreNoteFn);
-  const readEditState = useServerFn(readNoteEditStateFn);
 
   const [visibleRows, removeRow] = useOptimistic(rows, withoutNote);
   const [isMoving, startMoving] = useTransition();
@@ -138,17 +132,20 @@ export function NoteListBoard({
    * 一覧からの削除（ED-09 手順 1「ノート詳細または一覧のメニューから
    * 『削除』を選ぶ」）。
    *
-   * 「元に戻す」に要る版は削除の成功後に取り直す。`trashNote` の応答は
-   * 保持期限しか返さず、移動のついでにジョブの強制終端で版がもう 1 つ
-   * 進むことがあるので、差分を数えて当てにはできない（詳細画面と同じ）。
+   * 「元に戻す」に要る版は `trashNote` の応答が持ってくる。移動のついでに
+   * ジョブの強制終端で版がもう 1 つ進むことがあるので、行が見た版から
+   * 数えて当てることはできない（詳細画面と同じ）。
    */
   const onTrash = (row: NoteRowView) => {
     startMoving(async () => {
       removeRow(row.noteId);
+      let restoreVersion: number;
       try {
-        await trashNote({
-          data: { noteId: row.noteId, expectedVersion: row.version },
-        });
+        restoreVersion = (
+          await trashNote({
+            data: { noteId: row.noteId, expectedVersion: row.version },
+          })
+        ).version;
       } catch (failure) {
         setError(displayError(failure));
         return;
@@ -156,13 +153,6 @@ export function NoteListBoard({
       setError(null);
       setConfirmingNoteId(null);
       setOpenMenuNoteId(null);
-      let restoreVersion: number | null = null;
-      try {
-        restoreVersion = (await readEditState({ data: { noteId: row.noteId } }))
-          .version;
-      } catch {
-        restoreVersion = null;
-      }
       setTrashed({
         noteId: row.noteId,
         title: row.title,
@@ -175,9 +165,8 @@ export function NoteListBoard({
   };
 
   const onRestore = () => {
-    const noteId = trashed?.noteId ?? null;
-    const restoreVersion = trashed?.restoreVersion ?? null;
-    if (noteId === null || restoreVersion === null) return;
+    if (trashed === null) return;
+    const { noteId, restoreVersion } = trashed;
     startMoving(async () => {
       try {
         await restoreNote({
@@ -205,16 +194,14 @@ export function NoteListBoard({
           role="status"
           actions={
             <>
-              {trashed.restoreVersion === null ? null : (
-                <button
-                  type="button"
-                  disabled={isMoving}
-                  onClick={onRestore}
-                  className={subtleButtonClass}
-                >
-                  {isMoving ? "元に戻しています..." : "元に戻す"}
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={isMoving}
+                onClick={onRestore}
+                className={subtleButtonClass}
+              >
+                {isMoving ? "元に戻しています..." : "元に戻す"}
+              </button>
               <button
                 type="button"
                 onClick={() => setTrashed(null)}

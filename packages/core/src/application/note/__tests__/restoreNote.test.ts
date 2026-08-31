@@ -8,6 +8,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { getNote } from "../getNote";
 import { listNotes } from "../listNotes";
+import { renameNote } from "../renameNote";
 import { restoreNote } from "../restoreNote";
 import { trashNote } from "../trashNote";
 import {
@@ -56,7 +57,7 @@ describe("restoreNote", () => {
 
     const view = await restore(h, noteId);
 
-    expect(view).toEqual({ noteId, visibility: "public" });
+    expect(view).toEqual({ noteId, version: 2, visibility: "public" });
     const note = storedNote(h, noteId);
     expect(note?.lifecycle).toBe("active");
     expect(note?.version).toBe(2);
@@ -108,6 +109,27 @@ describe("restoreNote", () => {
     expect(after?.title).toEqual(before?.title);
     expect(after?.content).toEqual(before?.content);
     expect(after?.styleMode).toBe(before?.styleMode);
+  });
+
+  it("TC-note-814: the response carries the version the restore left, so the screen's next save is not a guess", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await trash(h, noteId);
+
+    const view = await restore(h, noteId);
+
+    expect(view.version).toBe(storedNote(h, noteId)?.version);
+    await expect(
+      renameNote({
+        container: h.container,
+        input: {
+          noteId,
+          userId: OWNER,
+          title: "戻したあとの題",
+          expectedVersion: view.version,
+        },
+      }),
+    ).resolves.toMatchObject({ noteId });
   });
 
   it("TC-note-466: a note that is not in the trash is refused with NOTE_NOT_TRASHED", async () => {

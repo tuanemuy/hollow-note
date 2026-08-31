@@ -19,3 +19,4 @@
 | viewer である | 適用する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 他者が先に更新した | 古い `expectedVersion` で適用する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
 | 適用が成功した | 版を確認する | 直前の内容が `manualEdit` として記録されている | |
+| ゴミ箱のノート | 編集を適用する | `BusinessRuleError(NoteIsTrashed)` が投げられ、本文は変わらない |  |

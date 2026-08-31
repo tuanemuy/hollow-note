@@ -6,6 +6,7 @@ import { isBusinessRuleError } from "@repo/core/domain/error";
 import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { describe, expect, it } from "vitest";
 import { changeNoteStyleMode } from "../changeNoteStyleMode";
+import { trashNote } from "../trashNote";
 import { updateNoteBody } from "../updateNoteBody";
 import {
   createPersonalNote,
@@ -30,6 +31,12 @@ const change = (
   changeNoteStyleMode({
     container: h.container,
     input: { noteId, userId, styleMode, expectedVersion },
+  });
+
+const trash = (h: TestHarness, noteId: string) =>
+  trashNote({
+    container: h.container,
+    input: { noteId, userId: OWNER, expectedVersion: 0, excludingJobId: null },
   });
 
 describe("changeNoteStyleMode", () => {
@@ -131,5 +138,18 @@ describe("changeNoteStyleMode", () => {
 
     expect(storedNote(h, noteId)?.styleMode).toBe("preserve");
     expect(eventsOfType(h, "note.styleModeChanged")).toHaveLength(1);
+  });
+
+  it("TC-note-786: refuses a trashed note with NoteIsTrashed", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await trash(h, noteId);
+
+    await expect(change(h, noteId, "preserve", 1)).rejects.toSatisfy(
+      (error) =>
+        isBusinessRuleError(error) &&
+        error.code === NoteErrorCode.NoteIsTrashed,
+    );
+    expect(storedNote(h, noteId)?.styleMode).toBe("default");
   });
 });

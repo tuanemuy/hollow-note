@@ -11,3 +11,4 @@
 | viewer である | 変更する | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 同じタイトルのノートが既にある | 同じタイトルにする | 成功する（重複を許す） | |
 | 他者が先に更新した | 古い `expectedVersion` で変更する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
+| ゴミ箱のノート | 改名する | `BusinessRuleError(NoteIsTrashed)` が投げられ、タイトルは変わらない |  |

@@ -1,12 +1,15 @@
 import type { Note } from "@repo/core/domain/note/note";
-import { NoteOwner } from "@repo/core/domain/note/valueObject";
+import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
 import { NOTE_OWNER_PURGE_TASK_KIND } from "../cleanup/participants";
 import {
   completePersonalCleanupIfDone,
   type ScopeCleanupTurn,
 } from "../cleanup/personalCleanup";
 import type { NotePurgeContainer } from "../di/types";
-import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
+import {
+  type ScopeTaskPayload,
+  ScopeTaskPriority,
+} from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 import { purgeNoteInternally } from "./purgeNote";
 
@@ -19,6 +22,67 @@ export { NOTE_OWNER_PURGE_TASK_KIND };
  * と分割単位」).
  */
 export const OWNER_PURGE_BATCH_SIZE = 100;
+
+/**
+ * A note this cleanup claimed but could not carry to a tombstone.
+ *
+ * `beginPurge` closes the route, and from that moment the note is
+ * outside every enumeration this usecase has: `NoteRouteStore.resolve`
+ * hides a `purging` row, the store cannot list them, and once the local
+ * delete commits `listByOwner` does not return the note either. A purge
+ * that stops in that window is therefore reachable only by note id,
+ * which is why the continuation carries one — without it the next turn
+ * enumerates nothing, concludes the scope is empty and acknowledges the
+ * `note` component over a note whose public projection is still
+ * standing.
+ *
+ * The version travels with the id because the closed route is also what
+ * makes it durable: nothing can edit a note whose route does not
+ * resolve, so the version the stuck turn read is still the version its
+ * resume needs. It is consulted only when the local delete did *not*
+ * commit — once it has, the resumed purge finds no row and carries the
+ * saga forward without asking for a version at all.
+ */
+export type StuckPurge = Readonly<{
+  noteId: NoteId;
+  expectedVersion: number;
+}>;
+
+const STUCK_PURGES = "stuckPurges";
+
+/**
+ * Reads the stuck purges a continuation carries.
+ *
+ * An entry that does not parse is dropped rather than faulted: the
+ * payload is one this usecase wrote, so a malformed entry is a bug with
+ * no forward path — faulting the turn would park the row and strand the
+ * very notes the list exists to recover.
+ */
+export const readOwnerPurgeTurn = (
+  payload: ScopeTaskPayload,
+): Readonly<{ stuckPurges: readonly StuckPurge[] }> => {
+  const raw = payload[STUCK_PURGES];
+  if (!Array.isArray(raw)) {
+    return { stuckPurges: [] };
+  }
+  const stuckPurges: StuckPurge[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const { noteId, expectedVersion } = entry as Record<string, unknown>;
+    if (
+      typeof noteId !== "string" ||
+      noteId.trim().length === 0 ||
+      typeof expectedVersion !== "number" ||
+      !Number.isInteger(expectedVersion)
+    ) {
+      continue;
+    }
+    stuckPurges.push({ noteId: NoteId.create(noteId), expectedVersion });
+  }
+  return { stuckPurges };
+};
 
 export type DeleteNotesForOwnerInput = Readonly<{
   deletionOperationId: string;
@@ -38,6 +102,12 @@ export type DeleteNotesForOwnerInput = Readonly<{
    */
   scope: ScopeKey;
   batchSize?: number;
+  /**
+   * Purges an earlier turn left unfinished, carried by the continuation
+   * that turn armed ({@link StuckPurge}). Empty on the command that
+   * opens the cleanup.
+   */
+  stuckPurges?: readonly StuckPurge[];
 }>;
 
 export type DeleteNotesForOwnerView = ScopeCleanupTurn &
@@ -46,6 +116,17 @@ export type DeleteNotesForOwnerView = ScopeCleanupTurn &
 export type DeleteNotesForOwnerArgs = Readonly<{
   container: NotePurgeContainer;
   input: DeleteNotesForOwnerInput;
+}>;
+
+/** One note this turn drives, and where the turn found it. */
+type PurgeTarget = StuckPurge & Readonly<{ enumerated: boolean }>;
+
+type TurnOutcome = Readonly<{
+  /** Targets that reached a tombstone, wherever they came from. */
+  purgedCount: number;
+  /** Of those, the ones `listByOwner` returned — what `count` shrinks by. */
+  purgedFromPage: number;
+  stuckPurges: readonly StuckPurge[];
 }>;
 
 /**
@@ -70,16 +151,31 @@ export type DeleteNotesForOwnerArgs = Readonly<{
  * owner column, so once the note is gone there is no way left to find
  * it.
  *
+ * **The component is acknowledged on tombstones, not on an empty
+ * enumeration.** A purge that stops after its route is claimed leaves
+ * nothing for `listByOwner` to return, so "the listing is empty" would
+ * close the deletion's `note` barrier over a note whose public row is
+ * still readable and whose fan-out never ran — irreversibly, since the
+ * closed barrier refuses every later cleanup command. The turn keeps
+ * the ids it could not finish ({@link StuckPurge}) and re-drives them
+ * next turn instead, and acknowledges only once the enumeration is
+ * exhausted *and* nothing is left stuck.
+ *
  * "Targets remain but none could be purged" is the one outcome that must
  * not breed a continuation — it would spin on a permanently failing
  * note. The turn backs its own row off instead and leaves the retry to
- * the schedule. Zero targets is the opposite: the work is finished, so
- * the component is acknowledged and the row completed.
+ * the schedule. A turn that got *newly* stuck is not that case even
+ * though it purged nothing: it has an id to hand on that the existing
+ * row's payload does not carry, and `backoffOrSchedule` keeps an
+ * existing row's payload. Discovering a note is stuck happens at most
+ * once per note, so re-arming there cannot spin. Zero targets is the
+ * opposite of both: the work is finished, so the component is
+ * acknowledged and the row completed.
  *
  * **Divergence from the spec's step 4**: the continuation cannot share
  * the transaction of the batch's last delete, because in this deployment
- * a purge is a saga over three stores that owns its own transaction
- * (ADR 017) and nesting `run` is forbidden. It is armed in a
+ * a purge is a saga over three stores (route, scope, public projection)
+ * that owns its own transaction, and nesting `run` is forbidden. It is armed in a
  * transaction of its own, immediately after the batch. A response lost
  * between the two leaves the purged notes purged and the row unarmed —
  * recovered by the same command being redelivered, which is the normal
@@ -110,70 +206,149 @@ export async function deleteNotesForOwner({
       });
     },
   );
-  const purgedCount = await purgeEachNote(container, input, page.items);
+  const carried = input.stuckPurges ?? [];
+  const targets = targetsOf(page.items, carried);
+  const outcome = await purgeEachNote(container, input, targets);
 
   return settle(container, input, {
-    targets: page.items.length,
+    ...outcome,
+    targets: targets.length,
     remaining: page.count,
-    purgedCount,
+    newlyStuck: outcome.stuckPurges.some(
+      (stuck) => !carried.some((entry) => entry.noteId === stuck.noteId),
+    ),
   });
 }
+
+/**
+ * The page first, then the stuck purges the page did not already offer.
+ * A note that is both is driven at the version just read: the listing
+ * saw the note this turn, the carried entry saw it on an earlier one.
+ */
+const targetsOf = (
+  items: readonly Note[],
+  carried: readonly StuckPurge[],
+): readonly PurgeTarget[] => {
+  const targets: PurgeTarget[] = items.map((note) => ({
+    noteId: note.id,
+    expectedVersion: note.version,
+    enumerated: true,
+  }));
+  const seen = new Set<string>(targets.map((target) => target.noteId));
+  for (const entry of carried) {
+    if (!seen.has(entry.noteId)) {
+      seen.add(entry.noteId);
+      targets.push({ ...entry, enumerated: false });
+    }
+  }
+  return targets;
+};
 
 /**
  * One note's failure is recorded and left behind: the notes of a scope
  * are unrelated, and stopping would strand the rest of the scope on a
  * single stuck route. The redelivery or the next continuation reads it
- * again from the start.
+ * again from the start — or, when the route no longer resolves, from
+ * the id this turn hands on.
  */
 async function purgeEachNote(
   container: NotePurgeContainer,
   input: DeleteNotesForOwnerInput,
-  notes: readonly Note[],
-): Promise<number> {
+  targets: readonly PurgeTarget[],
+): Promise<TurnOutcome> {
   let purgedCount = 0;
-  for (const note of notes) {
+  let purgedFromPage = 0;
+  const stuckPurges: StuckPurge[] = [];
+  for (const target of targets) {
     try {
       await purgeNoteInternally({
         container,
         input: {
           kind: "scopeCleanup",
-          noteId: note.id,
-          expectedVersion: note.version,
+          noteId: target.noteId,
+          expectedVersion: target.expectedVersion,
           scope: input.scope,
           deletionOperationId: input.deletionOperationId,
         },
       });
       purgedCount += 1;
+      if (target.enumerated) {
+        purgedFromPage += 1;
+      }
     } catch (cause) {
       container.logger.error("[deleteNotesForOwner] a note was left behind", {
         cause,
-        noteId: note.id,
+        noteId: target.noteId,
         deletionOperationId: input.deletionOperationId,
       });
+      if (await isOutOfReach(container, target.noteId)) {
+        stuckPurges.push({
+          noteId: target.noteId,
+          expectedVersion: target.expectedVersion,
+        });
+      }
     }
   }
-  return purgedCount;
+  return { purgedCount, purgedFromPage, stuckPurges };
 }
+
+/**
+ * Whether the failure left the note where no enumeration can find it.
+ *
+ * A route that still resolves means the purge refused and handed it
+ * back, so the next turn meets the note the ordinary way and the id is
+ * not worth carrying. A route that does not resolve is the opposite:
+ * `purging` (this operation's stopped saga, or a rival's), `reserved`,
+ * or an expired tombstone — none of which the listing will offer again
+ * once the local delete has committed.
+ */
+const isOutOfReach = async (
+  container: NotePurgeContainer,
+  noteId: NoteId,
+): Promise<boolean> => {
+  try {
+    return (await container.noteRouteStore.resolve(noteId)) === null;
+  } catch {
+    // The one place a broad catch earns its keep here: not knowing costs
+    // one wasted retry if the note was fine, and a permanently
+    // unreachable note if it was not.
+    return true;
+  }
+};
 
 async function settle(
   container: NotePurgeContainer,
   input: DeleteNotesForOwnerInput,
-  outcome: Readonly<{
-    targets: number;
-    remaining: number;
-    purgedCount: number;
-  }>,
+  outcome: TurnOutcome &
+    Readonly<{
+      targets: number;
+      remaining: number;
+      newlyStuck: boolean;
+    }>,
 ): Promise<DeleteNotesForOwnerView> {
-  const { purgedCount } = outcome;
+  const { purgedCount, stuckPurges } = outcome;
   const now = container.clock.now();
+  const payload: ScopeTaskPayload =
+    stuckPurges.length === 0
+      ? { deletionOperationId: input.deletionOperationId }
+      : {
+          deletionOperationId: input.deletionOperationId,
+          [STUCK_PURGES]: stuckPurges.map((stuck) => ({
+            noteId: String(stuck.noteId),
+            expectedVersion: stuck.expectedVersion,
+          })),
+        };
 
   return container.scopeUnitOfWorkProvider.run(input.scope, async (ctx) => {
-    if (outcome.targets > 0 && purgedCount === 0) {
+    if (outcome.targets > 0 && purgedCount === 0 && !outcome.newlyStuck) {
+      // Safe to lose this payload to an existing row: nothing is newly
+      // stuck, so what would be written is a subset of what that row
+      // already carries.
       await ctx.scopeTaskScheduler.backoffOrSchedule({
         kind: NOTE_OWNER_PURGE_TASK_KIND,
         operationId: input.deletionOperationId,
         priority: ScopeTaskPriority.securityCleanup,
-        payload: { deletionOperationId: input.deletionOperationId },
+        payload,
         now,
       });
       return {
@@ -183,13 +358,13 @@ async function settle(
       };
     }
 
-    if (outcome.remaining > purgedCount) {
+    if (outcome.remaining > outcome.purgedFromPage || stuckPurges.length > 0) {
       await ctx.scopeTaskScheduler.schedule({
         kind: NOTE_OWNER_PURGE_TASK_KIND,
         operationId: input.deletionOperationId,
         priority: ScopeTaskPriority.securityCleanup,
         dueAt: now,
-        payload: { deletionOperationId: input.deletionOperationId },
+        payload,
       });
       return {
         status: "continued",

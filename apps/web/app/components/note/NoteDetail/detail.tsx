@@ -21,7 +21,6 @@ import { Alert } from "@/components/ui/Alert";
 import { displayError } from "@/presentation/errorDisplay";
 import {
   changeNoteStyleModeFn,
-  readNoteEditStateFn,
   renameNoteFn,
   restoreNoteFn,
   trashNoteFn,
@@ -78,7 +77,6 @@ export function NoteDetailIsland({
   const changeStyleMode = useServerFn(changeNoteStyleModeFn);
   const trashNote = useServerFn(trashNoteFn);
   const restoreNote = useServerFn(restoreNoteFn);
-  const readEditState = useServerFn(readNoteEditStateFn);
 
   // 版は state ではなく ref に置く。表示に出ないうえ、自動保存のタイマー
   // が閉じ込めた古い値を送らないためである。
@@ -163,24 +161,21 @@ export function NoteDetailIsland({
 
   const onTrash = () => {
     startSaving(async () => {
+      // 「元に戻す」に要る版は応答が持ってくる。移動のついでにジョブの
+      // 強制終端で版がもう 1 つ進むことがあるので、送った版から数えて
+      // 当てることはできない。
+      let restoreVersion: number;
       try {
-        await trashNote({
-          data: { noteId, expectedVersion: versionRef.current },
-        });
+        restoreVersion = (
+          await trashNote({
+            data: { noteId, expectedVersion: versionRef.current },
+          })
+        ).version;
       } catch (failure) {
         setError(displayError(failure));
         return;
       }
       setError(null);
-      // 「元に戻す」に要る版は取り直す。`trashNote` の応答は保持期限しか
-      // 返さず、移動のついでにジョブの強制終端で版がもう 1 つ進むことも
-      // あるので、差分を数えて当てにはできない。
-      let restoreVersion: number | null = null;
-      try {
-        restoreVersion = (await readEditState({ data: { noteId } })).version;
-      } catch {
-        restoreVersion = null;
-      }
       setTrashed({ restoreVersion });
       // ここでは読み直さない。読み直すと断片が作り直され、いま出した
       // 「元に戻す」ごと消える。一覧はどのルートも訪問のたびに loader を
@@ -189,17 +184,18 @@ export function NoteDetailIsland({
   };
 
   const onRestore = () => {
-    const restoreVersion = trashed?.restoreVersion ?? null;
-    if (restoreVersion === null) return;
+    if (trashed === null) return;
+    const { restoreVersion } = trashed;
     startSaving(async () => {
       try {
-        await restoreNote({
+        // 復元後の版も応答が持ってくる。この画面はタイトルの自動保存を
+        // 続けるので、次の保存に使う版をここで正しく戻さないと必ず競合
+        // する。読み直しでは直せない — 断片を作り直しても島の state は
+        // 残る。
+        const restored = await restoreNote({
           data: { noteId, expectedVersion: restoreVersion },
         });
-        // `restoreNote` は `Note.restore` を 1 回保存するだけなので版は
-        // ちょうど 1 つ進む（応答は公開状態しか返さない）。読み直しでは
-        // 直せない — 断片を作り直しても島の state は残る。
-        versionRef.current = restoreVersion + 1;
+        versionRef.current = restored.version;
         setError(null);
         setTrashed(null);
       } catch (failure) {
@@ -242,16 +238,14 @@ export function NoteDetailIsland({
           role="status"
           actions={
             <>
-              {trashed.restoreVersion === null ? null : (
-                <button
-                  type="button"
-                  disabled={isSaving}
-                  onClick={onRestore}
-                  className={subtleButtonClass}
-                >
-                  {isSaving ? "元に戻しています..." : "元に戻す"}
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={onRestore}
+                className={subtleButtonClass}
+              >
+                {isSaving ? "元に戻しています..." : "元に戻す"}
+              </button>
               <BackToListLink context={context} />
             </>
           }
@@ -304,7 +298,7 @@ export function NoteDetailIsland({
 }
 
 /** ゴミ箱へ移した直後の状態。版は「元に戻す」のためだけに持つ。 */
-type TrashedState = Readonly<{ restoreVersion: number | null }>;
+type TrashedState = Readonly<{ restoreVersion: number }>;
 
 const TITLE_AUTOSAVE_DELAY_MS = 800;
 

@@ -2,12 +2,14 @@ import type { NotePurgeContainer } from "@repo/core/application/di/types";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
 import type { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
+import { NoteId } from "@repo/core/domain/note/valueObject";
 import { describe, expect, it } from "vitest";
 import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import {
   deleteNotesForOwner,
   NOTE_OWNER_PURGE_TASK_KIND,
   OWNER_PURGE_BATCH_SIZE,
+  readOwnerPurgeTurn,
 } from "../deleteNotesForOwner";
 import { trashNote } from "../trashNote";
 import {
@@ -87,6 +89,49 @@ const tasks = (h: TestHarness, scope: ScopeKey = userScope) =>
 
 const remainingNotes = (h: TestHarness, scope: ScopeKey = userScope): number =>
   h.backend.scope(scope).notes.keys().length;
+
+const route = (h: TestHarness, noteId: string) =>
+  h.backend.noteRoutes.get(noteId);
+
+/** Claims a note's route for a purge that is not this cleanup's. */
+const stopAForeignPurgeOn = (h: TestHarness, noteId: string) =>
+  h.container.noteRouteStore.beginPurge({
+    noteId: NoteId.create(noteId),
+    scope: userScope,
+    expectedRouteVersion: route(h, noteId)?.routeVersion ?? 0,
+    operationId: "a-user-purge-that-stopped",
+  });
+
+/**
+ * Loses the response of the `openAt`-th scope transaction, once, after
+ * it has committed. Opening the scope three times is one cleanup purge:
+ * the enumeration, the purge's `assertOwner`, then the delete itself.
+ */
+const withLostResponseAfterCommit = (
+  h: TestHarness,
+  openAt: number,
+): TestHarness["container"] => {
+  const real = h.container.scopeUnitOfWorkProvider;
+  let opened = 0;
+  let lost = false;
+  return {
+    ...h.container,
+    scopeUnitOfWorkProvider: {
+      run: (async (scope, body) => {
+        opened += 1;
+        const result = await real.run(scope, body);
+        if (opened === openAt && !lost) {
+          lost = true;
+          throw new SystemError(
+            SystemErrorCode.DatabaseError,
+            "the commit's response was lost",
+          );
+        }
+        return result;
+      }) as typeof real.run,
+    },
+  };
+};
 
 /** Fails every route claim, so no note of the batch can be purged. */
 const withBrokenRouteStore = (
@@ -439,6 +484,153 @@ describe("deleteNotesForOwner", () => {
 
     expect(rounds).toEqual([1, 1]);
     expect(remainingNotes(h)).toBe(0);
+  });
+
+  it("TC-note-781: does not read a route another operation holds as a purged note", async () => {
+    const h = createTestHarness();
+    const [noteId] = await createPersonalNotes(h, 1);
+    await beginCleanup(h);
+    await stopAForeignPurgeOn(h, noteId);
+
+    const view = await run(h);
+
+    // The rival's claim says nothing about whether this scope's note is
+    // gone — and it is not. Counting it would close the deletion's
+    // `note` barrier over a note that still holds its body.
+    expect(view.purgedCount).toBe(0);
+    expect(view.status).not.toBe("settled");
+    expect(remainingNotes(h)).toBe(1);
+    expect(await acknowledged(h)).not.toContain("note");
+    expect(eventsOfType(h, "note.purged")).toHaveLength(0);
+  });
+
+  it("TC-note-783: backs the row off once a note it cannot reach is already on the continuation", async () => {
+    const h = createTestHarness();
+    const [noteId] = await createPersonalNotes(h, 1);
+    await beginCleanup(h);
+    await stopAForeignPurgeOn(h, noteId);
+    await run(h);
+
+    const second = await deleteNotesForOwner({
+      container: h.container,
+      input: {
+        deletionOperationId: OPERATION_ID,
+        scope: userScope,
+        ...readOwnerPurgeTurn(tasks(h)[0]?.payload ?? {}),
+      },
+    });
+
+    // Nothing new to hand on, so the turn spends an attempt instead of
+    // re-arming: the row climbs towards `failed` and the deletion stays
+    // visibly `running` rather than acknowledging a note it never took.
+    expect(second.status).toBe("stalled");
+    expect(await acknowledged(h)).not.toContain("note");
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: NOTE_OWNER_PURGE_TASK_KIND,
+        attempt: 1,
+      }),
+    ]);
+  });
+
+  it("TC-note-782: carries a purge that stopped after the local delete to the next turn, and acknowledges only once it tombstones", async () => {
+    const h = createTestHarness();
+    const [noteId] = await createPersonalNotes(h, 1);
+    await beginCleanup(h);
+
+    const first = await run(h, {
+      container: withLostResponseAfterCommit(h, 3),
+    });
+
+    // The note row is gone, so no later `listByOwner` can offer it and
+    // the closed route hides it from every other enumeration. Only the
+    // id the continuation carries can reach it.
+    expect(remainingNotes(h)).toBe(0);
+    expect(route(h, noteId)?.state).toBe("purging");
+    expect(first.status).toBe("continued");
+    expect(await acknowledged(h)).not.toContain("note");
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: NOTE_OWNER_PURGE_TASK_KIND,
+        payload: {
+          deletionOperationId: OPERATION_ID,
+          stuckPurges: [{ noteId, expectedVersion: 0 }],
+        },
+      }),
+    ]);
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    expect(round.processed).toBe(1);
+    expect(route(h, noteId)?.state).toBe("tombstone");
+    expect(h.backend.publicPurgeAcks.keys()).toHaveLength(1);
+    expect(await acknowledged(h)).toContain("note");
+    expect(tasks(h)).toHaveLength(0);
+  });
+
+  it("TC-note-788: keeps the continuation alive for a stuck note even after the listing runs dry", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, 2);
+    await beginCleanup(h);
+    await run(h, {
+      batchSize: 1,
+      container: withLostResponseAfterCommit(h, 3),
+    });
+    const carried = readOwnerPurgeTurn(tasks(h)[0]?.payload ?? {});
+    const stuck = carried.stuckPurges[0]?.noteId ?? "";
+
+    const view = await deleteNotesForOwner({
+      // The stuck note stays out of reach while the note the listing
+      // does return purges cleanly, so the turn makes progress and
+      // still has an exhausted page.
+      container: withBrokenRouteStore(h, (noteId) => noteId === stuck),
+      input: {
+        deletionOperationId: OPERATION_ID,
+        scope: userScope,
+        ...carried,
+      },
+    });
+
+    expect(view.purgedCount).toBe(1);
+    expect(remainingNotes(h)).toBe(0);
+    // An empty listing is not an empty scope: the stuck note is what
+    // keeps the component unacknowledged.
+    expect(view.status).toBe("continued");
+    expect(await acknowledged(h)).not.toContain("note");
+    expect(tasks(h)[0]?.payload).toEqual({
+      deletionOperationId: OPERATION_ID,
+      stuckPurges: [{ noteId: stuck, expectedVersion: 0 }],
+    });
+  });
+
+  it("TC-note-789: finishing a carried purge does not stand in for a note the listing still holds", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, 3);
+    await beginCleanup(h);
+    await run(h, {
+      batchSize: 1,
+      container: withLostResponseAfterCommit(h, 3),
+    });
+    const carried = readOwnerPurgeTurn(tasks(h)[0]?.payload ?? {});
+    expect(carried.stuckPurges).toHaveLength(1);
+
+    const view = await deleteNotesForOwner({
+      container: h.container,
+      input: {
+        deletionOperationId: OPERATION_ID,
+        scope: userScope,
+        batchSize: 1,
+        ...carried,
+      },
+    });
+
+    // Two purges landed, but only one of them was a row the listing
+    // counted — the other had no row left at all. Crediting the page
+    // with both would end the walk one note early.
+    expect(view.purgedCount).toBe(2);
+    expect(view.status).toBe("continued");
+    expect(remainingNotes(h)).toBe(1);
+    expect(await acknowledged(h)).not.toContain("note");
   });
 
   it("refuses a command from an operation that does not own the scope", async () => {

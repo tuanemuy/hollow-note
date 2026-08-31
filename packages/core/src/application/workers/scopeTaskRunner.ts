@@ -15,7 +15,10 @@ import {
   deleteBackupRecordsForNote,
   NOTE_BACKUP_DELETE_TASK_KIND,
 } from "../integration/deleteBackupRecordsForNote";
-import { deleteNotesForOwner } from "../note/deleteNotesForOwner";
+import {
+  deleteNotesForOwner,
+  readOwnerPurgeTurn,
+} from "../note/deleteNotesForOwner";
 import {
   purgeExpiredTrash,
   TRASH_EXPIRY_TASK_KIND,
@@ -141,10 +144,17 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     });
     await settleCleanupTurn(container, task, turn);
   },
+  // The payload carries the purges an earlier turn could not finish;
+  // dropping it would let the next turn read an empty listing as a
+  // finished scope.
   [NOTE_OWNER_PURGE_TASK_KIND]: async (container, task) => {
     const turn = await deleteNotesForOwner({
       container,
-      input: { deletionOperationId: task.operationId, scope: task.scope },
+      input: {
+        deletionOperationId: task.operationId,
+        scope: task.scope,
+        ...readOwnerPurgeTurn(task.payload),
+      },
     });
     await settleCleanupTurn(container, task, turn);
   },

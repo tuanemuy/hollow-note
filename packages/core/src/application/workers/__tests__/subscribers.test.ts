@@ -399,19 +399,28 @@ describe("readNotePurgeTurn", () => {
   it("faults on a payload that names no note or an unreadable token, rather than inventing a turn", () => {
     expect(() => readNotePurgeTurn({})).toThrow(SystemError);
     expect(() => readNotePurgeTurn({ noteId: "" })).toThrow(SystemError);
+    // Whitespace names no note either: `NoteId.create` trims before it
+    // judges, so a guard that only rejected `""` would hand this one to
+    // the value object and answer a corrupt row with a business rule.
+    expect(() => readNotePurgeTurn({ noteId: "   " })).toThrow(SystemError);
     expect(() => readNotePurgeTurn({ noteId: 12 })).toThrow(SystemError);
     expect(() =>
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: 12 }),
     ).toThrow(SystemError);
 
-    try {
-      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: 12 });
-      expect.unreachable("the corrupt payload should have faulted");
-    } catch (cause) {
-      expect(cause).toBeInstanceOf(SystemError);
-      expect((cause as SystemError).code).toBe(
-        SystemErrorCode.DataIntegrityError,
-      );
+    for (const payload of [
+      { noteId: "   " },
+      { noteId: "note-1", deletionOperationId: 12 },
+    ]) {
+      try {
+        readNotePurgeTurn(payload);
+        expect.unreachable("the corrupt payload should have faulted");
+      } catch (cause) {
+        expect(cause).toBeInstanceOf(SystemError);
+        expect((cause as SystemError).code).toBe(
+          SystemErrorCode.DataIntegrityError,
+        );
+      }
     }
   });
 

@@ -302,8 +302,8 @@ export const listNoteRevisionsFn = createServerFn({ method: "GET" })
  * 版からの復元（UC-note-024、ED-04 / ED-08）。
  *
  * 応答の `version` を次の保存の `expectedVersion` に使う。復元は本文・
- * タイトル・スタイルの 3 つの遷移を合成するので版が 2〜3 進み、差分を
- * 数えて予測すると外れる（.thread/7/adr.md ADR-014）。
+ * タイトル・スタイルの 3 つの遷移を合成するので版が 2〜3 進み（タイトル
+ * が変わらなければ 2）、差分を数えて予測すると外れる。
  */
 export const restoreNoteRevisionFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])

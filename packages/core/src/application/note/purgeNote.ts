@@ -446,10 +446,20 @@ async function admitInternal(
 }
 
 /**
- * Picks up an internal purge whose route no longer resolves. Either it
- * is still `purging` under this same operation — the delete, the public
- * removal or the tombstone was lost — or the purge finished and its
- * route is a tombstone, which makes the redelivery a no-op.
+ * Picks up an internal purge whose route no longer resolves.
+ *
+ * The claim is the read: a row still `purging` under this same
+ * operation comes back — the delete, the public removal or the tombstone
+ * was lost — and the saga carries on from there.
+ *
+ * `null` means the note is gone and this command has nothing left to do.
+ * That is the *only* thing the absence of a row proves, so it is the
+ * only refusal folded into it. A `ConflictError` — a route somebody
+ * else's operation holds, a creation still `reserved`, a tombstone whose
+ * expiry has passed — says nothing about whether this scope's note was
+ * destroyed, and a caller that counts the calls which did not throw
+ * (`deleteNotesForOwner`) would read it as "already purged" and
+ * acknowledge a deletion over a note that is still there.
  */
 async function resumeInternal(
   container: NotePurgeContainer,
@@ -470,11 +480,7 @@ async function resumeInternal(
       operationId,
     });
   } catch (cause) {
-    // A tombstone (this purge already finished), a row reclaimed after
-    // the tombstone expired, or a route somebody else holds. None of
-    // them leaves this command anything to do, and failing would make
-    // the delivery retry forever.
-    if (isNotFoundError(cause) || isConflictError(cause)) {
+    if (isNotFoundError(cause)) {
       return null;
     }
     throw cause;
@@ -527,8 +533,9 @@ async function claimRoute(
  * The re-check is not a repetition of the entry gate. Nothing the gate
  * looked at moves the note's own version — a membership removal, a
  * restore, a competing purge all commit elsewhere — so the transaction
- * has to ask again, and this is the only ask that decides anything
- * (ADR 013 / ADR 015).
+ * has to ask again, and this is the only ask that decides anything. The
+ * entry gate exists to refuse a request that may not delete before any
+ * work is done; it is not what the write is allowed to rely on.
  *
  * The revisions go explicitly rather than by referential cascade: no
  * schema in this repository declares a foreign key, and the cross-row

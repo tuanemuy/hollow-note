@@ -62,8 +62,15 @@ const isTextNode = (node: ChildNode): node is TextNode =>
 const isSvg = (element: Element): boolean =>
   element.namespaceURI === SVG_NAMESPACE;
 
+/**
+ * The name as it was written in the source. In foreign content parse5
+ * carries a namespace prefix beside the local name, and gives a bare
+ * `xmlns` the *empty* prefix rather than none — so an empty prefix has to
+ * read as "no prefix" here, or the attribute is reported to the user as
+ * `:xmlns` and matches nothing in the allow list.
+ */
 const attributeName = (attribute: Token.Attribute): string =>
-  attribute.prefix === undefined
+  attribute.prefix === undefined || attribute.prefix === ""
     ? attribute.name
     : `${attribute.prefix}:${attribute.name}`;
 

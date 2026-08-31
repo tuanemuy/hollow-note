@@ -43,14 +43,39 @@ export const ORPHAN_MEDIA_TASK_KIND = "storage.orphanMediaContinued";
 export const ORPHAN_MEDIA_OPERATION_ID = "storage.orphanMediaSweep";
 
 /**
- * Files one turn inspects. The cap bounds the CPU of a single alarm
- * turn — one body parse per candidate — and the `storage.fileDeleted`
- * fan-out it emits (spec/platform/index.md「実行予算と分割単位」).
+ * Files one turn inspects. The cap bounds the rows a single alarm turn
+ * reads and the `storage.fileDeleted` fan-out it emits
+ * (spec/platform/index.md「実行予算と分割単位」).
  *
  * It is a cap on rows *read*, not on rows collected, which is why the
  * turn cannot simply keep reading until it finds work.
+ *
+ * It does **not** bound the turn's CPU on its own: what costs CPU is a
+ * body parse, and the number of those follows the number of distinct
+ * notes on the page, not the number of files ({@link readNoteReferences}
+ * parses the current body plus every retained revision). That bound is
+ * {@link ORPHAN_MEDIA_NOTE_BUDGET}'s job.
  */
 export const ORPHAN_MEDIA_BATCH_SIZE = 100;
+
+/**
+ * Distinct notes one turn reads bodies for.
+ *
+ * Each note costs a note read, a revision listing and up to
+ * `NoteRevision.RETENTION + 1` body parses of up to `NoteHtml`'s
+ * 800,000 bytes, so the page size alone leaves the turn's CPU unbounded:
+ * a page whose 100 files belong to 100 notes would parse 2,100 bodies.
+ * Five notes hold the worst case to 105 parses — the same order as the
+ * one-parse-per-candidate turn this sweep costed before the bodies of the
+ * retained revisions joined the reference set, which is what
+ * {@link ORPHAN_MEDIA_BATCH_SIZE} was chosen against.
+ *
+ * A page is usually one note's pictures, so the budget is normally never
+ * reached. When it is, the turn stops at the last file it judged and
+ * continues from there immediately: the position advances, so the work
+ * is postponed by a turn rather than lost.
+ */
+export const ORPHAN_MEDIA_NOTE_BUDGET = 5;
 
 /**
  * How long a media file is spared regardless of the body.
@@ -79,8 +104,12 @@ export type CollectOrphanMediaInput = Readonly<{
 export type CollectOrphanMediaView = Readonly<{
   collectedCount: number;
   /**
-   * Position handed to the continuation, or `null` when the pass walked
-   * the listing out and the row went back to its daily cadence.
+   * Position the next turn resumes from, or `null` when the pass walked
+   * the listing out and the next one starts at the head again.
+   *
+   * A turn that failed answers with the position it started from, not
+   * `null`: the row went back to the daily cadence, but it kept its place
+   * in the walk.
    */
   nextCursor: StoredFilePurposeCursor | null;
 }>;
@@ -246,7 +275,10 @@ type NoteReferences =
  * The read is per *note*, not per file, and the caller holds the answer
  * for the rest of the turn: a page is usually one note's pictures, and
  * parsing its bodies once is what keeps the revisions from multiplying
- * the turn's CPU by the retention depth.
+ * the turn's CPU by the retention depth. Memoization is not itself a
+ * bound, though — a page spread over as many notes as it has files
+ * memoizes nothing — which is why the caller also caps how many notes one
+ * turn reads ({@link ORPHAN_MEDIA_NOTE_BUDGET}).
  */
 async function readNoteReferences(
   container: OrphanMediaContainer,
@@ -308,9 +340,10 @@ const isOrphan = (
  * ({@link readNoteReferences}).
  *
  * No turn ever settles the row as `failed`: a turn that cannot finish
- * logs and re-arms itself for the next day. The sweep is the only thing
- * that keeps its own row alive, so parking it is not a retry ceiling but
- * the end of collection in that scope.
+ * logs and re-arms itself for the next day, keeping the position it
+ * started from so the failure costs a day rather than the walk. The
+ * sweep is the only thing that keeps its own row alive, so parking it is
+ * not a retry ceiling but the end of collection in that scope.
  *
  * The listing walks the whole scope rather than one owner's files, which
  * is why it is `listByPurposeOlderThan` and not `listByOwner`: a scope's
@@ -323,10 +356,11 @@ const isOrphan = (
  * して継続」).
  *
  * The row is then moved rather than completed, and what decides where to
- * is the **listing**, not the harvest: a full page means there may be
- * another behind it, so the row is re-armed for immediately after
- * carrying the keyset position of the page's last row, and a short page
- * means the walk is out, so the row goes back to the next day with the
+ * is the **listing**, not the harvest: a full page — or a page the note
+ * budget cut short ({@link ORPHAN_MEDIA_NOTE_BUDGET}) — means there is
+ * more to inspect, so the row is re-armed for immediately after carrying
+ * the position of the last file judged, and a page walked out to its end
+ * means the listing is out, so the row goes back to the next day with the
  * position cleared. Tying the continuation to "did this turn collect
  * anything" instead is what stalls the sweep: the rows it spares stay
  * where they are, so a scope whose oldest `limit` media are all still
@@ -357,16 +391,29 @@ export async function collectOrphanMedia({
       "[collectOrphanMedia] the turn failed; re-armed for the next day",
       { cause, scope: input.scope },
     );
-    await armDailySweep(container, input.scope, now);
-    return { collectedCount: 0, nextCursor: null };
+    // The position this turn started from is kept, not cleared. Clearing
+    // it sends the next turn back to the head of the listing, and a page
+    // that fails for a reason that does not clear — a body the parser
+    // keeps refusing, a scope whose listing keeps timing out — is then
+    // re-read every day forever, so nothing behind it is ever inspected.
+    // Keeping it costs at most one repeated page once the obstacle
+    // clears, and the pass still returns to the head as soon as a turn
+    // walks the listing out.
+    const kept = input.cursor ?? null;
+    await armDailySweep(container, input.scope, now, kept);
+    return { collectedCount: 0, nextCursor: kept };
   }
 }
 
-/** Puts the sweep row back on its daily cadence, position cleared. */
+/**
+ * Puts the sweep row back on its daily cadence, resuming from `cursor`
+ * (`null` — the ordinary end of a pass — starts the next one at the head).
+ */
 const armDailySweep = (
   container: OrphanMediaContainer,
   scope: ScopeKey,
   now: Date,
+  cursor: StoredFilePurposeCursor | null = null,
 ): Promise<void> =>
   container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
     ctx.scopeTaskScheduler.schedule({
@@ -374,7 +421,7 @@ const armDailySweep = (
       operationId: ORPHAN_MEDIA_OPERATION_ID,
       priority: ScopeTaskPriority.expiryCollection,
       dueAt: new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
-      payload: sweepPayload(null),
+      payload: sweepPayload(cursor),
     }),
   );
 
@@ -403,41 +450,57 @@ async function sweepOnce(
       // note's pictures, and each answer costs a note read, a revision
       // listing and up to `RETENTION + 1` body parses.
       const byNote = new Map<string, NoteReferences>();
+      // The position of the last file this turn actually judged, which
+      // is where the next one resumes. It is not simply the page's last
+      // row, because the note budget can stop the walk mid-page.
+      let judgedThrough: StoredFilePurposeCursor | null = null;
+      let notesRead = 0;
+      let outOfBudget = false;
       for (const file of candidates) {
         const noteId = file.noteId;
         // `media` provenance carries its note by construction; the guard
         // is the listing contract restated where it is relied on.
-        if (file.purpose !== "media" || noteId === null) {
-          continue;
-        }
-        try {
-          let references = byNote.get(noteId);
-          if (references === undefined) {
-            references = await readNoteReferences(container, ctx, noteId);
-            byNote.set(noteId, references);
+        if (file.purpose === "media" && noteId !== null) {
+          const known = byNote.get(noteId);
+          if (known === undefined && notesRead >= ORPHAN_MEDIA_NOTE_BUDGET) {
+            // Stopping here rather than reading one more note is what
+            // bounds the turn's CPU. `judgedThrough` has advanced over
+            // everything decided so far, so the continuation picks up
+            // behind this file instead of re-reading the page.
+            outOfBudget = true;
+            break;
           }
-          if (isOrphan(container, references, file.objectKey)) {
-            orphans.push(file.id);
+          try {
+            let references = known;
+            if (references === undefined) {
+              // Counted before the read, not after it: a note whose read
+              // keeps failing is retried by every file that names it, and
+              // counting attempts is what keeps that bounded too.
+              notesRead += 1;
+              references = await readNoteReferences(container, ctx, noteId);
+              byNote.set(noteId, references);
+            }
+            if (isOrphan(container, references, file.objectKey)) {
+              orphans.push(file.id);
+            }
+          } catch (cause) {
+            // Spares the file and carries on. This transaction only
+            // reads, so a failed read leaves nothing half-written, and
+            // the alternative — losing the turn — would stall the cursor
+            // on this page and hide everything behind it forever.
+            container.logger.error(
+              "[collectOrphanMedia] a file could not be judged",
+              { cause, fileId: file.id },
+            );
           }
-        } catch (cause) {
-          // Spares the file and carries on. This transaction only reads,
-          // so a failed read leaves nothing half-written, and the
-          // alternative — losing the turn — would stall the cursor on
-          // this page and hide everything behind it forever.
-          container.logger.error(
-            "[collectOrphanMedia] a file could not be judged",
-            { cause, fileId: file.id },
-          );
         }
+        judgedThrough = { createdAt: file.createdAt, id: file.id };
       }
-      const last = candidates[candidates.length - 1];
       return {
-        scanned: candidates.length,
+        pageFull: candidates.length === limit,
+        outOfBudget,
         orphans,
-        last:
-          last === undefined
-            ? null
-            : { createdAt: last.createdAt, id: last.id },
+        last: judgedThrough,
       };
     },
   );
@@ -457,7 +520,7 @@ async function sweepOnce(
     }
   }
 
-  const nextCursor = scan.scanned === limit ? scan.last : null;
+  const nextCursor = scan.pageFull || scan.outOfBudget ? scan.last : null;
   if (nextCursor === null) {
     await armDailySweep(container, input.scope, now);
   } else {

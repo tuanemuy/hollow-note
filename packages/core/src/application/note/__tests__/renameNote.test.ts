@@ -6,6 +6,7 @@ import { isBusinessRuleError } from "@repo/core/domain/error";
 import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { describe, expect, it } from "vitest";
 import { renameNote } from "../renameNote";
+import { trashNote } from "../trashNote";
 import {
   createPersonalNote,
   createTestHarness,
@@ -30,6 +31,12 @@ const rename = (
   renameNote({
     container: h.container,
     input: { noteId, userId, title, expectedVersion },
+  });
+
+const trash = (h: TestHarness, noteId: string) =>
+  trashNote({
+    container: h.container,
+    input: { noteId, userId: OWNER, expectedVersion: 0, excludingJobId: null },
   });
 
 describe("renameNote", () => {
@@ -139,5 +146,18 @@ describe("renameNote", () => {
         isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE",
     );
     expect(storedNote(h, noteId)?.title.value).toBe("一度目");
+  });
+
+  it("TC-note-785: refuses a trashed note with NoteIsTrashed", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await trash(h, noteId);
+
+    await expect(rename(h, noteId, "ゴミ箱の中で改名", 1)).rejects.toSatisfy(
+      (error) =>
+        isBusinessRuleError(error) &&
+        error.code === NoteErrorCode.NoteIsTrashed,
+    );
+    expect(storedNote(h, noteId)?.title.value).not.toBe("ゴミ箱の中で改名");
   });
 });

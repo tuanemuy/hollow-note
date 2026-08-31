@@ -47,6 +47,21 @@ const cannotCaptureEmptyContent = (): BusinessRuleError<NoteErrorCode> =>
  * editor sends what the user typed, and a body that moved underneath them
  * yields `skipped` entries the screen can show. Nothing is written in
  * that case, so no revision is spent on a no-op.
+ *
+ * **Both parses run inside the scope's transaction, unlike
+ * `updateNoteBody`**, whose JSDoc states the opposite rule for the
+ * opposite reason: there the body arrives with the request and can be
+ * sanitized before the transaction opens, because it is a pure
+ * computation over a string the request has not yet decided to keep.
+ * Here the input of `editTextNodes` is the body the claim just read, so
+ * there is no body to work on until the transaction holds one. The cost
+ * is charged where the divergence puts it: one autosave keeps the scope's
+ * transaction open for a parse → serialize → parse → serialize of a body
+ * up to `NoteHtml`'s 800,000 bytes, and on the target platform, where a
+ * scope is a single-threaded Durable Object (spec/platform/index.md),
+ * that is time no other write to the same scope can use. Reordering to
+ * pay it outside would mean sanitizing a body read outside the
+ * transaction, which is the read the version check exists to distrust.
  */
 export async function applyTextNodeEdits({
   container,

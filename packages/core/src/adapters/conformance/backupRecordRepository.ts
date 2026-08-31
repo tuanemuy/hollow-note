@@ -12,9 +12,10 @@ import { noteId, scopeOf, userId } from "./fixtures";
 
 /**
  * Shared conformance suite for the delete side of
- * `BackupRecordRepository` (ADP-integration-008, 014): the insert with
- * its `(noteId, sourceFileId)` uniqueness, the per-note listing, and the
- * bounded per-note delete a note purge walks.
+ * `BackupRecordRepository` (ADP-integration-008, 014, 030): the insert
+ * with its `(noteId, sourceFileId)` uniqueness, the per-note listing in
+ * `BackupRecordId` order, and the bounded per-note delete a note purge
+ * walks.
  */
 export function describeBackupRecordRepositoryContract(
   backendName: string,
@@ -63,6 +64,20 @@ export function describeBackupRecordRepositoryContract(
       const rows = await repository.listByNote(noteId(1));
       expect(rows.map((r) => r.id)).toEqual(["backup-001", "backup-004"]);
       expect(rows[0]).toEqual(record(1, noteId(1), "file-1"));
+    });
+
+    it("ADP-integration-030: lists one note's records by id ascending, whatever order they arrived in", async () => {
+      // Inserted out of order on purpose: the ascending order is the
+      // contract, so a backend that merely replays its insertion order
+      // has to fail here rather than pass by coincidence.
+      await repository.insert(record(2, noteId(1), "file-2"));
+      await repository.insert(record(1, noteId(1), "file-1"));
+      await repository.insert(record(3, noteId(2), "file-1"));
+
+      const rows = await repository.listByNote(noteId(1));
+      expect(rows.map((r) => r.id)).toEqual(["backup-001", "backup-002"]);
+      expect(rows[0]).toEqual(record(1, noteId(1), "file-1"));
+      expect(await repository.listByNote(noteId(9))).toEqual([]);
     });
 
     it("ADP-integration-008: answers a re-used record id with a fault, not the source-file conflict", async () => {

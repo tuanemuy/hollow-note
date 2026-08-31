@@ -190,6 +190,7 @@ export async function trashNote({
 
   return {
     noteId,
+    version: trashed.version,
     trashedAt: trashed.trashedAt,
     purgeAfter: trashed.purgeAfter,
   };

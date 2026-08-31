@@ -12,7 +12,12 @@
  * The scanner is deliberately forgiving: unbalanced braces and unknown
  * at-rules are carried through rather than rejected, because the input is
  * arbitrary imported CSS and losing it is worse than keeping something
- * inert.
+ * inert. Carried through means written back as they were found — the
+ * filter never supplies a `;` or a `}` the source did not have. Filtering
+ * has to be a fixed point (`filterCss(filterCss(x)) === filterCss(x)`)
+ * because a stored body is re-sanitized on every save, and a terminator
+ * added to an unclosed construct is invisible to the next pass, which then
+ * adds another.
  *
  * Every classification runs on a canonical copy of the statement rather
  * than on its source text, because a browser resolves comments and
@@ -247,21 +252,35 @@ const disallowedPositionProperty = (canonical: string): string | undefined => {
   return ALLOWED_POSITION_VALUE.test(value) ? undefined : property;
 };
 
+/**
+ * Emits one statement, or drops it and reports why.
+ *
+ * `terminated` says whether the source actually ended the statement with a
+ * `;`. Only then may one be written back. Supplying the terminator that
+ * the source lacked is what breaks the fixed point: an unterminated string
+ * or an unclosed `(` is exactly the state in which the scanner cannot find
+ * a terminator, so the `;` lands *inside* that construct and the next pass
+ * — this module runs again on its own output, in every path that
+ * re-sanitizes a stored body — no longer sees it, appends another, and the
+ * text grows by one character per save.
+ */
 const pushStatement = (
   text: string,
+  terminated: boolean,
   parts: string[],
   report: ReportCssRemoval,
 ): void => {
   if (text.length === 0) {
     return;
   }
+  const emitted = terminated ? `${text};` : text;
   const canonical = canonicalize(text).trim();
   if (canonical.startsWith("@")) {
     if (isImportAtRule(canonical)) {
       report({ name: "@import", reason: IMPORT_REASON });
       return;
     }
-    parts.push(`${text};`);
+    parts.push(emitted);
     return;
   }
   const property = disallowedPositionProperty(canonical);
@@ -269,7 +288,7 @@ const pushStatement = (
     report({ name: property, reason: POSITION_REASON });
     return;
   }
-  parts.push(`${text};`);
+  parts.push(emitted);
 };
 
 /**
@@ -297,11 +316,15 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
     }
     const stop = scanTo(input, i, ";{}");
     if (stop === -1) {
-      pushStatement(input.slice(i).trim(), parts, report);
+      pushStatement(input.slice(i).trim(), false, parts, report);
       break;
     }
     if (input[stop] !== "{") {
-      pushStatement(input.slice(i, stop).trim(), parts, report);
+      // A `}` closing nothing terminates the statement just as a `;` does,
+      // and is written back as one: a stop was found at all only because
+      // no string or paren was left open before it, so the `;` cannot be
+      // swallowed on the next pass.
+      pushStatement(input.slice(i, stop).trim(), true, parts, report);
       i = stop + 1;
       continue;
     }
@@ -314,7 +337,7 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
       report({ name: "@import", reason: IMPORT_REASON });
       continue;
     }
-    parts.push(`${prelude}{${filterCss(body, report)}}`);
+    parts.push(`${prelude}{${filterCss(body, report)}${end === -1 ? "" : "}"}`);
   }
   return parts.join("");
 }

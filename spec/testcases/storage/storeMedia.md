@@ -14,6 +14,9 @@
 | — | 128 KB を超える SVG をアップロードする | `BusinessRuleError(FileTooLarge)` が投げられる（本文の上限に触れて `NOTE_CONTENT_TOO_LARGE` になることはない） | |
 | サニタイズで実バイト長が 128 KB を超える SVG | アップロードする | 保管する直前の測り直しで `BusinessRuleError(FileTooLarge)` になり、オブジェクトも `StoredFile` の行も残らない | |
 | サニタイズ後に `</svg>` の後ろへ内容（テキスト・要素・2 つ目の `svg`）が残る SVG | アップロードする | `BusinessRuleError(UnsupportedMimeType)` が投げられ、オブジェクトも行も残らない（XML はルート要素の後ろの内容を致命的エラーとして扱うため、単体の `.svg` として開けない） | |
+| サニタイズ後に `</svg>` の後ろへ BOM・EM SPACE・LINE SEPARATOR が残る SVG | アップロードする | 同じく `BusinessRuleError(UnsupportedMimeType)` になる。判定の物差しは XML が空白と定める 4 文字（空白・タブ・CR・LF）で、`trim()` が空白と呼ぶだけの文字は内容として扱う | |
+| ルート要素の前後に XML の空白（空白・タブ・CR・LF）だけがある SVG | アップロードする | 成功する（境界値） | |
+| ゴミ箱のノート | アップロードする | `BusinessRuleError(NoteIsTrashed)` が投げられ、オブジェクトも行も残らない（`NoteAccessPolicy` は所有者自身のゴミ箱のノートに `canEdit: true` を返すので、この門が無いと本文へ入れる手段のないメディアが容量だけ占める） | |
 | 保存容量の残りが足りない | アップロードする | `BusinessRuleError(StorageQuotaExceeded)` が投げられる | |
 | viewer である | アップロードする | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 存在しないノート | アップロードする | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |

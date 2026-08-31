@@ -1,4 +1,5 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
+import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import type { FileStoredEvent } from "@repo/core/domain/storage/events";
@@ -13,6 +14,7 @@ import type { TestHarness } from "../../__tests__/helpers";
 import type { RequestContainer } from "../../di/types";
 import { createBlankNote } from "../../note/createBlankNote";
 import { moveNote } from "../../note/moveNote";
+import { trashNote } from "../../note/trashNote";
 import { ScopeKey } from "../../scope";
 import { recalculateStorageUsage } from "../../usage/recalculateStorageUsage";
 import {
@@ -108,6 +110,22 @@ const TRAILING_SVG = {
   element: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg><p>and a paragraph</p>`,
   sibling: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg><svg><circle r="1"/></svg>`,
 } as const;
+
+/**
+ * Characters `String.prototype.trim` drops but XML's `S` production does
+ * not admit: after the root element they are character data, and content
+ * in the Misc that follows the root is a fatal XML error. Judging "the
+ * root is alone" with `trim` stores each of these as an `image/svg+xml`
+ * that renders nothing.
+ */
+const NON_XML_SPACE_TRAILERS = {
+  bom: "\uFEFF",
+  emSpace: "\u2003",
+  lineSeparator: "\u2028",
+} as const;
+
+const trailedBy = (trailer: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>${trailer}`;
 
 /**
  * An attribute value carrying what looks like the end of the document.
@@ -479,6 +497,59 @@ describe("storeMedia", () => {
         StorageErrorCode.UnsupportedMimeType,
       );
     }
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-256: a character trim() calls whitespace but XML calls content is refused after </svg>", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    for (const [shape, trailer] of Object.entries(NON_XML_SPACE_TRAILERS)) {
+      const markup = trailedBy(trailer);
+      // The sanitizer keeps the character, so refusing is this usecase's
+      // job alone — without it the byte is stored inside the document.
+      expect(h.container.htmlProcessor.process(markup).html).toContain(trailer);
+      await expectBusinessRule(
+        upload(h, noteId, { body: svg(markup), fileName: `${shape}.svg` }),
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-256: XML's own whitespace around the root is accepted, the four characters it admits being the ruler", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    await upload(h, noteId, {
+      body: svg(`\r\n\t ${trailedBy("\n\t  ")}`),
+      fileName: "padded.svg",
+    });
+
+    const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
+    expect(stored.trimEnd().endsWith("</svg>")).toBe(true);
+  });
+
+  it("TC-storage-260: an upload into a trashed note is refused as NoteIsTrashed, the body being closed to it too", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    await trashNote({
+      container: h.container,
+      input: {
+        noteId,
+        userId: ACTOR,
+        expectedVersion: 0,
+        excludingJobId: null,
+      },
+    });
+
+    // `NoteAccessPolicy` leaves `canEdit` true for the owner of a trashed
+    // note, so nothing below this gate would have stopped the upload: the
+    // bytes would fill the subject's capacity while `updateNoteBody`
+    // refuses every reference to them.
+    await expectBusinessRule(upload(h, noteId), NoteErrorCode.NoteIsTrashed);
     expect(filesIn(h, personalScope)).toHaveLength(0);
     expect(h.backend.objects.size).toBe(0);
   });

@@ -47,6 +47,16 @@ export async function NoteDetail({
     throw error;
   }
 
+  // ゴミ箱のノートは「見つかりません（削除済み）」に落とす。所有者は
+  // 自分のゴミ箱のノートを読めるので `getNote` は成功して返り、
+  // `canEdit` / `canDelete` も真のまま来る — 判定材料は `trashedAt` しか
+  // ない。ここで止めないと、削除したノートを開き直した利用者にタイトルの
+  // インライン編集と「削除...」が出て、保存だけが `NOTE_IS_TRASHED` で
+  // 落ちる。復元は P-14（ゴミ箱）が担う。
+  if (note.trashedAt !== null) {
+    return <NotFoundState />;
+  }
+
   const canonicalWorkspaceId =
     note.ownerType === "workspace" ? note.ownerId : null;
   const currentWorkspaceId =

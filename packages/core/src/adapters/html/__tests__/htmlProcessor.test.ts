@@ -236,7 +236,7 @@ const sanitizeCases: readonly SanitizeCase[] = [
     tc: "TC-note-707",
     title: "drops only position: fixed inside a style attribute",
     input: '<p style="position:fixed;color:red">x</p>',
-    html: '<p style="color:red;">x</p>',
+    html: '<p style="color:red">x</p>',
     removed: [{ kind: "css", name: "position" }],
   },
   {
@@ -364,7 +364,7 @@ const sanitizeCases: readonly SanitizeCase[] = [
     tc: "TC-note-708",
     title: "drops position whose value is env(), the same shape as var()",
     input: '<p style="position:env(--x);color:red">x</p>',
-    html: '<p style="color:red;">x</p>',
+    html: '<p style="color:red">x</p>',
     removed: [{ kind: "css", name: "position" }],
   },
   {
@@ -386,7 +386,7 @@ const sanitizeCases: readonly SanitizeCase[] = [
     tc: "TC-note-710",
     title: "keeps a style element and a style attribute with no banned rule",
     input: '<style>.a{color:red}</style><p style="color:blue">x</p>',
-    present: ["<style>", "color:red", 'style="color:blue;"'],
+    present: ["<style>", "color:red", 'style="color:blue"'],
     noRemovals: true,
     hasDecoration: true,
   },
@@ -478,6 +478,47 @@ const sanitizeCases: readonly SanitizeCase[] = [
     input: "<div><p>unclosed<b>bold</div>",
     html: "<div><p>unclosed<b>bold</b></p></div>",
   },
+  // CSS is *not* repaired the way HTML is. A statement the scanner never
+  // saw terminated is written back as it was found, because a supplied
+  // terminator would land inside the construct that swallowed the scan and
+  // the next pass would add another one (see `css.ts`).
+  {
+    title: "carries an unterminated CSS string through without terminating it",
+    input: '<style>.a{content:"</style>',
+    html: '<style>.a{content:"</style>',
+    noRemovals: true,
+  },
+  {
+    title:
+      "carries a </style> cut out of a CSS string through unchanged, injecting nothing",
+    input: '<style>.a{content:"</style><img src=x onerror=alert(1)>"}</style>',
+    html: '<style>.a{content:"</style><img src="x">"}',
+    removed: [{ kind: "attribute", name: "onerror" }],
+  },
+  {
+    title: "carries an unclosed CSS paren through without terminating it",
+    input: "<style>.a{color:rgb(1</style>",
+    html: "<style>.a{color:rgb(1</style>",
+    noRemovals: true,
+  },
+  {
+    title:
+      "carries an unterminated string in a style attribute through unchanged",
+    input: '<p style="content:\'x">t</p>',
+    html: '<p style="content:\'x">t</p>',
+    noRemovals: true,
+  },
+  {
+    title:
+      "drops the namespace declarations of an inline svg under their real names",
+    input:
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a"/></svg>',
+    html: '<svg><use xlink:href="#a"></use></svg>',
+    removed: [
+      { kind: "attribute", name: "xmlns" },
+      { kind: "attribute", name: "xmlns:xlink" },
+    ],
+  },
 ];
 
 const namedSanitizeCases = sanitizeCases.map((testCase) => ({
@@ -518,6 +559,30 @@ describe("HtmlProcessor.process — ADP-note-001 sanitize allow-list (spec/adr/0
   });
 });
 
+/**
+ * Bodies are re-sanitized from storage — `applyTextNodeEdits` on every
+ * autosave, `restoreNoteRevision`, `listNoteRevisions` — so `process` has
+ * to be a fixed point. A second pass that changes anything makes a body
+ * drift with no user edit behind it, and the drift shows up in neither
+ * `removed` nor the screen.
+ */
+describe("HtmlProcessor.process — ADP-note-001 is a fixed point", () => {
+  const inputs = [
+    ...sanitizeCases.map(({ input }) => input),
+    "<h1>One</h1><h2>Two</h2><h2>Two</h2>",
+    '<link rel="stylesheet" href="https://cdn.example/x.css">',
+    "<style>@media (min-width:1px){.a{position:fixed;color:red}}</style>",
+  ];
+
+  it.each(inputs.map((input, index) => ({ index, input })))(
+    "$index: $input",
+    ({ input }) => {
+      const once = processor.process(input).html;
+      expect(processor.process(once).html).toBe(once);
+    },
+  );
+});
+
 describe("HtmlProcessor.process — ADP-note-001 derived projections", () => {
   it("TC-note-721: refuses a body that exceeds 800,000 bytes after sanitization", () => {
     expect(() => processor.process("a".repeat(800_001))).toThrow(
@@ -550,6 +615,19 @@ describe("HtmlProcessor.process — ADP-note-001 derived projections", () => {
     );
     expect(result.text).toBe(`${"あ".repeat(250)} 次`);
     expect(result.excerpt).toBe("あ".repeat(200));
+  });
+
+  it("names the dropped xmlns declarations exactly, with no :xmlns among them", () => {
+    // parse5 gives a bare `xmlns` the empty prefix rather than none, so the
+    // reported name is what AC-3 shows the user: an attribute that exists.
+    const result = processor.process(
+      '<p><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a"/></svg></p>',
+    );
+    expect(result.removed).toEqual([
+      expect.objectContaining({ kind: "attribute", name: "xmlns" }),
+      expect.objectContaining({ kind: "attribute", name: "xmlns:xlink" }),
+    ]);
+    expect(result.html).toBe('<p><svg><use xlink:href="#a"></use></svg></p>');
   });
 
   it("counts a removed link rel=stylesheet as decoration (spec/adr/007)", () => {
@@ -708,7 +786,7 @@ describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
     ]);
     expect(result.skipped).toEqual([]);
     expect(result.html).toContain(
-      '<p class="c" style="color:red;">A<b>bold</b>c</p>',
+      '<p class="c" style="color:red">A<b>bold</b>c</p>',
     );
   });
 
@@ -717,7 +795,7 @@ describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
       { path: "0.1.0", expected: "bold", text: "BOLD" },
     ]);
     expect(result.html).toBe(
-      '<p class="c" style="color:red;">a<b>BOLD</b>c</p><style>.x{color:red;}</style>',
+      '<p class="c" style="color:red">a<b>BOLD</b>c</p><style>.x{color:red}</style>',
     );
   });
 
@@ -753,7 +831,7 @@ describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
     ]);
     expect(result.skipped).toEqual([]);
     expect(result.html).toContain(
-      '<p class="c" style="color:red;"><b>bold</b>c</p>',
+      '<p class="c" style="color:red"><b>bold</b>c</p>',
     );
   });
 
@@ -775,7 +853,7 @@ describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
     const result = processor.editTextNodes(body, [
       {
         path: "1.0",
-        expected: ".x{color:red;}",
+        expected: ".x{color:red}",
         text: "body{position:fixed;top:0}",
       },
     ]);

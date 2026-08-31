@@ -1,6 +1,6 @@
 import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
-import type { Note } from "@repo/core/domain/note/note";
+import type { ActiveNote, Note } from "@repo/core/domain/note/note";
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
@@ -16,6 +16,7 @@ import {
 import type { RequestContainer } from "../di/types";
 import { NotFoundError } from "../errors";
 import { noteAccessPolicy, viewerFor } from "../note/accessControl";
+import { ensureNotTrashed } from "../note/editing";
 import type { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { ensureUploadAllowed } from "../usage/ensureUploadAllowed";
@@ -46,11 +47,23 @@ const XLINK_PREFIXED_ATTRIBUTE = /\sxlink:/i;
 const XMLNS_DECLARATION = /\sxmlns=/i;
 const XMLNS_XLINK_DECLARATION = /\sxmlns:xlink=/i;
 const TAG_NAME = /[a-zA-Z][^\s/>]*/y;
+/**
+ * XML's `S` production — space, tab, CR, LF — and nothing else.
+ *
+ * `String.prototype.trim` is the wrong ruler here: it also drops U+FEFF,
+ * U+2000–U+200A, U+2028 / U+2029, U+3000 and the rest of Unicode's
+ * whitespace, none of which XML admits after the root element. Judging
+ * with it stores a file whose Misc contains character data — a fatal
+ * error, so the `image/svg+xml` renders nothing at all. Only U+00A0
+ * escapes into `&nbsp;` on the way out of the sanitizer; every other one
+ * survives verbatim.
+ */
+const XML_WHITESPACE_ONLY = /^[\t\n\r ]*$/;
 
 const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
 
-type EditableNote = Readonly<{ scope: ScopeKey; note: Note }>;
+type EditableNote = Readonly<{ scope: ScopeKey; note: ActiveNote }>;
 
 /**
  * Resolves the note the media is being inserted into, and refuses anyone
@@ -60,6 +73,14 @@ type EditableNote = Readonly<{ scope: ScopeKey; note: Note }>;
  * and a viewer without `editNote` all collapse to
  * `NotFoundError("NOTE_NOT_FOUND")`, so an upload never reveals that a
  * note it may not touch exists.
+ *
+ * A trashed note is then refused as `NoteIsTrashed`, through the same
+ * gate the body-editing usecases take (`note/editing.ts`). The trash is
+ * no barrier to its owner in `NoteAccessPolicy` — `canEdit` stays true —
+ * so without this an upload succeeds into a note whose body no longer
+ * accepts the reference: the bytes fill the subject's capacity and sit
+ * there until the note is purged or the 30-day orphan sweep reaches
+ * them.
  *
  * The scope read is retried once against a freshly resolved route. A note
  * that moved between the route read and the scope read leaves the first
@@ -72,7 +93,10 @@ async function resolveEditableNote(
   noteId: NoteId,
   userId: string,
 ): Promise<EditableNote> {
-  const read = async (): Promise<EditableNote | null> => {
+  const read = async (): Promise<Readonly<{
+    scope: ScopeKey;
+    note: Note;
+  }> | null> => {
     const { scope } = await container.scopeRouter.resolveNote(noteId);
     const versioned = await container.noteReaderFor(scope).findById(noteId);
     return versioned === null ? null : { scope, note: versioned.entity };
@@ -93,7 +117,7 @@ async function resolveEditableNote(
   if (access.kind !== "granted" || !access.canEdit) {
     throw noteNotFound();
   }
-  return resolved;
+  return { scope: resolved.scope, note: ensureNotTrashed(resolved.note) };
 }
 
 type SvgRoot = Readonly<{
@@ -156,7 +180,7 @@ const findSvgRoot = (markup: string): SvgRoot | null => {
     const open = markup.indexOf("<", index);
     const outside = root === null || depth === 0;
     const text = markup.slice(index, open === -1 ? undefined : open);
-    if (outside && text.trim().length > 0) {
+    if (outside && !XML_WHITESPACE_ONLY.test(text)) {
       return null;
     }
     if (open === -1) {

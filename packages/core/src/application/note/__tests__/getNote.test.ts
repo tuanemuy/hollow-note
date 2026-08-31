@@ -340,6 +340,34 @@ describe("getNote", () => {
     expect(view.noteId).toBe(noteId);
   });
 
+  it("TC-note-815: a trashed note carries trashedAt — the only material the detail and editing screens have to tell it is deleted", async () => {
+    const h = createTestHarness();
+    const now = h.clock.now();
+    const noteId = await seedNote(h, {
+      lifecycle: "trashed",
+      trashedAt: now,
+      purgeAfter: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+    });
+
+    const view = await get(h, noteId, OWNER);
+
+    expect(view.trashedAt).toEqual(now);
+    // The verdict cannot be read off the permissions: the owner keeps
+    // every capability on their own trashed note.
+    expect(view.permissions).toEqual({
+      canEdit: true,
+      canDelete: true,
+      canChangeVisibility: true,
+    });
+  });
+
+  it("TC-note-816: a live note carries trashedAt null", async () => {
+    const h = createTestHarness();
+    const noteId = await seedNote(h);
+
+    expect((await get(h, noteId, OWNER)).trashedAt).toBeNull();
+  });
+
   it("TC-note-173: someone else's trashed note is NOTE_NOT_FOUND", async () => {
     const h = createTestHarness();
     const now = h.clock.now();

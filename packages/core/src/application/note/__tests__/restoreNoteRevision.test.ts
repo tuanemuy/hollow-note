@@ -2,11 +2,14 @@ import {
   isConflictError,
   isNotFoundError,
 } from "@repo/core/application/errors";
+import { isBusinessRuleError } from "@repo/core/domain/error";
 import { TokenHash } from "@repo/core/domain/identity/valueObject";
+import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteId, ShareLink } from "@repo/core/domain/note/valueObject";
 import { describe, expect, it } from "vitest";
 import { restoreNoteRevision } from "../restoreNoteRevision";
+import { trashNote } from "../trashNote";
 import { updateNoteBody } from "../updateNoteBody";
 import {
   createPersonalNote,
@@ -67,6 +70,12 @@ const saveBody = async (
       },
     })
   ).version;
+
+const trash = (h: TestHarness, noteId: string) =>
+  trashNote({
+    container: h.container,
+    input: { noteId, userId: OWNER, expectedVersion: 0, excludingJobId: null },
+  });
 
 describe("restoreNoteRevision", () => {
   it("TC-note-470: restores the revision's body, title and style mode", async () => {
@@ -350,5 +359,23 @@ describe("restoreNoteRevision", () => {
     );
     expect(eventsOfType(h, "note.styleModeChanged")).toHaveLength(1);
     expect(eventsOfType(h, "note.renamed")).toHaveLength(1);
+  });
+
+  it("TC-note-787: refuses a trashed note with NoteIsTrashed", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    seedRevision(h, noteId, {
+      id: "revision-old",
+      html: "<p>older body</p>",
+      createdAt: AT,
+    });
+    await trash(h, noteId);
+
+    await expect(restore(h, noteId, "revision-old", 1)).rejects.toSatisfy(
+      (error) =>
+        isBusinessRuleError(error) &&
+        error.code === NoteErrorCode.NoteIsTrashed,
+    );
+    expect(storedNote(h, noteId)?.version).toBe(1);
   });
 });

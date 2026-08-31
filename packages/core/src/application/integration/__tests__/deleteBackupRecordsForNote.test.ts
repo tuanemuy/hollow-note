@@ -190,6 +190,28 @@ describe("deleteBackupRecordsForNote", () => {
     expect(recordIds(h, workspaceScope)).toEqual([]);
   });
 
+  it("TC-integration-022: refuses a deletion-token turn in a workspace scope, which holds no personal receipt", async () => {
+    const h = createTestHarness();
+    await seed(h, [record(1, NOTE, otherUserId)], workspaceScope);
+    // The barrier is open, but in the personal scope. Admission reads
+    // the receipt of the scope the turn runs in, so a workspace turn
+    // carrying the same token names nothing there — the fan-out's one
+    // authorization point is fail-closed rather than satisfied by the
+    // token existing somewhere.
+    await openBarrier(h);
+
+    const refused = await run(h, DELETION_OPERATION, workspaceScope).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    );
+
+    expect(isConflictError(refused)).toBe(true);
+    expect(isConflictError(refused) && refused.code).toBe(
+      "CLEANUP_OPERATION_MISMATCH",
+    );
+    expect(recordIds(h, workspaceScope)).toEqual(["backup-001"]);
+  });
+
   it("TC-integration-023: reclaims 250 records a page at a time, each turn carrying the same deletion token", async () => {
     const h = createTestHarness();
     await seed(

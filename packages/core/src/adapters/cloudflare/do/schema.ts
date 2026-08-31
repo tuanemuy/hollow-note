@@ -295,8 +295,12 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
      ON ${SCOPE_TABLES.storedFiles} (owner_type, owner_id, purpose)`,
   `CREATE INDEX IF NOT EXISTS stored_files_expires_idx
      ON ${SCOPE_TABLES.storedFiles} (expires_at) WHERE retention = 'ephemeral'`,
+  // `id` is part of the key because the orphan sweep's keyset walk orders
+  // by `(created_at, id)` and resumes on `created_at = ? AND id > ?`: a
+  // scope with many rows sharing one instant would otherwise push the
+  // tie-break into a temporary B-tree.
   `CREATE INDEX IF NOT EXISTS stored_files_purpose_created_idx
-     ON ${SCOPE_TABLES.storedFiles} (purpose, created_at)`,
+     ON ${SCOPE_TABLES.storedFiles} (purpose, created_at, id)`,
   `CREATE INDEX IF NOT EXISTS stored_files_note_idx
      ON ${SCOPE_TABLES.storedFiles} (note_id) WHERE note_id IS NOT NULL`,
 

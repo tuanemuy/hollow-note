@@ -74,6 +74,17 @@ export type NoteDetailView = Readonly<{
    * lock can never start.
    */
   version: number;
+  /**
+   * When the note is in the trash, `null` while it is live.
+   *
+   * The access policy lets an owner (and a workspace editor) read their
+   * own trashed note, so absence is not what tells the detail and the
+   * editing screens that the note is gone — without this field they draw
+   * a trashed note as an ordinary one and offer edits every save would
+   * refuse with `NOTE_IS_TRASHED`. It is what lets both reach the
+   * "見つかりません（削除済み）" state of `spec/pages/index.md#P-11`.
+   */
+  trashedAt: Date | null;
   content: NoteContentView;
   styleMode: "default" | "preserve";
   visibility: "private" | "unlisted" | "public";
@@ -185,9 +196,16 @@ export type RestoredNoteRevisionView = Readonly<{
  * than derived on the screen: the retention window belongs to the
  * domain (`TRASH_RETENTION_MS`), and the trash list shows the days left
  * against it.
+ *
+ * `version` is the note's version after the move, and it is the version
+ * the screen's "元に戻す" has to send. It is carried rather than counted:
+ * the same transaction may also write the recovery of a body a cancelled
+ * conversion left mid-flight, so the number of steps between the version
+ * the screen sent and the one `restoreNote` demands is not fixed.
  */
 export type TrashedNoteView = Readonly<{
   noteId: string;
+  version: number;
   trashedAt: Date;
   purgeAfter: Date;
 }>;
@@ -196,9 +214,15 @@ export type TrashedNoteView = Readonly<{
  * Result of restoring a note. The visibility is what the caller needs to
  * know: a restored note gets its former publication back, so the screen
  * has to say where the note is now reachable from.
+ *
+ * `version` is carried for the same reason `TrashedNoteView` carries
+ * one: the detail screen keeps editing the note it just restored, and
+ * its next title save needs the version this write left behind rather
+ * than one derived from how many saves the usecase happens to make.
  */
 export type RestoredNoteView = Readonly<{
   noteId: string;
+  version: number;
   visibility: "private" | "unlisted" | "public";
 }>;
 

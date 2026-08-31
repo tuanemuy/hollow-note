@@ -174,6 +174,8 @@ type TagAssignmentPage = Readonly<{
 
 `listByTag` / delete / reassignはいずれも最大200件のpage/batchだけを扱う。全件を返す契約は提供しない。scope cleanup用`deleteByScope`もTagが同scopeであるassignmentを最大200件だけ消す。delete/reassign batchは影響Noteを返し、同じUoWでprojection revisionをbumpできるようにする。
 
+`insert` は 2 つの一意制約を別の種類のエラーへ写す。`(tagId, noteId)` の重複は呼び手が受け入れられる衝突なので `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`AssignmentId` の再利用は採番の誤りなので `SystemError(DatabaseError)` とする。両者を 1 つのエラーに畳むと、直すべき事故に対して「再試行せよ」と答えることになる（同じ整理を `BackupRecordRepository` の `BACKUP_RECORD_ALREADY_EXISTS` にも置く。[domains/integration.md](./integration.md)）。
+
 ### TagOperationStore
 
 ```ts

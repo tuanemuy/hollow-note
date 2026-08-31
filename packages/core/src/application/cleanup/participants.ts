@@ -58,7 +58,7 @@ export const personalCleanupParticipants = {
   backup: absent("Nothing sweeps a user's backup records", "#4"),
   localProjection: absent(
     "Nothing enqueues deletion-driven local projection tasks; author redaction is counted as a manifest item ack instead",
-    "the slice that enqueues deletion-driven local projection tasks",
+    "curation",
   ),
   // Everything the scope plane collects rides this outbox: the
   // `storage.fileDeleted` of each reclaimed file, and the `note.purged`

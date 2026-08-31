@@ -61,6 +61,32 @@
 
 `a` の `target="_blank"` には `rel="noopener noreferrer"` を必ず付与する正規化を行う。`window.opener` 経由で遷移元を書き換えられる経路を残さないためである。
 
+### SVG の許可する要素と属性
+
+本文中のインライン `<svg>` と、保管する SVG ファイル（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）で同じ部分集合を使う。要素名は HTML パーサーが補正したあとの綴り（`linearGradient` / `clipPath` / `textPath` のキャメルケース）で照合する。
+
+| 分類 | 要素 |
+| --- | --- |
+| 構造 | `svg`, `g`, `defs`, `desc`, `title`, `symbol`, `use`, `marker` |
+| 図形・パス | `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon` |
+| テキスト | `text`, `tspan`, `textPath` |
+| 塗り | `linearGradient`, `radialGradient`, `stop`, `pattern`, `clipPath`, `mask` |
+
+| 分類 | 属性 |
+| --- | --- |
+| 構造・座標系 | `viewBox`, `preserveAspectRatio`, `width`, `height`, `x`, `y`, `dx`, `dy`, `transform`, `gradientTransform`, `gradientUnits`, `patternUnits`, `patternContentUnits`, `clipPathUnits`, `maskUnits`, `maskContentUnits`, `markerUnits`, `markerWidth`, `markerHeight`, `refX`, `refY`, `orient`, `overflow` |
+| 図形 | `d`, `pathLength`, `points`, `cx`, `cy`, `r`, `rx`, `ry`, `x1`, `y1`, `x2`, `y2`, `fx`, `fy`, `offset`, `spreadMethod` |
+| 塗り・線 | `fill`, `fill-opacity`, `fill-rule`, `stroke`, `stroke-width`, `stroke-opacity`, `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `stroke-dasharray`, `stroke-dashoffset`, `opacity`, `color`, `stop-color`, `stop-opacity`, `clip-path`, `clip-rule`, `mask`, `paint-order`, `shape-rendering`, `vector-effect` |
+| テキスト | `font-family`, `font-size`, `font-style`, `font-weight`, `letter-spacing`, `word-spacing`, `text-anchor`, `text-decoration`, `dominant-baseline`, `alignment-baseline`, `baseline-shift`, `writing-mode`, `startOffset`, `textLength`, `lengthAdjust`, `xml:space` |
+
+上の表に加えて「全要素」の行（`class` / `id` / `title` / `lang` / `dir` / `role` / `aria-*` / `data-*` / `style`）も SVG の要素に効く。表示属性（`fill` などの、CSS プロパティを属性としても書ける組）はパターンで畳まず 1 つずつ並べる — 他の行と同じく集合を閉じたままにするためである。
+
+`href` / `xlink:href` は**同一文書内のフラグメント（`#` で始まる値）だけ**を残し、それ以外は URL の除去として報告する。
+
+**名前空間宣言（`xmlns` / `xmlns:*`）は許可しない。** 本文の断片ではインライン `<svg>` の名前空間を HTML パーサーが与えるので宣言は不活性であり、単体の `.svg` として必要になる分は `storeMedia` が保管の直前に組み立て直す（[usecases/storage.md](../usecases/storage.md)）。除去は他の属性と同じく一覧に出る。
+
+`script`、`foreignObject`、`animate` 系、`image`（どのポリシーも見ない外部取得になる）はいずれも表に無く、許可リスト外の要素として除去される。
+
 ### 許可する URL スキーム
 
 | 対象 | 許可するもの |
@@ -124,7 +150,17 @@
 - メディア挿入（ED-07）
 - SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`。`HtmlProcessor.process` と同じ規則を適用すると既に書かれている）
 
-SVG は本文中のインライン `<svg>` と、保管する SVG ファイルの両方で同じ部分集合を使う。許可するのは図形・パス・テキスト・グラデーション・`use`（同一文書内の参照に限る）などの描画要素のみで、`script`、`foreignObject`、`animate` 系のうち属性値にスクリプトを取りうるもの、`on*`、外部を指す `href` / `xlink:href` は許可しない。
+SVG の部分集合は上の「SVG の許可する要素と属性」が正典で、インラインの `<svg>` と保管する `.svg` の両方が同じ表を使う。
+
+### サニタイズは不動点である
+
+**`process(process(x))` は `process(x)` と等しい。** 出力がそのまま入力に戻ってくる経路が 3 つあるためで、どれも本文を変えてはならない。
+
+- `applyTextNodeEdits` — 自動保存のたびに保存済みの本文をもう一度通す
+- `restoreNoteRevision` — 保持している版の本文を通してから保存し直す
+- `listNoteRevisions` — 一覧の抜粋を組むために通す
+
+破りやすいのは「元に無かったものを補う」正規化である。壊れた CSS を拒否せずそのまま運ぶ以上、走査が終端子を見つけられないのは閉じていない文字列や括弧に呑まれたときだけなので、補った終端子はその構文の内側に落ち、次の走査がまた 1 つ補う。したがって**終端子は入力にあったものだけを書き戻す**（`style="color:red"` は `;` を補われない）。この性質は個別のパターンではなく、サニタイズ表全体を 2 度通す形で守る。
 
 ### 多層防御として CSP を併用する
 

@@ -234,6 +234,17 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
  * delivery still fails and the relay redelivers it — which is why every
  * handler must be safe to re-run (delivery is at-least-once), including
  * the ones that already succeeded.
+ *
+ * That relaxation is the dispatcher's, not the fan-out's: it also drops
+ * the ordering the continuation subscribers of one type used to inherit
+ * from registration order. `identity.accountDeletionDispatchContinued`
+ * is the case with more than one, and its siblings stay safe for the
+ * same reason rather than by running in sequence — each returns early
+ * unless the continuation names its own phase, and the two that do share
+ * a phase (`accountDeletionCleanup` / `accountDeletionGlobalCleanup`)
+ * each skip their half once its receipt is in. **A new phase subscriber
+ * must carry that independence itself**: it may not assume an earlier
+ * sibling of the same event ran, or ran to completion.
  */
 export const subscribers: readonly EventSubscriber[] = [
   ...domainEventSubscribers,

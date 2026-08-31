@@ -1748,6 +1748,42 @@
 | TC-note-778 | emptyTrash: 一部の削除が飛ばせない理由（`SystemError(DatabaseError)` など）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その失敗がそのまま送出されて要求ごと失敗し、「0 件を完全に削除しました」という誤った完了通知にならない。既に確定した purge は戻らない |
 | TC-note-779 | emptyTrash: ジョブ経路（51 件以上）の列挙 — ページの読み方を確認する | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | 手順 2 で数えた総数が導くページ数までで打ち切る（満たないページで早く抜けるのは従来どおり）。数えたあとにゴミ箱へ入ったノートは追いかけない |
 | TC-note-780 | purgeNote: local deleteのcommit後に応答を失う — 完全削除する | spec/testcases/note/purgeNote.md#テストケース-purgenote | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない |
+| TC-note-781 | deleteNotesForOwner: 対象ノートの route が別 operation の `purging` のまま停止している — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | そのノートは purge されず `purgedCount` に数えられず、`note` 成分も ack されない。`purgeNote` は他人が握る route を完全削除済みと畳まず競合として送出する |
+| TC-note-782 | deleteNotesForOwner: local delete の commit 直後に purge が停止した — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | 停止した purge のノート ID が継続要求の payload に載り、次の turn が route を再claimして public remove 以降を再開する。tombstone に到達して初めて `note` 成分を ack する |
+| TC-note-783 | deleteNotesForOwner: 持ち回っている対象が解消せず他に削除できたものも無い — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | 新しく持ち回る対象が無いので継続を積まず現在taskを backoff する（`note` 成分は ack しない） |
+| TC-note-784 | applyTextNodeEdits: ゴミ箱のノート — 編集を適用する | spec/testcases/note/applyTextNodeEdits.md#テストケース-applytextnodeedits | `BusinessRuleError(NoteIsTrashed)` が投げられ、本文は変わらない |
+| TC-note-785 | renameNote: ゴミ箱のノート — 改名する | spec/testcases/note/renameNote.md#テストケース-renamenote | `BusinessRuleError(NoteIsTrashed)` が投げられ、タイトルは変わらない |
+| TC-note-786 | changeNoteStyleMode: ゴミ箱のノート — 表示スタイルを変える | spec/testcases/note/changeNoteStyleMode.md#テストケース-changenotestylemode | `BusinessRuleError(NoteIsTrashed)` が投げられ、表示スタイルは変わらない |
+| TC-note-787 | restoreNoteRevision: ゴミ箱のノート — 版を復元する | spec/testcases/note/restoreNoteRevision.md#テストケース-restorenoterevision | `BusinessRuleError(NoteIsTrashed)` が投げられ、ノートは変わらない |
+| TC-note-788 | deleteNotesForOwner: 持ち回っている対象が残ったまま列挙が尽きた — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | 列挙が空でも継続要求を積み直し、`note` 成分を ack しない |
+| TC-note-789 | deleteNotesForOwner: 持ち回っていた purge が完了しページにはまだノートが残る — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | 持ち回りの完了をページの残件に数えない（列挙が尽きていないので継続する） |
+| TC-note-790 | purgeExpiredTrash: 対象が 1 件以上あり 1 件も削除できなかった — 実行する | spec/testcases/note/purgeExpiredTrash.md#テストケース-purgeexpiredtrash | task を backoff させ、直後の再予定はしない |
+| TC-note-791 | purgeExpiredTrash: 満ページだった、または一部が削除できずに残った — 実行する | spec/testcases/note/purgeExpiredTrash.md#テストケース-purgeexpiredtrash | task を直後へ再予定する |
+| TC-note-792 | purgeExpiredTrash: 満ページでなく期限の来た対象が残らなかった（0 件を含む） — 実行する | spec/testcases/note/purgeExpiredTrash.md#テストケース-purgeexpiredtrash | `findNextPurgeDeadline` の返す期限へ task を移し、ゴミ箱が空（`null`）のときだけ完了する |
+| TC-note-793 | trashNote: 保持期限の違うノートが複数ゴミ箱にある — ゴミ箱に入れる | spec/testcases/note/trashNote.md#テストケース-trashnote | scope の保持期限アラームが最も早い `purgeAfter` に張り替わる（手順 5） |
+| TC-note-794 | listNotes: 個人所有の active なノートが複数ある — 一覧を引く | spec/testcases/note/listNotes.md#テストケース-listnotes | active なノートだけがページで返り、総件数が添えられる |
+| TC-note-795 | listNotes: 一覧の各行 — 版を確認する | spec/testcases/note/listNotes.md#テストケース-listnotes | その時点の `version` を運ぶ |
+| TC-note-796 | listNotes: ノートを 1 件も持たない利用者 — 一覧を引く | spec/testcases/note/listNotes.md#テストケース-listnotes | 空のページと件数 0 が返る |
+| TC-note-797 | listNotes: ワークスペースのメンバー — そのワークスペースの一覧を引く | spec/testcases/note/listNotes.md#テストケース-listnotes | ワークスペース所有のノートだけが返り、本人の個人ノートは混ざらない |
+| TC-note-798 | listNotes: 非メンバー — そのワークスペースの一覧を引く | spec/testcases/note/listNotes.md#テストケース-listnotes | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-note-799 | listNotes: 存在しないワークスペース — 一覧を引く | spec/testcases/note/listNotes.md#テストケース-listnotes | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-note-800 | listTrashedNotes: ゴミ箱に複数のノートがある — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | 削除日時の新しい順に並ぶ |
+| TC-note-801 | listTrashedNotes: ゴミ箱の各行 — 内容を確認する | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | `version` と `purgeAfter` を運ぶ |
+| TC-note-802 | listTrashedNotes: active なノートとゴミ箱のノートが混在する — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | ゴミ箱のノートだけが返る |
+| TC-note-803 | listTrashedNotes: ゴミ箱が空 — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | 空のページと件数 0 が返る |
+| TC-note-804 | listTrashedNotes: 別の利用者がゴミ箱にノートを持つ — 自分のゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | 他人のゴミ箱には届かない |
+| TC-note-805 | listTrashedNotes: 件数が 1 ページに収まらない — ページを指定して引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | ページごとに返しつつ、報告する件数はゴミ箱の総数である |
+| TC-note-806 | listTrashedNotes: `limit` に上限を超える値を渡す — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | 1 ページ 100 件に丸められる（境界値） |
+| TC-note-807 | listTrashedNotes: `page` に 1 未満の値を渡す — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | 先頭ページを返す |
+| TC-note-808 | listTrashedNotes: ワークスペースの editor — そのワークスペースのゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | ワークスペースのゴミ箱が返り、本人の個人ゴミ箱は混ざらない |
+| TC-note-809 | listTrashedNotes: ワークスペースの viewer — そのワークスペースのゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | `BusinessRuleError(InsufficientRole)` が投げられる（`viewTrash` を要求する） |
+| TC-note-810 | listTrashedNotes: 非メンバー — そのワークスペースのゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | `BusinessRuleError(InsufficientRole)` が投げられる |
+| TC-note-811 | listTrashedNotes: 存在しないワークスペース — ゴミ箱を引く | spec/testcases/note/listTrashedNotes.md#テストケース-listtrashednotes | `NotFoundError("WORKSPACE_NOT_FOUND")` が投げられる |
+| TC-note-812 | trashNote: ゴミ箱に入れた — 応答の `version` を確認する | spec/testcases/note/trashNote.md#テストケース-trashnote | 移動後の版が返り、追加の読み取りなしにそのまま `restoreNote` の `expectedVersion` に使える |
+| TC-note-813 | trashNote: 本文の回復が同じ transaction に入った — 応答の `version` を確認する | spec/testcases/note/trashNote.md#テストケース-trashnote | 2 つ進んだ版が返る。送った版から数えて当てると `ConflictError("OPTIMISTIC_LOCK_FAILURE")` になる |
+| TC-note-814 | restoreNote: ゴミ箱にあるノート — 応答の `version` を確認する | spec/testcases/note/restoreNote.md#テストケース-restorenote | 復元後の版が返り、そのまま次の編集の `expectedVersion` に使える |
+| TC-note-815 | getNote: ゴミ箱のノート（所有者） — `trashedAt` を確認する | spec/testcases/note/getNote.md#テストケース-getnote | 移動した時刻が入る。`permissions` は真のままなので、詳細（P-11）と編集（P-12）が「削除済み」を判別できる材料はこれだけである |
+| TC-note-816 | getNote: ゴミ箱にないノート — `trashedAt` を確認する | spec/testcases/note/getNote.md#テストケース-getnote | `null` が返る |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -2005,7 +2041,9 @@
 | TC-storage-255 | collectOrphanMedia: task の payload に読める位置が無い — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 失敗させず先頭からやり直す（掃引行を `failed` に駐車させないため） |
 | TC-storage-256 | storeMedia: サニタイズ後に `</svg>` の後ろへ内容が残る SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 単体の `.svg` として開けないため `BusinessRuleError(UnsupportedMimeType)` が投げられ、オブジェクトも `StoredFile` の行も残らない |
 | TC-storage-257 | collectOrphanMedia: 本文からは参照が外れているが、保持中の版の本文がまだ参照しているメディア — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 削除されない（復元できる版が指すメディアは生きた参照として数える） |
-| TC-storage-258 | collectOrphanMedia: turn 全体が失敗する — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 記録して翌日の掃引を張り直し、`collectedCount: 0` で正常終了する（scope 唯一の掃引行を `failed` に駐車させないため） |
+| TC-storage-258 | collectOrphanMedia: turn 全体が失敗する — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 記録して翌日の掃引を張り直し、`collectedCount: 0` で正常終了する（scope 唯一の掃引行を `failed` に駐車させないため）。開始した位置は捨てず、張り直しの payload と `nextCursor` にそのまま載せる |
+| TC-storage-259 | collectOrphanMedia: 1 ページの中で 6 つ目のノートに当たる（ノート数の予算は 5） — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | その手前で打ち切り、判定し終えた最後の行の位置を載せた継続を直後に積む（ページが満ちていなくても継続する） |
+| TC-storage-260 | storeMedia: ゴミ箱のノート — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | `BusinessRuleError(NoteIsTrashed)` が投げられ、オブジェクトも `StoredFile` の行も残らない |
 | TC-tag-001 | assignTag: 編集できるノート、同名タグなし — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | タグが新規作成され付与され、`created: true` が返る |
 | TC-tag-002 | assignTag: 同じスコープに同名タグがある — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 既存のタグが使われ、`created: false` が返る |
 | TC-tag-003 | assignTag: 既に同じタグが付いている — 再度付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 重複した付与は作られず成功する |

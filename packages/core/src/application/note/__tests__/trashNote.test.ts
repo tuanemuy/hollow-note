@@ -21,6 +21,7 @@ import { getNote } from "../getNote";
 import type { ActiveNoteJob } from "../jobs";
 import { listNotes } from "../listNotes";
 import { renameNote } from "../renameNote";
+import { restoreNote } from "../restoreNote";
 import { JOB_TERMINATION_CONTINUATION_KIND, trashNote } from "../trashNote";
 import {
   createPersonalNote,
@@ -115,6 +116,7 @@ describe("trashNote", () => {
 
     expect(view).toEqual({
       noteId,
+      version: 1,
       trashedAt: now,
       purgeAfter: new Date(now.getTime() + 30 * DAY_MS),
     });
@@ -409,8 +411,43 @@ describe("trashNote", () => {
     const second = await trash(h, noteId, { expectedVersion: 0 });
 
     expect(second).toEqual(first);
+    expect(second.version).toBe(1);
     expect(storedNote(h, noteId)?.version).toBe(1);
     expect(eventsOfType(h, "note.trashed")).toHaveLength(1);
+  });
+
+  it("TC-note-812: the response carries the version the move left, so the undo needs no second read", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+
+    const view = await trash(h, noteId);
+
+    expect(view.version).toBe(storedNote(h, noteId)?.version);
+    await expect(
+      restoreNote({
+        container: h.container,
+        input: { noteId, userId: OWNER, expectedVersion: view.version },
+      }),
+    ).resolves.toMatchObject({ noteId });
+  });
+
+  it("TC-note-813: a move that also recovered a cancelled conversion answers two versions on — counting from the version sent would conflict", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    reseedNote(h, noteId, { contentStatus: "processing" });
+
+    const view = await trash(h, noteId, {
+      jobs: recordingTrashJobs([job("job-conversion", "conversion")]),
+    });
+
+    expect(view.version).toBe(2);
+    const restore = (expectedVersion: number) =>
+      restoreNote({
+        container: h.container,
+        input: { noteId, userId: OWNER, expectedVersion },
+      });
+    await expect(restore(1)).rejects.toSatisfy(isConflictError);
+    await expect(restore(view.version)).resolves.toMatchObject({ noteId });
   });
 
   it("TC-note-678: a workspace viewer is answered NOTE_NOT_FOUND and writes nothing", async () => {

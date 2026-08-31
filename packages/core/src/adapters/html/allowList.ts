@@ -297,6 +297,12 @@ export const ALLOWED_SVG_ELEMENTS: ReadonlySet<string> = set(
  * attributes are the CSS properties SVG also accepts as attributes; they
  * are listed rather than pattern-matched so the set stays closed like
  * every other row of ADR 013.
+ *
+ * `xmlns` / `xmlns:*` are deliberately absent: ADR 013 lists no namespace
+ * declaration, and an inline `<svg>` takes the SVG namespace from the HTML
+ * parser, so the declaration is dead weight in a body fragment. A
+ * standalone `.svg` does need them, and `storeMedia.asStandaloneSvg` puts
+ * them back on the document it builds out of this output.
  */
 export const ALLOWED_SVG_ATTRIBUTES: ReadonlySet<string> = set(
   // 構造・座標系
@@ -323,7 +329,6 @@ export const ALLOWED_SVG_ATTRIBUTES: ReadonlySet<string> = set(
   "refY",
   "orient",
   "overflow",
-  "xmlns",
   // 図形
   "d",
   "pathLength",

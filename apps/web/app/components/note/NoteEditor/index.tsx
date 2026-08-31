@@ -43,6 +43,14 @@ export async function NoteEditor({
     throw error;
   }
 
+  // ゴミ箱のノートは編集画面を開かせない（`NoteDetail` と同じ判定）。
+  // 所有者には `getNote` が成功して返るので、`trashedAt` が唯一の材料に
+  // なる。落とさないと、書けてしまったうえで最初の自動保存だけが
+  // `NOTE_IS_TRASHED` で落ち、権限喪失の表示に相乗りする。
+  if (note.trashedAt !== null) {
+    return <NotFoundState />;
+  }
+
   const backTo = backTarget(note.noteId, context);
 
   if (note.content.status !== "ready") {

@@ -362,11 +362,12 @@ export function HtmlSurface({
         <div className="border-b border-hairline bg-surface-elevated px-3 py-2 text-xs tracking-[0.06em] text-ink-tertiary uppercase">
           {repaired === null ? "プレビュー" : "プレビュー（補正後）"}
         </div>
-        {/* `contain` を掛けるのは、プレビューが保存時のサニタイズの部分
-            集合しか落とさないため（ADR-052）。`position: fixed` は残る
-            ので、ここが固定配置の包含ブロックにならないと本文が編集画面
-            全体を覆える。Shadow DOM が隔離するのはスタイルの適用範囲
-            だけで、ビューポート基準の配置は隔離しない。 */}
+        {/* `contain` を掛けるのは、プレビューが落とすのが保存時のサニ
+            タイズの部分集合（`on*`・`javascript:` の URL・script 相当の
+            要素）に限られるため。`position: fixed` は残るので、ここが
+            固定配置の包含ブロックにならないと本文が編集画面全体を覆える。
+            Shadow DOM が隔離するのはスタイルの適用範囲だけで、ビュー
+            ポート基準の配置は隔離しない。 */}
         <div className="min-h-[220px] [contain:layout_paint] p-4 text-sm leading-relaxed">
           <NoteBody html={analysis.preview} styleMode="default" headings={[]} />
         </div>

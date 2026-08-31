@@ -27,9 +27,11 @@ import {
   collectOrphanMedia,
   ORPHAN_MEDIA_BATCH_SIZE,
   ORPHAN_MEDIA_MIN_AGE_MS,
+  ORPHAN_MEDIA_NOTE_BUDGET,
   ORPHAN_MEDIA_OPERATION_ID,
   ORPHAN_MEDIA_SWEEP_INTERVAL_MS,
   ORPHAN_MEDIA_TASK_KIND,
+  type OrphanMediaContainer,
   readOrphanMediaSweepTurn,
 } from "../collectOrphanMedia";
 import { storeMedia } from "../storeMedia";
@@ -687,6 +689,89 @@ describe("collectOrphanMedia", () => {
     expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
       "[collectOrphanMedia] the turn failed; re-armed for the next day",
     );
+  });
+
+  it("TC-storage-258: a failed turn keeps the position it started from, so the walk costs a day rather than starting over", async () => {
+    const h = createTestHarness();
+    const now = h.clock.now();
+    const cursor = {
+      createdAt: new Date(now.getTime() - 31 * DAY_MS),
+      id: StoredFileId.create("file-7"),
+    };
+    const real = h.workerContainer.scopeUnitOfWorkProvider;
+    let opened = 0;
+
+    const view = await collectOrphanMedia({
+      container: {
+        ...h.workerContainer,
+        scopeUnitOfWorkProvider: {
+          run: async (target, fn) => {
+            opened += 1;
+            if (opened === 1) {
+              throw new Error("the listing would not read");
+            }
+            return real.run(target, fn);
+          },
+        },
+      },
+      input: { scope, cursor },
+    });
+
+    // Clearing the position instead sends every following turn back to
+    // the head, so a page that keeps failing is re-read daily and nothing
+    // behind it is ever inspected again.
+    expect(view).toEqual({ collectedCount: 0, nextCursor: cursor });
+    const row = sweepRow(h);
+    expect(row.dueAt).toEqual(
+      new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+    );
+    expect(readOrphanMediaSweepTurn(row.payload).cursor).toEqual(cursor);
+  });
+
+  it("TC-storage-259: stops at the note budget and continues from there, the turn's body reads being counted in notes rather than files", async () => {
+    const h = createTestHarness();
+    const files: string[] = [];
+    // One file per note, so the page memoizes nothing: this is the shape
+    // the batch size alone leaves unbounded, since each note costs its
+    // current body plus every retained revision.
+    for (let n = 0; n <= ORPHAN_MEDIA_NOTE_BUDGET; n += 1) {
+      const noteId = await seedNote(h, `note-${n}`, "<p>no picture here</p>");
+      const id = `file-${n}`;
+      await seedFile(h, { id, noteId, ageMs: 31 * DAY_MS });
+      files.push(id);
+    }
+    const now = h.clock.now();
+    const read: string[] = [];
+    const container: OrphanMediaContainer = {
+      ...h.workerContainer,
+      htmlProcessor: {
+        extractExternalReferences: (html) => {
+          read.push(html);
+          return h.workerContainer.htmlProcessor.extractExternalReferences(
+            html,
+          );
+        },
+      },
+    };
+
+    const first = await collectOrphanMedia({ container, input: { scope } });
+
+    expect(read).toHaveLength(ORPHAN_MEDIA_NOTE_BUDGET);
+    expect(first.collectedCount).toBe(ORPHAN_MEDIA_NOTE_BUDGET);
+    // The page was short, so only the budget can be asking for another
+    // turn — and it resumes behind the last file judged, not the last
+    // file listed.
+    expect(first.nextCursor?.id).toBe(files[ORPHAN_MEDIA_NOTE_BUDGET - 1]);
+    expect(sweepRow(h).dueAt).toEqual(now);
+
+    const second = await collectOrphanMedia({
+      container,
+      input: { scope, cursor: first.nextCursor },
+    });
+
+    expect(second.collectedCount).toBe(1);
+    expect(storedIds(h)).toEqual([]);
+    expect(second.nextCursor).toBeNull();
   });
 
   it("TC-storage-028: spares a candidate whose body it cannot read and finishes the rest of the page", async () => {

@@ -1890,3 +1890,265 @@ ADR-059 は「読めない payload で失敗させると上限で `failed` に�
 - 良い点: `failed` に駐車する経路が無くなり、`spec/adr/026` のポート 4 点セットを動かさずに済む
 - トレードオフ: 恒久的な不具合はログにしか出ず、毎日静かに失敗し続ける。掃引には観測される画面が無いので、監視はログ側の仕事になる
 - トレードオフ: 掃引行だけが「上限で駐車しない」scope task になる。他の継続要求は名指しの対象を持つので駐車が正しい振る舞いで、こちらだけが「自分を張り直せない周期 task」という別の性質を持つ
+
+---
+
+## ADR-077: `readNotePurgeTurn` は `NoteId` の不変条件を自分の門で全域化する
+
+### Context
+
+`readNotePurgeTurn` は「読めない payload には `SystemError(DataIntegrityError)` を返す」を唯一の答えとして持つ。ところが門は `typeof !== "string" || length === 0` だけで、最後の `NoteId.create` はその外にある。`NoteId.create` は trim してから空判定するので、`{ noteId: "   " }` は門を素通りして `BusinessRuleError(NOTE_INVALID_ID)` になる。scope task の payload は自分たちが書いたものなので実害は小さいが、「保存した行が壊れている」と「呼び手が禁じられたことを要求した」は別種で、後者を返すと配送側の扱い（隔離するか、呼び手へ返すか）も変わる。
+
+### Decision
+
+**門の判定を `noteId.trim().length === 0` にして、`NoteId` の不変条件と一致させる。** `NoteId.create` を `try` で包む案は採らない — 包むと「値オブジェクトが将来どんな理由で throw しても DataIntegrityError に写す」ことになり、業務不変条件の違反まで壊れた行として報告する。門で不変条件を写しておけば、`NoteId.create` に到達する値は必ず通ることが読んで分かる。
+
+代償として、`NoteId` に新しい不変条件が入ったときこの門も直す必要がある。その結合は WHY コメントとして門の直上に置き、`readNotePurgeTurn` の対応表（`""` / 空白のみ / 非文字列 / 欠落）を `subscribers.test.ts` の 1 ケースが押さえる。
+
+### Consequences
+
+- 良い点: 「payload が読めないときの答えは `corrupt()` ひとつ」が全域の主張になった
+- トレードオフ: `NoteId` の不変条件が 2 か所に書かれる。片方は値オブジェクトの正典、もう片方はこの門の写しで、テストが両者の一致を見る
+
+---
+
+## ADR-078: `filterCss` は元に無い終端子を書き戻さない — サニタイズは不動点である
+
+### Context
+
+`HtmlProcessor.process` の出力は入力に戻ってくる。`applyTextNodeEdits` は自動保存のたびに保存済みの本文をもう一度通し、`restoreNoteRevision` と `listNoteRevisions` も同じことをする。つまり `process(process(x)) === process(x)` は暗黙の前提だったが、どこにも書かれておらず、`filterCss` がそれを破っていた。
+
+`filterCss` は分類できた文を `${text};` で押し、ブロックには常に `}` を足していた。終端子が入力に無くても足す。ところが**終端子が見つからないのは、走査が閉じていない文字列か閉じていない `(` に呑まれたときだけ**なので、足した `;` はその構文の内側に落ちる。次の走査はそれを終端子として見ず、また 1 つ足す。`</style>` は raw text を切るので `<style>.a{content:"</style>…` という入力は現実に作れ、ビジュアルモードの自動保存が回るあいだ本文が保存のたびに伸び続ける。増分は `removed` にも画面にも出ない。
+
+### Decision
+
+**終端子は入力にあったものだけを書き戻す。** `pushStatement` は「その文が実際に `;`（または閉じ側の `}`）で終わっていたか」を受け取り、終わっていなければ何も足さずにそのまま押す。ブロックの `}` も `findBlockEnd` が実際に見つけたときだけ書き戻す。停止位置が見つかったということは、そこまでに開いたままの文字列も括弧も無かったということなので、書き戻した終端子が次の走査で呑まれることはない。これで各文の出力が入力の部分文字列そのものになり、不動点が構造的に成立する。
+
+「閉じていない文字列だけを特例にする」案は採らない。呑まれる構文は文字列・括弧・（ブロックでは）波括弧の 3 つあり、特例を数えるより「無かったものは足さない」1 つの規則のほうが短い。`css.ts` 冒頭が既に「壊れた CSS は拒否せず carried through する」と宣言しており、その宣言を文字どおりにしたことになる。
+
+不動点そのものは `htmlProcessor.test.ts` の表全体を 2 回通す形で押さえる。個別のパターンを潰すのではなく、**性質**として持つためである。
+
+### Consequences
+
+- 良い点: 再サニタイズで本文が伸びる経路が閉じる。`applyTextNodeEdits` / `restoreNoteRevision` / `listNoteRevisions` のどれも本文を変えない
+- 良い点: サニタイズ表に行を足すたび、不動点のケースも自動で 1 つ増える
+- トレードオフ: **`;` の正規化を失う。** `style="color:red"` はこれまで `color:red;` になっていたが、そのまま残る。ブロックの閉じ波括弧も、入力に無ければ補われない（`<style>.a{color:red</style>` は閉じないまま保存される）。どちらもブラウザは EOF で閉じるので描画は変わらず、「取り込んだ HTML をそのまま保つ」（[ADR 006](../../spec/adr/006-html-content-model.md)）の側に寄る
+- 残件: `spec/adr/013` は不動点について何も書いていない。再サニタイズが 3 経路あることを踏まえると、規則の正典に 1 行あってよい
+
+---
+
+## ADR-079: `ALLOWED_SVG_ATTRIBUTES` から `xmlns` を落とし、空 prefix を「prefix 無し」と読む
+
+### Context
+
+parse5 は foreign content の裸の `xmlns` を `{ prefix: "", name: "xmlns" }` として持つ。`attributeName` は `prefix === undefined` でしか prefix 無しと判定しないので、この属性の名前は `":xmlns"` になっていた。帰結が 2 つある。許可リストの `"xmlns"` は決して一致せず**到達不能**（ADR-011 が「`HtmlProcessor` は `xmlns` を落とす」と決めて `asStandaloneSvg` に復元させているのは、この事故の上に乗って正しく動いていた）。そして AC-3 の除去一覧に `:xmlns` という存在しない属性名が、インライン `<svg>` を含む本文を保存するたび出ていた。
+
+### Decision
+
+**落とす側で確定する。** `ALLOWED_SVG_ATTRIBUTES` から `"xmlns"` を削り、`attributeName` は空 prefix を prefix 無しとして読む。
+
+- 落とす側が正しいのは ADR 011 が既に決めている。`spec/adr/013` の属性表に名前空間宣言の行は無く、`spec/usecases/storage.md` の `storeMedia` 手順 4 も「`process` は XML 名前空間の宣言を落とす」を前提に `asStandaloneSvg` の復元を書いている。許可側へ倒すと、この 2 つと ADR-011 の選択（案 2）を同時にひっくり返すことになる
+- `attributeName` の修正は許可判定と報告名の両方に効く。`:xmlns` のまま `xmlns` だけ許可リストから消しても、利用者に見せる名前が壊れたままになる
+
+`xmlns` を報告しない案（宣言は装飾ではないので黙って落とす）は採らない。AC-3 は「除去された要素・属性の一覧」であり、除去したものを隠す例外を 1 つ作ると、次の例外の線引きが要る。
+
+### Consequences
+
+- 良い点: 許可リストが「書いてあるものは到達する」状態に戻る。到達不能な行が 1 つ減る
+- 良い点: 一覧に出る名前が実在する属性名になる（`xmlns` / `xmlns:xlink`）
+- 良い点: `xml:space` のように本当に prefix を持つ属性の名前は変わらない
+- トレードオフ: インライン `<svg>` を貼るたび除去が 1〜2 行出る。装飾は失われない（宣言は本文断片では不活性）が、利用者から見れば「何も壊れていないのに除去された」と読める行である
+
+
+---
+
+## ADR-080: 孤児掃引の 1 turn は「読む行数」と「読むノート数」の 2 つで有界にし、失敗した turn は位置を捨てない
+
+### Context
+
+ADR-075 が参照元に保持中の版を足したあと、1 turn の CPU の根拠が実態から外れた。`ORPHAN_MEDIA_BATCH_SIZE`（100）が縛るのは**読む行数**だけで、費用がかかるのは本文解析であり、その回数は**ノート数**に従う。ADR-075 はノート単位のメモ化でこれを抑えたつもりだったが、メモ化は上限ではない — ページが 100 件のファイル 100 ノートに散れば何も再利用されず、1 turn の解析は最大 2,100 本（`NoteHtml` は 800,000 バイトまで）になる。走査順は `createdAt` なので、複数ノートを並行して編集している scope ではページは素直に散る。
+
+そのうえ ADR-076 の「失敗したら翌日へ張り直す」は payload の位置を**捨てて**張り直していた。恒久的に失敗するページ（毒された本文、読めない行）が走査の手前にあると、毎日そのページを先頭から読み直して落ち、その後ろの孤児に永久に到達しない。ADR-076 が避けたはずの「回収が止まる」がカーソル側で再発していた。
+
+### Decision
+
+- **`ORPHAN_MEDIA_NOTE_BUDGET = 5` を足す。** 1 turn が本文を読むノート数の上限で、ノートあたり最大 `RETENTION + 1` 本の解析なので 1 turn の解析は 105 本に収まる。版を数える前の「1 候補につき 1 解析」（100 本）と同じ桁で、`ORPHAN_MEDIA_BATCH_SIZE` が選ばれた根拠に揃う。読みの回数は**試行**で数える（失敗した読みも 1 と数える）ので、同じノートを何度も読み直す毒行でも上限が効く
+- **予算で打ち切った turn も継続を張る。** 位置は「判定し終えた最後の行」であって「ページの最後の行」ではない。位置は必ず前進するので、打ち切りは取りこぼしではなく後回しになる。継続の条件は「満ページ」から「満ページ **または** 予算切れ」へ広がる
+- **失敗した turn は開始位置を残して翌日へ張り直す。** `nextCursor` にも同じ位置を返す。周期的な全走査なので、位置を保っても短いページを引いた時点で先頭へ戻る機会は残る
+
+### Consequences
+
+- 良い点: 1 turn の CPU が「行数 × ノート数」の 2 つで有界になり、`spec/platform/index.md`「実行予算と分割単位」の 100 files（イベント生成量が根拠）と CPU の根拠が別々に立つ
+- 良い点: 恒久的に失敗するページの後ろへ到達できる。失敗が費やすのは 1 日であって走査位置ではない
+- トレードオフ: ノートに散ったページは 1 turn で読み切れず、turn 数が増える。継続は直後（`dueAt: now`）に張るので日数は増えない
+- トレードオフ: 予算は定数で、`limit` に比例しない。`limit` を小さくした呼び出しでは予算に届かないだけなので害はない
+- 併せて `stored_files_purpose_created_idx` を `(purpose, created_at, id)` にした。ADR-059 のキーセットは `(created_at, id)` 順で `created_at = ? AND id > ?` を継続条件にするので、`id` を持たない index では同時刻の行の tie-break が一時 B-tree に落ちる
+- 追随が要る: `spec/database/index.md` の索引一覧（`stored_files_purpose_created_idx` の列）と `spec/testcases/storage/collectOrphanMedia.md`（予算で打ち切る行、失敗 turn が位置を保つ行 = TC-storage-259）、`spec/inventory/test.md` の TC-storage 行。本ユニットは `spec/usecases/storage.md` 以外の spec を触れないため未反映
+
+---
+
+## ADR-081: ゴミ箱のノートへのメディアのアップロードは `NoteIsTrashed` で拒む
+
+### Context
+
+`storeMedia` の `resolveEditableNote` は route の `purging` / tombstone と `canEdit` は見るが `lifecycle` を見ていなかった。`NoteAccessPolicy.evaluate` は**所有者本人**の trashed ノートに `canEdit: true` を返す（trash の壁は所有者以外の経路にしかない）ので、ゴミ箱のノートへのアップロードが成功して `StoredFile` が 1 行増える。一方で本文側は `application/note/editing.ts:ensureNotTrashed` が `BusinessRuleError(NoteIsTrashed)` を返すため、保管したメディアを本文へ入れる手段が無い。容量だけ占めたまま、完全削除か 30 日後の孤児回収まで残る。編集フローの前半（保管）と後半（本文）で lifecycle の扱いが割れていた。
+
+`NOTE_NOT_FOUND` に畳む案もあったが、ゴミ箱のノートの存在は所有者自身には見えている（ゴミ箱の一覧に並ぶ）ので、隠す相手がいない。
+
+### Decision
+
+`resolveEditableNote` が `canEdit` の判定の直後に `ensureNotTrashed` を通す。本文側と**同じ関数**を呼ぶので、判定が 2 つに分かれて drift することがない。返り値の型も `ActiveNote` に狭まる。
+
+拒否の順序は「不在・権限なし（`NOTE_NOT_FOUND`）→ ゴミ箱（`NoteIsTrashed`）」で、`note/editing.ts` の固定順と同じである。
+
+### Consequences
+
+- 良い点: 編集フローの前半と後半が同じ lifecycle の門を通る。入れられない本文のためにメディアが容量を食う経路が閉じる
+- 良い点: 画面には本文の保存と同じエラーが出るので、利用者に見える説明が 1 つで済む
+- トレードオフ: Storage のユースケースが Note のエラーコードを投げる。`accessControl` を既に借りている経路なので依存は増えないが、`storeMedia` のエラー表に Note 由来の行が 1 つ増える
+- 追随済み: `spec/usecases/storage.md#storeMedia` の手順 1 とエラーケース表
+- 追随が要る: `spec/testcases/storage/storeMedia.md`（TC-storage-260）と `spec/inventory/test.md`
+
+---
+
+## ADR-082: 編集島の「版を進めうる往復」は判別ユニオン 1 つで表し、入口を 1 か所に絞る
+
+### Context
+
+P-12 の島は版を握る唯一の主体だが、版を進めうる往復は 3 つの pending フラグに分かれていた — `isSaving`（自動保存・明示保存の transition）、`isBusy`（モード切替・破棄・版の復元・競合の解決・メディアの保管）、`isSubmitting`（`useActionState`）。自動保存の停止条件は `isSaving` しか見ておらず、依存配列にも残り 2 つが無い。
+
+そのため次が同時に走る。
+
+1. **破棄**: 「破棄」は `dirty` のときだけ押せるので、押した時点で自動保存タイマーは必ず生きている。ADR-071 で破棄は `readNoteEditStateFn` の往復になったので、この往復が残りタイマーより長いと**破棄対象の本文がサーバーへ書き込まれ**、戻ってきた再シードが「いま保存された内容」を正本として載せ直す。画面上も破棄は起きない
+2. **明示保存**: `commit(true)` の `setStatus({kind:"saving"})` で effect が張り直され、`dirty` はまだ下りていないのでタイマーが 1 本増える。往復が 1.5 秒を超えると同じ `versionRef.current` で 2 本目が飛び、後着が偽の競合になる
+3. **版の復元**: `restore` は `dirty` を要件にしないので未保存でも押せる。2 往復のあいだに自動保存が入ると、復元前の内容が復元後の版の上に書かれる
+
+ガードを 3 つ並べる直し方もあるが、「どれとどれが同時に走ってよいか」が型に現れないままなので、往復を 1 つ足すたびに同じ書き落としが起こりうる。
+
+### Decision
+
+版を進めうる往復を判別ユニオン `EditorActivity`（`idle` / `saving` / `reseeding` / `restoring`）1 つで表し、`runExclusive` を唯一の入口にする。`idle` からしか入れず、入れなかった側は何もしない（`null` を返す）。占有の判定は同じ tick で決まる必要があるので判定の正本は ref に置き、state 側は表示と effect の依存のために持つ。
+
+- 自動保存のガードと依存配列は `busy`（= `activity.kind !== "idle" || isSideBusy || isSubmitting`）1 つで置き換える。往復の開始で保留中のタイマーが落ち、落ちる前に発火しても `runExclusive` が占有を取れずに空振りする（二重の歯止め）
+- `busy` の宣言は自動保存 effect より前へ移す（`useActionState` ごと繰り上げる）
+- メディアの保管と版一覧の取得は版を進めないので、別の `useTransition`（`isSideBusy`）に残して並行を許す
+- 「保存して切り替える」は往復 2 つなので、占有を 1 つずつ順に取る（`await` で直列に並べる）
+
+### Consequences
+
+- 良い点: TC-10 の破棄が遅い回線でも成立する。破棄・明示保存・版の復元・競合の解決のどれと自動保存の組み合わせでも、版が枝分かれしない
+- 良い点: 往復を足すときはユニオンに 1 行足すことになり、ガードの書き落としが起こらない
+- トレードオフ: 往復中に押された保存は静かに落ちる（`null`）。ボタンは `busy` で無効なので通常は到達しないが、到達しても「何も起きない」だけで、走っている往復が同じ内容を保存している
+- トレードオフ: `status.kind === "saving"` と `activity.kind === "saving"` の 2 つが残る。前者は P-12 の状態表（表示）、後者は占有（進行）で、`commit` は必ず後者の中から呼ばれるため食い違わない
+
+---
+
+## ADR-083: ビジュアルモードの「いま面が持っている本文」は経路表を `baseline` へ当て直して組む
+
+### Context
+
+ビジュアルモードの面は本文 state を動かさない（動くのは経路表 `visualCurrent` だけ）。そのため `body` をそのまま「面が持っている本文」として使う経路が 3 つとも壊れていた。
+
+- **退避**（ED-08）: `writeDraft` が書くのは編集前の本文そのもので、`draft.html !== savedBody` も成立しないため復元の提案すら出ない。再試行を押さずに画面を離れると編集は消える
+- **ダウンロード**（権限喪失）と**競合の「自分の内容で上書きする」**: どちらも編集を 1 文字も含まない
+
+逆向きの穴もある。`commit` のビジュアル分岐は `diffTextNodeEdits` しか送らないのに、直後の `settleSaved` を無条件に呼ぶので、`body` が経路表と無関係に動いていても「保存済み」になる。`body` が面の外から動く経路は 2 つ（退避の復元、競合の上書き）あり、どちらも**利用者が明示的に選んだ内容が 1 度もサーバーへ送られないまま無言で消える**。
+
+### Decision
+
+`composeBody()` を「いま面が持っている本文」の唯一の定義にする。ビジュアルモードでは `composeEditedHtml(baseline, visualCurrent)` — 面と同じ `baseline` を同じ走査（`collectEditableTextNodes`）で数えて経路表を当て直す — を返す。退避・ダウンロード・競合の上書き・`commit` の全部がこれを読む。
+
+`commit` のビジュアル分岐は `body === savedBody`（面の外から本文が入っていない）を条件に付ける。
+
+- 満たすとき: これまでどおり経路単位で送り、確定値は `body` のまま
+- 満たさないとき: 経路では表せないので `updateNoteBody` で丸ごと送り、そのあと `readNoteEditStateFn` で面ごと正本を載せ直す（送った内容とサーバーの木が噛み合わないままだと、次の編集が全件 `contentChanged` に落ちる）
+
+サニタイズ通知（`removed`）と skip 通知（`skipped`）は `commit` の最後で必ず両方置き直す。どちらも直近の保存結果を指すので、本文を送らなかった保存（タイトルだけ）でも前回の結果を残さない。載せ直しの枝より後に置くのは、`replaceBody` が通知を畳むためである。
+
+### Consequences
+
+- 良い点: ED-08 の「保存済み / 未保存」が実態と一致する。退避の復元と競合の上書きは、ビジュアルモードでも必ずサーバーへ届く
+- 良い点: TC-23（退避と復元の提案）がビジュアルモードでも成立する
+- トレードオフ: 面の外から本文が入ったあとの最初の保存だけ 2 往復（保存 + 引き直し）になる。到達するのは退避の復元と競合の上書きの直後だけ
+- トレードオフ: `composeEditedHtml` は `template.innerHTML` の往復なので、属性の引用符など直列化の揺れが入りうる。`dirty` の判定には使わない（判定は `body` と `savedBody` の比較のまま）ので、揺れが自動保存を誘発することはない
+
+## ADR-084: scope cleanup の `note` 成分は「列挙が尽きた」ではなく「止まった purge を持ち回れなくなった」で ack する
+
+### Status
+
+Accepted
+
+### Context
+
+`deleteNotesForOwner` は `note` 障壁の唯一の ack 元である。ack の条件は `listByOwner` の総件数を今回消せた件数と比べるだけで、`spec/usecases/note.md#deleteNotesForOwner` の「全 purge operation が tombstone へ到達したことを確認して ack する」と食い違っていた。そこへ 2 系統の流入がある。
+
+1. `purgeNote.resumeInternal` が `beginPurge` の `NotFoundError` と `ConflictError` を同じ `null`（＝このコマンドにやることは無い）に畳んでいた。`ConflictError` は「別の operation が `purging` の route を握っている」「作成が `reserved` のまま」であって、ノートが消えたことを何も意味しない。呼び出し側は「例外を投げずに返った」を purge 済みと数えるので、本文ごと残ったノートを削除済みと数えて ack していた。
+2. `purgeNote` は local delete の commit 後に停止すると route を `purging` のまま残す。その時点でノート行は消えているので次の turn の `listByOwner` には現れず、`resolve` は `purging` を隠し、`purging` 行を列挙する手段は無い。つまり止まった purge は**どの列挙からも到達できない**まま、次の turn が「列挙が空」を根拠に ack してしまう。閉じた barrier は後続の cleanup command を `assertOwner` で拒むので、この ack は取り消せない。
+
+### Decision
+
+- `resumeInternal` は `NotFoundError`（route 行が無い＝ノートも無い）だけを `null` に畳み、`ConflictError` は送出する。
+- `deleteNotesForOwner` は、purge が失敗したノートについて `NoteRouteStore.resolve` を 1 度引き、`null`（＝どの列挙からも見えない）なら `{ noteId, expectedVersion }` を継続要求の payload に載せて次の turn へ持ち回る。次の turn はページと持ち回り分を併せて駆動する。
+- ack は「ページの列挙が尽き（`page.count <= ページ由来の purge 済み件数`）かつ持ち回る対象が 0 件」の turn だけが返す。
+- 「対象があるのに 1 件も消せなかった」＝ backoff の枝から、**その turn で新たに持ち回る対象が生まれた場合**を除く。`backoffOrSchedule` は既存行の payload を書き換えない契約なので、そこへ落とすと新しい ID がどこにも残らないためである。1 つのノートが「新たに持ち回る対象」になるのは高々 1 度なので、この例外は継続を無限には増やさない。
+
+持ち回る版を payload に載せるのは、route が閉じているあいだノートを編集できる主体が居らず、止まった turn が読んだ版がそのまま有効だからである。local delete が commit 済みなら再開時に行が無く、版は参照されない。
+
+### Alternatives
+
+- **ポートに「`purging` の route を列挙する」を足す**: 台帳をアダプター側に置けるが、グローバル route store に scope 横断の走査を持ち込むことになり、目標プラットフォーム（shard 化した route）で最も高くつく操作を新設する。継続 payload は既にこの turn 専用の器としてあるので採らなかった。
+- **spec を実装に寄せ、「列挙が尽きたら ack する / 中断した purge は回収しない」と書く**: AC-9 / AC-10（完全削除で公開・共有 URL から消える）と退会のデータ消去そのものが破れるため採れない。
+
+### Consequences
+
+- 良い点: 止まった purge が残るあいだ `note` は ack されず、退会は `running` のまま可視化される。回復不能な「ack 済みだがノートは残っている」状態にならない。
+- 良い点: 他人の operation が握る route が「削除済み」に化けない。`emptyTrash` はこれを飛ばして続け、`purgeExpiredTrash` は記録して次の turn へ回す。
+- トレードオフ: 継続 payload が scope のノート件数と同じオーダーまで伸びうる（1 turn で増えるのは失敗した件数だけ、`continued` の turn 数は総ノート数で頭打ち）。
+- トレードオフ: `backoffOrSchedule` が既存行の payload を保つため、backoff の枝で書こうとした持ち回りは既存行の持つ集合の部分集合であることに依存している。この不変条件が崩れるのは backoff の枝に「新たに持ち回る対象」を通したときだけで、上の例外がそれを禁じている。
+
+---
+
+## ADR-085: ゴミ箱の判定材料は `getNote` の `trashedAt` に載せ、画面の入口で終端させる
+
+### Context
+
+`NoteAccessPolicy` の所有者経路はゴミ箱の壁より手前で `canEdit: true` / `canDelete: true` を返す（ゴミ箱の壁は他人にしかない）。`getNote` にもゴミ箱の除外は無く、出力 DTO はゴミ箱かどうかを一切語らなかった。結果、削除したノートの `/notes/:noteId` を開き直すと通常どおり描かれ、タイトルのインライン編集も「削除...」も出た。編集画面（P-12）に至っては書けてしまい、最初の自動保存が `NOTE_IS_TRASHED` で落ちて初めて権限喪失の表示に相乗りしていた。`spec/pages/index.md#P-11` の状態表は「見つかりません | 不在・**削除済み**・権限なし」と定めており、その状態へ到達する経路が無かった。
+
+案は 2 つ。`getNote` をゴミ箱で `NOTE_NOT_FOUND` に畳む、あるいは判定材料を DTO に足して画面が終端させる。
+
+### Decision
+
+`NoteDetailView` に `trashedAt: Date | null` を足し、`NoteDetail` / `NoteEditor` の入口が非 `null` なら `NotFoundState` を返す。
+
+`getNote` 自体は畳まない。所有者がゴミ箱のノートを読めること（`spec/testcases/note/getNote.md`「ゴミ箱のノート（所有者） — 取得できる」）は既に決まっており、ゴミ箱一覧・完全削除・復元がその読み取りの上に乗る。畳むと、ゴミ箱を扱う画面が別の読み取りを要求することになる。「読めるが、この 2 画面では終端状態」という線引きは画面側の判断であり、DTO はその判断に要る事実だけを運ぶ。
+
+権限で代用はできない。所有者のゴミ箱のノートでは 3 つの `permissions` がすべて真のままだからで、これはテストにも書いてある。
+
+### Consequences
+
+- 良い点: P-11 / P-12 が spec の定める「削除済み」へ到達する。ゴミ箱のノートで書けてしまう窓が閉じる
+- 良い点: `getNote` の契約は動かないので、ゴミ箱一覧や復元の経路は影響を受けない
+- トレードオフ: 「読めるが開けない」という判断が画面側に 2 か所ある。どちらも入口 1 行で、判断の根拠（`trashedAt`）は 1 つ
+- トレードオフ: P-12 の状態表にゴミ箱用の行は無いままで、そこは「見つかりません」に寄せている（P-11 の表がその文言を持つ）
+
+---
+
+## ADR-086: ゴミ箱の往復の版は応答が運ぶ — `TrashedNoteView` / `RestoredNoteView` に `version` を足す
+
+### Context
+
+`TrashedNoteView` は `noteId` / `trashedAt` / `purgeAfter` しか返さなかったので、詳細も一覧も削除のたびに `readNoteEditStateFn`（＝ `getNote` 一式）をもう 1 往復投げて「元に戻す」に要る版を取り直していた。`RestoredNoteView` も版を返さないため、詳細画面は `versionRef.current = restoreVersion + 1` と実装の内側を推測していた。
+
+`restoreNote` は今日たしかに `save` を 1 回しか行わないが、それは DTO が保証していることではない。`trashNote` の側は既に反例を持っており、変換ジョブを強制終端した turn は同じ transaction で `markConversionFailed` も書くので版が 2 つ進む。
+
+### Decision
+
+両方の DTO に `version` を足し、**ドメインが進めた版をそのまま返す**（アプリケーション層で数字を作らない）。画面は追加の読み取りも推測もやめる。
+
+`RestoredNoteRevisionView` が同じ理由で既に `version` を返しており、ゴミ箱の 2 つだけが非対称だった。既にゴミ箱にあるノートを再度削除する idempotent な経路では、書き込みが無いので現在の版をそのまま返す。
+
+### Consequences
+
+- 良い点: 削除 1 回あたりの往復が 2 から 1 に減る。取り直しの失敗で「元に戻す」が出せない枝も消えた（`TrashedState` の `restoreVersion` が `number | null` から `number` になった）
+- 良い点: 復元後もタイトルの自動保存が正しい版で続く。`restoreNote` の保存回数が増えても画面は壊れない
+- トレードオフ: DTO が 1 フィールドずつ広がる。運ぶのは `number` 1 つで、`spec/usecases/note.md` の該当節に理由を書いた

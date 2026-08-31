@@ -7,6 +7,7 @@ import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import type { TextNodeEdit } from "@repo/core/domain/note/ports/htmlProcessor";
 import { describe, expect, it } from "vitest";
 import { applyTextNodeEdits } from "../applyTextNodeEdits";
+import { trashNote } from "../trashNote";
 import { updateNoteBody } from "../updateNoteBody";
 import {
   createPersonalNote,
@@ -65,6 +66,12 @@ const apply = (
       expectedVersion,
     },
     ...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+  });
+
+const trash = (h: TestHarness, noteId: string, expectedVersion: number) =>
+  trashNote({
+    container: h.container,
+    input: { noteId, userId: OWNER, expectedVersion, excludingJobId: null },
   });
 
 describe("applyTextNodeEdits", () => {
@@ -311,6 +318,27 @@ describe("applyTextNodeEdits", () => {
     ).rejects.toSatisfy(
       (error) =>
         isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE",
+    );
+    expect(readyBody(storedNote(h, noteId))).toContain("alpha");
+  });
+
+  it("TC-note-784: refuses a trashed note with NoteIsTrashed", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    const version = await seedBody(h, noteId);
+    await trash(h, noteId, version);
+
+    await expect(
+      apply(
+        h,
+        noteId,
+        [{ path: "0.0", expected: "alpha", text: "ALPHA" }],
+        version + 1,
+      ),
+    ).rejects.toSatisfy(
+      (error) =>
+        isBusinessRuleError(error) &&
+        error.code === NoteErrorCode.NoteIsTrashed,
     );
     expect(readyBody(storedNote(h, noteId))).toContain("alpha");
   });

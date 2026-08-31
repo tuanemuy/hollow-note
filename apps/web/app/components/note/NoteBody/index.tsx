@@ -16,9 +16,20 @@ import { useEffect, useRef, useState } from "react";
  *
  * ホストは絶対配置の包含ブロック（relative）にする — 本文の
  * `position: absolute` の基準を本文の内側に閉じるのは描画側の責務。
- * Shadow DOM が隔離するのはスタイルであって権限ではない: 本文の安全は
- * サニタイズ（後続スライス）と CSP が担い、本スライスで届く本文は
- * 白紙由来のみ。
+ *
+ * Shadow DOM が隔離するのはスタイルであって権限ではない。ここへ届く
+ * 本文は 2 種類ある。
+ *
+ * - 保存済みの本文 — `HtmlProcessor`（`adapters/html/htmlProcessor.ts`）の
+ *   サニタイズを通っている（[ADR 013](spec/adr/013-html-sanitization-policy.md)）
+ * - P-12 の HTML モードが出す**未保存**の本文 — `NoteEditor/surfaces.tsx` の
+ *   `scrubForPreview` しか通っていない。これは保存時のサニタイズの
+ *   **部分集合**で、許可リスト外の要素・属性・CSS 宣言は落ちない
+ *
+ * どちらもクライアントでは `shadowRoot.innerHTML` から入るので、本文の
+ * `<script>` はそこで実行されない。したがってここで効くのは属性
+ * ハンドラー（`on*`）と `javascript:` URL であり、それを落とす責任は
+ * 渡す側（上の 2 経路）にある。CSP はその外側の防波堤として効く。
  */
 
 // styleMode "default" の既定スタイル。GitHub 構造 × Apple Calm

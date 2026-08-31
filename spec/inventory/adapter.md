@@ -272,7 +272,7 @@
 | ADP-tag-009 | `TagRepository.deleteUnusedInScope` | `spec/domains/tag.md#ポート` | 未使用・unlocked Tag を原子的に有界削除し ID を返す |
 | ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する |
 | ADP-tag-011 | `TagAssignmentRepository.findByTagAndNote` | `spec/domains/tag.md#ポート` | tag・note の assignment を取得する |
-| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を列挙する |
+| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を `AssignmentId` 昇順で列挙する |
 | ADP-tag-013 | `TagAssignmentRepository.listByNotes` | `spec/domains/tag.md#ポート` | 複数ノートの assignment を列挙する |
 | ADP-tag-014 | `TagAssignmentRepository.listByTag` | `spec/domains/tag.md#ポート` | noteId 昇順の keyset page を最大 limit 件返す |
 | ADP-tag-015 | `TagAssignmentRepository.countByNote` | `spec/domains/tag.md#ポート` | ノートの assignment 数を返す |

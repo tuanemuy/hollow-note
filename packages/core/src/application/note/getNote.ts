@@ -1,3 +1,4 @@
+import { Note } from "@repo/core/domain/note/note";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { NotFoundError } from "../errors";
 import type { ServiceArgs } from "../types";
@@ -65,6 +66,7 @@ export async function getNote({
     noteId: note.id,
     title: note.title.value,
     version: note.version,
+    trashedAt: Note.isTrashed(note) ? note.trashedAt : null,
     content: toNoteContentView(note),
     styleMode: note.styleMode,
     visibility: note.visibility.status,

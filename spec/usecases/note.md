@@ -113,6 +113,7 @@ ExportTicket = {
 | `noteId` | `string` |
 | `title` | `string` |
 | `version` | `number` |
+| `trashedAt` | `Date \| null` |
 | `content` | `{ status: "processing" \| "awaitingIntegration" \| "failed" \| "ready"; html: string \| null; failureReason: string \| null }` |
 | `styleMode` | `"default" \| "preserve"` |
 | `visibility` | `"private" \| "unlisted" \| "public"` |
@@ -127,6 +128,8 @@ ExportTicket = {
 | `createdAt`, `updatedAt` | `Date` |
 
 `version` は編集画面が握る OCC トークンである。`updateNoteBody` / `applyTextNodeEdits` / `renameNote` / `changeNoteStyleMode` / `restoreNoteRevision` / `trashNote` / `restoreNote` はいずれも `expectedVersion` を要求するので、その最初の値を与える読み取りが要る。
+
+`trashedAt` はゴミ箱にあるノートで非 `null`、生きているノートで `null` になる。**ゴミ箱は不在に畳まない** — 所有者（およびワークスペースの editor 以上）は自分のゴミ箱のノートを読めるので、`NOTE_NOT_FOUND` になるのは他人から見たときだけであり、詳細（P-11）と編集（P-12）はこのフィールドでしか「削除済み」を判別できない。両画面はこれが非 `null` なら「見つかりません（削除済み）」を出す（[pages/index.md](../pages/index.md) の P-11 の状態表）。射影に無ければ、ゴミ箱のノートが通常どおり描かれ、保存だけが `NOTE_IS_TRASHED` で落ちる。
 
 ```
 ReferenceReport = {
@@ -766,7 +769,9 @@ operation の終端はしたがって次の 5 通りだけである。
 
 ### 出力DTO
 
-`noteId`, `trashedAt`, `purgeAfter`
+`noteId`, `version`, `trashedAt`, `purgeAfter`
+
+`version` は移動後の版で、画面の「元に戻す」がそのまま `restoreNote` の `expectedVersion` に使う。手順 3 の本文の回復が同じ transaction でもう 1 つ版を進めることがあるため、呼び出し側が送った版から数えて当てることはできない。既にゴミ箱にある場合（書き込みなし）は現在の版をそのまま返す。
 
 ### 処理フロー
 
@@ -802,7 +807,9 @@ operation の終端はしたがって次の 5 通りだけである。
 
 ### 出力DTO
 
-`noteId`, `visibility`
+`noteId`, `version`, `visibility`
+
+`version` は復元後の版である。詳細画面は「元に戻す」のあともタイトルの自動保存を続けるので、次の保存に使う版を応答が与える。`restoreNoteRevision` と同じ理由で、ユースケースが何回保存するかは呼び出し側の知識にしない。
 
 ### 処理フロー
 
@@ -923,7 +930,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 | --- | --- |
 | 対象が 1 件以上あり、1 件も削除できなかった | task を backoff させる（直後の再予定はしない） |
 | 満ページだった、または一部が削除できずに残った | task を直後へ再予定する |
-| 期限の来た対象が無かった | `findNextPurgeDeadline` の返す期限へ task を移し、ゴミ箱が空（`null`）のときだけ task を完了する |
+| 満ページでなく、期限の来た対象が残らなかった（0 件だった場合を含む） | `findNextPurgeDeadline` の返す期限へ task を移し、ゴミ箱が空（`null`）のときだけ task を完了する |
 
 `limit` の既定100は1 Alarm turnのCPUとevent fan-outを有界にする。**進捗ゼロだけを backoff に落とす**のは、恒久的に失敗する 1 件で直後の再予定が spin し続けるのを避けるためで、一部でも消えた turn は残りを直後に片づける。逆に、削除を拒まれたノートを残したまま行を次の期限へ動かすと、そのノートは次に誰かがゴミ箱へ何かを捨てるまで放置される。
 
@@ -955,7 +962,9 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず1件ずつ`purgeNote({ kind: "scopeCleanup", noteId, expectedVersion, scope, deletionOperationId })`で内部purge operationを開始する。各Noteはrouteを`purging`にしてからlocal削除・public remove・30日tombstoneへ進み、1件の失敗はoperation recoveryへ残して次へ進む
 3. タグ付与・保管ファイル・バックアップ記録・読み取りモデル・件数の後始末は `note.purged` の購読者（`purgeNote` の手順 4 と同じ受け手）に委ねる
 4. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。`batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued { scope, deletionOperationId }` を 1 件だけ**、そのバッチの最後の削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
-5. ただし**対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まない**。現在taskをbackoffし、上限到達時は `failed` + global運用通知とする。恒久的に失敗する 1 件が新しい継続を無限に増やすのを防ぐ。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）
+5. ただし**対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まない**。現在taskをbackoffし、上限到達時は `failed` + global運用通知とする。恒久的に失敗する 1 件が新しい継続を無限に増やすのを防ぐ。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）。**その turn で新たに持ち回る対象が生まれた場合もこれに当たらない**（手順 6） — backoff は既存行の payload を書き換えないため、backoff に落とすとその ID がどこにも残らない。1 つのノートが「新たに持ち回る対象」になるのは高々 1 度なので、ここで継続を積んでも無限には増えない
+6. **route を閉じたあとに止まった purge は、そのノート ID を継続要求の payload に載せて次の turn へ持ち回る**。`beginPurge` が通った時点でノートはどの列挙からも消える — `NoteRouteStore.resolve` は `purging` の route を隠し、`purging` の行を列挙する手段は無く、local delete が commit していれば `listByOwner` にも現れない。持ち回らなければ次の turn は「列挙が空 ＝ scope が空」と読み、公開行が残ったままのノートを置き去りにして `note` 成分を ack してしまう。次の turn は持ち回った ID を今回のページと併せて駆動し、route が閉じたままのノートは版が動きようがないので、止まった turn が使った expected Note version をそのまま再利用する
+7. **`note` 成分の ack は、ページの列挙が尽き、かつ持ち回る対象が 1 件も残らなかった turn だけが返す**。`purgeNote` の呼び出しが例外を投げずに返ることが「そのノートの purge が tombstone に到達した（あるいは既にしていた）」ことの証明であり、他人の operation が握る `purging` route は証明にならないので、`purgeNote` はそれを完全削除済みと畳まず競合として送出する。持ち回る対象が残るあいだ ack が出ないため、退会は `running` のまま可視化される — 閉じた barrier は後続の cleanup command を `assertOwner` で拒むので、ack は取り消せない
 
 **カーソルは持たない**。対象は処理するそばから消えるため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。重複配送で 2 系列が並走しても、両方が残りを読んで消し、対象が 0 件になった系列から順に止まる。
 
@@ -967,7 +976,7 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は 1 バッチ `batchSize` 件（既定 100）に上限があり、受け手はすべて冪等に設計されている。
 
-冪等性: `listByOwner`に現れないが`purging`のoperationが未完了なNoteもあるため、scope cleanupの完了ackは開始件数ではなく全purge operationがtombstoneへ到達したことを確認して返す。同じoperation IDの再実行は保存済みphaseから再開する。
+冪等性: `listByOwner`に現れないが`purging`のoperationが未完了なNoteもあるため、scope cleanupの完了ackは開始件数ではなく全purge operationがtombstoneへ到達したことを確認して返す（手順 6・7）。同じoperation IDの再実行は保存済みphaseから再開する。
 
 ### エラーケース
 

@@ -63,5 +63,9 @@ export async function restoreNote({
     return next.entity;
   });
 
-  return { noteId, visibility: restored.visibility.status };
+  return {
+    noteId,
+    version: restored.version,
+    visibility: restored.visibility.status,
+  };
 }

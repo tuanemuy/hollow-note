@@ -237,6 +237,26 @@ describe("deleteAssignmentsForNote", () => {
     expect((await run(h, DELETION_OPERATION)).deletedCount).toBe(1);
   });
 
+  it("TC-tag-028: refuses a token no barrier ever issued, so an absent receipt is as fatal as a foreign one", async () => {
+    const h = createTestHarness();
+    await seed(h, [assignment(1, 1, NOTE)]);
+    // No `beginPersonalAccountDeletion` at all. Admission asks the store
+    // to describe the operation and gets `null` — the same answer a
+    // withdrawn or foreign token gets — so the turn must be refused
+    // rather than treated as an ordinary tokenless purge.
+
+    const refused = await run(h, DELETION_OPERATION).then(
+      () => null,
+      (thrown: unknown) => thrown,
+    );
+
+    expect(isConflictError(refused)).toBe(true);
+    expect(isConflictError(refused) && refused.code).toBe(
+      "CLEANUP_OPERATION_MISMATCH",
+    );
+    expect(assignmentIds(h)).toEqual(["assignment-001"]);
+  });
+
   it("TC-tag-028: still reclaims the rows once the deletion barrier it inherited has completed", async () => {
     const h = createTestHarness();
     await seed(
