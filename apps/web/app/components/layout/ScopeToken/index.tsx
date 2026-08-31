@@ -237,11 +237,36 @@ export function ScopeToken({ scope }: { scope: ShellScope }) {
           </Link>
 
           {/* 現在の文脈の行き先。権限や状態で使えないものは並べずに消す
-              （L-01「使えない行き先は並べずに消す」）。タグ管理・ゴミ箱は
-              対応画面が別スライスなので置かない。 */}
+              （L-01「使えない行き先は並べずに消す」）。タグ管理は対応画面が
+              別スライスなので置かない。 */}
+          {scope.kind === "personal" ? (
+            <>
+              <div className="my-2 border-t border-hairline" />
+              <Link
+                to="/notes/trash"
+                onClick={() => setOpen(false)}
+                className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
+              >
+                ゴミ箱
+              </Link>
+            </>
+          ) : null}
+
           {scope.kind === "workspace" ? (
             <>
               <div className="my-2 border-t border-hairline" />
+              {/* ゴミ箱は `viewTrash`（最小ロール editor）を要する。
+                  viewer には行き先ごと出さない（L-01、TC-32）。 */}
+              {scope.canWrite === true ? (
+                <Link
+                  to="/workspaces/$workspaceId/notes/trash"
+                  params={{ workspaceId: scope.workspaceId }}
+                  onClick={() => setOpen(false)}
+                  className="block px-4 py-2 text-sm text-ink transition-colors hover:bg-surface"
+                >
+                  ゴミ箱
+                </Link>
+              ) : null}
               <Link
                 to="/workspaces/$workspaceId/settings/general"
                 params={{ workspaceId: scope.workspaceId }}

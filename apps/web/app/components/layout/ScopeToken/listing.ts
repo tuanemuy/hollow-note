@@ -36,6 +36,17 @@ export type ShellScope =
       name: string;
       slug: string | null;
       publication: "private" | "published";
+      /**
+       * editor 以上か。トークンに並べる「ゴミ箱」は `viewTrash`（最小
+       * ロール editor）を要するので、これが `true` のときだけ出す
+       * （L-01「使えない行き先は並べずに消す」）。
+       *
+       * 省略可なのは、ロールを読まないルート（設定レイアウトのように
+       * 別の権限で開いている画面）が嘘の `true` を作らずに済むように
+       * するためで、**省略は「出さない」と読む** — 権限のない行き先を
+       * 並べるより、開ける画面から開いてもらうほうがよい。
+       */
+      canWrite?: boolean;
     }>;
 
 export const IDLE_LISTING: Listing = { kind: "idle" };

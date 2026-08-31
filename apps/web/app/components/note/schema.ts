@@ -115,3 +115,34 @@ export const noteMediaUploadSchema = z.object({
       (file) => file.size > 0 && file.size <= MEDIA_UPLOAD_TRANSPORT_MAX_BYTES,
     ),
 });
+
+/**
+ * P-11 の表示スタイル切替（PAGE-p11-008 / ED-11）。値の妥当性は
+ * `StyleMode` が持つが、転送境界は 2 値の直和で受ける — 画面が出す
+ * 選択肢がその 2 つしかないので、それ以外は形の不正である。
+ */
+export const changeNoteStyleModeSchema = z.object({
+  noteId,
+  styleMode: z.enum(["default", "preserve"]),
+  expectedVersion,
+});
+
+/**
+ * ゴミ箱の 3 つのミューテーション（PAGE-p11-013 / PAGE-p14-002 /
+ * PAGE-p14-003）。`excludingJobId` は転送境界に出さない — 呼び出し元が
+ * ジョブ ID を名指しできると、他人のジョブを一掃の対象から外せてしまう
+ * （`TrashNoteInput` の JSDoc）。
+ */
+export const trashNoteSchema = z.object({ noteId, expectedVersion });
+
+export const restoreNoteSchema = z.object({ noteId, expectedVersion });
+
+export const purgeNoteSchema = z.object({ noteId, expectedVersion });
+
+/**
+ * ゴミ箱を空にする（PAGE-p14-004）。対象は文脈そのものなので、運ぶのは
+ * 「どのスコープか」だけになる（`null` が個人）。
+ */
+export const emptyTrashSchema = z.object({
+  workspaceId: z.string().min(1).max(WORKSPACE_ID_MAX_LENGTH).nullable(),
+});

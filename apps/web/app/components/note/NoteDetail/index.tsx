@@ -1,25 +1,28 @@
 import type { NoteDetailView } from "@repo/core/application/note/view";
 import { NotFoundState } from "@/components/ui/ErrorState";
 import { serializeError } from "@/presentation/errorResponse";
-import { NoteBody } from "../NoteBody";
 import {
   loadNote,
   type NoteDetailContext,
   PERSONAL_NOTE_DETAIL_CONTEXT,
 } from "./action";
-import { NoteDetailMenu } from "./menu";
+import { NoteDetailIsland } from "./detail";
 import { NoteUrlNormalizer } from "./normalize";
 
 /**
- * P-11 ノート詳細（最小形、モック P11-note.html）。本文の Shadow DOM
- * 描画・タイトル・公開ステータス・見出しの折りたたみと、編集できる閲覧者
- * だけに出す操作メニュー（移動）を持つ。タグ・共有パネル・ダウンロードは
- * 後続スライス。
+ * P-11 ノート詳細（モック P11-note.html）。本文の Shadow DOM 描画・
+ * タイトルのインライン編集・公開ステータス・見出しの折りたたみと、編集
+ * できる閲覧者だけに出す操作メニュー（編集・表示スタイル・移動・削除）を
+ * 持つ。タグ・共有パネル・ダウンロード・再生成は後続スライス。
  *
  * 個人（`/notes/:noteId`）とワークスペース
  * （`/workspaces/:workspaceId/notes/:noteId`）で同じ画面。文脈は呼び出し側
  * が URL から渡し、ノートの所属先と食い違えば正規な URL へ送り直す
  * （OR-12）。
+ *
+ * 読み取りと終端状態（見つかりません）だけをここが持ち、操作は島
+ * （`detail.tsx`）が持つ。版を握る場所を 1 つにするためで、分けると
+ * タイトルの自動保存と表示スタイルの切替が互いに古い版を送る。
  */
 export async function NoteDetail({
   noteId,
@@ -57,85 +60,29 @@ export async function NoteDetail({
           workspaceId={canonicalWorkspaceId}
         />
       )}
-      <div className="mb-4 flex flex-wrap items-start gap-2 text-xs text-ink-tertiary">
-        <VisibilityBadge visibility={note.visibility} />
-        <span className="text-hairline-strong">·</span>
-        <span>{createdAtFormat.format(note.createdAt)}</span>
-        <span className="min-w-2 flex-1" />
-        {note.permissions.canEdit ? (
-          <NoteDetailMenu
-            noteId={note.noteId}
-            ownerType={note.ownerType}
-            ownerId={note.ownerId}
-          />
-        ) : null}
-      </div>
-
-      <h1 className="mb-8 text-3xl font-normal tracking-tightest leading-[1.18]">
-        {note.title}
-      </h1>
-
-      <NoteContentBlock note={note} />
+      <NoteDetailIsland
+        noteId={note.noteId}
+        initialTitle={note.title}
+        initialVersion={note.version}
+        initialStyleMode={note.styleMode}
+        visibility={note.visibility}
+        createdAtLabel={createdAtFormat.format(note.createdAt)}
+        content={note.content}
+        headings={note.headings}
+        ownerType={note.ownerType}
+        ownerId={note.ownerId}
+        canEdit={note.permissions.canEdit}
+        canDelete={note.permissions.canDelete}
+        context={context}
+      />
     </main>
   );
 }
 
+// 日時の整形はサーバー側に閉じる。島の中で `Intl` を使うとサーバーと
+// ブラウザーのタイムゾーンが食い違ってハイドレーションがずれる。
 const createdAtFormat = new Intl.DateTimeFormat("ja-JP", {
   year: "numeric",
   month: "long",
   day: "numeric",
 });
-
-const VISIBILITY_META: Record<
-  NoteDetailView["visibility"],
-  { label: string; dotClass: string }
-> = {
-  private: { label: "非公開", dotClass: "bg-status-private" },
-  unlisted: { label: "リンクを知る人", dotClass: "bg-status-link" },
-  public: { label: "公開", dotClass: "bg-status-public" },
-};
-
-function VisibilityBadge({
-  visibility,
-}: {
-  visibility: NoteDetailView["visibility"];
-}) {
-  const meta = VISIBILITY_META[visibility];
-  return (
-    <span className="inline-flex items-center gap-2">
-      <span
-        aria-hidden="true"
-        className={`inline-block size-1.5 rounded-full ${meta.dotClass}`}
-      />
-      <span>{meta.label}</span>
-    </span>
-  );
-}
-
-function NoteContentBlock({ note }: { note: NoteDetailView }) {
-  switch (note.content.status) {
-    case "ready":
-      return note.content.html !== null && note.content.html.length > 0 ? (
-        <NoteBody
-          html={note.content.html}
-          styleMode={note.styleMode}
-          headings={note.headings}
-        />
-      ) : (
-        <p className="text-sm text-ink-secondary">このノートは白紙です。</p>
-      );
-    case "processing":
-    case "awaitingIntegration":
-      return (
-        <p className="text-sm text-ink-secondary" role="status">
-          本文を準備しています。完了するとここに表示されます。
-        </p>
-      );
-    case "failed":
-      return (
-        <p className="text-sm text-error" role="status">
-          このファイルを取り込めませんでした。
-        </p>
-      );
-  }
-}

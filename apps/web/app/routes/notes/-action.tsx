@@ -2,12 +2,17 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   applyTextNodeEditsSchema,
+  changeNoteStyleModeSchema,
   createNoteWithBodySchema,
+  emptyTrashSchema,
   moveNoteSchema,
   noteMediaUploadSchema,
   noteRefSchema,
+  purgeNoteSchema,
   renameNoteSchema,
   restoreNoteRevisionSchema,
+  restoreNoteSchema,
+  trashNoteSchema,
   updateNoteBodySchema,
 } from "@/components/note/schema";
 import { errorResponseMiddleware } from "@/presentation/errorResponseMiddleware";
@@ -427,5 +432,128 @@ export const createNoteWithBodyFn = createServerFn({ method: "POST" })
       workspaceId: data.workspaceId,
       version: saved.version,
       removed: saved.removed,
+    };
+  });
+
+// --- P-11 の表示スタイル・削除と P-14 ゴミ箱 ------------------------------
+
+/** 表示スタイルの切替（UC-note-012、PAGE-p11-008 / ED-11）。 */
+export const changeNoteStyleModeFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(changeNoteStyleModeSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/note/changeNoteStyleMode"),
+      ),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.changeNoteStyleMode({
+      container,
+      input: { ...data, userId: user.userId },
+    });
+  });
+
+/**
+ * ゴミ箱へ移す（UC-note-017、PAGE-p11-013 / ED-09）。
+ *
+ * `excludingJobId` は画面からは常に `null` である。一覧・詳細のどちらから
+ * 削除しても実行中のジョブはすべて取り消してよく、除外してよい 1 件を
+ * 持つのは一括操作の子ジョブだけだからで、その値は転送境界を渡らない。
+ */
+export const trashNoteFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(trashNoteSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/note/trashNote")),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.trashNote({
+      container,
+      input: { ...data, userId: user.userId, excludingJobId: null },
+    });
+  });
+
+/** ゴミ箱から戻す（UC-note-018、PAGE-p14-002 / ED-10）。 */
+export const restoreNoteFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(restoreNoteSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/note/restoreNote")),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.restoreNote({
+      container,
+      input: { ...data, userId: user.userId },
+    });
+  });
+
+/** 完全に削除する（UC-note-019、PAGE-p14-003 / ED-10）。 */
+export const purgeNoteFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(purgeNoteSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/note/purgeNote")),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    await module.purgeNote({
+      container,
+      input: { kind: "userRequest", ...data, userId: user.userId },
+    });
+    return { noteId: data.noteId };
+  });
+
+/**
+ * ゴミ箱を空にする（UC-note-020、PAGE-p14-004 / ED-10）。
+ *
+ * 応答の `mode` をそのまま画面へ返す。`purgedCount` は 2 つの意味を持ち
+ * （`purged` は消し終えた件数、`scheduled` は登録しただけの件数）、
+ * 取り違えるとまだ 1 件も消えていない予約を「削除しました」と announce
+ * することになる（`EmptyTrashView` の JSDoc）。
+ */
+export const emptyTrashFn = createServerFn({ method: "POST" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(emptyTrashSchema))
+  .handler(async ({ data }) => {
+    const [{ container, module }, { requireSession }] = await Promise.all([
+      loadServerDeps(() => import("@repo/core/application/note/emptyTrash")),
+      import("@/presentation/session"),
+    ]);
+    const user = await requireSession();
+    return module.emptyTrash({
+      container,
+      input:
+        data.workspaceId === null
+          ? { userId: user.userId, ownerType: "user" }
+          : {
+              userId: user.userId,
+              ownerType: "workspace",
+              ownerWorkspaceId: data.workspaceId,
+            },
+    });
+  });
+
+/** P-14 の断片（PAGE-p14-001）。個人文脈の `/notes/trash`。 */
+export const renderTrashList = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(z.object({ redirect: redirectField })))
+  .handler(async ({ data }) => {
+    const [{ TrashList }, { requireSessionOrRedirect }, { toViewerView }] =
+      await Promise.all([
+        import("@/components/note/TrashList"),
+        import("@/presentation/sessionGuard"),
+        import("@/presentation/auth"),
+      ]);
+    const user = await requireSessionOrRedirect(data.redirect);
+    return {
+      user: toViewerView(user),
+      TrashList: renderServerFragment(() => TrashList({ userId: user.userId })),
     };
   });

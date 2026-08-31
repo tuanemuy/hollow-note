@@ -10,18 +10,21 @@ import { extractSerializedError } from "@/presentation/errorResponse";
 import { buildHead } from "@/presentation/head";
 import { boundedRedirectSource } from "@/presentation/redirect";
 import { workspaceUnavailability } from "@/presentation/scope";
-import { renderWorkspaceNoteList } from "../-action";
+import { renderWorkspaceTrashList } from "../-action";
 
 /**
- * P-10 のワークスペース文脈版（`/workspaces/:workspaceId/notes`、WS-02 手順
- * 3 の切替先）。個人の `/notes` と同じ画面で、文脈だけが URL から来る。
+ * P-14 のワークスペース文脈版（`/workspaces/:workspaceId/notes/trash`）。
+ * 個人の `/notes/trash` と同じ画面で、文脈だけが URL から来る。
  *
- * `shouldReload` / `loader` ガードの扱いは `/notes` と同じ理由による。
+ * 一覧（`notes/index.tsx`）と同じくワークスペース自身を読むので、
+ * 非メンバー・削除済みの畳み方も同じにする — 同じ失敗で loader が
+ * 引き継ぎ Cookie を畳んでいるため、ここが独自の写像を持つと画面と
+ * Cookie が同じ入力で違う結論を出す。
  */
-export const Route = createFileRoute("/workspaces/$workspaceId/notes/")({
+export const Route = createFileRoute("/workspaces/$workspaceId/notes/trash")({
   shouldReload: ({ cause }) => cause !== "preload",
   loader: ({ params, location }) =>
-    renderWorkspaceNoteList({
+    renderWorkspaceTrashList({
       data: {
         workspaceId: params.workspaceId,
         redirect: boundedRedirectSource(location.href),
@@ -31,19 +34,12 @@ export const Route = createFileRoute("/workspaces/$workspaceId/notes/")({
     const config = match.context?.config;
     if (!config) return {};
     const { meta, links } = buildHead(config, {
-      title: `ノート一覧 — ${config.siteName}`,
-      path: `/workspaces/${match.params.workspaceId}/notes`,
+      title: `ゴミ箱 — ${config.siteName}`,
+      path: `/workspaces/${match.params.workspaceId}/notes/trash`,
     });
     return { meta, links };
   },
-  component: WorkspaceNotesPage,
-  // 非メンバーと削除済み・不在を 1 つの表示に畳む（存在の有無を漏らさない）。
-  // 判定は `workspaceUnavailability` に委ねる — 同じ失敗で loader が引き継ぎ
-  // Cookie を畳んでいるので、ここが独自の写像を持つと画面と Cookie が同じ
-  // 入力で違う結論を出す。`loader` が失敗している以上シェルに渡す利用者が
-  // 無いので、上部バーが戻り先だけの最小形（`ReaderShell`、スコープは個人）で
-  // 包む — 素のページに落とさず、次の行き先を必ず 1 つ残すため
-  // （`notes/$noteId` と同じ理由）。
+  component: WorkspaceTrashPage,
   errorComponent: ({ error }) => (
     <ReaderShell>
       {workspaceUnavailability(extractSerializedError(error)) === null ? (
@@ -55,8 +51,8 @@ export const Route = createFileRoute("/workspaces/$workspaceId/notes/")({
   ),
 });
 
-function WorkspaceNotesPage() {
-  const { user, workspace, NoteList } = Route.useLoaderData();
+function WorkspaceTrashPage() {
+  const { user, workspace, TrashList } = Route.useLoaderData();
   return (
     <AppShell
       displayName={user.displayName}
@@ -71,7 +67,7 @@ function WorkspaceNotesPage() {
       }}
     >
       <Suspense fallback={<NoteListSkeleton />}>
-        <Deferred promise={NoteList} />
+        <Deferred promise={TrashList} />
       </Suspense>
     </AppShell>
   );

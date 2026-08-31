@@ -76,6 +76,8 @@ export const renderWorkspaceNoteList = createServerFn({ method: "GET" })
         name: workspace.name,
         slug: workspace.slug,
         publication: workspace.publication,
+        // スコープトークンの「ゴミ箱」を出すかの判定に使う（L-01）。
+        canWrite: owner.canWrite,
       },
       NoteList: renderServerFragment(() =>
         NoteList({ userId: user.userId, owner }),
@@ -178,6 +180,72 @@ export const renderWorkspaceNewNoteEditor = createServerFn({ method: "GET" })
         NewNoteEditor({
           context: { kind: "workspace", workspaceId: data.workspaceId },
         }),
+      ),
+    };
+  });
+
+/**
+ * P-14 のワークスペース版（`/workspaces/:workspaceId/notes/trash`）。
+ *
+ * 一覧（`renderWorkspaceNoteList`）と同じくワークスペース自身を読む。
+ * ゴミ箱は**書き込み可否がシェルと表示の両方に効く**画面で、`viewTrash`
+ * の最小ロールが editor である以上、viewer には一覧そのものを出さない
+ * （`spec/pages/index.md` L-01「使えない行き先は並べずに消す」）。
+ * 失敗時に引き継ぎ Cookie を畳んでから再送出するのも一覧と同じ理由で、
+ * 畳まないと入口が同じエラー画面に着き続ける。
+ *
+ * 復元・完全削除・空にするのミューテーションは `routes/notes/-action.tsx`
+ * のものを両文脈で共有する（対象が `noteId` かスコープ 1 つで定まる）。
+ */
+export const renderWorkspaceTrashList = createServerFn({ method: "GET" })
+  .middleware([errorResponseMiddleware])
+  .validator(validateInput(workspaceNoteListSchema))
+  .handler(async ({ data }) => {
+    const [
+      { container, module },
+      { TrashList },
+      { requireSessionOrRedirect },
+      { WorkspaceRole },
+      { toViewerView },
+      scopeCookie,
+    ] = await Promise.all([
+      loadServerDeps(
+        () => import("@repo/core/application/workspace/getWorkspaceSettings"),
+      ),
+      import("@/components/note/TrashList"),
+      import("@/presentation/sessionGuard"),
+      import("@repo/core/domain/workspace/valueObject"),
+      import("@/presentation/auth"),
+      import("@/presentation/scopeCookie"),
+    ]);
+    const user = await requireSessionOrRedirect(data.redirect);
+    let workspace: Awaited<ReturnType<typeof module.getWorkspaceSettings>>;
+    try {
+      workspace = await module.getWorkspaceSettings({
+        container,
+        input: { workspaceId: data.workspaceId, userId: user.userId },
+      });
+    } catch (error) {
+      scopeCookie.foldScopeSelectionForUnavailable(data.workspaceId, error);
+      throw error;
+    }
+    const owner = {
+      kind: "workspace",
+      workspaceId: workspace.workspaceId,
+      name: workspace.name,
+      canWrite: WorkspaceRole.atLeast(workspace.role, "editor"),
+    } as const;
+    return {
+      user: toViewerView(user),
+      workspace: {
+        workspaceId: workspace.workspaceId,
+        name: workspace.name,
+        slug: workspace.slug,
+        publication: workspace.publication,
+        canWrite: owner.canWrite,
+      },
+      TrashList: renderServerFragment(() =>
+        TrashList({ userId: user.userId, owner }),
       ),
     };
   });

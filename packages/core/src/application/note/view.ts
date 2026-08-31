@@ -1,4 +1,4 @@
-import type { Note } from "@repo/core/domain/note/note";
+import type { Note, TrashedNote } from "@repo/core/domain/note/note";
 import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
 
 /**
@@ -237,4 +237,36 @@ export const toNoteListItemView = (note: Note): NoteListItemView => ({
   contentStatus: note.content.status,
   createdAt: note.createdAt,
   updatedAt: note.updatedAt,
+});
+
+/**
+ * One row of the trash (P-14).
+ *
+ * Carries the two things the trash screen cannot derive for itself: the
+ * version every trash mutation demands as its `expectedVersion`
+ * (`restoreNote` / `purgeNote`), and the retention deadline the remaining
+ * days are counted against — `TRASH_RETENTION_MS` belongs to the domain,
+ * so the screen reads the deadline rather than recomputing it.
+ */
+export type TrashedNoteListItemView = Readonly<{
+  noteId: string;
+  title: string;
+  version: number;
+  trashedAt: Date;
+  purgeAfter: Date;
+}>;
+
+export type TrashedNoteListView = Readonly<{
+  items: readonly TrashedNoteListItemView[];
+  count: number;
+}>;
+
+export const toTrashedNoteListItemView = (
+  note: TrashedNote,
+): TrashedNoteListItemView => ({
+  noteId: note.id,
+  title: note.title.value,
+  version: note.version,
+  trashedAt: note.trashedAt,
+  purgeAfter: note.purgeAfter,
 });
