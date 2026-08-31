@@ -308,6 +308,7 @@ export function createMemoryRuntime(
           createMemoryPublicNoteProjectionWriter(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),
         objectStorage,
+        htmlProcessor,
         workspaceDirectoryProjectionWriter:
           createMemoryWorkspaceDirectoryProjectionWriter(backend),
         workspaceSlugReservationStore:

@@ -103,6 +103,7 @@ const WORKER_PORTS = [
   "publicNoteProjectionWriter",
   "scopeTaskQueue",
   "objectStorage",
+  "htmlProcessor",
   "workspaceDirectoryProjectionWriter",
   "workspaceSlugReservationStore",
   "invitationRouteStore",

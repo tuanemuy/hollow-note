@@ -155,6 +155,20 @@ export type NotePurgeContainer = SharedDeps &
     noteRouteStore: NoteRouteStore;
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
   }>;
+/**
+ * The half of `HtmlProcessor` a body is only *read* through.
+ *
+ * Sanitizing is a write decision — it produces the html, text, excerpt
+ * and headings a body-write usecase then persists — and no worker-plane
+ * path makes that decision, so the worker container is handed the
+ * reference listing alone. The orphan-media sweep is its only caller:
+ * deciding whether a stored file still appears in a body is a read of
+ * that body, not a rewrite of it.
+ */
+export type HtmlReferenceReader = Pick<
+  HtmlProcessor,
+  "extractExternalReferences"
+>;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
   NoteRepository,
@@ -415,7 +429,10 @@ export type ExpirySweep = Readonly<{
  * continuation work due — it reads, and the claim still happens inside
  * each scope's unit of work. `objectStorage` is here because reclaiming
  * an object is the subscriber's job, after the metadata row it belonged
- * to is already gone.
+ * to is already gone, and because the orphan-media sweep asks it for the
+ * URL a body would have to name. `htmlProcessor` is the read half of the
+ * same sweep (see {@link HtmlReferenceReader}); the alarm that drives it
+ * arrives on this plane, so the port has to.
  *
  * The four workspace ports are the global half of the workspace-deletion
  * saga: its cleanup
@@ -445,6 +462,7 @@ export type WorkerContainer = SharedDeps &
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
+    htmlProcessor: HtmlReferenceReader;
     workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
     workspaceSlugReservationStore: WorkspaceSlugReservationStore;
     invitationRouteStore: InvitationRouteStore;

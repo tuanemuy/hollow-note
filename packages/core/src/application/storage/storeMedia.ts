@@ -17,6 +17,7 @@ import { noteAccessPolicy, viewerFor } from "../note/accessControl";
 import type { ScopeKey } from "../scope";
 import type { ServiceArgs } from "../types";
 import { ensureUploadAllowed } from "../usage/ensureUploadAllowed";
+import { armOrphanMediaSweepOnFirstMedia } from "./collectOrphanMedia";
 import type { StoreMediaView } from "./view";
 
 export type StoreMediaInput = Readonly<{
@@ -157,6 +158,10 @@ const sanitizeSvg = (
  * reclaim paths have — `collectOrphanMedia` decides on it whether a file
  * is still referenced, and `deleteFilesForNote` sweeps by it after a
  * purge.
+ *
+ * The first media a scope ever stores also arms that sweep's daily
+ * alarm, in the same transaction as the row it registers: nothing else
+ * in the scope has a reason to start it.
  */
 export async function storeMedia({
   container,
@@ -227,6 +232,7 @@ export async function storeMedia({
       await ctx.cleanupAdmission.assertWritable();
       await ctx.cleanupAdmission.assertActorWritable(userId);
       await ctx.workspaceOperationLockStore.assertWritable();
+      await armOrphanMediaSweepOnFirstMedia(ctx, now);
 
       const registered = StoredFile.register(
         {

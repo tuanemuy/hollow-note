@@ -481,6 +481,7 @@ export function createCloudflareRuntime(
         publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         scopeTaskQueue: createCloudflareScopeTaskQueue({ session }),
         objectStorage,
+        htmlProcessor,
         workspaceDirectoryProjectionWriter:
           createD1WorkspaceDirectoryProjectionWriter({ session, clock }),
         workspaceSlugReservationStore: createD1WorkspaceSlugReservationStore({

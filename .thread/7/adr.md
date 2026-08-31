@@ -706,3 +706,51 @@ ADR-026 で `deleteNotesForOwner` が `WorkerContainer` からそのまま呼べ
 - 良い点: 退会の barrier が「ノートも消えた」ことを実際に待つようになった。`REQUIRED_PERSONAL_CLEANUP_COMPONENTS` は `storage` / `usage` / `note` の 3 つ
 - 良い点: cleanup wave → `deleteNotesForOwner` → 継続 task → runner → `deleteNotesForOwner` の連鎖が閉じ、`note.ownerPurgeContinued` を積みっぱなしにする経路が無くなった
 - トレードオフ: 退会テストで barrier を手組みしていた箇所は、コンポーネント列を `REQUIRED_PERSONAL_CLEANUP_COMPONENTS` から取るよう直した。以後 participant が増えても手組み側が置いていかれない
+
+---
+
+## ADR-029: 孤児メディアの走査は worker 面へ `HtmlProcessor` の読み取り半分を渡して駆動する
+
+### Context
+
+`collectOrphanMedia` は「所属ノートの本文に当該ファイルの URL が現れるか」を `HtmlProcessor.extractExternalReferences` で調べる（`spec/usecases/storage.md#collectOrphanMedia` 手順 2）。駆動は scope Alarm なので受け手は `scopeTaskRunner` の `ScopeTaskHandler` で、引数は `WorkerContainer` である。ところが `htmlProcessor` は `RequestContainer` にしか載っておらず、ADR-023 が `purgeNote` で踏んだのと同じ「worker 面から呼べないユースケース」がそのまま再現する。
+
+### Decision
+
+ADR-026 と同じ形を採る。
+
+- **`WorkerContainer` に `htmlProcessor` を足す。ただしポート丸ごとではなく `HtmlReferenceReader`（`Pick<HtmlProcessor, "extractExternalReferences">`）にする。** `process` はサニタイズ結果（html / text / excerpt / headings）を作る**書き込みの判断**で、worker 面にその判断をする経路は無い。本文を読むだけの用途に読み取り半分だけを渡す
+- **ユースケース側は `OrphanMediaContainer`（`SharedDeps` + `scopeUnitOfWorkProvider` + `Pick<ObjectStorage, "publicUrl">` + `HtmlReferenceReader`）を自分で名乗る。** `RequestContainer` も `WorkerContainer` も構造的に満たす
+- **`storage.orphanMediaContinued` を `scopeTaskHandlers` に登録する。** 未登録の kind は due のまま warn を出し続けるだけで、走査は一度も走らない
+
+`objectStorage` は既に `WorkerContainer` にある。`appUrl` は無いので、本文中の参照とファイルの公開 URL の突き合わせは配備の origin を知らずに済む形（完全一致 → 解決後の pathname 一致）にした。誤答は「消さずに残す」側へ倒れる。
+
+### Consequences
+
+- 良い点: Alarm → runner → 走査 → 削除 → 再武装の連鎖が実経路として閉じ、TC-storage-027 を worker 面から完走で検証できる
+- トレードオフ: `WorkerContainer` のポートが 1 つ増えたので、両ランタイムの配線と `adapters/cloudflare/__tests__/runtimeComposition.test.ts` の `WORKER_PORTS` を触った（ADR-026 と同じ範囲）
+- 既知の制限: `publicUrl` が絶対 URL の配備では、別ホストの同一 path を持つ URL を本文が指していると参照中と誤判定する。倒れる向きは「残す」なので回収漏れにしかならない
+
+---
+
+## ADR-030: 日次 task の起点は `storeMedia` の「scope 最初の 1 件」に置き、走査は行を complete せず張り替える
+
+### Context
+
+`spec/usecases/storage.md#collectOrphanMedia` は「scopeで最初のmediaを登録するときに日次taskを自己登録し」「処理後は翌日のtaskを自己登録する」「`limit`件に達したときは直後にも継続taskを設定」と定める。`ScopeTaskScheduler.schedule` は `(kind, operationId)` の upsert で `dueAt` を無条件に上書きするため、**毎回の登録で張り直すと、メディアを毎日挿入する scope の走査が永久に後ろへ逃げる**（ADR-027 が `trashNote` で踏んだのと同じ罠）。
+
+また `listByPurposeOlderThan` にはカーソルが無く、走査は残すと決めた行をページの先頭に残す。満ページで無条件に「直後」を張ると、全件が参照中のページを永久に読み直す spin になる。
+
+### Decision
+
+- **起点は `storeMedia` が張る。** transaction の中、`StoredFile` を insert する前に `listByPurposeOlderThan("media", now, 1)` を引き、**0 件のときだけ**翌日の行を張る。「まだ media が無い」と「これが 1 件目」が同じ読みになる位置に置いた
+- **走査は行を `complete` しない。** 周期的な掃除なので、翌日（既定）か直後（残件あり）へ張り替える。ゴミ箱の sweep（ADR-027）が「空になったら complete」なのと非対称なのは、ゴミ箱には「空」という終端があるがメディアには無いため
+- **「直後」を張る条件は「満ページ**かつ**当該 turn が 1 件以上回収した」。** 満ページだけを条件にすると上記の spin になる。進捗が無いページは翌日へ回し、次の日にもう一度同じ判断をする
+- **削除は 1 件 1 transaction。** spec の「個々の失敗は記録して継続」を満たすには、1 件の失敗がページ全体を巻き戻してはならない。判定（列挙 + 本文の読み）は 1 つの transaction にまとめる
+- **所属ノートが不在なら回収、本文が読めない（`processing` / `failed` など）なら残す。** 不在は終端だが、本文が無い状態は一時的で、「本文が無い」ことは「参照が外れた」証拠にならない
+
+### Consequences
+
+- 良い点: 実運用の駆動経路（最初の 1 件 → 翌日 → 残件があれば直後 → 翌日）が揃い、TC-storage-026 / 027 が実 backend の上で成立する
+- トレードオフ: media を 1 件でも持った scope には task 行が 1 本常駐する。runner の tick は 1 日 1 回しか当たらない
+- 既知の制限: カーソルが無いため、先頭 `limit` 件がすべて参照中のまま滞留すると、その後ろにある孤児へ到達できない。解消にはポートへキーセットを足す必要があり、本スライスの担当範囲の外
