@@ -29,11 +29,12 @@ export type NoteHeadingView = Readonly<{
 }>;
 
 /**
- * Import-provenance report (spec/usecases/note.md#getnote). In the
- * walking-skeleton slice every field is empty by construction: only
- * blank notes exist, so there is no body-derived reference to report,
- * and the supplying ports (`HtmlProcessor`, storage records) arrive with
- * the import slice. The shape ships now so the DTO is stable.
+ * Import-provenance report (spec/usecases/note.md#getnote). Every field
+ * is still empty by construction: the report describes what a *reference
+ * import* left behind, and the import itself is a Job seam with no
+ * implementation, so no body carries the traces the report is composed
+ * from and no fetch record exists to read the reasons out of. The shape
+ * ships now so the DTO is stable.
  */
 export type ReferenceReportView = Readonly<{
   imported: readonly Readonly<{ fileId: string; url: string | null }>[];

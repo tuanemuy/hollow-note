@@ -180,7 +180,7 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `limitFor` | `purpose: FilePurpose, mimeType: MimeType` | `ByteSize` | 下表の上限を引く |
-| `ensureAcceptable` | `params: { purpose: FilePurpose; body: Uint8Array }` | `AcceptedUpload = { mimeType: MimeType; size: ByteSize }` | MIME は申告値ではなく**先頭バイトの署名**（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る。どの許可形式にも一致しなければ `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)`。判定結果を返すので、呼び出し側は申告値を保管できない（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)） |
+| `ensureAcceptable` | `params: { purpose: FilePurpose; body: Uint8Array }` | `AcceptedUpload = { mimeType: MimeType; size: ByteSize }` | MIME は申告値ではなく**バイト列そのもの**から決め、サイズは実バイト長で測る。どの許可形式にも一致しなければ `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)`。判定結果を返すので、呼び出し側は申告値を保管できない（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)） |
 
 | 用途 | 許可する MIME | 上限 |
 | --- | --- | --- |
@@ -190,7 +190,19 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | `artifact` | `application/pdf`, `application/zip`, `text/html`, `text/markdown` | 1 GB |
 | `avatar` | `image/png`, `image/jpeg`, `image/webp` | 5 MB |
 
-`ensureAcceptable` が署名から判定できるのは、現時点では PNG / JPEG / WebP である。**署名を持たない形式（`text/markdown`、`image/svg+xml` など）を許可する purpose を足すスライスが、入口の形をさらに広げる**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。
+`ensureAcceptable` が判定できるのは、`media` と `avatar` が許可する 7 形式である。判定は次の順に行い、**先頭バイトを比べるものを先に、本文を復号するものを最後に**置く。
+
+| 形式 | 判定 |
+| --- | --- |
+| `image/png` | 先頭 8 バイトの署名 |
+| `image/jpeg` | 先頭 3 バイトの署名 |
+| `image/gif` | 先頭 6 バイトの署名（`GIF87a` / `GIF89a`） |
+| `image/webp` | 先頭の `RIFF` と オフセット 8 の `WEBP`（コンテナの形まで見る） |
+| `video/mp4` | オフセット 4 の `ftyp` と、オフセット 8 のブランドが許可集合にあること。**`ftyp` だけでは足りない** — HEIC / 3GP / QuickTime も同じボックスを自分のブランドで持ち、受け入れると `video/mp4` として配信できないファイルを保管することになる |
+| `video/webm` | 先頭 4 バイトの EBML 署名と、先頭 64 バイト内の DocType `webm`。EBML 署名は Matroska と共有するのでこの走査が要る |
+| `image/svg+xml` | **署名を持たない**。先頭 4096 バイトを復号し、BOM とプロローグ（`<!--…-->` / `<?…?>` / `<!…>`）を読み飛ばして根要素が `<svg` であることを確かめる。閉じないプロローグ、および内部サブセットを持つ doctype は、推測せずに拒否する |
+
+`source` / `reference` / `artifact` にはまだ規則が無い。**これらの purpose を許可するスライスが、その入口の形を決める**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。規則を持たない purpose は署名判定にすら入らず、`UnsupportedMimeType` になる。
 
 `limitFor` はユースケースからは直接呼ばない。上限の表を引く責務を切り出して `ensureAcceptable` の実装に使うもので、外向きの入口は `ensureAcceptable` に限る。
 
@@ -225,14 +237,15 @@ FetchState  = Readonly<{ fetchedCount: number; fetchedBytes: number }>;
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `isInternal` | `url: string` | `boolean` | 配信元がサービス自身のストレージなら真 |
+| `create` | `params: { appUrl: string; deliveryBaseUrl: string }` | `StorageUrlPolicy` | 2 つの構成値を焼き込んだ判定器を作る。値の組が不正なら投げる（業務規則違反ではなく配備の設定誤りなので `BusinessRuleError` にしない） |
+| `isInternal` | `url: string` | `boolean` | `appUrl` を基準に解決した URL が `deliveryBaseUrl` で始まるなら真。**本文相対の URL も対象**（アプリ相対の配信パスを持つ配備ではこれが本題）。解決できない URL は投げずに偽 |
 
 `ExternalFetchPolicy.ensureFetchable` の複合条件から**この 1 つだけを切り出した**ものである。切り出す理由は 2 つある。
 
 - `ensureFetchable` は `DnsResolver` に依存し、ホスト名を解決して private / loopback / メタデータ用アドレスを弾く。読み取り経路（ノート詳細で「未解決の参照はどれか」を求める）で呼ぶには重すぎるうえ、I/O を伴う
 - 同じ判定を `importExternalReferences` の `skipped` の判定、参照取り込みジョブの登録条件（[usecases/note.md](../usecases/note.md) の `updateNoteBody`、[usecases/conversion.md](../usecases/conversion.md) の `runConversion` / `runRegeneration`）、`collectOrphanMedia` の参照判定、そしてノート詳細の合成が使う。1 か所に置かないと規則が分岐する
 
-判定材料（配信元のホストや URL の前置き）は構成に依存するため、値は `AppConfig`（[presentation/index.md](../presentation/index.md)）から供給する。`ensureFetchable` は引き続きこの判定を内部で使い、内部を指す URL を `RefusedUrl` として弾く。
+`appUrl` は `AppConfig`（[presentation/index.md](../presentation/index.md)）から供給する。**`deliveryBaseUrl` は構成に持たず、`ObjectStorage.publicUrl` の答えから読み戻す** — 配信 URL の形はアダプターに閉じる（[ADR 049](../adr/049-object-storage-public-url.md)）ので、アプリ相対の配信パスも公開ドメインの URL も「共通の前置き」に畳める。`ensureFetchable` は引き続きこの判定を内部で使い、内部を指す URL を `RefusedUrl` として弾く。
 
 **依存するポート**: なし
 

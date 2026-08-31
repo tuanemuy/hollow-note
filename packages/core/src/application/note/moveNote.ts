@@ -72,8 +72,10 @@ export type MovedNoteView = Readonly<{
 /**
  * Seam for the tag half of a move.
  *
- * The tag domain does not exist yet, so this
- * slice ships the call sites and no implementation. The three members are
+ * The tag domain carries only its delete side — `TagAssignment` and the
+ * `deleteByNote` half of its repository, which the `note.purged` fan-out
+ * needs — so there is nothing here to reassign yet and the call sites
+ * ship without an implementation. The three members are
  * the same phases the note itself moves through: `plan` runs before the
  * operation is created, so its answer can be fixed into the operation
  * payload, and the names the move reports are read back from that payload
@@ -106,7 +108,7 @@ export interface NoteMoveTagRelocation {
   ): Promise<void>;
 }
 
-/** The seam's only implementation until the tag slice lands. */
+/** The seam's only implementation until tag assignment gains a write side. */
 export const noTagRelocation: NoteMoveTagRelocation = {
   targetScopeCommandKeys: [],
   async plan(): Promise<readonly string[]> {

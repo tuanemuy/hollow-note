@@ -1025,7 +1025,11 @@ export function NoteEditorIsland({
         className="sticky bottom-0 z-50 border-t border-hairline bg-[var(--bar-bg)] px-4 py-2 backdrop-blur-xl backdrop-saturate-150 sm:px-6"
       >
         <div className="mx-auto flex max-w-[var(--content-max)] items-center gap-2 overflow-x-auto">
-          <MediaButton disabled={!editable || busy} onPick={upload} />
+          {/* ED-06: visual mode edits text nodes in place and cannot add
+              an element, so the insert is not offered there at all. */}
+          {mode === "visual" ? null : (
+            <MediaButton disabled={!editable || busy} onPick={upload} />
+          )}
           <button
             type="button"
             className={actionButtonClass}

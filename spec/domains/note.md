@@ -258,6 +258,7 @@ NoteAccess =
 | --- | --- | --- | --- |
 | `evaluate` | `note: Note, viewer: NoteViewer, credential: ShareCredential, now: Date` | `NoteAccess` | 下表の順に判定する |
 | `ensureCanEdit` | `note: Note, viewer: NoteViewer` | `void` | 編集不可なら `BusinessRuleError(AccessDenied)` |
+| `ensureCanDelete` | `note: Note, viewer: NoteViewer` | `void` | 削除不可なら `BusinessRuleError(AccessDenied)`。`ensureCanEdit` と分けるのは、`WorkspaceAuthorization` が `deleteNote` と `editNote` に別の最小ロールを与えた時点で 2 つの権能が離れるため |
 | `isPassValid` | `link: ShareLink, pass: SharePass \| null, now: Date` | `boolean` | `pass` が `null`、`link.password` が `null`、`tokenHash` が不一致、発行から 24 時間経過、`pass.passwordUpdatedAt` が `link.password.updatedAt` と異なる、のいずれかなら偽 |
 | `issuePass` | `link: ShareLink, now: Date` | `SharePass` | パスワード照合に成功した直後に発行する |
 

@@ -134,10 +134,13 @@ const toStoredFile = (
 /**
  * Enumerates the note's relocatable rows.
  *
- * The scan goes through `listByOwner` and filters on `noteId` because the
- * port carries no note-scoped listing yet (`StoredFileRepository`: "the
- * import slice adds the note / artifact / expiry listings"). The result is
- * the same set a note-keyed query would answer; only the cost differs.
+ * The scan goes through `listByOwner` and filters on `noteId` rather
+ * than through `listDeletableByNote`, which covers exactly the same
+ * purposes: that one is capped at `limit` with no way to tell a full
+ * page from the end, because a purge turn reschedules itself and the
+ * rows it read are gone. A move reads without deleting, so it needs the
+ * `PaginationResult` only `listByOwner` returns. The result is the same
+ * set; only the cost differs.
  */
 async function listNoteFiles(
   ctx: ScopeUnitOfWorkContext,

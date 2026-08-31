@@ -148,9 +148,10 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 1. D1 primaryの`NoteRouteStore.resolve(noteId)`でactive routeを解決し、その1つのscope objectでノート・routeVersion・`canEdit`を確認する。`moving`は切替前source、`purging` / `tombstone`はnot found、scope missはprimaryで1回だけ引き直す
 2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
-4. SVG の場合は `HtmlProcessor.process` と同じサニタイズ規則を適用してから保管する
-5. `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる
-6. 配信用の URL を返す
+4. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない
+5. `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる。保管するサイズは手順 4 のあとのバイト長で、手順 3 で容量を確かめた申告前のバイト長とは SVG で食い違う
+6. 手順 5 の transaction が失敗した場合は、手順 5 で置いたオブジェクトを消す。`storeSource` が孤児として回収に任せるのと違うのは、**メディアには回収の手掛かりになる行が残らない**ためである（`StoredFile` が保存されていないので `collectOrphanMedia` が見つけられない）。この後始末自体が失敗した場合は記録して元のエラーを投げる
+7. 配信用の URL を返す
 
 ### エラーケース
 
@@ -159,6 +160,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 | 未対応の形式・サイズ超過 | `BusinessRuleError(UnsupportedMimeType)` / `BusinessRuleError(FileTooLarge)` |
 | 容量の上限到達 | `BusinessRuleError(StorageQuotaExceeded)` |
 | ノート不在・権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
+| 保管の失敗 | `SystemError(ExternalServiceError)` |
 
 ## storeAvatar
 

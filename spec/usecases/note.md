@@ -112,6 +112,7 @@ ExportTicket = {
 | --- | --- |
 | `noteId` | `string` |
 | `title` | `string` |
+| `version` | `number` |
 | `content` | `{ status: "processing" \| "awaitingIntegration" \| "failed" \| "ready"; html: string \| null; failureReason: string \| null }` |
 | `styleMode` | `"default" \| "preserve"` |
 | `visibility` | `"private" \| "unlisted" \| "public"` |
@@ -124,6 +125,8 @@ ExportTicket = {
 | `references` | `ReferenceReport`（下記） |
 | `permissions` | `{ canEdit: boolean; canDelete: boolean; canChangeVisibility: boolean }` |
 | `createdAt`, `updatedAt` | `Date` |
+
+`version` は編集画面が握る OCC トークンである。`updateNoteBody` / `applyTextNodeEdits` / `renameNote` / `changeNoteStyleMode` / `restoreNoteRevision` / `trashNote` / `restoreNote` はいずれも `expectedVersion` を要求するので、その最初の値を与える読み取りが要る。
 
 ```
 ReferenceReport = {
@@ -310,6 +313,62 @@ ReferenceReport = {
 | 検索のタイムアウト | `SystemError(TimeoutError)` |
 | ページング値の範囲外 | `ValidationError("INVALID_PAGINATION")` |
 
+## listNotes
+
+### 概要
+
+現在の文脈の active なノートを、絞り込みなしで一覧する（OR-01）。`searchNotes` の代役で、読み取りモデルではなく `NoteRepository.listByOwner` を直接引く。`searchNotes` と同じ owner 対（`ownerType` / `ownerWorkspaceId`）を取るので、**読み取りモデルが揃った時点でこの節ごと `searchNotes` に置き換わる**。
+
+### 入力DTO
+
+`userId`, `ownerType`（既定は `"user"`）, `ownerWorkspaceId`（`ownerType === "workspace"` のとき必須）, `page`（既定 1）, `limit`（既定 50・上限 100）
+
+### 出力DTO
+
+`items: { noteId, title, visibility, contentStatus, createdAt, updatedAt }[]`, `count: number`
+
+### 処理フロー
+
+1. `NoteOwner` を組み立て、ワークスペースなら `resolveWorkspaceAccess` でロールを引いて `viewNote` を確認する（全ロールが通るので、ここで弾かれるのは非メンバーだけ）
+2. owner から ScopeKey を導き `NoteRepository.listByOwner(owner, "active", { page, limit })` を引く
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 非メンバー | `BusinessRuleError(InsufficientRole)` |
+| ワークスペース不在 | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+
+## listTrashedNotes
+
+### 概要
+
+現在の文脈のゴミ箱を一覧する（ED-10）。`searchNotes` の `lifecycle: "trashed"` の代役で、`listNotes` と同じ立場にある。
+
+`listNotes` の引数にせず別のユースケースにするのは、**門と行の形が両方とも違う**ためである。権限は `viewNote` ではなく `viewTrash`（ワークスペースの viewer はゴミ箱そのものに触れない）で、行は復元・完全削除に渡す `version` と残り日数を出す `purgeAfter` を必ず持つ。1 本にまとめると、引数で意味の変わる門と、active な行すべてに載る「必ず `null` の保持期限」を抱えることになる。
+
+### 入力DTO
+
+`listNotes` と同じ。
+
+### 出力DTO
+
+`items: { noteId, title, version, trashedAt, purgeAfter }[]`, `count: number`
+
+### 処理フロー
+
+1. `NoteOwner` を組み立て、ワークスペースなら `resolveWorkspaceAccess` でロールを引いて `viewTrash` を確認する
+2. owner から ScopeKey を導き `NoteRepository.listByOwner(owner, "trashed", { page, limit })` を引く
+
+並び順は `listByOwner` の `updatedAt DESC, id DESC` をそのまま使う。ゴミ箱に入っている間はノートを更新できる経路が無いので、trashed な行の `updatedAt` は削除の瞬間そのもので、P-14 が要求する「削除日時の新しい順」と一致する。
+
+### エラーケース
+
+| 条件 | 種類 |
+| --- | --- |
+| 非メンバー・viewer | `BusinessRuleError(InsufficientRole)` |
+| ワークスペース不在 | `NotFoundError("WORKSPACE_NOT_FOUND")` |
+
 ## searchPublicNotes
 
 ### 概要
@@ -485,7 +544,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 処理フロー
 
-1. 閲覧者コンテキストを解決し、`canEdit` を確認する
+1. 閲覧者コンテキストを解決し、`canEdit` を確認する。`TrashedNote` なら `BusinessRuleError(NoteIsTrashed)`
 2. `Note.rename` を適用して保存する（由来は `manual`）
 
 ### エラーケース
@@ -493,6 +552,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | 条件 | 種類 |
 | --- | --- |
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
+| ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
 | 200 文字超 | `BusinessRuleError(InvalidTitle)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
@@ -512,7 +572,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 
 ### 処理フロー
 
-1. 閲覧者コンテキストを解決し、`canEdit` を確認する
+1. 閲覧者コンテキストを解決し、`canEdit` を確認する。`TrashedNote` なら `BusinessRuleError(NoteIsTrashed)`
 2. `Note.changeStyleMode` を適用して保存し、`note.styleModeChanged` を収集する（読み取りモデルの `style_mode` はこのイベント経由の `projectNoteChanges` でのみ更新される）
 
 ### エラーケース
@@ -521,6 +581,8 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | --- | --- |
 | 未知の値 | `BusinessRuleError(InvalidStyleMode)` |
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
+| ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
+| 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## moveNote
 
@@ -759,7 +821,9 @@ operation の終端はしたがって次の 5 通りだけである。
 
 ### 入力DTO
 
-`{ kind: "userRequest"; noteId; userId; expectedVersion } | { kind: "scopeCleanup"; noteId; expectedVersion; scope: ScopeKey; deletionOperationId: string }`
+`{ kind: "userRequest"; noteId; userId; expectedVersion } | { kind: "scopeCleanup"; noteId; expectedVersion; scope: ScopeKey; deletionOperationId: string } | { kind: "retention"; noteId; expectedVersion; scope: ScopeKey }`
+
+`scope` は**内部専用**。scopeを名指しできる呼び出し元は、routeが置いていない文脈からノートを消せてしまう。`scopeCleanup` / `retention` の2つは actor を名指ししないので、どちらの面（request / worker）からでも駆動できる。
 
 ### 出力DTO
 
@@ -767,8 +831,8 @@ operation の終端はしたがって次の 5 通りだけである。
 
 ### 処理フロー
 
-1. `userRequest`はprimary routeと対象scopeで閲覧者・Membership version・`canDelete`・trashed lifecycle・expected Note versionを確認する。`scopeCleanup`は`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`とrouteのscope/Note ownerが入力`scope`に一致すること、expected Note versionだけを確認し、削除中User・削除済みMembership/Workspace・active Noteを許す。どちらも判定材料をoperation payloadへ固定する
-2. `scopeCleanup`なら`sha256("ownerPurge:" + deletionOperationId + ":" + noteId)`を内部operation IDとし、`userRequest`なら新規採番する。ただしrouteが既に`purging`なら新規採番せず保存済みoperation ID/phaseを返してforward recoveryを再開する。`NoteRouteStore.beginPurge`をrouteVersion CASで呼んでrouteを`purging`にする
+1. `userRequest`はprimary routeと対象scopeで閲覧者・Membership version・`canDelete`・trashed lifecycle・expected Note versionを確認する。`scopeCleanup`は`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`とrouteのscope/Note ownerが入力`scope`に一致すること、expected Note versionだけを確認し、削除中User・削除済みMembership/Workspace・active Noteを許す。`retention`は誰の要求でもなく削除も走っていないので`assertOwner`も閲覧者解決も持たず、列挙が既に立てた主張だけ — routeのscope/Note ownerが入力`scope`に一致すること、expected Note version — を確認する。列挙と transaction の間に復元されたノートは版が動いているので競合として弾かれる。いずれも判定材料をoperation payloadへ固定する
+2. `scopeCleanup`なら`sha256("ownerPurge:" + deletionOperationId + ":" + noteId)`、`retention`なら`sha256("trashExpiry:" + noteId)`を内部operation IDとし、`userRequest`なら新規採番する。sweepは自分のoperationを持たずturnが自由に再実行されるため、`retention`の内部operation IDは派生でなければならない（重なった2つのturnは1つのpurgeを再開する）。ただしrouteが既に`purging`なら新規採番せず保存済みoperation ID/phaseを返してforward recoveryを再開する。`NoteRouteStore.beginPurge`をrouteVersion CASで呼んでrouteを`purging`にする
 3. 対象scopeのlocal transactionで、`userRequest`はactor/Membership・expected Note version・trashed lifecycleを再確認する。`scopeCleanup`はcleanup owner・scope/owner一致・expected Note versionだけを再確認し、actor/Membership/trashed lifecycleは要求しない。競合してNoteが残る場合はlocal変更をせず`abortPurge`でrouteをactiveへ戻し、元の競合/権限エラーを返す。abort応答喪失はrecoveryが同じoperation IDで再試行する
 4. 再確認が通ればNoteを削除し、内部operation ID・cleanup入力の`deletionOperationId`（userRequestはnull）・routeVersion・削除時projectionRevisionを含む`note.purged`を収集する。ここから先はabortせずforward recoveryする
 5. `note.purged` の購読者が後始末を担う
@@ -777,7 +841,7 @@ operation の終端はしたがって次の 5 通りだけである。
    - Integration の `deleteBackupRecordsForNote` — バックアップ記録の削除
    - Note の `projectNoteChanges` — 読み取りモデルからの除去
    - Usage の `applyStorageDelta` — 件数の減算
-6. global consumerはNoteId hashで決まるnote coordination shardの`PublicNoteProjectionWriter.removeForPurge`を呼び、同じshardにco-locateしたpublic 3表の削除を1 transactionで確定する。削除は世代を比較せずend stateで冪等になり、別途のack行は持たない。その削除の確定後だけ`finishPurge`で30日tombstoneにする
+6. **手順 4 の local transaction が commit したあと、このユースケース自身が続けて**NoteId hashで決まるnote coordination shardの`PublicNoteProjectionWriter.removeForPurge`を呼び、同じshardにco-locateしたpublic 3表の削除を1 transactionで確定する。削除は世代を比較せずend stateで冪等になり、別途のack行は持たない。その削除の確定後だけ`finishPurge`で30日tombstoneにする。手順 5 の購読者に混ぜないのは、**「public 削除の確定後だけ tombstone」という順序を守る主体を 1 か所に置く**ためで、`moveNote` が route saga の全 phase を要求経路で駆動するのと同じ形になる。ここで失敗した場合はabortせず、routeを`purging`のまま（＝到達不能のまま）残してrecoveryに委ねる
 
 recoveryはpayloadに固定したactor/Membership version、scope、expected Note version、routeVersion、projectionRevisionを使う。Noteが残り再検査不能ならabort、Noteが消えていればpublic remove以降を再開する。利用者入力を読み直さない
 
@@ -959,6 +1023,7 @@ Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `Re
 | --- | --- |
 | 版が不在・他ノートのもの | `NotFoundError("REVISION_NOT_FOUND")` |
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
+| ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## exportNote

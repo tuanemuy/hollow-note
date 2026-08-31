@@ -25,8 +25,8 @@ const noteNotFound = (): NotFoundError =>
  *
  * `shareUrl` is revealed (decrypted) only for a viewer with
  * `canChangeVisibility` on an unlisted note; anonymous / read-only
- * paths never decrypt. `references` is structurally empty in this slice
- * (see {@link emptyReferenceReport}).
+ * paths never decrypt. `references` is structurally empty until the
+ * reference import runs (see {@link emptyReferenceReport}).
  */
 export async function getNote({
   container,

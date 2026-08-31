@@ -967,3 +967,78 @@ ED-10 手順 1 は「スコープトークンのメニューから、現在の�
 
 - 良い点: viewer のトークンにゴミ箱が出ない（TC-32）。判定はサーバー側の `WorkspaceRole.atLeast(role, "editor")` 1 か所から来る
 - トレードオフ: **ワークスペース設定の 4 タブからはゴミ箱へ移れない。** ロールを渡すには `settings/-action.tsx` と `settings/route.tsx` を触ることになり、本スライスの担当範囲外なので見送った。ノート一覧とゴミ箱自身のトークンからは移れるので、行き先が完全に失われるわけではない
+
+---
+
+## ADR-039: spec へ書き戻すのは「本スライスが決めたこと」だけにし、他スライスの未実装は spec から消さない
+
+### Context
+
+仕上げで spec と実装を突き合わせたところ、乖離が 2 種類に分かれた。
+
+- **実装が spec より先に決めたこと** — `getNote` の `version`、`listTrashedNotes`、`NoteAccessPolicy.ensureCanDelete`、`ensureAcceptable` が判定する 7 形式、`purgeNote` の `retention` admission と手順 6 の駆動主体、`StorageUrlPolicy` の `deliveryBaseUrl` の出どころ
+- **spec が実装より先に書いていること** — `purgeNote` 手順 5 の 5 購読者のうち `projectNoteChanges` / `applyStorageDelta`、`UploadValidationPolicy` の `source` / `reference` / `artifact` の行、recovery driver
+
+後者を「実装に合わせて」spec から削ると、他スライスが実装すべき対象そのものが消える。
+
+### Decision
+
+**前者だけを spec に書き戻し、後者は 1 行も触らない。** spec は設計の正典であって進捗表ではないので、まだ実装されていない設計は正典に残る。逆に、実装が spec より先に決めてしまったことは、決めた側が spec に戻すまで正典が嘘をつく。
+
+書き戻したのは次の 7 か所。
+
+| spec | 変更 |
+| --- | --- |
+| `usecases/note.md#getNote` | 出力 DTO に `version` を足し、OCC トークンである理由を添えた |
+| `usecases/note.md` | `listNotes` / `listTrashedNotes` の節を新設（ADR-040） |
+| `usecases/note.md#renameNote` / `#changeNoteStyleMode` / `#restoreNoteRevision` | エラー表に `NoteIsTrashed` を追加。`changeNoteStyleMode` には版の競合も（`expectedVersion` を取るのに行が無かった） |
+| `usecases/note.md#purgeNote` | 入力 DTO に `retention` を足し（ADR-027）、手順 6 の駆動主体を「global consumer」からユースケース自身に直した（ADR-017） |
+| `usecases/storage.md#storeMedia` | SVG の名前空間の付け直しと、transaction 失敗時のオブジェクト削除を手順に追加 |
+| `domains/note.md` | `NoteAccessPolicy` の表に `ensureCanDelete` を追加 |
+| `domains/storage.md` | `ensureAcceptable` の判定表を 7 形式に更新。`StorageUrlPolicy` に `create` を足し、`deliveryBaseUrl` の出どころを `AppConfig` から `ObjectStorage.publicUrl`（[ADR 049](../../spec/adr/049-object-storage-public-url.md)）へ直した |
+
+最後の 1 つは `spec/presentation/index.md` の `AppConfig` 表からも「ストレージの配信元」の行を落とした。実装の `AppConfig` にその項目は無く、ADR 049 が「配信 URL の形はアダプターに閉じる」と決めているため、2 か所が同時に嘘をついていた。
+
+### Consequences
+
+- 良い点: spec を読んで実装を書く人が、本スライスが決めたことを `.thread/` を読まずに知れる
+- 良い点: 未実装の設計が正典に残るので、後続スライスのチェックリストが痩せない
+- トレードオフ: 「実装が spec より遅れている」ことは spec からは読めない。読むのは Issue のチェックリストであって spec ではない、という分担にした
+
+---
+
+## ADR-040: `listTrashedNotes` の節を足すなら `listNotes` の節も同時に足す
+
+### Context
+
+ADR-035 は「`spec/usecases/note.md` に対応する節が無い実装が 1 本増えた（`listNotes` と同じ立場）」をトレードオフとして残した。仕上げで `listTrashedNotes` の節を足すことになったが、`listNotes` にも節が無い状態は変わっていない。
+
+### Decision
+
+**両方足す。** 片方だけ書くと「`listNotes` は正典に無いから読み替えなくてよい」と誤読できる。2 つは `searchNotes` の同じ代役で、置き換わるときも一緒に置き換わる。節の冒頭で「`searchNotes` の代役であり、読み取りモデルが揃った時点でこの節ごと置き換わる」と明示し、`spec/inventory/usecase.md` に `UC-note-037` / `UC-note-038` を（[ADR 052](../../spec/adr/052-adapter-inventory-granularity.md) に従いドメイン群の末尾へ）追加した。
+
+`listNotes` は既にマージ済みのスライスの持ち分だが、書くのは実装ではなく正典への記述なので、他スライスの実装には触れていない。
+
+### Consequences
+
+- 良い点: 検索スライスが `searchNotes` を実装するとき、消すべき節と台帳行が 2 組そろって見える
+- トレードオフ: 一時的な代役が正典に載る。節の冒頭がそう書いているので、残り続けることはない
+
+---
+
+## ADR-041: ビジュアルモードではメディア挿入を出さない（実装を canon に合わせた唯一の変更）
+
+### Context
+
+`spec/scenario/editing.md` の ED-06 は「ビジュアルモードでは要素を追加できないため、この操作を提供しない」と定める。実装では下端の操作バーの `MediaButton` がモードによらず常に描かれていた。手順書 TC-15 手順 3 は canon に忠実で、実装のほうが違反していた。
+
+手順書と実装の食い違いは他にもあるが（HTML モードのシンタックスハイライト、保存前の構文補正の警告、アップロード中の離脱確認、本文へのプレースホルダー挿入、先頭行からの自動命名）、いずれも新しい機能を作る規模で、仕上げの担当範囲を越える。
+
+### Decision
+
+**`MediaButton` をビジュアルモードで描かない**（1 行の分岐）だけを直し、残りは手順書を canon のまま残して報告する。手順書は「正しい実装を FAIL にしない」ために直すのであって、**違反している実装を PASS にするために直すものではない**。
+
+### Consequences
+
+- 良い点: TC-15 手順 3 が実機で通るようになった
+- トレードオフ: 残る 5 件は手順書を実行すると FAIL する。FAIL が正しい状態なので、手順書には手を入れていない

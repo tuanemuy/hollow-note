@@ -58,7 +58,7 @@ export const personalCleanupParticipants = {
   backup: absent("Nothing sweeps a user's backup records", "#4"),
   localProjection: absent(
     "Nothing enqueues deletion-driven local projection tasks; author redaction is counted as a manifest item ack instead",
-    "editing / curation",
+    "the slice that enqueues deletion-driven local projection tasks",
   ),
   outbox: absent(
     "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`",
