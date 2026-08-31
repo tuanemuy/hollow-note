@@ -325,7 +325,9 @@ ReferenceReport = {
 
 ### 出力DTO
 
-`items: { noteId, title, visibility, contentStatus, createdAt, updatedAt }[]`, `count: number`
+`items: { noteId, title, version, visibility, contentStatus, createdAt, updatedAt }[]`, `count: number`
+
+`version` は行の OCC トークンである。一覧からの削除（ED-09）は**一覧メンバーシップの変更**なので実行するのは一覧側であり、`trashNote` が要求する `expectedVersion` は行と一緒に届いていなければならない。サーバー側で引き直すと、自分で読んだ値と突き合わせるだけの恒真な検査になる。
 
 ### 処理フロー
 

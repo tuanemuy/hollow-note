@@ -71,6 +71,8 @@ function toNoteRowView(item: NoteListItemView): NoteRowView {
   return {
     noteId: item.noteId,
     title: item.title,
+    version: item.version,
+    isPublished: item.visibility !== "private",
     visibilityLabel: visibility.label,
     visibilityDotClass: visibility.dotClass,
     updatedLabel: formatUpdatedAt(item.updatedAt),

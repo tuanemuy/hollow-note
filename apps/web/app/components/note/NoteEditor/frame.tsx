@@ -29,11 +29,9 @@ const backLinkClass =
 export function BackLink({
   target,
   label,
-  onNavigate,
 }: {
   target: BackTarget;
   label: string;
-  onNavigate?: (event: { preventDefault: () => void }) => void;
 }) {
   const icon = (
     <svg
@@ -56,7 +54,7 @@ export function BackLink({
   switch (target.kind) {
     case "notes":
       return (
-        <Link to="/notes" className={backLinkClass} onClick={onNavigate}>
+        <Link to="/notes" className={backLinkClass}>
           {icon}
           {text}
         </Link>
@@ -67,7 +65,6 @@ export function BackLink({
           to="/workspaces/$workspaceId/notes"
           params={{ workspaceId: target.workspaceId }}
           className={backLinkClass}
-          onClick={onNavigate}
         >
           {icon}
           {text}
@@ -79,7 +76,6 @@ export function BackLink({
           to="/notes/$noteId"
           params={{ noteId: target.noteId }}
           className={backLinkClass}
-          onClick={onNavigate}
         >
           {icon}
           {text}
@@ -94,7 +90,6 @@ export function BackLink({
             noteId: target.noteId,
           }}
           className={backLinkClass}
-          onClick={onNavigate}
         >
           {icon}
           {text}

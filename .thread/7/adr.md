@@ -1042,3 +1042,159 @@ ADR-035 は「`spec/usecases/note.md` に対応する節が無い実装が 1 本
 
 - 良い点: TC-15 手順 3 が実機で通るようになった
 - トレードオフ: 残る 5 件は手順書を実行すると FAIL する。FAIL が正しい状態なので、手順書には手を入れていない
+
+---
+
+## ADR-042: HTML モードのシンタックスハイライトは依存を増やさず自前で書く
+
+### Context
+
+ED-03 手順 2 と TC-05 手順 1 は「シンタックスハイライト付きのソースエディタ」を要求する。実装は素の `textarea` で、色分けが無かった。
+
+`apps/web/package.json` と `packages/core/package.json` を当たったが、ハイライターも構文解析の部品も入っていない（依存は TanStack・React・Tailwind・zod だけ）。選択肢は 3 つあった。
+
+1. 汎用ハイライター（highlight.js / Shiki / Prism）を足す
+2. CodeMirror などのエディタ部品ごと差し替える
+3. HTML 1 言語ぶんのトークナイザーを書き、背面の `pre` に色を付ける
+
+### Decision
+
+3 を採る。`NoteEditor/highlight.ts` に HTML のトークナイザー（テキスト / 記号 / タグ名 / 属性名 / 属性値 / コメント）を置き、面（`surfaces.tsx`）が背面の `pre` に `span` として描く。前面の `textarea` は文字を透明にして caret と選択だけを持つ。
+
+1 は、必要なのが 1 言語ぶんの色分けなのに、言語定義一式とテーマ一式を持ち込むことになる。`spec/design/index.md` は `--code-keyword` / `--code-string` / `--code-comment` / `--code-function` / `--code-number` を既に定義しており（本スライスまで未使用だった）、配色の正典はこちらにある。ハイライターのテーマを当てると、正典が 2 つ並ぶ。2 は入力の実装ごと差し替わるので、自動保存・退避・モード切替が載っている現在の形を壊す。
+
+トークナイザーは HTML パーサーではない。壊れた構文（閉じていないタグ、引用符の無い属性値）もそのまま色が付く — 補正は保存側の `HtmlProcessor` が行うのであって、書いている最中の面が構文を正すのではない。
+
+長さの上限（60,000 文字）を超えたら色分けを止めて素のまま描く。トークン 1 つが `span` 1 つになるので、本文の上限（サニタイズ後 800 KB）に近いソースでは DOM が数十万ノードになり、打鍵のたびに固まる。色が無いことより、書けないことのほうが重い。
+
+### Consequences
+
+- 良い点: 依存が 1 つも増えず、配色は `--code-*` トークン 1 か所から来る
+- 良い点: トークン列の連結が入力と一致する（不変条件）ので、背面の `pre` と前面の `textarea` の桁がずれない
+- トレードオフ: 色分けの粒度は 6 種類だけで、`<script>` / `<style>` の中身は色が付かない
+- トレードオフ: 60,000 文字を超えるソースは色が付かない。上限に当たったことは画面上では何も告げない
+
+---
+
+## ADR-043: 離脱の確認はルーターの blocker に一本化する
+
+### Context
+
+確認が要る離脱は 3 通りある — 画面内のリンク（TC-22 手順 1）、ブラウザーの戻る（TC-22 手順 3）、タブを閉じる。加えて ED-06 は「アップロード中に編集画面を離れようとした場合、中断される旨を確認する」（TC-27）を別の理由として要求する。
+
+実装は 2 つに分かれていた。`beforeunload` の listener（タブを閉じる／再読み込みだけ）と、`BackLink` の `onClick` での `window.confirm`（そのリンクだけ）である。SPA の遷移は前者を通らず、戻るボタンは後者を通らない。したがって TC-22 手順 3 は素通りしていた。アップロード中はどちらの経路にも条件が無かった。
+
+### Decision
+
+`useBlocker`（`@tanstack/react-router`）1 つにまとめる。`shouldBlockFn` が `window.confirm` を出し、取りやめられたときだけ遷移を止める。`enableBeforeUnload` に同じ条件を渡すのでタブを閉じる経路も同じ判定に載る。`BackLink` の `onNavigate` は用が無くなったので prop ごと外した。
+
+確認の文言は理由で分ける — アップロード中なら「中断されます」、未保存なら「失われます」。アップロード中を先に見るのは、そちらのほうが取り返しがつかないためである（未保存の本文は端末に退避されるが、中断したアップロードは何も残さない）。
+
+`shouldBlockFn` / `enableBeforeUnload` は `useCallback` で固定し、条件は ref 経由で読む。blocker は関数の同一性で購読を張り直すので、毎描画で作り直す関数を渡すと打鍵のたびに登録が動く。
+
+### Consequences
+
+- 良い点: TC-22 の 3 手順と TC-27 が同じ 1 つの判定から出る。経路ごとに条件が食い違うことがない
+- 良い点: 確認を出す場所が増えない。リンクを 1 本足しても勝手に守られる
+- トレードオフ: `window.confirm` に依存する。画面内のダイアログにするには blocker の `withResolver` へ移す必要があり、その分だけ状態が増える
+
+---
+
+## ADR-044: メディアの仮の要素は本文へ差し込み、成否で差し替えるか取り除く
+
+### Context
+
+ED-06 は「アップロードに失敗した場合、挿入されたプレースホルダーを取り除き、再試行できるようにする」と定め、TC-26 は手順 1 で「プレースホルダーが挿入され」ることを期待する。実装は本文に何も挿入せず、成功したときだけ `img` / `video` を入れていた。失敗は本文の外の一覧に 1 行出るだけで、再試行の導線も無かった（同じファイルを選び直すしかない）。
+
+### Decision
+
+挿入を始めた時点で `<span data-hollow-upload="{id}">…</span>` を本文へ差し込み、成功したら保管した要素で置き換え、失敗したら取り除く。`id` は属性セレクターと正規表現の両方に載るので、ファイル名を混ぜず `[a-z0-9-]` だけで組む。
+
+置き換えは面によって経路が違う。WYSIWYG の本文は DOM が正本なので `querySelector` で引いて `outerHTML` を差し替え、HTML モードは文字列なので正規表現で置換する。どちらの場合も本文の state を揃えてから `dirty` に戻す。
+
+失敗した項目は `File` を持ち続け、「再試行」がそのファイルをもう一度送る。選び直させると、TC-26 手順 4（通信を回復して再試行する）が「同じファイルをもう一度選ぶ」という別の操作になる。
+
+### Consequences
+
+- 良い点: 挿入位置が最初から見え、完了しても位置が動かない
+- 良い点: 失敗の後始末が本文の中で完結する。利用者が仮の要素を手で消す必要がない
+- トレードオフ: 仮の要素は保存されうる。自動保存はアップロード中は待つようにしたが、明示保存を押せば `data-hollow-upload` が落ちた素の `span` が本文に残る
+- トレードオフ: 自動保存がアップロードの間だけ止まる。表示は「未保存」のままになる
+- トレードオフ: HTML モードでの置換は正規表現なので、利用者が仮の要素の中身を書き換えると当たらなくなる
+
+---
+
+## ADR-045: 一覧からの削除のために `NoteListItemView` に `version` を足す
+
+### Context
+
+ED-09 手順 1 は「ノート詳細**または一覧**のメニューから『削除』を選ぶ」と定め、P-10 は行ごとのメニューを機能に挙げている。実装は一覧のメニューに「移動」しか無かった。ステップ 11 の担当者は「`NoteListItemView` に `version` が無く、追加すると core の変更がもう 1 つ増える」ことを理由に見送っている。
+
+`trashNote` は `expectedVersion` を要求する。CLAUDE.md「Frontend」の所有権の規則により削除を実行するのは一覧を握る島であり（楽観的な除去がリーフを先に unmount する）、その島は行から版を受け取るしかない。サーバー関数の中で引き直すと、自分で読んだ値と突き合わせるだけの恒真な検査になり、楽観ロックが**あるように見えて無い**状態になる（`moveNoteFn` の JSDoc と同じ論点）。
+
+### Decision
+
+`NoteListItemView` に `version: number` を足す（ADR-031 / ADR-035 と同じ純粋な加算）。`spec/usecases/note.md#listNotes` の出力 DTO にも書き戻し、OCC トークンである理由を添えた。
+
+削除の可否は既存の `NoteListOwner.canWrite` をそのまま使う。`WorkspaceAuthorization` の最小ロールは `deleteNote` も `moveNote` も editor なので、可否が分かれる余地が無い。
+
+削除直後の「元に戻す」は詳細画面と同じ形にする（ADR-037）。版は `readNoteEditStateFn` で取り直す — `trashNote` の応答は保持期限しか返さず、ジョブの強制終端で版がもう 1 つ進むことがあるので差分を数えて当てにはできない。詳細と違って `router.invalidate()` は呼ぶ。楽観的な除去は transition が終わると戻るので、行を実際に消すのは読み直しであり、通知は島の state なので断片が作り直されても消えない。
+
+### Consequences
+
+- 良い点: ED-09 手順 1 の「一覧のメニューから」が実際に動く。TC-12 に手順 6・7 を足して手順書からも辿れるようにした
+- 良い点: 一覧が版を持つので、後続スライスの一括操作（OR-09）も同じ値を使える
+- トレードオフ: バックエンドは完成済みという前提のもとでフロントエンド側の作業として `packages/core` に触れた（ADR-031 / ADR-035 と同じ扱い）
+
+---
+
+## ADR-046: `storeMedia` の `routeVersion` は spec 側を直す
+
+### Context
+
+`spec/usecases/storage.md#storeMedia` の手順 1 は「その1つのscope objectでノート・routeVersion・`canEdit`を確認する」と書いているが、実装は `scopeRouter.resolveNote` が返す `routeVersion` を読み捨てている。
+
+読み直した結果は次のとおりである。
+
+- `routeVersion` を実際に消費するのは route の**状態遷移**だけである（`beginMove` / `abortMove` の `expectedRouteVersion`、`beginPurge`）。`NoteRouteStore` の JSDoc も CAS を `beginMove` / `beginPurge` に結び付けている
+- 編集系ユースケースは全部 `editing.ts` の `resolveNoteFor` を通り、`EditableNote.routeVersion` を受け取るが、`purgeNote` 以外は 1 つも使っていない。`updateNoteBody` / `renameNote` / `applyTextNodeEdits` / `changeNoteStyleMode` / `trashNote` / `restoreNote` はどれもノート自身の `version` で楽観ロックする
+- 「共通: 閲覧者コンテキストの解決」（`spec/usecases/note.md`）は `routeVersion` の確認を手順に含めていない。含めているのは「scope miss / stale route version なら primary から1回だけ引き直す」だけで、`storeMedia` の実装はこれを満たしている
+
+つまり `storeMedia` が書くのは scope 内の `StoredFile` 1 行であって route の状態遷移ではなく、`routeVersion` を固定する相手（CAS を取る呼び出し）が存在しない。
+
+### Decision
+
+**spec を直す。** 手順 1 を「共通: 閲覧者コンテキストの解決と同じ手順」に読み替え、**route の CAS は取らない**ことと、その理由（書き先が route ではない）を明記した。解決から保存までの間に移動が起きた場合の帰結（旧 scope に残った行は `collectOrphanMedia` の回収対象になる）も添えた。
+
+実装側に CAS を足す案は採らない。`NoteRouteStore` に「読み取りだけの CAS」は無く、足すとすべての編集系ユースケースが同じものを要求することになる（`storeMedia` だけ強い保証を持つ理由が無い）。窓の実体は編集系ユースケース共通のもので、`storeMedia` に固有の欠陥ではない。
+
+### Consequences
+
+- 良い点: spec が「取っていない CAS」を約束しなくなる。読んだ人が実装の欠落と誤解しない
+- 良い点: 移動と保存が交差したときの帰結が正典に書かれた（回収に任せる、という既存の設計と同じ結論）
+- トレードオフ: 移動の窓は残る。塞ぐなら編集系ユースケース全体の設計判断になるので、本スライスでは扱わない
+
+---
+
+## ADR-047: ED-01 の「先頭行からの自動タイトル」は本スライスの持ち分ではない
+
+### Context
+
+`spec/scenario/editing.md#ED-01` の異常系は「タイトルが未入力のまま保存した場合、本文の先頭行から自動で仮のタイトルを付ける。本文も空なら『無題』とする」と定める。実装にこの導出は無い。plan.md はスコープから ED-01 を外しているが、「導出が `updateNoteBody` の振る舞いなら本スライスの持ち分」という留保が残っていた。
+
+判定のために当たったのは 3 か所である。
+
+- `spec/usecases/note.md#createBlankNote` 手順 2 — 「`title` が空なら `NoteTitle.auto("無題")`」。本文を受け取らないので先頭行を知りようがない
+- `spec/usecases/note.md#updateNoteBody` 手順 1〜8 — タイトルに触れる手順が 1 つも無い。出力 DTO にも `title` が無い
+- `domain/note/note.ts` の `Note.updateBody` — `content` と `version` と `updatedAt` しか動かさない。`NoteTitle` の `auto` / `manual` の区別は「後の変換結果で上書きしてよいか」を表すものであって、本文からの導出を指すものではない
+
+つまり導出を担うユースケースは正典のどこにも無く、`updateNoteBody` の振る舞いでもない。ED-01 の異常系の受け皿は `createBlankNote`（依存 Issue #1）側にある。
+
+### Decision
+
+**実装しない。** 手順書（`spec/manual-tests/editing.md` の TC-02）も直さない — canon が要求していて実装が無い状態が正しく FAIL するのは、手順書が仕事をしている姿である。
+
+### Consequences
+
+- 良い点: 他スライスの持ち分を先取りしない。`createBlankNote` に本文を渡す形にするのか、`updateNoteBody` に手順を足すのかは、実装する側が決めるべき設計判断として残る
+- トレードオフ: TC-02 は引き続き FAIL する

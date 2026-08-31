@@ -145,7 +145,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 
 ### 処理フロー
 
-1. D1 primaryの`NoteRouteStore.resolve(noteId)`でactive routeを解決し、その1つのscope objectでノート・routeVersion・`canEdit`を確認する。`moving`は切替前source、`purging` / `tombstone`はnot found、scope missはprimaryで1回だけ引き直す
+1. 「共通: 閲覧者コンテキストの解決」（[usecases/note.md](note.md)）と同じ手順でノートを解決し、`canEdit` を確認する。`moving` は切替前 source、`purging` / `tombstone` は not found、scope miss は primary で 1 回だけ引き直す。**route の CAS は取らない** — この経路が書くのは scope 内の `StoredFile` 1 行だけで、route の状態遷移（`beginMove` / `beginPurge`）ではないため `routeVersion` を固定する相手がいない。解決から手順 5 までの間にノートが移動した場合は、`resolveNote` の 1 回の引き直しに間に合ったものだけが新しい scope へ届き、間に合わなければ旧 scope に行が残って `collectOrphanMedia` の回収対象になる（編集系ユースケースがどれも同じ窓を持つ）
 2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
 4. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない

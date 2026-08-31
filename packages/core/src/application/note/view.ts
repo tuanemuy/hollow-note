@@ -90,9 +90,19 @@ export type NoteDetailView = Readonly<{
   updatedAt: Date;
 }>;
 
+/**
+ * One row of the note list (P-10).
+ *
+ * `version` is the row's OCC token, carried for the same reason
+ * `TrashedNoteListItemView` carries one: the list owns the delete
+ * (a list-membership change cannot be optimistically applied from the
+ * row), and `trashNote` demands the version the screen actually saw.
+ * Re-reading it server-side would make the check tautological.
+ */
 export type NoteListItemView = Readonly<{
   noteId: string;
   title: string;
+  version: number;
   visibility: "private" | "unlisted" | "public";
   contentStatus: NoteContentView["status"];
   createdAt: Date;
@@ -234,6 +244,7 @@ export const toNoteContentView = (note: Note): NoteContentView => {
 export const toNoteListItemView = (note: Note): NoteListItemView => ({
   noteId: note.id,
   title: note.title.value,
+  version: note.version,
   visibility: note.visibility.status,
   contentStatus: note.content.status,
   createdAt: note.createdAt,

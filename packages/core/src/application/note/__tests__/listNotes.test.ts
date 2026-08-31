@@ -8,6 +8,7 @@ import {
 } from "../../workspace/__tests__/harness";
 import { createBlankNote } from "../createBlankNote";
 import { listNotes } from "../listNotes";
+import { renameNote } from "../renameNote";
 
 const WORKSPACE = "workspace-1";
 
@@ -51,6 +52,41 @@ describe("listNotes", () => {
       visibility: "private",
       contentStatus: "ready",
     });
+  });
+
+  // The row carries the OCC token the list's own delete demands: the
+  // membership change is owned by the list, not the row, so the version
+  // has to arrive with the listing rather than be re-read per row.
+  it("carries the current version of each row", async () => {
+    const h = createTestHarness();
+    const created = await createBlankNote({
+      container: h.container,
+      input: { userId: "u1", ownerType: "user", title: "One" },
+    });
+    const before = await listNotes({
+      container: h.container,
+      input: { userId: "u1" },
+    });
+    const renamed = await renameNote({
+      container: h.container,
+      input: {
+        noteId: created.noteId,
+        userId: "u1",
+        title: "Renamed",
+        expectedVersion: before.items[0]?.version ?? -1,
+      },
+    });
+
+    const view = await listNotes({
+      container: h.container,
+      input: { userId: "u1" },
+    });
+    expect(view.items).toEqual([
+      expect.objectContaining({
+        noteId: created.noteId,
+        version: renamed.version,
+      }),
+    ]);
   });
 
   it("returns an empty page for a user without notes", async () => {

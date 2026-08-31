@@ -1,7 +1,20 @@
 "use client";
 
-import { type RefObject, useEffect, useId, useRef } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Alert } from "@/components/ui/Alert";
 import { NoteBody } from "../NoteBody";
+import {
+  HIGHLIGHT_MAX_LENGTH,
+  type HtmlTokenKind,
+  tokenizeHtml,
+} from "./highlight";
 import { collectEditableTextNodes } from "./textNodes";
 
 /**
@@ -78,6 +91,36 @@ export function WysiwygSurface({
   );
 }
 
+/** 色分けとソースの字送りは 1 か所で決める（ずれると桁が合わない）。 */
+const sourceTypeClass =
+  "font-mono text-[length:var(--text-mono)] leading-[1.7] whitespace-pre-wrap [overflow-wrap:anywhere]";
+
+const TOKEN_CLASS: Readonly<Record<HtmlTokenKind, string>> = {
+  text: "",
+  punct: "text-ink-tertiary",
+  tag: "text-[var(--code-keyword)]",
+  attr: "text-[var(--code-function)]",
+  value: "text-[var(--code-string)]",
+  comment: "text-[var(--code-comment)]",
+};
+
+/**
+ * ブラウザーの HTML パーサーが直した結果。壊れた構文（閉じていないタグ、
+ * 引用符の無い属性値）はここで補われる。
+ *
+ * サーバー側の `HtmlProcessor` とは別の実装だが、どちらも HTML の構文解析
+ * 規則そのものを実装しているので、補正の結果は一致する。`null` は「補正が
+ * 要らなかった」で、警告もプレビューの差し替えも起こさない。
+ */
+const REPAIR_CHECK_DELAY_MS = 500;
+
+function repairMarkup(source: string): string | null {
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const repaired = template.innerHTML;
+  return repaired === source ? null : repaired;
+}
+
 export function HtmlSurface({
   value,
   onChange,
@@ -88,30 +131,97 @@ export function HtmlSurface({
   textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const sourceId = useId();
+  const overlayRef = useRef<HTMLPreElement | null>(null);
+
+  // 構文の補正はブラウザーのパーサーに聞くので、描画のあとに走らせる
+  // （サーバー側の描画には `document` が無い）。打鍵が止まってからにする
+  // のは、書きかけのタグ（`<p` まで打った状態）がどれも「壊れている」に
+  // 当たり、打つそばから警告が出入りするためである。
+  const [repaired, setRepaired] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setRepaired(repairMarkup(value));
+    }, REPAIR_CHECK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [value]);
+
+  const tokens = useMemo(
+    () => (value.length > HIGHLIGHT_MAX_LENGTH ? null : tokenizeHtml(value)),
+    [value],
+  );
+
   return (
     <div className="grid gap-4">
       <div className="overflow-hidden rounded-lg border border-hairline">
         <div className="border-b border-hairline bg-surface-elevated px-3 py-2 text-xs tracking-[0.06em] text-ink-tertiary uppercase">
           <label htmlFor={sourceId}>ソース</label>
         </div>
-        <textarea
-          id={sourceId}
-          ref={textareaRef}
-          value={value}
-          spellCheck={false}
-          onChange={(event) => onChange(event.target.value)}
-          className="block min-h-[220px] w-full resize-y bg-bg p-3 font-mono text-[length:var(--text-mono)] leading-[1.7] text-ink outline-none"
-        />
+        {/* 色分けは背面の `pre` が描き、前面の `textarea` は文字を透明に
+            して caret と選択だけを担う。`contenteditable` にすると打鍵の
+            たびに caret が飛ぶので、入力そのものは素の `textarea` に
+            残してある。字送りの規則は両者で共有する。 */}
+        <div className="relative bg-bg">
+          <pre
+            ref={overlayRef}
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 m-0 overflow-hidden p-3 text-ink ${sourceTypeClass}`}
+          >
+            {tokens === null
+              ? value
+              : tokens.map((token, index) =>
+                  token.kind === "text" ? (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: トークン列は毎回作り直す派生値で、並べ替えも部分更新も起きない。
+                    <span key={index}>{token.text}</span>
+                  ) : (
+                    <span
+                      // biome-ignore lint/suspicious/noArrayIndexKey: 同上。
+                      key={index}
+                      className={TOKEN_CLASS[token.kind]}
+                    >
+                      {token.text}
+                    </span>
+                  ),
+                )}
+            {"\n"}
+          </pre>
+          <textarea
+            id={sourceId}
+            ref={textareaRef}
+            value={value}
+            spellCheck={false}
+            onChange={(event) => onChange(event.target.value)}
+            onScroll={(event) => {
+              const overlay = overlayRef.current;
+              if (overlay !== null) {
+                overlay.scrollTop = event.currentTarget.scrollTop;
+              }
+            }}
+            className={`relative block min-h-[220px] w-full resize-y bg-transparent p-3 text-transparent outline-none [caret-color:var(--color-ink)] ${sourceTypeClass}`}
+          />
+        </div>
       </div>
+
+      {/* ED-03「構文が壊れている場合、保存前に警告し、補正後の結果を
+          プレビューで示す」。 */}
+      {repaired === null ? null : (
+        <Alert tone="warning" title="HTML の構文を補正しました" role="status">
+          閉じていないタグや引用符の無い属性値を補いました。保存すると、下のプレビューの内容で保存されます。
+        </Alert>
+      )}
+
       <div className="overflow-hidden rounded-lg border border-hairline">
         <div className="border-b border-hairline bg-surface-elevated px-3 py-2 text-xs tracking-[0.06em] text-ink-tertiary uppercase">
-          プレビュー
+          {repaired === null ? "プレビュー" : "プレビュー（補正後）"}
         </div>
         <div className="min-h-[220px] p-4 text-sm leading-relaxed">
           {/* プレビューは保存前の本文なのでサニタイズを通っていない。
               Shadow DOM の隔離は `NoteBody` と同じ扱いで、実際の安全は
               保存時のサニタイズと CSP が担う。 */}
-          <NoteBody html={value} styleMode="default" headings={[]} />
+          <NoteBody
+            html={repaired ?? value}
+            styleMode="default"
+            headings={[]}
+          />
         </div>
       </div>
     </div>

@@ -1,9 +1,10 @@
 "use client";
 
-import { useRouter } from "@tanstack/react-router";
+import { useBlocker, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
   useActionState,
+  useCallback,
   useEffect,
   useId,
   useOptimistic,
@@ -90,11 +91,16 @@ type RevisionEntry = Readonly<{
   excerpt: string;
 }>;
 
+/**
+ * 進行中・失敗したメディア挿入（ED-06）。`file` を持ち続けるのは再試行の
+ * ためで、失敗の表示から選び直さずにもう一度送れるようにする。
+ */
 type UploadEntry = Readonly<{
   id: string;
   name: string;
   status: "uploading" | "failed";
   message: string | null;
+  file: File;
 }>;
 
 const AUTOSAVE_DELAY_MS = 1_500;
@@ -200,6 +206,7 @@ export function NoteEditorIsland({
 
   const dirty = title !== savedTitle || body !== savedBody || visualDirty;
   const editable = status.kind !== "locked" && status.kind !== "blocked";
+  const uploading = uploads.some((entry) => entry.status === "uploading");
 
   // 既定のモードは端末に持つ（ED-05）。新規作成だけは引き継がず常に
   // WYSIWYG で開く。読み出しを effect に置くのは、サーバー描画と初回の
@@ -225,15 +232,27 @@ export function NoteEditorIsland({
     setVisualAvailable(collectEditableTextNodes(template.content).length > 0);
   }, [body]);
 
-  // 未保存のまま離脱しようとしたら確認する（ED-08）。
-  useEffect(() => {
-    if (!dirty) return;
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
+  // 離脱の確認（ED-08 の未保存、ED-06 のアップロード中）。
+  //
+  // ルーターの blocker に載せるのは、確認が要る離脱が 3 通りあるため
+  // である — 画面内のリンク、ブラウザーの戻る、タブを閉じる。素の
+  // `beforeunload` は最後の 1 つしか捕まえず、SPA の遷移は素通りする。
+  // ref を経由するのは、blocker が `shouldBlockFn` の同一性で購読を張り
+  // 直すためで、毎描画で作り直す関数を渡すと打鍵のたびに登録が動く。
+  const leaveConfirmRef = useRef<string | null>(null);
+  leaveConfirmRef.current = uploading
+    ? UPLOAD_LEAVE_CONFIRM
+    : dirty
+      ? LEAVE_CONFIRM
+      : null;
+
+  useBlocker({
+    shouldBlockFn: useCallback(() => {
+      const message = leaveConfirmRef.current;
+      return message !== null && !window.confirm(message);
+    }, []),
+    enableBeforeUnload: useCallback(() => leaveConfirmRef.current !== null, []),
+  });
 
   const reconcile = () =>
     router.invalidate().catch(() => {
@@ -382,15 +401,27 @@ export function NoteEditorIsland({
   // だけで、競合は解決されず、失敗はサーバーへの連打になる。再開は利用者の
   // 「再試行」か競合の解決が起点になる。
   //
+  // アップロード中も待つ。本文にはまだ仮の要素が入っていて、それを保存
+  // すると `data-hollow-upload` が落ちた素の `span` が本文に残る。
+  //
   // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに `commit` が読む値（タイトル・本文・ビジュアルの差分）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。
   useEffect(() => {
-    if (!dirty || !editable || isSaving) return;
+    if (!dirty || !editable || isSaving || uploading) return;
     if (status.kind === "conflict" || status.kind === "failed") return;
     const timer = window.setTimeout(() => {
       startSaving(() => commit(false));
     }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [dirty, editable, isSaving, status.kind, title, body, visualDirty]);
+  }, [
+    dirty,
+    editable,
+    isSaving,
+    uploading,
+    status.kind,
+    title,
+    body,
+    visualDirty,
+  ]);
 
   const [, submitSave, isSubmitting] = useActionState(
     async (): Promise<null> => {
@@ -532,46 +563,79 @@ export function NoteEditorIsland({
     setBody((value) => value.slice(0, start) + markup + value.slice(end));
   };
 
-  const upload = (file: File): void => {
+  /**
+   * 挿入した仮の要素を、保管できた要素で置き換える（`markup` が空なら
+   * 取り除く）。WYSIWYG の本文は DOM が正本で HTML モードは文字列なので、
+   * 面が持っているほうを直してから本文の state を揃える。
+   */
+  const settlePlaceholder = (id: string, markup: string): void => {
+    const surface = wysiwygRef.current;
+    const node = surface?.querySelector(`[data-hollow-upload="${id}"]`) ?? null;
+    if (surface !== null && node !== null) {
+      if (markup.length === 0) {
+        node.remove();
+      } else {
+        node.outerHTML = markup;
+      }
+      setBody(surface.innerHTML);
+      setStatus({ kind: "dirty" });
+      return;
+    }
+    setBody((value) => value.replace(placeholderPattern(id), markup));
+    setStatus({ kind: "dirty" });
+  };
+
+  const upload = (file: File, retryOf: string | null = null): void => {
+    if (retryOf !== null) {
+      setUploads((list) => list.filter((entry) => entry.id !== retryOf));
+    }
     if (noteId === null) {
       setUploads((list) => [
         ...list,
         {
-          id: `${Date.now()}`,
+          id: nextUploadId(),
           name: file.name,
           status: "failed",
           message:
             "先に本文を保存してください。ノートが作られてからメディアを挿入できます。",
+          file,
         },
       ]);
       return;
     }
-    const id = `${Date.now()}-${file.name}`;
+    const id = nextUploadId();
+    const entry: UploadEntry = {
+      id,
+      name: file.name,
+      status: "uploading",
+      message: null,
+      file,
+    };
+    // ED-06 手順 2「アップロードの進捗がその場に表示される」。仮の要素を
+    // 先に本文へ置き、成否が決まった時点で差し替えるか取り除く。
+    insertMarkup(placeholderMarkup(id, file.name));
     startBusy(async () => {
-      addOptimisticUpload({
-        id,
-        name: file.name,
-        status: "uploading",
-        message: null,
-      });
+      addOptimisticUpload(entry);
+      setUploads((list) => [...list, entry]);
       try {
         const payload = new FormData();
         payload.set("file", file);
         payload.set("noteId", noteId);
         const stored = await uploadMedia({ data: payload });
-        insertMarkup(mediaMarkup(stored.url, stored.mimeType, file.name));
+        settlePlaceholder(
+          id,
+          mediaMarkup(stored.url, stored.mimeType, file.name),
+        );
         // 成功したら失敗の履歴だけを残す（挿入された要素が結果を語る）。
-        setUploads((list) => list.filter((entry) => entry.id !== id));
+        setUploads((list) => list.filter((item) => item.id !== id));
       } catch (error) {
-        setUploads((list) => [
-          ...list,
-          {
-            id,
-            name: file.name,
-            status: "failed",
-            message: displayError(error),
-          },
-        ]);
+        settlePlaceholder(id, "");
+        const message = displayError(error);
+        setUploads((list) =>
+          list.map((item) =>
+            item.id === id ? { ...item, status: "failed", message } : item,
+          ),
+        );
       }
     });
   };
@@ -581,13 +645,10 @@ export function NoteEditorIsland({
   return (
     <div className="min-h-dvh">
       <header className={barClass}>
-        <BackLink
-          target={backTo}
-          label="ノートへ戻る"
-          onNavigate={(event) => {
-            if (dirty && !window.confirm(LEAVE_CONFIRM)) event.preventDefault();
-          }}
-        />
+        {/* 離脱の確認はここではなくルーターの blocker が持つ（この
+            リンクだけでなく、戻るボタンとタブを閉じる操作も同じ確認に
+            通す必要があるため）。 */}
+        <BackLink target={backTo} label="ノートへ戻る" />
 
         {/* モック P12-editor.html の `.segmented`。素の `radio` を隠して
             ラベルに見た目を持たせる形にしてあるのは、`role="radio"` を
@@ -950,13 +1011,41 @@ export function NoteEditorIsland({
             {optimisticUploads.map((entry) => (
               <li
                 key={entry.id}
-                className={`text-xs ${
+                className={`flex flex-wrap items-center gap-2 text-xs ${
                   entry.status === "failed" ? "text-error" : "text-ink-tertiary"
                 }`}
               >
-                {entry.status === "uploading"
-                  ? `${entry.name} をアップロードしています...`
-                  : `${entry.name}: ${entry.message}`}
+                {entry.status === "uploading" ? (
+                  `${entry.name} をアップロードしています...`
+                ) : (
+                  <>
+                    <span>
+                      {entry.name}: {entry.message}
+                    </span>
+                    {/* ED-06「挿入されたプレースホルダーを取り除き、再試行
+                        できるようにする」。選び直させないよう、失敗した
+                        ファイルそのものをもう一度送る。 */}
+                    <button
+                      type="button"
+                      className={smallGhostClass}
+                      disabled={busy}
+                      onClick={() => upload(entry.file, entry.id)}
+                    >
+                      再試行
+                    </button>
+                    <button
+                      type="button"
+                      className={smallGhostClass}
+                      onClick={() =>
+                        setUploads((list) =>
+                          list.filter((item) => item.id !== entry.id),
+                        )
+                      }
+                    >
+                      閉じる
+                    </button>
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -1058,6 +1147,29 @@ export function NoteEditorIsland({
 
 const LEAVE_CONFIRM =
   "未保存の変更があります。このまま移動すると失われます。よろしいですか？";
+
+const UPLOAD_LEAVE_CONFIRM =
+  "アップロードが進行中です。このまま移動すると中断されます。よろしいですか？";
+
+let uploadSequence = 0;
+
+/**
+ * 本文へ差し込む仮の要素の識別子。属性セレクターと正規表現の両方に載る
+ * ので、ファイル名は混ぜず `[a-z0-9-]` だけで組む。
+ */
+const nextUploadId = (): string => {
+  uploadSequence += 1;
+  return `u${Date.now().toString(36)}-${uploadSequence}`;
+};
+
+const escapeText = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const placeholderMarkup = (id: string, fileName: string): string =>
+  `<span data-hollow-upload="${id}">${escapeText(fileName)} をアップロードしています...</span>`;
+
+const placeholderPattern = (id: string): RegExp =>
+  new RegExp(`<span data-hollow-upload="${id}"[^>]*>[\\s\\S]*?</span>`);
 
 const smallPrimaryClass =
   "inline-flex h-7 items-center rounded-pill bg-accent px-3 text-xs font-medium text-bg transition-colors hover:bg-accent-hover disabled:opacity-55";
