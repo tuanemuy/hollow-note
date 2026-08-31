@@ -1,3 +1,4 @@
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import type { NoteId } from "@repo/core/domain/note/valueObject";
 import type { StoredFilePurposeCursor } from "@repo/core/domain/storage/ports/storedFileRepository";
@@ -213,41 +214,87 @@ const addressesSameObject = (reference: string, fileUrl: string): boolean => {
 };
 
 /**
- * Decides one candidate on its own note's body.
+ * What one note has to say about the media it owns.
  *
- * The owning note comes from `FileProvenance.noteId`, which `media`
- * carries by construction, so nothing has to search bodies for the file.
- * That is also why another note referencing the same URL does not save
- * it: the sweep asks whether *this* note still uses it.
+ * `gone` is terminal, so the note's media is collectable. `unreadable`
+ * is the opposite: a note whose content is not `ready` has no body to
+ * read, and "no body" is not evidence a reference was dropped, so its
+ * media is spared until the body comes back.
+ */
+type NoteReferences =
+  | Readonly<{ kind: "gone" }>
+  | Readonly<{ kind: "unreadable" }>
+  | Readonly<{ kind: "urls"; urls: readonly string[] }>;
+
+/**
+ * Every address one note still holds — in the body it shows now, and in
+ * each revision that can still be restored.
+ *
+ * The revisions are part of the answer because a revision is a *live*
+ * reference: `restoreNoteRevision` puts one of the newest
+ * {@link NoteRevision.RETENTION} bodies back verbatim, and the sweep
+ * measures age from creation. Reading the current body alone therefore
+ * collects a picture that "insert, drop from the body the next day,
+ * sweep 29 days later" leaves a restorable revision pointing at — the
+ * restore succeeds and the image 404s. Twenty saved bodies span months,
+ * so this is the ordinary case, not a corner of one.
  *
  * `extractExternalReferences` is deliberately not filtered through
  * `StorageUrlPolicy.isInternal` — an internal storage URL is exactly what
  * is being looked for (spec/usecases/storage.md#collectorphanmedia).
  *
- * A note that is gone is terminal, so its media is collectable. A note
- * whose content is not `ready` is the opposite: it has no body to read,
- * and "no body" is not evidence the reference was dropped, so the file is
- * spared until the body comes back.
+ * The read is per *note*, not per file, and the caller holds the answer
+ * for the rest of the turn: a page is usually one note's pictures, and
+ * parsing its bodies once is what keeps the revisions from multiplying
+ * the turn's CPU by the retention depth.
  */
-async function isOrphan(
+async function readNoteReferences(
   container: OrphanMediaContainer,
   ctx: ScopeUnitOfWorkContext,
   noteId: NoteId,
-  objectKey: ObjectKey,
-): Promise<boolean> {
+): Promise<NoteReferences> {
   const versioned = await ctx.noteRepository.findById(noteId);
   if (versioned === null) {
-    return true;
+    return { kind: "gone" };
   }
   const content = versioned.entity.content;
   if (content.status !== "ready") {
-    return false;
+    return { kind: "unreadable" };
+  }
+  const revisions = await ctx.noteRevisionRepository.listByNote(
+    noteId,
+    NoteRevision.RETENTION,
+  );
+  const urls = [
+    content.html,
+    ...revisions.map((revision) => revision.html),
+  ].flatMap((html) =>
+    container.htmlProcessor
+      .extractExternalReferences(html)
+      .map((reference) => reference.url),
+  );
+  return { kind: "urls", urls };
+}
+
+/**
+ * Decides one candidate against what its own note holds.
+ *
+ * The owning note comes from `FileProvenance.noteId`, which `media`
+ * carries by construction, so nothing has to search bodies for the file.
+ * That is also why another note referencing the same URL does not save
+ * it: the sweep asks whether *this* note still uses it.
+ */
+const isOrphan = (
+  container: OrphanMediaContainer,
+  references: NoteReferences,
+  objectKey: ObjectKey,
+): boolean => {
+  if (references.kind !== "urls") {
+    return references.kind === "gone";
   }
   const fileUrl = container.objectStorage.publicUrl(objectKey);
-  return !container.htmlProcessor
-    .extractExternalReferences(content.html)
-    .some((reference) => addressesSameObject(reference.url, fileUrl));
-}
+  return !references.urls.some((url) => addressesSameObject(url, fileUrl));
+};
 
 /**
  * Reclaims media that no body references any more (UC-storage-010,
@@ -256,7 +303,14 @@ async function isOrphan(
  * Collection needs both conditions: old enough *and* unreferenced. The
  * age is the listing's own predicate, so a young file is never even
  * inspected, and the boundary is inclusive — a file created exactly
- * `now - 30 days` is in the page.
+ * `now - 30 days` is in the page. "Unreferenced" spans the note's whole
+ * restorable history, not just the body it shows now
+ * ({@link readNoteReferences}).
+ *
+ * No turn ever settles the row as `failed`: a turn that cannot finish
+ * logs and re-arms itself for the next day. The sweep is the only thing
+ * that keeps its own row alive, so parking it is not a retry ceiling but
+ * the end of collection in that scope.
  *
  * The listing walks the whole scope rather than one owner's files, which
  * is why it is `listByPurposeOlderThan` and not `listByOwner`: a scope's
@@ -285,11 +339,54 @@ export async function collectOrphanMedia({
   container,
   input,
 }: CollectOrphanMediaArgs): Promise<CollectOrphanMediaView> {
+  const now = container.clock.now();
+  try {
+    return await sweepOnce(container, input, now);
+  } catch (cause) {
+    // The sweep row is the scope's only one and nothing else re-arms it:
+    // `armOrphanMediaSweepOnFirstMedia` fires on "the scope holds no
+    // media", which a scope that has media never satisfies again. Letting
+    // a turn throw hands the row to the runner's backoff, and a failure
+    // that does not clear — an unreadable body, a listing the backend
+    // keeps refusing — walks it to the attempt ceiling and parks it as
+    // `failed`, ending that scope's collection for good. A periodic
+    // full-scope sweep has a cheaper answer available: skip this turn and
+    // take the loss, the same reasoning `readOrphanMediaSweepTurn`
+    // applies to a payload it cannot read.
+    container.logger.error(
+      "[collectOrphanMedia] the turn failed; re-armed for the next day",
+      { cause, scope: input.scope },
+    );
+    await armDailySweep(container, input.scope, now);
+    return { collectedCount: 0, nextCursor: null };
+  }
+}
+
+/** Puts the sweep row back on its daily cadence, position cleared. */
+const armDailySweep = (
+  container: OrphanMediaContainer,
+  scope: ScopeKey,
+  now: Date,
+): Promise<void> =>
+  container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+    ctx.scopeTaskScheduler.schedule({
+      kind: ORPHAN_MEDIA_TASK_KIND,
+      operationId: ORPHAN_MEDIA_OPERATION_ID,
+      priority: ScopeTaskPriority.expiryCollection,
+      dueAt: new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+      payload: sweepPayload(null),
+    }),
+  );
+
+async function sweepOnce(
+  container: OrphanMediaContainer,
+  input: CollectOrphanMediaInput,
+  now: Date,
+): Promise<CollectOrphanMediaView> {
   const limit = Math.min(
     Math.max(1, input.limit ?? ORPHAN_MEDIA_BATCH_SIZE),
     ORPHAN_MEDIA_BATCH_SIZE,
   );
-  const now = container.clock.now();
   const createdBefore = new Date(now.getTime() - ORPHAN_MEDIA_MIN_AGE_MS);
 
   const scan = await container.scopeUnitOfWorkProvider.run(
@@ -302,6 +399,10 @@ export async function collectOrphanMedia({
         input.cursor ?? null,
       );
       const orphans: StoredFileId[] = [];
+      // One answer per note for the whole page: a page is usually one
+      // note's pictures, and each answer costs a note read, a revision
+      // listing and up to `RETENTION + 1` body parses.
+      const byNote = new Map<string, NoteReferences>();
       for (const file of candidates) {
         const noteId = file.noteId;
         // `media` provenance carries its note by construction; the guard
@@ -309,8 +410,24 @@ export async function collectOrphanMedia({
         if (file.purpose !== "media" || noteId === null) {
           continue;
         }
-        if (await isOrphan(container, ctx, noteId, file.objectKey)) {
-          orphans.push(file.id);
+        try {
+          let references = byNote.get(noteId);
+          if (references === undefined) {
+            references = await readNoteReferences(container, ctx, noteId);
+            byNote.set(noteId, references);
+          }
+          if (isOrphan(container, references, file.objectKey)) {
+            orphans.push(file.id);
+          }
+        } catch (cause) {
+          // Spares the file and carries on. This transaction only reads,
+          // so a failed read leaves nothing half-written, and the
+          // alternative — losing the turn — would stall the cursor on
+          // this page and hide everything behind it forever.
+          container.logger.error(
+            "[collectOrphanMedia] a file could not be judged",
+            { cause, fileId: file.id },
+          );
         }
       }
       const last = candidates[candidates.length - 1];
@@ -341,18 +458,19 @@ export async function collectOrphanMedia({
   }
 
   const nextCursor = scan.scanned === limit ? scan.last : null;
-  await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
-    ctx.scopeTaskScheduler.schedule({
-      kind: ORPHAN_MEDIA_TASK_KIND,
-      operationId: ORPHAN_MEDIA_OPERATION_ID,
-      priority: ScopeTaskPriority.expiryCollection,
-      dueAt:
-        nextCursor === null
-          ? new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS)
-          : now,
-      payload: sweepPayload(nextCursor),
-    }),
-  );
+  if (nextCursor === null) {
+    await armDailySweep(container, input.scope, now);
+  } else {
+    await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: ORPHAN_MEDIA_TASK_KIND,
+        operationId: ORPHAN_MEDIA_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: now,
+        payload: sweepPayload(nextCursor),
+      }),
+    );
+  }
 
   return { collectedCount, nextCursor };
 }

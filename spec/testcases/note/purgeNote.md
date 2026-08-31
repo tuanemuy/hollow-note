@@ -8,6 +8,7 @@
 | local delete前にactorのMembershipが変わる | 再確認する | 削除せずrouteをactiveへabortする | |
 | abort応答を失う | recoveryする | Noteが残ることを確認して同じoperation IDのabortを再試行する | |
 | local delete後・public remove前に停止する | recoveryする | 同じoperation IDでpublic removeを再開し、古いeventはpublic行を復活させない | |
+| local deleteのcommit後に応答を失う | 完全削除する | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない | |
 | public removeがackした | 完了する | routeが30日保持の`tombstone`になり、再配送しても同じ結果になる | |
 | remove ackの応答を失う | Cron recoveryする | public削除とoperation ackを冪等に再実行し、ack後だけtombstoneへ進む | |
 | 完全削除後 | 版（`note_revisions`）を確認する | DB の FK CASCADE で同時に削除される | |

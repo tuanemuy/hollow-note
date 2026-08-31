@@ -98,6 +98,7 @@ const imageAtCaret = (surface: HTMLElement): HTMLImageElement | null => {
 
 export function WysiwygSurface({
   baseline,
+  editable,
   surfaceRef,
   onChange,
   onSelectImage,
@@ -105,6 +106,13 @@ export function WysiwygSurface({
 }: {
   /** 外から本文が差し替わったときだけ変わる値（復元・破棄・版の復元）。 */
   baseline: string;
+  /**
+   * 保存が受け付けられる状態か（P-12 の「処理中で編集できない」「権限
+   * 喪失」で `false`）。書けるのに絶対に保存されない面を出すと、書いた
+   * 内容がどこにも残らないまま失われる。読み取りは残す（権限喪失では
+   * 「内容をダウンロード」から持ち出せる必要がある）。
+   */
+  editable: boolean;
   surfaceRef: RefObject<HTMLDivElement | null>;
   onChange: (html: string) => void;
   /** 代替テキストの編集対象。親が持つ（属性を書くのは本文の持ち主）。 */
@@ -133,11 +141,12 @@ export function WysiwygSurface({
       <div
         data-hollow-wysiwyg=""
         ref={surfaceRef}
-        contentEditable
+        contentEditable={editable}
         suppressContentEditableWarning
         role="textbox"
         tabIndex={0}
         aria-multiline="true"
+        aria-readonly={!editable}
         aria-label="本文"
         className={editorSurfaceClass}
         onInput={(event) => onChange(event.currentTarget.innerHTML)}
@@ -178,7 +187,9 @@ const REPAIR_CHECK_DELAY_MS = 500;
  *
  * 落とす対象は保存時のサニタイズ（`HtmlProcessor`）が落とすものの部分
  * 集合なので、プレビューは「実際に保存される形」から外れる向きには
- * 動かない。
+ * 動かない。逆に言えばプレビューは保存後の姿ではない — 許可リスト外の
+ * 要素・属性・CSS 宣言（`position: fixed` を含む）はここでは残るので、
+ * 面の外へ出られないことはホスト側の `contain` が担保する。
  */
 const UNSAFE_PREVIEW_ELEMENTS = new Set([
   "script",
@@ -245,11 +256,14 @@ const analyzeMarkup = (source: string): SourceAnalysis => {
 
 export function HtmlSurface({
   value,
+  editable,
   onChange,
   textareaRef,
   onDropFiles,
 }: {
   value: string;
+  /** `WysiwygSurface` と同じ意味。`readOnly` を選ぶのは選択とコピーを残すため。 */
+  editable: boolean;
   onChange: (html: string) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onDropFiles: ((files: readonly File[]) => void) | null;
@@ -321,6 +335,7 @@ export function HtmlSurface({
             ref={textareaRef}
             value={value}
             spellCheck={false}
+            readOnly={!editable}
             onChange={(event) => onChange(event.target.value)}
             onScroll={(event) => {
               const overlay = overlayRef.current;
@@ -338,7 +353,8 @@ export function HtmlSurface({
           プレビューで示す」。 */}
       {repaired === null ? null : (
         <Alert tone="warning" title="HTML の構文を補正しました" role="status">
-          閉じていないタグや引用符の無い属性値を補いました。保存すると、下のプレビューの内容で保存されます。
+          閉じていないタグや引用符の無い属性値を補いました。下のプレビューは補正した構文で描いています。保存時にはさらに、許可されていない要素・属性・CSS
+          宣言が取り除かれます（除去された分は保存後に一覧で示します）。
         </Alert>
       )}
 
@@ -346,7 +362,12 @@ export function HtmlSurface({
         <div className="border-b border-hairline bg-surface-elevated px-3 py-2 text-xs tracking-[0.06em] text-ink-tertiary uppercase">
           {repaired === null ? "プレビュー" : "プレビュー（補正後）"}
         </div>
-        <div className="min-h-[220px] p-4 text-sm leading-relaxed">
+        {/* `contain` を掛けるのは、プレビューが保存時のサニタイズの部分
+            集合しか落とさないため（ADR-052）。`position: fixed` は残る
+            ので、ここが固定配置の包含ブロックにならないと本文が編集画面
+            全体を覆える。Shadow DOM が隔離するのはスタイルの適用範囲
+            だけで、ビューポート基準の配置は隔離しない。 */}
+        <div className="min-h-[220px] [contain:layout_paint] p-4 text-sm leading-relaxed">
           <NoteBody html={analysis.preview} styleMode="default" headings={[]} />
         </div>
       </div>
@@ -366,10 +387,20 @@ export function HtmlSurface({
  */
 export function VisualSurface({
   baseline,
+  seed,
+  editable,
   onReady,
   onChange,
 }: {
   baseline: string;
+  /**
+   * 面を組み直す世代。`baseline` と別に要るのは、破棄がまさに**同じ
+   * 文字列**へ戻す操作だからである — 文字列の同一性だけを鍵にすると、
+   * 破棄しても span の中身が編集したまま残る。
+   */
+  seed: number;
+  /** `WysiwygSurface` と同じ意味。 */
+  editable: boolean;
   onReady: (paths: ReadonlyMap<string, string>) => void;
   onChange: (current: ReadonlyMap<string, string>) => void;
 }) {
@@ -379,6 +410,7 @@ export function VisualSurface({
   onReadyRef.current = onReady;
   onChangeRef.current = onChange;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `seed` は値を読まず、再シードを起こすためだけに置いてある（`baseline` が同じ文字列へ戻る破棄を鍵にできない）。
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) return;
@@ -421,7 +453,25 @@ img, video { max-width: 100%; height: auto; }
     root.addEventListener("input", listener);
     onReadyRef.current(original);
     return () => root.removeEventListener("input", listener);
-  }, [baseline]);
+  }, [baseline, seed]);
+
+  // 編集の可否は面を組み直さずに切り替える（組み直すと、ロックが掛かった
+  // 瞬間に書きかけが消える）。上の effect と同じ commit で走るので、
+  // 差し込んだ直後の span にも塗り直しの前に当たる。
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `baseline` / `seed` は値を読まずに置いてある。上の effect が span を作り直すたびにここも走らないと、組み直した直後の面が `editable` を無視した状態で残る。
+  useEffect(() => {
+    const root = hostRef.current?.shadowRoot;
+    if (root === null || root === undefined) return;
+    for (const span of Array.from(
+      root.querySelectorAll("[data-hollow-path]"),
+    )) {
+      span.setAttribute(
+        "contenteditable",
+        editable ? "plaintext-only" : "false",
+      );
+    }
+  }, [editable, baseline, seed]);
 
   return (
     <>

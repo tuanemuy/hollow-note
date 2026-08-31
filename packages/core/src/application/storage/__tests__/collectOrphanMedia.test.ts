@@ -1,5 +1,6 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { Note } from "@repo/core/domain/note/note";
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import type { FileDeletedEvent } from "@repo/core/domain/storage/events";
 import type { StoredFilePurposeCursor } from "@repo/core/domain/storage/ports/storedFileRepository";
@@ -79,6 +80,28 @@ async function seedNote(
     ctx.noteRepository.insert(note),
   );
   return NoteId.create(id);
+}
+
+/** Saves one revision of a note — a body `restoreNoteRevision` can put back. */
+async function seedRevision(
+  h: TestHarness,
+  params: Readonly<{ id: string; noteId: NoteId; html: string }>,
+): Promise<void> {
+  await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+    ctx.noteRevisionRepository.insert(
+      NoteRevision.reconstruct({
+        id: params.id,
+        noteId: params.noteId,
+        html: params.html,
+        title: "Seeded note",
+        titleOrigin: "manual",
+        styleMode: "default",
+        createdBy: OWNER,
+        createdAt: h.clock.now(),
+        reason: "manualEdit",
+      }),
+    ),
+  );
 }
 
 async function seedFile(
@@ -179,6 +202,42 @@ describe("collectOrphanMedia", () => {
     expect(view.collectedCount).toBe(0);
     expect(storedIds(h)).toEqual(["file-1"]);
     expect(deletionEvents(h)).toEqual([]);
+  });
+
+  it("TC-storage-257: spares media that only a retained revision still references, a restore having to find it there", async () => {
+    const h = createTestHarness();
+    // "inserted, dropped from the body the next day, swept 29 days
+    // later": the age runs from creation, so the file comes due while a
+    // revision that shows it is still restorable.
+    const noteId = await seedNote(h, "note-1", "<p>the picture went away</p>");
+    await seedRevision(h, {
+      id: "revision-1",
+      noteId,
+      html: `<p><img src="${urlOf(h, "file-1")}"></p>`,
+    });
+    await seedFile(h, { id: "file-1", noteId, ageMs: 31 * DAY_MS });
+
+    const view = await run(h);
+
+    expect(view.collectedCount).toBe(0);
+    expect(storedIds(h)).toEqual(["file-1"]);
+    expect(deletionEvents(h)).toEqual([]);
+  });
+
+  it("TC-storage-016: collects media no revision references either, the history being read as well as the body", async () => {
+    const h = createTestHarness();
+    const noteId = await seedNote(h, "note-1", "<p>the picture went away</p>");
+    await seedRevision(h, {
+      id: "revision-1",
+      noteId,
+      html: `<p><img src="${urlOf(h, "file-2")}"></p>`,
+    });
+    await seedFile(h, { id: "file-1", noteId, ageMs: 31 * DAY_MS });
+
+    const view = await run(h);
+
+    expect(view.collectedCount).toBe(1);
+    expect(storedIds(h)).toEqual([]);
   });
 
   it("TC-storage-018: spares unreferenced media aged 29 days, the age being measured from creation", async () => {
@@ -593,6 +652,73 @@ describe("collectOrphanMedia", () => {
     expect(storedIds(h)).toEqual(["file-1"]);
     expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
       "[collectOrphanMedia] a file was left behind",
+    );
+  });
+
+  it("TC-storage-258: re-arms for the next day when the whole turn fails, so the scope's only sweep row cannot park", async () => {
+    const h = createTestHarness();
+    const now = h.clock.now();
+    const real = h.workerContainer.scopeUnitOfWorkProvider;
+    let opened = 0;
+
+    const view = await collectOrphanMedia({
+      container: {
+        ...h.workerContainer,
+        scopeUnitOfWorkProvider: {
+          run: async (target, fn) => {
+            opened += 1;
+            if (opened === 1) {
+              throw new Error("the listing would not read");
+            }
+            return real.run(target, fn);
+          },
+        },
+      },
+      input: { scope },
+    });
+
+    expect(view).toEqual({ collectedCount: 0, nextCursor: null });
+    // Nothing else re-arms this row: `armOrphanMediaSweepOnFirstMedia`
+    // only fires while the scope holds no media at all. Letting the turn
+    // throw walks it to the attempt ceiling and parks it as `failed`.
+    expect(sweepRow(h).dueAt).toEqual(
+      new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+    );
+    expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
+      "[collectOrphanMedia] the turn failed; re-armed for the next day",
+    );
+  });
+
+  it("TC-storage-028: spares a candidate whose body it cannot read and finishes the rest of the page", async () => {
+    const h = createTestHarness();
+    const unreadable = await seedNote(h, "note-1", "<p>unreadable body</p>");
+    const readable = await seedNote(h, "note-2", "<p>no picture here</p>");
+    await seedFile(h, { id: "file-1", noteId: unreadable, ageMs: 31 * DAY_MS });
+    await seedFile(h, { id: "file-2", noteId: readable, ageMs: 31 * DAY_MS });
+
+    const view = await collectOrphanMedia({
+      container: {
+        ...h.workerContainer,
+        htmlProcessor: {
+          extractExternalReferences: (html) => {
+            if (html === "<p>unreadable body</p>") {
+              throw new Error("the body would not parse");
+            }
+            return h.workerContainer.htmlProcessor.extractExternalReferences(
+              html,
+            );
+          },
+        },
+      },
+      input: { scope },
+    });
+
+    // Losing the turn instead would stall the cursor on this page and
+    // hide every row behind it for as long as the body stays poisoned.
+    expect(view.collectedCount).toBe(1);
+    expect(storedIds(h)).toEqual(["file-1"]);
+    expect(h.logger.byLevel("error").map((entry) => entry.message)).toContain(
+      "[collectOrphanMedia] a file could not be judged",
     );
   });
 

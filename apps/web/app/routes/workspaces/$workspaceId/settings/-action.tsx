@@ -53,6 +53,7 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const [
       { container, module },
+      { WorkspaceRole },
       { requireSessionOrRedirect },
       { toViewerView },
       scopeCookie,
@@ -60,6 +61,7 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
       loadServerDeps(
         () => import("@repo/core/application/workspace/getWorkspaceSettings"),
       ),
+      import("@repo/core/domain/workspace/valueObject"),
       import("@/presentation/sessionGuard"),
       import("@/presentation/auth"),
       import("@/presentation/scopeCookie"),
@@ -79,6 +81,10 @@ export const loadWorkspaceSettingsShell = createServerFn({ method: "GET" })
           name: settings.name,
           slug: settings.slug,
           publication: settings.publication,
+          // スコープトークンの「ゴミ箱」を出すかの判定（L-01）。この
+          // loader は `role` を持っているので、設定配下でだけ導線が
+          // 消える理由が無い（ノート一覧の loader と同じ 1 行）。
+          canWrite: WorkspaceRole.atLeast(settings.role, "editor"),
         },
       };
     } catch (error) {

@@ -196,6 +196,7 @@ interface ExternalConnectionRepository extends TransactionalRepository<ExternalC
 ```ts
 interface BackupRecordRepository extends TransactionalRepository<BackupRecord, BackupRecordId> {
   findByNoteAndFile(noteId: NoteId, sourceFileId: StoredFileId): Promise<Versioned<BackupRecord> | null>;
+  listByNote(noteId: NoteId): Promise<readonly BackupRecord[]>;
   listByNotes(noteIds: readonly NoteId[]): Promise<readonly BackupRecord[]>;
   deleteByNote(noteId: NoteId, limit: number): Promise<number>;
   deleteByUser(userId: UserId, limit: number): Promise<number>;
@@ -204,7 +205,11 @@ interface BackupRecordRepository extends TransactionalRepository<BackupRecord, B
 
 `ExternalConnectionRepository` は global D1 に置き、利用者の provider credential を一意に管理する。`BackupRecordRepository` は対象 Note / source file と同じ scope DO に束縛し、scope をまたぐ `deleteByUser` は提供しない。どちらの`deleteByUser`も最大`limit`件だけを削除し、account deletion は directory で列挙した各 scope に削除commandを送る。
 
-**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`SystemError(DatabaseError)`
+`listByNote` は 1 ノートの記録を `BackupRecordId` 昇順で全件返す。順序はバックエンドの裁量ではなく契約とし、同じノートを 2 回読めば同じ並びになること・バックエンド間で比較できることを保証する（`listByNotes` の複数ノート版とは別に、`deleteByNote` の対象集合をそのまま観測する経路として要る）。
+
+`insert` は 2 つの一意制約を別の種類のエラーへ写す。`(noteId, sourceFileId)` の重複は呼び手が受け入れられる衝突なので `ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`BackupRecordId` の再利用は採番の誤りなので `SystemError(DatabaseError)` とする。両者を 1 つのエラーに畳むと、直すべき事故に対して「再試行せよ」と答えることになる（`TagAssignmentRepository` の `ASSIGNMENT_ALREADY_EXISTS` と同じ整理）。
+
+**エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`SystemError(DatabaseError)`
 
 ### SecretCipher
 

@@ -33,13 +33,11 @@ import {
   MODE_LABEL,
   readDraft,
   readPreferredMode,
-  readWysiwygWarningDismissed,
   writeDraft,
   writePreferredMode,
-  writeWysiwygWarningDismissed,
 } from "./preferences";
 import { HtmlSurface, VisualSurface, WysiwygSurface } from "./surfaces";
-import { collectEditableTextNodes, diffTextNodeEdits } from "./textNodes";
+import { diffTextNodeEdits, hasEditableTextNode } from "./textNodes";
 
 /**
  * P-12 の編集を持つ島（PAGE-p12-001..008）。
@@ -105,6 +103,13 @@ type UploadEntry = Readonly<{
 
 const AUTOSAVE_DELAY_MS = 1_500;
 
+/**
+ * 「ビジュアル不可」の再判定を据え置く間隔。判定は本文を丸ごとパースする
+ * ので、打鍵のたびに走らせると本文長に比例して入力そのものが詰まる。
+ * 要るのはモード切替ボタンの活性だけで、1 打鍵の粒度は要らない。
+ */
+const VISUAL_CHECK_DELAY_MS = 500;
+
 const REMOVED_KIND_LABEL: Readonly<Record<string, string>> = {
   element: "要素",
   attribute: "属性",
@@ -169,6 +174,12 @@ export function NoteEditorIsland({
   /** 書く面へ渡す値。差し替えたときだけ動かす（打鍵ごとに動かすと caret が飛ぶ）。 */
   const [baseline, setBaseline] = useState(savedBody);
   /**
+   * 面を組み直した回数。`baseline` の同一性だけでは破棄を鍵にできない
+   * （破棄はまさに同じ文字列へ戻す操作で、ビジュアルの面は文字列が
+   * 変わらないと span を作り直さない）。
+   */
+  const [baselineSeed, setBaselineSeed] = useState(0);
+  /**
    * 確定済みの値の ref 版。面の再シード（`applyMode`）は非同期の
    * transition の中から呼ばれるので、閉包が捕まえた `savedTitle` /
    * `savedBody` は必ず 1 世代古い。書き戻しの入口を `rememberSaved` に
@@ -176,7 +187,16 @@ export function NoteEditorIsland({
    */
   const savedRef = useRef({ title: savedTitle, body: savedBody });
 
-  const [mode, setMode] = useState<EditorMode>("wysiwyg");
+  /**
+   * 開いた直後のモード。HTML 由来のノート（`mayLoseDecoration`）を
+   * WYSIWYG で開かないのは、ED-04 の警告なしに WYSIWYG に**居る**状態を
+   * 作らないためである。警告は「WYSIWYG を選ぶ」ことの前提であり、
+   * 既定として黙って入ってしまうと、警告も版理由（`wysiwygConversion`）
+   * も素通りして装飾の喪失だけが起きる。
+   */
+  const initialMode: EditorMode =
+    target.kind === "existing" && target.mayLoseDecoration ? "html" : "wysiwyg";
+  const [mode, setMode] = useState<EditorMode>(initialMode);
   const [status, setStatus] = useState<SaveStatus>(
     isNew ? { kind: "new" } : { kind: "idle" },
   );
@@ -235,6 +255,7 @@ export function NoteEditorIsland({
   // 展開する別の effect が出すので、同じ commit の中では間に合わず、
   // 判定を待たずに復元すると編集欄が 1 つも無い面が開く。
   const preferenceAppliedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 復元は 1 回だけで、`seedMode` / `needsWysiwygWarning` は毎描画で作り直される。依存に入れると、面を差し替えるたびに復元がもう一度走りうる。ref で 1 回に絞っているのがこの effect の唯一の起動条件である。
   useEffect(() => {
     if (isNew || preferenceAppliedRef.current || visualAvailable === null) {
       return;
@@ -242,22 +263,43 @@ export function NoteEditorIsland({
     preferenceAppliedRef.current = true;
     const preferred = readPreferredMode();
     if (preferred === null) return;
-    setMode(preferred === "visual" && !visualAvailable ? "wysiwyg" : preferred);
-  }, [isNew, visualAvailable]);
+    const next =
+      preferred === "visual" && !visualAvailable ? "wysiwyg" : preferred;
+    if (next === initialMode) return;
+    // 復元も切り替えと同じ門を通す。既定が WYSIWYG だからといって ED-04 の
+    // 警告と `wysiwygConversion` の版理由を飛ばしてよい理由は無い。
+    if (needsWysiwygWarning(next)) {
+      setWysiwygWarning(true);
+      setPendingMode(next);
+      return;
+    }
+    // 開いた直後の正本は `target` そのものなので引き直さない。
+    seedMode(next, savedRef.current.title, savedRef.current.body);
+  }, [isNew, initialMode, visualAvailable]);
 
-  // 退避データの検出（ED-08 の「復元の提案」）。
+  // 退避データの検出（ED-08 の「復元の提案」）。提案は退避そのものの
+  // 従属値にする — 保存が通って退避が消えたのに提案だけが残ると、
+  // 「復元する」が保存済みの内容を古い退避で上書きできてしまう。
   useEffect(() => {
     if (noteId === null) return;
     const draft = readDraft(noteId);
-    if (draft !== null && draft.html !== savedBody) setDraftOffer(draft);
-    // 提案は開いた時点の 1 回だけ。保存のたびに出し直さない。
+    setDraftOffer(draft !== null && draft.html !== savedBody ? draft : null);
   }, [noteId, savedBody]);
 
-  // ビジュアルモードが選べるか（ED-05 の「ビジュアル不可」）。
+  // ビジュアルモードが選べるか（ED-05 の「ビジュアル不可」）。打鍵が
+  // 止まってから数えるのは、判定が本文全体のパースを伴うため。開いた
+  // 直後の 1 回だけ待たないのは、待つと既定モードの復元がその分遅れる
+  // （復元は判定を待って走る）ため。
+  const visualCheckedRef = useRef(false);
   useEffect(() => {
-    const template = document.createElement("template");
-    template.innerHTML = body;
-    setVisualAvailable(collectEditableTextNodes(template.content).length > 0);
+    const delay = visualCheckedRef.current ? VISUAL_CHECK_DELAY_MS : 0;
+    visualCheckedRef.current = true;
+    const timer = window.setTimeout(() => {
+      const template = document.createElement("template");
+      template.innerHTML = body;
+      setVisualAvailable(hasEditableTextNode(template.content));
+    }, delay);
+    return () => window.clearTimeout(timer);
   }, [body]);
 
   // 離脱の確認（ED-08 の未保存、ED-06 のアップロード中）。
@@ -358,6 +400,12 @@ export function NoteEditorIsland({
 
       // タイトルを先に確定する。どちらも版を 1 つ進めるので、応答の版を
       // 次の呼び出しへ渡さないと本文が必ず競合する。
+      //
+      // 確定値は**応答の値**である。`NoteTitle.manual` が空を「無題」に
+      // 変え前後の空白を落とすので、送った生値を確定済みとして持つと
+      // `dirty` が下りず、同じタイトルをもう一度 rename して版と往復を
+      // 1 つ無駄にする。
+      let appliedTitle = currentTitle;
       if (currentTitle !== savedTitle) {
         const renamed = await rename({
           data: {
@@ -367,7 +415,9 @@ export function NoteEditorIsland({
           },
         });
         versionRef.current = renamed.version;
-        setSavedTitle(renamed.title);
+        appliedTitle = renamed.title;
+        // 本文の保存がこのあと失敗しても、タイトルはもう確定している。
+        rememberSaved(appliedTitle, savedRef.current.body);
         setTitle((value) => (value === currentTitle ? renamed.title : value));
       }
 
@@ -385,6 +435,10 @@ export function NoteEditorIsland({
           // 適用済みの値を新しい基準にする。次の保存が同じ編集を送り直す
           // と `contentChanged` で落ちる。
           visualOriginal.current = new Map(visualCurrent.current);
+        } else {
+          // 通知が指すのは**直近の保存結果**。1 件も落ちなかった保存の
+          // あとに前回の「反映できなかった編集」が残ってはならない。
+          setSkipped([]);
         }
         setVisualDirty(false);
       } else if (currentBody !== savedBody) {
@@ -404,8 +458,12 @@ export function NoteEditorIsland({
         setRemoved(saved.removed);
       }
 
-      settleSaved(currentTitle, currentBody);
+      settleSaved(appliedTitle, currentBody);
       clearDraft(noteId);
+      // 退避が消えた以上、提案も消す。残すと「復元する」がいま保存した
+      // 内容を古い退避で上書きできてしまう（本文が変わらない保存では
+      // 退避を見張る effect が走らないので、ここで畳む）。
+      setDraftOffer(null);
       await reconcile();
       return true;
     } catch (error) {
@@ -488,13 +546,19 @@ export function NoteEditorIsland({
     enterMode(next);
   };
 
+  /**
+   * ED-04 の警告を出すか。「今後表示しない」は**置いていない** — ED-04 は
+   * 「設定画面から再表示に戻せる」ことまで込みで定めており、戻し口を持つ
+   * 設定画面は本スライスの外にある。戻せない一方通行の抑止だけを先に
+   * 出すと、一度押した端末では装飾の喪失が二度と告げられなくなる。
+   */
+  const needsWysiwygWarning = (next: EditorMode): boolean =>
+    next === "wysiwyg" &&
+    target.kind === "existing" &&
+    target.mayLoseDecoration;
+
   const enterMode = (next: EditorMode): void => {
-    if (
-      next === "wysiwyg" &&
-      target.kind === "existing" &&
-      target.mayLoseDecoration &&
-      !readWysiwygWarningDismissed()
-    ) {
+    if (needsWysiwygWarning(next)) {
       setWysiwygWarning(true);
       setPendingMode(next);
       return;
@@ -540,26 +604,52 @@ export function NoteEditorIsland({
     nextTitle: string,
     nextBody: string,
   ): void => {
-    // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。
-    wysiwygConversionRef.current = next === "wysiwyg" && mode !== "wysiwyg";
+    // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。同じ面へ
+    // 載せ直す（破棄）ときは、まだ記録していない変換の予定を落とさない。
+    wysiwygConversionRef.current =
+      next === "wysiwyg" &&
+      (mode !== "wysiwyg" || wysiwygConversionRef.current);
     setMode(next);
     replaceBody(nextTitle, nextBody);
     writePreferredMode(next);
   };
 
+  /**
+   * 面ごと本文を差し替える。`baselineSeed` を必ず進めるのは、同じ文字列へ
+   * 戻す差し替え（破棄）でもビジュアルの面を組み直させるためである。
+   * ビジュアルの経路表もここで捨てる — 残すと、破棄したはずの書き換えが
+   * 次の差分に混ざって自動保存で送られる。
+   *
+   * サニタイズ通知と skip 通知も落とす。どちらも「直近の保存結果」を
+   * 指す表示なので、正本を載せ直した面の上に前の保存の結果が残っては
+   * ならない。
+   */
   const replaceBody = (nextTitle: string, nextBody: string): void => {
     rememberSaved(nextTitle, nextBody);
     setTitle(nextTitle);
     setBody(nextBody);
     setBaseline(nextBody);
+    setBaselineSeed((value) => value + 1);
     setVisualDirty(false);
     setSelectedImage(null);
+    setRemoved([]);
+    setSkipped([]);
+    visualOriginal.current = new Map();
+    visualCurrent.current = new Map();
   };
 
+  /**
+   * 破棄（ED-08 手順 3）。**サーバーから正本を引き直す**のは、手元の
+   * 「確定済みの値」が最後に保存した状態とは限らないためである — ビジュアル
+   * モードの保存は経路単位の書き換えなので、確定した本文の HTML は
+   * `applyMode` と同じく引き直すしか手が無い（ADR-051）。手元の値へ戻すと、
+   * 画面は保存済みの書き換えが消えた姿になり、次の編集が古い `expected` で
+   * 送られて全件 `contentChanged` に落ちる。
+   */
   const discard = (): void => {
-    replaceBody(savedRef.current.title, savedRef.current.body);
-    setStatus({ kind: "idle" });
     if (noteId !== null) clearDraft(noteId);
+    setDraftOffer(null);
+    applyMode(mode);
   };
 
   /** 競合の解決（ED-08）。どちらの枝も最新の版を引き直してから進む。 */
@@ -580,6 +670,8 @@ export function NoteEditorIsland({
         rememberSaved(latest.title, latest.html);
         setTitle(localTitle);
         setBody(localBody);
+        setRemoved([]);
+        setSkipped([]);
         setStatus({ kind: "dirty" });
         return;
       }
@@ -625,6 +717,15 @@ export function NoteEditorIsland({
     });
   };
 
+  /**
+   * HTML モードで続けて挿すときの次の位置。1 回のドロップに複数の
+   * ファイルが来ると挿入はループの中で同期に走るので、あいだに再描画が
+   * 入らず `textarea` の選択位置は 2 件目以降も 1 件目のままになる。
+   * 挿し終えた位置を持ち回って前へ進めないと、選択範囲があるときに
+   * 前の仮の要素を途中で切り落としてしまう。
+   */
+  const insertAtRef = useRef<number | null>(null);
+
   const insertMarkup = (markup: string): void => {
     if (mode === "wysiwyg") {
       const surface = wysiwygRef.current;
@@ -639,8 +740,10 @@ export function NoteEditorIsland({
       setBody((value) => value + markup);
       return;
     }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
+    const pending = insertAtRef.current;
+    const start = pending ?? textarea.selectionStart;
+    const end = pending ?? textarea.selectionEnd;
+    insertAtRef.current = start + markup.length;
     setBody((value) => value.slice(0, start) + markup + value.slice(end));
   };
 
@@ -673,8 +776,15 @@ export function NoteEditorIsland({
     return null;
   };
 
-  const upload = (file: File, retryOf: string | null = null): void => {
-    if (retryOf !== null) {
+  const upload = (
+    file: File,
+    options: Readonly<{ retryOf?: string; batched?: boolean }> = {},
+  ): void => {
+    const { retryOf, batched = false } = options;
+    // 単発の挿入は面の選択位置から始める。持ち回っている位置は 1 回の
+    // ドロップの中でしか意味を持たない。
+    if (!batched) insertAtRef.current = null;
+    if (retryOf !== undefined) {
       setUploads((list) => list.filter((entry) => entry.id !== retryOf));
     }
     if (noteId === null) {
@@ -729,9 +839,14 @@ export function NoteEditorIsland({
     });
   };
 
-  /** ドロップは 1 件ずつ流す（ED-06 手順 1 の「本文にドロップする」）。 */
+  /**
+   * ドロップは 1 件ずつ流す（ED-06 手順 1 の「本文にドロップする」）。
+   * ループのあいだだけ挿入位置を持ち回り、抜けたら捨てる。
+   */
   const uploadAll = (files: readonly File[]): void => {
-    for (const file of files) upload(file);
+    insertAtRef.current = null;
+    for (const file of files) upload(file, { batched: true });
+    insertAtRef.current = null;
   };
 
   /**
@@ -969,16 +1084,9 @@ export function NoteEditorIsland({
                 >
                   了解して進む
                 </button>
-                <button
-                  type="button"
-                  className={smallGhostClass}
-                  onClick={() => {
-                    writeWysiwygWarningDismissed();
-                    applyMode("wysiwyg");
-                  }}
-                >
-                  今後表示しない
-                </button>
+                {/* ED-04 の「今後表示しない」はここに置かない。戻し口
+                    （設定画面からの再表示）が本スライスの外にあり、
+                    出すと一度きりの不可逆な抑止になるため。 */}
                 <button
                   type="button"
                   className={smallGhostClass}
@@ -1099,6 +1207,7 @@ export function NoteEditorIsland({
         {mode === "wysiwyg" ? (
           <WysiwygSurface
             baseline={baseline}
+            editable={editable}
             surfaceRef={wysiwygRef}
             onChange={(html) => {
               setBody(html);
@@ -1110,6 +1219,7 @@ export function NoteEditorIsland({
         ) : mode === "html" ? (
           <HtmlSurface
             value={body}
+            editable={editable}
             textareaRef={sourceRef}
             onChange={(html) => {
               setBody(html);
@@ -1120,6 +1230,8 @@ export function NoteEditorIsland({
         ) : (
           <VisualSurface
             baseline={baseline}
+            seed={baselineSeed}
+            editable={editable}
             onReady={(paths) => {
               visualOriginal.current = paths;
               visualCurrent.current = paths;
@@ -1157,7 +1269,7 @@ export function NoteEditorIsland({
                       type="button"
                       className={smallGhostClass}
                       disabled={busy}
-                      onClick={() => upload(entry.file, entry.id)}
+                      onClick={() => upload(entry.file, { retryOf: entry.id })}
                     >
                       再試行
                     </button>

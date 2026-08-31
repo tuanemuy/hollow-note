@@ -1,3 +1,4 @@
+import type { FilePurpose } from "@repo/core/domain/storage/valueObject";
 import { createFileRoute } from "@tanstack/react-router";
 
 /**
@@ -9,8 +10,17 @@ import { createFileRoute } from "@tanstack/react-router";
  * 閲覧者にも見える**必要があるため。鍵は推測できないファイル ID を
  * 含み、一覧する経路も無いので、URL を知っていることが読める条件に
  * なる（avatar と同じ扱い）。
+ *
+ * `FilePurpose` で型付けするのは、3 つの適用点のうちここだけが機械で
+ * 守れるため。綴り違いも、`FILE_PURPOSES` から消えた purpose も型で
+ * 落ちる。増えた側は型では落ちないので、
+ * `__tests__/storage.delivery.test.ts` が `FILE_PURPOSES` との差分を
+ * 走査して「載せていない purpose は 404」を押さえる。
  */
-const PUBLICLY_SERVED_PURPOSES: readonly string[] = ["avatar", "media"];
+export const PUBLICLY_SERVED_PURPOSES: readonly FilePurpose[] = [
+  "avatar",
+  "media",
+];
 
 /**
  * 保管オブジェクトの配信口。

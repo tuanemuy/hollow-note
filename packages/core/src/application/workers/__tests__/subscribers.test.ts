@@ -1,3 +1,5 @@
+import { readNotePurgeTurn } from "@repo/core/application/cleanup/notePurgeFanOut";
+import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
 import { ScopeKey } from "@repo/core/application/scope";
 import { EventId } from "@repo/core/domain/common/event";
 import type { UserDeletedEvent } from "@repo/core/domain/identity/events";
@@ -16,6 +18,7 @@ import {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import { TagAssignment } from "@repo/core/domain/tag/tagAssignment";
+import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import {
@@ -198,15 +201,42 @@ describe("dispatchDomainEvent", () => {
 });
 
 const PURGED_NOTE = NoteId.create("note-1");
-const PURGE_SCOPE = ScopeKey.user(UserId.create("user-1"));
 
-const notePurged = (): NotePurgedEvent => ({
+/**
+ * A note of one owner, with the residue the three followers reclaim.
+ * The owner is what the subscribers turn into a scope, so the two
+ * targets below are the two branches of `scopeOfNoteOwner`.
+ */
+type PurgeTarget = Readonly<{
+  scope: ScopeKey;
+  noteOwner: NoteOwner;
+  storageOwner: StorageOwner;
+  suffix: string;
+}>;
+
+const PERSONAL_TARGET: PurgeTarget = {
+  scope: ScopeKey.user(UserId.create("user-1")),
+  noteOwner: NoteOwner.user(UserId.create("user-1")),
+  storageOwner: StorageOwner.user(UserId.create("user-1")),
+  suffix: "personal",
+};
+
+const WORKSPACE_TARGET: PurgeTarget = {
+  scope: ScopeKey.workspace(WorkspaceId.create("workspace-1")),
+  noteOwner: NoteOwner.workspace(WorkspaceId.create("workspace-1")),
+  storageOwner: StorageOwner.workspace(WorkspaceId.create("workspace-1")),
+  suffix: "workspace",
+};
+
+const notePurged = (
+  target: PurgeTarget = PERSONAL_TARGET,
+): NotePurgedEvent => ({
   id: EventId.create("event-3"),
   type: "note.purged",
   payload: {
     noteId: PURGED_NOTE,
-    owner: NoteOwner.user(UserId.create("user-1")),
-    sourceFileId: StoredFileId.create("file-1"),
+    owner: target.noteOwner,
+    sourceFileId: StoredFileId.create(`file-${target.suffix}`),
     operationId: "purge-note-1",
     deletionOperationId: null,
     routeVersion: 1,
@@ -216,20 +246,24 @@ const notePurged = (): NotePurgedEvent => ({
   aggregateId: "note-1",
 });
 
-async function seedPurgeResidue(h: TestHarness): Promise<void> {
-  await h.container.scopeUnitOfWorkProvider.run(PURGE_SCOPE, async (ctx) => {
+async function seedPurgeResidue(
+  h: TestHarness,
+  target: PurgeTarget = PERSONAL_TARGET,
+): Promise<void> {
+  const fileId = StoredFileId.create(`file-${target.suffix}`);
+  await h.container.scopeUnitOfWorkProvider.run(target.scope, async (ctx) => {
     await ctx.storedFileRepository.insert(
       StoredFile.register(
         {
-          id: "file-1",
-          owner: OWNER,
+          id: fileId,
+          owner: target.storageOwner,
           objectKey: ObjectKey.build(
-            OWNER,
+            target.storageOwner,
             "source",
-            StoredFileId.create("file-1"),
+            fileId,
             "html",
           ),
-          fileName: "file-1.html",
+          fileName: `${fileId}.html`,
           mimeType: "text/html",
           size: 10,
           checksum: Checksum.sha256("a".repeat(64)),
@@ -242,21 +276,24 @@ async function seedPurgeResidue(h: TestHarness): Promise<void> {
     );
     await ctx.tagAssignmentRepository.insert(
       TagAssignment.reconstruct({
-        id: "assignment-1",
+        id: `assignment-${target.suffix}`,
         tagId: "tag-1",
         noteId: PURGED_NOTE,
-        scopeType: "user",
-        scopeId: "user-1",
+        scopeType: target.scope.type,
+        scopeId:
+          target.scope.type === "user"
+            ? target.scope.userId
+            : target.scope.workspaceId,
         assignedBy: "user-1",
         assignedAt: h.clock.now(),
       }),
     );
     await ctx.backupRecordRepository.insert(
       BackupRecord.reconstruct({
-        id: "backup-1",
+        id: `backup-${target.suffix}`,
         userId: "user-1",
         noteId: PURGED_NOTE,
-        sourceFileId: "file-1",
+        sourceFileId: fileId,
         externalFileId: "drive-1",
         webViewUrl: "https://drive.example.test/1",
         checksumValue: "c".repeat(64),
@@ -268,8 +305,11 @@ async function seedPurgeResidue(h: TestHarness): Promise<void> {
   });
 }
 
-const residueCounts = (h: TestHarness) => {
-  const store = h.backend.scope(PURGE_SCOPE);
+const residueCounts = (
+  h: TestHarness,
+  target: PurgeTarget = PERSONAL_TARGET,
+) => {
+  const store = h.backend.scope(target.scope);
   return {
     files: store.storedFiles.values().length,
     assignments: store.tagAssignments.values().length,
@@ -323,5 +363,71 @@ describe("note.purged fan-out", () => {
     // The second delivery announces nothing new: every follower found
     // its rows already gone.
     expect(h.backend.outbox.values()).toHaveLength(afterFirst);
+  });
+
+  // The event carries an owner, not a scope, so the subscribers are the
+  // only place the workspace branch of `scopeOfNoteOwner` is exercised —
+  // the usecase tests hand `scope` in by hand. Seeding both scopes is
+  // what makes the assertion about *which* scope was reached rather than
+  // about deletion happening somewhere.
+  it("TC-integration-022: reclaims a workspace-owned note's residue in the workspace scope, leaving the personal scope untouched", async () => {
+    const h = createTestHarness();
+    await seedPurgeResidue(h, PERSONAL_TARGET);
+    await seedPurgeResidue(h, WORKSPACE_TARGET);
+
+    await dispatchDomainEvent(notePurged(WORKSPACE_TARGET), h.workerContainer);
+
+    expect(residueCounts(h, WORKSPACE_TARGET)).toEqual({
+      files: 0,
+      assignments: 0,
+      backups: 0,
+    });
+    expect(residueCounts(h, PERSONAL_TARGET)).toEqual({
+      files: 1,
+      assignments: 1,
+      backups: 1,
+    });
+    expect(h.logger.byLevel("warn")).toHaveLength(0);
+  });
+});
+
+describe("readNotePurgeTurn", () => {
+  // Unlike the orphan-media sweep's reader, which restarts from the head
+  // on an unreadable position (TC-storage-255), this payload *is* the
+  // work: a turn that cannot name its note has nothing to fall back on,
+  // so it faults instead of guessing.
+  it("faults on a payload that names no note or an unreadable token, rather than inventing a turn", () => {
+    expect(() => readNotePurgeTurn({})).toThrow(SystemError);
+    expect(() => readNotePurgeTurn({ noteId: "" })).toThrow(SystemError);
+    expect(() => readNotePurgeTurn({ noteId: 12 })).toThrow(SystemError);
+    expect(() =>
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: 12 }),
+    ).toThrow(SystemError);
+
+    try {
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: 12 });
+      expect.unreachable("the corrupt payload should have faulted");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(SystemError);
+      expect((cause as SystemError).code).toBe(
+        SystemErrorCode.DataIntegrityError,
+      );
+    }
+  });
+
+  it("reads an absent, null or empty deletion token as `null`, so an ordinary purge carries no barrier", () => {
+    expect(readNotePurgeTurn({ noteId: "note-1" })).toEqual({
+      noteId: "note-1",
+      deletionOperationId: null,
+    });
+    expect(
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: null }),
+    ).toEqual({ noteId: "note-1", deletionOperationId: null });
+    expect(
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "" }),
+    ).toEqual({ noteId: "note-1", deletionOperationId: null });
+    expect(
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "op-1" }),
+    ).toEqual({ noteId: "note-1", deletionOperationId: "op-1" });
   });
 });

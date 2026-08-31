@@ -213,12 +213,20 @@ export const claimNoteForDelete = (
 ): Promise<Readonly<{ note: Note; expectedVersion: ExpectedVersion<Note> }>> =>
   claimNote(ctx, { ...params, capability: "canDelete" });
 
-/** The OCC refusal, third and last of the fixed refusal order. */
+/**
+ * The OCC refusal, third and last of the fixed refusal order.
+ *
+ * The token is compared, not the aggregate's `version`: `ExpectedVersion`
+ * exists so a write consumes what the read captured, and re-deriving the
+ * expected version from the in-memory `Note` is the mistake its brand is
+ * there to prevent. The comparison needs no cast — the brand is an
+ * intersection with `number`.
+ */
 export function ensureExpectedVersion(
   actual: ExpectedVersion<Note>,
   expected: number,
 ): void {
-  if ((actual as number) !== expected) {
+  if (actual !== expected) {
     throw versionConflict();
   }
 }

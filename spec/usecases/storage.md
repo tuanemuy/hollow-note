@@ -148,7 +148,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 1. 「共通: 閲覧者コンテキストの解決」（[usecases/note.md](note.md)）と同じ手順でノートを解決し、`canEdit` を確認する。`moving` は切替前 source、`purging` / `tombstone` は not found、scope miss は primary で 1 回だけ引き直す。**route の CAS は取らない** — この経路が書くのは scope 内の `StoredFile` 1 行だけで、route の状態遷移（`beginMove` / `beginPurge`）ではないため `routeVersion` を固定する相手がいない。解決から手順 5 までの間にノートが移動した場合は、`resolveNote` の 1 回の引き直しに間に合ったものだけが新しい scope へ届き、間に合わなければ旧 scope に行が残って `collectOrphanMedia` の回収対象になる（編集系ユースケースがどれも同じ窓を持つ）
 2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
-4. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない
+4. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない。**そのうえで、サニタイズ後の markup が単体の 1 文書であることを確かめる** — 最初の要素が `svg` の開始タグで、対応する終了タグまでで入れ子が閉じ、ルートの外に空白以外が残らないこと。`process` は本文の断片を前提にするので `</svg>` の後ろの内容をそのまま返すが、XML はルート要素の後ろの内容を致命的エラーとして扱うため、そのまま保管すると `image/svg+xml` として 1 ドットも描かれない。1 文書にならなければ `BusinessRuleError(UnsupportedMimeType)` で返す（判定の対象は受け取ったバイト列ではなく保管される実体なので、この検査は受理判定ではなくここに置く）
 5. **保管する直前に、サニタイズ後の実バイト長を `UploadValidationPolicy.limitFor("media", mimeType)` へ測り直す**。超えていれば `BusinessRuleError(FileTooLarge)` で返す。手順 2 が測ったのは受け取ったバイト列で、手順 4 は SVG をそのバイト列とは別のものに書き換えるため、受理判定の対象と実際に保管される実体が食い違ったままになる。容量に効くのも行に載るのもサニタイズ後の長さなので、上限を当てる相手はそちらである（`image/svg+xml` の上限が 128 KB である理由は [domains/storage.md](../domains/storage.md)）。そのうえで `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる。保管するサイズは手順 4 のあとのバイト長で、手順 3 で容量を確かめた申告前のバイト長とは SVG で食い違う
 6. 手順 5 の transaction が失敗した場合は、手順 5 で置いたオブジェクトを消す。`storeSource` が孤児として回収に任せるのと違うのは、**メディアには回収の手掛かりになる行が残らない**ためである（`StoredFile` が保存されていないので `collectOrphanMedia` が見つけられない）。この後始末自体が失敗した場合は記録して元のエラーを投げる
 7. 配信用の URL を返す
@@ -158,6 +158,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 | 条件 | 種類 |
 | --- | --- |
 | 未対応の形式・サイズ超過 | `BusinessRuleError(UnsupportedMimeType)` / `BusinessRuleError(FileTooLarge)` |
+| サニタイズ後の SVG が単体の 1 文書にならない | `BusinessRuleError(UnsupportedMimeType)` |
 | 容量の上限到達 | `BusinessRuleError(StorageQuotaExceeded)` |
 | ノート不在・権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
 | 保管の失敗 | `SystemError(ExternalServiceError)` |
@@ -418,7 +419,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 ### 処理フロー
 
 1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit, cursor)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）。`cursor` はその順序上の位置を**排他的**に指し、位置は行ではないので、その行が既に消えていても解決する — 掃引は読んだページの一部を消すのが常態だからである
-2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
+2. 各ファイルの `noteId` から所属ノートを引き、**現在の本文と保持している版（`NoteRevision.RETENTION` 件）の本文**に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる。版の本文も参照元に数えるのは、`restoreNoteRevision` が復元できる版が指すメディアを回収すると、復元は成功して画像だけが 404 になるためである（回収の起点は作成時刻なので、本文から外して 30 日経てば版はまだ生きている）。読み取りはファイル単位ではなく**ノート単位**にして 1 turn のあいだ持ち回る — 1 ページは 1 つのノートの画像であることが普通なので、版の数だけ本文解析が増えるのをこれで抑える（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
 3. 現れないものを `deleteFiles` で削除する
 
 処理後は翌日のtaskを自己登録する。**ページが満ちたときは残件を先に処理するため直後にも継続taskを設定し**、読んだ最後の行の `(createdAt, id)` を位置として task の payload に載せる。完了後に日次へ戻す。継続の条件は「回収できたか」ではなく「ページが満ちたか」である — 掃引は残すと決めた行をそのまま残すので、回収数を条件にすると、最も古い `limit` 件がすべて本文から参照されている scope（稼働中なら普通の状態）で毎日同じページを読み直し、その後ろの孤児が 1 度も検査されない。カーソルが毎回厳密に前進するので、満ページで直後を張っても spin にはならない。位置を task の payload に置くのは、payload が `(kind, operationId)` の upsert で掃引行そのものと一緒に書かれ、位置の寿命が掃引行の寿命と一致するためである。**読めない payload は失敗させず、先頭からやり直す** — 位置は周期的な全走査の再開位置でしかなく、先頭から読み直せば作業は重複するが取りこぼしはない。逆に失敗させると backoff が回り、上限で scope 唯一の掃引行が `failed` に駐車されて、掃引は自分を張り直せないためその scope の回収が二度と動かなくなる。走査中に 30 日境界を跨いだ行はカーソルの後ろに現れうるので、そのパスでは拾わず翌日の先頭からの走査で拾う。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。

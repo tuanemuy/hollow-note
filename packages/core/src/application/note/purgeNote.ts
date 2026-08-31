@@ -10,6 +10,7 @@ import {
   ConflictError,
   isConflictError,
   isNotFoundError,
+  isValidationError,
   ValidationError,
 } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
@@ -103,8 +104,33 @@ export const PURGE_TOMBSTONE_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const RESUME_CLAIM = -1;
 
+const NOTE_NOT_TRASHED = "NOTE_NOT_TRASHED";
+
 const noteNotTrashed = (): ValidationError =>
-  new ValidationError("NOTE_NOT_TRASHED", "The note is not in the trash");
+  new ValidationError(NOTE_NOT_TRASHED, "The note is not in the trash");
+
+/**
+ * Whether a failed local transaction is one of the refusals step 3
+ * lets hand the route back.
+ *
+ * The set is closed on purpose, and it is exactly what `reclaim` can
+ * raise while the note is still there: the permission collapse
+ * (`NOTE_NOT_FOUND`), the trash barrier, the version, the foreign
+ * scope, the lost cleanup ownership. Every one of them means the
+ * transaction decided *not* to delete, so the note it refused to touch
+ * has to become reachable again.
+ *
+ * Anything else — a driver fault, a lost response — says nothing about
+ * whether the delete committed, and a commit whose response was lost is
+ * the case that makes this a whitelist rather than a `catch`: aborting
+ * there would reopen the route of a note that is already gone and whose
+ * `note.purged` is already in the outbox, leaving a row that resolves to
+ * nothing for as long as it stands.
+ */
+const isAbortableRefusal = (cause: unknown): boolean =>
+  isConflictError(cause) ||
+  isNotFoundError(cause) ||
+  (isValidationError(cause) && cause.code === NOTE_NOT_TRASHED);
 
 const versionConflict = (): ConflictError =>
   new ConflictError(
@@ -193,14 +219,23 @@ const digest = async (source: string): Promise<string> =>
  * touched in.
  *
  * The route is claimed first (`beginPurge`), which closes every external
- * read and mutation of the note before anything is destroyed. Until the
- * local delete commits the claim is reversible, so every refusal the
- * re-check inside that transaction can raise — a note restored between
+ * read and mutation of the note before anything is destroyed. A *refusal*
+ * the re-check inside that transaction raises — a note restored between
  * the entry gate and the claim, a member removed, a version that moved —
- * hands the route back (`abortPurge`) and reports itself unchanged. From
- * the moment the delete commits the saga is forward-only: the note's
- * sole copy is gone, so there is nothing to give a reopened route back
- * to, and a failure is retried rather than compensated.
+ * hands the route back (`abortPurge`) and reports itself unchanged,
+ * because a refusal is a decision not to delete and the note it left
+ * behind has to be reachable again ({@link isAbortableRefusal}).
+ *
+ * Any *other* failure of that transaction is not a decision, and the
+ * route stays `purging`. Whether the delete committed is unknown from
+ * out here — a lost response to a committed delete looks exactly like
+ * one that never ran — and only one of the two answers is recoverable:
+ * a route left `purging` is resumed by re-issuing the same command,
+ * while a route reopened over a note that is already gone resolves
+ * forever to nothing. From the moment the delete commits the saga is
+ * forward-only in any case: the note's sole copy is gone, so there is
+ * nothing to give a reopened route back to, and a failure is retried
+ * rather than compensated.
  *
  * The public projection is removed before the route is tombstoned, never
  * after. The tombstone is what tells a later reader that this note is
@@ -219,7 +254,10 @@ const digest = async (source: string): Promise<string> =>
  * nothing scans for stopped operations on its own, and a `userRequest`
  * purge whose response was lost cannot be re-issued at all: its
  * operation id was minted, and `NoteRouteStore.resolve` hides the
- * `purging` route that holds it.
+ * `purging` route that holds it. That is the whole cost of leaving an
+ * undecided transaction's route `purging`: on the two internal paths a
+ * redelivery resumes it, and on the user path it waits for that driver
+ * instead of being reopened over a note that may already be gone.
  */
 export async function purgeNote({
   container,
@@ -266,7 +304,19 @@ async function drive(
   try {
     outcome = await deleteLocally(container, plan);
   } catch (cause) {
-    await abortQuietly(container, plan, cause);
+    if (isAbortableRefusal(cause)) {
+      await abortQuietly(container, plan, cause);
+    } else {
+      container.logger.error(
+        "[purgeNote] the local transaction failed without deciding; the route is left purging",
+        {
+          cause,
+          operationId: plan.operationId,
+          noteId: plan.noteId,
+          scope: ScopeKey.serialize(plan.scope),
+        },
+      );
+    }
     throw cause;
   }
 
@@ -307,6 +357,10 @@ async function admitUserRequest(
   if (!Note.isTrashed(note)) {
     throw noteNotTrashed();
   }
+  // The aggregate's own version, not an OCC token: this read happens
+  // outside the transaction that deletes, so nothing here can consume a
+  // token. The token comparison is `ensureExpectedVersion` inside that
+  // transaction, and that is the one that decides.
   if (note.version !== input.expectedVersion) {
     throw versionConflict();
   }

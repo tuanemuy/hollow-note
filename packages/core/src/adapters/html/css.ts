@@ -1,12 +1,13 @@
 /**
  * Declaration-level CSS filtering for spec/adr/013.
  *
- * Two things are removed and nothing else: `position: fixed` / `sticky`
- * (Shadow DOM scopes selectors but not layout, so one such declaration
- * covers the whole public page) and `@import` (an external fetch that
- * `ExternalFetchPolicy` never sees). The unit is the declaration / the
- * at-rule, never the enclosing block — dropping a whole `<style>` for one
- * violation would erase the decoration the `preserve` mode exists to keep.
+ * Two things are removed and nothing else: a `position` whose value is not
+ * on the allow list (Shadow DOM scopes selectors but not layout, so one
+ * `fixed` declaration covers the whole public page) and `@import` (an
+ * external fetch that `ExternalFetchPolicy` never sees). The unit is the
+ * declaration / the at-rule, never the enclosing block — dropping a whole
+ * `<style>` for one violation would erase the decoration the `preserve`
+ * mode exists to keep.
  *
  * The scanner is deliberately forgiving: unbalanced braces and unknown
  * at-rules are carried through rather than rejected, because the input is
@@ -24,11 +25,22 @@ export type CssRemoval = Readonly<{ name: string; reason: string }>;
 export type ReportCssRemoval = (removal: CssRemoval) => void;
 
 const POSITION_PROPERTY = /^(?:-[a-z]+-)?position$/i;
-const VIEWPORT_ANCHORED_POSITION = /^(?:-[a-z]+-)?(?:fixed|sticky)$/i;
+
+/**
+ * The only `position` values that survive. Judging the value with an allow
+ * list rather than a deny list is what closes indirection for free: a
+ * browser resolves `var()` / `env()` (and one day `attr()`) to a keyword
+ * this module never sees, so `position: var(--x)` would slip a `fixed`
+ * past any list of banned spellings. An unknown value is inert in the
+ * browser anyway, so removing it costs no decoration.
+ */
+const ALLOWED_POSITION_VALUE =
+  /^(?:static|relative|absolute|inherit|initial|revert|revert-layer|unset)$/i;
+
 const AT_RULE_NAME = /^@([-\w]+)/;
 
-const FIXED_POSITION_REASON =
-  "position: fixed / sticky escapes the note body (spec/adr/013)";
+const POSITION_REASON =
+  "position outside static / relative / absolute escapes the note body (spec/adr/013)";
 const IMPORT_REASON =
   "@import fetches outside ExternalFetchPolicy (spec/adr/013)";
 
@@ -214,12 +226,12 @@ const isImportAtRule = (canonical: string): boolean =>
   AT_RULE_NAME.exec(canonical)?.[1]?.toLowerCase() === "import";
 
 /**
- * The property of a viewport-anchoring declaration, or undefined when the
- * canonical statement is not one. The separator is found with the same scan
- * the statement splitter uses, so what counts as a colon here is what counts
- * as one everywhere else in this module.
+ * The property of a `position` declaration whose value is not allowed, or
+ * undefined when the canonical statement is not one. The separator is found
+ * with the same scan the statement splitter uses, so what counts as a colon
+ * here is what counts as one everywhere else in this module.
  */
-const viewportAnchoringProperty = (canonical: string): string | undefined => {
+const disallowedPositionProperty = (canonical: string): string | undefined => {
   const colon = scanTo(canonical, 0, ":");
   if (colon === -1) {
     return undefined;
@@ -232,7 +244,7 @@ const viewportAnchoringProperty = (canonical: string): string | undefined => {
     .slice(colon + 1)
     .replace(/!\s*important\s*$/i, "")
     .trim();
-  return VIEWPORT_ANCHORED_POSITION.test(value) ? property : undefined;
+  return ALLOWED_POSITION_VALUE.test(value) ? undefined : property;
 };
 
 const pushStatement = (
@@ -252,9 +264,9 @@ const pushStatement = (
     parts.push(`${text};`);
     return;
   }
-  const property = viewportAnchoringProperty(canonical);
+  const property = disallowedPositionProperty(canonical);
   if (property !== undefined) {
-    report({ name: property, reason: FIXED_POSITION_REASON });
+    report({ name: property, reason: POSITION_REASON });
     return;
   }
   parts.push(`${text};`);

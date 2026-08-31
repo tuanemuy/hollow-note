@@ -41,7 +41,7 @@ export const Route = createFileRoute("/notes/new")({
 function NewNoteEditorPage() {
   const { NoteEditor } = Route.useLoaderData();
   return (
-    <Suspense fallback={<NoteEditorSkeleton />}>
+    <Suspense fallback={<NoteEditorSkeleton backTo={{ kind: "notes" }} />}>
       <Deferred promise={NoteEditor} />
     </Suspense>
   );

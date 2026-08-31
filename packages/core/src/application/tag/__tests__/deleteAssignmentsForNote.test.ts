@@ -215,6 +215,12 @@ describe("deleteAssignmentsForNote", () => {
 
     await run(h);
     expect(tasks(h)).toHaveLength(1);
+    // No deletion drove this purge, so its continuation is expiry
+    // collection rather than security cleanup — class 0 is reserved for
+    // the deletion turns a barrier waits on (spec/database/index.md).
+    expect(tasks(h).map((task) => task.priority)).toEqual([
+      ScopeTaskPriority.expiryCollection,
+    ]);
 
     const round = await runDueScopeTasks(h.workerContainer);
 

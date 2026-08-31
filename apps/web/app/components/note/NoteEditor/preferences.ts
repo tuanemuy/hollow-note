@@ -1,10 +1,13 @@
 /**
- * P-12 が端末に置く 3 つの値。いずれも**サーバーへは永続化しない**
+ * P-12 が端末に置く 2 つの値。どちらも**サーバーへは永続化しない**
  * （ED-05 / ED-08）。
  *
  * - 既定の編集モード（利用者単位。新規作成は常に WYSIWYG で開く）
- * - WYSIWYG 警告を今後表示しないか
  * - 保存に失敗した本文の退避（復元の提案）
+ *
+ * ED-04 の「WYSIWYG 警告を今後表示しない」はここに無い。抑止を戻す
+ * 設定画面が本スライスの外にあり、戻し口の無い一方通行の抑止だけを
+ * 置くと、一度押した端末では装飾の喪失が二度と告げられなくなる。
  *
  * `localStorage` はプライベートウィンドウやサイトデータの遮断で読み書き
  * そのものが投げるので、すべての経路を握り潰す。ここが投げると編集画面が
@@ -26,7 +29,6 @@ export const MODE_LABEL: Readonly<Record<EditorMode, string>> = {
 };
 
 const MODE_KEY = "hollow.noteEditor.mode";
-const WYSIWYG_WARNING_KEY = "hollow.noteEditor.wysiwygWarningDismissed";
 const DRAFT_PREFIX = "hollow.noteEditor.draft.";
 
 const read = (key: string): string | null => {
@@ -63,14 +65,6 @@ export function readPreferredMode(): EditorMode | null {
 
 export function writePreferredMode(mode: EditorMode): void {
   write(MODE_KEY, mode);
-}
-
-export function readWysiwygWarningDismissed(): boolean {
-  return read(WYSIWYG_WARNING_KEY) === "1";
-}
-
-export function writeWysiwygWarningDismissed(): void {
-  write(WYSIWYG_WARNING_KEY, "1");
 }
 
 export type LocalDraft = Readonly<{

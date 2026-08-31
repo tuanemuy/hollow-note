@@ -25,8 +25,16 @@ export type DeleteNotesForOwnerInput = Readonly<{
   /**
    * Scope the cleanup is walking. A personal deletion names the leaving
    * user's own scope and therefore never reaches the workspace notes
-   * they authored (AC-09); a workspace deletion names the workspace and
-   * never reaches its members' personal notes.
+   * they authored (AC-09).
+   *
+   * A workspace scope is accepted by the same rule — it would name the
+   * workspace and never reach its members' personal notes — but nothing
+   * drives it yet: `application/workspace/workspaceDeletionLocal.ts`
+   * retires memberships, invitations and the Workspace row without
+   * purging notes, so the only caller today is the personal cleanup.
+   * That is also why the `note.purged` fan-out's admission reads the
+   * personal receipt alone
+   * (`application/cleanup/notePurgeFanOut.ts`).
    */
   scope: ScopeKey;
   batchSize?: number;

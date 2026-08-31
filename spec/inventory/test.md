@@ -513,7 +513,7 @@
 | TC-integration-019 | deleteBackupRecordsForNote: 記録の所有者が削除実行者と異なるメンバー — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | 所有者によらず、そのノートの記録がすべて削除される |
 | TC-integration-020 | deleteBackupRecordsForNote: 対象ノートの記録が 1 件もない — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | 何もせず `deletedCount: 0` で成功として返る |
 | TC-integration-021 | deleteBackupRecordsForNote: 同じイベントを 2 回受け取る — 2 回処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | 2 回目は削除対象がなく `deletedCount: 0` で終わり、結果は変わらない（冪等） |
-| TC-integration-022 | deleteBackupRecordsForNote: ワークスペース削除に伴う `note.purged` を受け取る — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | ワークスペース所有ノートの記録もこの経路で削除される（`backup_records` は owner 列を持たず `noteId` 経由でしか特定できないため） |
+| TC-integration-022 | deleteBackupRecordsForNote: ワークスペース所有ノートの `note.purged` を受け取る — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | ワークスペース scope でも同じ経路で記録が削除される（`backup_records` は owner 列を持たず `noteId` 経由でしか特定できないため）。受理判定は personal barrier の receipt 1 本なので、`deletionOperationId` を積んだ turn がワークスペース scope で通ることはない |
 | TC-integration-023 | deleteBackupRecordsForNote: 記録が250件ある — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | 100件ずつ`integration.noteDeleteContinued`で再開し、同じ`deletionOperationId`を保持する |
 | TC-integration-024 | deleteBackupRecordsForNote: personal account deletion由来 — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | personal scopeのcleanup owner receipt一致時だけ削除する。障壁が既に `completed` でも削除する（この追随者は receipt に触れないため） |
 | TC-integration-025 | deleteBackupRecordsForNote: 書き込みが失敗する — 処理する | spec/testcases/integration/deleteBackupRecordsForNote.md#テストケース-deletebackuprecordsfornote | `SystemError(DatabaseError)` が投げられ、再配送に委ねられる |
@@ -1747,6 +1747,7 @@
 | TC-note-777 | moveNote: 終端した行の payload が読めない — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | plan を読むのが開き直しより先なので、decode に失敗した行は終端したまま残り、誰も閉じない `running` を作らない |
 | TC-note-778 | emptyTrash: 一部の削除が飛ばせない理由（`SystemError(DatabaseError)` など）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その失敗がそのまま送出されて要求ごと失敗し、「0 件を完全に削除しました」という誤った完了通知にならない。既に確定した purge は戻らない |
 | TC-note-779 | emptyTrash: ジョブ経路（51 件以上）の列挙 — ページの読み方を確認する | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | 手順 2 で数えた総数が導くページ数までで打ち切る（満たないページで早く抜けるのは従来どおり）。数えたあとにゴミ箱へ入ったノートは追いかけない |
+| TC-note-780 | purgeNote: local deleteのcommit後に応答を失う — 完全削除する | spec/testcases/note/purgeNote.md#テストケース-purgenote | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない |
 | TC-storage-001 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 削除され、`collectedCount` に数えられる |
 | TC-storage-002 | collectExpiredArtifacts: 期限が過ぎた PDF がある — 実行後にイベントを確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | `deleteFiles` と同じ手順を通るため、件ごとに `storage.fileDeleted`（`objectKey` を含む）が発行される |
 | TC-storage-003 | collectExpiredArtifacts: `storage.fileDeleted` が発行された — 購読側を確認する | spec/testcases/storage/collectExpiredArtifacts.md#テストケース-collectexpiredartifacts | 実体の回収は `deleteStoredObjects` が行う（本ユースケースはオブジェクトストレージを直接触らない） |
@@ -1799,15 +1800,15 @@
 | TC-storage-050 | deleteFilesByOwner: 実行後 — 発行されたイベントを確認する | spec/testcases/storage/deleteFilesByOwner.md#テストケース-deletefilesbyowner | 1 件ごとに `storage.fileDeleted` が発行される（所有者単位の一括削除メソッドは持たず、`listByOwner` + `deleteFiles` の反復で行い、Usage の減算と実体の回収を 1 件ずつつなぐ） |
 | TC-storage-051 | deleteFilesForNote: 元ファイル 1 件・メディア 2 件・取り込んだ外部参照 1 件を持つノートが完全削除された — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 4 件すべてのメタデータが削除され、1 件ごとに `storage.fileDeleted` が発行され、`deletedCount: 4` が返る |
 | TC-storage-052 | deleteFilesForNote: 同じノート由来の artifact（PDF エクスポートの生成物）もある — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | artifact は削除の対象にならず残る（期限の経過時に `collectExpiredArtifacts` が回収する） |
-| TC-storage-053 | deleteFilesForNote: 他のノートのメディアがある — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | `listByNote(noteId)` に現れないため削除されない |
+| TC-storage-053 | deleteFilesForNote: 他のノートのメディアがある — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | `listDeletableByNote(noteId)` に現れないため削除されない |
 | TC-storage-054 | deleteFilesForNote: 所有者のアイコン（`purpose: "avatar"`）がある — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | ノートに属さない（`noteId: null`）ため削除されない |
 | TC-storage-055 | deleteFilesForNote: 削除後 — 使用量を確認する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | `storage.fileDeleted` を購読する `applyStorageDelta` によって保存容量が返る |
 | TC-storage-056 | deleteFilesForNote: 削除後 — オブジェクトストレージを確認する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 実体は `storage.fileDeleted` を購読する `deleteStoredObjects` が削除する |
 | TC-storage-057 | deleteFilesForNote: 対象のファイルが 1 件もない（元ファイルのないノート） — `note.purged` を処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 何もせず成功し、`deletedCount: 0` が返る |
 | TC-storage-058 | deleteFilesForNote: deletable fileが250件ある — 処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 100件ずつ`storage.noteDeleteContinued`で再開し、各taskが同じ`deletionOperationId`を保持する |
 | TC-storage-059 | deleteFilesForNote: personal account deletion由来のtoken — 処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | personal scopeのcommit済み`applied_operations` receiptと照合して通し、workspace専用portを要求しない。障壁が既に `completed` でも通す（この追随者は receipt に触れないため） |
-| TC-storage-060 | deleteFilesForNote: workspace deletion由来の別operation ID — 処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | manifest owner不一致として削除を拒否する |
-| TC-storage-061 | deleteFilesForNote: 同じイベントを 2 回受け取る — 2 回処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 削除済みのファイルは `listByNote` に現れず、2 回目は `deletedCount: 0` で終わる（冪等） |
+| TC-storage-060 | deleteFilesForNote: personal barrier の receipt と一致しない operation ID（workspace 削除由来の token を含む） — 処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 受理判定は personal barrier の receipt 1 本なので、一致しない token は `ConflictError("CLEANUP_OPERATION_MISMATCH")` として削除を拒否する |
+| TC-storage-061 | deleteFilesForNote: 同じイベントを 2 回受け取る — 2 回処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 削除済みのファイルは `listDeletableByNote` に現れず、2 回目は `deletedCount: 0` で終わる（冪等） |
 | TC-storage-062 | deleteFilesForNote: 一部のファイルが既に不在 — 処理する | spec/testcases/storage/deleteFilesForNote.md#テストケース-deletefilesfornote | 無視して継続し、残りが削除される |
 | TC-storage-063 | deleteStoredObjects: `storage.fileDeleted` を 3 件まとめて受け取る — 処理する | spec/testcases/storage/deleteStoredObjects.md#テストケース-deletestoredobjects | `ObjectStorage.deleteMany` が 3 件の `objectKey` で呼ばれ、`deletedCount: 3` が返る |
 | TC-storage-064 | deleteStoredObjects: 受け取ったイベント — 鍵の解決方法を確認する | spec/testcases/storage/deleteStoredObjects.md#テストケース-deletestoredobjects | イベントの `objectKey` をそのまま使い、`StoredFileRepository` を引き直さない（メタデータは既に削除済みのため引けない） |
@@ -1999,9 +2000,12 @@
 | TC-storage-250 | storeAvatar: ワークスペースが削除を受理済み — ワークスペースのアイコンを差し替える | spec/testcases/storage/storeAvatar.md#テストケース-storeavatar | `ConflictError("WORKSPACE_DELETING")` が投げられる |
 | TC-storage-251 | storeMedia: — — 128 KB を超える SVG をアップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | `BusinessRuleError(FileTooLarge)` が投げられる（本文の上限に触れて `NOTE_CONTENT_TOO_LARGE` になることはない） |
 | TC-storage-252 | storeMedia: サニタイズで実バイト長が 128 KB を超える SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 保管する直前の測り直しで `BusinessRuleError(FileTooLarge)` になり、オブジェクトも `StoredFile` の行も残らない |
-| TC-storage-253 | storeMedia: — — 128 KB（131,072 バイト）ちょうどの SVG をアップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 成功する（境界値。SVG だけがラスタ画像と別の上限を持つ） |
+| TC-storage-253 | storeMedia: サニタイズ後も 128 KB 以内に収まる 128 KB（131,072 バイト）ちょうどの SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 成功する（境界値。上限が当たるのはサニタイズ後の長さなので、書き換えで伸びない入力だけがこの境界に届く。SVG だけがラスタ画像と別の上限を持つ） |
 | TC-storage-254 | collectOrphanMedia: 本文から参照され続けている media が `limit` 件並び、その後ろに孤児がある — 2 turn 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 1 turn 目は 0 件回収して満ページのまま継続し、2 turn 目がカーソルの先の孤児を回収する（先頭を読み直さない） |
 | TC-storage-255 | collectOrphanMedia: task の payload に読める位置が無い — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 失敗させず先頭からやり直す（掃引行を `failed` に駐車させないため） |
+| TC-storage-256 | storeMedia: サニタイズ後に `</svg>` の後ろへ内容が残る SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 単体の `.svg` として開けないため `BusinessRuleError(UnsupportedMimeType)` が投げられ、オブジェクトも `StoredFile` の行も残らない |
+| TC-storage-257 | collectOrphanMedia: 本文からは参照が外れているが、保持中の版の本文がまだ参照しているメディア — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 削除されない（復元できる版が指すメディアは生きた参照として数える） |
+| TC-storage-258 | collectOrphanMedia: turn 全体が失敗する — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 記録して翌日の掃引を張り直し、`collectedCount: 0` で正常終了する（scope 唯一の掃引行を `failed` に駐車させないため） |
 | TC-tag-001 | assignTag: 編集できるノート、同名タグなし — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | タグが新規作成され付与され、`created: true` が返る |
 | TC-tag-002 | assignTag: 同じスコープに同名タグがある — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 既存のタグが使われ、`created: false` が返る |
 | TC-tag-003 | assignTag: 既に同じタグが付いている — 再度付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 重複した付与は作られず成功する |

@@ -1,7 +1,10 @@
 import {
   isConflictError,
   isNotFoundError,
+  isSystemError,
   isValidationError,
+  SystemError,
+  SystemErrorCode,
 } from "@repo/core/application/errors";
 import type { NoteRouteStore } from "@repo/core/application/ports/noteRouteStore";
 import type { ScopeKey } from "@repo/core/application/scope";
@@ -125,6 +128,37 @@ const withPublicProjection = (
     ...overrides,
   },
 });
+
+/**
+ * Loses the response of the `openAt`-th scope transaction, once, *after*
+ * it has committed — the window a driver fault cannot be distinguished
+ * from, and the one an abort must not fire in.
+ */
+const withLostResponseAfterCommit = (
+  h: TestHarness,
+  openAt: number,
+): TestHarness["container"] => {
+  const real = h.container.scopeUnitOfWorkProvider;
+  let opened = 0;
+  let lost = false;
+  return {
+    ...h.container,
+    scopeUnitOfWorkProvider: {
+      run: (async (scope, body) => {
+        opened += 1;
+        const result = await real.run(scope, body);
+        if (opened === openAt && !lost) {
+          lost = true;
+          throw new SystemError(
+            SystemErrorCode.DatabaseError,
+            "the commit's response was lost",
+          );
+        }
+        return result;
+      }) as typeof real.run,
+    },
+  };
+};
 
 /** Fails the wrapped call exactly once, then lets it through. */
 const failOnce = <TArgs extends readonly unknown[], TResult>(
@@ -374,6 +408,55 @@ describe("purgeNote", () => {
     expect(route(h, noteId)?.state).toBe("tombstone");
     // The delete committed on the first attempt, so the resume must not
     // publish a second hand-off to the fan-out.
+    expect(purgedEvents(h)).toHaveLength(1);
+  });
+
+  it("TC-note-780: a lost response to the committed local delete leaves the route purging instead of handing it back", async () => {
+    const h = createTestHarness();
+    const noteId = await trashedPersonalNote(h);
+
+    await expect(
+      purgeNote({
+        container: withLostResponseAfterCommit(h, 1),
+        input: {
+          kind: "userRequest",
+          noteId,
+          userId: OWNER,
+          expectedVersion: 1,
+        },
+      }),
+    ).rejects.toSatisfy(isSystemError);
+
+    // The delete committed and its `note.purged` is already on its way
+    // to the fan-out, so reopening the route would leave a row that
+    // resolves to a note nothing can produce.
+    expect(storedNote(h, noteId)).toBeNull();
+    expect(purgedEvents(h)).toHaveLength(1);
+    expect(route(h, noteId)?.state).toBe("purging");
+    expect(purgeAckKeys(h)).toEqual([]);
+  });
+
+  it("TC-note-780: a cleanup purge whose committed delete lost its response resumes on redelivery", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await beginCleanup(h);
+    // The cleanup path opens the scope twice per attempt: `assertOwner`
+    // before the claim, then the transaction that deletes.
+    const container = withLostResponseAfterCommit(h, 2);
+
+    await expect(purgeForCleanup(h, noteId, { container })).rejects.toSatisfy(
+      isSystemError,
+    );
+    expect(route(h, noteId)?.state).toBe("purging");
+
+    await purgeForCleanup(h, noteId, { container });
+
+    const operationId = await ownerPurgeOperationId(
+      CLEANUP_OPERATION,
+      NoteId.create(noteId),
+    );
+    expect(route(h, noteId)?.state).toBe("tombstone");
+    expect(purgeAckKeys(h)).toEqual([`${operationId} ${noteId}`]);
     expect(purgedEvents(h)).toHaveLength(1);
   });
 

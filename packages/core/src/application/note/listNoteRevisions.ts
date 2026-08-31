@@ -18,9 +18,21 @@ export type ListNoteRevisionsInput = Readonly<{
  *
  * The excerpt is derived here rather than stored: `NoteRevision` holds
  * only the HTML, and re-deriving keeps the picker from having to carry
- * twenty full bodies to the browser. The read is bounded by the same
- * retention the writers enforce, so this is at most twenty passes over
- * already-sanitized markup.
+ * twenty full bodies to the browser.
+ *
+ * **The cost is the whole of `process`, once per revision.** `process`
+ * parses, applies the allow list, re-serializes, extracts the text and
+ * collects the headings whatever it is handed — being already sanitized
+ * saves it nothing — and the excerpt is a by-product of that. Bounded by
+ * the retention the writers enforce and by `NoteHtml`'s 800 KB ceiling,
+ * one listing is therefore worst-case 20 × 800 KB of full sanitization,
+ * run synchronously every time the editor opens its revision picker.
+ *
+ * That is knowingly left standing in this slice. Making it cheap means
+ * either a text-extraction-only entry on `HtmlProcessor` — a port
+ * change, held by the conformance suites — or an excerpt stored on
+ * `NoteRevision`, which `spec/domains/note.md` has to declare first.
+ * Neither belongs to the editing slice this usecase ships with.
  *
  * The listing opens a scope unit of work even though it writes nothing:
  * `NoteRevisionRepository` is reachable only from that context, and

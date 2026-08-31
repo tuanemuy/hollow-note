@@ -16,7 +16,8 @@ const processor = createHtmlProcessor();
 type Removal = Readonly<{ kind: RemovedNode["kind"]; name: string }>;
 
 type SanitizeCase = Readonly<{
-  tc: string;
+  /** Ledger row this case holds, when one covers it. */
+  tc?: string;
   title: string;
   input: string;
   /** Exact expected output, when the whole serialization is the claim. */
@@ -257,28 +258,28 @@ const sanitizeCases: readonly SanitizeCase[] = [
   // property name, so every spelling below is effectively the plain one that
   // TC-note-705 / 706 / 707 cover.
   {
-    tc: "TC-note-705 / B-001",
+    tc: "TC-note-705",
     title: "drops position: fixed written with a comment inside the value",
     input: '<p style="position:/**/fixed">x</p>',
     html: "<p>x</p>",
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705 / B-001",
+    tc: "TC-note-705",
     title: "drops position: fixed written with a comment before the colon",
     input: '<p style="position/**/:fixed">x</p>',
     html: "<p>x</p>",
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705 / B-001",
+    tc: "TC-note-705",
     title: "drops position: fixed written with a comment hiding a colon",
     input: '<p style="/*:*/position:fixed">x</p>',
     html: "<p>x</p>",
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705 / B-001",
+    tc: "TC-note-705",
     title: "drops a commented position: fixed inside a style element",
     input: "<style>.a{position:/**/fixed;color:red}</style>",
     present: ["color:red"],
@@ -286,21 +287,21 @@ const sanitizeCases: readonly SanitizeCase[] = [
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705 / B-001",
+    tc: "TC-note-705",
     title: "drops position: fixed written with an identifier escape",
     input: '<p style="position:\\66 ixed">x</p>',
     html: "<p>x</p>",
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-708 / B-001",
+    tc: "TC-note-708",
     title: "drops position: sticky whose !important is written escaped",
     input: '<p style="position:sticky!\\69 mportant">x</p>',
     html: "<p>x</p>",
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-706 / B-001",
+    tc: "TC-note-706",
     title: "drops @import written with an identifier escape",
     input: "<style>@\\69 mport url(evil.css); .a{color:red}</style>",
     present: ["color:red"],
@@ -308,7 +309,7 @@ const sanitizeCases: readonly SanitizeCase[] = [
     removed: [{ kind: "css", name: "@import" }],
   },
   {
-    tc: "TC-note-706 / B-001",
+    tc: "TC-note-706",
     title: "drops @import written with a comment before its prelude",
     input: "<style>@import/**/url(evil.css); .a{color:red}</style>",
     present: ["color:red"],
@@ -316,13 +317,69 @@ const sanitizeCases: readonly SanitizeCase[] = [
     removed: [{ kind: "css", name: "@import" }],
   },
   {
-    tc: "TC-note-709 / B-001",
+    tc: "TC-note-709",
     title: "keeps a property a comment splits, which no browser resolves",
     // A comment separates identifiers rather than joining them, so this is
     // an unknown property and not `position` — over-removing here would eat
     // decoration the preserve mode exists to keep.
     input: '<p style="pos/**/ition:fixed">x</p>',
     present: ["pos/**/ition:fixed"],
+    noRemovals: true,
+  },
+  // The value is judged by an allow list, so every indirection a browser
+  // resolves after this module has run — `var()`, `env()`, one day `attr()`
+  // — falls out without being enumerated.
+  {
+    tc: "TC-note-705",
+    title: "drops position whose value is var(), which resolves to fixed",
+    input: '<p style="position:var(--x)">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops a var() overlay that a custom property resolves to fixed",
+    input:
+      "<style>:host{--x:fixed}" +
+      ".o{position:var(--x);top:0;left:0;width:100%;height:100%}</style>",
+    present: ["--x:fixed", "top:0"],
+    absent: ["position"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position written with an upper-case VAR()",
+    input: '<p style="position:VAR(--x)">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position whose var() names fixed as its fallback",
+    input: '<p style="position:var(--x,fixed)">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-708",
+    title: "drops position whose value is env(), the same shape as var()",
+    input: '<p style="position:env(--x);color:red">x</p>',
+    html: '<p style="color:red;">x</p>',
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    title: "drops an unlisted position value, since only the browser resolves",
+    // No ledger row: this is the allow list's own consequence rather than a
+    // rule of ADR 013. An unknown value is inert in the browser anyway, so
+    // removing it costs no decoration.
+    input: '<p style="position:absolutely">x</p>',
+    html: "<p>x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    title: "keeps the global keywords, which cannot resolve to fixed",
+    input: '<p style="position:inherit">a</p><p style="position:unset">b</p>',
+    present: ["position:inherit", "position:unset"],
     noRemovals: true,
   },
   {
@@ -423,8 +480,16 @@ const sanitizeCases: readonly SanitizeCase[] = [
   },
 ];
 
+const namedSanitizeCases = sanitizeCases.map((testCase) => ({
+  ...testCase,
+  name:
+    testCase.tc === undefined
+      ? testCase.title
+      : `${testCase.tc}: ${testCase.title}`,
+}));
+
 describe("HtmlProcessor.process — ADP-note-001 sanitize allow-list (spec/adr/013)", () => {
-  it.each(sanitizeCases)("$tc: $title", (testCase) => {
+  it.each(namedSanitizeCases)("$name", (testCase) => {
     const result = processor.process(testCase.input);
 
     if (testCase.html !== undefined) {

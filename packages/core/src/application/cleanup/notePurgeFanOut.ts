@@ -23,9 +23,19 @@ import { ScopeKey } from "../scope";
 export type NotePurgeFanOutTurn = Readonly<{
   noteId: NoteId;
   /**
-   * Cleanup admission token when the purge came from an account or
-   * workspace deletion; `null` for an ordinary purge, which has no
-   * barrier to prove ownership of.
+   * Token of the **personal** account-deletion barrier when the purge
+   * came from one; `null` for an ordinary purge, which has no barrier to
+   * prove ownership of.
+   *
+   * Personal is the whole of it, not an example: the only driver that
+   * puts a token here is the personal cleanup's `deleteNotesForOwner`,
+   * and the admission below reads the personal receipt of the current
+   * scope. A workspace deletion does not purge notes in this deployment
+   * (`application/workspace/workspaceDeletionLocal.ts`), so a workspace
+   * scope only ever sees `null` — and a non-null token arriving there
+   * would be refused, having no receipt to name. The slice that makes a
+   * workspace deletion take its notes with it has to give admission a
+   * workspace half first.
    */
   deletionOperationId: string | null;
 }>;
@@ -61,8 +71,18 @@ export const readNotePurgeTurn = (
 
 /**
  * Re-checks, on every turn, that the cleanup token the turn inherited
- * still names **this scope's** barrier — and admits the turn when it
- * does, whether that barrier is still running or already completed.
+ * still names **this scope's personal** barrier — and admits the turn
+ * when it does, whether that barrier is still running or already
+ * completed.
+ *
+ * The predicate is the personal receipt and nothing else, which is what
+ * `spec/usecases/{tag,integration,storage}.md` step 1 names
+ * (`describePersonalCleanup`). A workspace scope holds no such receipt,
+ * so any non-null token reaching one is refused; that costs nothing
+ * today because nothing drives a workspace deletion through note purges
+ * (see `NotePurgeFanOutTurn.deletionOperationId`), and the slice that
+ * does must extend both this predicate and those usecase steps rather
+ * than lean on the wording here.
  *
  * `assertOwner` cannot be used here. It asks "may cleaning still
  * proceed?", so it turns false the moment the receipt completes; but the
@@ -102,9 +122,16 @@ export const assertNotePurgeAdmission = async (
  * Re-arms this follower's own continuation inside the transaction that
  * deleted the page, so a lost response cannot drop the rest of the work.
  *
- * Priority is the security-cleanup class for every purge, deletion-driven
- * or not: what these turns reclaim is data a user asked to be gone, and
- * the same rows back an account deletion's barrier when one is running.
+ * The priority is the turn's provenance, not the follower's: a
+ * deletion-driven turn is `securityCleanup` because the rows it reclaims
+ * back an account deletion's barrier, and every other purge —
+ * user-emptied trash, retention sweep — is `expiryCollection`. Widening
+ * class 0 to all of them would put an unbounded stream of ordinary
+ * purges next to the deletion continuations, and class 0 has no
+ * fairness inside itself: the scheduler reserves a slot per priority but
+ * orders within one by `(dueAt, kind, operationId)` alone, so the
+ * starvation guarantee of `spec/platform/index.md` rests on class 0
+ * staying what `spec/database/index.md` says it is.
  */
 export const armNotePurgeContinuation = async (
   ctx: ScopeUnitOfWorkContext,
@@ -118,7 +145,10 @@ export const armNotePurgeContinuation = async (
   await ctx.scopeTaskScheduler.schedule({
     kind: params.kind,
     operationId: params.operationId,
-    priority: ScopeTaskPriority.securityCleanup,
+    priority:
+      params.turn.deletionOperationId === null
+        ? ScopeTaskPriority.expiryCollection
+        : ScopeTaskPriority.securityCleanup,
     dueAt: params.now,
     payload: {
       noteId: params.turn.noteId,

@@ -1584,3 +1584,309 @@ canon の同期で、既存の行に収まらない振る舞いが 6 つ出た �
 
 - 良い点: 取り込みスライスのチェックリストが痩せない
 - トレードオフ: 台帳だけを読むと `deleteFilesForNote` が既に取り込み記録を消していると読める。実装との差は Issue が持つ
+
+---
+
+## ADR-065: `purgeNote` の abort は「拒否」だけに限り、判定不能な失敗では route を `purging` に残す
+
+### Context
+
+`drive` は local transaction のあらゆる例外で `abortPurge` を呼び、route を `active` へ戻していた。`spec/usecases/note.md#purgeNote` の手順 3 が abort を許すのは「競合して Note が残る場合」だけで、手順 4 以降は forward-only と書いてある。
+
+差が出るのは commit 後に応答を失ったときである。Cloudflare DO / D1 では現実に起こる形で、そのとき `ctx.noteRepository.delete` は確定し `note.purged` は outbox に載っているのに、呼び出し側から見えるのは例外だけになる。旧実装はここで route を `active` に戻すので、Note は消え fan-out は走り、それでも route は「解決するが実体の無い」行として残り、`finishPurge` も走らないので tombstone も付かない。以後この route を通る全経路が `NOTE_NOT_FOUND` を返し続ける。
+
+「commit したかどうか」は外からは判定できない — 応答を失った commit と、そもそも走らなかった transaction は同じ形をしている。
+
+### Decision
+
+**abort するのは transaction が「削除しない」と決めた拒否だけに限る。** `isAbortableRefusal` が集合を閉じ、`isConflictError`（版・foreign scope・cleanup ownership・書き込み障壁）／ `isNotFoundError`（権限を潰した形）／ `ValidationError("NOTE_NOT_TRASHED")` の 3 つだけを通す。これは `reclaim` が「Note を残したまま」投げうる例外の全体でもある。
+
+それ以外の例外では abort せず、route を `purging` のまま残してログに残す。到達不能は事実の表現であり、2 つの答えのうち回復できるのは片方だけである — `purging` の route は同じコマンドの再送で再開できるが、消えた Note の上で開き直した route は永久に解決不能になる。
+
+`userRequest` だけは再送口が無い（operation ID を採番し、`resolve` が `purging` を隠す）。この制約は既に JSDoc の「Not covered by this slice」が recovery driver の持ち分として宣言しており、そこに 1 文足すに留めた。
+
+### Consequences
+
+- 良い点: forward-only 規則が実装と一致し、「解決するが実体の無い route」が原理的に作れなくなる
+- 良い点: abort する条件が名前の付いた 1 つの述語になり、`reclaim` に拒否を足すときに見る場所が 1 か所になった
+- トレードオフ: `userRequest` で判定不能な失敗が起きると、route は recovery driver が来るまで `purging` のまま残る。利用者から見ればノートは消えたままで、復元も再削除もできない。旧実装ではこの窓で route が `active` に戻り「消えたのに一覧に見える」形になっていたので、壊れ方が「見えないまま」へ寄った
+- テスト: `purgeNote.test.ts` に TC-note-353 として 2 本。commit 直後に応答を失う wrapper を 1 回だけ噛ませ、(1) `userRequest` で Note が消え `note.purged` が 1 件出た上で route が `purging` に残ること、(2) `scopeCleanup` では同じコマンドの再送が tombstone まで到達し `note.purged` が二重にならないことを見る
+
+---
+
+## ADR-073: `position` の値は許可リストで判定する
+
+### Context
+
+`filterCss` は `position` の値が `fixed` / `sticky`（とベンダー接頭辞付きの同義語）に一致するかだけを見ていた。ブラウザは `var()` を CSS の解決時に展開するので、`:host{--x:fixed}` と `.o{position:var(--x)}` を 1 つの `<style>` に並べるだけで、ADR 013 の中核防御（公開ページ全面を覆うオーバーレイを描かせない）が素通りする。CSP は `position` を止めないため多層防御も効かない。
+
+### Decision
+
+**値の判定を許可リストへ転換する。** `static` / `relative` / `absolute` とグローバルキーワード（`inherit` / `initial` / `revert` / `revert-layer` / `unset`）だけを残し、それ以外の値は宣言ごと落として `removed` に載せる。`var()` / `env()` / 将来の `attr()` は綴りを列挙しなくても自動的に落ちる。
+
+否認リストへ `var(` を足す案は採らない。ブラウザが解決する間接の形を先回りして列挙し続けることになり、ADR 013 が要素・属性で否認リストを捨てた理由と同じ失敗形に戻る。
+
+過剰除去の代償は無い。許可リストに載らない値は、ブラウザから見れば解決できる間接（`var()`）か無効な宣言として無視される綴り（`position:absolutely`）のどちらかで、どちらも落としても装飾を失わない。
+
+新しく足したテストのうち「未列挙の値を落とす」「グローバルキーワードを残す」の 2 件は許可リスト自体の帰結であって台帳に行が無いので、`SanitizeCase.tc` を省略可能にし、`it` 名は振る舞いだけを述べる形にした（ADR-058 / ADR-063 の「誤った ID を書かない」に従う）。
+
+### Consequences
+
+- 良い点: 間接の綴りを列挙せずに `position: fixed` への到達経路が閉じる
+- 良い点: ADR 013 の「許可リスト方式」が要素・属性・URL スキームだけでなく CSS の値にも一貫して掛かる
+- トレードオフ: 将来 CSS に安全な `position` の値が増えたら、許可リストへ足すまで落ちる。ADR 013 の表が正典なので更新点は 1 か所である
+- プレビュー（ADR-052）は CSS 宣言を一切見ないため、サーバー側が落とす量が増えても「プレビューは `HtmlProcessor` の部分集合」の不変条件は保たれる
+
+---
+
+## ADR-066: 本文の転送上限は生 HTML の 2 MB、テキストノード編集の枠はサニタイズ後の 800 KB
+
+### Context
+
+`NOTE_HTML_TRANSPORT_MAX` は 800,000 文字で、根拠のコメントは「バイト上限と同じ数の文字数を許せばドメインの判定より必ず緩い」と書いていた。比べている 2 つが違う — ドメインの 800,000 バイトは**サニタイズ後**の `NoteHtml` に掛かり、転送の上限は**サニタイズ前**の生 HTML に掛かる。生 HTML はサニタイズで縮む側なので「必ず緩い」は成り立たず、ED-03 の中核要件（インラインスクリプト込みで 1 MB ある保存済み Web ページ）が `NOTE_CONTENT_TOO_LARGE` ではなく `INVALID_INPUT` で弾かれていた。
+
+### Decision
+
+転送上限を `spec/usecases/note.md#updateNoteBody` の入力 DTO 表どおり **2,000,000 文字**にする。DoS の枠としてはそれで足り、`ContentTooLarge` はサニタイズ後にドメインが出す。
+
+あわせて、`applyTextNodeEdits` の枠が使っていた定数を `NOTE_HTML_SANITIZED_MAX`（800,000）へ分けた。あの枠の根拠は「書き換えの前後どちらの本文もサニタイズ後 800 KB に収まる」であって生 HTML の上限ではないので、転送上限に相乗りしたままだと 2 MB への緩和が理由の無い 4 MB を連れてくる。運ぶのがテキストノードの中身である以上、サニタイズ後の上限が正しい枠である。
+
+### Consequences
+
+- 良い点: ED-03 の「800 KB 超は保存を拒否し、分割を促す」が設計どおりの種別で返る
+- 良い点: 2 つの上限が別のものを測っていることが定数名から読める
+- トレードオフ: 転送が受け取る最大バイト数が増える。サニタイズ前の 1 回の POST に掛かる枠なので、`ContentTooLarge` を出すために必要な余白の範囲に収まっている
+
+---
+
+## ADR-067: `note.purged` 追随者の受理判定は personal barrier 専用と明記し、workspace 削除経路は開けない
+
+### Context
+
+`assertNotePurgeAdmission` は `ScopeCleanupAdmissionStore.describePersonalCleanup` だけを引く（ADR-056）。一方 `NotePurgeFanOutTurn.deletionOperationId` の JSDoc は「account **or workspace** deletion 由来の token」と書き、受理判定の JSDoc も「この scope を名指さない token を拒む」という scope 非依存の述語として読める。workspace scope には personal receipt が無いので、workspace 削除由来の token を積んだ `note.purged` は初回配送も継続も一律 `ConflictError("CLEANUP_OPERATION_MISMATCH")` になる。「対応しているように読める JSDoc」「対応を要求する TC」「対応していない実装」の三すくみである。
+
+### Decision
+
+**実装ではなく JSDoc を直す。正典は `spec/usecases/{tag,integration,storage}.md` の手順 1 で、そこは `describePersonalCleanup` を名指しし「同じ operation の receipt が current scope にあること」を要求している。** 実装はその正典どおりであり、広げれば正典と食い違う。
+
+- `NotePurgeFanOutTurn.deletionOperationId` を「personal barrier の token に限る」と書き直し、workspace scope が見るのは常に `null` であること、非 null が届けば拒否されることを明記した
+- `assertNotePurgeAdmission` の JSDoc に、述語が personal receipt 1 本であること、workspace の追随を開くスライスは**この述語と usecase 手順の両方**を広げる必要があることを書いた
+- `deleteNotesForOwner` の `scope` の JSDoc から「workspace deletion は workspace を名指す」という現在形の主張を外し、`workspaceDeletionLocal.ts` がノートを purge しない事実を書いた
+
+実装側に workspace 半分（`WorkspaceOperationLockStore.assertDeletionOwner` へのフォールバック）を足す案は採らなかった。理由は 2 つある。1 つは正典との食い違いで、上のとおり。もう 1 つは `assertDeletionOwner` が完了済み manifest tombstone で false に転じることで、ADR-056 が personal で避けた「完了と fan-out が必ず競合する」問題をそのまま workspace 側に作る — workspace の完了条件は manifest の item 数であってノートではないので、fan-out が in-flight のまま `markCompleted` に到達しうる。**追随を開くなら、受理判定に「完了済みも通す」workspace 側の read が要る**。これはポートの新設であり、本スライスの持ち分ではない。
+
+### Consequences
+
+- 良い点: 3 者（JSDoc・usecase 正典・実装）のうち 2 者が既に一致していた側へ寄り、読み手が「どちらが正か」を決められる
+- 良い点: workspace 追随を開くスライスに、必要な作業（受理述語の workspace 半分 + usecase 手順の改訂 + 完了済みを通す read）が JSDoc と本 ADR に残る
+- トレードオフ: `spec/testcases/integration/deleteBackupRecordsForNote.md` の「ワークスペース削除に伴う `note.purged`」行と `spec/testcases/storage/deleteFilesForNote.md` の TC-storage-060 は、依然「workspace 削除由来」を名乗っている。文言は spec を持つ担当の持ち分として残す。ただし TC-integration-022 の実体（ワークスペース所有ノートの記録がこの経路で消えること）は `subscribers.test.ts` に追加したケースが直接押さえた
+
+---
+
+## ADR-068: `note.purged` 追随者の継続 priority は turn の出自で決める
+
+### Context
+
+`armNotePurgeContinuation` は継続を無条件に `securityCleanup`（priority 0）で積んでいた。`spec/database/index.md` と `spec/platform/index.md` は priority 0 を「security cleanup / lease reaping」と定義し、「低 priority task が継続的に補充されても security cleanup と lease reaping を飢餓させない」ことを保証としている。この保証は class 0 の中身が membership / account の後始末と lease 回収に限られることに依存する — `ScopeTaskScheduler` は priority ごとに 1 枠を予約するが、**同じ priority の中には公平化が無く** `(dueAt, kind, operationId)` 順でしかない。ユーザーがゴミ箱を空にした purge や retention sweep の fan-out まで class 0 に入れると、退会中の scope で `note.ownerPurgeContinued` / `storage.ownerDeleteContinued` と同じ枠を奪い合う。
+
+### Decision
+
+**`deletionOperationId !== null` の turn だけ `securityCleanup`、それ以外は `expiryCollection`（3）にする。** 分類の基準は追随者ではなく turn の出自である。削除由来の turn が回収する行は障壁が待っている行そのものなので class 0 に属し、通常の purge の後始末は「期限回収」の定義にそのまま収まる。
+
+spec の priority 定義を広げる案は採らない。広げれば飢餓保証の前提を書き換えることになり、その根拠（fan-out は 1 ノートあたり満ページのときだけ 1 行）を保証として書き足す必要がある。既存の 2 つの class にそのまま収まるなら、正典を動かさないほうが安い。
+
+### Consequences
+
+- 良い点: class 0 が `spec/database/index.md` の定義どおりの中身に戻り、飢餓保証の前提が保たれる
+- 良い点: 出自による分類なので、削除由来の追随は従来どおり最優先で走る（TC-tag-027 の 1 本目がそれを固定している）
+- トレードオフ: ユーザーがゴミ箱を空にした直後の付与・記録・ファイルの回収は、同じ scope に投影や outbox の仕事があるとその後ろに回る。回収が観測される画面は無く、1 turn ぶんの遅れに留まる
+
+---
+
+## ADR-069: ワークスペース設定のシェルも `canWrite` を渡す（ADR-038 のトレードオフを覆す）
+
+### Context
+
+ADR-038 は `ShellScope` の `canWrite` を省略可にし、「省略は出さないと読む」と定めたうえで、ワークスペース設定のレイアウトは「別の loader で開いていて、そこまで手を伸ばすと本スライスの担当範囲を越える」としてゴミ箱の導線を落とした。
+
+これは事実の確認を落としていた。`settings/route.tsx` の loader（`loadWorkspaceSettingsShell`）はすでに `getWorkspaceSettings` を呼んでおり、その `WorkspaceSettingsView` は `role` を非 null で持っている。ロールを読まない画面ではなく、**読んでいるのに黙っている**画面だった。
+
+結果として、owner / editor が設定の 4 タブを開いているあいだだけスコープトークンから「ゴミ箱」が消え、同じメニューの「ワークスペース設定」「公開ページ」はロール判定なしで並び続けるという非対称が残っていた。`spec/pages/index.md#L-01` の「パレット以外に最低 1 つの視覚的導線」を満たす導線が、この画面では 0 になる。
+
+### Decision
+
+`loadWorkspaceSettingsShell` が `canWrite: WorkspaceRole.atLeast(settings.role, "editor")` を返し、`settings/route.tsx` がそれを `scope` へ渡す。ノート一覧の loader（`workspaces/$workspaceId/-action.tsx`）と同じ 1 行である。
+
+`canWrite` を省略可に保つ判断（ADR-038 の主文）はそのまま残す。覆すのは「設定配下は見送る」というトレードオフのほうだけで、規約は「**ロールを読む画面は省略しない**」と読み替える — 省略は「知らない」であって「持っていない」ではないので、答えを持っている loader が黙るとその画面でだけ導線が消える。この読み替えは `listing.ts` の JSDoc にも書いた。
+
+### Consequences
+
+- 良い点: owner / editor は設定配下からもゴミ箱へ移れる。viewer には引き続き並ばない（TC-32）
+- 良い点: 判定の出所が `WorkspaceRole.atLeast(role, "editor")` の 1 種類に揃う
+- トレードオフ: 同じ 1 行を 2 か所に持つ。まとめる先は「ロールを読む loader が返す形」だが、2 つの loader の戻り値の形が違うので今回は寄せていない
+- 残件: `invitations/-action.tsx` は `getWorkspaceSettings` を読まない経路なので省略のまま。ここは ADR-038 の原則どおり
+
+---
+
+## ADR-070: HTML 由来のノートは WYSIWYG で開かず、既定モードの復元も ED-04 の門を通す
+
+### Context
+
+編集画面は既存ノートを常に WYSIWYG で開き、端末に覚えた既定モードの復元は `setMode(preferred)` を直接呼んでいた。ED-04 の警告と `wysiwygConversion` の版理由は `enterMode` にしか無いので、次の 2 つが常用パスとして素通りしていた。
+
+1. 既定が WYSIWYG の端末で HTML 由来のノートを開く（`setMode` は初期値と同じなので何も起きない）
+2. 既定が無い端末で HTML 由来のノートを開く（初期値がそのまま WYSIWYG）
+
+どちらも「警告を出さないまま WYSIWYG に居る」状態で、そこで 1 文字打って保存すれば装飾は正規化され、版理由は `manualEdit` になる。ED-04 が保証する「保存前に自動で版を保持し、元に戻せる」経路に到達しない。
+
+復元だけを `enterMode` に通しても 1 と 2 は消えない。**初期値が無条件に WYSIWYG である**ことが原因なので、そこを動かさない限り「警告なしに WYSIWYG に居る」状態は残る。
+
+加えて ED-04 は「警告は『今後表示しない』を選べる。設定画面から再表示に戻せる」と定めるが、`WYSIWYG_WARNING_KEY` を消す UI はどこにも無く、一度押すと永久に戻せなかった。
+
+### Decision
+
+- 既存ノートの初期モードを `mayLoseDecoration ? "html" : "wysiwyg"` にする。WYSIWYG へ入るのは必ず明示の切り替えになり、そのすべてが `enterMode` の門を通る
+- 既定モードの復元も同じ門を通す。ただし開いた直後の正本は `target` そのものなので `applyMode` の引き直しは挟まず、`seedMode` を直接呼ぶ
+- 「今後表示しない」は**出さない**。戻し口（設定画面からの再表示）は本スライスの外にあり、戻せない一方通行の抑止だけを先に出すと、一度押した端末では装飾の喪失が二度と告げられなくなる。`preferences.ts` からも `readWysiwygWarningDismissed` / `writeWysiwygWarningDismissed` と鍵を落とした
+- `seedMode` は同じモードへ載せ直すとき（破棄）に、まだ記録していない変換の予定を落とさない
+
+新規作成（ED-05）は `mayLoseDecoration` を持たないので、引き続き常に WYSIWYG で開く。
+
+### Consequences
+
+- 良い点: 「警告なしに WYSIWYG に居る」状態が構造的に無くなる。HTML 由来のノートの最初の保存は必ず `wysiwygConversion` として版に残る
+- 良い点: 抑止の状態が端末に残らないので、戻し口が無いことが実害にならない
+- トレードオフ: **取り込み由来のノートは HTML モードで開く。** `mayLoseDecoration` は `sourceFileId !== null || styleMode === "preserve"` なので、装飾を持たない取り込み（Markdown 由来など）もソース面で開くことになる。1 回モードを切り替えれば端末の既定が更新され、以降はそちらで開く
+- トレードオフ: ED-04 の「今後表示しない」は spec に残ったまま実装が持たない。設定画面のスライスが入るときに、鍵・抑止・戻し口の 3 つを同時に足す
+
+---
+
+## ADR-071: 破棄はモードによらずサーバーから正本を引き直す
+
+### Context
+
+「破棄」は手元の「確定済みの値」（`savedRef`）へ戻す実装だった。ビジュアルモードではこれが成立しない。
+
+ビジュアルモードの保存は経路単位の書き換え（`applyTextNodeEdits`）なので、`commit` が確定済みとして持つ本文は**面を差し替える前の HTML** のままである。つまり `savedRef.current.body` はビジュアルモードにいるあいだ一度も進まない。そこで破棄を押すと、
+
+1. `setBaseline(nextBody)` が同じ文字列なので `VisualSurface` の再シードが起きず、span の中身は編集したまま残る（画面上は何も破棄されない）
+2. `visualDirty` だけが下りて `visualCurrent` は編集後の値を保持し続けるため、次に 1 文字打つと破棄したはずの編集まで差分に混ざり、自動保存がそれを送る
+
+手元の値で再シードする形に直しても直らない。保存済みの書き換えを画面から消したうえで、次の編集が古い `expected` で送られて全件 `contentChanged` に落ちるだけである。確定済みの本文の HTML は、ADR-051 が書いたとおり**引き直すしか手が無い**。
+
+### Decision
+
+破棄は `applyMode(mode)` に落とす — モードを変えずに、同じ経路で正本を引き直して面ごと載せ直す。退避（`clearDraft`）と提案（`draftOffer`）はその前に畳む。ノートがまだ無い（新規作成）ときだけ、`applyMode` の既存の分岐が `savedRef` から載せ直す。
+
+あわせて `replaceBody` を「面を組み直す唯一の口」にする。
+
+- `baselineSeed` を必ず 1 つ進め、`VisualSurface` はそれを再シードの鍵に加える。破棄はまさに**同じ文字列へ戻す**操作なので、文字列の同一性だけでは鍵にならない
+- ビジュアルの経路表（`visualOriginal` / `visualCurrent`）を捨てる。残すと破棄した書き換えが次の差分に混ざる
+- サニタイズ通知（`removed`）と skip 通知（`skipped`）を落とす。どちらも「直近の保存結果」を指す表示で、正本を載せ直した面の上に前の保存の結果が残ってはならない
+
+### Consequences
+
+- 良い点: ED-08 手順 3 と TC-10 が 3 モードすべてで成立する。破棄したあとの面と `expected` がサーバーの正本と一致する
+- 良い点: 通知の寿命が「面の世代」に揃う。モード切替・版の復元・競合解決でも同じ規則で消える
+- トレードオフ: 破棄が 1 往復ぶん遅くなる。往復の最中は `busy` なので破棄ボタンも押せない
+- トレードオフ: 通信が切れているあいだは破棄できない（引き直しに失敗すると、モード切替と同じくエラーの状態だけが出る）。手元へ戻すだけの破棄なら成立したが、ビジュアルモードでその「手元」が正しくない以上、モードごとに別の意味を持たせるよりは揃えるほうを採った
+
+---
+
+## ADR-072: HTML プレビューの断言は「補正した構文」までに限り、はみ出しは `contain` で止める
+
+### Context
+
+ADR-052 はプレビューが落とすものを「保存時のサニタイズが落とすものの**部分集合**」に保つと定めた。この不変条件は維持したい — プレビューが `HtmlProcessor` より多く落とすと、保存されるはずの内容が保存前に見えなくなる。
+
+一方で補正アラートの文言は「保存すると、下のプレビューの内容で保存されます」と言い切っていた。実際にプレビューが落とすのは危険要素・`on*`・`javascript:` URL だけで、許可リスト外の要素・属性・CSS 宣言はそのまま残る。ED-03 が「除去された要素・属性・URL・CSS 宣言が保存後に一覧表示される」と定めているのと合わせて読むと、利用者には「プレビュー＝保存される内容」と読めてしまう。
+
+`position: fixed` / `sticky` はこの差分の中でも性質が違う。Shadow DOM が隔離するのはスタイルの**適用範囲**だけで、ビューポート基準の配置は隔離しないので、プレビューが編集画面全体を覆う形も作れる。
+
+### Decision
+
+- 文言を実態へ合わせる。「下のプレビューは補正した構文で描いています。保存時にはさらに、許可されていない要素・属性・CSS 宣言が取り除かれます（除去された分は保存後に一覧で示します）」
+- `scrubForPreview` には `position` を足さない。ADR-052 の部分集合の不変条件を崩すうえ、`adapters/html/css.ts` の許可規則が動いているあいだ、両側で別々の値判定を持つことになる
+- 代わりにプレビューのホストへ `contain: layout paint` を掛ける。固定配置の包含ブロックになるので、中身が何であれ面の外へ出られない。HTML には触らないので不変条件に関わらない
+
+### Consequences
+
+- 良い点: 断言が実態と一致し、ED-03 の「保存後に一覧で示す」との関係も文言の中で繋がる
+- 良い点: はみ出しの封じ込めが、サニタイズ規則の変更から独立する
+- トレードオフ: プレビューと保存後の姿の差は残る。埋めるには読み取り専用のサニタイズ経路をサーバーに置く必要があり、打鍵ごとの描画には重すぎる
+
+---
+
+## ADR-074: 保管する SVG は「単体の 1 文書であること」を保管直前に確かめ、そうでなければ受理しない
+
+### Context
+
+ADR-011 は `HtmlProcessor.process` の戻り値へ名前空間宣言を付け直す形を採ったが、確かめていたのは**根要素が `svg` であること**だけだった。受理判定（`UploadValidationPolicy.opensAsSvg`）もプロローグを読み飛ばして根要素を見るところまでで、文書がその根要素で閉じるかは見ていない。
+
+`process` は本文断片のサニタイザーなので、`<svg …></svg>trailing text<p>and a paragraph</p>` は許可リストを通った残骸ごとそのまま返る。それが `.svg` として `ObjectStorage.put` され、`/storage/$` が `image/svg+xml` で配る。XML はルート要素の後ろの内容を**致命的エラー**として扱うので、この文書はどのブラウザでも 1 ドットも描かれない。`spec/usecases/storage.md#storeMedia` 手順 4 の「単体の `.svg` として開けるよう」という契約を、受理した入力に対して満たしていなかった。
+
+加えて開始タグの抽出が `markup.indexOf(">")` だったため、parse5 が属性値中の `>` をエスケープしないこと（`data-x="a>b"`）と噛み合わず、`xmlns` 重複ガードが誤判定しうる状態だった。
+
+選択肢は 2 つ。
+
+1. `opensAsSvg` を「ルート外に非空白の内容が無い」まで強める
+2. サニタイズ後の markup が 1 つの `svg` 文書であることを `storeMedia` が確かめ、そうでなければ拒否する
+
+### Decision
+
+2 を採る。`storeMedia` の `findSvgRoot` が、サニタイズ後の markup を**属性値を不透明として扱う走査**でたどり、(a) 最初の要素が `svg` の開始タグ、(b) その対応する終了タグまでで入れ子が閉じる、(c) ルートの外に空白以外が無い、の 3 つを確かめる。満たさなければ `BusinessRuleError(UnsupportedMimeType)` で拒否する。
+
+1 を採らないのは、判定の対象と保管される実体が違うためである。受理判定が見るのは**受け取ったバイト列**、実際に配られるのは**サニタイザーの出力**で、両者は SVG では別物になる（ADR-054 が測り直しを入れたのと同じ理由）。ルート外の内容はサニタイズで増減もするので、保証は保管する側の実体に当てるほかない。
+
+同じ走査が `>` 問題も畳む。開始タグの終端が引用符を意識して決まるので、`xmlns` / `xmlns:xlink` の重複ガードが本当のルート開始タグを見るようになる。
+
+### Consequences
+
+- 良い点: 保管された `image/svg+xml` は必ず XML として開ける。「アプリ自身のオリジンから、宣言した型と異なる攻撃者由来の HTML を配る」状態が閉じ、CSP が付かない公開ドメイン配信（`spec/platform/index.md`）へ移っても担保が残る
+- 良い点: `ALLOWED_SVG_ATTRIBUTES` の `xmlns` が将来到達可能になっても、二重宣言のガードが実際に効く
+- トレードオフ: 走査は文字列レベルのタグスキャンで、正しい HTML パーサーではない。入力がパーサー出力に限られるため成り立つ（コメントも doctype も既に落ちている）ので、コメント・doctype・裸の `<` を見つけたら拒否する側に倒している
+- トレードオフ: ルート外にコメントだけを持つ SVG も拒否される。サニタイザーがコメントを落とすので実際には到達しない
+- 追随が要る: `spec/usecases/storage.md#storeMedia` 手順 4 に「1 文書にならなければ `UnsupportedMimeType`」の一文と、エラー表への行が要る（本ユニットは当該ファイルを触れないため未反映）
+
+---
+
+## ADR-075: 孤児メディアの参照元には保持中の版の本文も数える
+
+### Context
+
+`collectOrphanMedia` の `isOrphan` は所属ノートの**現在の本文**だけを見ていた。本スライスは同時に `restoreNoteRevision`（AC-8「直近 20 版から復元できる」）を実装しており、`NoteRevision` は `html: NoteHtml` を保持している。回収の起点は作成時刻なので、「挿入 → 翌日に本文から外す → 29 日後に回収」の順で、まだ復元できる版が指すメディアが消える。復元は成功して画像だけが 404 になる。20 版は数か月をまたぐので稀ではない。
+
+### Decision
+
+判定を「現在の本文 ∪ 保持している版（`NoteRevision.RETENTION` 件）の本文」に広げる。読み取りは**ファイル単位ではなくノート単位**にして 1 turn のあいだ持ち回る（`readNoteReferences` + `byNote` の Map）。ページは 1 つのノートの画像であることが普通なので、これで版の分だけ CPU が倍増するのを防ぐ。
+
+### Consequences
+
+- 良い点: 版から復元した本文の画像が生きている。回収規則と保持規則が同じ「生きた参照」の定義を共有する
+- トレードオフ: 1 ノートあたり `RETENTION + 1` 本の本文解析と、版一覧の読み取り 1 回が増える。turn の上限は読む**行数**に掛かる（`spec/platform/index.md`）ので、`ORPHAN_MEDIA_BATCH_SIZE` はそのままにし、ノート単位のキャッシュで実際の増分を抑えた
+- トレードオフ: 版が消えるまでメディアも消えない。保持は直近 20 版なので上限があり、`deleteFilesForNote` の完全削除経路は変わらない
+- 追随が要る: `spec/usecases/storage.md#collectOrphanMedia` 手順 2 と `spec/testcases/storage/collectOrphanMedia.md` に版の行が要る（本ユニットは当該ファイルを触れないため未反映。`spec/domains/storage.md` の `FilePurpose` 表と直後の段落には反映済み）
+
+---
+
+## ADR-076: 掃引 turn は自分を `failed` に落とさない — 失敗したら記録して翌日へ張り直す
+
+### Context
+
+ADR-059 は「読めない payload で失敗させると上限で `failed` に駐車し、掃引は自分を張り直せない」と認識して payload だけを手当てした。しかし駐車の原因は payload に限らない。掃引行を張り直せる経路は `armOrphanMediaSweepOnFirstMedia` だけで、その述語は「scope に media が 1 件も無い」である。media を持つ scope は二度とその条件を満たさないので、いったん `failed` になればその scope の回収は永久に止まる。
+
+推奨されたのは `ScopeTaskScheduler` に存在確認を足す案だったが、ポート契約の変更は ADR-026 の 4 点セットになり、本ユニットが触れないアダプターを含む（ADR-055 と同じ理由）。
+
+### Decision
+
+掃引 turn 自身が駐車を避ける。
+
+- **turn 全体を包み、失敗したら記録して翌日へ張り直し、`{ collectedCount: 0, nextCursor: null }` を返す。** runner は正常終了として扱うので `backoff` が回らず、`attempt` が上限に届かない。周期的な全走査は 1 回落としても取りこぼしにならない — ADR-059 が payload に当てた理屈を turn 全体へ広げただけである
+- **1 件の判定失敗はその行を残して継続する。** 走査の transaction は読み取りしかしないので、途中で握りつぶしても半端な書き込みは残らない。ここで turn を失うと、その毒された行のあるページでカーソルが止まり、後ろの行が永久に検査されなくなる（まさに避けたい状態）
+- 張り直し自体が失敗したときだけ throw する。行を書けない状況では、誰にも張り直せない
+
+### Consequences
+
+- 良い点: `failed` に駐車する経路が無くなり、`spec/adr/026` のポート 4 点セットを動かさずに済む
+- トレードオフ: 恒久的な不具合はログにしか出ず、毎日静かに失敗し続ける。掃引には観測される画面が無いので、監視はログ側の仕事になる
+- トレードオフ: 掃引行だけが「上限で駐車しない」scope task になる。他の継続要求は名指しの対象を持つので駐車が正しい振る舞いで、こちらだけが「自分を張り直せない周期 task」という別の性質を持つ

@@ -53,12 +53,14 @@
 | 値 | 意味 | 回収 |
 | --- | --- | --- |
 | `source` | アップロードされた元ファイル | ノートの完全削除時 |
-| `media` | 編集中に挿入した画像・動画 | 作成から 30 日が経過し、かつ本文から参照されていないとき |
+| `media` | 編集中に挿入した画像・動画 | 作成から 30 日が経過し、かつ現在の本文からも保持中の版の本文からも参照されていないとき |
 | `reference` | 本文から取り込んだ外部リソース | ノートの完全削除時 |
 | `artifact` | 生成物（PDF / ZIP） | `expiresAt` の経過時 |
 | `avatar` | 利用者・ワークスペースのアイコン | 差し替え時 |
 
 `source` / `reference` の「ノートの完全削除時」の回収と、`media` の孤児判定は、`StoredFile` の `noteId` で所属ノートを解決して行う（`note.purged` の購読と孤児メディアの走査）。`media` の回収の起点を「参照が外れた時刻」ではなく作成時刻に取るのは、本文から参照が外れた時刻を保持しないため。走査時点で本文に現れないことを確認してから消す（[usecases/storage.md](../usecases/storage.md) の `collectOrphanMedia`）。
+
+**参照元には保持中の版（[note.md](./note.md) の `NoteRevision`、直近 20 版）の本文も数える**。版は `restoreNoteRevision` がそのまま書き戻せる生きた参照であり、回収の起点が作成時刻である以上、「挿入 → 翌日に本文から外す → 29 日後に回収」の順で復元可能な版が指すメディアが消える。20 版は数か月をまたぐので稀なケースではなく、復元しても画像が 404 になる状態は AC-8 の「直近 20 版から復元できる」を満たさない。
 
 ### StorageOwner
 
@@ -333,6 +335,8 @@ type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
 `media` を公開側に置くのは、本文に挿した画像・動画の URL が本文にそのまま載り、**公開ノートを匿名の閲覧者が読むときにも解決できなければならない**ため。読める条件は「鍵を知っていること」で、鍵は推測できないファイル ID を含み、鍵を列挙する経路も持たない（`avatar` と同じ扱い）。`source` / `reference` / `artifact` は同じストアを共有するので、**配信側がこの境界を自分で保つ**（`ObjectStorage.publicUrl` の JSDoc と `apps/web/app/routes/storage.$.tsx` の許可集合が同じ決定の適用点で、3 か所を同時に動かす）。配信するときは `X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox; default-src 'none'` を付ける — SVG は保管時にサニタイズ済みだが、鍵空間に何が積まれても実行させないのは配信側の担保である。
 
 `collectOrphanMedia` が本文と突き合わせる住所も `publicUrl` の戻り値なので、配信経路と回収規則は同じ 1 つの住所を見る。片方だけを動かすと、挿した直後のメディアが孤児として回収されるか、配信できない URL を本文に配ることになる。
+
+**非公開化もゴミ箱への移動もメディア URL を失効させない**。配信口はセッションも `StoredFile` の行も見ず鍵だけで通し、行と実体はノートの完全削除（`purgeNote` → `deleteFilesForNote` → `storage.fileDeleted`、ゴミ箱の既定保持期間は 30 日）まで残るため、本文を見たことがある閲覧者はその間メディアを読み続けられる。失効の時点は purge であって、公開範囲の変更ではない — capability URL を選んだことの帰結であり、ノート URL 自体は非公開化と同時に閉じる（AC-9）。
 
 `put` が受けるのはバイト列だけで、ストリーム受け（`ReadableStream<Uint8Array>`）は契約に持たない。受理判定を実体から行う形（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)）が「受理判定の時点で実体を握っていること」「ポートがバイト列だけを受ける形であること（ストリームを通す用途が現れた時点で、その要求とともに広げる）」を前提に置いているためで、**契約を弱めた側として責務の移転をここに残す**。**ストリームを入力に持つ要求元は設計上すでに実在する** — [usecases/storage.md](../usecases/storage.md) の `storeUpload` で、入力 DTO の `body: ReadableStream<Uint8Array>` と、**同ユースケース手順 2 の `UploadValidationPolicy.ensureAcceptable` 呼び出し**がそれに当たる（バイト列が手に入るのは手順 5 の `put` 以降なので、実体判定を手順 2 で行う形への手順の組み替えもそのスライスの仕事になる）。**この経路を実装するスライスが、上記の前提に従って `put` の入口を広げ、読み切る前に上限で切る形をそこで設計する。**
 

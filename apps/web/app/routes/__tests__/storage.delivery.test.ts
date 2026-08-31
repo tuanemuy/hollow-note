@@ -6,6 +6,7 @@ import type { ObjectStorage } from "@repo/core/application/ports/objectStorage";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import {
   ByteSize,
+  FILE_PURPOSES,
   type FilePurpose,
   MimeType,
   ObjectKey,
@@ -13,7 +14,7 @@ import {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import { beforeEach, describe, expect, it } from "vitest";
-import { Route } from "../storage.$";
+import { PUBLICLY_SERVED_PURPOSES, Route } from "../storage.$";
 
 const owner = StorageOwner.user(UserId.create("user-1"));
 
@@ -102,16 +103,29 @@ describe("/storage/$", () => {
     );
   });
 
-  it("serves an avatar, and refuses every purpose that is not publicly served", async () => {
+  it("serves exactly the purposes spec/domains/storage.md publishes, and refuses the rest of the key space", async () => {
     const bytes = new Uint8Array([1, 2, 3]);
-    const avatar = await put("avatar", {
-      id: "file-3",
-      mimeType: "image/png",
-      bytes,
-    });
-    expect((await get(avatar.url)).status).toBe(200);
+    // The canon, restated rather than read from the route: this is the
+    // side of the pair that has to fail when the route's set changes.
+    const published: readonly FilePurpose[] = ["avatar", "media"];
+    expect([...PUBLICLY_SERVED_PURPOSES].sort()).toEqual([...published].sort());
 
-    for (const purpose of ["source", "reference", "artifact"] as const) {
+    for (const purpose of published) {
+      const stored = await put(purpose, {
+        id: `served-${purpose}`,
+        mimeType: "image/png",
+        bytes,
+      });
+      expect((await get(stored.url)).status).toBe(200);
+    }
+
+    // The complement comes from `FILE_PURPOSES`, so a purpose added to
+    // the key space is covered here without this file being edited.
+    const refused = FILE_PURPOSES.filter(
+      (purpose) => !published.includes(purpose),
+    );
+    expect(refused.length).toBeGreaterThan(0);
+    for (const purpose of refused) {
       const stored = await put(purpose, {
         id: `file-of-${purpose}`,
         mimeType: "application/pdf",

@@ -42,8 +42,10 @@ const EXTENSION_BY_MIME_TYPE: Readonly<Record<string, string>> = {
 const SVG_MIME_TYPE = "image/svg+xml";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
-const SVG_ROOT_START_TAG = /<svg\b/i;
 const XLINK_PREFIXED_ATTRIBUTE = /\sxlink:/i;
+const XMLNS_DECLARATION = /\sxmlns=/i;
+const XMLNS_XLINK_DECLARATION = /\sxmlns:xlink=/i;
+const TAG_NAME = /[a-zA-Z][^\s/>]*/y;
 
 const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
@@ -94,9 +96,109 @@ async function resolveEditableNote(
   return resolved;
 }
 
+type SvgRoot = Readonly<{
+  /** Offset just past the root's tag name, where a declaration goes. */
+  insertAt: number;
+  /** The root's start tag, delimited by the walk rather than by `>`. */
+  openTag: string;
+}>;
+
+/**
+ * Walks to the end of the tag that starts at `from`, treating a quoted
+ * attribute value as opaque.
+ *
+ * A plain `indexOf(">")` is wrong on the sanitizer's own output: the
+ * serializer escapes `&` and `"` inside an attribute value but leaves
+ * `>` alone, so `data-x="a>b"` would end the tag early.
+ */
+const readTagEnd = (markup: string, from: number): number => {
+  let index = from;
+  while (index < markup.length) {
+    const character = markup[index];
+    if (character === ">") {
+      return index + 1;
+    }
+    if (character === '"' || character === "'") {
+      const close = markup.indexOf(character, index + 1);
+      if (close === -1) {
+        return -1;
+      }
+      index = close + 1;
+      continue;
+    }
+    index += 1;
+  }
+  return -1;
+};
+
+/**
+ * The one `<svg>` root of a sanitized fragment, or `null` when the
+ * markup is not a single SVG document.
+ *
+ * A stored `.svg` is parsed as XML, where content after the root element
+ * is a *fatal* error — the file renders nothing at all. The sanitizer
+ * answers a body fragment, so `<svg/>…</svg>trailing<p>text</p>` comes
+ * back with the trailing markup intact (allow-list-clean, but no longer
+ * an SVG document). Deciding on the root element alone would store that
+ * as `image/svg+xml`, which is why the whole shape is walked here
+ * instead: the root has to open the document, close it, and leave
+ * nothing but whitespace outside itself.
+ *
+ * The walk is a tag scan rather than a parse because its input is
+ * already parser output: what it has to be exact about is the tag
+ * boundaries the serializer produces, not the grammar of arbitrary HTML.
+ */
+const findSvgRoot = (markup: string): SvgRoot | null => {
+  let index = 0;
+  let depth = 0;
+  let root: SvgRoot | null = null;
+  for (;;) {
+    const open = markup.indexOf("<", index);
+    const outside = root === null || depth === 0;
+    const text = markup.slice(index, open === -1 ? undefined : open);
+    if (outside && text.trim().length > 0) {
+      return null;
+    }
+    if (open === -1) {
+      break;
+    }
+    const closing = markup[open + 1] === "/";
+    const nameAt = open + (closing ? 2 : 1);
+    TAG_NAME.lastIndex = nameAt;
+    const name = TAG_NAME.exec(markup);
+    const tagEnd =
+      name === null ? -1 : readTagEnd(markup, nameAt + name[0].length);
+    // A comment, a doctype, a stray `<` or an unterminated tag. The
+    // sanitizer emits none of them, and guessing at the shape of one is
+    // guessing at whether the document closes.
+    if (name === null || tagEnd === -1) {
+      return null;
+    }
+    const isSvg = name[0].toLowerCase() === "svg";
+    const selfClosed = markup[tagEnd - 2] === "/";
+    if (root === null) {
+      if (!isSvg || closing) {
+        return null;
+      }
+      root = {
+        insertAt: nameAt + name[0].length,
+        openTag: markup.slice(open, tagEnd),
+      };
+      depth = selfClosed ? 0 : 1;
+    } else if (depth === 0) {
+      return null;
+    } else if (isSvg && !selfClosed) {
+      depth += closing ? -1 : 1;
+    }
+    index = tagEnd;
+  }
+  return depth === 0 ? root : null;
+};
+
 /**
  * Puts back the namespace declarations a standalone `.svg` cannot go
- * without.
+ * without, or answers `null` when the sanitized markup is not one
+ * document to begin with.
  *
  * `HtmlProcessor` drops every `xmlns*` attribute, and rightly so for what
  * it is built for: it sanitizes body fragments, where an inline `<svg>`
@@ -112,20 +214,19 @@ async function resolveEditableNote(
  * themselves, and this adds no element and no attribute the sanitizer
  * decided against.
  */
-const asStandaloneSvg = (markup: string): string => {
-  const root = SVG_ROOT_START_TAG.exec(markup);
+const asStandaloneSvg = (markup: string): string | null => {
+  const root = findSvgRoot(markup);
   if (root === null) {
-    return markup;
+    return null;
   }
-  const insertAt = root.index + root[0].length;
-  const openTag = markup.slice(root.index, markup.indexOf(">", root.index) + 1);
   const declarations = [
-    openTag.includes(" xmlns=") ? "" : ` xmlns="${SVG_NAMESPACE}"`,
-    XLINK_PREFIXED_ATTRIBUTE.test(markup) && !openTag.includes(" xmlns:xlink=")
+    XMLNS_DECLARATION.test(root.openTag) ? "" : ` xmlns="${SVG_NAMESPACE}"`,
+    XLINK_PREFIXED_ATTRIBUTE.test(markup) &&
+    !XMLNS_XLINK_DECLARATION.test(root.openTag)
       ? ` xmlns:xlink="${XLINK_NAMESPACE}"`
       : "",
   ].join("");
-  return `${markup.slice(0, insertAt)}${declarations}${markup.slice(insertAt)}`;
+  return `${markup.slice(0, root.insertAt)}${declarations}${markup.slice(root.insertAt)}`;
 };
 
 /**
@@ -137,6 +238,12 @@ const asStandaloneSvg = (markup: string): string => {
  * back is parser output, which is also why the size is measured again
  * afterwards.
  *
+ * What the acceptance policy answered is that the bytes *open* as SVG —
+ * it reads a prologue, not a whole document. Whether they also close as
+ * one is decided here, on the markup that will actually be stored, and
+ * an input that does not is refused as `UnsupportedMimeType`: the row
+ * would otherwise claim `image/svg+xml` for a file no XML parser opens.
+ *
  * `process` answers a note-body fragment, so its 800,000-byte cap is the
  * real ceiling of anything that goes through here. That is what
  * `MEDIA_SVG_MAX_BYTES` is chosen against: no input this policy accepts
@@ -147,10 +254,18 @@ const asStandaloneSvg = (markup: string): string => {
 const sanitizeSvg = (
   htmlProcessor: HtmlProcessor,
   body: Uint8Array,
-): Uint8Array =>
-  new TextEncoder().encode(
-    asStandaloneSvg(htmlProcessor.process(new TextDecoder().decode(body)).html),
+): Uint8Array => {
+  const document = asStandaloneSvg(
+    htmlProcessor.process(new TextDecoder().decode(body)).html,
   );
+  if (document === null) {
+    throw new BusinessRuleError(
+      StorageErrorCode.UnsupportedMimeType,
+      "The SVG does not sanitize into a single standalone document",
+    );
+  }
+  return new TextEncoder().encode(document);
+};
 
 /**
  * Stores an image or a video the editor inserts into a note body.

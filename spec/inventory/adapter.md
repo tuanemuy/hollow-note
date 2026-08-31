@@ -322,6 +322,7 @@
 | ADP-integration-027 | `CloudDriveClient.upload` | `spec/domains/integration.md#ポート` | stream を folder へ upload し外部参照を返す |
 | ADP-integration-028 | `CloudDriveClient.download` | `spec/domains/integration.md#ポート` | external file を stream で取得する |
 | ADP-integration-029 | `CloudDriveClient.headFile` | `spec/domains/integration.md#ポート` | external file の size・MIME または不存在を返す |
+| ADP-integration-030 | `BackupRecordRepository.listByNote` | `spec/domains/integration.md#ポート` | ノートの backup 記録を `BackupRecordId` 昇順で列挙する |
 | ADP-job-001 | `JobRepository.insert` | `spec/domains/job.md#ポート` | 新規 Job を保存する |
 | ADP-job-002 | `JobRepository.findById` | `spec/domains/job.md#ポート` | JobId で OCC token 付き Job を取得する |
 | ADP-job-003 | `JobRepository.save` | `spec/domains/job.md#ポート` | 期待版一致時だけ Job を更新する |

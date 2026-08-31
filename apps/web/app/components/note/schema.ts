@@ -36,9 +36,17 @@ export const moveNoteSchema = z.discriminatedUnion("targetOwnerType", [
  */
 const NOTE_TITLE_TRANSPORT_MAX = 1_000;
 
-// 800 KB は UTF-8 バイト数の上限。1 UTF-16 単位は最大 3 バイトなので、
-// バイト上限と同じ数の**文字数**を許せばドメインの判定より必ず緩い。
-const NOTE_HTML_TRANSPORT_MAX = 800_000;
+// 転送が見るのはサニタイズ**前**の生 HTML で、ドメインの 800 KB は
+// サニタイズ**後**の `NoteHtml` に掛かる。`<script>` や未許可の属性が
+// 落ちる分だけ生 HTML のほうが大きいので、同じ数を置くと ED-03 の中核
+// 要件（インラインスクリプト込みで 1 MB あり、サニタイズ後は数十 KB に
+// なる保存済み Web ページ）が `NOTE_CONTENT_TOO_LARGE` ではなく
+// `INVALID_INPUT` で弾かれる。2 MB はその差を吸収するために
+// `spec/usecases/note.md#updateNoteBody` の入力 DTO 表が定めた値である。
+const NOTE_HTML_TRANSPORT_MAX = 2_000_000;
+
+/** サニタイズ後の本文に掛かるドメインの上限（`NoteHtml`）を文字数で写した枠。 */
+const NOTE_HTML_SANITIZED_MAX = 800_000;
 
 const expectedVersion = z.number().int().min(0);
 
@@ -65,9 +73,10 @@ export const updateNoteBodySchema = z.object({
  * では枠にならない — 効くのは**合計**のほうである。旧値・新値・経路の
  * 3 列を合わせて本文 2 つ分に収める: 書き換えの前後どちらの本文も
  * サニタイズ後 800 KB に収まる以上、その和を超える編集列は本文の不変
- * 条件のほうと矛盾する。
+ * 条件のほうと矛盾する。枠に使うのがサニタイズ後の上限なのは、ここが
+ * 運ぶのが生 HTML ではなくテキストノードの中身だからである。
  */
-const TEXT_NODE_EDITS_TOTAL_MAX = 2 * NOTE_HTML_TRANSPORT_MAX;
+const TEXT_NODE_EDITS_TOTAL_MAX = 2 * NOTE_HTML_SANITIZED_MAX;
 
 export const applyTextNodeEditsSchema = z.object({
   noteId,
@@ -76,8 +85,8 @@ export const applyTextNodeEditsSchema = z.object({
     .array(
       z.object({
         path: textNodePath,
-        expected: z.string().max(NOTE_HTML_TRANSPORT_MAX),
-        text: z.string().max(NOTE_HTML_TRANSPORT_MAX),
+        expected: z.string().max(NOTE_HTML_SANITIZED_MAX),
+        text: z.string().max(NOTE_HTML_SANITIZED_MAX),
       }),
     )
     .max(20_000)

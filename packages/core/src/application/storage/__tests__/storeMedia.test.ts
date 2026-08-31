@@ -97,8 +97,45 @@ const DRAWING_SVG = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http:/
   <use xlink:href="#glyph"/>
 </svg>`;
 
+/**
+ * Allow-list-clean markup that is nonetheless not an SVG document: the
+ * sanitizer keeps everything after `</svg>`, and XML treats content past
+ * the root element as a fatal error. Text and an element are separate
+ * cases — nothing outside the root may survive, whatever its kind.
+ */
+const TRAILING_SVG = {
+  text: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>trailing text`,
+  element: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg><p>and a paragraph</p>`,
+  sibling: `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg><svg><circle r="1"/></svg>`,
+} as const;
+
+/**
+ * An attribute value carrying what looks like the end of the document.
+ * The serializer escapes `&` and `"` in a value but not `<` or `>`, so
+ * anything that delimits tags by searching for those characters closes
+ * the root here and refuses a document that is perfectly well formed.
+ */
+const CLOSING_TAG_IN_ATTRIBUTE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" data-note="a>b </svg> more"><rect width="4" height="4"/></svg>`;
+
 const SVG_NAMESPACE = 'xmlns="http://www.w3.org/2000/svg"';
 const XLINK_NAMESPACE = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
+
+/**
+ * An SVG of exactly `bytes` bytes whose sanitized form is the same
+ * length: the sanitizer drops the `xmlns` and `asStandaloneSvg` puts
+ * back the identical declaration, and nothing in the text expands.
+ */
+const svgOfExactly = (bytes: number): Uint8Array => {
+  const head = `<svg ${SVG_NAMESPACE}><text>`;
+  const tail = "</text></svg>";
+  const body = svg(
+    `${head}${"a".repeat(bytes - head.length - tail.length)}${tail}`,
+  );
+  if (body.byteLength !== bytes) {
+    throw new Error(`built ${body.byteLength} bytes, wanted ${bytes}`);
+  }
+  return body;
+};
 
 // --- helpers --------------------------------------------------------------
 
@@ -409,6 +446,57 @@ describe("storeMedia", () => {
     );
     expect(filesIn(h, personalScope)).toHaveLength(0);
     expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-253: an SVG of exactly 128 KB that does not grow while being sanitized is accepted at the boundary", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    const body = svgOfExactly(MEDIA_SVG_MAX_BYTES);
+
+    const view = await upload(h, noteId, { body, fileName: "boundary.svg" });
+
+    expect(view.mimeType).toBe("image/svg+xml");
+    // The row and the capacity both carry the sanitized length, which is
+    // what the ceiling is applied to, so the boundary is only reachable
+    // for an input that survives the rewrite at the same size.
+    expect(view.size).toBe(MEDIA_SVG_MAX_BYTES);
+    expect(onlyFile(h, personalScope).size).toBe(MEDIA_SVG_MAX_BYTES);
+  });
+
+  it("TC-storage-256: an SVG with anything left after </svg> is refused, since it would not open as a document", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // The sanitizer answers a body fragment and keeps what follows the
+    // root, so accepting these stores an `image/svg+xml` no XML parser
+    // reads past the root element.
+    expect(
+      h.container.htmlProcessor.process(TRAILING_SVG.element).html,
+    ).toContain("and a paragraph");
+
+    for (const [shape, markup] of Object.entries(TRAILING_SVG)) {
+      await expectBusinessRule(
+        upload(h, noteId, { body: svg(markup), fileName: `${shape}.svg` }),
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-256: an attribute value that looks like the end of the document does not end it", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    await upload(h, noteId, {
+      body: svg(CLOSING_TAG_IN_ATTRIBUTE_SVG),
+      fileName: "quoted.svg",
+    });
+
+    const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
+    expect(stored).toContain('data-note="a>b </svg> more"');
+    expect(stored.endsWith("</svg>")).toBe(true);
+    // One declaration, inserted into the root's real start tag.
+    expect(stored.split(SVG_NAMESPACE)).toHaveLength(2);
   });
 
   it("TC-storage-183: an upload larger than the remaining capacity is refused before any byte is written", async () => {

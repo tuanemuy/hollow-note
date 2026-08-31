@@ -56,9 +56,16 @@ export const Route = createFileRoute(
 });
 
 function WorkspaceNoteEditorPage() {
+  const { workspaceId, noteId } = Route.useParams();
   const { NoteEditor } = Route.useLoaderData();
   return (
-    <Suspense fallback={<NoteEditorSkeleton />}>
+    <Suspense
+      fallback={
+        <NoteEditorSkeleton
+          backTo={{ kind: "workspaceNote", noteId, workspaceId }}
+        />
+      }
+    >
       <Deferred promise={NoteEditor} />
     </Suspense>
   );
