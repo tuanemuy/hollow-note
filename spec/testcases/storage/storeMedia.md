@@ -10,6 +10,9 @@
 | — | 21 MB の画像をアップロードする | `BusinessRuleError(FileTooLarge)` が投げられる | |
 | — | 20 MB の画像をアップロードする | 成功する（境界値） | |
 | — | 201 MB の動画をアップロードする | `BusinessRuleError(FileTooLarge)` が投げられる | |
+| — | 128 KB（131,072 バイト）ちょうどの SVG をアップロードする | 成功する（境界値。SVG だけがラスタ画像と別の上限を持つ） | |
+| — | 128 KB を超える SVG をアップロードする | `BusinessRuleError(FileTooLarge)` が投げられる（本文の上限に触れて `NOTE_CONTENT_TOO_LARGE` になることはない） | |
+| サニタイズで実バイト長が 128 KB を超える SVG | アップロードする | 保管する直前の測り直しで `BusinessRuleError(FileTooLarge)` になり、オブジェクトも `StoredFile` の行も残らない | |
 | 保存容量の残りが足りない | アップロードする | `BusinessRuleError(StorageQuotaExceeded)` が投げられる | |
 | viewer である | アップロードする | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | 存在しないノート | アップロードする | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |

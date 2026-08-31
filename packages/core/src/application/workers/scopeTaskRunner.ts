@@ -29,6 +29,7 @@ import { ScopeKey } from "../scope";
 import {
   collectOrphanMedia,
   ORPHAN_MEDIA_TASK_KIND,
+  readOrphanMediaSweepTurn,
 } from "../storage/collectOrphanMedia";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
 import {
@@ -155,10 +156,14 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     await purgeExpiredTrash({ container, input: { scope: task.scope } });
   },
   // The orphan sweep moves its own row instead of settling it: it is
-  // periodic, so it re-arms for immediately after while a full page is
-  // still yielding progress and for the next day otherwise.
+  // periodic, so it re-arms for immediately after while the listing has
+  // a page left and for the next day otherwise. The payload carries the
+  // keyset position that continuation resumes from.
   [ORPHAN_MEDIA_TASK_KIND]: async (container, task) => {
-    await collectOrphanMedia({ container, input: { scope: task.scope } });
+    await collectOrphanMedia({
+      container,
+      input: { scope: task.scope, ...readOrphanMediaSweepTurn(task.payload) },
+    });
   },
   // The `note.purged` followers settle their own rows: a turn either
   // re-arms the row it was claimed for or completes it, in the same

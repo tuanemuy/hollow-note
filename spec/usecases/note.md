@@ -774,10 +774,11 @@ operation の終端はしたがって次の 5 通りだけである。
 2. `JobRepository.listActiveByTarget({ type: "note", noteId }, limit: 100)` を引き、`excludingJobId` に一致するものを除いたすべてを `Job.cancel` する。100 件に達していれば同じ UoW で継続要求 `job.terminationContinued { origin: { path: "trashNote", noteId, excludingJobId } }` を積む（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）。1 ノートの網なので実際には達しないが、規則は経路ごとに省かない
 3. 「共通: 強制終端の後始末」（[usecases/job.md](./job.md)）に従う。`kind: "conversion"` のジョブを止めた結果、対象ノートの `content.status` が `processing` のままなら `Note.markConversionFailed("canceled", now)` を適用する。生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles`（[usecases/storage.md](./storage.md)）で回収する — ただし対象（`target.type === "note"`）で引くこの経路は batch 親を返さないため、回収対象は実際には空になる。規則は経路ごとに省かず同じ形で適用する
 4. `Note.trash` を適用して保存し、イベントを収集する
+5. 同じ transaction で `NoteRepository.findNextPurgeDeadline()` を引き直し、その期限へ scope の保持期限回収 task（`purgeExpiredTrash` の行）を upsert する。行は scope に 1 つなので、いま捨てたノートの `purgeAfter` をそのまま書くと、より古いノートの期限を捨てるたびに押し出してしまう。同じ transaction の内側で引き直すことが、いま保存したノートを答えに含める条件でもある。ゴミ箱が空（`null`）になることはこの経路では起こらない
 
 手順 3 は手順 4 より**先**に適用する — `Note.markConversionFailed` は `ActiveNote` しか受け取らないため、`Note.trash` を先に当てると回復の手立てがなくなる。
 
-ジョブの取り消し・本文の回復・ノートの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する（手順 2 の `listActiveByTarget` も UoW の内側で引く）。
+ジョブの取り消し・本文の回復・ノートの更新・保持期限回収 task の張り替えは同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する（手順 2 の `listActiveByTarget` と手順 5 の `findNextPurgeDeadline` も UoW の内側で引く）。
 
 手順 2 の除外は、`excludingJobId` に一致する 1 件だけを取り除く。同じノートを対象とする他のジョブ（変換・再生成・PDF 書き出し・別の一括操作の子）は、呼び出し元が一括操作の子であっても通常どおり取り消す — 取り消すべき理由（ノートがゴミ箱に入る）は呼び出し経路によらないためである。
 
@@ -876,7 +877,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 1. 権限を `deleteNote`（ワークスペースの場合）で確認する
 2. `NoteRepository.countByOwner(owner, "trashed")` で件数を数え、次のどちらか一方だけを行う
    - **50 件以下** → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` でゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
-   - **50 件超** → 対象を500件ごとに分割し、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
+   - **50 件超** → `listByOwner(owner, "trashed", pagination)` でゴミ箱をページごとに列挙し、対象を500件ごとに分割して、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。**列挙は手順 2 で数えた総数が導くページ数（`ceil(総数 / ページ幅)`）までで打ち切る** — 1 要求の逐次読みは、その要求が既に支払って知っている数で束縛する（[platform/index.md](../platform/index.md) の「実行予算と分割単位」）。満たないページを引いた時点で早く抜けるのは従来どおり。数えたあとにゴミ箱へ入ったノートは次の要求の持ち分で、追いかけない。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
 
 **同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者はHTTP要求の中で開始・完了を待つpurge operation数、後者は**1つの親ジョブ**が受け持つ件数である。同期削除はroute/DO/D1投影をまたぐため応答時間とevent fan-outを50件に止める。子ジョブは1件ずつ別実行なので親は500件を持てる。scope-local SQLにD1 query予算は適用しない。値の正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 
@@ -884,7 +885,8 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 
 - このユースケース自身は `UnitOfWorkProvider.run` を開かない。`purgeNote` が 1 件ごとに自分の UoW を開いて確定する。50 件を 1 トランザクションに束ねないのは、`note.purged` の購読者が結果整合で後始末する設計（[ADR 008](../adr/008-domain-boundaries.md)）である以上、まとめても得られる保証が増えないためである。途中で失敗しても既に消えたノートは戻らないが、ゴミ箱を空にする操作は部分的に進んでも矛盾しない
 - `purgeNote` が要求する `expectedVersion` は**呼び出し側が渡す**。値の出所は手順 2 の `listByOwner` で引いた各ノートのその時点の `version` である（規約の「対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す」に当たる）
-- 版が競合した（`ConflictError`）ノートは**読み直さずに飛ばし**、`purgedCount` に数えない。列挙から削除までの間に版が動くのは、そのノートが `restoreNote` でゴミ箱から出された場合がほとんどで、読み直して再適用すると利用者が戻したばかりのノートを消してしまう。同じ理由で `NOTE_NOT_TRASHED`（既に他の経路で消えた・戻された）も飛ばして続ける
+- 版が競合した（`ConflictError`）ノートは**読み直さずに飛ばし**、`purgedCount` に数えない。列挙から削除までの間に版が動くのは、そのノートが `restoreNote` でゴミ箱から出された場合がほとんどで、読み直して再適用すると利用者が戻したばかりのノートを消してしまう。同じ理由で `NOTE_NOT_TRASHED`・不在（既に他の経路で消えた・戻された）も飛ばして続ける
+- **飛ばせるのはこの 3 つだけで、それ以外の失敗は要求ごと失敗する**。3 つはいずれも「このノートはもうこの要求の持ち分ではない」という 1 件についての事実だが、scope が応答しない・不変条件が壊れたといった失敗は、たまたま当たったノートについて何も語らない。全件がそれで落ちた要求を成功として返すと、画面は「0 件を完全に削除しました」という誤った完了通知を出す。途中で失敗しても既に確定した purge は戻らないが、これはこの操作が部分的に進んでも矛盾しないという上の性質そのものである
 - `purgeNote` が周辺を巻き込む副作用（ジョブの強制終端など）を持たないため、`trashNote` のような除外引数は要らない（本文冒頭の「共通: ユースケースを合成するときの副作用の範囲」）
 
 ### エラーケース
@@ -892,7 +894,8 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 | 条件 | 種類 |
 | --- | --- |
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
-| 同期削除の途中で個々のノートの版が競合・既に削除済み | そのノートを飛ばして続ける（`purgedCount` に数えない） |
+| 同期削除の途中で個々のノートの版が競合・既に削除済み（`ConflictError` / `ValidationError("NOTE_NOT_TRASHED")` / `NotFoundError`） | そのノートを飛ばして続ける（`purgedCount` に数えない） |
+| 同期削除の途中の上記以外の失敗 | そのまま送出して要求ごと失敗する。既に確定した purge は戻らない |
 
 ## purgeExpiredTrash
 
@@ -902,7 +905,9 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 
 ### 入力DTO
 
-`limit: number`（既定 100）
+`scope: ScopeKey`, `limit: number`（既定 100、上限 100）
+
+`scope` は**内部専用**。回収は scope ローカルで、Alarm が鳴った scope そのものを名指しする。誰の要求でもないので actor は持たず、要求面・worker 面のどちらからでも駆動できる（`purgeNote` の `retention` と同じ）。
 
 ### 出力DTO
 
@@ -910,10 +915,19 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 
 ### 処理フロー
 
-1. `NoteRepository.listPurgeable(now, limit)` を引く
+1. `NoteRepository.listPurgeable(now, limit)` を引く。`now` は turn の頭で 1 度だけ読み、`purgeAfter <= now` が判定のすべてである — turn の途中でゴミ箱に入ったノートを早く回収しない
 2. 1 件ずつ内部purge commandを開始し、routeを閉じてからlocal delete・public remove・tombstoneまで進める。1 件の失敗はtaskへ記録して他に影響させない
+3. 結果で task 行を次の 3 通りに決着させる
 
-`limit` の既定100は1 Alarm turnのCPUとevent fan-outを有界にする。残りがあれば同taskを直後に再予定し、なければ次の`purgeAfter`へAlarmを合わせる。
+| turn の結果 | 決着 |
+| --- | --- |
+| 対象が 1 件以上あり、1 件も削除できなかった | task を backoff させる（直後の再予定はしない） |
+| 満ページだった、または一部が削除できずに残った | task を直後へ再予定する |
+| 期限の来た対象が無かった | `findNextPurgeDeadline` の返す期限へ task を移し、ゴミ箱が空（`null`）のときだけ task を完了する |
+
+`limit` の既定100は1 Alarm turnのCPUとevent fan-outを有界にする。**進捗ゼロだけを backoff に落とす**のは、恒久的に失敗する 1 件で直後の再予定が spin し続けるのを避けるためで、一部でも消えた turn は残りを直後に片づける。逆に、削除を拒まれたノートを残したまま行を次の期限へ動かすと、そのノートは次に誰かがゴミ箱へ何かを捨てるまで放置される。
+
+**期限が来ていないことは、残っていないことと同じではない**。したがって task を完了できるのはゴミ箱が空の turn だけである。Alarm はゴミ箱の唯一の駆動主体なので、まだ数えている最中のノートを残したまま行を完了すると、そのノートは永久に回収されない。
 
 ### エラーケース
 

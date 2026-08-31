@@ -7,7 +7,7 @@
 | 同じタグが他のノートにも付いている | 処理する | 他のノートの付与は削除されない | |
 | 処理後 | 発行されたイベントを確認する | `tag.unassigned` は発行されない（local/public読み取りモデルの行は `note.purged` を処理する各projection writerが消すため） | |
 | 付与が450件ある | 処理する | 200件ずつ`tag.noteDeleteContinued`で再開し、各turnでdeletion ownerを再確認する | |
-| personal account deletion由来 | 処理する | `ScopeCleanupAdmissionStore`がpersonal receiptの同一operation IDを確認して通す | |
+| personal account deletion由来 | 処理する | personal receiptの同一operation IDを確認して通す。障壁が既に `completed` でも通す（この追随者は receipt に触れないため）。別 operation・不在・abort 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")` | |
 | 対象ノートに付与が 1 件もない | 処理する | 何もせず `deletedCount: 0` で成功として返る | |
 | 同じイベントを 2 回受け取る | 2 回処理する | 2 回目は削除対象がなく `deletedCount: 0` で終わり、結果は変わらない（冪等） | |
 | 同じ削除で `deleteTagsForScope` が先にタグごと消していた | 処理する | 付与は既にないため 0 件削除で無害に終わる（順序によらず結果は同じ） | |

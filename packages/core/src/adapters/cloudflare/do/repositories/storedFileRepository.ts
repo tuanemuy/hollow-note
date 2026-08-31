@@ -12,6 +12,7 @@ import { UserId } from "../../../../domain/identity/valueObject";
 import { NoteId } from "../../../../domain/note/valueObject";
 import {
   NOTE_DELETABLE_PURPOSES,
+  type StoredFilePurposeCursor,
   type StoredFileRepository,
 } from "../../../../domain/storage/ports/storedFileRepository";
 import type {
@@ -442,26 +443,49 @@ export function createCloudflareStoredFileRepository(
       purpose: FilePurpose,
       createdBefore: Date,
       limit: number,
+      after: StoredFilePurposeCursor | null,
     ): Promise<readonly StoredFile[]> {
       const bounded = Math.max(0, limit);
       if (bounded === 0) {
         return [];
       }
       const threshold = toTimestamp(createdBefore);
+      const keyset =
+        after === null
+          ? null
+          : { at: toTimestamp(after.createdAt), id: after.id };
       const rows = await session.readRows({
         table: TABLE,
-        statement: statement(
-          `SELECT ${SELECTION} FROM ${TABLE}
+        statement:
+          keyset === null
+            ? statement(
+                `SELECT ${SELECTION} FROM ${TABLE}
              WHERE purpose = ? AND created_at <= ?
              ORDER BY created_at, id LIMIT ?`,
-          purpose,
-          threshold,
-          bounded,
-        ),
+                purpose,
+                threshold,
+                bounded,
+              )
+            : statement(
+                `SELECT ${SELECTION} FROM ${TABLE}
+             WHERE purpose = ? AND created_at <= ?
+               AND (created_at > ? OR (created_at = ? AND id > ?))
+             ORDER BY created_at, id LIMIT ?`,
+                purpose,
+                threshold,
+                keyset.at,
+                keyset.at,
+                keyset.id,
+                bounded,
+              ),
         keyOf: (row) => text(row, "id"),
         matches: (row) =>
           text(row, "purpose") === purpose &&
-          int(row, "created_at") <= threshold,
+          int(row, "created_at") <= threshold &&
+          (keyset === null ||
+            int(row, "created_at") > keyset.at ||
+            (int(row, "created_at") === keyset.at &&
+              compareText(text(row, "id"), keyset.id) > 0)),
         compare: oldestFirst,
         limit: bounded,
       });

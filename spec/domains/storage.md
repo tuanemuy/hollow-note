@@ -266,7 +266,7 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
   listDeletableByNote(noteId: NoteId, limit: number): Promise<readonly StoredFile[]>;
   findArtifactByNoteAndVersion(noteId: NoteId, noteVersion: number, mimeType: MimeType, now: Date): Promise<EphemeralFile | null>;
   listExpired(now: Date, limit: number): Promise<readonly EphemeralFile[]>;
-  listByPurposeOlderThan(purpose: FilePurpose, createdBefore: Date, limit: number): Promise<readonly StoredFile[]>;
+  listByPurposeOlderThan(purpose: FilePurpose, createdBefore: Date, limit: number, after: StoredFilePurposeCursor | null): Promise<readonly StoredFile[]>;
   sumSizeByOwner(owner: StorageOwner): Promise<number>;
   listByOwner(owner: StorageOwner, purpose: FilePurpose | null, pagination: Pagination): Promise<PaginationResult<StoredFile>>;
 }
@@ -275,6 +275,16 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
 チェックサムによる重複保管の回避は行わない。`StoredFile` は `FileProvenance` で所属ノートと由来を持つため、同一内容でもノートごとに別の行が要る（1 行を複数ノートで共有すると `note.purged` 後の回収と所有者の付け替えが成立しない）。実体の共有はメタデータと blob を分ける設計を要し、本設計の範囲外とする。所有者単位の一括削除（`deleteFilesByOwner`）も、1 件ごとに `storage.fileDeleted` を発行して Usage の減算と実体の回収につなげる必要があるため、`listByOwner` + `deleteFiles` の反復で行い一括削除のメソッドは持たない。
 
 `listByNote` はcurrent scopeで `noteId` が一致する全ファイルを引く。moveでは `source` / `media` / `reference` metadataをsnapshotへ含め、target scopeへ同じR2 keyで復元する。artifactはJob scopeに残し `expiresAt` で回収する。`listByPurposeOlderThan` の所有者に依らない走査もcurrent scope内に限り、全DO走査ではない。`sumSizeByOwner` はartifactを除外する。
+
+`listByPurposeOlderThan` は**キーセットで前進する走査**である。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を**排他的に**指す（`null` は先頭から）。境界は `createdBefore` 側が包含（ちょうど `createdBefore` の行はページに入る）。
+
+```ts
+type StoredFilePurposeCursor = { createdAt: Date; id: StoredFileId };
+```
+
+カーソルは**行ではなく位置**である。カーソルを採った行がその後削除されていても位置は解決できる（掃引は読んだページの一部を消すのが常態なので、これは例外ではなく既定の状況にあたる）。offset ではなくキーセットにするのはそのためで、前方の行が消えても後方の行が走査から漏れない。
+
+カーソルが契約に要るのは `collectOrphanMedia` のためである。この掃引は**残すと決めた行をそのまま残す**ので、毎 turn 先頭から読む形だと、scope の最古の `limit` 件がすべて本文から参照されている（稼働中の scope ではごく普通の状態）とき、その後ろにある孤児へ永久に到達できない。満ページを受け取った呼び出し側は、そのページ末尾の `(createdAt, id)` を次の turn の `after` に渡す。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("OBJECT_KEY_ALREADY_USED")`、`SystemError(DatabaseError)`
 

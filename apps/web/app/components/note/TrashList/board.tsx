@@ -36,10 +36,18 @@ export type TrashRowView = Readonly<{
   remainingLabel: string;
 }>;
 
-/** 空にした結果。`mode` で意味が変わるので件数だけを持ち回らない。 */
+/**
+ * 空にした結果。`mode` で意味が変わるので件数だけを持ち回らない。
+ *
+ * `jobIds` は `scheduled` のときだけ中身を持つ。処理履歴（P-15）はまだ
+ * 無いので導線は張れないが、予約そのものは ID として画面に出す — 「処理
+ * 履歴で確認できます」とだけ書いて何も渡さないと、利用者は登録された
+ * 予約を指す手掛かりを 1 つも持たないまま一覧へ戻ることになる。
+ */
 type EmptyOutcome = Readonly<{
   mode: "purged" | "scheduled";
   count: number;
+  jobIds: readonly string[];
 }>;
 
 function withoutNote(
@@ -121,7 +129,11 @@ export function TrashBoard({
       }
       setError(null);
       setConfirmingEmpty(false);
-      setOutcome({ mode: result.mode, count: result.purgedCount });
+      setOutcome({
+        mode: result.mode,
+        count: result.purgedCount,
+        jobIds: result.jobIds,
+      });
       // 51 件以上（`scheduled`）はまだ 1 件も消えていないので、一覧は
       // その場で空にせず読み直すだけにする（P-14 の状態表）。
       await reconcile();
@@ -191,6 +203,15 @@ export function TrashBoard({
         <Alert tone="info" title={`${outcome.count} 件の削除を開始しました`}>
           件数が多いため、まとめて消す処理として登録しました。まだ 1
           件も消えていないので、この一覧はしばらく残ります。処理の進みは処理履歴で確認できます。
+          {outcome.jobIds.length === 0 ? null : (
+            <>
+              {" "}
+              登録した処理:{" "}
+              <span className="break-all font-mono text-xs">
+                {outcome.jobIds.join(", ")}
+              </span>
+            </>
+          )}
         </Alert>
       )}
 

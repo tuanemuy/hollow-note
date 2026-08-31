@@ -391,9 +391,11 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録する
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録する
 2. Drive 上のファイルは消さない。バックアップは利用者自身の Drive にあり、その扱いは利用者に委ねる（IN-09 と同じ整理）
 3. 同じイベントを 2 回受け取っても、2 回目は削除対象が既にないため 0 件削除で終わり、結果は変わらない
+
+手順 1 で `assertOwner` を使わないのは、それが完了済みの障壁を拒否する述語だからである。障壁を完了させるのは Note 自身の ack で、その ack が待った purge の `note.purged` はリレーがそのあと配送するため、完了と fan-out は必ず競合する。完了済みを通してよいのは、この追随者が receipt に触れず purge 済みノートの行を消すだけだからである（`deleteBackupRecordsByUser` のように障壁へ ack する経路は `assertOwner` のまま）。
 
 ### エラーケース
 

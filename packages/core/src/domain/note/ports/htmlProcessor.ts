@@ -16,8 +16,9 @@ export type ExternalReference = Readonly<{
  * `path` addresses a text node by dot-separated 0-based child indices
  * from the body root (e.g. `"2.0.1"`), stable over `process` output.
  * `expected` is the string the node held before editing. Text nodes
- * inside `<style>` are never assigned a path — edits addressing them
- * fall out as `pathNotFound` (spec/adr/013 bypass prevention).
+ * inside `<style>` and `<script>` are never assigned a path — both carry
+ * CSS / script source rather than prose — so edits addressing them fall
+ * out as `pathNotFound` (spec/adr/013 bypass prevention).
  */
 export type TextNodeEdit = Readonly<{
   path: string;

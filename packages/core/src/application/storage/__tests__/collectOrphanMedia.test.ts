@@ -2,6 +2,7 @@ import { UserId } from "@repo/core/domain/identity/valueObject";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import type { FileDeletedEvent } from "@repo/core/domain/storage/events";
+import type { StoredFilePurposeCursor } from "@repo/core/domain/storage/ports/storedFileRepository";
 import { StoredFile } from "@repo/core/domain/storage/storedFile";
 import {
   Checksum,
@@ -23,10 +24,12 @@ import {
 } from "../../workspace/__tests__/harness";
 import {
   collectOrphanMedia,
+  ORPHAN_MEDIA_BATCH_SIZE,
   ORPHAN_MEDIA_MIN_AGE_MS,
   ORPHAN_MEDIA_OPERATION_ID,
   ORPHAN_MEDIA_SWEEP_INTERVAL_MS,
   ORPHAN_MEDIA_TASK_KIND,
+  readOrphanMediaSweepTurn,
 } from "../collectOrphanMedia";
 import { storeMedia } from "../storeMedia";
 
@@ -111,10 +114,14 @@ async function seedFile(
   );
 }
 
-const run = (h: TestHarness, limit?: number) =>
+const run = (
+  h: TestHarness,
+  limit?: number,
+  cursor: StoredFilePurposeCursor | null = null,
+) =>
   collectOrphanMedia({
     container: h.workerContainer,
-    input: { scope, ...(limit === undefined ? {} : { limit }) },
+    input: { scope, cursor, ...(limit === undefined ? {} : { limit }) },
   });
 
 const storedIds = (h: TestHarness): readonly string[] =>
@@ -374,7 +381,7 @@ describe("collectOrphanMedia", () => {
     );
   });
 
-  it("TC-storage-027: re-arms for immediately after while a full page still makes progress, then falls back to the next day", async () => {
+  it("TC-storage-027: re-arms for immediately after while the listing has a page left, then falls back to the next day", async () => {
     const h = createTestHarness();
     const noteId = await seedNote(h, "note-1", "<p>no picture here</p>");
     for (const id of ["file-1", "file-2", "file-3"]) {
@@ -385,11 +392,13 @@ describe("collectOrphanMedia", () => {
     const first = await run(h, 2);
 
     expect(first.collectedCount).toBe(2);
+    expect(first.nextCursor?.id).toBe("file-2");
     expect(sweepRow(h).dueAt).toEqual(now);
 
-    const second = await run(h, 2);
+    const second = await run(h, 2, first.nextCursor);
 
     expect(second.collectedCount).toBe(1);
+    expect(second.nextCursor).toBeNull();
     expect(sweepRow(h).dueAt).toEqual(
       new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
     );
@@ -397,7 +406,7 @@ describe("collectOrphanMedia", () => {
     expect(tasks(h)).toHaveLength(1);
   });
 
-  it("TC-storage-027: a full page of files the bodies still reference goes back to the next day rather than spinning", async () => {
+  it("TC-storage-254: a full page of files the bodies still reference is continued past, and the walk stops at the next day once nothing is behind it", async () => {
     const h = createTestHarness();
     const noteId = await seedNote(
       h,
@@ -409,14 +418,103 @@ describe("collectOrphanMedia", () => {
     }
     const now = h.clock.now();
 
-    const view = await run(h, 2);
+    const first = await run(h, 2);
 
-    expect(view.collectedCount).toBe(0);
-    // The listing has no cursor and the spared rows stay at the head of
-    // it, so an immediate continuation would re-read this same page.
+    // Nothing was collected, but the page was full, so the listing —
+    // not the harvest — is what says there may be more behind it.
+    expect(first.collectedCount).toBe(0);
+    expect(first.nextCursor?.id).toBe("file-2");
+    expect(sweepRow(h).dueAt).toEqual(now);
+
+    const second = await run(h, 2, first.nextCursor);
+
+    // Behind the spared page there is nothing, so the chain of
+    // immediate turns ends here instead of spinning on the same page.
+    expect(second.collectedCount).toBe(0);
+    expect(second.nextCursor).toBeNull();
     expect(sweepRow(h).dueAt).toEqual(
       new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
     );
+    expect(storedIds(h)).toEqual(["file-1", "file-2"]);
+  });
+
+  it("TC-storage-254: collects an orphan sitting behind a full page of files the bodies still reference, driven from the worker plane", async () => {
+    const h = createTestHarness();
+    const referenced = Array.from(
+      { length: ORPHAN_MEDIA_BATCH_SIZE },
+      (_, n) =>
+        // Padded so the id order matches the seeding order: the whole
+        // batch shares one creation instant, and `id` breaks that tie.
+        `file-${String(n).padStart(3, "0")}`,
+    );
+    const noteId = await seedNote(
+      h,
+      "note-1",
+      `<p>${referenced.map((id) => `<img src="${urlOf(h, id)}">`).join("")}</p>`,
+    );
+    for (const id of referenced) {
+      await seedFile(h, { id, noteId, ageMs: 0 });
+    }
+    // Sorts last, so a sweep pinned to the head of the listing never
+    // reaches it: the first page is a full batch of referenced rows.
+    await seedFile(h, { id: "file-100", noteId, ageMs: 0 });
+    await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: ORPHAN_MEDIA_TASK_KIND,
+        operationId: ORPHAN_MEDIA_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: new Date(
+          h.clock.now().getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS,
+        ),
+        payload: {},
+      }),
+    );
+    h.clock.advance(31 * DAY_MS);
+
+    const first = await runDueScopeTasks(h.workerContainer);
+    expect(first.processed).toBe(1);
+    // Every row of the first page is still referenced, so nothing goes;
+    // the row is nonetheless due again at once, carrying its position.
+    expect(storedIds(h)).toHaveLength(ORPHAN_MEDIA_BATCH_SIZE + 1);
+    expect(sweepRow(h).dueAt).toEqual(h.clock.now());
+    expect(sweepRow(h).payload.afterId).toBe("file-099");
+
+    const second = await runDueScopeTasks(h.workerContainer);
+    expect(second.processed).toBe(1);
+    expect(storedIds(h)).toEqual(referenced);
+    expect(deletionEvents(h).map((payload) => payload.fileId)).toEqual([
+      "file-100",
+    ]);
+    expect(sweepRow(h).dueAt).toEqual(
+      new Date(h.clock.now().getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+    );
+    expect(sweepRow(h).payload.afterId).toBeUndefined();
+
+    // Back to the daily cadence: nothing is due any more.
+    expect((await runDueScopeTasks(h.workerContainer)).processed).toBe(0);
+  });
+
+  it("TC-storage-255: starts a fresh pass from the head when the payload carries no readable position", async () => {
+    expect(readOrphanMediaSweepTurn({}).cursor).toBeNull();
+    expect(
+      readOrphanMediaSweepTurn({ afterCreatedAt: "not a date", afterId: "f" })
+        .cursor,
+    ).toBeNull();
+    expect(
+      readOrphanMediaSweepTurn({ afterCreatedAt: 12, afterId: "f" }).cursor,
+    ).toBeNull();
+    expect(
+      readOrphanMediaSweepTurn({
+        afterCreatedAt: new Date(0).toISOString(),
+        afterId: "   ",
+      }).cursor,
+    ).toBeNull();
+    expect(
+      readOrphanMediaSweepTurn({
+        afterCreatedAt: new Date(1_000).toISOString(),
+        afterId: "file-1",
+      }).cursor,
+    ).toEqual({ createdAt: new Date(1_000), id: "file-1" });
   });
 
   it("TC-storage-027: is resumed by the scope-task runner until the scope is swept clean", async () => {

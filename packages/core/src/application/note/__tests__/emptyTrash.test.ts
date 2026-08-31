@@ -255,7 +255,7 @@ describe("emptyTrash", () => {
     ).toBe(1200);
   });
 
-  it("TC-note-106: bounds the job path's enumeration by the count it already took", async () => {
+  it("TC-note-779: bounds the job path's enumeration by the count it already took", async () => {
     const h = createTestHarness();
     seedTrashedNotes(h, 1200);
     const reader = h.container.noteReaderFor(userScope);
@@ -436,7 +436,7 @@ describe("emptyTrash", () => {
     expect(h.backend.scope(userScope).notes.keys()).toEqual([doomed]);
   });
 
-  it("TC-note-111: reports a failure the skip rules do not cover instead of counting it as an empty trash", async () => {
+  it("TC-note-778: reports a failure the skip rules do not cover instead of counting it as an empty trash", async () => {
     const h = createTestHarness();
     await trashPersonalNotes(h, 3);
     const container = {
@@ -466,7 +466,7 @@ describe("emptyTrash", () => {
     expect(await trashedCount(h)).toBe(3);
   });
 
-  it("TC-note-111: stops at the first unskippable failure and keeps what it already purged", async () => {
+  it("TC-note-778: stops at the first unskippable failure and keeps what it already purged", async () => {
     const h = createTestHarness();
     const ids = await trashPersonalNotes(h, 3);
     const doomed = ids[1];

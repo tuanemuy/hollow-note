@@ -372,7 +372,7 @@ describe("storeMedia", () => {
     expect(filesIn(h, personalScope)).toHaveLength(0);
   });
 
-  it("TC-storage-180: an SVG past its own ceiling is refused as FileTooLarge, not as a body that is too long", async () => {
+  it("TC-storage-251: an SVG past its own ceiling is refused as FileTooLarge, not as a body that is too long", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
     const oversized = `<svg xmlns="http://www.w3.org/2000/svg"><!--${"a".repeat(
@@ -390,7 +390,7 @@ describe("storeMedia", () => {
     expect(h.backend.objects.size).toBe(0);
   });
 
-  it("TC-storage-181: an SVG that grows past the ceiling while being sanitized is refused before it is stored", async () => {
+  it("TC-storage-252: an SVG that grows past the ceiling while being sanitized is refused before it is stored", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
     // Every `&` comes back as `&amp;`, so bytes the policy accepted turn

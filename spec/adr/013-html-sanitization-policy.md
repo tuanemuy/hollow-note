@@ -52,7 +52,8 @@
 | `track` | `src`, `kind`, `srclang`, `label`, `default` |
 | 表 | `colspan`, `rowspan`, `headers`, `scope`, `span`, `abbr` |
 | `ol` / `li` | `start`, `reversed`, `type`, `value` |
-| `blockquote` / `q` / `del` / `ins` | `cite`, `datetime` |
+| `blockquote` / `q` | `cite` |
+| `del` / `ins` | `cite`, `datetime` |
 | `time` | `datetime` |
 | `details` | `open` |
 
@@ -82,6 +83,7 @@
 | `meta` | 文書のメタ情報は本文断片の責務ではない。とくに `http-equiv="refresh"` は公開ページに自動遷移を仕込める |
 | `link`（`rel=stylesheet` を含む） | `ExternalFetchPolicy` を通らない外部取得経路になる。装飾の保持は次項の取り込みで代替する |
 | `template` | 内容がパースされずに保持され、後段の走査（テキスト抽出・参照抽出）とサニタイズの見え方がずれる |
+| `math`（MathML） | 配下は HTML ではなく foreign content として解析され、要素の入れ子・属性の扱いがこの文書の他のどの部分とも違う。要素を剥がして中身を本文へ昇格させると数式のトークンが地の文になり、`annotation-xml` のように解析を HTML へ戻す入口も残る。数式は本文の表現力の外に置き、内容ごと除去する |
 | 上記以外の未列挙の要素・属性 | 許可リスト方式の定義そのもの |
 
 ### 外部スタイルシートは `<link>` ではなく `<style>` として取り込む

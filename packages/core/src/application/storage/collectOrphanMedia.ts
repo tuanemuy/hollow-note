@@ -1,7 +1,8 @@
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import type { NoteId } from "@repo/core/domain/note/valueObject";
-import type {
-  ObjectKey,
+import type { StoredFilePurposeCursor } from "@repo/core/domain/storage/ports/storedFileRepository";
+import {
+  type ObjectKey,
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import type { SharedDeps } from "../di/types";
@@ -10,7 +11,10 @@ import type {
   ScopeUnitOfWorkProvider,
 } from "../execution/unitOfWork";
 import type { ObjectStorage } from "../ports/objectStorage";
-import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
+import {
+  type ScopeTaskPayload,
+  ScopeTaskPriority,
+} from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 import { deleteStoredFiles } from "./deleteFiles";
 
@@ -18,11 +22,15 @@ import { deleteStoredFiles } from "./deleteFiles";
  * Scope-task kind carrying the orphan-media sweep of one scope.
  *
  * The row is armed by the first media that appears in the scope
- * ({@link armOrphanMediaSweepOnFirstMedia}) and moved by every turn —
- * to immediately after while a full page is still yielding progress,
- * and to the next day otherwise. It is never completed: the sweep is
- * periodic, and a scope that once held media can grow an orphan again
- * at any time.
+ * ({@link armOrphanMediaSweepOnFirstMedia}) and moved by every turn — to
+ * immediately after while the listing still has a page behind the one
+ * just read, and to the next day once it is walked out. It is never
+ * completed: the sweep is periodic, and a scope that once held media can
+ * grow an orphan again at any time.
+ *
+ * Its payload carries the keyset position the next turn resumes from
+ * ({@link readOrphanMediaSweepTurn}), which is what keeps the walk
+ * moving past rows the sweep decides to spare.
  */
 export const ORPHAN_MEDIA_TASK_KIND = "storage.orphanMediaContinued";
 
@@ -37,6 +45,9 @@ export const ORPHAN_MEDIA_OPERATION_ID = "storage.orphanMediaSweep";
  * Files one turn inspects. The cap bounds the CPU of a single alarm
  * turn — one body parse per candidate — and the `storage.fileDeleted`
  * fan-out it emits (spec/platform/index.md「実行予算と分割単位」).
+ *
+ * It is a cap on rows *read*, not on rows collected, which is why the
+ * turn cannot simply keep reading until it finds work.
  */
 export const ORPHAN_MEDIA_BATCH_SIZE = 100;
 
@@ -57,9 +68,65 @@ export type CollectOrphanMediaInput = Readonly<{
   /** Scope whose alarm fired. The sweep is scope-local. */
   scope: ScopeKey;
   limit?: number;
+  /**
+   * Keyset position the previous turn stopped at; `null` (the default)
+   * starts a fresh pass at the oldest media in the scope.
+   */
+  cursor?: StoredFilePurposeCursor | null;
 }>;
 
-export type CollectOrphanMediaView = Readonly<{ collectedCount: number }>;
+export type CollectOrphanMediaView = Readonly<{
+  collectedCount: number;
+  /**
+   * Position handed to the continuation, or `null` when the pass walked
+   * the listing out and the row went back to its daily cadence.
+   */
+  nextCursor: StoredFilePurposeCursor | null;
+}>;
+
+const CURSOR_CREATED_AT = "afterCreatedAt";
+const CURSOR_ID = "afterId";
+
+/**
+ * Reads back the keyset position {@link collectOrphanMedia} wrote into
+ * its own task payload.
+ *
+ * A payload that does not carry a readable position yields `null` — a
+ * fresh pass from the head — rather than an error. Unlike a note-purge
+ * continuation, whose payload names the one note it exists to clean up,
+ * this one is a *resumption hint* for a periodic sweep over the whole
+ * scope: restarting from the head repeats work but loses none, whereas
+ * throwing would back the row off and, at the attempt ceiling, park the
+ * scope's only sweep as `failed` with nothing left to re-arm it.
+ */
+export const readOrphanMediaSweepTurn = (
+  payload: ScopeTaskPayload,
+): Readonly<{ cursor: StoredFilePurposeCursor | null }> => {
+  const createdAt = payload[CURSOR_CREATED_AT];
+  const id = payload[CURSOR_ID];
+  if (
+    typeof createdAt !== "string" ||
+    typeof id !== "string" ||
+    id.trim().length === 0
+  ) {
+    return { cursor: null };
+  }
+  const at = new Date(createdAt);
+  if (Number.isNaN(at.getTime())) {
+    return { cursor: null };
+  }
+  return { cursor: { createdAt: at, id: StoredFileId.create(id) } };
+};
+
+const sweepPayload = (
+  cursor: StoredFilePurposeCursor | null,
+): ScopeTaskPayload =>
+  cursor === null
+    ? {}
+    : {
+        [CURSOR_CREATED_AT]: cursor.createdAt.toISOString(),
+        [CURSOR_ID]: cursor.id,
+      };
 
 /**
  * The ports the sweep is written against, and nothing else.
@@ -107,6 +174,7 @@ export async function armOrphanMediaSweepOnFirstMedia(
     "media",
     now,
     1,
+    null,
   );
   if (existing.length > 0) {
     return;
@@ -116,7 +184,7 @@ export async function armOrphanMediaSweepOnFirstMedia(
     operationId: ORPHAN_MEDIA_OPERATION_ID,
     priority: ScopeTaskPriority.expiryCollection,
     dueAt: new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
-    payload: {},
+    payload: sweepPayload(null),
   });
 }
 
@@ -200,10 +268,18 @@ async function isOrphan(
  * not take the rest of the page down with it (spec's「個々の失敗は記録
  * して継続」).
  *
- * The row is then moved rather than completed. Immediately after only
- * when a full page *also* made progress: the listing has no cursor and
- * the sweep keeps what it spares, so re-arming a full page that collected
- * nothing would re-read the same page forever.
+ * The row is then moved rather than completed, and what decides where to
+ * is the **listing**, not the harvest: a full page means there may be
+ * another behind it, so the row is re-armed for immediately after
+ * carrying the keyset position of the page's last row, and a short page
+ * means the walk is out, so the row goes back to the next day with the
+ * position cleared. Tying the continuation to "did this turn collect
+ * anything" instead is what stalls the sweep: the rows it spares stay
+ * where they are, so a scope whose oldest `limit` media are all still
+ * referenced — an ordinary busy scope — would re-read that same page
+ * every day and never inspect anything behind it. The cursor is also
+ * what keeps the immediate re-arm from spinning: it advances strictly,
+ * over a finite listing, so the chain of immediate turns ends.
  */
 export async function collectOrphanMedia({
   container,
@@ -223,6 +299,7 @@ export async function collectOrphanMedia({
         "media",
         createdBefore,
         limit,
+        input.cursor ?? null,
       );
       const orphans: StoredFileId[] = [];
       for (const file of candidates) {
@@ -236,7 +313,15 @@ export async function collectOrphanMedia({
           orphans.push(file.id);
         }
       }
-      return { scanned: candidates.length, orphans };
+      const last = candidates[candidates.length - 1];
+      return {
+        scanned: candidates.length,
+        orphans,
+        last:
+          last === undefined
+            ? null
+            : { createdAt: last.createdAt, id: last.id },
+      };
     },
   );
 
@@ -255,18 +340,19 @@ export async function collectOrphanMedia({
     }
   }
 
-  const hasMoreNow = scan.scanned === limit && collectedCount > 0;
+  const nextCursor = scan.scanned === limit ? scan.last : null;
   await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
     ctx.scopeTaskScheduler.schedule({
       kind: ORPHAN_MEDIA_TASK_KIND,
       operationId: ORPHAN_MEDIA_OPERATION_ID,
       priority: ScopeTaskPriority.expiryCollection,
-      dueAt: hasMoreNow
-        ? now
-        : new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
-      payload: {},
+      dueAt:
+        nextCursor === null
+          ? new Date(now.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS)
+          : now,
+      payload: sweepPayload(nextCursor),
     }),
   );
 
-  return { collectedCount };
+  return { collectedCount, nextCursor };
 }

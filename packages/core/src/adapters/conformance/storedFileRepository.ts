@@ -30,7 +30,8 @@ const CHECKSUM = Checksum.sha256("a".repeat(64));
  * (ADP-storage-001..005, 007, 010, 011, 012): OCC over the file rows,
  * the owner-scoped listing and total the avatar and cleanup paths need,
  * and the two bounded sweeps a note purge and the orphan-media
- * collection walk.
+ * collection walk — the second of which is a keyset walk, so its cursor
+ * is pinned here too.
  */
 export function describeStoredFileRepositoryContract(
   backendName: string,
@@ -266,30 +267,98 @@ export function describeStoredFileRepositoryContract(
       // Oldest first — the ids run the other way, so an id order would
       // answer `file-2, file-3` here.
       expect(
-        (await repository.listByPurposeOlderThan("media", cutoff, 100)).map(
-          (file) => file.id,
-        ),
+        (
+          await repository.listByPurposeOlderThan("media", cutoff, 100, null)
+        ).map((file) => file.id),
       ).toEqual(["file-3", "file-2"]);
       expect(
-        (await repository.listByPurposeOlderThan("media", cutoff, 1)).map(
+        (await repository.listByPurposeOlderThan("media", cutoff, 1, null)).map(
           (file) => file.id,
         ),
       ).toEqual(["file-3"]);
       expect(
-        (await repository.listByPurposeOlderThan("reference", cutoff, 100)).map(
-          (file) => file.id,
-        ),
+        (
+          await repository.listByPurposeOlderThan(
+            "reference",
+            cutoff,
+            100,
+            null,
+          )
+        ).map((file) => file.id),
       ).toEqual(["file-4"]);
       expect(
-        await repository.listByPurposeOlderThan("media", cutoff, 0),
+        await repository.listByPurposeOlderThan("media", cutoff, 0, null),
       ).toEqual([]);
       expect(
         await repository.listByPurposeOlderThan(
           "media",
           new Date(cutoff.getTime() - 3),
           100,
+          null,
         ),
       ).toEqual([]);
+    });
+
+    it("ADP-storage-010: resumes strictly past the keyset cursor, so a caller that spares every row it read still advances", async () => {
+      const instant = new Date(backend.clock.now().getTime());
+      const cutoff = new Date(instant.getTime() + 60_000);
+      // Same instant for 1..3, so only the id tie-break separates them,
+      // and one older row to prove the cursor is not read as an offset.
+      await repository.insert(
+        noteFile(4, "media", noteId(1), new Date(instant.getTime() - 1)),
+      );
+      for (const n of [1, 2, 3]) {
+        await repository.insert(noteFile(n, "media", noteId(1), instant));
+      }
+
+      const first = await repository.listByPurposeOlderThan(
+        "media",
+        cutoff,
+        2,
+        null,
+      );
+      expect(first.map((file) => file.id)).toEqual(["file-4", "file-1"]);
+
+      const afterFirst = first[first.length - 1];
+      if (afterFirst === undefined) {
+        throw new Error("the first page is empty");
+      }
+      const second = await repository.listByPurposeOlderThan(
+        "media",
+        cutoff,
+        2,
+        { createdAt: afterFirst.createdAt, id: afterFirst.id },
+      );
+      // Strictly past: `file-1` shares its instant with the cursor and
+      // must not come back, or the walk would never leave this page.
+      expect(second.map((file) => file.id)).toEqual(["file-2", "file-3"]);
+
+      const afterSecond = second[second.length - 1];
+      if (afterSecond === undefined) {
+        throw new Error("the second page is empty");
+      }
+      expect(
+        await repository.listByPurposeOlderThan("media", cutoff, 2, {
+          createdAt: afterSecond.createdAt,
+          id: afterSecond.id,
+        }),
+      ).toEqual([]);
+
+      // A position, not a row: deleting the row the cursor was taken
+      // from leaves the position resolvable.
+      const versioned = await repository.findById(afterFirst.id);
+      if (versioned === null) {
+        throw new Error("the cursor row is gone");
+      }
+      await repository.delete(afterFirst.id, versioned.expectedVersion);
+      expect(
+        (
+          await repository.listByPurposeOlderThan("media", cutoff, 100, {
+            createdAt: afterFirst.createdAt,
+            id: afterFirst.id,
+          })
+        ).map((file) => file.id),
+      ).toEqual(["file-2", "file-3"]);
     });
 
     it("ADP-storage-012: pages an owner's files and reports the total so a full page is not mistaken for the end", async () => {

@@ -684,7 +684,7 @@ node /tmp/hollow-manual-7/gen.cjs
 
 | 手順 | 依存先 | 理由 |
 |---|---|---|
-| TC-13 手順 5〜7（51 件以上の一括削除ジョブ、`/jobs` の 500 件分割） | Job 集約（#5 / #6） | `emptyTrash` の 51 件以上の経路は `requestBulkNoteOperation` を呼ぶ（adr.md ADR-002） |
+| TC-13 手順 5〜7（51 件以上の一括削除ジョブ、処理履歴の 500 件分割） | Job 集約（#5 / #6） | `emptyTrash` の 51 件以上の経路は `requestBulkNoteOperation` を呼ぶ（adr.md ADR-002）。本スライスの `NoteBulkPurgeJobs` は `null` を返す縫い目だけなので `jobIds` は常に空で、手順 5 の案内は出るが ID は 1 件も並ばない。画面側（`TrashList/board.tsx`）は返った `jobIds` をそのまま出す形になっているので、Job 集約が入れば手順 5〜7 はそのまま実行できる |
 | TC-14 手順 4〜5（HTML でのダウンロード） | 書き出し（#10） | `exportNote` 以降が未実装 |
 | TC-29（処理中ノートの編集ロック） | 取り込み（#6）+ Job 集約 | 変換処理中のノートを作る手段がなく、`NoteLockedByJob` の分岐も Job 集約に依存する（adr.md ADR-002） |
 | TC-34 手順 3 / 7 / 8（取り込みの実行結果・再取り込み・`/jobs`） | 取り込み（#6） | 外部参照の取り込みジョブが未実装（本スライスが確認するのは選択肢の提示と痕跡の残り方まで） |

@@ -22,6 +22,21 @@ export const NOTE_DELETABLE_PURPOSES = [
 export type NoteDeletablePurpose = (typeof NOTE_DELETABLE_PURPOSES)[number];
 
 /**
+ * Exclusive keyset position in the `listByPurposeOlderThan` order — the
+ * `(createdAt, id)` of the last row a caller has already seen.
+ *
+ * It names a position, not a row: the row it was taken from may since
+ * have been deleted (a sweep normally deletes some of the page it just
+ * read), and the position still resolves. A keyset rather than an
+ * offset, so rows removed ahead of it cannot shift the ones behind it
+ * out of the walk.
+ */
+export type StoredFilePurposeCursor = Readonly<{
+  createdAt: Date;
+  id: StoredFileId;
+}>;
+
+/**
  * Bound to the current scope: a file id alone cannot locate its scope,
  * so an outside entry point resolves a note route, a job id, or an
  * explicit storage scope first. `StorageOwner` records who the bytes
@@ -67,15 +82,22 @@ export interface StoredFileRepository
    *
    * Owner-independent by design — the orphan-media sweep walks a whole
    * scope and has no owner to filter by, which is why it cannot use
-   * `listByOwner`. Oldest-first is contractual rather than incidental:
-   * the sweep keeps the rows it decides to spare, so a repeated turn
-   * would re-read the same page forever under any order that lets a
-   * newer row displace an older one.
+   * `listByOwner`.
+   *
+   * The order is total and contractual: `createdAt` ascending, `id`
+   * ascending within one instant. `after` starts the page **strictly
+   * past** that position (`null` starts at the head), and being able to
+   * ask for it is what makes the walk advance at all: the sweep keeps
+   * the rows it decides to spare, so a caller that always read from the
+   * head would re-read the same full page of spared rows forever and
+   * never reach what is behind them. A caller that receives a full page
+   * therefore continues from the `(createdAt, id)` of its last row.
    */
   listByPurposeOlderThan(
     purpose: FilePurpose,
     createdBefore: Date,
     limit: number,
+    after: StoredFilePurposeCursor | null,
   ): Promise<readonly StoredFile[]>;
   listByOwner(
     owner: StorageOwner,

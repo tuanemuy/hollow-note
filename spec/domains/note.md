@@ -326,7 +326,7 @@ type TextNodeEdit = Readonly<{ path: string; expected: string; text: string }>;
 
 `expected` は編集前にそのノードが持っていた文字列。`editTextNodes` は経路が解決できない、または現在の文字列が `expected` と一致しない場合、その編集だけを適用せず `SkippedEdit` として返す。要素の追加・削除・並べ替えは行わない。空文字列への更新はノードを削除せず空のまま残す。
 
-**`<style>` の子テキストノードには経路を割り当てない**。`<style>` の中身はテキストノードなので、経路を与えるとビジュアルエディタから CSS を直接書き換えられ、[ADR 013](../adr/013-html-sanitization-policy.md) の内容制約（`position: fixed` / `sticky` / `@import` の除去）を迂回して再注入できてしまう。ビジュアルモードは「テキストノードのみを書き換える」（[ADR 006](../adr/006-html-content-model.md)）が、その「テキスト」は読み物としての文字列を指し、スタイルシートの中身は含まない。経路が割り当たらないため、この位置を指す編集は `pathNotFound` として `skipped` に落ちる。呼び出し側は結果を `process` に通してから保存する（[usecases/note.md](../usecases/note.md) の `applyTextNodeEdits`）。
+**`<style>` と `<script>` の子テキストノードには経路を割り当てない**。どちらも中身はテキストノードだが、運んでいるのは読み物ではなく CSS / スクリプトのソースである。`<style>` に経路を与えるとビジュアルエディタから CSS を直接書き換えられ、[ADR 013](../adr/013-html-sanitization-policy.md) の内容制約（`position: fixed` / `sticky` / `@import` の除去）を迂回して再注入できてしまう。`<script>` は ADR 013 が内容ごと除去する要素なので、そもそも経路の対象にならない。ビジュアルモードは「テキストノードのみを書き換える」（[ADR 006](../adr/006-html-content-model.md)）が、その「テキスト」は読み物としての文字列を指し、スタイルシート・スクリプトの中身は含まない。経路が割り当たらないため、この位置を指す編集は `pathNotFound` として `skipped` に落ちる。呼び出し側は結果を `process` に通してから保存する（[usecases/note.md](../usecases/note.md) の `applyTextNodeEdits`）。
 
 ```ts
 type EditTextNodesResult = Readonly<{ html: NoteHtml; skipped: readonly SkippedEdit[] }>;
@@ -410,11 +410,14 @@ interface NoteExportComposer {
 interface NoteRepository extends TransactionalRepository<Note, NoteId> {
   listByIds(ids: readonly NoteId[]): Promise<readonly Note[]>;
   listPurgeable(now: Date, limit: number): Promise<readonly TrashedNote[]>;
+  findNextPurgeDeadline(): Promise<Date | null>;
   countByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all"): Promise<number>;
   listByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all", pagination: Pagination): Promise<PaginationResult<Note>>;
 }
 ```
 
+- `listPurgeable` の順序は `purgeAfter ASC, id ASC` である。保持期限の回収は最も長く待ったノートから行うため、この順序は契約であって実装の都合ではない。`id` のタイブレークが順序を全順序にする
+- `findNextPurgeDeadline` は現在時刻を見ない。ゴミ箱にあるノートの `purgeAfter` の最小値を返し、ゴミ箱が空なら `null` を返す。「保持期限の回収に次に仕事があるのはいつか」を答える口であり、scope の Alarm はこの値から張る — **まだ開いていない窓こそがこのメソッドの用途**なので、`listPurgeable` と違って `now` で絞らない
 - `listByOwner` の順序は `updatedAt DESC, id DESC` である。`id` のタイブレークが順序を全順序にする — 半順序に対してオフセットページングを掛けると、同じ行が 1 ページ目に出て次のページから消えるといった重複・欠落が起きる。ここを入口に列挙する projection の再構築は、失敗もせずにノートを取りこぼすことになる
 - `listByOwner` の `lifecycle` は `countByOwner` と同じ 3 値を取る。ゴミ箱だけを対象にする `emptyTrash`、生死を問わない `deleteNotesForOwner` / `rebuildNoteProjection` がそれぞれ別の値で呼ぶため、件数と一覧で絞り込みの語彙を揃える
 - repository は現在の ScopeKey に束縛され、scope をまたぐ全件走査を提供しない。local projection の再構築は `listByOwner(currentScope, "all", ...)`、public projection の再構築は global D1 の `note_routes` を入口にする
@@ -668,7 +671,7 @@ interface NoteMovePort {
 }
 ```
 
-`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`が3表の削除を1 transactionで確定できる配置を維持する。冪等はend state（行が消えていること）で満たし、operationへのack行は契約しない — operationは既にrouteを閉じており、比較する世代が残っていないため、再配送は同じend stateへ到達する。
+`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。**`beginPurge` の操作単位の冪等は routeVersion の CAS より先に効く** — 既に同じ `operationId` で `purging` になっている行は `expectedRouteVersion` を比較せずそのまま返る。この順序は契約であって実装の偶然ではない。`resolve` が `purging` を隠す以上、claim し直すことが停止した purge が自分の scope と世代を読み戻す唯一の経路であり、recovery はどの route も持ちえない番兵世代でこれを呼ぶ。CAS を先に置いたバックエンドは、停止した purge をすべて復旧不能（route は `purging` のまま＝ノートは永久に到達不能）にする。他人の operation の行は state（`active` 以外）か CAS で拒まれるので、番兵世代が route を奪うことはない。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`が3表の削除を1 transactionで確定できる配置を維持する。冪等はend state（行が消えていること）で満たし、operationへのack行は契約しない — operationは既にrouteを閉じており、比較する世代が残っていないため、再配送は同じend stateへ到達する。
 
 `resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。500 件の上限を超える入力は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない（`UserBatchReader.resolveMany` の 100 件上限と同じ契約。[domains/identity.md](./identity.md)）。
 

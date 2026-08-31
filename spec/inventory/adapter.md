@@ -178,7 +178,7 @@
 | ADP-storage-007 | `StoredFileRepository.listDeletableByNote` | `spec/domains/storage.md#ポート` | ノート削除対象 file を有界列挙する |
 | ADP-storage-008 | `StoredFileRepository.findArtifactByNoteAndVersion` | `spec/domains/storage.md#ポート` | 有効期限内の同版 artifact を取得する |
 | ADP-storage-009 | `StoredFileRepository.listExpired` | `spec/domains/storage.md#ポート` | 期限切れ ephemeral file を有界列挙する |
-| ADP-storage-010 | `StoredFileRepository.listByPurposeOlderThan` | `spec/domains/storage.md#ポート` | current scope の用途・作成時刻で file を有界列挙する |
+| ADP-storage-010 | `StoredFileRepository.listByPurposeOlderThan` | `spec/domains/storage.md#ポート` | current scope の用途・作成時刻（`createdBefore` は包含）で file を有界列挙する。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を排他的に指すキーセット（`null` は先頭）。位置は行ではないので、その行が既に消えていても解決する |
 | ADP-storage-011 | `StoredFileRepository.sumSizeByOwner` | `spec/domains/storage.md#ポート` | artifact を除く owner の使用容量を合計する |
 | ADP-storage-012 | `StoredFileRepository.listByOwner` | `spec/domains/storage.md#ポート` | owner と用途で file をページングする |
 | ADP-storage-013 | `ReferenceImportRecordRepository.saveAttempts` | `spec/domains/storage.md#ポート` | 取得試行を note・URL キーで上書き保存する |
@@ -216,7 +216,7 @@
 | ADP-note-010 | `NoteRepository.save` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を更新する |
 | ADP-note-011 | `NoteRepository.delete` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を削除する |
 | ADP-note-012 | `NoteRepository.listByIds` | `spec/domains/note.md#ポート` | current scope の複数 Note を ID で取得する |
-| ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を有界列挙する |
+| ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を `purgeAfter ASC, id ASC` の全順序で有界列挙し、最も長く待った 1 件を先頭に置く |
 | ADP-note-014 | `NoteRepository.countByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle 条件の Note 数を返す |
 | ADP-note-015 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note を `updatedAt DESC, id DESC` の全順序でページングし、ページ境界で重複・欠落を出さない |
 | ADP-note-016 | `NoteRevisionRepository.insert` | `spec/domains/note.md#ポート` | 不変な NoteRevision を保存する |
@@ -246,7 +246,7 @@
 | ADP-note-040 | `NoteRouteStore.beginMove` | `spec/domains/note.md#ポート` | expected route version で moving 状態を開始する |
 | ADP-note-041 | `NoteRouteStore.abortMove` | `spec/domains/note.md#ポート` | switch 前の move route を source active へ戻す |
 | ADP-note-042 | `NoteRouteStore.switchMove` | `spec/domains/note.md#ポート` | moving route を target scope へ切り替える |
-| ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
+| ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる。同じ `operationId` で既に `purging` の行は `expectedRouteVersion` を見ずに返す（**操作単位の冪等が CAS より先**。recovery が番兵世代で claim し直して scope と世代を読み戻す経路がこれ）。他人の operation は state か CAS で拒む |
 | ADP-note-044 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | ADP-note-045 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
 | ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を opaque cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
@@ -260,6 +260,7 @@
 | ADP-note-054 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
 | ADP-note-055 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | ADP-note-056 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| ADP-note-057 | `NoteRepository.findNextPurgeDeadline` | `spec/domains/note.md#ポート` | current scope のゴミ箱にある `purgeAfter` の最小値を返し、空なら `null` を返す。`now` で絞らないので、まだ到来していない期限も答える（scope の Alarm はこの値から張る） |
 | ADP-tag-001 | `TagRepository.insert` | `spec/domains/tag.md#ポート` | 新規 Tag を保存する |
 | ADP-tag-002 | `TagRepository.findById` | `spec/domains/tag.md#ポート` | TagId で OCC token 付き Tag を取得する |
 | ADP-tag-003 | `TagRepository.save` | `spec/domains/tag.md#ポート` | 期待版一致時だけ Tag を更新する |

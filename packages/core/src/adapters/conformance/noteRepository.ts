@@ -11,7 +11,7 @@ import { makeBlankNote, noteId, scopeOf, userId } from "./fixtures";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Shared conformance suite for `NoteRepository` (ADP-note-008..015). */
+/** Shared conformance suite for `NoteRepository` (ADP-note-008..015, ADP-note-057). */
 export function describeNoteRepositoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,
@@ -113,7 +113,7 @@ export function describeNoteRepositoryContract(
       ).toHaveLength(1);
     });
 
-    it("ADP-note-013: findNextPurgeDeadline answers the earliest purgeAfter, whether or not it has arrived", async () => {
+    it("ADP-note-057: findNextPurgeDeadline answers the earliest purgeAfter, whether or not it has arrived", async () => {
       const now = backend.clock.now();
       expect(await scoped.noteRepository.findNextPurgeDeadline()).toBeNull();
 

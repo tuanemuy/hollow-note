@@ -149,7 +149,7 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
 3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
 4. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない
-5. `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる。保管するサイズは手順 4 のあとのバイト長で、手順 3 で容量を確かめた申告前のバイト長とは SVG で食い違う
+5. **保管する直前に、サニタイズ後の実バイト長を `UploadValidationPolicy.limitFor("media", mimeType)` へ測り直す**。超えていれば `BusinessRuleError(FileTooLarge)` で返す。手順 2 が測ったのは受け取ったバイト列で、手順 4 は SVG をそのバイト列とは別のものに書き換えるため、受理判定の対象と実際に保管される実体が食い違ったままになる。容量に効くのも行に載るのもサニタイズ後の長さなので、上限を当てる相手はそちらである（`image/svg+xml` の上限が 128 KB である理由は [domains/storage.md](../domains/storage.md)）。そのうえで `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる。保管するサイズは手順 4 のあとのバイト長で、手順 3 で容量を確かめた申告前のバイト長とは SVG で食い違う
 6. 手順 5 の transaction が失敗した場合は、手順 5 で置いたオブジェクトを消す。`storeSource` が孤児として回収に任せるのと違うのは、**メディアには回収の手掛かりになる行が残らない**ためである（`StoredFile` が保存されていないので `collectOrphanMedia` が見つけられない）。この後始末自体が失敗した場合は記録して元のエラーを投げる
 7. 配信用の URL を返す
 
@@ -400,23 +400,28 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-作成から 30 日が経過し、本文から参照されていないメディアを回収する。scopeで最初のmediaを登録するときに日次taskを自己登録し、そのscope objectのAlarmから呼ぶ。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
+作成から 30 日が経過し、本文から参照されていないメディアを回収する。scopeにmediaが**初めて流入する**とき（`storeMedia` の保管、および `relocateFilesForNote` の `stageTarget` が運ぶ移動）に日次taskを自己登録し、そのscope objectのAlarmから呼ぶ。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
 
 ### 入力DTO
 
-`limit: number`（既定100。1件ごとの本文検査に使うAlarm turnのCPU時間を有界にする値）
+`scope: ScopeKey`, `limit: number`（既定100。1件ごとの本文検査に使うAlarm turnのCPU時間を有界にする値）, `cursor: StoredFilePurposeCursor | null`（既定 `null`。前の turn が止まったキーセット位置で、`null` は scope の最も古い media から始める）
 
 ### 出力DTO
 
-`collectedCount: number`
+| フィールド | 型 |
+| --- | --- |
+| `collectedCount` | `number` |
+| `nextCursor` | `StoredFilePurposeCursor \| null` |
+
+`nextCursor` は継続 task へ渡す位置。走査し切って日次へ戻る turn は `null` を返すので、呼び手は継続が要るかどうかを `collectedCount` から推測せずに観測できる。
 
 ### 処理フロー
 
-1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）
+1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit, cursor)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）。`cursor` はその順序上の位置を**排他的**に指し、位置は行ではないので、その行が既に消えていても解決する — 掃引は読んだページの一部を消すのが常態だからである
 2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
 3. 現れないものを `deleteFiles` で削除する
 
-処理後は翌日のtaskを自己登録する。`limit`件に達したときは残件を先に処理するため直後にも継続taskを設定し、完了後に日次へ戻す。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。
+処理後は翌日のtaskを自己登録する。**ページが満ちたときは残件を先に処理するため直後にも継続taskを設定し**、読んだ最後の行の `(createdAt, id)` を位置として task の payload に載せる。完了後に日次へ戻す。継続の条件は「回収できたか」ではなく「ページが満ちたか」である — 掃引は残すと決めた行をそのまま残すので、回収数を条件にすると、最も古い `limit` 件がすべて本文から参照されている scope（稼働中なら普通の状態）で毎日同じページを読み直し、その後ろの孤児が 1 度も検査されない。カーソルが毎回厳密に前進するので、満ページで直後を張っても spin にはならない。位置を task の payload に置くのは、payload が `(kind, operationId)` の upsert で掃引行そのものと一緒に書かれ、位置の寿命が掃引行の寿命と一致するためである。**読めない payload は失敗させず、先頭からやり直す** — 位置は周期的な全走査の再開位置でしかなく、先頭から読み直せば作業は重複するが取りこぼしはない。逆に失敗させると backoff が回り、上限で scope 唯一の掃引行が `failed` に駐車されて、掃引は自分を張り直せないためその scope の回収が二度と動かなくなる。走査中に 30 日境界を跨いだ行はカーソルの後ろに現れうるので、そのパスでは拾わず翌日の先頭からの走査で拾う。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。
 
 ### エラーケース
 
@@ -472,10 +477,12 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`StoredFileRepository.listDeletableByNote(noteId, 100)` で `purpose` が `source` / `media` / `reference` のファイルを最大100件列挙する。`artifact` は対象にしない
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`StoredFileRepository.listDeletableByNote(noteId, 100)` で `purpose` が `source` / `media` / `reference` のファイルを最大100件列挙する。`artifact` は対象にしない
 2. `deleteFiles(fileIds, deletionOperationId)` を呼んで削除する（各`storage.fileDeleted`へ同じtokenを引き継ぐ）
 3. 100件なら同じUoWで`storage.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。100件未満になったturnから`ReferenceImportRecordRepository.deleteByNote(noteId, 100)`で取得記録と要約を最大100件ずつ消し、100件なら同じtaskを再登録する（[ADR 014](../adr/014-import-result-provenance.md)）
 4. 両集合が100件未満になったときだけ完了する。削除済み行は次回に現れず、同じoperation/tokenで再実行しても結果は変わらない（冪等）
+
+手順 1 で `assertOwner` を使わないのは、それが完了済みの障壁を拒否する述語だからである。障壁を完了させるのは Note 自身の ack で、その ack が待った purge の `note.purged` はリレーがそのあと配送するため、完了と fan-out は必ず競合する。完了済みを通してよいのは、この追随者が receipt に触れず purge 済みノートの行を消すだけだからである（`deleteFilesByOwner` のように障壁へ ack する経路は `assertOwner` のまま）。
 
 ### エラーケース
 

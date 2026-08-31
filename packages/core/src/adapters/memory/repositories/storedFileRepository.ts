@@ -7,6 +7,7 @@ import type { NoteId } from "../../../domain/note/valueObject";
 import {
   NOTE_DELETABLE_PURPOSES,
   type NoteDeletablePurpose,
+  type StoredFilePurposeCursor,
   type StoredFileRepository,
 } from "../../../domain/storage/ports/storedFileRepository";
 import type { StoredFile } from "../../../domain/storage/storedFile";
@@ -19,6 +20,17 @@ import type { ScopeStore } from "../store";
 import { clone, compareStrings, createOccRepository } from "../support";
 
 const TABLE = "stored_files";
+
+const isPastCursor = (
+  file: StoredFile,
+  after: StoredFilePurposeCursor | null,
+): boolean => {
+  if (after === null) {
+    return true;
+  }
+  const drift = file.createdAt.getTime() - after.createdAt.getTime();
+  return drift > 0 || (drift === 0 && compareStrings(file.id, after.id) > 0);
+};
 
 export function createMemoryStoredFileRepository(
   scope: ScopeStore,
@@ -77,13 +89,15 @@ export function createMemoryStoredFileRepository(
       purpose: FilePurpose,
       createdBefore: Date,
       limit: number,
+      after: StoredFilePurposeCursor | null,
     ): Promise<readonly StoredFile[]> {
       return table
         .values()
         .filter(
           (file) =>
             file.purpose === purpose &&
-            file.createdAt.getTime() <= createdBefore.getTime(),
+            file.createdAt.getTime() <= createdBefore.getTime() &&
+            isPastCursor(file, after),
         )
         .sort(
           (a, b) =>
