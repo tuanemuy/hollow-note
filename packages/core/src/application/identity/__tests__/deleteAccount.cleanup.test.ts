@@ -174,7 +174,11 @@ describe("deleteAccount personal cleanup", () => {
     expect(tasks.map((task) => task.kind)).toEqual([
       PERSONAL_BARRIER_PRUNE_TASK_KIND,
     ]);
-    expect(receipt(h, userId)?.acknowledged).toHaveLength(2);
+    expect([...(receipt(h, userId)?.acknowledged ?? [])].sort()).toEqual([
+      "note",
+      "storage",
+      "usage",
+    ]);
   });
 
   it("TC-identity-087: a lost response after the barrier commit only re-records the receipt", async () => {

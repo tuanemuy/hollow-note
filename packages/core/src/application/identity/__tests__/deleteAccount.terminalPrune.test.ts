@@ -3,6 +3,7 @@ import { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "../../cleanup/participants";
 import {
   PERSONAL_BARRIER_PRUNE_TASK_KIND,
   prunePersonalCleanupBarriers,
@@ -280,7 +281,7 @@ describe("personal barrier prune", () => {
           operationId,
           UserId.create(userId),
         );
-        for (const component of ["storage", "usage"] as const) {
+        for (const component of REQUIRED_PERSONAL_CLEANUP_COMPONENTS) {
           await ctx.cleanupAdmission.acknowledgePersonalComponent(
             operationId,
             component,

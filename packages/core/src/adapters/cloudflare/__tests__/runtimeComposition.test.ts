@@ -99,7 +99,7 @@ const WORKER_PORTS = [
   "identityRemovalReceiptStore",
   "accountDeletionManifestStore",
   "noteRouteFanOutReader",
-  "noteRouteResolver",
+  "noteRouteStore",
   "publicNoteProjectionWriter",
   "scopeTaskQueue",
   "objectStorage",

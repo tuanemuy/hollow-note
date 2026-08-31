@@ -37,22 +37,19 @@ const absent = (reason: string, handoff: string): CleanupAbsentReason => ({
 export const STORAGE_OWNER_DELETE_TASK_KIND = "storage.ownerDeleteContinued";
 /** Scope-task kind of the usage cleanup turns. */
 export const USAGE_USER_CLEANUP_TASK_KIND = "usage.userCleanupContinued";
+/**
+ * Scope-task kind of the note purge turns (`note.ownerPurgeContinued`,
+ * spec/domains/index.md「継続要求」). One row per cleanup operation, so a
+ * turn replayed after a lost response rewrites the row instead of
+ * forking a second series.
+ */
+export const NOTE_OWNER_PURGE_TASK_KIND = "note.ownerPurgeContinued";
 
 export const personalCleanupParticipants = {
   storage: { kind: "participant", taskKind: STORAGE_OWNER_DELETE_TASK_KIND },
   usage: { kind: "participant", taskKind: USAGE_USER_CLEANUP_TASK_KIND },
   job: absent("The Job aggregate does not exist", "#5"),
-  // `deleteNotesForOwner` exists, but nothing can command it here: a
-  // purge claims and tombstones the *global* note route, so it runs on
-  // the request plane (ADR 017), while the cleanup wave and the
-  // scope-task runner both dispatch with a `WorkerContainer`, which
-  // carries `NoteRouteStore` only as a `resolve` view. Promoting this
-  // entry before that gap closes would make the barrier wait on an
-  // acknowledgement no caller can produce.
-  note: absent(
-    "Nothing on the worker plane can drive a note purge",
-    "the slice giving the worker plane the note-route saga",
-  ),
+  note: { kind: "participant", taskKind: NOTE_OWNER_PURGE_TASK_KIND },
   // Both aggregates exist only on their delete side, which the
   // `note.purged` fan-out drives one note at a time. Neither has the
   // scope-wide sweep a barrier can wait on — `deleteTagsForScope` and

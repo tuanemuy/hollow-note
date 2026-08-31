@@ -90,6 +90,51 @@ export function describeNoteRepositoryContract(
       expect(await scoped.noteRepository.listPurgeable(arrived, 0)).toEqual([]);
     });
 
+    it("ADP-note-013: listPurgeable hands the longest-waiting note out first", async () => {
+      const now = backend.clock.now();
+      const later = Note.trash(makeBlankNote(1, userId(1), now), now).entity;
+      const earlier = Note.trash(
+        makeBlankNote(2, userId(1), now),
+        new Date(now.getTime() - 1_000),
+      ).entity;
+      await scoped.noteRepository.insert(later);
+      await scoped.noteRepository.insert(earlier);
+
+      const purgeable = await scoped.noteRepository.listPurgeable(
+        new Date(later.purgeAfter.getTime()),
+        10,
+      );
+      expect(purgeable.map((note) => note.id)).toEqual([noteId(2), noteId(1)]);
+      expect(
+        await scoped.noteRepository.listPurgeable(
+          new Date(later.purgeAfter.getTime()),
+          1,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("ADP-note-013: findNextPurgeDeadline answers the earliest purgeAfter, whether or not it has arrived", async () => {
+      const now = backend.clock.now();
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toBeNull();
+
+      await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toBeNull();
+
+      const later = Note.trash(makeBlankNote(2, userId(1), now), now).entity;
+      const earlier = Note.trash(
+        makeBlankNote(3, userId(1), now),
+        new Date(now.getTime() - 60_000),
+      ).entity;
+      await scoped.noteRepository.insert(later);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        later.purgeAfter,
+      );
+      await scoped.noteRepository.insert(earlier);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        earlier.purgeAfter,
+      );
+    });
+
     it("ADP-note-014/015: countByOwner and listByOwner respect owner and lifecycle filters", async () => {
       const now = backend.clock.now();
       await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));

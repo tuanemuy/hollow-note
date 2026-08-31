@@ -19,8 +19,22 @@ export type NoteLifecycleFilter = "active" | "trashed" | "all";
  */
 export interface NoteRepository extends TransactionalRepository<Note, NoteId> {
   listByIds(ids: readonly NoteId[]): Promise<readonly Note[]>;
-  /** Trashed notes whose `purgeAfter <= now`, bounded by `limit`. */
+  /**
+   * Trashed notes whose `purgeAfter <= now`, bounded by `limit` and
+   * ordered `purgeAfter ASC, id ASC` — the order the retention sweep
+   * reclaims them in, so the note that has waited longest goes first.
+   */
   listPurgeable(now: Date, limit: number): Promise<readonly TrashedNote[]>;
+  /**
+   * The earliest `purgeAfter` among this scope's trashed notes, or
+   * `null` when nothing is in the trash.
+   *
+   * Unlike `listPurgeable` this ignores the clock: it answers *when* the
+   * retention sweep next has work, which is what the scope's alarm is
+   * set from, so a window that has not opened yet is exactly the case it
+   * exists for.
+   */
+  findNextPurgeDeadline(): Promise<Date | null>;
   countByOwner(
     owner: NoteOwner,
     lifecycle: NoteLifecycleFilter,

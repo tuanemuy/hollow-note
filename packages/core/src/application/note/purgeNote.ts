@@ -5,7 +5,7 @@ import { Note } from "@repo/core/domain/note/note";
 import type { NoteOwner } from "@repo/core/domain/note/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import type { StoredFileId } from "@repo/core/domain/storage/valueObject";
-import type { RequestContainer } from "../di/types";
+import type { NotePurgeContainer, RequestContainer } from "../di/types";
 import {
   ConflictError,
   isConflictError,
@@ -35,6 +35,15 @@ import {
  * so it authenticates on the cleanup operation instead and keeps only
  * the two checks that stay meaningful: the note really belongs to the
  * scope being cleaned, and it is the version the enumeration saw.
+ *
+ * `retention` is the trash's own expiry sweep. It has neither of the
+ * other two principals: nobody asked for it, so there is no viewer to
+ * evaluate `canDelete` against, and no deletion is under way, so
+ * `assertOwner` would refuse it. What is left is exactly what the
+ * enumeration already established — this note is in this scope, at this
+ * version — and the version is what makes it safe to keep so little: a
+ * note restored between `listPurgeable` and the transaction has moved
+ * on from the version the sweep read, and is refused as a conflict.
  */
 export type PurgeNoteInput =
   | Readonly<{
@@ -54,7 +63,27 @@ export type PurgeNoteInput =
        */
       scope: ScopeKey;
       deletionOperationId: string;
+    }>
+  | Readonly<{
+      kind: "retention";
+      noteId: string;
+      expectedVersion: number;
+      /** Scope whose trash is being swept. **Internal only**, as above. */
+      scope: ScopeKey;
     }>;
+
+/**
+ * The two admissions that name no actor.
+ *
+ * Both are reachable from either plane, which is what
+ * {@link purgeNoteInternally} exists to express: their gates read the
+ * route and the scope's own rows, never the request-path viewer
+ * resolution `userRequest` opens with.
+ */
+export type InternalPurgeNoteInput = Extract<
+  PurgeNoteInput,
+  { kind: "scopeCleanup" | "retention" }
+>;
 
 /** How long a completed purge's route stays reachable as a tombstone. */
 export const PURGE_TOMBSTONE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -134,11 +163,25 @@ export async function ownerPurgeOperationId(
   deletionOperationId: string,
   noteId: NoteId,
 ): Promise<string> {
-  const source = `ownerPurge:${deletionOperationId}:${noteId}`;
-  return hex(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source)),
-  );
+  return digest(`ownerPurge:${deletionOperationId}:${noteId}`);
 }
+
+/**
+ * The internal operation id of a purge driven by the retention sweep.
+ *
+ * Derived from the note alone, because the note is the whole identity
+ * here: the sweep has no operation of its own, its turns are replayed
+ * freely, and two turns that overlap on one note must resume a single
+ * purge rather than race two.
+ */
+export async function retentionPurgeOperationId(
+  noteId: NoteId,
+): Promise<string> {
+  return digest(`trashExpiry:${noteId}`);
+}
+
+const digest = async (source: string): Promise<string> =>
+  hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source)));
 
 /**
  * Completely deletes a note (UC-note-019, ED-10).
@@ -181,11 +224,43 @@ export async function purgeNote({
   container,
   input,
 }: ServiceArgs<PurgeNoteInput>): Promise<void> {
-  const plan = await admit(container, input);
+  if (input.kind !== "userRequest") {
+    return purgeNoteInternally({ container, input });
+  }
+  return drive(container, await admitUserRequest(container, input));
+}
+
+export type PurgeNoteInternallyArgs = Readonly<{
+  container: NotePurgeContainer;
+  input: InternalPurgeNoteInput;
+}>;
+
+/**
+ * The same purge, reached by the two admissions that name no actor
+ * (UC-note-020 / UC-note-021 / UC-note-022).
+ *
+ * The whole of the request path that this drops is the viewer
+ * resolution `userRequest` opens with — the scope router, the note
+ * reader, the workspace reader. What is left is the saga itself, over
+ * ports both containers carry, which is what lets the deletion cleanup
+ * and the retention sweep purge from the worker plane instead of
+ * needing a request to ride on.
+ */
+export async function purgeNoteInternally({
+  container,
+  input,
+}: PurgeNoteInternallyArgs): Promise<void> {
+  const plan = await admitInternal(container, input);
   if (plan === null) {
     return;
   }
+  return drive(container, plan);
+}
 
+async function drive(
+  container: NotePurgeContainer,
+  plan: PurgePlan,
+): Promise<void> {
   let outcome: LocalOutcome;
   try {
     outcome = await deleteLocally(container, plan);
@@ -220,20 +295,6 @@ export async function purgeNote({
   }
 }
 
-/**
- * Step 1 and step 2 in one: decide whether this request may purge, then
- * claim the route for it. `null` means the purge is already finished
- * and this command is a duplicate.
- */
-async function admit(
-  container: RequestContainer,
-  input: PurgeNoteInput,
-): Promise<PurgePlan | null> {
-  return input.kind === "userRequest"
-    ? admitUserRequest(container, input)
-    : admitScopeCleanup(container, input);
-}
-
 async function admitUserRequest(
   container: RequestContainer,
   input: Extract<PurgeNoteInput, { kind: "userRequest" }>,
@@ -265,18 +326,37 @@ async function admitUserRequest(
   return plan;
 }
 
-async function admitScopeCleanup(
-  container: RequestContainer,
-  input: Extract<PurgeNoteInput, { kind: "scopeCleanup" }>,
+/**
+ * Step 1 and step 2 for an admission that names no actor: decide
+ * whether this command may purge, then claim the route for it. `null`
+ * means the purge is already finished and this command is a duplicate.
+ *
+ * The two kinds diverge on their identity and on their barrier only.
+ * A cleanup derives its operation id from the deletion that ordered it
+ * and has to prove it still owns the scope; retention derives its own
+ * from the note and has no barrier to prove anything against. Both are
+ * left with the same two claims the enumeration already made — the note
+ * lives in this scope, at this version — which the route check here and
+ * the re-check inside the transaction take between them.
+ */
+async function admitInternal(
+  container: NotePurgeContainer,
+  input: InternalPurgeNoteInput,
 ): Promise<PurgePlan | null> {
   const noteId = NoteId.create(input.noteId);
-  const operationId = await ownerPurgeOperationId(
-    input.deletionOperationId,
-    noteId,
-  );
+  const deletionOperationId =
+    input.kind === "scopeCleanup" ? input.deletionOperationId : null;
+  const operationId =
+    deletionOperationId === null
+      ? await retentionPurgeOperationId(noteId)
+      : await ownerPurgeOperationId(deletionOperationId, noteId);
   const route = await container.noteRouteStore.resolve(noteId);
   if (route === null) {
-    return resumeCleanup(container, input, noteId, operationId);
+    return resumeInternal(container, input, {
+      noteId,
+      operationId,
+      deletionOperationId,
+    });
   }
   // The purge already ran to completion and the tombstone has not
   // expired yet. Cleanup commands are delivered at least once, so this
@@ -295,31 +375,37 @@ async function admitScopeCleanup(
     routeVersion: route.routeVersion,
     expectedVersion: input.expectedVersion,
     actorUserId: null,
-    deletionOperationId: input.deletionOperationId,
+    deletionOperationId,
   };
-  // Ownership of the cleanup is asked before the route is closed: a
-  // command from an operation that no longer owns this scope must not
-  // be able to make the note unreachable even for the moment an abort
-  // would take to undo.
-  await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
-    ctx.cleanupAdmission.assertOwner(input.deletionOperationId),
-  );
+  if (deletionOperationId !== null) {
+    // Ownership of the cleanup is asked before the route is closed: a
+    // command from an operation that no longer owns this scope must not
+    // be able to make the note unreachable even for the moment an abort
+    // would take to undo.
+    await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
+      ctx.cleanupAdmission.assertOwner(deletionOperationId),
+    );
+  }
   await claimRoute(container, plan);
   return plan;
 }
 
 /**
- * Picks up a cleanup purge whose route no longer resolves. Either it is
- * still `purging` under this same operation — the delete, the public
+ * Picks up an internal purge whose route no longer resolves. Either it
+ * is still `purging` under this same operation — the delete, the public
  * removal or the tombstone was lost — or the purge finished and its
  * route is a tombstone, which makes the redelivery a no-op.
  */
-async function resumeCleanup(
-  container: RequestContainer,
-  input: Extract<PurgeNoteInput, { kind: "scopeCleanup" }>,
-  noteId: NoteId,
-  operationId: string,
+async function resumeInternal(
+  container: NotePurgeContainer,
+  input: InternalPurgeNoteInput,
+  identity: Readonly<{
+    noteId: NoteId;
+    operationId: string;
+    deletionOperationId: string | null;
+  }>,
 ): Promise<PurgePlan | null> {
+  const { noteId, operationId, deletionOperationId } = identity;
   let claimed: NoteRoute;
   try {
     claimed = await container.noteRouteStore.beginPurge({
@@ -348,7 +434,7 @@ async function resumeCleanup(
     routeVersion: claimed.routeVersion,
     expectedVersion: input.expectedVersion,
     actorUserId: null,
-    deletionOperationId: input.deletionOperationId,
+    deletionOperationId,
   };
 }
 
@@ -361,7 +447,7 @@ async function resumeCleanup(
  * reach, and a conflict would invite a retry that can only fail again.
  */
 async function claimRoute(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   plan: PurgePlan,
 ): Promise<void> {
   try {
@@ -395,7 +481,7 @@ async function claimRoute(
  * that causes it or by the event it emits.
  */
 async function deleteLocally(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   plan: PurgePlan,
 ): Promise<LocalOutcome> {
   const now = container.clock.now();
@@ -506,7 +592,7 @@ async function reclaim(
  * resumes it — while a replaced diagnosis is not.
  */
 async function abortQuietly(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   plan: PurgePlan,
   cause: unknown,
 ): Promise<void> {

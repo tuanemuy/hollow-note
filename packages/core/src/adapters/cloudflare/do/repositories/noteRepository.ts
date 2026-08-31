@@ -436,6 +436,26 @@ export function createCloudflareNoteRepository(
       return rows.map(restore).filter(Note.isTrashed);
     },
 
+    async findNextPurgeDeadline(): Promise<Date | null> {
+      const rows = await session.readRows({
+        table: TABLE,
+        statement: statement(
+          `SELECT ${SELECTION} FROM ${TABLE}
+             WHERE lifecycle = 'trashed'
+             ORDER BY purge_after, id LIMIT 1`,
+        ),
+        keyOf: (row) => text(row, "id"),
+        matches: (row) => text(row, "lifecycle") === "trashed",
+        compare: (a, b) =>
+          (intOrNull(a, "purge_after") ?? 0) -
+            (intOrNull(b, "purge_after") ?? 0) ||
+          compareText(text(a, "id"), text(b, "id")),
+        limit: 1,
+      });
+      const first = rows[0];
+      return first === undefined ? null : dateOrNull(first, "purge_after");
+    },
+
     async countByOwner(
       owner: NoteOwner,
       lifecycle: NoteLifecycleFilter,

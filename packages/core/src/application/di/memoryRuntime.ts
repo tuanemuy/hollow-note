@@ -303,7 +303,7 @@ export function createMemoryRuntime(
           },
         ),
         noteRouteFanOutReader: createMemoryNoteRouteFanOutReader(backend),
-        noteRouteResolver: createMemoryNoteRouteStore(backend),
+        noteRouteStore: createMemoryNoteRouteStore(backend),
         publicNoteProjectionWriter:
           createMemoryPublicNoteProjectionWriter(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),

@@ -1,5 +1,6 @@
 import { readNotePurgeTurn } from "../cleanup/notePurgeFanOut";
 import {
+  NOTE_OWNER_PURGE_TASK_KIND,
   STORAGE_OWNER_DELETE_TASK_KIND,
   USAGE_USER_CLEANUP_TASK_KIND,
 } from "../cleanup/participants";
@@ -14,6 +15,11 @@ import {
   deleteBackupRecordsForNote,
   NOTE_BACKUP_DELETE_TASK_KIND,
 } from "../integration/deleteBackupRecordsForNote";
+import { deleteNotesForOwner } from "../note/deleteNotesForOwner";
+import {
+  purgeExpiredTrash,
+  TRASH_EXPIRY_TASK_KIND,
+} from "../note/purgeExpiredTrash";
 import {
   SCOPE_TASK_LEASE_MS,
   type ScopeTask,
@@ -130,7 +136,20 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     });
     await settleCleanupTurn(container, task, turn);
   },
+  [NOTE_OWNER_PURGE_TASK_KIND]: async (container, task) => {
+    const turn = await deleteNotesForOwner({
+      container,
+      input: { deletionOperationId: task.operationId, scope: task.scope },
+    });
+    await settleCleanupTurn(container, task, turn);
+  },
   [PERSONAL_CLEANUP_HANDOVER_TASK_KIND]: handOverPersonalCleanup,
+  // The retention sweep settles its own row: it re-arms for the rest of
+  // a full page, moves the row to the next deadline when nothing is due,
+  // and completes it only once the trash is empty.
+  [TRASH_EXPIRY_TASK_KIND]: async (container, task) => {
+    await purgeExpiredTrash({ container, input: { scope: task.scope } });
+  },
   // The `note.purged` followers settle their own rows: a turn either
   // re-arms the row it was claimed for or completes it, in the same
   // transaction as the page it reclaimed.

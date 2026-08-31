@@ -1,15 +1,16 @@
 import type { TrashedNote } from "@repo/core/domain/note/note";
-import type { RequestContainer } from "../di/types";
+import type { NotePurgeContainer } from "../di/types";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
+import { purgeNoteInternally } from "./purgeNote";
 
 /**
  * Scope-task kind carrying the retention sweep of one scope's trash.
  *
  * The row is armed by `trashNote` at the earliest `purgeAfter` of the
- * scope and re-armed by a turn that came back full; a turn that finds
- * nothing left completes it, because the next deadline is only known to
- * the note that sets it.
+ * scope, re-armed by a turn that came back full, moved to the next
+ * deadline by a turn that found nothing due, and completed only by a
+ * turn that found the trash empty.
  */
 export const TRASH_EXPIRY_TASK_KIND = "note.trashExpiryContinued";
 
@@ -35,36 +36,9 @@ export type PurgeExpiredTrashInput = Readonly<{
 
 export type PurgeExpiredTrashView = Readonly<{ purgedCount: number }>;
 
-/**
- * Seam for the purge half of the retention sweep.
- *
- * The sweep is neither of the two admissions `purgeNote` offers. It has
- * no actor — nobody asked for it, so `userRequest`'s permission gate has
- * no one to evaluate and a workspace note has no member to name — and it
- * has no cleanup barrier, so `scopeCleanup`'s `assertOwner` refuses it.
- * Reaching the saga therefore takes a third admission kind on
- * `PurgeNoteInput`, one that keeps only the checks retention needs (the
- * note is in this scope, at the version the enumeration read) and skips
- * both the actor and the barrier.
- *
- * Until that kind exists the driver is supplied by the caller. That is
- * deliberate rather than defaulted to a no-op: a sweep whose default
- * silently purges nothing would keep expired notes forever while
- * reporting success.
- */
-export type ExpiredNotePurge = (
-  container: RequestContainer,
-  target: Readonly<{
-    noteId: string;
-    expectedVersion: number;
-    scope: ScopeKey;
-  }>,
-) => Promise<void>;
-
 export type PurgeExpiredTrashArgs = Readonly<{
-  container: RequestContainer;
+  container: NotePurgeContainer;
   input: PurgeExpiredTrashInput;
-  purge: ExpiredNotePurge;
 }>;
 
 /**
@@ -77,19 +51,22 @@ export type PurgeExpiredTrashArgs = Readonly<{
  * the next turn.
  *
  * The page is bounded and reaching a short one is the proof there is
- * nothing left, which is the only condition that settles the row. A full
- * page re-arms the sweep for immediately after, and so does a page some
- * of whose notes refused to be purged — leaving those behind while
- * settling the row would drop them until the next note happened to be
- * trashed. The one outcome that must not breed a continuation is a page
- * where nothing at all could be purged: that would spin on a permanently
- * failing note, so the row is backed off instead and the schedule owns
- * the retry.
+ * nothing due. A full page re-arms the sweep for immediately after, and
+ * so does a page some of whose notes refused to be purged — leaving
+ * those behind while settling the row would drop them until the next
+ * note happened to be trashed. The one outcome that must not breed a
+ * continuation is a page where nothing at all could be purged: that
+ * would spin on a permanently failing note, so the row is backed off
+ * instead and the schedule owns the retry.
+ *
+ * Nothing due is not the same as nothing left. The turn then moves its
+ * row to the earliest deadline still in the trash, and only an empty
+ * trash completes it — the alarm is the trash's only driver, so a row
+ * completed while a note is still counting down would strand it.
  */
 export async function purgeExpiredTrash({
   container,
   input,
-  purge,
 }: PurgeExpiredTrashArgs): Promise<PurgeExpiredTrashView> {
   const limit = Math.min(
     Math.max(1, input.limit ?? TRASH_EXPIRY_BATCH_SIZE),
@@ -101,12 +78,7 @@ export async function purgeExpiredTrash({
     input.scope,
     (ctx) => ctx.noteRepository.listPurgeable(now, limit),
   );
-  const purgedCount = await purgeEachNote(
-    container,
-    input.scope,
-    purge,
-    targets,
-  );
+  const purgedCount = await purgeEachNote(container, input.scope, targets);
 
   await settle(container, input.scope, {
     targets: targets.length,
@@ -118,18 +90,21 @@ export async function purgeExpiredTrash({
 }
 
 async function purgeEachNote(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   scope: ScopeKey,
-  purge: ExpiredNotePurge,
   targets: readonly TrashedNote[],
 ): Promise<number> {
   let purgedCount = 0;
   for (const note of targets) {
     try {
-      await purge(container, {
-        noteId: note.id,
-        expectedVersion: note.version,
-        scope,
+      await purgeNoteInternally({
+        container,
+        input: {
+          kind: "retention",
+          noteId: note.id,
+          expectedVersion: note.version,
+          scope,
+        },
       });
       purgedCount += 1;
     } catch (cause) {
@@ -143,7 +118,7 @@ async function purgeEachNote(
 }
 
 async function settle(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   scope: ScopeKey,
   outcome: Readonly<{
     targets: number;
@@ -173,9 +148,25 @@ async function settle(
       });
       return;
     }
-    await ctx.scopeTaskScheduler.complete(
-      TRASH_EXPIRY_TASK_KIND,
-      TRASH_EXPIRY_OPERATION_ID,
-    );
+    // Nothing is due any more, so the row moves to the next note's
+    // deadline rather than being completed: `trashNote` only ever arms
+    // the earliest one it knows of, and a note whose window opens after
+    // the last trashing would otherwise wait for an unrelated note to
+    // be thrown away before anything looked at the trash again.
+    const nextDeadline = await ctx.noteRepository.findNextPurgeDeadline();
+    if (nextDeadline === null) {
+      await ctx.scopeTaskScheduler.complete(
+        TRASH_EXPIRY_TASK_KIND,
+        TRASH_EXPIRY_OPERATION_ID,
+      );
+      return;
+    }
+    await ctx.scopeTaskScheduler.schedule({
+      kind: TRASH_EXPIRY_TASK_KIND,
+      operationId: TRASH_EXPIRY_OPERATION_ID,
+      priority: ScopeTaskPriority.expiryCollection,
+      dueAt: nextDeadline,
+      payload: {},
+    });
   });
 }

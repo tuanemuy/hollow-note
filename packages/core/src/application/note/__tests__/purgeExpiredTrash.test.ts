@@ -1,19 +1,20 @@
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
 import { ScopeTaskPriority } from "@repo/core/application/ports/scopeTaskScheduler";
 import { describe, expect, it } from "vitest";
+import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import {
-  type ExpiredNotePurge,
   purgeExpiredTrash,
   TRASH_EXPIRY_BATCH_SIZE,
   TRASH_EXPIRY_OPERATION_ID,
   TRASH_EXPIRY_TASK_KIND,
 } from "../purgeExpiredTrash";
-import { purgeNote } from "../purgeNote";
+import { restoreNote } from "../restoreNote";
 import { trashNote } from "../trashNote";
 import {
   createPersonalNote,
   createTestHarness,
   OWNER,
+  storedNote,
   type TestHarness,
   userScope,
 } from "./editingHarness";
@@ -21,28 +22,10 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_MS = 30 * DAY_MS;
 
-/**
- * The retention sweep's purge driver, standing in for the admission kind
- * `PurgeNoteInput` does not have yet: these notes are personal, so their
- * owner is a principal `purgeNote`'s user path accepts, and the saga
- * that runs underneath is the real one.
- */
-const purgeAsOwner: ExpiredNotePurge = (container, target) =>
-  purgeNote({
-    container,
-    input: {
-      kind: "userRequest",
-      noteId: target.noteId,
-      userId: OWNER,
-      expectedVersion: target.expectedVersion,
-    },
-  });
-
 const sweep = (
   h: TestHarness,
   options: Readonly<{
     limit?: number;
-    purge?: ExpiredNotePurge;
     container?: TestHarness["container"];
   }> = {},
 ) =>
@@ -52,8 +35,40 @@ const sweep = (
       scope: userScope,
       ...(options.limit === undefined ? {} : { limit: options.limit }),
     },
-    purge: options.purge ?? purgeAsOwner,
   });
+
+/** Fails the route claim of the notes it matches, so they cannot purge. */
+const withBrokenRouteStore = (
+  h: TestHarness,
+  matches: (noteId: string) => boolean = () => true,
+): TestHarness["container"] => ({
+  ...h.container,
+  noteRouteStore: {
+    ...h.container.noteRouteStore,
+    beginPurge: async (
+      params: Parameters<typeof h.container.noteRouteStore.beginPurge>[0],
+    ) => {
+      if (matches(params.noteId)) {
+        throw new SystemError(
+          SystemErrorCode.DatabaseError,
+          "route store unavailable",
+        );
+      }
+      return h.container.noteRouteStore.beginPurge(params);
+    },
+  },
+});
+
+async function trashOne(
+  h: TestHarness,
+): Promise<Readonly<{ noteId: string; purgeAfter: Date }>> {
+  const noteId = await createPersonalNote(h);
+  const view = await trashNote({
+    container: h.container,
+    input: { noteId, userId: OWNER, expectedVersion: 0, excludingJobId: null },
+  });
+  return { noteId, purgeAfter: view.purgeAfter };
+}
 
 async function trashNotes(
   h: TestHarness,
@@ -182,15 +197,7 @@ describe("purgeExpiredTrash", () => {
     h.clock.advance(31 * DAY_MS);
 
     const view = await sweep(h, {
-      purge: async (container, target) => {
-        if (target.noteId === doomed) {
-          throw new SystemError(
-            SystemErrorCode.DatabaseError,
-            "route store unavailable",
-          );
-        }
-        await purgeAsOwner(container, target);
-      },
+      container: withBrokenRouteStore(h, (noteId) => noteId === doomed),
     });
 
     expect(view).toEqual({ purgedCount: 2 });
@@ -203,11 +210,7 @@ describe("purgeExpiredTrash", () => {
     await trashNotes(h, 2);
     h.clock.advance(31 * DAY_MS);
 
-    const view = await sweep(h, {
-      purge: async () => {
-        throw new SystemError(SystemErrorCode.DatabaseError, "unavailable");
-      },
-    });
+    const view = await sweep(h, { container: withBrokenRouteStore(h) });
 
     expect(view).toEqual({ purgedCount: 0 });
     expect(remainingNotes(h)).toBe(2);
@@ -229,6 +232,100 @@ describe("purgeExpiredTrash", () => {
 
     expect(view).toEqual({ purgedCount: 0 });
     expect(tasks(h)).toHaveLength(0);
+  });
+
+  it("UC-note-021: trashing arms the scope's alarm at the earliest deadline, not the newest one", async () => {
+    const h = createTestHarness();
+    const first = await trashOne(h);
+    h.clock.advance(DAY_MS);
+    const second = await trashOne(h);
+
+    expect(second.purgeAfter.getTime()).toBeGreaterThan(
+      first.purgeAfter.getTime(),
+    );
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: TRASH_EXPIRY_TASK_KIND,
+        operationId: TRASH_EXPIRY_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: first.purgeAfter,
+      }),
+    ]);
+  });
+
+  it("UC-note-021: the runner drives the sweep off that alarm and re-points it at the next deadline", async () => {
+    const h = createTestHarness();
+    const first = await trashOne(h);
+    h.clock.advance(DAY_MS);
+    const second = await trashOne(h);
+
+    h.clock.set(first.purgeAfter);
+    const firstRound = await runDueScopeTasks(h.workerContainer);
+
+    expect(firstRound.processed).toBe(1);
+    expect(h.backend.scope(userScope).notes.keys()).toEqual([second.noteId]);
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: TRASH_EXPIRY_TASK_KIND,
+        dueAt: second.purgeAfter,
+      }),
+    ]);
+
+    h.clock.set(second.purgeAfter);
+    const secondRound = await runDueScopeTasks(h.workerContainer);
+
+    expect(secondRound.processed).toBe(1);
+    expect(remainingNotes(h)).toBe(0);
+    expect(tasks(h)).toHaveLength(0);
+    expect(
+      h.logger.byLevel("warn").map((entry) => entry.message),
+    ).not.toContain(`[scope-tasks] no handler for ${TRASH_EXPIRY_TASK_KIND}`);
+  });
+
+  it("UC-note-021: a note still counting down keeps the alarm armed instead of settling it", async () => {
+    const h = createTestHarness();
+    const first = await trashOne(h);
+    h.clock.advance(DAY_MS);
+    await trashOne(h);
+    h.clock.set(first.purgeAfter);
+
+    const view = await sweep(h);
+
+    expect(view).toEqual({ purgedCount: 1 });
+    expect(tasks(h)).toHaveLength(1);
+  });
+
+  it("TC-note-350: a note restored between the enumeration and the transaction is left alone", async () => {
+    const h = createTestHarness();
+    const { noteId, purgeAfter } = await trashOne(h);
+    h.clock.set(purgeAfter);
+    let restored = false;
+    // The window opens after `listPurgeable` and closes when the purge's
+    // own transaction re-reads the note, so the restore is driven from
+    // the route read the admission makes in between.
+    const container: TestHarness["container"] = {
+      ...h.container,
+      noteRouteStore: {
+        ...h.container.noteRouteStore,
+        resolve: async (
+          id: Parameters<typeof h.container.noteRouteStore.resolve>[0],
+        ) => {
+          if (!restored) {
+            restored = true;
+            await restoreNote({
+              container: h.container,
+              input: { noteId, userId: OWNER, expectedVersion: 1 },
+            });
+          }
+          return h.container.noteRouteStore.resolve(id);
+        },
+      },
+    };
+
+    const view = await sweep(h, { container });
+
+    expect(view).toEqual({ purgedCount: 0 });
+    expect(storedNote(h, noteId)?.lifecycle).toBe("active");
   });
 
   it("does not touch the notes that are still active", async () => {

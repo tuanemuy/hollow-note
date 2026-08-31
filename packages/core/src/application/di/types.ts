@@ -137,11 +137,24 @@ export type NoteRouteFanOutReadView = Pick<
   "listByCreatedBy"
 >;
 /**
- * Where a note currently lives. Author redaction fixed its targets by
- * NoteId, and a note may have moved (or been purged) since, so the plane
- * it writes to is re-resolved per target rather than assumed.
+ * The ports a note purge is a saga over, and nothing else.
+ *
+ * A purge spans three stores that cannot share a transaction — the
+ * global route, the scope's own data, and the global public projection —
+ * and both planes have to be able to drive it: the screen purges one
+ * note, while the deletion cleanup and the retention sweep purge a
+ * scope's worth of them from the worker plane. Naming the trio as its
+ * own type is what lets `purgeNote` be reached from either container
+ * without the worker plane taking on the request-path viewer resolution
+ * it has no actor for (`RequestContainer` and `WorkerContainer` both
+ * satisfy it structurally).
  */
-export type NoteRouteResolver = Pick<NoteRouteStore, "resolve">;
+export type NotePurgeContainer = SharedDeps &
+  Readonly<{
+    scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
+    noteRouteStore: NoteRouteStore;
+    publicNoteProjectionWriter: PublicNoteProjectionWriter;
+  }>;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
   NoteRepository,
@@ -387,9 +400,17 @@ export type ExpirySweep = Readonly<{
  * a routing-catalog read that the manifest's transaction may not
  * enclose, which is why deletion continuations are worker-plane
  * consumers rather than request-path calls. Author redaction adds the
- * other two halves of that same fan-out: the route resolver that says
+ * other two halves of that same fan-out: `noteRouteStore`, which says
  * where each fixed target lives now, and the public projection, which is
  * global and therefore belongs to no scope's unit of work.
+ *
+ * `noteRouteStore` is the whole port rather than a `resolve` view
+ * because the route saga is what a purge *is*: the deletion cleanup and
+ * the retention sweep both purge notes from this plane, and neither can
+ * claim, abort or tombstone a route through a read (see
+ * {@link NotePurgeContainer}). Author redaction's use of it stays a
+ * `resolve`, by call and not by type.
+ *
  * `scopeTaskQueue` is the runner's only way to learn which scopes have
  * continuation work due — it reads, and the claim still happens inside
  * each scope's unit of work. `objectStorage` is here because reclaiming
@@ -420,7 +441,7 @@ export type WorkerContainer = SharedDeps &
     identityRemovalReceiptStore: IdentityRemovalReceiptStore;
     accountDeletionManifestStore: AccountDeletionManifestStore;
     noteRouteFanOutReader: NoteRouteFanOutReadView;
-    noteRouteResolver: NoteRouteResolver;
+    noteRouteStore: NoteRouteStore;
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;

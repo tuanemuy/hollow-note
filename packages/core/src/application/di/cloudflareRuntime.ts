@@ -477,7 +477,7 @@ export function createCloudflareRuntime(
           requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
         }),
         noteRouteFanOutReader: createD1NoteRouteFanOutReader({ session }),
-        noteRouteResolver: createD1NoteRouteStore({ session, clock }),
+        noteRouteStore: createD1NoteRouteStore({ session, clock }),
         publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         scopeTaskQueue: createCloudflareScopeTaskQueue({ session }),
         objectStorage,

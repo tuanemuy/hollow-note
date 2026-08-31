@@ -1,7 +1,9 @@
+import type { NotePurgeContainer } from "@repo/core/application/di/types";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
 import type { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { describe, expect, it } from "vitest";
+import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
 import {
   deleteNotesForOwner,
   NOTE_OWNER_PURGE_TASK_KIND,
@@ -41,7 +43,7 @@ const run = (
   options: Readonly<{
     scope?: ScopeKey;
     batchSize?: number;
-    container?: TestHarness["container"];
+    container?: NotePurgeContainer;
   }> = {},
 ) =>
   deleteNotesForOwner({
@@ -71,6 +73,14 @@ const trash = (h: TestHarness, noteId: string) =>
     container: h.container,
     input: { noteId, userId: OWNER, expectedVersion: 0, excludingJobId: null },
   });
+
+const acknowledged = (h: TestHarness): Promise<readonly string[] | undefined> =>
+  h.container.scopeUnitOfWorkProvider.run(
+    userScope,
+    async (ctx) =>
+      (await ctx.cleanupAdmission.describePersonalCleanup(OPERATION_ID))
+        ?.acknowledged,
+  );
 
 const tasks = (h: TestHarness, scope: ScopeKey = userScope) =>
   h.backend.scope(scope).scheduledTasks.values();
@@ -297,20 +307,42 @@ describe("deleteNotesForOwner", () => {
     await createPersonalNotes(h, 3);
     await beginCleanup(h);
     const limits: number[] = [];
-    const reader = h.container.noteReaderFor(userScope);
     const container = {
       ...h.container,
-      noteReaderFor: () => ({
-        ...reader,
-        listByOwner: (
-          owner: Parameters<typeof reader.listByOwner>[0],
-          lifecycle: Parameters<typeof reader.listByOwner>[1],
-          pagination: Parameters<typeof reader.listByOwner>[2],
-        ) => {
-          limits.push(pagination.limit);
-          return reader.listByOwner(owner, lifecycle, pagination);
-        },
-      }),
+      scopeUnitOfWorkProvider: {
+        run: <T>(
+          scope: Parameters<
+            typeof h.container.scopeUnitOfWorkProvider.run<T>
+          >[0],
+          callback: Parameters<
+            typeof h.container.scopeUnitOfWorkProvider.run<T>
+          >[1],
+        ) =>
+          h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+            callback({
+              ...ctx,
+              noteRepository: {
+                ...ctx.noteRepository,
+                listByOwner: (
+                  owner: Parameters<typeof ctx.noteRepository.listByOwner>[0],
+                  lifecycle: Parameters<
+                    typeof ctx.noteRepository.listByOwner
+                  >[1],
+                  pagination: Parameters<
+                    typeof ctx.noteRepository.listByOwner
+                  >[2],
+                ) => {
+                  limits.push(pagination.limit);
+                  return ctx.noteRepository.listByOwner(
+                    owner,
+                    lifecycle,
+                    pagination,
+                  );
+                },
+              },
+            }),
+          ),
+      },
     };
 
     await run(h, { batchSize: 5000, container });
@@ -359,6 +391,54 @@ describe("deleteNotesForOwner", () => {
     expect(second.status).toBe("settled");
     expect(second.purgedCount).toBe(0);
     expect(eventsOfType(h, "note.purged")).toHaveLength(3);
+  });
+
+  it("TC-note-076: the worker plane claims the continuation it armed and finishes the purge there", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, 5);
+    await beginCleanup(h);
+
+    const first = await deleteNotesForOwner({
+      container: h.workerContainer,
+      input: {
+        deletionOperationId: OPERATION_ID,
+        scope: userScope,
+        batchSize: 2,
+      },
+    });
+    expect(first.status).toBe("continued");
+    expect(remainingNotes(h)).toBe(3);
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    expect(round.processed).toBe(1);
+    expect(remainingNotes(h)).toBe(0);
+    expect(tasks(h)).toHaveLength(0);
+    expect(await acknowledged(h)).toContain("note");
+    expect(
+      h.logger.byLevel("warn").map((entry) => entry.message),
+    ).not.toContain(
+      `[scope-tasks] no handler for ${NOTE_OWNER_PURGE_TASK_KIND}`,
+    );
+  });
+
+  it("TC-note-074: the runner's own turns chain until the last note is gone", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, OWNER_PURGE_BATCH_SIZE + 2);
+    await beginCleanup(h);
+    await run(h, { batchSize: 1, container: h.workerContainer });
+
+    // Every turn is a claim of the row the previous one re-armed, so the
+    // count is the proof the chain is what carried the work: one turn
+    // for the first full batch and one for the two notes left over.
+    const rounds: number[] = [];
+    while (tasks(h).length > 0 && rounds.length < 6) {
+      rounds.push((await runDueScopeTasks(h.workerContainer)).processed);
+      h.clock.advance(1);
+    }
+
+    expect(rounds).toEqual([1, 1]);
+    expect(remainingNotes(h)).toBe(0);
   });
 
   it("refuses a command from an operation that does not own the scope", async () => {

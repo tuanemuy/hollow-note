@@ -1,21 +1,16 @@
 import type { Note } from "@repo/core/domain/note/note";
 import { NoteOwner } from "@repo/core/domain/note/valueObject";
+import { NOTE_OWNER_PURGE_TASK_KIND } from "../cleanup/participants";
 import {
   completePersonalCleanupIfDone,
   type ScopeCleanupTurn,
 } from "../cleanup/personalCleanup";
-import type { RequestContainer } from "../di/types";
+import type { NotePurgeContainer } from "../di/types";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
-import { purgeNote } from "./purgeNote";
+import { purgeNoteInternally } from "./purgeNote";
 
-/**
- * Scope-task kind carrying the rest of an owner-wide purge
- * (`note.ownerPurgeContinued`, spec/domains/index.md「継続要求」). One
- * row per cleanup operation, so a turn replayed after a lost response
- * rewrites the row instead of forking a second series.
- */
-export const NOTE_OWNER_PURGE_TASK_KIND = "note.ownerPurgeContinued";
+export { NOTE_OWNER_PURGE_TASK_KIND };
 
 /**
  * Notes one turn purges. The cap is about the CPU of a single alarm turn
@@ -41,7 +36,7 @@ export type DeleteNotesForOwnerView = ScopeCleanupTurn &
   Readonly<{ purgedCount: number }>;
 
 export type DeleteNotesForOwnerArgs = Readonly<{
-  container: RequestContainer;
+  container: NotePurgeContainer;
   input: DeleteNotesForOwnerInput;
 }>;
 
@@ -94,13 +89,19 @@ export async function deleteNotesForOwner({
 
   // Asked before anything is read: a command from an operation that no
   // longer owns this scope must not enumerate it, let alone purge it.
-  await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
-    ctx.cleanupAdmission.assertOwner(input.deletionOperationId),
+  // The enumeration shares that transaction rather than taking a read
+  // view of its own — the scope's repository is the one surface both
+  // planes reach, and a purge has to be drivable from either.
+  const page = await container.scopeUnitOfWorkProvider.run(
+    input.scope,
+    async (ctx) => {
+      await ctx.cleanupAdmission.assertOwner(input.deletionOperationId);
+      return ctx.noteRepository.listByOwner(owner, "all", {
+        page: 1,
+        limit: batchSize,
+      });
+    },
   );
-
-  const page = await container
-    .noteReaderFor(input.scope)
-    .listByOwner(owner, "all", { page: 1, limit: batchSize });
   const purgedCount = await purgeEachNote(container, input, page.items);
 
   return settle(container, input, {
@@ -117,14 +118,14 @@ export async function deleteNotesForOwner({
  * again from the start.
  */
 async function purgeEachNote(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   input: DeleteNotesForOwnerInput,
   notes: readonly Note[],
 ): Promise<number> {
   let purgedCount = 0;
   for (const note of notes) {
     try {
-      await purgeNote({
+      await purgeNoteInternally({
         container,
         input: {
           kind: "scopeCleanup",
@@ -147,7 +148,7 @@ async function purgeEachNote(
 }
 
 async function settle(
-  container: RequestContainer,
+  container: NotePurgeContainer,
   input: DeleteNotesForOwnerInput,
   outcome: Readonly<{
     targets: number;

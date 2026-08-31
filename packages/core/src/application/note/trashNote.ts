@@ -1,6 +1,7 @@
 import type { WithEventDrafts } from "@repo/core/domain/common/event";
 import type { NoteEvent } from "@repo/core/domain/note/events";
 import { type ActiveNote, Note } from "@repo/core/domain/note/note";
+import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ServiceArgs } from "../types";
 import {
@@ -14,6 +15,10 @@ import {
   type NoteTrashJobs,
   noNoteTrashJobs,
 } from "./jobs";
+import {
+  TRASH_EXPIRY_OPERATION_ID,
+  TRASH_EXPIRY_TASK_KIND,
+} from "./purgeExpiredTrash";
 import type { TrashedNoteView } from "./view";
 
 export type TrashNoteInput = Readonly<{
@@ -68,6 +73,33 @@ const recoverCanceledConversion = (
     : null;
 
 /**
+ * Points the scope's retention alarm at the deadline that comes first.
+ *
+ * The row is upserted on `(kind, operationId)` and the sweep is one per
+ * scope, so the deadline is re-read from the trash rather than taken
+ * from the note just trashed: writing this note's own `purgeAfter` would
+ * push an older note's deadline out every time something newer was
+ * thrown away, and a scope that keeps trashing would never reclaim
+ * anything. Reading it inside the same transaction is what makes the
+ * note just saved part of the answer.
+ */
+const armRetentionSweep = async (
+  ctx: ScopeUnitOfWorkContext,
+): Promise<void> => {
+  const deadline = await ctx.noteRepository.findNextPurgeDeadline();
+  if (deadline === null) {
+    return;
+  }
+  await ctx.scopeTaskScheduler.schedule({
+    kind: TRASH_EXPIRY_TASK_KIND,
+    operationId: TRASH_EXPIRY_OPERATION_ID,
+    priority: ScopeTaskPriority.expiryCollection,
+    dueAt: deadline,
+    payload: {},
+  });
+};
+
+/**
  * Moves a note to the trash (ED-09).
  *
  * One transaction carries all three writes the spec's steps 2–4 name —
@@ -76,6 +108,11 @@ const recoverCanceledConversion = (
  * order of the last two is not a preference: `Note.markConversionFailed`
  * accepts an `ActiveNote` only, so trashing first would leave the body
  * with no way back at all.
+ *
+ * The scope's retention alarm is armed in that same transaction. It is
+ * the only thing that ever reclaims this note, so a response lost
+ * between the trashing and the arming must not be able to leave the note
+ * with no deadline pointing at it.
  *
  * Step 2 of the shared cleanup — reclaiming the artifacts of an
  * already-succeeded child — has no effect here and is therefore not
@@ -146,6 +183,7 @@ export async function trashNote({
     const next = Note.trash(recovered?.entity ?? claimed.note, now);
     await ctx.noteRepository.save(next.entity, claimed.expectedVersion);
     await ctx.noteProjectionRevisionStore.bump(noteId);
+    await armRetentionSweep(ctx);
     ctx.collectEvents([...(recovered?.eventDrafts ?? []), ...next.eventDrafts]);
     return next.entity;
   });

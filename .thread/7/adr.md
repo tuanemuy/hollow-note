@@ -631,3 +631,78 @@ ADR-017 は `purgeNote` に route saga の全 phase（`beginPurge` → local del
 
 - 良い点: `run` の入れ子を作らずに spec の手順の意味（残作業がある限り 1 系列 1 行の継続が残る）を保てる
 - トレードオフ: 「バッチは進んだが継続が積まれていない」窓が開く。塞ぐには purge の transaction を呼び出し側が握れる形（ADR-023 の解消手順）が要る
+
+---
+
+## ADR-026: `purgeNote` の依存を構造的に絞り、内部 admission を両面から駆動できるようにする
+
+### Context
+
+ADR-023 は「完全削除を駆動できるのは request plane だけ」と結論し、`deleteNotesForOwner` / `purgeExpiredTrash` を `RequestContainer` に置いて `scopeTaskRunner` に登録しなかった。結果、`note.ownerPurgeContinued` は積まれるが受け手が居らず、退会・ワークスペース削除からノートを 1 件も回収できない状態が残った。同 ADR は解消手順を「`WorkerContainer` にポートを足すか、`purgeNote` の引数を構造的に絞る」と 2 案で書いている。
+
+### Decision
+
+**後者を採る。** `purgeNote` が本当に要求するのは saga の 3 ストア（scope UoW・`NoteRouteStore`・`PublicNoteProjectionWriter`）と `SharedDeps` だけで、`RequestContainer` の残り（`scopeRouter` / `noteReaderFor` / `workspaceReaderFor`）は `userRequest` の閲覧者解決にしか使わない。そこで
+
+- `application/di/types.ts` に `NotePurgeContainer`（`SharedDeps` + 上記 3 つ）を定義する。`RequestContainer` も `WorkerContainer` も構造的にこれを満たす
+- `purgeNote` は `PurgeNoteInput` 全体を受ける入口のまま残し、actor を名指ししない admission を `purgeNoteInternally(NotePurgeContainer, InternalPurgeNoteInput)` として切り出す
+- `WorkerContainer` の `noteRouteResolver`（`Pick<…, "resolve">`）を `noteRouteStore` 丸ごとに広げる。route の claim / abort / tombstone は読み取りでは書けない。author redaction の用途は呼び出しとして `resolve` のままにする
+- `deleteNotesForOwner` / `purgeExpiredTrash` は `NotePurgeContainer` を取り、`scopeTaskRunner` の `scopeTaskHandlers` に `note.ownerPurgeContinued` / `note.trashExpiryContinued` を登録する
+
+`deleteNotesForOwner` の列挙は `container.noteReaderFor(scope)` をやめ、`assertOwner` と同じ transaction の中で `ctx.noteRepository.listByOwner` を引く。読み取り view は request 面にしかないので、両面から届く唯一の面である scope UoW に寄せた。ADR-025 の「継続は別 transaction」は変わらない（`purgeNote` が自分の transaction を持つ以上、入れ子は依然禁止）。
+
+**ADR-023 の判断はこの ADR が上書きする。** ADR-017（`purgeNote` が public projection と tombstone を自分で駆動する）はそのまま有効で、変わったのは「その駆動が request plane に限られる」という前提だけである。
+
+### Consequences
+
+- 良い点: 退会の cleanup wave からノートが回収される。`PERSONAL_CLEANUP_COMMANDS` に `note` の行が書けるようになった
+- 良い点: `purgeNote` の依存が型で最小化され、worker 面が request 面の閲覧者解決を抱え込まずに済む
+- トレードオフ: `WorkerContainer` のポートが 1 つ広がったので `adapters/cloudflare/__tests__/runtimeComposition.test.ts` のキー一覧と両ランタイムの配線を触った
+- 既知の制限: `workspace.deleted` から `deleteNotesForOwner` を起動する経路はまだ無い。ワークスペース削除の local 側 3 フェーズ（`workspaceDeletionLocal`）は Membership / Invitation しか掃かず、そこに note の phase を足すのは削除サガ側の持ち分である
+
+---
+
+## ADR-027: 保持期限の purge は `retention` admission にし、Alarm は「最小の次期限」を scope から読み直して張り替える
+
+### Context
+
+ADR-024 は `purgeExpiredTrash` の purge を `ExpiredNotePurge` の継ぎ目にし、塞ぐには `PurgeNoteInput` の 3 つ目の admission 種別と、`trashNote` の `purgeAfter` upsert が要ると書いた。どちらも未実装で、本番の駆動経路が無かった。
+
+`ScopeTaskScheduler.schedule` は `(kind, operationId)` の upsert で、`dueAt` を無条件に入力値へ書き換える。したがって `trashNote` が「自分の `purgeAfter`」を積むと、新しいノートを捨てるたびに古いノートの期限が後ろへ押し出され、捨て続ける scope は永久に回収されない。spec が「**最小の** `purgeAfter` を upsert」と書いているのはこの点である。ところが `NoteRepository` には最小の `purgeAfter` を読む手段が無い。
+
+### Decision
+
+- **`PurgeNoteInput` に `retention` を足す。** actor も barrier も持たず、残るのは列挙が既に立てた 2 つの主張（このノートはこの scope に居る・この版である）だけ。operation ID は `sha256("trashExpiry:" + noteId)` の派生とする — sweep 自身に operation が無く、turn は自由に再実行されるので、重なった 2 turn は 1 つの purge を再開しなければならない
+- **`NoteRepository.findNextPurgeDeadline()` を足す**（ポート JSDoc + memory + cloudflare + conformance の 3 点セット、[ADR 026](../../spec/adr/026-port-contract-and-conformance.md)）。`listPurgeable` の JSDoc にも順序（`purgeAfter ASC, id ASC`）を明記し、conformance で固定した
+- **`trashNote` は保存と同じ transaction で、scope の最小期限を読み直して Alarm を張る。** 自分の `purgeAfter` を書かないのは上の理由による。ゴミ箱が空なら張らない
+- **`purgeExpiredTrash` は「due が 0 件」で `complete` せず、次の期限へ行を張り替える。** 完了するのはゴミ箱が空のときだけ。UC-note-021 の「残件または次期限に Alarm を設定する」がこの形で、`complete` だけだと「まだ期限前のノート」が、無関係なノートが捨てられるまで誰にも見られなくなる
+- 継ぎ目 `ExpiredNotePurge` は削除する。ADR-024 が「admission 種別ができるまで」と条件付きで置いたものなので、条件が満たされた時点で残す理由が無い
+
+### Consequences
+
+- 良い点: AC-10（保持期限による自動削除）が Alarm → runner → sweep → purge の実経路で成立する
+- 良い点: 「最小期限」を毎回読み直すので、復元・利用者による完全削除で期限集合が変わっても次の turn が自分で正しい位置へ張り替える。取りこぼしの回復に別の driver が要らない
+- トレードオフ: ゴミ箱に何か入っている限り scope に task 行が 1 本常駐する。行は 1 scope 1 本で、`dueAt` は最も近い期限なので、runner の tick が空振りするのは期限が来たときだけである
+- 既知の制限: TC-note-347（実行後に使用量が減っている）は `applyStorageDelta` が未実装のため依然書けない
+
+---
+
+## ADR-028: `participants.ts` の `note` を participant へ昇格する
+
+### Context
+
+ADR-021 / ADR-023 は「ack する実装が無いまま `participant` へ移せば、退会したアカウントが `deleting` のまま二度と完了しない」として `note` を `absent` に留めた。理由は `PERSONAL_CLEANUP_COMMANDS`（`WorkerContainer` を受け取る）に書ける行が無かったことである。
+
+### Decision
+
+ADR-026 で `deleteNotesForOwner` が `WorkerContainer` からそのまま呼べるようになったので、**`note` を `{ kind: "participant", taskKind: NOTE_OWNER_PURGE_TASK_KIND }` へ昇格する。** `NOTE_OWNER_PURGE_TASK_KIND` の定義は `participants.ts` へ移し、`deleteNotesForOwner` はそれを再輸出する（他の 2 参加者と同じ形。逆向きに import すると `personalCleanup` 経由で循環する）。
+
+`PERSONAL_CLEANUP_COMMANDS` の `note` は `commandKey` を渡さない。この turn は「列挙して壊す」ので、再配送は前回の残りを読むだけで収束し、抑止すべき「適用済み」状態が存在しない（`deleteFilesByOwner` / `deleteQuota` の `commandKey` は 1 回性のある turn のためのもの）。
+
+`tag` / `backup` / `job` / `localProjection` / `outbox` は ADR-021 のまま `absent` に据え置く — これらは scope 全体を掃く後始末が本当に無い。
+
+### Consequences
+
+- 良い点: 退会の barrier が「ノートも消えた」ことを実際に待つようになった。`REQUIRED_PERSONAL_CLEANUP_COMPONENTS` は `storage` / `usage` / `note` の 3 つ
+- 良い点: cleanup wave → `deleteNotesForOwner` → 継続 task → runner → `deleteNotesForOwner` の連鎖が閉じ、`note.ownerPurgeContinued` を積みっぱなしにする経路が無くなった
+- トレードオフ: 退会テストで barrier を手組みしていた箇所は、コンポーネント列を `REQUIRED_PERSONAL_CLEANUP_COMPONENTS` から取るよう直した。以後 participant が増えても手組み側が置いていかれない
