@@ -1,9 +1,8 @@
-import { NoteId, type NoteOwner } from "@repo/core/domain/note/valueObject";
+import { NoteId } from "@repo/core/domain/note/valueObject";
 import { ConflictError, SystemError, SystemErrorCode } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
 import type { ScopeTaskPayload } from "../ports/scopeTaskScheduler";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
-import { ScopeKey } from "../scope";
 
 /**
  * The shape every `note.purged` follower shares.
@@ -39,11 +38,6 @@ export type NotePurgeFanOutTurn = Readonly<{
    */
   deletionOperationId: string | null;
 }>;
-
-export const scopeOfNoteOwner = (owner: NoteOwner): ScopeKey =>
-  owner.type === "user"
-    ? ScopeKey.user(owner.userId)
-    : ScopeKey.workspace(owner.workspaceId);
 
 const corrupt = (detail: string): SystemError =>
   new SystemError(
@@ -124,12 +118,26 @@ export const assertNotePurgeAdmission = async (
 };
 
 /**
- * Re-arms this follower's own continuation inside the transaction that
- * deleted the page, so a lost response cannot drop the rest of the work.
+ * Ends one follower's turn, and is the whole of how the chain stops.
  *
- * The priority is the turn's provenance, not the follower's: a
- * deletion-driven turn is `securityCleanup` because the rows it reclaims
- * back an account deletion's barrier, and every other purge —
+ * A full page re-arms this follower's own continuation inside the
+ * transaction that deleted the page, so a lost response cannot drop the
+ * rest of the work. A short page instead `complete`s the continuation
+ * row in that same transaction — without it the scope-task runner would
+ * keep claiming a row whose work is already done, so the `complete` is
+ * as much part of the usecase as the delete
+ * (`spec/usecases/{tag,integration,storage}.md`).
+ *
+ * `complete` cannot drop unfinished work even though two drivers reach
+ * the same `(kind, operationId)` row independently — the relay
+ * redelivering `note.purged` takes no lease, the runner does. A turn
+ * reports a short page only once that note's rows are exhausted, so
+ * whichever driver settles last settles a turn that found nothing left
+ * to hand on.
+ *
+ * The priority of a re-arm is the turn's provenance, not the follower's:
+ * a deletion-driven turn is `securityCleanup` because the rows it
+ * reclaims back an account deletion's barrier, and every other purge —
  * user-emptied trash, retention sweep — is `expiryCollection`. Widening
  * class 0 to all of them would put an unbounded stream of ordinary
  * purges next to the deletion continuations, and class 0 has no
@@ -138,15 +146,21 @@ export const assertNotePurgeAdmission = async (
  * starvation guarantee of `spec/platform/index.md` rests on class 0
  * staying what `spec/database/index.md` says it is.
  */
-export const armNotePurgeContinuation = async (
+export const settleNotePurgeTurn = async (
   ctx: ScopeUnitOfWorkContext,
   params: Readonly<{
     kind: string;
     operationId: string;
     turn: NotePurgeFanOutTurn;
     now: Date;
+    /** Whether this turn read a full page, i.e. rows may remain. */
+    full: boolean;
   }>,
 ): Promise<void> => {
+  if (!params.full) {
+    await ctx.scopeTaskScheduler.complete(params.kind, params.operationId);
+    return;
+  }
   await ctx.scopeTaskScheduler.schedule({
     kind: params.kind,
     operationId: params.operationId,

@@ -107,8 +107,13 @@ type SaveStatus =
   | Readonly<{ kind: "dirty" }>
   | Readonly<{ kind: "saving" }>
   | Readonly<{ kind: "saved" }>
-  /** 通信エラー。ローカルへ退避したうえで再試行を出す。 */
-  | Readonly<{ kind: "failed"; message: string }>
+  /**
+   * 通信エラー。`stashed` は**実際に端末へ退避できたか**で、退避の鍵が
+   * `noteId` である以上、まだ作られていないノートでは偽になる。案内と
+   * 逃げ道（再試行 / ダウンロード）はこの値で分かれる — 退避していない
+   * のに「退避した」と告げると、利用者はそれを信じて画面を離れる。
+   */
+  | Readonly<{ kind: "failed"; message: string; stashed: boolean }>
   /** 他者の更新。上書きするか破棄するかを選ばせる。 */
   | Readonly<{ kind: "conflict" }>
   /** 変換・再生成のジョブが実行中。編集を受け付けず完了を待つよう案内する。 */
@@ -445,8 +450,21 @@ export function NoteEditorIsland({
       case "WORKSPACE_INSUFFICIENT_ROLE":
         return { kind: "blocked", message };
       default:
-        return { kind: "failed", message };
+        // 退避したかどうかを知っているのは `writeDraft` を呼ぶ側だけなので、
+        // ここでは「していない」から始める。
+        return { kind: "failed", message, stashed: false };
     }
+  };
+
+  /**
+   * `locked` / `blocked` は面ごと凍っている状態なので、進行を語る表示
+   * （`idle` / `saved`）で上書きしない。往復の途中で権限を失った・ジョブに
+   * 掴まれたと分かったときに、その事実を「保存済み」が消してしまう。
+   */
+  const setProgressStatus = (next: SaveStatus): void => {
+    setStatus((current) =>
+      current.kind === "locked" || current.kind === "blocked" ? current : next,
+    );
   };
 
   /**
@@ -596,7 +614,14 @@ export function NoteEditorIsland({
           rememberIdentity({ kind: "existing", noteId, version });
           nextSkipped = applied.skipped.map((entry) => entry.path);
         }
-        settleSaved(sent, appliedTitle);
+        // サーバーが拒んだ経路が 1 つでもあれば、手元の経路表はもう
+        // サーバーの木と噛み合っていない。載せ直して噛み合わせ直す。
+        if (nextSkipped.length === 0 || !(await reseedIfUnchanged(sent))) {
+          settleSaved(sent, appliedTitle, nextSkipped);
+        } else {
+          setSavedAt(new Date());
+          setProgressStatus({ kind: "saved" });
+        }
       } else if (sent.body !== savedBody) {
         const saved = await saveBody({
           data: {
@@ -613,14 +638,13 @@ export function NoteEditorIsland({
         rememberIdentity({ kind: "existing", noteId, version });
         wysiwygConversionRef.current = false;
         nextRemoved = saved.removed;
-        if (mode === "visual") {
-          // 丸ごと送ったあとの経路表は、サーバーがサニタイズ後に持つ木と
-          // 噛み合わない。面ごと正本を載せ直してから確定させる。
-          await reseedFromServer(mode);
-          setSavedAt(new Date());
-          setStatus({ kind: "saved" });
-        } else {
+        // 丸ごと送ったあとの経路表は、サーバーがサニタイズ後に持つ木と
+        // 噛み合わない。ビジュアルの面だけは載せ直して噛み合わせ直す。
+        if (mode !== "visual" || !(await reseedIfUnchanged(sent))) {
           settleSaved(sent, appliedTitle);
+        } else {
+          setSavedAt(new Date());
+          setProgressStatus({ kind: "saved" });
         }
       } else {
         settleSaved(sent, appliedTitle);
@@ -641,14 +665,18 @@ export function NoteEditorIsland({
       return true;
     } catch (error) {
       const next = classify(error);
-      setStatus(next);
       const failed = identityRef.current;
+      // 退避の鍵は `noteId` なので、まだ作られていないノートでは退避
+      // そのものが成立しない。告げる文言と逃げ道はその事実に従わせる。
       if (failed.kind === "existing" && next.kind === "failed") {
         writeDraft(failed.noteId, {
           html: sent.body,
           title: sent.title,
           savedAt: Date.now(),
         });
+        setStatus({ ...next, stashed: true });
+      } else {
+        setStatus(next);
       }
       return false;
     }
@@ -670,22 +698,57 @@ export function NoteEditorIsland({
    * 保存の確定。**受け取るのは送った写しだけ**で、面の「いまの値」は
    * ここから読まない（`EditorSnapshot` の JSDoc）。タイトルだけは応答の
    * 正規化後の値を取る。
+   *
+   * `skippedPaths` はサーバーが拒んだ経路（`pathNotFound` /
+   * `contentChanged`）。拒まれた経路はサーバー側で**一切適用されていない**
+   * ので、新しい基準に取り込んではならない — 取り込むと、次にその経路を
+   * 編集したときの `expected` が一度も適用されていない文字列になり、以後
+   * その経路は何度打っても `contentChanged` で落ち続ける。
    */
-  const settleSaved = (sent: EditorSnapshot, appliedTitle: string): void => {
+  const settleSaved = (
+    sent: EditorSnapshot,
+    appliedTitle: string,
+    skippedPaths: readonly string[] = [],
+  ): void => {
     rememberSaved(appliedTitle, sent.body);
     if (sent.textNodes !== null) {
       // ビジュアルの面は本文 state を動かさないので、確定済みと同じ値へ
       // 揃える（揃えないと `dirty` が下りない）。面は組み直さない。
       setBody(sent.body);
-      // 新しい基準は**送った経路表**である。往復のあいだに打った文字は
-      // まだサーバーに無いので、その差はそのまま次の保存へ残す。
-      visualOriginal.current = sent.textNodes;
+      // 新しい基準は**送って通った経路表**である。往復のあいだに打った
+      // 文字はまだサーバーに無いので、その差はそのまま次の保存へ残す。
+      const applied = new Map(sent.textNodes);
+      for (const path of skippedPaths) {
+        const previous = visualOriginal.current.get(path);
+        if (previous === undefined) applied.delete(path);
+        else applied.set(path, previous);
+      }
+      visualOriginal.current = applied;
       setVisualDirty(
-        diffTextNodeEdits(sent.textNodes, visualCurrent.current).length > 0,
+        diffTextNodeEdits(applied, visualCurrent.current).length > 0,
       );
     }
     setSavedAt(new Date());
     setStatus({ kind: "saved" });
+  };
+
+  /**
+   * 面ごと正本を載せ直す（`reseedFromServer`）が、**面がまだ写しと同じ値の
+   * ままのときだけ**行う。載せ直しは確定ではなく置き換えなので、往復の
+   * あいだに打った文字をそのまま捨ててしまう — 写しの規則
+   * （`EditorSnapshot`）の逆向きである。
+   *
+   * 載せ直せなかったときは、その保存を送った写しで確定させるだけにする。
+   * 面の値と確定済みの値が食い違ったまま残るので、次の保存は経路単位では
+   * なく丸ごと送る枝に落ち（`takeSnapshot` の分岐）、往復中の打鍵をそこで
+   * 拾う。打鍵の無い往復が 1 回あれば載せ直しが通って噛み合いが戻る。
+   *
+   * 載せ直せたら `true`。占有は呼び出し元がすでに取っている。
+   */
+  const reseedIfUnchanged = async (sent: EditorSnapshot): Promise<boolean> => {
+    if (takeSnapshot().body !== sent.body) return false;
+    await reseedFromServer(mode);
+    return true;
   };
 
   const [, submitSave, isSubmitting] = useActionState(
@@ -708,6 +771,14 @@ export function NoteEditorIsland({
    * たびにそれらが暗くなると、「打てるが太字にできない」状態になる。
    */
   const busy = activity.kind !== "idle" || isSubmitting || uploading;
+
+  /**
+   * 新規作成の初回保存が落ちたまま（退避も成立していない）。もう一度
+   * 送ると白紙のノートが 1 件増えるだけなので、保存の入口をすべて閉じる
+   * （自動保存は `failed` から自力で再開しない）。残す逃げ道は
+   * 「内容をダウンロード」で、失敗の Alert が出している。
+   */
+  const creationFailed = status.kind === "failed" && !status.stashed;
 
   // 自動保存（ED-08）。落ち着いてから 1 回だけ走らせる。
   //
@@ -795,11 +866,7 @@ export function NoteEditorIsland({
         setStatus(classify(error));
         return;
       }
-      setStatus((current) =>
-        current.kind === "locked" || current.kind === "blocked"
-          ? current
-          : { kind: "idle" },
-      );
+      setProgressStatus({ kind: "idle" });
     });
   };
 
@@ -808,6 +875,11 @@ export function NoteEditorIsland({
    * 失敗は投げる — 呼び出し元によって「モードを切り替えない」と「保存は
    * 通ったが面を載せ直せなかった」で扱いが違う。占有は呼び出し元が
    * すでに取っている。
+   *
+   * 引き直した正本が `canEdit === false` を告げたらその場で `blocked` に
+   * する。載せ直しは権限喪失を**次の保存を待たずに**知れる唯一の機会で、
+   * 見送ると面はふつうに書ける状態で載り、そこから書いた分は保存できずに
+   * ダウンロードするしか残らない。
    */
   const reseedFromServer = async (next: EditorMode): Promise<void> => {
     const current = identityRef.current;
@@ -819,6 +891,9 @@ export function NoteEditorIsland({
       version: latest.version,
     });
     seedMode(next, latest.title, latest.html);
+    if (!latest.canEdit) {
+      setStatus({ kind: "blocked", message: EDIT_PERMISSION_LOST });
+    }
   };
 
   const seedMode = (
@@ -900,6 +975,13 @@ export function NoteEditorIsland({
         return;
       }
       rememberIdentity({ kind: "existing", noteId, version: latest.version });
+      // 引き直した正本が権限喪失を告げたら、どちらの枝へも進まない
+      // （`reseedFromServer` と同じ理由）。上書きは保存が必ず拒まれ、
+      // 破棄は書きかけを捨てるだけになる。
+      if (!latest.canEdit) {
+        setStatus({ kind: "blocked", message: EDIT_PERMISSION_LOST });
+        return;
+      }
       if (keepLocal) {
         rememberSaved(latest.title, latest.html);
         setTitle(local.title);
@@ -951,7 +1033,7 @@ export function NoteEditorIsland({
           version: restored.version,
         });
         await reseedFromServer(mode);
-        setStatus({ kind: "saved" });
+        setProgressStatus({ kind: "saved" });
         setSavedAt(new Date());
         setRevisions(null);
       } catch (error) {
@@ -1162,10 +1244,13 @@ export function NoteEditorIsland({
 
         <SaveIndicator status={status} dirty={dirty} savedAt={savedAt} />
 
+        {/* 破棄も版を進めうる往復（正本の引き直し）なので、面ごと凍って
+            いるあいだは落とす。押せると、権限を失ったノートで唯一操作
+            できるボタンとして残ってしまう。 */}
         <button
           type="button"
           onClick={discard}
-          disabled={!dirty || busy}
+          disabled={!dirty || busy || !editable}
           className="inline-flex h-8 items-center rounded-pill px-3 text-sm font-medium text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
         >
           破棄
@@ -1308,20 +1393,41 @@ export function NoteEditorIsland({
             tone="error"
             title="保存できませんでした"
             actions={
-              <button
-                type="button"
-                className={smallPrimaryClass}
-                disabled={busy}
-                onClick={() => {
-                  void runExclusive({ kind: "saving" }, () => commit(true));
-                }}
-              >
-                再試行
-              </button>
+              // 退避できていない = ノートがまだ作られていない、という
+              // ことなので再試行を出さない。作成は冪等ではなく（冪等鍵は
+              // 作成そのものの持ち分で、この画面からは運べない）、応答が
+              // 届かなかった往復の結果を画面から知る術も無いため、押す
+              // たびに白紙のノートが 1 件ずつ増える。逃げ道は
+              // 「権限喪失」と同じダウンロードにする。
+              status.stashed ? (
+                <button
+                  type="button"
+                  className={smallPrimaryClass}
+                  disabled={busy}
+                  onClick={() => {
+                    void runExclusive({ kind: "saving" }, () => commit(true));
+                  }}
+                >
+                  再試行
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={smallGhostClass}
+                  onClick={() => {
+                    const snapshot = takeSnapshot();
+                    downloadBody(snapshot.title, snapshot.body);
+                  }}
+                >
+                  内容をダウンロード
+                </button>
+              )
             }
           >
-            {status.message}
-            内容はこの端末に退避したので、次に開いたときに復元できます。
+            {status.message}{" "}
+            {status.stashed
+              ? "内容はこの端末に退避したので、次に開いたときに復元できます。"
+              : "ノートがまだ作られていないため、内容はこの端末に退避できていません。ダウンロードして残してください。"}
           </Alert>
         ) : null}
 
@@ -1355,8 +1461,8 @@ export function NoteEditorIsland({
               </>
             }
           >
-            このノートは取り込んだ HTML
-            を保っています。エディタが解釈できない装飾のほか、取り込んだ外部スタイルシートとその取り込み元の記録も失われることがあります。保存の直前に版が記録されるので、あとから戻せます。
+            このノートは書かれたままの HTML
+            を保っています。エディタが解釈できない装飾のほか、本文に埋め込まれたスタイルシート（取り込んだ外部スタイルシートとその取り込み元の記録を含む）も失われます。保存の直前に版が記録されるので、あとから戻せます。
           </Alert>
         ) : null}
 
@@ -1369,7 +1475,7 @@ export function NoteEditorIsland({
                 <button
                   type="button"
                   className={smallPrimaryClass}
-                  disabled={busy}
+                  disabled={busy || creationFailed}
                   onClick={() => {
                     // 保存と切り替えは版を進めうる往復 2 つなので、直列に
                     // 並べて 1 つずつ占有を取る。保存が通らなかったら
@@ -1407,8 +1513,9 @@ export function NoteEditorIsland({
             role="status"
           >
             <ul>
-              {removed.map((entry) => (
-                <li key={`${entry.kind}:${entry.name}:${entry.reason}`}>
+              {removed.map((entry, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: 除去の一覧は出現ごとに 1 件積む派生値で、同じ要素が 2 つあれば `kind` / `name` / `reason` の 3 列は必ず一致する。並べ替えも部分更新も起きない。
+                <li key={`${index}:${entry.kind}:${entry.name}`}>
                   {REMOVED_KIND_LABEL[entry.kind] ?? entry.kind}「{entry.name}
                   」— {entry.reason}
                 </li>
@@ -1424,7 +1531,7 @@ export function NoteEditorIsland({
             role="status"
           >
             本文の構造が変わったため、{skipped.length}{" "}
-            か所の書き換えを適用できませんでした。画面を読み直してからやり直してください。
+            か所の書き換えを適用できませんでした。最新の本文で編集欄を読み直すので、必要ならもう一度書き換えてください。
           </Alert>
         ) : null}
 
@@ -1636,7 +1743,7 @@ export function NoteEditorIsland({
           </span>
           <button
             type="submit"
-            disabled={!editable || busy}
+            disabled={!editable || busy || creationFailed}
             aria-busy={busy}
             className="inline-flex h-9 items-center rounded-pill bg-accent px-4 text-sm font-medium text-bg transition-colors hover:bg-accent-hover active:bg-accent-pressed disabled:opacity-55"
           >
@@ -1668,6 +1775,14 @@ const composeEditedHtml = (
   }
   return template.innerHTML;
 };
+
+/**
+ * 正本を引き直したときに `canEdit === false` だった場合の案内（ED-08 の
+ * 「権限喪失」）。保存の応答から来る `blocked` と違い、ここには元になる
+ * エラーが無いので文言を持つ。
+ */
+const EDIT_PERMISSION_LOST =
+  "このノートを編集する権限が失われました。書いた内容はダウンロードして持ち出せます。";
 
 const LEAVE_CONFIRM =
   "未保存の変更があります。このまま移動すると失われます。よろしいですか？";
@@ -1814,6 +1929,38 @@ const FORMAT_COMMANDS: readonly Readonly<{
   { label: "コード", command: "formatBlock", value: "pre" },
 ];
 
+const SAFE_LINK_SCHEMES: ReadonlySet<string> = new Set([
+  "http",
+  "https",
+  "mailto",
+]);
+
+const LINK_SCHEME_REJECTED =
+  "リンク先には http / https / mailto の URL か、同じサイト内の相対パスだけを指定できます。";
+
+/**
+ * 面へ載せてよいリンク先か。面は live DOM なので、`javascript:` の `href`
+ * はこの画面（アプリのオリジン）でそのまま実行される — 保存時のサニタイズ
+ * を通るので永続化はされないが、その面をクリックすればセッションの中で
+ * 走る。`data:` も同じ理由で通さない。
+ *
+ * ブラウザーは `href` の中の制御文字と空白を捨ててからスキームを読むので、
+ * 判定の前に同じように捨てる（`javascript:` の途中に改行やタブを挟んだ
+ * 値を素通りさせない）。
+ * スキームを名乗っていない値（相対パス・フラグメント・クエリ）は許す。
+ */
+const isSafeLinkUrl = (value: string): boolean => {
+  const normalized = Array.from(value)
+    .filter((char) => (char.codePointAt(0) ?? 0) > 0x20)
+    .join("")
+    .toLowerCase();
+  if (normalized.length === 0) return false;
+  const separator = normalized.indexOf(":");
+  const slash = normalized.indexOf("/");
+  if (separator < 0 || (slash >= 0 && slash < separator)) return true;
+  return SAFE_LINK_SCHEMES.has(normalized.slice(0, separator));
+};
+
 function FormatBar({
   disabled,
   onCommand,
@@ -1849,7 +1996,12 @@ function FormatBar({
         disabled={disabled}
         onClick={() => {
           const url = window.prompt("リンク先の URL");
-          if (url !== null && url.length > 0) onCommand("createLink", url);
+          if (url === null || url.length === 0) return;
+          if (!isSafeLinkUrl(url)) {
+            window.alert(LINK_SCHEME_REJECTED);
+            return;
+          }
+          onCommand("createLink", url);
         }}
         className="inline-flex h-[30px] items-center rounded-pill px-3 text-xs text-ink-secondary transition-colors hover:bg-surface hover:text-ink disabled:opacity-55"
       >
@@ -1940,6 +2092,13 @@ function downloadBody(title: string, html: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = `${title || "note"}.html`;
+  document.body.append(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  // `click()` が保証するのはダウンロードの**開始**だけである。同じタスクの
+  // 中で失効させると、ブラウザーによってはフェッチが始まる前に URL が
+  // 無効になり、権限を失ったときの唯一の逃げ道が黙って失敗する。
+  window.setTimeout(() => {
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }, 0);
 }

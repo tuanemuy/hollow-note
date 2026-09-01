@@ -365,7 +365,7 @@ move Saga の source snapshot作成とtarget stagingで、タグ付与を移送�
 ### 処理フロー
 
 1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認する（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）。そのうえで `UnitOfWorkProvider.run` で `TagAssignmentRepository.deleteByNote(noteId, 200)` を1回呼ぶ
-2. 200件なら同じUoWで`tag.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。イベントは発行しない（読み取りモデルの行は `note.purged` を処理するlocal/public projection writerが消すため）
+2. 200件なら同じUoWで`tag.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。200件未満なら、同じUoWで`tag.noteDeleteContinued`の継続task行を`ScopeTaskScheduler.complete`する — これが継続の連鎖を止める唯一の手段で、呼ばなければ scope-task runner が同じ行を claim し続ける。イベントは発行しない（読み取りモデルの行は `note.purged` を処理するlocal/public projection writerが消すため）
 
 手順 1 で `ScopeCleanupAdmissionStore.assertOwner`（「まだ掃除してよいか」を問う述語で、完了済みの障壁を拒否する）**は使えない**。障壁を完了させるのは Note コンポーネント自身の ack であり、その ack が待った purge は自分の transaction から `note.purged` を outbox へ入れて、リレーが**そのあと**配送する。したがって完了と fan-out は必ず競合し、`assertOwner` を通すと初回配送も継続も毎回拒否され、outbox 行は隔離、継続 task は `failed` になって付与が恒久的に取り残される。完了済みを通してよいのは、この追随者が何も ack しないからである — purge 済みノートの行を消すだけで receipt に触れないので、完了した receipt を `running` へ巻き戻すことがない。`deleteTagsForScope` のように障壁へ ack する経路は従来どおり `assertOwner` を使う。
 

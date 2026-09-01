@@ -6,7 +6,7 @@ import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
-import { ScopeKey } from "../scope";
+import { scopeOfNoteOwner } from "../scope";
 import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { type TrashedNoteListView, toTrashedNoteListItemView } from "./view";
@@ -52,10 +52,7 @@ export async function listTrashedNotes({
   input,
 }: ServiceArgs<ListTrashedNotesInput>): Promise<TrashedNoteListView> {
   const owner = await resolveOwner(container, input);
-  const scope =
-    owner.type === "user"
-      ? ScopeKey.user(owner.userId)
-      : ScopeKey.workspace(owner.workspaceId);
+  const scope = scopeOfNoteOwner(owner);
   const reader = container.noteReaderFor(scope);
   const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
   const page = Math.max(input.page ?? 1, 1);

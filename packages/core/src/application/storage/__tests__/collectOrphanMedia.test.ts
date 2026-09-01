@@ -774,6 +774,39 @@ describe("collectOrphanMedia", () => {
     expect(second.nextCursor).toBeNull();
   });
 
+  it("TC-storage-259: parses the bodies outside the transaction, which is held only for the reads the decision needs", async () => {
+    const h = createTestHarness();
+    const noteId = await seedNote(h, "note-1", "<p>no picture here</p>");
+    await seedRevision(h, {
+      id: "revision-1",
+      noteId,
+      html: "<p>nor here</p>",
+    });
+    await seedFile(h, { id: "file-1", noteId, ageMs: 31 * DAY_MS });
+
+    const openWhileParsing: boolean[] = [];
+    const view = await collectOrphanMedia({
+      container: {
+        ...h.workerContainer,
+        htmlProcessor: {
+          extractExternalReferences: (html) => {
+            openWhileParsing.push(h.backend.transactions.inTransaction());
+            return h.workerContainer.htmlProcessor.extractExternalReferences(
+              html,
+            );
+          },
+        },
+      },
+      input: { scope },
+    });
+
+    expect(view.collectedCount).toBe(1);
+    // The current body and the one retained revision — both parsed with
+    // no unit of work open, so a scope object is not held for the whole
+    // turn's parsing budget.
+    expect(openWhileParsing).toEqual([false, false]);
+  });
+
   it("TC-storage-028: spares a candidate whose body it cannot read and finishes the rest of the page", async () => {
     const h = createTestHarness();
     const unreadable = await seedNote(h, "note-1", "<p>unreadable body</p>");

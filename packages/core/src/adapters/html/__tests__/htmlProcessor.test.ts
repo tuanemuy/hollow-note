@@ -375,6 +375,98 @@ const sanitizeCases: readonly SanitizeCase[] = [
       { kind: "css", name: "position" },
     ],
   },
+  // Inside an unquoted `url(` the browser is not tokenising any more: it
+  // reads code points to the `)`, so comment and string notation written
+  // there is part of the URL and the `;` after the `)` still ends the
+  // declaration. A scan that took the `/*` for a comment lost that `;` and
+  // read the overlay as part of one `background` declaration.
+  {
+    tc: "TC-note-707",
+    title: "drops position after an unclosed comment opened inside url()",
+    input: '<p style="background:url(x/*);position:fixed">x</p>',
+    html: '<p style="background:url(x/*);">x</p>',
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title:
+      "drops position after an unclosed comment opened inside url() in a style element",
+    input: "<style>.a{background:url(x/*);position:fixed}</style>",
+    present: ["background:url(x/*);"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-707",
+    title: "drops position after a comment closed only outside url()",
+    input: '<p style="background:url(/*)*/;position:fixed">x</p>',
+    html: '<p style="background:url(/*)*/;">x</p>',
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title:
+      "drops position between a url() comment and the declaration after it",
+    input: "<style>.a{background:url(/*)*/;position:fixed;color:red}</style>",
+    present: ["background:url(/*)*/;", "color:red"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position hidden behind url() inside a nested at-rule",
+    input:
+      "<style>@media print{.a{background:url(y/*);position:fixed}}</style>",
+    present: ["@media print{", "background:url(y/*);"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after a url() whose ident is written escaped",
+    // `\75 rl(` is a url-token to a browser, so the `url` the scan matches
+    // has to be the escape-resolved ident and not the source spelling.
+    input: "<style>.a{background:\\75 rl(x/*);position:fixed}</style>",
+    present: ["background:\\75 rl(x/*);"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  // A quote right after the `(` is the one branch where the browser keeps
+  // tokenising, so the string has to stay a string here.
+  {
+    tc: "TC-note-707",
+    title: "drops position after a double-quoted url()",
+    input: '<style>.a{background:url("x/*");position:fixed}</style>',
+    present: ['background:url("x/*");'],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-707",
+    title: "drops position after a single-quoted url()",
+    input: "<p style=\"background:url('x/*');position:fixed\">x</p>",
+    html: "<p style=\"background:url('x/*');\">x</p>",
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-710",
+    title: "keeps a url() whose value contains a semicolon",
+    // The url-token is one lexeme, so the `;` inside it is not a terminator
+    // and the declaration after it is not invented.
+    input: '<p style="background:url(a;b);color:red">x</p>',
+    html: '<p style="background:url(a;b);color:red">x</p>',
+    noRemovals: true,
+  },
+  {
+    tc: "TC-note-710",
+    title: "keeps a url() an escaped paren carries past its first close",
+    // The escape is the one thing still read inside a url-token, so the
+    // `)` it swallows does not end the token and the `position` spelled
+    // after it is part of the URL rather than a declaration.
+    input: '<p style="background:url(a\\);position:fixed);color:red">x</p>',
+    html: '<p style="background:url(a\\);position:fixed);color:red">x</p>',
+    noRemovals: true,
+  },
   {
     tc: "TC-note-709",
     title: "keeps a property a comment splits, which no browser resolves",
@@ -637,6 +729,10 @@ describe("HtmlProcessor.process — ADP-note-001 is a fixed point", () => {
     "<style>.a{background:url\\(a</style>",
     '<style>.a{content:\\"</style>',
     "<style>.a{content:\\</style>",
+    // A url-token the input never closes: the scan runs to the end without
+    // a terminator, so none may be written back.
+    "<style>.a{background:url(x/*</style>",
+    "<style>.a{background:url(x/*)</style>",
   ];
 
   it.each(inputs.map((input, index) => ({ index, input })))(

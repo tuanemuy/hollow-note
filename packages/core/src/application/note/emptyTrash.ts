@@ -7,7 +7,7 @@ import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/wor
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
 import { isConflictError, isNotFoundError, isValidationError } from "../errors";
-import { ScopeKey } from "../scope";
+import { type ScopeKey, scopeOfNoteOwner } from "../scope";
 import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { jobScopeOf, type NoteJobScope } from "./jobs";
@@ -109,10 +109,7 @@ export async function emptyTrash({
   jobs = noNoteBulkPurgeJobs,
 }: EmptyTrashArgs): Promise<EmptyTrashView> {
   const owner = await resolveOwner(container, input);
-  const scope =
-    owner.type === "user"
-      ? ScopeKey.user(owner.userId)
-      : ScopeKey.workspace(owner.workspaceId);
+  const scope = scopeOfNoteOwner(owner);
   const reader = container.noteReaderFor(scope);
   const total = await reader.countByOwner(owner, "trashed");
 

@@ -8,7 +8,7 @@ import { NoteId, type NoteOwner } from "@repo/core/domain/note/valueObject";
 import type { RequestContainer } from "../di/types";
 import { ConflictError, NotFoundError } from "../errors";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
-import { ScopeKey } from "../scope";
+import type { ScopeKey } from "../scope";
 import { noteAccessPolicy, viewerFor } from "./accessControl";
 
 /**
@@ -55,10 +55,7 @@ export type EditableNote = Readonly<{
   note: Note;
 }>;
 
-export const scopeOfOwner = (owner: NoteOwner): ScopeKey =>
-  owner.type === "user"
-    ? ScopeKey.user(owner.userId)
-    : ScopeKey.workspace(owner.workspaceId);
+export { scopeOfNoteOwner as scopeOfOwner } from "../scope";
 
 /**
  * The capability a gate demands. `canEdit` covers the editing paths;

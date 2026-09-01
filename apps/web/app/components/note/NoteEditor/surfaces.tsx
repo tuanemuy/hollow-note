@@ -125,12 +125,15 @@ export function WysiwygSurface({
   //
   // この面も live DOM なので、載せる前に `scrubForSurface` を通す
   // （`baseline` には未保存の本文が入りうる — 退避の「復元する」）。
+  // `<style>` も落とす（この面だけが shadow root の外にあるため。
+  // `dropStyleElements` の JSDoc）。
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface === null) return;
     const template = document.createElement("template");
     template.innerHTML = baseline;
     scrubForSurface(template.content);
+    dropStyleElements(template.content);
     const next = template.innerHTML;
     if (surface.innerHTML !== next) {
       surface.innerHTML = next;
@@ -157,6 +160,21 @@ export function WysiwygSurface({
         aria-label="本文"
         className={editorSurfaceClass}
         onInput={(event) => onChange(event.currentTarget.innerHTML)}
+        // 貼り付けもシードと同じ scrub を通す。ブラウザーが既定で挿す
+        // `text/html` は他所の DOM そのままで、`on*` も `<style>` も
+        // 載っている。プレーンテキストしか無いときは既定の挿入に任せる。
+        onPaste={(event) => {
+          const html = event.clipboardData.getData("text/html");
+          if (html === "") return;
+          event.preventDefault();
+          const template = document.createElement("template");
+          template.innerHTML = html;
+          scrubForSurface(template.content);
+          dropStyleElements(template.content);
+          const surface = event.currentTarget;
+          document.execCommand("insertHTML", false, template.innerHTML);
+          onChange(surface.innerHTML);
+        }}
         onClick={(event) =>
           onSelectImage(
             event.target instanceof HTMLImageElement
@@ -197,14 +215,24 @@ const REPAIR_CHECK_DELAY_MS = 500;
  * 落とす対象は保存時のサニタイズ（`HtmlProcessor`）が落とすものの部分
  * 集合なので、面は「実際に保存される形」から外れる向きには動かない
  * （落ちるものはどのみち保存で落ちる）。逆に言えば面は保存後の姿では
- * ない — 許可リスト外の要素・属性・CSS 宣言（`position: fixed` を含む）
- * はここでは残るので、面の外へ出られないことはホスト側の `contain` が
- * 担保する。
+ * ない — 許可リスト外の要素・属性・CSS 宣言はここでは残る。
  *
- * 未保存の本文を live DOM へ入れる経路は 3 つとも（`WysiwygSurface` /
- * `VisualSurface` / `HtmlSurface` のプレビュー）これを通す。木を渡す形に
- * してあるのは、面ごとに通す位置が違うためである — ビジュアルは経路を
- * 数え終えたあと、HTML のプレビューは構文補正の判定を取ったあとになる。
+ * 残るものが面の外へ出ないことを担保しているのは**面ごとに違う**。
+ * ビジュアルと HTML のプレビューは shadow root なので、本文の
+ * `<style>` が持つセレクターの到達範囲はそこで閉じる。加えて HTML の
+ * プレビューはホストに `contain: layout paint` を掛けてある — これは
+ * レイアウトと描画の閉じ込め（`position: fixed` の包含ブロックになる）
+ * であって、**セレクターの到達範囲は閉じない**。WYSIWYG だけは
+ * shadow root でも `contain` でもないので、`<style>` を別途落とす
+ * （`dropStyleElements`）。
+ *
+ * 未保存の本文が live DOM へ入る経路はすべてこれを通す — 3 つの面の
+ * シードに加え、WYSIWYG の貼り付けも通る。木を渡す形にしてあるのは、
+ * 面ごとに通す位置が違うためである — ビジュアルは経路を数え終えたあと、
+ * HTML のプレビューは構文補正の判定を取ったあとになる。面へ markup を
+ * 差し込む残り 2 経路（`insertHTML` の仮の要素とメディア、`createLink`）
+ * は親（`editor.tsx`）が組み立てる値で、属性は組み立てる側が
+ * エスケープし、URL は組み立てる側がスキームで絞る。
  */
 const UNSAFE_PREVIEW_ELEMENTS = new Set([
   "script",
@@ -243,6 +271,28 @@ const scrubForSurface = (root: ParentNode): void => {
         element.removeAttribute(attribute.name);
       }
     }
+  }
+};
+
+/**
+ * WYSIWYG の面だけが追加で落とすもの。`<style>` は保存時のサニタイズが
+ * **意図して残す**要素（ED-03 の「スタイルシートは本文に埋め込みます」）
+ * なので、これは `scrubForSurface` の部分集合の性質から外れる — 落とすと
+ * 面の内容がそのまま保存の元値になる以上、装飾が実際に失われる。
+ *
+ * それでも落とすのは、この面が shadow root の外にあるためである。HTML の
+ * `<style>` は挿入位置によらず**文書全体**に効くので、本文が持つ
+ * セレクターが編集画面の上部バー・保存ボタン・警告にそのまま当たる。
+ * 共有ワークスペースでは他のメンバーが書いた本文が自分の編集画面を
+ * 壊せる。
+ *
+ * 失われることは ED-04 の門（装飾が失われうる警告と、保存前に残る版）が
+ * 先に告げる — `<style>` を持つ本文は `mayLoseDecoration` に入るので、
+ * この面は警告を了解しないかぎり開かない（`NoteEditor/index.tsx`）。
+ */
+const dropStyleElements = (root: ParentNode): void => {
+  for (const element of Array.from(root.querySelectorAll("style"))) {
+    element.remove();
   }
 };
 

@@ -1,6 +1,6 @@
 import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
-import type { NoteId } from "@repo/core/domain/note/valueObject";
+import type { NoteHtml, NoteId } from "@repo/core/domain/note/valueObject";
 import type { StoredFilePurposeCursor } from "@repo/core/domain/storage/ports/storedFileRepository";
 import {
   type ObjectKey,
@@ -52,8 +52,9 @@ export const ORPHAN_MEDIA_OPERATION_ID = "storage.orphanMediaSweep";
  *
  * It does **not** bound the turn's CPU on its own: what costs CPU is a
  * body parse, and the number of those follows the number of distinct
- * notes on the page, not the number of files ({@link readNoteReferences}
- * parses the current body plus every retained revision). That bound is
+ * notes on the page, not the number of files ({@link readNoteBodies}
+ * reads the current body plus every retained revision, and
+ * {@link decideOrphans} parses each of them). That bound is
  * {@link ORPHAN_MEDIA_NOTE_BUDGET}'s job.
  */
 export const ORPHAN_MEDIA_BATCH_SIZE = 100;
@@ -259,8 +260,21 @@ type NoteReferences =
   | Readonly<{ kind: "urls"; urls: readonly string[] }>;
 
 /**
- * Every address one note still holds — in the body it shows now, and in
- * each revision that can still be restored.
+ * The same three answers before anything has been parsed: the bodies one
+ * note holds, read but not yet inspected.
+ *
+ * Splitting the answer in two is what keeps the parse out of the
+ * transaction ({@link sweepOnce}). Reading is the only half that needs
+ * the scope's tables; deciding is a pure function of these strings.
+ */
+type NoteBodies =
+  | Readonly<{ kind: "gone" }>
+  | Readonly<{ kind: "unreadable" }>
+  | Readonly<{ kind: "bodies"; htmls: readonly NoteHtml[] }>;
+
+/**
+ * Every body one note still holds — the one it shows now, and each
+ * revision that can still be restored.
  *
  * The revisions are part of the answer because a revision is a *live*
  * reference: `restoreNoteRevision` puts one of the newest
@@ -271,23 +285,19 @@ type NoteReferences =
  * restore succeeds and the image 404s. Twenty saved bodies span months,
  * so this is the ordinary case, not a corner of one.
  *
- * `extractExternalReferences` is deliberately not filtered through
- * `StorageUrlPolicy.isInternal` — an internal storage URL is exactly what
- * is being looked for (spec/usecases/storage.md#collectorphanmedia).
- *
  * The read is per *note*, not per file, and the caller holds the answer
  * for the rest of the turn: a page is usually one note's pictures, and
- * parsing its bodies once is what keeps the revisions from multiplying
- * the turn's CPU by the retention depth. Memoization is not itself a
+ * reading its bodies once is what keeps the revisions from multiplying
+ * the turn's work by the retention depth. Memoization is not itself a
  * bound, though — a page spread over as many notes as it has files
  * memoizes nothing — which is why the caller also caps how many notes one
- * turn reads ({@link ORPHAN_MEDIA_NOTE_BUDGET}).
+ * turn reads ({@link ORPHAN_MEDIA_NOTE_BUDGET}), and that cap is what
+ * bounds the bodies this turn holds in memory as well.
  */
-async function readNoteReferences(
-  container: OrphanMediaContainer,
+async function readNoteBodies(
   ctx: ScopeUnitOfWorkContext,
   noteId: NoteId,
-): Promise<NoteReferences> {
+): Promise<NoteBodies> {
   const versioned = await ctx.noteRepository.findById(noteId);
   if (versioned === null) {
     return { kind: "gone" };
@@ -300,16 +310,34 @@ async function readNoteReferences(
     noteId,
     NoteRevision.RETENTION,
   );
-  const urls = [
-    content.html,
-    ...revisions.map((revision) => revision.html),
-  ].flatMap((html) =>
-    container.htmlProcessor
-      .extractExternalReferences(html)
-      .map((reference) => reference.url),
-  );
-  return { kind: "urls", urls };
+  return {
+    kind: "bodies",
+    htmls: [content.html, ...revisions.map((revision) => revision.html)],
+  };
 }
+
+/**
+ * The addresses those bodies name. Pure, and deliberately run outside the
+ * transaction that read them ({@link sweepOnce}).
+ *
+ * `extractExternalReferences` is deliberately not filtered through
+ * `StorageUrlPolicy.isInternal` — an internal storage URL is exactly what
+ * is being looked for (spec/usecases/storage.md#collectorphanmedia).
+ */
+const referencesOf = (
+  container: OrphanMediaContainer,
+  bodies: NoteBodies,
+): NoteReferences =>
+  bodies.kind === "bodies"
+    ? {
+        kind: "urls",
+        urls: bodies.htmls.flatMap((html) =>
+          container.htmlProcessor
+            .extractExternalReferences(html)
+            .map((reference) => reference.url),
+        ),
+      }
+    : bodies;
 
 /**
  * Decides one candidate against what its own note holds.
@@ -332,6 +360,60 @@ const isOrphan = (
 };
 
 /**
+ * One candidate the read transaction got as far as: the file, and the
+ * bodies of the note that owns it. Everything needed to decide it, and
+ * nothing that needs the scope's tables again.
+ */
+type JudgedCandidate = Readonly<{
+  id: StoredFileId;
+  objectKey: ObjectKey;
+  noteId: NoteId;
+  bodies: NoteBodies;
+}>;
+
+/**
+ * Turns the bodies the transaction read into the list of files to
+ * delete. Runs **outside** the transaction: parsing a body is where this
+ * turn spends its CPU (up to `RETENTION + 1` bodies per note of up to
+ * `NoteHtml`'s 800,000 bytes each), and holding the scope open across
+ * that stalls every other request to the same scope object
+ * (spec/platform/index.md「実行予算と分割単位」).
+ *
+ * Moving it out costs no consistency: the reads that feed the decision —
+ * the listing, the note and its revisions — all happened inside the one
+ * transaction, and what is left here is a pure function of their result.
+ *
+ * A body that will not parse spares its file and the walk carries on,
+ * for the same reason a failed read does: losing the turn would stall
+ * the cursor on this page and hide everything behind it.
+ */
+const decideOrphans = (
+  container: OrphanMediaContainer,
+  judged: readonly JudgedCandidate[],
+): readonly StoredFileId[] => {
+  const byNote = new Map<string, NoteReferences>();
+  const orphans: StoredFileId[] = [];
+  for (const candidate of judged) {
+    try {
+      let references = byNote.get(candidate.noteId);
+      if (references === undefined) {
+        references = referencesOf(container, candidate.bodies);
+        byNote.set(candidate.noteId, references);
+      }
+      if (isOrphan(container, references, candidate.objectKey)) {
+        orphans.push(candidate.id);
+      }
+    } catch (cause) {
+      container.logger.error(
+        "[collectOrphanMedia] a file could not be judged",
+        { cause, fileId: candidate.id },
+      );
+    }
+  }
+  return orphans;
+};
+
+/**
  * Reclaims media that no body references any more (UC-storage-010,
  * spec/usecases/storage.md#collectorphanmedia).
  *
@@ -340,7 +422,7 @@ const isOrphan = (
  * inspected, and the boundary is inclusive — a file created exactly
  * `now - 30 days` is in the page. "Unreferenced" spans the note's whole
  * restorable history, not just the body it shows now
- * ({@link readNoteReferences}).
+ * ({@link readNoteBodies}).
  *
  * No turn ever settles the row as `failed`: a turn that cannot finish
  * logs and re-arms itself for the next day, keeping the position it
@@ -353,10 +435,12 @@ const isOrphan = (
  * media belongs to whoever uploaded it and the sweep has no owner to
  * filter by.
  *
- * Deciding and deleting are separate transactions, and each deletion is a
- * transaction of its own, because one file that cannot be removed must
- * not take the rest of the page down with it (spec's「個々の失敗は記録
- * して継続」).
+ * A turn is three stages, and only the first and the last touch the
+ * scope: one transaction reads the page and the bodies of the notes it
+ * names, {@link decideOrphans} parses those bodies outside any
+ * transaction, and each deletion is then a transaction of its own,
+ * because one file that cannot be removed must not take the rest of the
+ * page down with it (spec's「個々の失敗は記録して継続」).
  *
  * The row is then moved rather than completed, and what decides where to
  * is the **listing**, not the harvest: a full page — or a page the note
@@ -448,11 +532,11 @@ async function sweepOnce(
         limit,
         input.cursor ?? null,
       );
-      const orphans: StoredFileId[] = [];
-      // One answer per note for the whole page: a page is usually one
-      // note's pictures, and each answer costs a note read, a revision
-      // listing and up to `RETENTION + 1` body parses.
-      const byNote = new Map<string, NoteReferences>();
+      const judged: JudgedCandidate[] = [];
+      // One read per note for the whole page: a page is usually one
+      // note's pictures, and each answer costs a note read and a revision
+      // listing.
+      const byNote = new Map<string, NoteBodies>();
       // The position of the last file this turn actually judged, which
       // is where the next one resumes. It is not simply the page's last
       // row, because the note budget can stop the walk mid-page.
@@ -464,37 +548,42 @@ async function sweepOnce(
         // `media` provenance carries its note by construction; the guard
         // is the listing contract restated where it is relied on.
         if (file.purpose === "media" && noteId !== null) {
-          const known = byNote.get(noteId);
-          if (known === undefined && notesRead >= ORPHAN_MEDIA_NOTE_BUDGET) {
+          let bodies = byNote.get(noteId);
+          if (bodies === undefined && notesRead >= ORPHAN_MEDIA_NOTE_BUDGET) {
             // Stopping here rather than reading one more note is what
-            // bounds the turn's CPU. `judgedThrough` has advanced over
+            // bounds the turn's cost. `judgedThrough` has advanced over
             // everything decided so far, so the continuation picks up
             // behind this file instead of re-reading the page.
             outOfBudget = true;
             break;
           }
-          try {
-            let references = known;
-            if (references === undefined) {
+          if (bodies === undefined) {
+            try {
               // Counted before the read, not after it: a note whose read
               // keeps failing is retried by every file that names it, and
               // counting attempts is what keeps that bounded too.
               notesRead += 1;
-              references = await readNoteReferences(container, ctx, noteId);
-              byNote.set(noteId, references);
+              bodies = await readNoteBodies(ctx, noteId);
+              byNote.set(noteId, bodies);
+            } catch (cause) {
+              // Spares the file and carries on. This transaction only
+              // reads, so a failed read leaves nothing half-written, and
+              // the alternative — losing the turn — would stall the
+              // cursor on this page and hide everything behind it
+              // forever.
+              container.logger.error(
+                "[collectOrphanMedia] a file could not be judged",
+                { cause, fileId: file.id },
+              );
             }
-            if (isOrphan(container, references, file.objectKey)) {
-              orphans.push(file.id);
-            }
-          } catch (cause) {
-            // Spares the file and carries on. This transaction only
-            // reads, so a failed read leaves nothing half-written, and
-            // the alternative — losing the turn — would stall the cursor
-            // on this page and hide everything behind it forever.
-            container.logger.error(
-              "[collectOrphanMedia] a file could not be judged",
-              { cause, fileId: file.id },
-            );
+          }
+          if (bodies !== undefined) {
+            judged.push({
+              id: file.id,
+              objectKey: file.objectKey,
+              noteId,
+              bodies,
+            });
           }
         }
         judgedThrough = { createdAt: file.createdAt, id: file.id };
@@ -502,14 +591,16 @@ async function sweepOnce(
       return {
         pageFull: candidates.length === limit,
         outOfBudget,
-        orphans,
+        judged,
         last: judgedThrough,
       };
     },
   );
 
+  const orphans = decideOrphans(container, scan.judged);
+
   let collectedCount = 0;
-  for (const fileId of scan.orphans) {
+  for (const fileId of orphans) {
     try {
       collectedCount += await container.scopeUnitOfWorkProvider.run(
         input.scope,

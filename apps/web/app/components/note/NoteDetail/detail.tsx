@@ -34,9 +34,11 @@ import { NoteDetailMenu } from "./menu";
  * P11-note.html）。
  *
  * **この画面の版（`version`）を握るのはここだけである。** タイトルの自動
- * 保存・表示スタイルの切替・ゴミ箱への移動はどれも `expectedVersion` を
- * 要求し、どれも成功のたびに版を 1 つ進める。所有者を分けると、片方が
- * 保存した直後にもう片方が古い版を送って必ず競合する。
+ * 保存・表示スタイルの切替・ゴミ箱への移動・元に戻すはどれも
+ * `expectedVersion` を要求し、どれも成功のたびに版を 1 つ進める。所有者を
+ * 分けると、片方が保存した直後にもう片方が古い版を送って必ず競合する。
+ * 握るだけでは足りず、その 1 か所の中で往復が**直列**である必要もある
+ * （`DetailActivity` / `runExclusive`。編集島の同名の仕組みと同じ形）。
  *
  * 本文の描画（`NoteBody`）も島の中に置く。ED-11 の「切り替えると、その場
  * で表示が変わる」は、`styleMode` を楽観的に差し替えた同じ木で本文を描く
@@ -91,95 +93,141 @@ export function NoteDetailIsland({
   );
   const [trashed, setTrashed] = useState<TrashedState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isSaving, startSaving] = useTransition();
+  const [isPending, startSaving] = useTransition();
+
+  const [activity, setActivity] = useState<DetailActivity>(IDLE_ACTIVITY);
+  /**
+   * 占有の判定は同じ tick の中で決まらないといけない（タイマーの発火と
+   * メニューのクリックが同じ描画の中に並ぶ）ので、判定の正本は ref に
+   * 置く。state 側は表示と effect の依存のために持つ。
+   */
+  const activityRef = useRef<DetailActivity>(IDLE_ACTIVITY);
+
+  /**
+   * 版を進めうる往復の唯一の入口。`idle` からしか入れないので、タイトル
+   * の自動保存・表示スタイルの切替・ゴミ箱への移動・元に戻すが互いを
+   * 踏むことがない。入れなかった側は何もしない（`null` を返す）。
+   *
+   * タイトルの保存だけは落としても失われない — `title` が `savedTitle`
+   * から離れたままなので、`busy` が下りた時点で自動保存の effect が
+   * タイマーを張り直す。
+   */
+  const runExclusive = async <T,>(
+    next: BusyActivity,
+    task: () => Promise<T>,
+  ): Promise<T | null> => {
+    if (activityRef.current.kind !== "idle") return null;
+    activityRef.current = next;
+    setActivity(next);
+    try {
+      return await task();
+    } finally {
+      activityRef.current = IDLE_ACTIVITY;
+      setActivity(IDLE_ACTIVITY);
+    }
+  };
+
+  /** 版を進めうる往復が走っているか。UI の活性と自動保存の歯止め。 */
+  const busy = activity.kind !== "idle" || isPending;
 
   const saveTitle = (next: string): void => {
     startSaving(async () => {
-      let applied: string;
-      try {
-        const renamed = await rename({
-          data: {
-            noteId,
-            title: next,
-            expectedVersion: versionRef.current,
-          },
+      await runExclusive({ kind: "renaming" }, async () => {
+        let applied: string;
+        try {
+          const renamed = await rename({
+            data: {
+              noteId,
+              title: next,
+              expectedVersion: versionRef.current,
+            },
+          });
+          versionRef.current = renamed.version;
+          applied = renamed.title;
+        } catch (failure) {
+          setError(displayError(failure));
+          // PAGE-p11-002「競合・validation・権限失敗で巻き戻す」。
+          setTitle(savedTitle);
+          return;
+        }
+        setError(null);
+        setSavedTitle(applied);
+        // 空は `NoteTitle` が「無題」に畳むので、返った値で入力欄を直す
+        // （ED-07「空にした場合は「無題」に戻す」）。入力が先に進んで
+        // いれば触らない。
+        setTitle((value) => (value === next ? applied : value));
+        await router.invalidate().catch(() => {
+          console.error("Note reconcile failed");
         });
-        versionRef.current = renamed.version;
-        applied = renamed.title;
-      } catch (failure) {
-        setError(displayError(failure));
-        // PAGE-p11-002「競合・validation・権限失敗で巻き戻す」。
-        setTitle(savedTitle);
-        return;
-      }
-      setError(null);
-      setSavedTitle(applied);
-      // 空は `NoteTitle` が「無題」に畳むので、返った値で入力欄を直す
-      // （ED-07「空にした場合は「無題」に戻す」）。入力が先に進んで
-      // いれば触らない。
-      setTitle((value) => (value === next ? applied : value));
-      await router.invalidate().catch(() => {
-        console.error("Note reconcile failed");
       });
     });
   };
 
   // ED-07「入力を終えると自動保存される」。打鍵が止まってから送る。
   //
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `saveTitle` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。タイマーを張り直す根拠は `title` が `savedTitle` から離れたことだけである（`NoteEditor` の自動保存と同じ扱い）。
+  // 走っている往復があるあいだはタイマーを張らない。張ってしまうと
+  // 表示スタイルの切替やゴミ箱への移動と同じ `versionRef.current` を
+  // 送り、後着が必ず競合になる。`busy` が下りた時点で `title` はまだ
+  // `savedTitle` から離れているので、この effect が張り直す。
+  //
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `saveTitle` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。タイマーを張り直す根拠は `title` が `savedTitle` から離れたことと、往復が空いたことだけである（`NoteEditor` の自動保存と同じ扱い）。
   useEffect(() => {
-    if (!canEdit || title === savedTitle || trashed !== null) return;
+    if (!canEdit || title === savedTitle || trashed !== null || busy) return;
     const timer = window.setTimeout(() => {
       saveTitle(title);
     }, TITLE_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [title, savedTitle, canEdit, trashed]);
+  }, [title, savedTitle, canEdit, trashed, busy]);
 
   const onStyleMode = (next: "default" | "preserve") => {
     startSaving(async () => {
-      showStyleMode(next);
-      try {
-        const changed = await changeStyleMode({
-          data: {
-            noteId,
-            styleMode: next,
-            expectedVersion: versionRef.current,
-          },
+      await runExclusive({ kind: "styling" }, async () => {
+        showStyleMode(next);
+        try {
+          const changed = await changeStyleMode({
+            data: {
+              noteId,
+              styleMode: next,
+              expectedVersion: versionRef.current,
+            },
+          });
+          versionRef.current = changed.version;
+          setStyleMode(changed.styleMode);
+        } catch (failure) {
+          setError(displayError(failure));
+          return;
+        }
+        setError(null);
+        await router.invalidate().catch(() => {
+          console.error("Note reconcile failed");
         });
-        versionRef.current = changed.version;
-        setStyleMode(changed.styleMode);
-      } catch (failure) {
-        setError(displayError(failure));
-        return;
-      }
-      setError(null);
-      await router.invalidate().catch(() => {
-        console.error("Note reconcile failed");
       });
     });
   };
 
   const onTrash = () => {
     startSaving(async () => {
-      // 「元に戻す」に要る版は応答が持ってくる。移動のついでにジョブの
-      // 強制終端で版がもう 1 つ進むことがあるので、送った版から数えて
-      // 当てることはできない。
-      let restoreVersion: number;
-      try {
-        restoreVersion = (
-          await trashNote({
-            data: { noteId, expectedVersion: versionRef.current },
-          })
-        ).version;
-      } catch (failure) {
-        setError(displayError(failure));
-        return;
-      }
-      setError(null);
-      setTrashed({ restoreVersion });
-      // ここでは読み直さない。読み直すと断片が作り直され、いま出した
-      // 「元に戻す」ごと消える。一覧はどのルートも訪問のたびに loader を
-      // 再実行する（`shouldReload`）ので、戻った先が古いことはない。
+      await runExclusive({ kind: "trashing" }, async () => {
+        // 「元に戻す」に要る版は応答が持ってくる。移動のついでにジョブの
+        // 強制終端で版がもう 1 つ進むことがあるので、送った版から数えて
+        // 当てることはできない。
+        let restoreVersion: number;
+        try {
+          restoreVersion = (
+            await trashNote({
+              data: { noteId, expectedVersion: versionRef.current },
+            })
+          ).version;
+        } catch (failure) {
+          setError(displayError(failure));
+          return;
+        }
+        setError(null);
+        setTrashed({ restoreVersion });
+        // ここでは読み直さない。読み直すと断片が作り直され、いま出した
+        // 「元に戻す」ごと消える。一覧はどのルートも訪問のたびに loader を
+        // 再実行する（`shouldReload`）ので、戻った先が古いことはない。
+      });
     });
   };
 
@@ -187,23 +235,25 @@ export function NoteDetailIsland({
     if (trashed === null) return;
     const { restoreVersion } = trashed;
     startSaving(async () => {
-      try {
-        // 復元後の版も応答が持ってくる。この画面はタイトルの自動保存を
-        // 続けるので、次の保存に使う版をここで正しく戻さないと必ず競合
-        // する。読み直しでは直せない — 断片を作り直しても島の state は
-        // 残る。
-        const restored = await restoreNote({
-          data: { noteId, expectedVersion: restoreVersion },
+      await runExclusive({ kind: "restoring" }, async () => {
+        try {
+          // 復元後の版も応答が持ってくる。この画面はタイトルの自動保存を
+          // 続けるので、次の保存に使う版をここで正しく戻さないと必ず競合
+          // する。読み直しでは直せない — 断片を作り直しても島の state は
+          // 残る。
+          const restored = await restoreNote({
+            data: { noteId, expectedVersion: restoreVersion },
+          });
+          versionRef.current = restored.version;
+          setError(null);
+          setTrashed(null);
+        } catch (failure) {
+          setError(displayError(failure));
+          return;
+        }
+        await router.invalidate().catch(() => {
+          console.error("Note reconcile failed");
         });
-        versionRef.current = restored.version;
-        setError(null);
-        setTrashed(null);
-      } catch (failure) {
-        setError(displayError(failure));
-        return;
-      }
-      await router.invalidate().catch(() => {
-        console.error("Note reconcile failed");
       });
     });
   };
@@ -226,7 +276,7 @@ export function NoteDetailIsland({
             styleMode={shownStyleMode}
             onStyleMode={onStyleMode}
             onTrash={onTrash}
-            busy={isSaving}
+            busy={busy}
           />
         ) : null}
       </div>
@@ -240,11 +290,13 @@ export function NoteDetailIsland({
             <>
               <button
                 type="button"
-                disabled={isSaving}
+                disabled={busy}
                 onClick={onRestore}
                 className={subtleButtonClass}
               >
-                {isSaving ? "元に戻しています..." : "元に戻す"}
+                {activity.kind === "restoring"
+                  ? "元に戻しています..."
+                  : "元に戻す"}
               </button>
               <BackToListLink context={context} />
             </>
@@ -275,7 +327,11 @@ export function NoteDetailIsland({
             className="mb-2 block w-full border-none bg-transparent p-0 text-3xl font-normal tracking-tightest leading-[1.18] text-ink outline-none focus:bg-accent-surface [caret-color:var(--color-accent)] placeholder:text-ink-tertiary"
           />
           <p className="mb-6 h-4 text-xs text-ink-tertiary" role="status">
-            {isSaving ? "保存中..." : title === savedTitle ? "" : "未保存"}
+            {activity.kind === "renaming"
+              ? "保存中..."
+              : title === savedTitle
+                ? ""
+                : "未保存"}
           </p>
         </>
       ) : (
@@ -299,6 +355,24 @@ export function NoteDetailIsland({
 
 /** ゴミ箱へ移した直後の状態。版は「元に戻す」のためだけに持つ。 */
 type TrashedState = Readonly<{ restoreVersion: number }>;
+
+/**
+ * いま走っている「版を進めうる往復」。4 つのうちどの 2 つも同時に走って
+ * はならない（どれも `versionRef.current` を送り、成功のたびに版を 1 つ
+ * 進める）ので、フラグを並べるのではなく 1 つの判別ユニオンで持つ。
+ * `useTransition` は往復を直列化しないため、これが唯一の歯止めである。
+ */
+type DetailActivity =
+  | Readonly<{ kind: "idle" }>
+  /** タイトルの自動保存・入力欄からの離脱。 */
+  | Readonly<{ kind: "renaming" }>
+  | Readonly<{ kind: "styling" }>
+  | Readonly<{ kind: "trashing" }>
+  | Readonly<{ kind: "restoring" }>;
+
+type BusyActivity = Exclude<DetailActivity, Readonly<{ kind: "idle" }>>;
+
+const IDLE_ACTIVITY: DetailActivity = { kind: "idle" };
 
 const TITLE_AUTOSAVE_DELAY_MS = 800;
 

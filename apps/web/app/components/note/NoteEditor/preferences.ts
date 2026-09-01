@@ -12,6 +12,11 @@
  * `localStorage` はプライベートウィンドウやサイトデータの遮断で読み書き
  * そのものが投げるので、すべての経路を握り潰す。ここが投げると編集画面が
  * 開かなくなり、失う実害（既定が 1 回戻る）より遥かに重い。
+ *
+ * 退避だけは**保持期限**を持つ（{@link DRAFT_MAX_AGE_MS}）。中身はノート
+ * 本文そのもので、保存に成功する以外に消える契機が無いため、置きっぱなし
+ * にすると共用端末では次に使う人が読める state になる。期限切れは読まず、
+ * 読みのついでに同じ前置きの鍵をまとめて捨てる。
  */
 
 export type EditorMode = "wysiwyg" | "visual" | "html";
@@ -73,10 +78,18 @@ export type LocalDraft = Readonly<{
   savedAt: number;
 }>;
 
+/**
+ * 退避を保持する上限。7 日を過ぎた退避は読まず、捨てる。
+ *
+ * 保存に成功しなかった本文をいつまでも端末に残さないための期限であって、
+ * 「いつまで復元できるか」の約束ではない。ED-08 が求めるのは保存に失敗
+ * した直後に復元を提案できることで、それは分〜時間の話である。
+ */
+const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 const draftKey = (noteId: string): string => `${DRAFT_PREFIX}${noteId}`;
 
-export function readDraft(noteId: string): LocalDraft | null {
-  const raw = read(draftKey(noteId));
+const parseDraft = (raw: string | null): LocalDraft | null => {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -93,6 +106,44 @@ export function readDraft(noteId: string): LocalDraft | null {
   } catch {
     return null;
   }
+};
+
+const isExpired = (draft: LocalDraft, now: number): boolean =>
+  now - draft.savedAt > DRAFT_MAX_AGE_MS;
+
+/**
+ * 期限切れの退避を前置きごと捨てる。
+ *
+ * 鍵ごとの期限判定だけでは、二度と開かないノートの退避が永久に残る。
+ * 読めない値も落とす — この前置きの下にあるものはすべてこの層が書いた
+ * 退避で、読めない以上もう復元には使えない。
+ */
+const sweepExpiredDrafts = (now: number): void => {
+  try {
+    const storage = window.localStorage;
+    const doomed: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key === null || !key.startsWith(DRAFT_PREFIX)) continue;
+      const draft = parseDraft(storage.getItem(key));
+      if (draft === null || isExpired(draft, now)) doomed.push(key);
+    }
+    for (const key of doomed) drop(key);
+  } catch {
+    // 列挙そのものを拒む端末では掃除を諦める。個別の期限判定は残る。
+  }
+};
+
+export function readDraft(noteId: string): LocalDraft | null {
+  const now = Date.now();
+  sweepExpiredDrafts(now);
+  const draft = parseDraft(read(draftKey(noteId)));
+  if (draft === null) return null;
+  if (isExpired(draft, now)) {
+    clearDraft(noteId);
+    return null;
+  }
+  return draft;
 }
 
 export function writeDraft(noteId: string, draft: LocalDraft): void {

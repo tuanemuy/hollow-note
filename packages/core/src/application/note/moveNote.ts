@@ -28,7 +28,7 @@ import type {
   DistributedOperationPayload,
 } from "../ports/distributedOperationStore";
 import type { NoteRoute } from "../ports/noteRouteStore";
-import { ScopeKey } from "../scope";
+import { ScopeKey, scopeOfNoteOwner } from "../scope";
 import {
   type MovedFileMetadata,
   relocateFilesCommandKey,
@@ -1055,10 +1055,7 @@ export async function moveNote({
     );
   }
 
-  const target =
-    targetOwner.type === "user"
-      ? ScopeKey.user(targetOwner.userId)
-      : ScopeKey.workspace(targetOwner.workspaceId);
+  const target = scopeOfNoteOwner(targetOwner);
   const droppedTagNames = await tagRelocation.plan(container, {
     noteId,
     source,

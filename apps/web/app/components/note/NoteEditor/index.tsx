@@ -97,8 +97,16 @@ export async function NoteEditor({
         // ED-04 の警告は「元が HTML ファイル由来のノート」に出す。取り込み
         // 由来かどうかは元ファイルの有無で、装飾を保っている本文かどうかは
         // `styleMode` で分かる（[ADR 007](spec/adr/007-default-style-isolation.md)）。
+        //
+        // 本文が `<style>` を持つノートも同じ門の後ろへ寄せる。WYSIWYG の
+        // 面だけは shadow root の外にあり、そこへ載せた `<style>` の
+        // セレクターは編集画面全体に当たるので、面は `<style>` を落として
+        // から載せる（`surfaces.tsx` の `dropStyleElements`）。落ちるのは
+        // 実際の装飾なので、警告と保存前の版を経ずに起きてはならない。
         mayLoseDecoration:
-          note.sourceFileId !== null || note.styleMode === "preserve",
+          note.sourceFileId !== null ||
+          note.styleMode === "preserve" ||
+          hasStyleElement(note.content.html ?? ""),
       }}
     />
   );
@@ -129,6 +137,14 @@ export function NewNoteEditor({
     />
   );
 }
+
+/**
+ * 本文が `<style>` を持つか。ここはサーバーコンポーネントで `document` が
+ * 無いので、パースではなく走査で判定する。取りこぼさない側へ倒してある
+ * （コメントや文字列の中の `<style` にも当たる） — 過検出は警告が 1 回
+ * 余分に出るだけだが、見落とすと装飾が警告も版も無しに失われる。
+ */
+const hasStyleElement = (html: string): boolean => /<style[\s/>]/i.test(html);
 
 const backTarget = (noteId: string, context: NoteDetailContext): BackTarget =>
   context.kind === "workspace"

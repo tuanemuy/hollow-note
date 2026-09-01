@@ -391,7 +391,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録する
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録し、100件未満なら同じUoWでその継続task行を`ScopeTaskScheduler.complete`する — これが継続の連鎖を止める唯一の手段で、呼ばなければ scope-task runner が同じ行を claim し続ける
 2. Drive 上のファイルは消さない。バックアップは利用者自身の Drive にあり、その扱いは利用者に委ねる（IN-09 と同じ整理）
 3. 同じイベントを 2 回受け取っても、2 回目は削除対象が既にないため 0 件削除で終わり、結果は変わらない
 

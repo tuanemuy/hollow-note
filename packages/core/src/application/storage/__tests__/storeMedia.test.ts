@@ -81,10 +81,14 @@ const svg = (markup: string): Uint8Array => new TextEncoder().encode(markup);
 const plainText = (): Uint8Array =>
   new TextEncoder().encode("# just some markdown\n");
 
+// The payload inside `foreignObject` is a `<label>` rather than the `<p>`
+// such a file usually carries: `p` is one of the element names the intake
+// refuses outright (TC-storage-269), so this document would never reach
+// the sanitizer at all and the case below would test nothing.
 const HOSTILE_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="alert(1)">
   <script>alert(2)</script>
-  <foreignObject width="10" height="10"><p>escaped</p></foreignObject>
+  <foreignObject width="10" height="10"><label>escaped</label></foreignObject>
   <use xlink:href="https://evil.example/sprite.svg#icon"/>
   <use href="/other.svg#icon"/>
   <rect width="10" height="10" fill="#ffffff"/>
@@ -156,10 +160,14 @@ const NBSP_SVG =
  * `style` element applying to the document, and void elements that
  * serialize with no closing tag at all.
  */
+// `img`, `br` and `b` — the elements this case used to carry — are
+// refused by name at the intake now (TC-storage-269), so the void
+// element and the formatting element here are the ones the HTML parser
+// keeps inside foreign content: `wbr`, `input` and `label`.
 const INTEGRATION_POINT_SVG =
   `<svg xmlns="http://www.w3.org/2000/svg"><desc>` +
-  `<style>rect{fill:red}</style><img src="a.png"/>a<br/>b</desc>` +
-  `<title><b>bold</b></title><rect width="4" height="4"/></svg>`;
+  `<style>rect{fill:red}</style><input value="x"/>a<wbr/>b</desc>` +
+  `<title><label>bold</label></title><rect width="4" height="4"/></svg>`;
 
 /**
  * Markup no XML parser opens, each broken in its own way. All of them
@@ -169,7 +177,7 @@ const INTEGRATION_POINT_SVG =
  */
 const MALFORMED_SVG = {
   controlCharacter: `<svg xmlns="http://www.w3.org/2000/svg"><desc>a\u0001b</desc><rect width="4" height="4"/></svg>`,
-  unclosedTag: `<svg xmlns="http://www.w3.org/2000/svg"><desc><img src="a.png"></desc><rect width="4" height="4"/></svg>`,
+  unclosedTag: `<svg xmlns="http://www.w3.org/2000/svg"><desc><wbr></desc><rect width="4" height="4"/></svg>`,
   undefinedEntity: `<svg xmlns="http://www.w3.org/2000/svg"><text>a&nbsp;b</text></svg>`,
   rawLessThan: `<svg xmlns="http://www.w3.org/2000/svg" data-note="a<b"><rect width="4" height="4"/></svg>`,
 } as const;
@@ -202,6 +210,52 @@ const svgOfExactly = (bytes: number): Uint8Array => {
     throw new Error(`built ${body.byteLength} bytes, wanted ${bytes}`);
   }
   return body;
+};
+
+/**
+ * `levels` nested `<name a="i">` elements and the closing tags for them.
+ * The attributes differ so the parser's Noah's Ark clause — which keeps
+ * at most three identical entries on the list of active formatting
+ * elements — does not thin the list out.
+ */
+const nested = (name: string, levels: number): readonly [string, string] => [
+  Array.from({ length: levels }, (_, index) => `<${name} a="${index}">`).join(
+    "",
+  ),
+  `</${name}>`.repeat(levels),
+];
+
+/**
+ * The review's counterexample, built to `bytes`: well formed, every tag
+ * closed, nesting within `MEDIA_SVG_MAX_DEPTH`, and inside the byte
+ * ceiling. `<table>` is what takes the parser out of foreign content,
+ * and each `<tr>` clears the stack back to the table while leaving the
+ * formatting elements on the list of active formatting elements — so
+ * every row reconstructs all 61 of them. 131,064 bytes of it serialized
+ * into 11,300,523 (86×) in 886 ms.
+ */
+const fosterParentingSvg = (formatting: string, bytes: number): string => {
+  // svg > table > formatting… > tr, so the rows sit exactly at the cap.
+  const [open, close] = nested(formatting, MEDIA_SVG_MAX_DEPTH - 3);
+  const head = `<svg ${SVG_NAMESPACE}><table>${open}`;
+  const tail = `${close}</table></svg>`;
+  const row = "<tr>X</tr>";
+  const rows = Math.floor((bytes - head.length - tail.length) / row.length);
+  return `${head}${row.repeat(rows)}${tail}`;
+};
+
+/**
+ * The same shape with no breakout tag in it: the parser never leaves
+ * foreign content, so `<a>` and `<font>` are SVG elements rather than
+ * HTML formatting elements and nothing is reconstructed at all.
+ */
+const foreignOnlySvg = (formatting: string, bytes: number): string => {
+  const [open, close] = nested(formatting, MEDIA_SVG_MAX_DEPTH - 2);
+  const head = `<svg ${SVG_NAMESPACE}>${open}`;
+  const tail = `${close}</svg>`;
+  const row = "<text>X</text>";
+  const rows = Math.floor((bytes - head.length - tail.length) / row.length);
+  return `${head}${row.repeat(rows)}${tail}`;
 };
 
 // --- helpers --------------------------------------------------------------
@@ -655,9 +709,9 @@ describe("storeMedia", () => {
     expect(stored).not.toContain("fill:red");
     // Void elements have no closing tag in HTML serialization, so one
     // left inside the root is a mismatched tag to an XML parser.
-    expect(stored).not.toContain("<img");
-    expect(stored).not.toContain("<br");
-    expect(stored).not.toContain("<b>");
+    expect(stored).not.toContain("<input");
+    expect(stored).not.toContain("<wbr");
+    expect(stored).not.toContain("<label");
     expect(stored).toContain("<desc>ab</desc>");
     expect(stored).toContain("<rect");
   });
@@ -734,8 +788,10 @@ describe("storeMedia", () => {
     // Unclosed formatting elements across blocks are what makes the HTML
     // parser reconstruct — and duplicate — them: 128 KB of this
     // serialized into a value the note body's 800,000-byte invariant
-    // refused, so an accepted upload failed in Note's vocabulary.
-    for (const unit of ["<b><p>", "<em><p>", "<b><i><p>"]) {
+    // refused, so an accepted upload failed in Note's vocabulary. The
+    // last unit carries no breakout tag, so it is the well-formedness
+    // walk alone that refuses it rather than the element-name gate.
+    for (const unit of ["<b><p>", "<em><p>", "<a><g>"]) {
       await expectBusinessRule(
         upload(h, noteId, {
           body: svg(repeatedInsideDesc(unit, MEDIA_SVG_MAX_BYTES)),
@@ -746,6 +802,50 @@ describe("storeMedia", () => {
     }
     expect(filesIn(h, personalScope)).toHaveLength(0);
     expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-269: refuses a well-formed SVG carrying a breakout tag, which is what foster parenting needs", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    const markup = fosterParentingSvg("b", MEDIA_SVG_MAX_BYTES);
+    // Nothing about this document is malformed and nothing about it is
+    // oversized: every tag closes, the nesting is inside the depth cap,
+    // and it is under the ceiling. Only the element names are refused.
+    expect(new TextEncoder().encode(markup).byteLength).toBeLessThanOrEqual(
+      MEDIA_SVG_MAX_BYTES,
+    );
+
+    await expectBusinessRule(
+      upload(h, noteId, { body: svg(markup), fileName: "foster.svg" }),
+      StorageErrorCode.UnsupportedMimeType,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-270: an SVG of the same shape without a breakout tag is stored at the ceiling", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // `a` and `font` are the formatting elements that survive the gate,
+    // and this is the boundary the ceiling is chosen against: with no
+    // breakout tag the parser never leaves foreign content, so nothing
+    // is reconstructed and `process` answers a fragment the note body's
+    // 800,000-byte invariant accepts instead of `NOTE_CONTENT_TOO_LARGE`.
+    for (const [index, formatting] of ["a", "font"].entries()) {
+      const markup = foreignOnlySvg(formatting, MEDIA_SVG_MAX_BYTES);
+      expect(new TextEncoder().encode(markup).byteLength).toBeGreaterThan(
+        MEDIA_SVG_MAX_BYTES - 16,
+      );
+
+      const view = await upload(h, noteId, {
+        body: svg(markup),
+        fileName: `${formatting}.svg`,
+      });
+
+      expect(view.mimeType).toBe("image/svg+xml");
+      expect(view.size).toBeLessThanOrEqual(MEDIA_SVG_MAX_BYTES);
+      expect(filesIn(h, personalScope)).toHaveLength(index + 1);
+    }
   });
 
   it("TC-storage-183: an upload larger than the remaining capacity is refused before any byte is written", async () => {
@@ -873,6 +973,52 @@ describe("storeMedia", () => {
       input: { userId: ACTOR, subjectType: "user", subjectId: ACTOR },
     });
     expect(usage.consumedBytes).toBe(1024);
+  });
+
+  it("TC-storage-271: the capacity is weighed on the sanitized length, the one the row records", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // Everything inside `<script>` is dropped, so what arrives is far
+    // longer than what is stored. The gate has to ask about the bytes
+    // that fill the quota, or an upload is refused for room it never
+    // takes.
+    const shrinking = svg(
+      `<svg ${SVG_NAMESPACE}><script>${"a".repeat(8 * 1024)}</script>` +
+        `<rect width="4" height="4"/></svg>`,
+    );
+    await seedPersonalQuota(h, 4096);
+    expect(shrinking.byteLength).toBeGreaterThan(4096);
+
+    const view = await upload(h, noteId, {
+      body: shrinking,
+      fileName: "shrinking.svg",
+    });
+
+    expect(view.size).toBeLessThan(4096);
+    const usage = await recalculateStorageUsage({
+      container: h.container,
+      input: { userId: ACTOR, subjectType: "user", subjectId: ACTOR },
+    });
+    expect(usage.consumedBytes).toBe(view.size);
+  });
+
+  it("TC-storage-271: an SVG that grows while being sanitized is refused for the capacity it will actually take", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // U+00A0 is two bytes in and six out (`&#160;`), so measuring the
+    // received bytes lets a subject overrun its quota by what the
+    // rewrite adds.
+    const growing = svg(
+      `<svg ${SVG_NAMESPACE}><text>${"\u00A0".repeat(512)}</text></svg>`,
+    );
+    await seedPersonalQuota(h, growing.byteLength + 16);
+
+    await expectBusinessRule(
+      upload(h, noteId, { body: growing, fileName: "growing.svg" }),
+      UsageErrorCode.StorageQuotaExceeded,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 
   it("rolls the stored object back when the transaction fails", async () => {

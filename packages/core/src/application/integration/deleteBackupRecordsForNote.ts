@@ -1,7 +1,7 @@
 import {
-  armNotePurgeContinuation,
   assertNotePurgeAdmission,
   type NotePurgeFanOutTurn,
+  settleNotePurgeTurn,
 } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
 import type { ScopeKey } from "../scope";
@@ -57,19 +57,12 @@ export async function deleteBackupRecordsForNote({
       NOTE_BACKUP_DELETE_BATCH_SIZE,
     );
 
-    if (deletedCount < NOTE_BACKUP_DELETE_BATCH_SIZE) {
-      await ctx.scopeTaskScheduler.complete(
-        NOTE_BACKUP_DELETE_TASK_KIND,
-        input.operationId,
-      );
-      return { deletedCount };
-    }
-
-    await armNotePurgeContinuation(ctx, {
+    await settleNotePurgeTurn(ctx, {
       kind: NOTE_BACKUP_DELETE_TASK_KIND,
       operationId: input.operationId,
       turn: input,
       now,
+      full: deletedCount >= NOTE_BACKUP_DELETE_BATCH_SIZE,
     });
     return { deletedCount };
   });

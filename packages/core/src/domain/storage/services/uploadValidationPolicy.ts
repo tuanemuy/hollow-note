@@ -31,14 +31,25 @@ export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
  *
  * 128 KB is what makes the ceiling reachable, and it is reachable only
  * because `readSvgDocument` bounds the *shape* of what is accepted as
- * well as its length. For a well-formed document the HTML parser
- * duplicates no element — reconstruction of the active formatting
- * elements needs misnested or unclosed formatting tags, which is not
- * well-formed — so the only growth left is character escaping, at most
- * six bytes for one (`"` inside an attribute becoming `&quot;`), and
- * 131,072 × 6 = 786,432 stays under 800,000. Without that gate the
- * factor is not a constant at all: `<b a="1">…<b a="k"><p>…` is
- * quadratic, and 3 KB of it serializes into 446 KB.
+ * well as its length — well-formedness alone does not bound it. What
+ * multiplies output is foster parenting: an element popped from the
+ * stack of open elements while it stays on the list of active
+ * formatting elements is reconstructed again for every row that
+ * follows, so `k` formatting elements and `m` rows serialize into
+ * `k × m` of them. Perfectly well-formed input reaches it — a measured
+ * 131,064 bytes of `<svg><table><b a="0">…<b a="61">` with 13,018
+ * `<tr>X</tr>` after it serialized into 11,300,523 (86×) in 886 ms.
+ *
+ * That mechanism has exactly two entrances, and both are named: a
+ * breakout tag leaves foreign content directly, and an HTML integration
+ * point (`desc` / `title` / `foreignObject`) resumes HTML parsing —
+ * from which reaching a table insertion mode still needs a `table`
+ * start tag, itself a breakout tag. So `readSvgDocument` refuses those
+ * element names outright, which closes both. What is left is character
+ * escaping, at most six bytes for one (`"` inside an attribute becoming
+ * `&quot;`, 131,072 × 6 = 786,432 under 800,000), and the adoption
+ * agency on the formatting elements that survive the gate — `a` and
+ * `font` — measured at 1.7× and 1.0× on the same construction.
  *
  * The bytes that are actually stored are measured against this same
  * limit again, since the sanitizer's output is what the file becomes.
@@ -229,6 +240,76 @@ const XML_NAME = /^[A-Za-z_:\u00C0-\uFFFD][-.\w:\u00B7\u00C0-\uFFFD]*$/;
 /** What ends a name: XML's `S`, plus the delimiters of a tag. */
 const NAME_END = /[\t\n\r />=<'"]/;
 
+/**
+ * The element names that take an HTML parser *out* of an `<svg>`.
+ *
+ * Verbatim from the HTML Standard's rules for parsing tokens in foreign
+ * content ("if the token is a start tag whose tag name is one of…"),
+ * which is what parse5 implements as `EXITS_FOREIGN_CONTENT`. A start
+ * tag from this list pops the SVG off the stack of open elements and
+ * hands the token to the HTML insertion modes — the only way an
+ * uploaded SVG can reach the table modes whose foster parenting
+ * multiplies the output (see `MEDIA_SVG_MAX_BYTES`).
+ *
+ * Refusing them costs nothing that would have been stored: the
+ * sanitizer's SVG subset holds none of these names, so every one of
+ * them is dropped from the markup anyway.
+ */
+const HTML_BREAKOUT_ELEMENTS = new Set([
+  "b",
+  "big",
+  "blockquote",
+  "body",
+  "br",
+  "center",
+  "code",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "embed",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "hr",
+  "i",
+  "img",
+  "li",
+  "listing",
+  "menu",
+  "meta",
+  "nobr",
+  "ol",
+  "p",
+  "pre",
+  "ruby",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "strike",
+  "sub",
+  "sup",
+  "table",
+  "tt",
+  "u",
+  "ul",
+  "var",
+]);
+
+/**
+ * `font` is the one conditional member of the set above: it breaks out
+ * only when it carries one of these three attributes. A `<font>` without
+ * them stays in foreign content, and SVG 1.1 has an element of that
+ * name, so the condition is kept rather than rounded up to the name.
+ */
+const FONT_BREAKOUT_ATTRIBUTES = new Set(["color", "face", "size"]);
+
 const PREDEFINED_ENTITY = /^&(?:amp|lt|gt|apos|quot);/;
 const NUMERIC_REFERENCE = /^&#(x)?([0-9a-fA-F]+);/;
 
@@ -296,7 +377,12 @@ const readName = (markup: string, from: number): number => {
   return name.length > 0 && XML_NAME.test(name) ? index : -1;
 };
 
-type TagEnd = Readonly<{ end: number; selfClosing: boolean }>;
+type TagEnd = Readonly<{
+  end: number;
+  selfClosing: boolean;
+  /** Whether the tag carries one of `FONT_BREAKOUT_ATTRIBUTES`. */
+  fontBreakoutAttribute: boolean;
+}>;
 
 /**
  * Reads the attribute list of the tag whose name ends at `from`. XML
@@ -305,13 +391,14 @@ type TagEnd = Readonly<{ end: number; selfClosing: boolean }>;
  */
 const readAttributes = (markup: string, from: number): TagEnd | null => {
   let index = from;
+  let fontBreakoutAttribute = false;
   for (;;) {
     const at = skipXmlSpace(markup, index);
     if (markup.startsWith("/>", at)) {
-      return { end: at + 2, selfClosing: true };
+      return { end: at + 2, selfClosing: true, fontBreakoutAttribute };
     }
     if (markup[at] === ">") {
-      return { end: at + 1, selfClosing: false };
+      return { end: at + 1, selfClosing: false, fontBreakoutAttribute };
     }
     if (at === index) {
       return null;
@@ -319,6 +406,9 @@ const readAttributes = (markup: string, from: number): TagEnd | null => {
     const nameEnd = readName(markup, at);
     if (nameEnd === -1) {
       return null;
+    }
+    if (FONT_BREAKOUT_ATTRIBUTES.has(markup.slice(at, nameEnd).toLowerCase())) {
+      fontBreakoutAttribute = true;
     }
     const equals = skipXmlSpace(markup, nameEnd);
     if (markup[equals] !== "=") {
@@ -336,6 +426,21 @@ const readAttributes = (markup: string, from: number): TagEnd | null => {
     }
     index = close + 1;
   }
+};
+
+/**
+ * Whether a start tag of this name would leave foreign content.
+ *
+ * The HTML tokenizer lowercases ASCII in tag and attribute names, so a
+ * `<TABLE>` XML keeps distinct from `<table>` is the same token to it
+ * and has to be refused just the same.
+ */
+const breaksOutOfForeignContent = (name: string, tag: TagEnd): boolean => {
+  const lowered = name.toLowerCase();
+  return (
+    HTML_BREAKOUT_ELEMENTS.has(lowered) ||
+    (lowered === "font" && tag.fontBreakoutAttribute)
+  );
 };
 
 /** Where a namespace declaration goes on a document that has none. */
@@ -357,6 +462,11 @@ export type SvgDocumentShape = Readonly<{
  * whitespace outside it, tags that match, names XML admits, references
  * the document defines, characters XML allows, and nesting within
  * `MEDIA_SVG_MAX_DEPTH`.
+ *
+ * It also refuses `HTML_BREAKOUT_ELEMENTS`, which XML has no opinion
+ * about at all. That one is a bound on what the *sanitizer* can be made
+ * to produce rather than on what a browser can open, and the reasoning
+ * for it lives on `MEDIA_SVG_MAX_BYTES`.
  *
  * The same predicate answers at both ends of `storeMedia`: on the bytes
  * as they arrive, so nothing the sanitizer cannot bound is handed to it
@@ -452,7 +562,7 @@ export const readSvgDocument = (markup: string): SvgDocumentShape | null => {
     }
     const name = markup.slice(index + 1, nameEnd);
     const tag = readAttributes(markup, nameEnd);
-    if (tag === null) {
+    if (tag === null || breaksOutOfForeignContent(name, tag)) {
       return null;
     }
     if (root === null) {

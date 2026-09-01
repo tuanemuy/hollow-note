@@ -371,6 +371,40 @@ describe("UploadValidationPolicy: media", () => {
     );
   });
 
+  it("TC-storage-269: refuses the element names that take an HTML parser out of foreign content", () => {
+    const carrying = (markup: string): Uint8Array =>
+      svgBody(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`);
+
+    // One name per shape of the rule rather than all 44: a formatting
+    // element, the table that opens the foster-parenting path, a block,
+    // a void element, and the uppercase spelling XML keeps distinct but
+    // the HTML tokenizer lowercases into the same token.
+    for (const markup of [
+      "<b>x</b>",
+      "<table><tr>x</tr></table>",
+      "<p>x</p>",
+      "<br/>",
+      "<TABLE><tr>x</tr></TABLE>",
+    ]) {
+      expect(refuse(carrying(markup))).toBe(
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+
+    // `font` is the conditional member: it leaves foreign content only
+    // when it carries `color`, `face` or `size`. SVG 1.1 has an element
+    // of that name, and `a` is SVG's own link, so neither is rounded up
+    // to the name.
+    expect(accept(carrying(`<a href="#x"><font>x</font></a>`)).mimeType).toBe(
+      "image/svg+xml",
+    );
+    for (const attribute of ["color", "face", "size", "SIZE"]) {
+      expect(refuse(carrying(`<font ${attribute}="1">x</font>`))).toBe(
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+  });
+
   it("TC-storage-182: measures a video against its own 200 MB ceiling, not the image one", () => {
     expect(accept(matroskaBody("webm", 21 * MB)).mimeType).toBe("video/webm");
     expect(accept(mp4Body("isom", 200 * MB)).size).toBe(200 * MB);

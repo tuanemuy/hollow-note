@@ -1,5 +1,6 @@
 import { readNotePurgeTurn } from "@repo/core/application/cleanup/notePurgeFanOut";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
+import type { ScopeUnitOfWorkProvider } from "@repo/core/application/execution/unitOfWork";
 import { ScopeKey } from "@repo/core/application/scope";
 import { EventId } from "@repo/core/domain/common/event";
 import type { UserDeletedEvent } from "@repo/core/domain/identity/events";
@@ -21,6 +22,11 @@ import { TagAssignment } from "@repo/core/domain/tag/tagAssignment";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
+import { signUpVerified } from "../../identity/__tests__/authFlowHelpers";
+import type { AccountDeletionDispatchContinuedEvent } from "../../identity/continuations";
+import { IdentityContinuations } from "../../identity/continuations";
+import { deleteAccount } from "../../identity/deleteAccount";
+import { continueAccountDeletionManifestBuild } from "../../identity/deleteAccount/manifestBuild";
 import {
   continuationSubscribers,
   dispatchDomainEvent,
@@ -438,5 +444,89 @@ describe("readNotePurgeTurn", () => {
     expect(
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "op-1" }),
     ).toEqual({ noteId: "note-1", deletionOperationId: "op-1" });
+  });
+});
+
+/**
+ * `identity.accountDeletionDispatchContinued` is the only event type
+ * with more than one sibling that actually does work in the same turn:
+ * the `cleanup` phase is served by `accountDeletionCleanup` (scope
+ * plane) and `accountDeletionGlobalCleanup` (global plane). The
+ * dispatcher stopped depending on registration order, so the JSDoc's
+ * claim that these two are independent has to be exercised on the real
+ * registry rather than on a synthetic one.
+ */
+describe("identity.accountDeletionDispatchContinued siblings", () => {
+  const EMAIL = "sibling@example.com";
+  const REQUEST_ID = "22222222-2222-4222-8222-222222222222";
+
+  const cleanupDispatch = (
+    operationId: string,
+  ): AccountDeletionDispatchContinuedEvent => ({
+    id: EventId.create("event-4"),
+    ...IdentityContinuations.accountDeletionDispatch(
+      { operationId, phase: "cleanup" },
+      new Date("2026-01-01T00:00:00.000Z"),
+    ),
+  });
+
+  async function acceptAndBuild(h: TestHarness): Promise<string> {
+    const { userId } = await signUpVerified(h, EMAIL);
+    const view = await deleteAccount({
+      container: h.container,
+      input: {
+        type: "userRequest",
+        userId,
+        confirmationEmail: EMAIL,
+        requestId: REQUEST_ID,
+      },
+    });
+    for (const phase of ["memberships", "authorRoutes"] as const) {
+      await continueAccountDeletionManifestBuild(h.workerContainer, {
+        type: "identity.accountDeletionManifestBuildContinued",
+        operationId: view.operationId,
+        phase,
+        cursor: null,
+      });
+    }
+    return view.operationId;
+  }
+
+  it("runs the global half of the cleanup wave even when the personal half fails first, and still fails the delivery", async () => {
+    const h = createTestHarness();
+    const operationId = await acceptAndBuild(h);
+
+    // The window: the scope plane is down for the whole delivery, so
+    // `accountDeletionCleanup` — the sibling registered first — throws
+    // on its very first read. The global half touches only the global
+    // plane and the manifest store, so nothing but the dispatcher can
+    // carry the failure across.
+    const scopePlaneDown: ScopeUnitOfWorkProvider = {
+      run: () => {
+        throw new SystemError(
+          SystemErrorCode.DatabaseError,
+          "scope plane unreachable",
+        );
+      },
+    };
+
+    await expect(
+      dispatchDomainEvent(cleanupDispatch(operationId), {
+        ...h.workerContainer,
+        scopeUnitOfWorkProvider: scopePlaneDown,
+      }),
+    ).rejects.toThrow("scope plane unreachable");
+
+    const receipts = h.backend.manifestHeaders.get(operationId)?.receipts ?? [];
+    expect(receipts).not.toContain("personalCleanup");
+    expect(receipts).toContain("uniquenessRelease");
+    expect(
+      h.logger
+        .byLevel("error")
+        .map((entry) => entry.message)
+        .filter((message) => message.startsWith("[subscribers] ")),
+    ).toEqual([
+      "[subscribers] identity.accountDeletionCleanup failed for identity.accountDeletionDispatchContinued",
+    ]);
   });
 });

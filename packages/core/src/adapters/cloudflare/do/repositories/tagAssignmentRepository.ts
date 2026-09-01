@@ -1,4 +1,5 @@
 import { ConflictError } from "../../../../application/errors";
+import type { ScopeKey } from "../../../../application/scope";
 import type { NoteId } from "../../../../domain/note/valueObject";
 import type { TagAssignmentRepository } from "../../../../domain/tag/ports/tagAssignmentRepository";
 import { TagAssignment } from "../../../../domain/tag/tagAssignment";
@@ -6,6 +7,7 @@ import { type RowMutation, remove, upsert } from "../../execution/writeSet";
 import {
   classifySqlError,
   databaseError,
+  dataIntegrityError,
   throwTranslated,
 } from "../../sql/errors";
 import { date, text, toTimestamp } from "../../sql/row";
@@ -58,6 +60,13 @@ const valuesOf = (row: SqlRow): readonly SqlValue[] =>
 const compareText = (a: string, b: string): number =>
   a < b ? -1 : a > b ? 1 : 0;
 
+const scopeColumns = (
+  scope: ScopeKey | TagAssignment["scope"],
+): Readonly<{ type: string; id: string }> =>
+  scope.type === "user"
+    ? { type: "user", id: scope.userId }
+    : { type: "workspace", id: scope.workspaceId };
+
 const byId = (a: SqlRow, b: SqlRow): number =>
   compareText(text(a, "id"), text(b, "id"));
 
@@ -78,17 +87,50 @@ const duplicateId = (assignment: TagAssignment) =>
 
 export type CloudflareTagAssignmentRepositoryDeps = Readonly<{
   session: SqlSession;
+  scope: ScopeKey;
 }>;
 
 /**
  * `tag_assignments` of one scope object. Assignments are immutable, so
  * there is no OCC here — only inserts, the per-note read, and the
  * bounded delete the note purge walks.
+ *
+ * `scope_type` / `scope_id` is a scope key, not attribution: an
+ * assignment lives in the scope of the note it is on
+ * (spec/domains/tag.md), so a row naming another object is either a
+ * write that went to the wrong place or a read that crossed objects.
+ * Like `notes.owner_type` / `owner_id`, it is checked against the
+ * object's own `_scope_identity` pin on both save and restore
+ * (`spec/database/index.md` の「共通の規約」). `backup_records.user_id`
+ * is the other case and is deliberately unchecked — it names the
+ * connection whose Drive holds the copy, not the object holding the row.
  */
 export function createCloudflareTagAssignmentRepository(
   deps: CloudflareTagAssignmentRepositoryDeps,
 ): TagAssignmentRepository {
   const { session } = deps;
+  const bound = scopeColumns(deps.scope);
+
+  const ensureScopeOf = (assignment: TagAssignment): void => {
+    const columns = scopeColumns(assignment.scope);
+    if (columns.type !== bound.type || columns.id !== bound.id) {
+      throw dataIntegrityError(
+        `Tag assignment scope ${columns.type}:${columns.id} does not match the scope ${bound.type}:${bound.id}`,
+      );
+    }
+  };
+
+  const restore = (row: SqlRow): TagAssignment => {
+    if (
+      text(row, "scope_type") !== bound.type ||
+      text(row, "scope_id") !== bound.id
+    ) {
+      throw dataIntegrityError(
+        `Tag assignment ${text(row, "id")} is scoped to ${text(row, "scope_type")}:${text(row, "scope_id")} but the scope is ${bound.type}:${bound.id}`,
+      );
+    }
+    return fromRow(row);
+  };
 
   const write = async (
     mutations: readonly RowMutation[],
@@ -145,6 +187,7 @@ export function createCloudflareTagAssignmentRepository(
 
   return {
     async insert(assignment: TagAssignment): Promise<void> {
+      ensureScopeOf(assignment);
       const clash = await clashOf(assignment);
       if (clash === "id") {
         throw duplicateId(assignment);
@@ -179,7 +222,7 @@ export function createCloudflareTagAssignmentRepository(
     },
 
     async listByNote(noteId: NoteId): Promise<readonly TagAssignment[]> {
-      return (await rowsOfNote(noteId)).map(fromRow);
+      return (await rowsOfNote(noteId)).map(restore);
     },
 
     async deleteByNote(noteId: NoteId, limit: number): Promise<number> {

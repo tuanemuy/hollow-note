@@ -1,5 +1,4 @@
 import type { DomainEvent } from "@repo/core/domain/common/event";
-import { scopeOfNoteOwner } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
 import { authResidueCleanup } from "../identity/authResidueCleanup";
 import type { IdentityContinuationEvent } from "../identity/continuations";
@@ -11,6 +10,7 @@ import { runAccountDeletionGlobalCleanup } from "../identity/deleteAccount/globa
 import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
 import { deleteBackupRecordsForNote } from "../integration/deleteBackupRecordsForNote";
+import { scopeOfNoteOwner } from "../scope";
 import { deleteFilesForNote } from "../storage/deleteFilesForNote";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
 import { deleteAssignmentsForNote } from "../tag/deleteAssignmentsForNote";
@@ -234,6 +234,14 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
  * delivery still fails and the relay redelivers it — which is why every
  * handler must be safe to re-run (delivery is at-least-once), including
  * the ones that already succeeded.
+ *
+ * Only the *first* failure is re-thrown, so when several siblings fail
+ * in one delivery the later ones survive as `logger.error` lines alone:
+ * a follower's `ConflictError` can hide a sibling's transient
+ * `SystemError` from whatever inspects the thrown error. Nothing depends
+ * on the distinction today — `eventRelayWorker` quarantines on attempts
+ * and never on the kind — but a reader diagnosing a stuck delivery has
+ * to read the log, not the exception.
  *
  * That relaxation is the dispatcher's, not the fan-out's: it also drops
  * the ordering the continuation subscribers of one type used to inherit

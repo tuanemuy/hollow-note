@@ -1,4 +1,5 @@
 import { UserId } from "@repo/core/domain/identity/valueObject";
+import type { NoteOwner } from "@repo/core/domain/note/valueObject";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 
 /**
@@ -50,3 +51,18 @@ export const ScopeKey = {
       ? b.type === "user" && a.userId === b.userId
       : b.type === "workspace" && a.workspaceId === b.workspaceId,
 };
+
+/**
+ * The scope object a note's owner names.
+ *
+ * `NoteOwner` and `ScopeKey` are the same two cases seen from two
+ * layers: the domain says which owner a note belongs to, and this says
+ * which storage object holds that owner's data
+ * (`spec/platform/index.md`). Keeping the mapping here rather than in
+ * each caller is what makes "a note lives in its owner's scope object"
+ * one decision instead of one per usecase.
+ */
+export const scopeOfNoteOwner = (owner: NoteOwner): ScopeKey =>
+  owner.type === "user"
+    ? ScopeKey.user(owner.userId)
+    : ScopeKey.workspace(owner.workspaceId);

@@ -332,6 +332,7 @@ export function createCloudflareRuntime(
         storedFileRepository: createCloudflareStoredFileRepository({ session }),
         tagAssignmentRepository: createCloudflareTagAssignmentRepository({
           session,
+          scope,
         }),
         backupRecordRepository: createCloudflareBackupRecordRepository({
           session,

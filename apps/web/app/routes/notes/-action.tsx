@@ -249,6 +249,9 @@ export const renameNoteFn = createServerFn({ method: "POST" })
  * ルーターの `invalidate()` では足りない。競合の解決（上書き / 破棄）も
  * 版の復元も**その場で次の保存に使う版**が要るのに対し、`invalidate()` は
  * 断片を作り直すだけで、島が握っている版には届かないためである。
+ *
+ * `canEdit` を載せるのは、この往復が権限喪失を**次の保存を待たずに**知れる
+ * 唯一の機会だからである。島は偽なら面を凍らせる（`reseedFromServer`）。
  */
 export const readNoteEditStateFn = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])
@@ -367,6 +370,14 @@ export const storeNoteMediaFn = createServerFn({ method: "POST" })
  *
  * 本文が空のときは白紙のまま作る（`updateNoteBody` を呼ばない） — 版を
  * 1 つと Revision を 1 件、何も書いていない編集に費やさないため。
+ *
+ * **この経路は冪等ではない。** `createBlankNote` が通ったあとで
+ * `updateNoteBody` が落ちる（あるいは応答が届かない）と、サーバーには
+ * ノートが 1 件残るのに画面は「まだ作られていない」ままになる。同じ呼び
+ * 出しを送り直せば 2 件目の白紙ノートが生まれるので、画面は初回保存が
+ * 落ちたときに再送を出さず、内容のダウンロードへ倒す（`editor.tsx` の
+ * `creationFailed`）。畳むための冪等鍵は作成そのもの（`createBlankNote`）
+ * の持ち分で、この経路からは持ち込めない。
  *
  * `title` を返すのは、確定済みのタイトルを画面が**送った生値**で持たない
  * ためである。`NoteTitle.manual` は空を「無題」に変え前後の空白を落とす

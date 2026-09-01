@@ -50,11 +50,12 @@ export const SCOPE_TABLES = {
  */
 export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   // The object's own ScopeKey, pinned on first contact. Columns that act
-  // as a scope key — `notes.owner_type`/`owner_id` and this row — are
-  // checked against it on both restore and save. The attribution columns
-  // of `stored_files` / `storage_quotas` / `llm_usages` are not scope
-  // keys and are not checked; the physical separation rests on this pin
-  // alone.
+  // as a scope key — `notes.owner_type`/`owner_id`,
+  // `tag_assignments.scope_type`/`scope_id` and this row — are checked
+  // against it on both restore and save. The attribution columns of
+  // `stored_files` / `storage_quotas` / `llm_usages` and
+  // `backup_records.user_id` are not scope keys and are not checked;
+  // the physical separation rests on this pin alone.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.scopeIdentity} (
      id integer PRIMARY KEY CHECK (id = 0),
      scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),
@@ -315,6 +316,10 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   // (spec/domains/tag.md), so the slice adding `tags` reclaims
   // assignments through `deleteBatchByTag` / `deleteByScope` in code and
   // does not restore the constraint.
+  // `scope_type`/`scope_id` is a scope key, not attribution: an
+  // assignment lives in the scope of the note it is on
+  // (spec/domains/tag.md), so the repository checks it against
+  // `_scope_identity` on both save and restore.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.tagAssignments} (
      id text PRIMARY KEY,
      tag_id text NOT NULL,

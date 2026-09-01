@@ -34,6 +34,17 @@
  * `content:\";position:fixed` as opening a string, never find the `;`
  * that actually ends the declaration, and hand the whole run to the
  * classifier as one statement whose property is `content`.
+ *
+ * There is a fourth rule, and it is the one that suspends the first two:
+ * inside an unquoted `url(`, a browser consumes code points straight to
+ * the `)` (CSS Syntax § consume-a-url-token), so neither a comment nor a
+ * string starts there. `background:url(x/*);position:fixed` ends its
+ * first declaration at the `;` — a scan that read the `/*` as a comment
+ * would run to the end of the input looking for a comment close, lose
+ * that `;`, and let the overlay through as one `background` declaration. So
+ * `readLexeme` returns the whole url-token as one lexeme too, honouring
+ * only escapes inside it, and the ident it tests for `url` is the
+ * escape-resolved one (`\75 rl(` is a url-token to a browser).
  */
 
 export type CssRemoval = Readonly<{ name: string; reason: string }>;
@@ -111,7 +122,7 @@ const asIdentChar = (char: string): string =>
     : OPAQUE_ESCAPE;
 
 type Lexeme = Readonly<{
-  kind: "comment" | "string" | "escape";
+  kind: "comment" | "string" | "escape" | "url";
   /** What the canonical copy stands the lexeme in as. */
   canonical: string;
   /** Offset just past it. */
@@ -146,16 +157,81 @@ const readEscape = (input: string, start: number): Lexeme => {
 };
 
 /**
+ * The unquoted url-token starting at `start`, or `null`.
+ *
+ * Mirrors CSS Syntax § consume-a-url-token: an ident spelled `url`
+ * (case-insensitively, **after** escapes resolve) followed by `(` opens a
+ * token that runs to the `)` — or to the end of the input — with escapes
+ * as the only thing read inside it. A quote after the `(` is the one
+ * branch that stays a function token, since that is where the browser
+ * starts tokenising again too.
+ *
+ * The ident is read forwards from `start` rather than backwards from the
+ * `(`, so a caller that walks one position at a time meets it. An ident
+ * this lands part-way into (`myurl(`) is over-matched, which only ever
+ * makes the scan see a terminator the browser hides — never the reverse.
+ */
+const readUrlToken = (input: string, start: number): Lexeme | null => {
+  let i = start;
+  let name = "";
+  while (i < input.length && name.length < 4) {
+    const char = input[i] as string;
+    if (char === "\\") {
+      const lexeme = readEscape(input, i);
+      name += lexeme.canonical;
+      i = lexeme.next;
+      continue;
+    }
+    if (!IDENT_CHAR.test(char)) {
+      break;
+    }
+    name += char;
+    i += 1;
+  }
+  if (name.toLowerCase() !== "url" || input[i] !== "(") {
+    return null;
+  }
+  let body = i + 1;
+  while (body < input.length && isWhitespace(input[body] as string)) {
+    body += 1;
+  }
+  const first = input[body];
+  if (first === '"' || first === "'") {
+    return null;
+  }
+  let end = i + 1;
+  while (end < input.length) {
+    const char = input[end] as string;
+    if (char === "\\") {
+      end = readEscape(input, end).next;
+      continue;
+    }
+    end += 1;
+    if (char === ")") {
+      break;
+    }
+  }
+  return { kind: "url", canonical: input.slice(start, end), next: end };
+};
+
+/**
  * The low-level lexical unit at `start`, or `null` when the character is
  * ordinary CSS syntax.
  *
- * The one place this module recognises a comment, a string or an escape.
- * Routing every scan through it is what makes the three rules hold in all
- * of them at once — see the note at the top of the file on why a scan
- * that honours only some of them is a hole rather than an inconsistency.
+ * The one place this module recognises a comment, a string, an escape, or
+ * an unquoted url-token. Routing every scan through it is what makes the
+ * four rules hold in all of them at once — see the note at the top of the
+ * file on why a scan that honours only some of them is a hole rather than
+ * an inconsistency.
  */
 const readLexeme = (input: string, start: number): Lexeme | null => {
   const char = input[start];
+  // Before the escape branch: `\75 rl(` is a url-token, not an escape
+  // followed by ordinary syntax.
+  const url = readUrlToken(input, start);
+  if (url !== null) {
+    return url;
+  }
   if (char === "/" && input[start + 1] === "*") {
     // A comment separates tokens, it does not join them: `pos/**/ition`
     // is two identifiers to the parser and must not collapse into one.

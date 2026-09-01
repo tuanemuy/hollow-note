@@ -178,8 +178,10 @@ const asStandaloneSvg = (markup: string): string | null => {
  * `process` answers a note-body fragment, so its 800,000-byte cap is the
  * real ceiling of anything that goes through here. That is what
  * `MEDIA_SVG_MAX_BYTES` is chosen against, and why the intake bounds the
- * document's shape as well as its length: no input this policy accepts
- * can serialize into a value the body's invariant refuses, so an
+ * document's shape — well-formedness, a depth, and the element names
+ * that would take the parser out of foreign content — as well as its
+ * length: an accepted input cannot reach the parser's foster parenting,
+ * which is what let a 128 KB document serialize into 11 MB, so an
  * oversized SVG is refused as `FileTooLarge` in Storage's own vocabulary
  * rather than as a note that is too long.
  */
@@ -245,21 +247,6 @@ export async function storeMedia({
     body: input.body,
   });
 
-  const owner: StorageOwner =
-    note.owner.type === "user"
-      ? StorageOwner.user(note.owner.userId)
-      : StorageOwner.workspace(note.owner.workspaceId);
-  await ensureUploadAllowed({
-    container,
-    input: {
-      subjectType: owner.type,
-      subjectId: owner.type === "user" ? owner.userId : owner.workspaceId,
-      userId: input.userId,
-      totalBytes: accepted.size,
-      llmCalls: 0,
-    },
-  });
-
   const mimeType: MimeType = accepted.mimeType;
   const body =
     mimeType === SVG_MIME_TYPE
@@ -281,6 +268,28 @@ export async function storeMedia({
       "File exceeds the media size limit once sanitized",
     );
   }
+
+  const owner: StorageOwner =
+    note.owner.type === "user"
+      ? StorageOwner.user(note.owner.userId)
+      : StorageOwner.workspace(note.owner.workspaceId);
+  // The capacity is weighed after the rewrite, on the same value: what
+  // fills a subject's quota is what the row records, and asking the gate
+  // about the bytes as they arrived would let an SVG that grows overrun
+  // the remaining capacity and one that shrinks be refused for room it
+  // does not need. Sanitizing an over-quota upload first is bounded work
+  // — the intake caps an SVG at `MEDIA_SVG_MAX_BYTES` and bounds its
+  // shape — and no byte reaches the object store before this gate.
+  await ensureUploadAllowed({
+    container,
+    input: {
+      subjectType: owner.type,
+      subjectId: owner.type === "user" ? owner.userId : owner.workspaceId,
+      userId: input.userId,
+      totalBytes: storedSize,
+      llmCalls: 0,
+    },
+  });
 
   const fileId = StoredFileId.create(idGenerator.next());
   const objectKey = ObjectKey.build(

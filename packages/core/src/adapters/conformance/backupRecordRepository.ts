@@ -105,7 +105,12 @@ export function describeBackupRecordRepositoryContract(
       }
       await repository.insert(record(6, noteId(2), "file-1"));
 
+      // `limit <= 0` is the whole clause, not just `0`: a backend that
+      // hands the bound to its driver unclamped answers a negative page
+      // with everything, or with a driver fault.
       expect(await repository.deleteByNote(noteId(1), 0)).toBe(0);
+      expect(await repository.deleteByNote(noteId(1), -1)).toBe(0);
+      expect(await repository.listByNote(noteId(1))).toHaveLength(5);
       // A full page is what tells the caller to schedule another turn,
       // so the bound has to cut exactly at `limit`.
       expect(await repository.deleteByNote(noteId(1), 2)).toBe(2);

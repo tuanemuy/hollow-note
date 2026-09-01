@@ -10,7 +10,7 @@ import { WorkspaceErrorCode } from "@repo/core/domain/workspace/errorCode";
 import { WorkspaceAuthorization } from "@repo/core/domain/workspace/services/workspaceAuthorization";
 import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import type { RequestContainer } from "../di/types";
-import { ScopeKey } from "../scope";
+import { scopeOfNoteOwner } from "../scope";
 import type { ServiceArgs } from "../types";
 import { resolveWorkspaceAccess } from "../workspace/resolveWorkspaceAccess";
 import { type CreatedNoteView, ownerOf } from "./view";
@@ -59,7 +59,7 @@ export async function createBlankNote({
 
   const userId = UserId.create(input.userId);
   const owner = await resolveOwner(container, input);
-  const scope = scopeOf(owner);
+  const scope = scopeOfNoteOwner(owner);
   const rawTitle = input.title ?? "";
   // Validate before reserving the route so an invalid title never
   // creates saga state.
@@ -161,7 +161,7 @@ export async function recoverBlankNoteCreation({
     input.ownerType === "user"
       ? NoteOwner.user(UserId.create(input.ownerId))
       : NoteOwner.workspace(WorkspaceId.create(input.ownerId));
-  const scope = scopeOf(owner);
+  const scope = scopeOfNoteOwner(owner);
 
   const stored = await container
     .noteReaderFor(scope)
@@ -203,10 +203,4 @@ async function resolveOwner(
   }
   WorkspaceAuthorization.ensureCan(access.role, "createNote");
   return NoteOwner.workspace(WorkspaceId.create(access.workspaceId));
-}
-
-function scopeOf(owner: NoteOwner): ScopeKey {
-  return owner.type === "user"
-    ? ScopeKey.user(owner.userId)
-    : ScopeKey.workspace(owner.workspaceId);
 }

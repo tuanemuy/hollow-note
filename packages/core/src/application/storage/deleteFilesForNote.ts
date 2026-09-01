@@ -1,7 +1,7 @@
 import {
-  armNotePurgeContinuation,
   assertNotePurgeAdmission,
   type NotePurgeFanOutTurn,
+  settleNotePurgeTurn,
 } from "../cleanup/notePurgeFanOut";
 import type { WorkerContainer } from "../di/types";
 import type { ScopeKey } from "../scope";
@@ -73,19 +73,15 @@ export async function deleteFilesForNote({
       now,
     );
 
-    if (files.length < NOTE_FILE_DELETE_BATCH_SIZE) {
-      await ctx.scopeTaskScheduler.complete(
-        NOTE_FILE_DELETE_TASK_KIND,
-        input.operationId,
-      );
-      return { deletedCount };
-    }
-
-    await armNotePurgeContinuation(ctx, {
+    // The page that decides the turn is what `listDeletableByNote`
+    // returned, not what `deleteStoredFiles` removed: a file another
+    // turn already took shortens the count without shortening the page.
+    await settleNotePurgeTurn(ctx, {
       kind: NOTE_FILE_DELETE_TASK_KIND,
       operationId: input.operationId,
       turn: input,
       now,
+      full: files.length >= NOTE_FILE_DELETE_BATCH_SIZE,
     });
     return { deletedCount };
   });
