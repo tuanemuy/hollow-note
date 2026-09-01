@@ -3,7 +3,10 @@ import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import type { FileStoredEvent } from "@repo/core/domain/storage/events";
-import { MEDIA_SVG_MAX_BYTES } from "@repo/core/domain/storage/services/uploadValidationPolicy";
+import {
+  MEDIA_SVG_MAX_BYTES,
+  MEDIA_SVG_MAX_DEPTH,
+} from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { ObjectKey } from "@repo/core/domain/storage/valueObject";
 import { UsageErrorCode } from "@repo/core/domain/usage/errorCode";
 import { StorageQuota } from "@repo/core/domain/usage/storageQuota";
@@ -128,12 +131,58 @@ const trailedBy = (trailer: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>${trailer}`;
 
 /**
- * An attribute value carrying what looks like the end of the document.
- * The serializer escapes `&` and `"` in a value but not `<` or `>`, so
- * anything that delimits tags by searching for those characters closes
- * the root here and refuses a document that is perfectly well formed.
+ * An attribute value carrying what looks like the end of a tag. The
+ * serializer escapes `&` and `"` in a value but not `>`, so anything
+ * that delimits tags by searching for that character ends the root's
+ * start tag here and refuses a document that is perfectly well formed.
+ * (`<` cannot join it: XML forbids one inside an attribute value, which
+ * is a separate case below.)
  */
-const CLOSING_TAG_IN_ATTRIBUTE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" data-note="a>b </svg> more"><rect width="4" height="4"/></svg>`;
+const CLOSING_TAG_IN_ATTRIBUTE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" data-note="a>b /svg> more"><rect width="4" height="4"/></svg>`;
+
+/**
+ * U+00A0 in text and in an attribute value. The HTML serializer writes
+ * both as `&nbsp;`, and a `.svg` carries no DTD to define that name, so
+ * storing it verbatim is an undefined entity — a fatal XML error.
+ */
+const NBSP_SVG =
+  `<svg xmlns="http://www.w3.org/2000/svg">` +
+  `<text>a\u00A0b</text><rect data-x="c\u00A0d" width="4" height="4"/></svg>`;
+
+/**
+ * `desc` and `title` are HTML integration points: the parser resumes
+ * HTML parsing under them, so without a rule of its own the whole HTML
+ * allow list gets in — `<style>`, which XML then reads as SVG's own
+ * `style` element applying to the document, and void elements that
+ * serialize with no closing tag at all.
+ */
+const INTEGRATION_POINT_SVG =
+  `<svg xmlns="http://www.w3.org/2000/svg"><desc>` +
+  `<style>rect{fill:red}</style><img src="a.png"/>a<br/>b</desc>` +
+  `<title><b>bold</b></title><rect width="4" height="4"/></svg>`;
+
+/**
+ * Markup no XML parser opens, each broken in its own way. All of them
+ * are what the *uploaded* bytes look like, and a browser refuses every
+ * one of them, so refusing at the intake costs nothing that would have
+ * rendered.
+ */
+const MALFORMED_SVG = {
+  controlCharacter: `<svg xmlns="http://www.w3.org/2000/svg"><desc>a\u0001b</desc><rect width="4" height="4"/></svg>`,
+  unclosedTag: `<svg xmlns="http://www.w3.org/2000/svg"><desc><img src="a.png"></desc><rect width="4" height="4"/></svg>`,
+  undefinedEntity: `<svg xmlns="http://www.w3.org/2000/svg"><text>a&nbsp;b</text></svg>`,
+  rawLessThan: `<svg xmlns="http://www.w3.org/2000/svg" data-note="a<b"><rect width="4" height="4"/></svg>`,
+} as const;
+
+/** A document `levels` elements deep, the root included. */
+const nestedSvg = (levels: number): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg">${"<g>".repeat(levels - 1)}` +
+  `x${"</g>".repeat(levels - 1)}</svg>`;
+
+const repeatedInsideDesc = (unit: string, bytes: number): string => {
+  const head = `<svg xmlns="http://www.w3.org/2000/svg"><desc>`;
+  return `${head}${unit.repeat(Math.floor((bytes - head.length) / unit.length))}`;
+};
 
 const SVG_NAMESPACE = 'xmlns="http://www.w3.org/2000/svg"';
 const XLINK_NAMESPACE = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
@@ -448,11 +497,12 @@ describe("storeMedia", () => {
   it("TC-storage-252: an SVG that grows past the ceiling while being sanitized is refused before it is stored", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
-    // Every `&` comes back as `&amp;`, so bytes the policy accepted turn
-    // into bytes it would not have. What is stored is what has to obey
-    // the limit.
-    const growing = `<svg xmlns="http://www.w3.org/2000/svg"><text>${"&".repeat(
-      MEDIA_SVG_MAX_BYTES / 2,
+    // U+00A0 is two bytes in and six out — the sanitizer writes it as
+    // `&nbsp;`, which storing rewrites into the numeric form XML defines
+    // — so bytes the policy accepted turn into bytes it would not have.
+    // What is stored is what has to obey the limit.
+    const growing = `<svg xmlns="http://www.w3.org/2000/svg"><text>${"\u00A0".repeat(
+      MEDIA_SVG_MAX_BYTES / 4,
     )}</text></svg>`;
     expect(new TextEncoder().encode(growing).byteLength).toBeLessThan(
       MEDIA_SVG_MAX_BYTES,
@@ -501,7 +551,7 @@ describe("storeMedia", () => {
     expect(h.backend.objects.size).toBe(0);
   });
 
-  it("TC-storage-256: a character trim() calls whitespace but XML calls content is refused after </svg>", async () => {
+  it("TC-storage-261: a character trim() calls whitespace but XML calls content is refused after </svg>", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
 
@@ -519,7 +569,7 @@ describe("storeMedia", () => {
     expect(h.backend.objects.size).toBe(0);
   });
 
-  it("TC-storage-256: XML's own whitespace around the root is accepted, the four characters it admits being the ruler", async () => {
+  it("TC-storage-268: XML's own whitespace around the root is accepted, the four characters it admits being the ruler", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
 
@@ -564,10 +614,138 @@ describe("storeMedia", () => {
     });
 
     const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
-    expect(stored).toContain('data-note="a>b </svg> more"');
+    expect(stored).toContain('data-note="a>b /svg> more"');
     expect(stored.endsWith("</svg>")).toBe(true);
     // One declaration, inserted into the root's real start tag.
     expect(stored.split(SVG_NAMESPACE)).toHaveLength(2);
+  });
+
+  it("TC-storage-262: stores U+00A0 as the reference XML defines, not the &nbsp; the serializer writes", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // The sanitizer's own output carries the undefined entity, in the
+    // text and in the attribute value alike, so this is the usecase's to
+    // resolve before the bytes become a document.
+    expect(h.container.htmlProcessor.process(NBSP_SVG).html).toContain(
+      "&nbsp;",
+    );
+
+    await upload(h, noteId, { body: svg(NBSP_SVG), fileName: "space.svg" });
+
+    const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
+    expect(stored).not.toContain("&nbsp;");
+    expect(stored).toContain("a&#160;b");
+    expect(stored).toContain('data-x="c&#160;d"');
+  });
+
+  it("TC-storage-263: keeps the SVG subset under desc / title, where HTML parsing resumes", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    await upload(h, noteId, {
+      body: svg(INTEGRATION_POINT_SVG),
+      fileName: "described.svg",
+    });
+
+    const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
+    // `<style>` is the one that matters twice over: ADR 013 keeps it out
+    // of the SVG subset, and XML reads a surviving one as SVG's own
+    // `style` element, applying its CSS to the whole document.
+    expect(stored).not.toContain("<style");
+    expect(stored).not.toContain("fill:red");
+    // Void elements have no closing tag in HTML serialization, so one
+    // left inside the root is a mismatched tag to an XML parser.
+    expect(stored).not.toContain("<img");
+    expect(stored).not.toContain("<br");
+    expect(stored).not.toContain("<b>");
+    expect(stored).toContain("<desc>ab</desc>");
+    expect(stored).toContain("<rect");
+  });
+
+  it("TC-storage-265: refuses markup XML cannot open, whatever it is that breaks it", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    for (const [shape, markup] of Object.entries(MALFORMED_SVG)) {
+      await expectBusinessRule(
+        upload(h, noteId, { body: svg(markup), fileName: `${shape}.svg` }),
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-264: accepts an ampersand where XML reads one as a character rather than a reference", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    // A generator comment is where a real drawing carries one, and the
+    // references rule has no business there — inside a comment, a
+    // processing instruction or CDATA an `&` opens nothing.
+    await upload(h, noteId, {
+      body: svg(
+        `<svg xmlns="http://www.w3.org/2000/svg"><!-- Drawn & exported --><rect width="4" height="4"/></svg>`,
+      ),
+      fileName: "commented.svg",
+    });
+
+    expect(filesIn(h, personalScope)).toHaveLength(1);
+  });
+
+  it("TC-storage-266: refuses an SVG nested past the depth the sanitizer's recursion can walk", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // The two sides below are relative to the constant, so the literal
+    // the ledger row names (64 / 65) is pinned here rather than moving
+    // with it.
+    expect(MEDIA_SVG_MAX_DEPTH).toBe(64);
+
+    await upload(h, noteId, {
+      body: svg(nestedSvg(MEDIA_SVG_MAX_DEPTH)),
+      fileName: "deep.svg",
+    });
+    expect(filesIn(h, personalScope)).toHaveLength(1);
+
+    await expectBusinessRule(
+      upload(h, noteId, {
+        body: svg(nestedSvg(MEDIA_SVG_MAX_DEPTH + 1)),
+        fileName: "deeper.svg",
+      }),
+      StorageErrorCode.UnsupportedMimeType,
+    );
+    // 6 KB of this used to reach `sanitizeNodes` and answer a bare
+    // `RangeError`, which carries no `kind` and reaches the user as an
+    // unexplained 500.
+    await expectBusinessRule(
+      upload(h, noteId, {
+        body: svg(repeatedInsideDesc("<b><i>", 8 * 1024)),
+        fileName: "recursive.svg",
+      }),
+      StorageErrorCode.UnsupportedMimeType,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(1);
+  });
+
+  it("TC-storage-267: refuses an SVG whose parse would multiply before any length is weighed", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    // Unclosed formatting elements across blocks are what makes the HTML
+    // parser reconstruct — and duplicate — them: 128 KB of this
+    // serialized into a value the note body's 800,000-byte invariant
+    // refused, so an accepted upload failed in Note's vocabulary.
+    for (const unit of ["<b><p>", "<em><p>", "<b><i><p>"]) {
+      await expectBusinessRule(
+        upload(h, noteId, {
+          body: svg(repeatedInsideDesc(unit, MEDIA_SVG_MAX_BYTES)),
+          fileName: "quadratic.svg",
+        }),
+        StorageErrorCode.UnsupportedMimeType,
+      );
+    }
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 
   it("TC-storage-183: an upload larger than the remaining capacity is refused before any byte is written", async () => {

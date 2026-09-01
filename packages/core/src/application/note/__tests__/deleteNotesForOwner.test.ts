@@ -1,5 +1,6 @@
 import type { NotePurgeContainer } from "@repo/core/application/di/types";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
+import type { ScopeTaskPayload } from "@repo/core/application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
@@ -566,6 +567,73 @@ describe("deleteNotesForOwner", () => {
     expect(h.backend.publicPurgeAcks.keys()).toHaveLength(1);
     expect(await acknowledged(h)).toContain("note");
     expect(tasks(h)).toHaveLength(0);
+  });
+
+  it("TC-note-782: hands the stuck purge on even when the turn's own settle is lost", async () => {
+    const h = createTestHarness();
+    const [noteId] = await createPersonalNotes(h, 1);
+    await beginCleanup(h);
+    const real = h.container.scopeUnitOfWorkProvider;
+    let opened = 0;
+    const rowsBefore: (readonly ScopeTaskPayload[])[] = [];
+    const container: NotePurgeContainer = {
+      ...h.container,
+      scopeUnitOfWorkProvider: {
+        run: (async (scope, body) => {
+          opened += 1;
+          rowsBefore.push(tasks(h).map((task) => task.payload));
+          const result = await real.run(scope, body);
+          // The delete's response is lost (3), and so is the
+          // transaction that settles the turn (5) — one incident is
+          // enough to take both.
+          if (opened === 3 || opened === 5) {
+            throw new SystemError(
+              SystemErrorCode.DatabaseError,
+              "the commit's response was lost",
+            );
+          }
+          return result;
+        }) as typeof real.run,
+      },
+    };
+
+    const turn = await run(h, { container }).then(
+      () => "the settle committed",
+      () => "the settle was lost",
+    );
+
+    // What the row held *before* the turn's last transaction: the id was
+    // already there. Had it waited for the settle, the loss of that
+    // transaction would have left the note recorded nowhere at all.
+    expect(rowsBefore.at(-1)).toEqual([
+      {
+        deletionOperationId: OPERATION_ID,
+        stuckPurges: [{ noteId, expectedVersion: 0 }],
+      },
+    ]);
+    expect(turn).toBe("the settle was lost");
+
+    // The note is out of every enumeration, so this row is the only
+    // record left of it anywhere.
+    expect(remainingNotes(h)).toBe(0);
+    expect(route(h, noteId)?.state).toBe("purging");
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: NOTE_OWNER_PURGE_TASK_KIND,
+        operationId: OPERATION_ID,
+        payload: {
+          deletionOperationId: OPERATION_ID,
+          stuckPurges: [{ noteId, expectedVersion: 0 }],
+        },
+      }),
+    ]);
+    expect(await acknowledged(h)).not.toContain("note");
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    expect(round.processed).toBe(1);
+    expect(route(h, noteId)?.state).toBe("tombstone");
+    expect(await acknowledged(h)).toContain("note");
   });
 
   it("TC-note-788: keeps the continuation alive for a stuck note even after the listing runs dry", async () => {

@@ -1323,7 +1323,7 @@
 | TC-note-353 | purgeNote: local delete後・public remove前に停止する — recoveryする | spec/testcases/note/purgeNote.md#テストケース-purgenote | 同じoperation IDでpublic removeを再開し、古いeventはpublic行を復活させない |
 | TC-note-354 | purgeNote: public removeがackした — 完了する | spec/testcases/note/purgeNote.md#テストケース-purgenote | routeが30日保持の`tombstone`になり、再配送しても同じ結果になる |
 | TC-note-355 | purgeNote: remove ackの応答を失う — Cron recoveryする | spec/testcases/note/purgeNote.md#テストケース-purgenote | public削除とoperation ackを冪等に再実行し、ack後だけtombstoneへ進む |
-| TC-note-356 | purgeNote: 完全削除後 — 版（`note_revisions`）を確認する | spec/testcases/note/purgeNote.md#テストケース-purgenote | DB の FK CASCADE で同時に削除される |
+| TC-note-356 | purgeNote: 完全削除後 — 版（`note_revisions`）を確認する | spec/testcases/note/purgeNote.md#テストケース-purgenote | purge の transaction が `NoteRevisionRepository.deleteByNote` で明示的に消す（本リポジトリのどのスキーマも FK を宣言しない） |
 | TC-note-357 | purgeNote: 完全削除後 — タグ付与を確認する | spec/testcases/note/purgeNote.md#テストケース-purgenote | Tag の `deleteAssignmentsForNote` が `note.purged` を受けて削除する |
 | TC-note-358 | purgeNote: 完全削除後 — 保管ファイル（`source` / `media` / `reference`）を確認する | spec/testcases/note/purgeNote.md#テストケース-purgenote | Storage の `deleteFilesForNote` が回収する |
 | TC-note-359 | purgeNote: 完全削除後 — バックアップ記録を確認する | spec/testcases/note/purgeNote.md#テストケース-purgenote | Integration の `deleteBackupRecordsForNote` が削除する |
@@ -2044,6 +2044,14 @@
 | TC-storage-258 | collectOrphanMedia: turn 全体が失敗する — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | 記録して翌日の掃引を張り直し、`collectedCount: 0` で正常終了する（scope 唯一の掃引行を `failed` に駐車させないため）。開始した位置は捨てず、張り直しの payload と `nextCursor` にそのまま載せる |
 | TC-storage-259 | collectOrphanMedia: 1 ページの中で 6 つ目のノートに当たる（ノート数の予算は 5） — 実行する | spec/testcases/storage/collectOrphanMedia.md#テストケース-collectorphanmedia | その手前で打ち切り、判定し終えた最後の行の位置を載せた継続を直後に積む（ページが満ちていなくても継続する） |
 | TC-storage-260 | storeMedia: ゴミ箱のノート — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | `BusinessRuleError(NoteIsTrashed)` が投げられ、オブジェクトも `StoredFile` の行も残らない |
+| TC-storage-261 | storeMedia: サニタイズ後に `</svg>` の後ろへ BOM・EM SPACE・LINE SEPARATOR が残る SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 同じく `BusinessRuleError(UnsupportedMimeType)` になる。判定の物差しは XML が空白と定める 4 文字（空白・タブ・CR・LF）で、`trim()` が空白と呼ぶだけの文字は内容として扱う |
+| TC-storage-262 | storeMedia: テキストまたは属性値に U+00A0 を含む SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 保管されたバイト列では `&#160;` になっている（HTML の直列化が書く `&nbsp;` は DTD を持たない `.svg` では未定義実体＝致命的エラーになる） |
+| TC-storage-263 | storeMedia: `<desc>` / `<title>` の配下に `style` / `img` / `br` / `b` を持つ SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | それらは内容ごと除去され、`<desc>` にはテキストだけが残る（HTML の integration point なので配下では HTML 解析が再開するが、`<svg>` の内側の許可リストは SVG の部分集合ただ 1 つ） |
+| TC-storage-264 | storeMedia: コメント・処理命令・CDATA の中に `&` を含む SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 成功する（実体参照の規則が効くのは文字データと属性値だけで、コメントの中の `&` は 1 文字にすぎない） |
+| TC-storage-265 | storeMedia: XML として整形式でない SVG（タブ・CR・LF 以外の C0 制御文字、閉じないタグ、未定義実体 `&nbsp;`、属性値中の生の `<`） — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | `BusinessRuleError(UnsupportedMimeType)` が投げられ、オブジェクトも `StoredFile` の行も残らない（ブラウザもこれらを開けないので、受理を断っても描けたものは失わない） |
+| TC-storage-266 | storeMedia: 入れ子が 64 段の SVG / 65 段の SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 64 段は成功し、65 段は `BusinessRuleError(UnsupportedMimeType)` になる（境界値。サニタイザーは木を素の再帰で歩くので、深さがそのままスタックの深さになる） |
+| TC-storage-267 | storeMedia: 閉じない整形要素とブロック要素を交互に並べた 128 KB の SVG（`<b><p>` / `<em><p>` / `<b><i><p>` の反復） — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | `BusinessRuleError(UnsupportedMimeType)` になる（整形要素の複製で出力が入力の二乗に膨らむため、受理すると Note の語彙の `NOTE_CONTENT_TOO_LARGE` で落ちる） |
+| TC-storage-268 | storeMedia: ルート要素の前後に XML の空白（空白・タブ・CR・LF）だけがある SVG — アップロードする | spec/testcases/storage/storeMedia.md#テストケース-storemedia | 成功する（境界値） |
 | TC-tag-001 | assignTag: 編集できるノート、同名タグなし — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | タグが新規作成され付与され、`created: true` が返る |
 | TC-tag-002 | assignTag: 同じスコープに同名タグがある — タグを付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 既存のタグが使われ、`created: false` が返る |
 | TC-tag-003 | assignTag: 既に同じタグが付いている — 再度付ける | spec/testcases/tag/assignTag.md#テストケース-assigntag | 重複した付与は作られず成功する |

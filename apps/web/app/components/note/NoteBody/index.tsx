@@ -23,7 +23,7 @@ import { useEffect, useRef, useState } from "react";
  * - 保存済みの本文 — `HtmlProcessor`（`adapters/html/htmlProcessor.ts`）の
  *   サニタイズを通っている（[ADR 013](spec/adr/013-html-sanitization-policy.md)）
  * - P-12 の HTML モードが出す**未保存**の本文 — `NoteEditor/surfaces.tsx` の
- *   `scrubForPreview` しか通っていない。これは保存時のサニタイズの
+ *   `scrubForSurface` しか通っていない。これは保存時のサニタイズの
  *   **部分集合**で、許可リスト外の要素・属性・CSS 宣言は落ちない
  *
  * どちらもクライアントでは `shadowRoot.innerHTML` から入るので、本文の

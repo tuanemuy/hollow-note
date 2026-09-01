@@ -351,10 +351,16 @@ describe("UploadValidationPolicy: media", () => {
     // through `HtmlProcessor`, whose result is bound by the note body's
     // 800,000-byte cap, and a limit above what that can return would be
     // unreachable (spec/domains/storage.md).
-    const padded = (bytes: number): Uint8Array =>
-      svgBody(
-        `<svg xmlns="http://www.w3.org/2000/svg"><!--${"a".repeat(bytes)}--></svg>`,
-      ).subarray(0, bytes);
+    // Padded inside a comment, and closed: the intake reads the whole
+    // document, so a body cut off mid-construct is refused for its shape
+    // before its length is ever weighed.
+    const padded = (bytes: number): Uint8Array => {
+      const head = '<svg xmlns="http://www.w3.org/2000/svg"><!--';
+      const tail = "--></svg>";
+      return svgBody(
+        `${head}${"a".repeat(bytes - head.length - tail.length)}${tail}`,
+      );
+    };
     expect(accept(padded(MEDIA_SVG_MAX_BYTES)).size).toBe(MEDIA_SVG_MAX_BYTES);
     expect(refuse(padded(MEDIA_SVG_MAX_BYTES + 1))).toBe(
       StorageErrorCode.FileTooLarge,

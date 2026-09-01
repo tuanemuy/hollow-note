@@ -367,6 +367,12 @@ export const storeNoteMediaFn = createServerFn({ method: "POST" })
  *
  * 本文が空のときは白紙のまま作る（`updateNoteBody` を呼ばない） — 版を
  * 1 つと Revision を 1 件、何も書いていない編集に費やさないため。
+ *
+ * `title` を返すのは、確定済みのタイトルを画面が**送った生値**で持たない
+ * ためである。`NoteTitle.manual` は空を「無題」に変え前後の空白を落とす
+ * ので、生値を確定済みにすると編集画面のタイトル欄だけが空のまま残る
+ * （`rename` の応答が `title` を返すのと同じ理由）。読み直しは版のために
+ * すでに行っているので往復は増えない。
  */
 export const createNoteWithBodyFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])
@@ -408,6 +414,7 @@ export const createNoteWithBodyFn = createServerFn({ method: "POST" })
         noteId: created.noteId,
         workspaceId: data.workspaceId,
         version: blank.version,
+        title: blank.title,
         removed: [],
       };
     }
@@ -431,6 +438,7 @@ export const createNoteWithBodyFn = createServerFn({ method: "POST" })
       noteId: created.noteId,
       workspaceId: data.workspaceId,
       version: saved.version,
+      title: read.title,
       removed: saved.removed,
     };
   });

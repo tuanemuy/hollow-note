@@ -467,13 +467,19 @@ export function createCloudflareStoredFileRepository(
                 bounded,
               )
             : statement(
+                // A row value, not the equivalent
+                // `created_at > ? OR (created_at = ? AND id > ?)`: SQLite
+                // cannot push the OR form into a range constraint, so it
+                // seeks only to `purpose = ?` and re-reads every already
+                // swept row of the pass as a filter. `(created_at, id) > (?, ?)`
+                // becomes the lower bound of the seek on
+                // `stored_files_purpose_created_idx`.
                 `SELECT ${SELECTION} FROM ${TABLE}
              WHERE purpose = ? AND created_at <= ?
-               AND (created_at > ? OR (created_at = ? AND id > ?))
+               AND (created_at, id) > (?, ?)
              ORDER BY created_at, id LIMIT ?`,
                 purpose,
                 threshold,
-                keyset.at,
                 keyset.at,
                 keyset.id,
                 bounded,

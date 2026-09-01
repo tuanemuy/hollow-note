@@ -283,8 +283,11 @@ const reportUnconditionalAttributes = (
   }
 };
 
-const sanitizeAttributes = (element: Element, report: Report): void => {
-  const svg = isSvg(element);
+const sanitizeAttributes = (
+  element: Element,
+  report: Report,
+  svg: boolean,
+): void => {
   const kept: Token.Attribute[] = [];
   const allowedForElement = ELEMENT_ATTRIBUTES.get(element.tagName);
 
@@ -400,18 +403,31 @@ const sanitizeNodes = (
   nodes: readonly ChildNode[],
   parent: ParentNode,
   report: Report,
+  insideSvg: boolean,
 ): ChildNode[] => {
   const out: ChildNode[] = [];
   for (const node of nodes) {
-    out.push(...sanitizeNode(node, parent, report));
+    out.push(...sanitizeNode(node, parent, report, insideSvg));
   }
   return out;
 };
 
+/**
+ * `insideSvg` says the node has an `<svg>` above it, which is not the
+ * same as being in the SVG namespace: `desc`, `title` and
+ * `foreignObject` are HTML integration points, so the parser resumes
+ * *HTML* parsing under them and their children come back in the HTML
+ * namespace. Judging each node by its own namespace would let the whole
+ * HTML allow list in through `<desc>` — `<style>` included, which ADR
+ * 013 deliberately keeps out of the SVG subset, and which an XML parser
+ * then reads as SVG's own `style` element applying to the document.
+ * Inside an `<svg>` the SVG subset is the only allow list there is.
+ */
 const sanitizeNode = (
   node: ChildNode,
   parent: ParentNode,
   report: Report,
+  insideSvg: boolean,
 ): ChildNode[] => {
   if (isTextNode(node)) {
     return [node];
@@ -421,7 +437,7 @@ const sanitizeNode = (
     return [];
   }
 
-  const svg = isSvg(node);
+  const svg = isSvg(node) || insideSvg;
   const name = node.tagName;
 
   if (!svg && name === "link") {
@@ -447,10 +463,10 @@ const sanitizeNode = (
     if (svg || DROP_WITH_CONTENT.has(name)) {
       return [];
     }
-    return sanitizeNodes(node.childNodes, parent, report);
+    return sanitizeNodes(node.childNodes, parent, report, insideSvg);
   }
 
-  sanitizeAttributes(node, report);
+  sanitizeAttributes(node, report, svg);
 
   if (!svg && name === "style") {
     const source = node.childNodes
@@ -464,7 +480,7 @@ const sanitizeNode = (
     return [node];
   }
 
-  adopt(node, sanitizeNodes(node.childNodes, node, report));
+  adopt(node, sanitizeNodes(node.childNodes, node, report, svg));
   return [node];
 };
 
@@ -766,7 +782,10 @@ export function createHtmlProcessor(): HtmlProcessor {
         removed.push(removal);
       };
 
-      adopt(fragment, sanitizeNodes(fragment.childNodes, fragment, report));
+      adopt(
+        fragment,
+        sanitizeNodes(fragment.childNodes, fragment, report, false),
+      );
       const headings = collectHeadings(fragment);
       const text = extractText(fragment.childNodes);
 

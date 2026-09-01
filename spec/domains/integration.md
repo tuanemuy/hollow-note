@@ -207,6 +207,8 @@ interface BackupRecordRepository extends TransactionalRepository<BackupRecord, B
 
 `listByNote` は 1 ノートの記録を `BackupRecordId` 昇順で全件返す。順序はバックエンドの裁量ではなく契約とし、同じノートを 2 回読めば同じ並びになること・バックエンド間で比較できることを保証する（`listByNotes` の複数ノート版とは別に、`deleteByNote` の対象集合をそのまま観測する経路として要る）。
 
+`deleteByNote` は同じ `BackupRecordId` 昇順の先頭から最大 `limit` 件を消す。どの `limit` 件を消すかも契約であってバックエンドの裁量ではない — 途中まで消した時点の残りがバックエンド間で一致し、`listByNote` で観測できることがそのまま有界削除の検証手段になる。
+
 `insert` は 2 つの一意制約を別の種類のエラーへ写す。`(noteId, sourceFileId)` の重複は呼び手が受け入れられる衝突なので `ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`BackupRecordId` の再利用は採番の誤りなので `SystemError(DatabaseError)` とする。両者を 1 つのエラーに畳むと、直すべき事故に対して「再試行せよ」と答えることになる（`TagAssignmentRepository` の `ASSIGNMENT_ALREADY_EXISTS` と同じ整理）。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`SystemError(DatabaseError)`

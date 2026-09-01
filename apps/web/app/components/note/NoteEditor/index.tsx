@@ -94,7 +94,6 @@ export async function NoteEditor({
         title: note.title,
         html: note.content.html ?? "",
         version: note.version,
-        styleMode: note.styleMode,
         // ED-04 の警告は「元が HTML ファイル由来のノート」に出す。取り込み
         // 由来かどうかは元ファイルの有無で、装飾を保っている本文かどうかは
         // `styleMode` で分かる（[ADR 007](spec/adr/007-default-style-isolation.md)）。

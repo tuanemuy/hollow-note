@@ -73,7 +73,10 @@ export const ORPHAN_MEDIA_BATCH_SIZE = 100;
  * A page is usually one note's pictures, so the budget is normally never
  * reached. When it is, the turn stops at the last file it judged and
  * continues from there immediately: the position advances, so the work
- * is postponed by a turn rather than lost.
+ * is postponed by a turn rather than lost. Lowering this value is not
+ * free — a pass over files that stay scattered across notes costs
+ * `limit / budget` times as many turns, since each turn then advances by
+ * the budget rather than by the page.
  */
 export const ORPHAN_MEDIA_NOTE_BUDGET = 5;
 

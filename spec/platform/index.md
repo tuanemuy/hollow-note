@@ -144,7 +144,7 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 | 経路 | 1 回の上限 | 根拠 |
 | --- | --- | --- |
 | `emptyTrash` の同期削除 | **50 notes** | HTTP mutation の CPU と response latency |
-| owner / workspace cleanup | **100 rows** | 1 Alarm turn の CPU と outbox fan-out |
+| owner / workspace cleanup | **100 rows** | 1 Alarm turn の CPU と outbox fan-out（note の purge だけは下記のとおり global 予算も掛かる） |
 | 強制終端 / `reapExpiredJobs` | **100 jobs** | transition + recovery + event の fan-out |
 | tag rename/delete/merge fan-out、unused delete | **200 assignments/tags** | revision bump・再投影task・監査payloadの上限 |
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
@@ -155,6 +155,8 @@ scope-local の一括削除は、**書き込みをバッチ件数によらず 1 
 一方で **1 turn の SQL 文の総数と、読み側の RPC 往復は件数に比例する**。所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約から、読みは 1 件につき往復を持つ。Cloudflare 実装の実測は 1 turn `4n + 3` 文（`n` 件に対し読み `2n + 2` ＋ commit 内 `2n + 1`）で、commit は件数によらず 1 回である。これも上限ではなく実装が満たすべき設計目標として置く（[ADR 056](../adr/056-performance-budget-placement.md) 決定 2）。どのバックエンドがこの数に届かないかは同 ADR のコンテキストが持ち、この節には書かない（同 決定 3）。
 
 全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。ここでの「往復」は**ポート呼び出しの追加往復**（件数ぶんの `listByOwner` を要求しない、の意）であって、上の RPC 往復とは別の量である。
+
+**`deleteNotesForOwner` だけは scope cleanup でありながら Global D1 の予算に掛かる**。1 件の purge は route の `resolve` / `beginPurge` / `finishPurge` と public projection の `removeForPurge` という global 側を必ず通るため、1 turn の global query 数は概ね「ノート数 × 4〜6」になる。上表の 100 rows は既定でこの 500 query 上限に張り付く値であり、余裕を取る側の調整は `batchSize` を**下げる**ことである。他の scope cleanup（storage / tag / integration）は scope-local に閉じるのでこの勘定に入らない。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 

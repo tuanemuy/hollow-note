@@ -273,7 +273,7 @@ interface IdempotencyStore {
 
 | 継続要求 | payload | 唯一の購読者 |
 | --- | --- | --- |
-| `note.ownerPurgeContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
+| `note.ownerPurgeContinued` | `{ scope, deletionOperationId, stuckPurges: { noteId, expectedVersion }[] }` | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
 | `storage.ownerDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
 | `storage.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteFilesForNote`](../usecases/storage.md) |
 | `tag.scopeDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |

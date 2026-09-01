@@ -24,6 +24,16 @@
  * identifier escapes before it sees a property name: `position/**\/:fixed`,
  * `position:\66 ixed` and `@\69 mport` are all effectively the two things
  * this module exists to remove.
+ *
+ * **Every scan in this module reads its input through `readLexeme`.** The
+ * three low-level constructs a browser resolves before any of the syntax
+ * above — a comment, a string, an escape — are recognised in exactly one
+ * place, so a scan cannot know about one of them and not the others. An
+ * escape in particular swallows what follows the `\` and is never syntax:
+ * a scan that skipped the `\` would read the `"` of
+ * `content:\";position:fixed` as opening a string, never find the `;`
+ * that actually ends the declaration, and hand the whole run to the
+ * classifier as one statement whose property is `content`.
  */
 
 export type CssRemoval = Readonly<{ name: string; reason: string }>;
@@ -62,7 +72,9 @@ const skipString = (input: string, start: number): number => {
   while (i < input.length) {
     const char = input[i];
     if (char === "\\") {
-      i += 2;
+      // The same escape rule as outside a string, which is what keeps a
+      // `\"` from closing the string it is written inside.
+      i = readEscape(input, i).next;
       continue;
     }
     if (char === quote) {
@@ -98,11 +110,16 @@ const asIdentChar = (char: string): string =>
     ? char
     : OPAQUE_ESCAPE;
 
+type Lexeme = Readonly<{
+  kind: "comment" | "string" | "escape";
+  /** What the canonical copy stands the lexeme in as. */
+  canonical: string;
+  /** Offset just past it. */
+  next: number;
+}>;
+
 /** Resolves the escape starting at `start`, per CSS Syntax § consume-escape. */
-const readEscape = (
-  input: string,
-  start: number,
-): Readonly<{ text: string; next: number }> => {
+const readEscape = (input: string, start: number): Lexeme => {
   let i = start + 1;
   let hex = "";
   while (i < input.length && hex.length < 6 && isHexDigit(input[i] as string)) {
@@ -120,12 +137,38 @@ const readEscape = (
       codePoint === 0 || codePoint > 0x10ffff
         ? "\uFFFD"
         : String.fromCodePoint(codePoint);
-    return { text: asIdentChar(resolved), next: i };
+    return { kind: "escape", canonical: asIdentChar(resolved), next: i };
   }
   const escaped = input[start + 1];
   return escaped === undefined
-    ? { text: OPAQUE_ESCAPE, next: start + 1 }
-    : { text: asIdentChar(escaped), next: start + 2 };
+    ? { kind: "escape", canonical: OPAQUE_ESCAPE, next: start + 1 }
+    : { kind: "escape", canonical: asIdentChar(escaped), next: start + 2 };
+};
+
+/**
+ * The low-level lexical unit at `start`, or `null` when the character is
+ * ordinary CSS syntax.
+ *
+ * The one place this module recognises a comment, a string or an escape.
+ * Routing every scan through it is what makes the three rules hold in all
+ * of them at once — see the note at the top of the file on why a scan
+ * that honours only some of them is a hole rather than an inconsistency.
+ */
+const readLexeme = (input: string, start: number): Lexeme | null => {
+  const char = input[start];
+  if (char === "/" && input[start + 1] === "*") {
+    // A comment separates tokens, it does not join them: `pos/**/ition`
+    // is two identifiers to the parser and must not collapse into one.
+    return { kind: "comment", canonical: " ", next: skipComment(input, start) };
+  }
+  if (char === '"' || char === "'") {
+    const next = skipString(input, start);
+    return { kind: "string", canonical: input.slice(start, next), next };
+  }
+  if (char === "\\") {
+    return readEscape(input, start);
+  }
+  return null;
 };
 
 /**
@@ -137,27 +180,13 @@ const canonicalize = (input: string): string => {
   let out = "";
   let i = 0;
   while (i < input.length) {
-    const char = input[i] as string;
-    if (char === "/" && input[i + 1] === "*") {
-      // A comment separates tokens, it does not join them: `pos/**/ition`
-      // is two identifiers to the parser and must not collapse into one.
-      out += " ";
-      i = skipComment(input, i);
+    const lexeme = readLexeme(input, i);
+    if (lexeme !== null) {
+      out += lexeme.canonical;
+      i = lexeme.next;
       continue;
     }
-    if (char === '"' || char === "'") {
-      const end = skipString(input, i);
-      out += input.slice(i, end);
-      i = end;
-      continue;
-    }
-    if (char === "\\") {
-      const resolved = readEscape(input, i);
-      out += resolved.text;
-      i = resolved.next;
-      continue;
-    }
-    out += char;
+    out += input[i] as string;
     i += 1;
   }
   return out;
@@ -165,23 +194,20 @@ const canonicalize = (input: string): string => {
 
 /**
  * Index of the first `stops` character that is not inside a string,
- * comment, or parenthesised group. Parens matter because `url(a;b)` and
- * `@supports (a: b)` both hide characters that would otherwise look like
- * a terminator.
+ * comment, escape, or parenthesised group. Parens matter because
+ * `url(a;b)` and `@supports (a: b)` both hide characters that would
+ * otherwise look like a terminator.
  */
 const scanTo = (input: string, start: number, stops: string): number => {
   let i = start;
   let depth = 0;
   while (i < input.length) {
+    const lexeme = readLexeme(input, i);
+    if (lexeme !== null) {
+      i = lexeme.next;
+      continue;
+    }
     const char = input[i] as string;
-    if (char === "/" && input[i + 1] === "*") {
-      i = skipComment(input, i);
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      i = skipString(input, i);
-      continue;
-    }
     if (char === "(") {
       depth += 1;
       i += 1;
@@ -205,15 +231,12 @@ const findBlockEnd = (input: string, openBrace: number): number => {
   let i = openBrace + 1;
   let depth = 1;
   while (i < input.length) {
+    const lexeme = readLexeme(input, i);
+    if (lexeme !== null) {
+      i = lexeme.next;
+      continue;
+    }
     const char = input[i] as string;
-    if (char === "/" && input[i + 1] === "*") {
-      i = skipComment(input, i);
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      i = skipString(input, i);
-      continue;
-    }
     if (char === "{") {
       depth += 1;
     } else if (char === "}") {
@@ -305,8 +328,12 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
       i += 1;
       continue;
     }
-    if (char === "/" && input[i + 1] === "*") {
-      i = skipComment(input, i);
+    const lexeme = readLexeme(input, i);
+    if (lexeme?.kind === "comment") {
+      // Only a comment can stand before a statement without belonging to
+      // it. A string or an escape is the statement's own first token, so
+      // it is left to `scanTo` below rather than skipped here.
+      i = lexeme.next;
       continue;
     }
     if (char === "}") {

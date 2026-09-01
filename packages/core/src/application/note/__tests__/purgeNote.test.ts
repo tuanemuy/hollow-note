@@ -160,6 +160,38 @@ const withLostResponseAfterCommit = (
   };
 };
 
+/**
+ * Takes the cleanup barrier away once the `openAt`-th scope transaction
+ * has committed — the window between the entry gate's `assertOwner` and
+ * the transaction that deletes.
+ */
+const losingTheScopeAfter = (
+  h: TestHarness,
+  openAt: number,
+): TestHarness["container"] => {
+  const real = h.container.scopeUnitOfWorkProvider;
+  let opened = 0;
+  let taken = false;
+  return {
+    ...h.container,
+    scopeUnitOfWorkProvider: {
+      run: (async (scope, body) => {
+        opened += 1;
+        const result = await real.run(scope, body);
+        if (opened === openAt && !taken) {
+          taken = true;
+          await real.run(userScope, (ctx) =>
+            ctx.cleanupAdmission.abortPersonalAccountDeletion(
+              CLEANUP_OPERATION,
+            ),
+          );
+        }
+        return result;
+      }) as typeof real.run,
+    },
+  };
+};
+
 /** Fails the wrapped call exactly once, then lets it through. */
 const failOnce = <TArgs extends readonly unknown[], TResult>(
   real: (...args: TArgs) => Promise<TResult>,
@@ -458,6 +490,50 @@ describe("purgeNote", () => {
     expect(route(h, noteId)?.state).toBe("tombstone");
     expect(purgeAckKeys(h)).toEqual([`${operationId} ${noteId}`]);
     expect(purgedEvents(h)).toHaveLength(1);
+  });
+
+  it("TC-note-780: a resume whose cleanup no longer owns the scope carries the purge forward instead of reopening the route", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await beginCleanup(h);
+
+    await expect(
+      purgeForCleanup(h, noteId, {
+        container: withLostResponseAfterCommit(h, 2),
+      }),
+    ).rejects.toSatisfy(isSystemError);
+    expect(route(h, noteId)?.state).toBe("purging");
+
+    // The barrier is gone by the time the command comes back — the
+    // deletion was abandoned, or a later one took the scope.
+    await h.container.scopeUnitOfWorkProvider.run(userScope, (ctx) =>
+      ctx.cleanupAdmission.abortPersonalAccountDeletion(CLEANUP_OPERATION),
+    );
+
+    await purgeForCleanup(h, noteId);
+
+    // Ownership is a reason not to delete, and there is nothing left to
+    // not delete: handing the route back here would leave a row pointing
+    // at a note whose `note.purged` is already out.
+    expect(route(h, noteId)?.state).toBe("tombstone");
+    expect(h.backend.publicProjection.get(noteId)).toBeUndefined();
+    expect(purgedEvents(h)).toHaveLength(1);
+  });
+
+  it("TC-note-351: a cleanup that loses the scope after the entry gate hands back the route of the note it did not delete", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    await beginCleanup(h);
+
+    await expect(
+      purgeForCleanup(h, noteId, { container: losingTheScopeAfter(h, 1) }),
+    ).rejects.toSatisfy(isConflictError);
+
+    // The note is still there, so the lost ownership is a decision not
+    // to delete — and the route has to be reachable again.
+    expect(storedNote(h, noteId)).not.toBeNull();
+    expect(route(h, noteId)?.state).toBe("active");
+    expect(purgedEvents(h)).toHaveLength(0);
   });
 
   it("TC-note-354: the route becomes a 30-day tombstone once the public removal is acked", async () => {

@@ -361,6 +361,29 @@ export function describeStoredFileRepositoryContract(
       ).toEqual(["file-2", "file-3"]);
     });
 
+    it("ADP-storage-010: compares the cursor by instant first, so a newer row whose id sorts before the cursor's is still reached", async () => {
+      const earlier = new Date(backend.clock.now().getTime());
+      const later = new Date(earlier.getTime() + 1);
+      const cutoff = new Date(earlier.getTime() + 60_000);
+      // `file-1` is newer than the cursor but its id sorts before it, and
+      // `file-3` is older by id at the same instant: a comparison that
+      // weighed the two components independently would drop the first
+      // and hand back the second.
+      await repository.insert(noteFile(3, "media", noteId(1), earlier));
+      await repository.insert(noteFile(7, "media", noteId(1), earlier));
+      await repository.insert(noteFile(9, "media", noteId(1), earlier));
+      await repository.insert(noteFile(1, "media", noteId(1), later));
+
+      expect(
+        (
+          await repository.listByPurposeOlderThan("media", cutoff, 100, {
+            createdAt: earlier,
+            id: StoredFileId.create("file-7"),
+          })
+        ).map((file) => file.id),
+      ).toEqual(["file-9", "file-1"]);
+    });
+
     it("ADP-storage-012: pages an owner's files and reports the total so a full page is not mistaken for the end", async () => {
       await repository.insert(avatar(1));
       await repository.insert(source(2, 10));

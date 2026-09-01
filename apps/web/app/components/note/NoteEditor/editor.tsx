@@ -1,5 +1,6 @@
 "use client";
 
+import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
 import { MEDIA_ALLOWED_MIME_TYPES } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { useBlocker, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -66,9 +67,39 @@ export type EditorTarget =
       title: string;
       html: string;
       version: number;
-      styleMode: "default" | "preserve";
       mayLoseDecoration: boolean;
     }>;
+
+/**
+ * 編集しているノートの同一性。`noteId` と `version` を別々の値で持つと
+ * 「ID はあるが版が無い」「版だけある」が表現できてしまい、版の sentinel
+ * （`-1`）が転送境界（`expectedVersion` は 0 以上）へ届きうる。作られる前
+ * と作られたあとを判別ユニオンで分ければ、その組み合わせは書けない。
+ */
+type NoteIdentity =
+  | Readonly<{ kind: "new" }>
+  | Readonly<{ kind: "existing"; noteId: string; version: number }>;
+
+/**
+ * 保存が送る値の写し。作れるのは `takeSnapshot()` の 1 か所だけで、
+ * 往復のあいだ動かない。
+ *
+ * 確定済みの値（`settleSaved`）はこの写しからしか作れない。保存が確定
+ * させてよいのは**送った値**であって、往復のあいだに面へ入った「いまの
+ * 値」ではない — 後者を確定させると、送っていない打鍵が「保存済み」と
+ * して捨てられ、次の保存が送る `expected` がサーバーの持つ値と食い違って
+ * 全件 `contentChanged` に落ちる。
+ */
+type EditorSnapshot = Readonly<{
+  title: string;
+  /** 面が持っている本文。退避・ダウンロード・丸ごと送る保存が読む。 */
+  body: string;
+  /**
+   * 経路単位で送れるときの経路表（ビジュアルの面で、かつ面の外から本文が
+   * 入っていないとき）。`null` なら丸ごと送るしかない。
+   */
+  textNodes: ReadonlyMap<string, string> | null;
+}>;
 
 type SaveStatus =
   | Readonly<{ kind: "new" }>
@@ -110,7 +141,7 @@ type RevisionEntry = Readonly<{
   revisionId: string;
   createdAt: Date;
   createdByName: string | null;
-  reason: string;
+  reason: RevisionReason;
   excerpt: string;
 }>;
 
@@ -142,12 +173,16 @@ const REMOVED_KIND_LABEL: Readonly<Record<string, string>> = {
   css: "CSS 宣言",
 };
 
-const REVISION_REASON_LABEL: Readonly<Record<string, string>> = {
+/**
+ * 版理由の表示名。`Record<RevisionReason, string>` で受けるのは、理由が
+ * 増えたときにここが必ず型で落ちるようにするためである（`Record<string,
+ * string>` だと、ドメインに無い行を持っていても、足りない行があっても
+ * 何も言わない）。
+ */
+const REVISION_REASON_LABEL: Readonly<Record<RevisionReason, string>> = {
   manualEdit: "編集",
   wysiwygConversion: "WYSIWYG への変換",
-  conversion: "取り込み",
   regeneration: "作り直し",
-  referenceImport: "外部参照の取り込み",
   restore: "版の復元",
 };
 
@@ -184,10 +219,24 @@ export function NoteEditorIsland({
   const isNew = target.kind === "new";
 
   // 確定済みの状態（サーバーが返した最後の値）と、書いている途中の状態。
-  const [noteId, setNoteId] = useState<string | null>(
-    target.kind === "existing" ? target.noteId : null,
+  const [identity, setIdentity] = useState<NoteIdentity>(
+    target.kind === "existing"
+      ? { kind: "existing", noteId: target.noteId, version: target.version }
+      : { kind: "new" },
   );
-  const versionRef = useRef(target.kind === "existing" ? target.version : -1);
+  /**
+   * 同一性の ref 版。版を進める往復は非同期の閉包の中から次の
+   * `expectedVersion` を読むので、描画が捕まえた `identity` は 1 世代
+   * 古いことがある。書き戻しの入口を `rememberIdentity` に絞って、state
+   * と ref が食い違わないようにしてある。
+   */
+  const identityRef = useRef<NoteIdentity>(identity);
+  const rememberIdentity = (next: NoteIdentity): void => {
+    identityRef.current = next;
+    setIdentity(next);
+  };
+  /** 描画が読む側。版は握らない（版を読んでよいのは往復の中だけ）。 */
+  const noteId = identity.kind === "existing" ? identity.noteId : null;
   const [savedTitle, setSavedTitle] = useState(
     target.kind === "existing" ? target.title : "",
   );
@@ -419,15 +468,32 @@ export function NoteEditorIsland({
   };
 
   /**
-   * 現在の面が持っている本文。WYSIWYG は DOM が正本で、ビジュアルは
-   * 経路表を `baseline` へ当て直して組む — `body` state はビジュアルの
-   * 経路編集では動かないので、そのまま使うと退避（ED-08）・ダウンロード・
-   * 競合の上書きが編集を 1 文字も含まない。
+   * いま面が持っている内容を 1 つの写しに固める。**面の内容を読む唯一の
+   * 手段**にしてあるのは、本文と経路表を別々の瞬間から読む書き方を無く
+   * すためである（`EditorSnapshot` の JSDoc）。
+   *
+   * WYSIWYG は DOM が正本で、ビジュアルは経路表を `baseline` へ当て直して
+   * 組む — `body` state はビジュアルの経路編集では動かないので、そのまま
+   * 使うと退避（ED-08）・ダウンロード・競合の上書きが編集を 1 文字も
+   * 含まない。
    */
-  const composeBody = (): string => {
-    if (mode === "wysiwyg") return wysiwygRef.current?.innerHTML ?? body;
-    if (mode !== "visual") return body;
-    return composeEditedHtml(baseline, visualCurrent.current);
+  const takeSnapshot = (): EditorSnapshot => {
+    if (mode === "wysiwyg") {
+      return {
+        title,
+        body: wysiwygRef.current?.innerHTML ?? body,
+        textNodes: null,
+      };
+    }
+    if (mode !== "visual") return { title, body, textNodes: null };
+    const textNodes = new Map(visualCurrent.current);
+    return {
+      title,
+      body: composeEditedHtml(baseline, textNodes),
+      // 面の外から本文が入っている（退避の復元・競合の上書き）と経路
+      // 単位では表せないので、丸ごと送る枝しか選べない。
+      textNodes: body === savedBody ? textNodes : null,
+    };
   };
 
   /**
@@ -437,26 +503,33 @@ export function NoteEditorIsland({
    * 往復がここにあるため）。
    */
   const commit = async (explicit: boolean): Promise<boolean> => {
-    const currentBody = composeBody();
-    const currentTitle = title;
     if (!explicit && !dirty) return true;
+    // 送る値をここで 1 つに固める。以降この関数は `title` / `body` /
+    // `visualCurrent` の「いま」を読まない。
+    const sent = takeSnapshot();
 
     setStatus({ kind: "saving" });
+    const opening = identityRef.current;
     try {
-      if (noteId === null) {
+      if (opening.kind === "new") {
         // 初回の自動保存でノートが生まれる（PAGE-p12-002）。
         const created = await createWithBody({
           data: {
             workspaceId: target.kind === "new" ? target.workspaceId : null,
-            title: currentTitle,
-            rawHtml: currentBody,
+            title: sent.title,
+            rawHtml: sent.body,
             importReferences,
           },
         });
-        versionRef.current = created.version;
-        setNoteId(created.noteId);
+        rememberIdentity({
+          kind: "existing",
+          noteId: created.noteId,
+          version: created.version,
+        });
         setRemoved(created.removed);
-        settleSaved(currentTitle, currentBody);
+        // 確定するタイトルは**応答の値**である（理由は下の rename と同じ）。
+        settleSaved(sent, created.title);
+        setTitle((value) => (value === sent.title ? created.title : value));
         await reconcile();
         // URL を編集の URL へ置き換える。以降は既存ノートの編集と同じ扱い。
         await router
@@ -489,20 +562,19 @@ export function NoteEditorIsland({
       // 変え前後の空白を落とすので、送った生値を確定済みとして持つと
       // `dirty` が下りず、同じタイトルをもう一度 rename して版と往復を
       // 1 つ無駄にする。
-      let appliedTitle = currentTitle;
-      if (currentTitle !== savedTitle) {
+      const noteId = opening.noteId;
+      let version = opening.version;
+      let appliedTitle = sent.title;
+      if (sent.title !== savedTitle) {
         const renamed = await rename({
-          data: {
-            noteId,
-            title: currentTitle,
-            expectedVersion: versionRef.current,
-          },
+          data: { noteId, title: sent.title, expectedVersion: version },
         });
-        versionRef.current = renamed.version;
+        version = renamed.version;
+        rememberIdentity({ kind: "existing", noteId, version });
         appliedTitle = renamed.title;
         // 本文の保存がこのあと失敗しても、タイトルはもう確定している。
         rememberSaved(appliedTitle, savedRef.current.body);
-        setTitle((value) => (value === currentTitle ? renamed.title : value));
+        setTitle((value) => (value === sent.title ? renamed.title : value));
       }
 
       // どちらの通知も指すのは**直近の保存結果**なので、送らなかった
@@ -511,41 +583,34 @@ export function NoteEditorIsland({
       let nextRemoved: readonly RemovedEntry[] = [];
       let nextSkipped: readonly string[] = [];
 
-      // ビジュアルモードの保存は経路単位の書き換えなので、`body` が経路表
-      // と無関係に動いていない（＝面の外から本文が入っていない）ときだけ
-      // 経路で送れる。動いているなら丸ごと送る枝へ落とす — 送っていない
-      // 保存を「保存済み」にすると、利用者が選んだ復元・上書きの内容が
-      // 無言で消える。
-      if (mode === "visual" && body === savedBody) {
-        const edits = diffTextNodeEdits(
-          visualOriginal.current,
-          visualCurrent.current,
-        );
+      // 経路単位で送れるかどうかは写しを取った時点で決まっている
+      // （`takeSnapshot`）。送っていない保存を「保存済み」にすると、
+      // 利用者が選んだ復元・上書きの内容が無言で消える。
+      if (sent.textNodes !== null) {
+        const edits = diffTextNodeEdits(visualOriginal.current, sent.textNodes);
         if (edits.length > 0) {
           const applied = await saveTextNodes({
-            data: { noteId, expectedVersion: versionRef.current, edits },
+            data: { noteId, expectedVersion: version, edits },
           });
-          versionRef.current = applied.version;
+          version = applied.version;
+          rememberIdentity({ kind: "existing", noteId, version });
           nextSkipped = applied.skipped.map((entry) => entry.path);
-          // 適用済みの値を新しい基準にする。次の保存が同じ編集を送り直す
-          // と `contentChanged` で落ちる。
-          visualOriginal.current = new Map(visualCurrent.current);
         }
-        setVisualDirty(false);
-        settleSaved(appliedTitle, body);
-      } else if (currentBody !== savedBody) {
+        settleSaved(sent, appliedTitle);
+      } else if (sent.body !== savedBody) {
         const saved = await saveBody({
           data: {
             noteId,
-            rawHtml: currentBody,
-            expectedVersion: versionRef.current,
+            rawHtml: sent.body,
+            expectedVersion: version,
             reason: wysiwygConversionRef.current
               ? "wysiwygConversion"
               : "manualEdit",
             importReferences,
           },
         });
-        versionRef.current = saved.version;
+        version = saved.version;
+        rememberIdentity({ kind: "existing", noteId, version });
         wysiwygConversionRef.current = false;
         nextRemoved = saved.removed;
         if (mode === "visual") {
@@ -555,10 +620,10 @@ export function NoteEditorIsland({
           setSavedAt(new Date());
           setStatus({ kind: "saved" });
         } else {
-          settleSaved(appliedTitle, currentBody);
+          settleSaved(sent, appliedTitle);
         }
       } else {
-        settleSaved(appliedTitle, currentBody);
+        settleSaved(sent, appliedTitle);
       }
 
       setRemoved(nextRemoved);
@@ -577,10 +642,11 @@ export function NoteEditorIsland({
     } catch (error) {
       const next = classify(error);
       setStatus(next);
-      if (noteId !== null && next.kind === "failed") {
-        writeDraft(noteId, {
-          html: currentBody,
-          title: currentTitle,
+      const failed = identityRef.current;
+      if (failed.kind === "existing" && next.kind === "failed") {
+        writeDraft(failed.noteId, {
+          html: sent.body,
+          title: sent.title,
           savedAt: Date.now(),
         });
       }
@@ -600,8 +666,24 @@ export function NoteEditorIsland({
     setSavedBody(nextBody);
   };
 
-  const settleSaved = (nextTitle: string, nextBody: string): void => {
-    rememberSaved(nextTitle, nextBody);
+  /**
+   * 保存の確定。**受け取るのは送った写しだけ**で、面の「いまの値」は
+   * ここから読まない（`EditorSnapshot` の JSDoc）。タイトルだけは応答の
+   * 正規化後の値を取る。
+   */
+  const settleSaved = (sent: EditorSnapshot, appliedTitle: string): void => {
+    rememberSaved(appliedTitle, sent.body);
+    if (sent.textNodes !== null) {
+      // ビジュアルの面は本文 state を動かさないので、確定済みと同じ値へ
+      // 揃える（揃えないと `dirty` が下りない）。面は組み直さない。
+      setBody(sent.body);
+      // 新しい基準は**送った経路表**である。往復のあいだに打った文字は
+      // まだサーバーに無いので、その差はそのまま次の保存へ残す。
+      visualOriginal.current = sent.textNodes;
+      setVisualDirty(
+        diffTextNodeEdits(sent.textNodes, visualCurrent.current).length > 0,
+      );
+    }
     setSavedAt(new Date());
     setStatus({ kind: "saved" });
   };
@@ -615,11 +697,17 @@ export function NoteEditorIsland({
   );
 
   /**
-   * 何らかの往復が走っているか。版を進めうる往復（`activity`）に、版を
-   * 進めない往復と明示保存の pending を足したもの。自動保存のガードと
-   * ボタンの活性が同じ 1 つの値を見る。
+   * 版を進めうる操作（保存・破棄・モード切替・版の復元・競合の解決）を
+   * 受け付けられないか。占有（`activity`）に明示保存の pending と、本文に
+   * 仮の要素が入っているあいだ（アップロード中）を足したもの。
+   *
+   * 版を進めない往復（`isSideBusy` — メディアの保管・版一覧の取得）は
+   * **入れない**。書式ツールバー・メディア挿入・版一覧の取得は面の DOM を
+   * 触るだけか読むだけで、止める理由が無い（打鍵と同じく、変更は
+   * `body !== savedBody` として残り次の保存が拾う）。1.5 秒ごとの自動保存の
+   * たびにそれらが暗くなると、「打てるが太字にできない」状態になる。
    */
-  const busy = activity.kind !== "idle" || isSideBusy || isSubmitting;
+  const busy = activity.kind !== "idle" || isSubmitting || uploading;
 
   // 自動保存（ED-08）。落ち着いてから 1 回だけ走らせる。
   //
@@ -634,12 +722,13 @@ export function NoteEditorIsland({
   // 「再試行」か競合の解決が起点になる（`markDirty` が `failed` /
   // `conflict` を打鍵で降ろさないのは、この条件を守るためである）。
   //
-  // アップロード中も待つ。本文にはまだ仮の要素が入っていて、それを保存
-  // すると `data-hollow-upload` が落ちた素の `span` が本文に残る。
+  // アップロード中も待つ（`busy` に畳んである）。本文にはまだ仮の要素が
+  // 入っていて、それを保存すると `data-hollow-upload` が落ちた素の `span`
+  // が本文に残る。
   //
   // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに `commit` が読む値（タイトル・本文・ビジュアルの差分）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。
   useEffect(() => {
-    if (!dirty || !editable || busy || uploading) return;
+    if (!dirty || !editable || busy) return;
     if (status.kind === "conflict" || status.kind === "failed") return;
     const timer = window.setTimeout(() => {
       startTransition(async () => {
@@ -647,7 +736,7 @@ export function NoteEditorIsland({
       });
     }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [dirty, editable, busy, uploading, status.kind, title, body, visualDirty]);
+  }, [dirty, editable, busy, status.kind, title, body, visualDirty]);
 
   const requestMode = (next: EditorMode): void => {
     if (next === mode) return;
@@ -688,13 +777,18 @@ export function NoteEditorIsland({
    * 画面上で巻き戻り、そのまま次の自動保存でサーバーへ書き戻される。
    */
   const applyMode = (next: EditorMode): void => {
-    setPendingMode(null);
-    setWysiwygWarning(false);
-    if (noteId === null) {
+    if (identityRef.current.kind === "new") {
+      setPendingMode(null);
+      setWysiwygWarning(false);
       seedMode(next, savedRef.current.title, savedRef.current.body);
       return;
     }
     void runExclusive({ kind: "reseeding" }, async () => {
+      // 確認を畳むのは占有を取れたときだけ。`runExclusive` は取れなければ
+      // 黙って何もしないので、外で畳むと押した痕跡だけが消えてモードは
+      // 変わらない。
+      setPendingMode(null);
+      setWysiwygWarning(false);
       try {
         await reseedFromServer(next);
       } catch (error) {
@@ -716,9 +810,14 @@ export function NoteEditorIsland({
    * すでに取っている。
    */
   const reseedFromServer = async (next: EditorMode): Promise<void> => {
-    if (noteId === null) return;
-    const latest = await readEditState({ data: { noteId } });
-    versionRef.current = latest.version;
+    const current = identityRef.current;
+    if (current.kind === "new") return;
+    const latest = await readEditState({ data: { noteId: current.noteId } });
+    rememberIdentity({
+      kind: "existing",
+      noteId: current.noteId,
+      version: latest.version,
+    });
     seedMode(next, latest.title, latest.html);
   };
 
@@ -746,6 +845,12 @@ export function NoteEditorIsland({
    * サニタイズ通知と skip 通知も落とす。どちらも「直近の保存結果」を
    * 指す表示なので、正本を載せ直した面の上に前の保存の結果が残っては
    * ならない。
+   *
+   * アップロードの一覧も畳む。行が指しているのは**前の面に挿した仮の
+   * 要素**で、載せ直した面にそれはもう無い。残すと、挿入を持たない
+   * ビジュアルモードでも「再試行」が押せてしまい、面に出ない生の
+   * `data-hollow-upload` が本文の末尾へ継ぎ足される（ED-06 の挿入は
+   * HTML / WYSIWYG にしかない）。
    */
   const replaceBody = (nextTitle: string, nextBody: string): void => {
     rememberSaved(nextTitle, nextBody);
@@ -757,6 +862,7 @@ export function NoteEditorIsland({
     setSelectedImage(null);
     setRemoved([]);
     setSkipped([]);
+    setUploads([]);
     visualOriginal.current = new Map();
     visualCurrent.current = new Map();
   };
@@ -778,12 +884,14 @@ export function NoteEditorIsland({
 
   /** 競合の解決（ED-08）。どちらの枝も最新の版を引き直してから進む。 */
   const resolveConflict = (keepLocal: boolean): void => {
-    if (noteId === null) return;
-    const localTitle = title;
-    // ビジュアルモードでもここで組み直す。`body` state のままだと
+    if (identityRef.current.kind === "new") return;
+    // ビジュアルモードでもここで写しを取る。`body` state のままだと
     // 「自分の内容」が面の編集を 1 文字も含まない。
-    const localBody = composeBody();
+    const local = takeSnapshot();
     void runExclusive({ kind: "reseeding" }, async () => {
+      const current = identityRef.current;
+      if (current.kind === "new") return;
+      const noteId = current.noteId;
       let latest: Awaited<ReturnType<typeof readEditState>>;
       try {
         latest = await readEditState({ data: { noteId } });
@@ -791,13 +899,13 @@ export function NoteEditorIsland({
         setStatus(classify(error));
         return;
       }
-      versionRef.current = latest.version;
+      rememberIdentity({ kind: "existing", noteId, version: latest.version });
       if (keepLocal) {
         rememberSaved(latest.title, latest.html);
-        setTitle(localTitle);
+        setTitle(local.title);
         // 面の外から入った本文になるので、次の保存は経路単位ではなく
-        // 丸ごとの `updateNoteBody` へ落ちる（`commit` の分岐）。
-        setBody(localBody);
+        // 丸ごとの `updateNoteBody` へ落ちる（`takeSnapshot` の分岐）。
+        setBody(local.body);
         setRemoved([]);
         setSkipped([]);
         setStatus({ kind: "dirty" });
@@ -810,11 +918,12 @@ export function NoteEditorIsland({
   };
 
   const openRevisions = (): void => {
-    if (noteId === null) return;
+    const current = identityRef.current;
+    if (current.kind === "new") return;
     setRevisionError(null);
     startSide(async () => {
       try {
-        const list = await listRevisions({ data: { noteId } });
+        const list = await listRevisions({ data: { noteId: current.noteId } });
         setRevisions(list.revisions);
       } catch (error) {
         setRevisionError(displayError(error));
@@ -824,13 +933,23 @@ export function NoteEditorIsland({
   };
 
   const restore = (revisionId: string): void => {
-    if (noteId === null) return;
+    if (identityRef.current.kind === "new") return;
     void runExclusive({ kind: "restoring" }, async () => {
+      const current = identityRef.current;
+      if (current.kind === "new") return;
       try {
         const restored = await restoreRevision({
-          data: { noteId, revisionId, expectedVersion: versionRef.current },
+          data: {
+            noteId: current.noteId,
+            revisionId,
+            expectedVersion: current.version,
+          },
         });
-        versionRef.current = restored.version;
+        rememberIdentity({
+          kind: "existing",
+          noteId: current.noteId,
+          version: restored.version,
+        });
         await reseedFromServer(mode);
         setStatus({ kind: "saved" });
         setSavedAt(new Date());
@@ -1171,7 +1290,10 @@ export function NoteEditorIsland({
               <button
                 type="button"
                 className={smallGhostClass}
-                onClick={() => downloadBody(title, composeBody())}
+                onClick={() => {
+                  const snapshot = takeSnapshot();
+                  downloadBody(snapshot.title, snapshot.body);
+                }}
               >
                 内容をダウンロード
               </button>
@@ -1212,6 +1334,7 @@ export function NoteEditorIsland({
                 <button
                   type="button"
                   className={smallPrimaryClass}
+                  disabled={busy}
                   onClick={() => applyMode("wysiwyg")}
                 >
                   了解して進む
@@ -1323,8 +1446,10 @@ export function NoteEditorIsland({
         />
 
         {mode === "wysiwyg" ? (
+          // 書式のコマンドは面の DOM を触るだけで往復を持たないので、
+          // 保存中も落とさない（落とすと「打てるが太字にできない」）。
           <FormatBar
-            disabled={!editable || busy}
+            disabled={!editable}
             onCommand={(command, value) => {
               wysiwygRef.current?.focus();
               document.execCommand(command, false, value);
@@ -1404,7 +1529,7 @@ export function NoteEditorIsland({
                     <button
                       type="button"
                       className={smallGhostClass}
-                      disabled={busy}
+                      disabled={!editable}
                       onClick={() => upload(entry.file, { retryOf: entry.id })}
                     >
                       再試行
@@ -1493,12 +1618,14 @@ export function NoteEditorIsland({
           {/* ED-06: visual mode edits text nodes in place and cannot add
               an element, so the insert is not offered there at all. */}
           {mode === "visual" ? null : (
-            <MediaButton disabled={!editable || busy} onPick={upload} />
+            // 保管は版を進めない（`startSide`）ので、保存中も挿せる。
+            <MediaButton disabled={!editable} onPick={upload} />
           )}
           <button
             type="button"
             className={actionButtonClass}
-            disabled={noteId === null || busy}
+            // 一覧の取得も版を進めない。落とすのは二重取得だけ。
+            disabled={noteId === null || isSideBusy}
             onClick={openRevisions}
           >
             版を復元

@@ -4,7 +4,10 @@ import type { ActiveNote, Note } from "@repo/core/domain/note/note";
 import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
-import { UploadValidationPolicy } from "@repo/core/domain/storage/services/uploadValidationPolicy";
+import {
+  readSvgDocument,
+  UploadValidationPolicy,
+} from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { StoredFile } from "@repo/core/domain/storage/storedFile";
 import {
   ByteSize,
@@ -46,19 +49,8 @@ const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
 const XLINK_PREFIXED_ATTRIBUTE = /\sxlink:/i;
 const XMLNS_DECLARATION = /\sxmlns=/i;
 const XMLNS_XLINK_DECLARATION = /\sxmlns:xlink=/i;
-const TAG_NAME = /[a-zA-Z][^\s/>]*/y;
-/**
- * XML's `S` production — space, tab, CR, LF — and nothing else.
- *
- * `String.prototype.trim` is the wrong ruler here: it also drops U+FEFF,
- * U+2000–U+200A, U+2028 / U+2029, U+3000 and the rest of Unicode's
- * whitespace, none of which XML admits after the root element. Judging
- * with it stores a file whose Misc contains character data — a fatal
- * error, so the `image/svg+xml` renders nothing at all. Only U+00A0
- * escapes into `&nbsp;` on the way out of the sanitizer; every other one
- * survives verbatim.
- */
-const XML_WHITESPACE_ONLY = /^[\t\n\r ]*$/;
+const HTML_NBSP_REFERENCE = "&nbsp;";
+const XML_NBSP_REFERENCE = "&#160;";
 
 const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
@@ -120,105 +112,6 @@ async function resolveEditableNote(
   return { scope: resolved.scope, note: ensureNotTrashed(resolved.note) };
 }
 
-type SvgRoot = Readonly<{
-  /** Offset just past the root's tag name, where a declaration goes. */
-  insertAt: number;
-  /** The root's start tag, delimited by the walk rather than by `>`. */
-  openTag: string;
-}>;
-
-/**
- * Walks to the end of the tag that starts at `from`, treating a quoted
- * attribute value as opaque.
- *
- * A plain `indexOf(">")` is wrong on the sanitizer's own output: the
- * serializer escapes `&` and `"` inside an attribute value but leaves
- * `>` alone, so `data-x="a>b"` would end the tag early.
- */
-const readTagEnd = (markup: string, from: number): number => {
-  let index = from;
-  while (index < markup.length) {
-    const character = markup[index];
-    if (character === ">") {
-      return index + 1;
-    }
-    if (character === '"' || character === "'") {
-      const close = markup.indexOf(character, index + 1);
-      if (close === -1) {
-        return -1;
-      }
-      index = close + 1;
-      continue;
-    }
-    index += 1;
-  }
-  return -1;
-};
-
-/**
- * The one `<svg>` root of a sanitized fragment, or `null` when the
- * markup is not a single SVG document.
- *
- * A stored `.svg` is parsed as XML, where content after the root element
- * is a *fatal* error — the file renders nothing at all. The sanitizer
- * answers a body fragment, so `<svg/>…</svg>trailing<p>text</p>` comes
- * back with the trailing markup intact (allow-list-clean, but no longer
- * an SVG document). Deciding on the root element alone would store that
- * as `image/svg+xml`, which is why the whole shape is walked here
- * instead: the root has to open the document, close it, and leave
- * nothing but whitespace outside itself.
- *
- * The walk is a tag scan rather than a parse because its input is
- * already parser output: what it has to be exact about is the tag
- * boundaries the serializer produces, not the grammar of arbitrary HTML.
- */
-const findSvgRoot = (markup: string): SvgRoot | null => {
-  let index = 0;
-  let depth = 0;
-  let root: SvgRoot | null = null;
-  for (;;) {
-    const open = markup.indexOf("<", index);
-    const outside = root === null || depth === 0;
-    const text = markup.slice(index, open === -1 ? undefined : open);
-    if (outside && !XML_WHITESPACE_ONLY.test(text)) {
-      return null;
-    }
-    if (open === -1) {
-      break;
-    }
-    const closing = markup[open + 1] === "/";
-    const nameAt = open + (closing ? 2 : 1);
-    TAG_NAME.lastIndex = nameAt;
-    const name = TAG_NAME.exec(markup);
-    const tagEnd =
-      name === null ? -1 : readTagEnd(markup, nameAt + name[0].length);
-    // A comment, a doctype, a stray `<` or an unterminated tag. The
-    // sanitizer emits none of them, and guessing at the shape of one is
-    // guessing at whether the document closes.
-    if (name === null || tagEnd === -1) {
-      return null;
-    }
-    const isSvg = name[0].toLowerCase() === "svg";
-    const selfClosed = markup[tagEnd - 2] === "/";
-    if (root === null) {
-      if (!isSvg || closing) {
-        return null;
-      }
-      root = {
-        insertAt: nameAt + name[0].length,
-        openTag: markup.slice(open, tagEnd),
-      };
-      depth = selfClosed ? 0 : 1;
-    } else if (depth === 0) {
-      return null;
-    } else if (isSvg && !selfClosed) {
-      depth += closing ? -1 : 1;
-    }
-    index = tagEnd;
-  }
-  return depth === 0 ? root : null;
-};
-
 /**
  * Puts back the namespace declarations a standalone `.svg` cannot go
  * without, or answers `null` when the sanitized markup is not one
@@ -237,20 +130,29 @@ const findSvgRoot = (markup: string): SvgRoot | null => {
  * spec/adr/013 keeps exactly one application point for the rules
  * themselves, and this adds no element and no attribute the sanitizer
  * decided against.
+ *
+ * `&nbsp;` is rewritten for the same reason. It is the one reference an
+ * HTML serializer emits that XML has no name for — U+00A0 comes back as
+ * `&nbsp;`, and a `.svg` carries no DTD to define it — so the numeric
+ * form says the same thing in a vocabulary the document owns. Nothing
+ * else needs the treatment: every other `&` in parser output is already
+ * one of the five XML predefines, which is what `readSvgDocument`
+ * verifies afterwards rather than assumes.
  */
 const asStandaloneSvg = (markup: string): string | null => {
-  const root = findSvgRoot(markup);
+  const document = markup.replaceAll(HTML_NBSP_REFERENCE, XML_NBSP_REFERENCE);
+  const root = readSvgDocument(document);
   if (root === null) {
     return null;
   }
   const declarations = [
-    XMLNS_DECLARATION.test(root.openTag) ? "" : ` xmlns="${SVG_NAMESPACE}"`,
-    XLINK_PREFIXED_ATTRIBUTE.test(markup) &&
-    !XMLNS_XLINK_DECLARATION.test(root.openTag)
+    XMLNS_DECLARATION.test(root.rootTag) ? "" : ` xmlns="${SVG_NAMESPACE}"`,
+    XLINK_PREFIXED_ATTRIBUTE.test(document) &&
+    !XMLNS_XLINK_DECLARATION.test(root.rootTag)
       ? ` xmlns:xlink="${XLINK_NAMESPACE}"`
       : "",
   ].join("");
-  return `${markup.slice(0, root.insertAt)}${declarations}${markup.slice(root.insertAt)}`;
+  return `${document.slice(0, root.rootNameEnd)}${declarations}${document.slice(root.rootNameEnd)}`;
 };
 
 /**
@@ -262,15 +164,21 @@ const asStandaloneSvg = (markup: string): string | null => {
  * back is parser output, which is also why the size is measured again
  * afterwards.
  *
- * What the acceptance policy answered is that the bytes *open* as SVG —
- * it reads a prologue, not a whole document. Whether they also close as
- * one is decided here, on the markup that will actually be stored, and
- * an input that does not is refused as `UnsupportedMimeType`: the row
- * would otherwise claim `image/svg+xml` for a file no XML parser opens.
+ * What the acceptance policy answered is that the *uploaded bytes* are a
+ * well-formed SVG document. That is not the same question as the one
+ * here: `process` answers a body **fragment**, serialized as HTML, and
+ * the two grammars part company in ways that only matter once the result
+ * is served as `image/svg+xml` — content left after the root, `&nbsp;`
+ * for a U+00A0, a void element the HTML parser resumed inside `<desc>`.
+ * So the same predicate is asked again of the markup that will actually
+ * be stored, and an input that fails it is refused as
+ * `UnsupportedMimeType`: the row would otherwise claim `image/svg+xml`
+ * for a file no XML parser opens.
  *
  * `process` answers a note-body fragment, so its 800,000-byte cap is the
  * real ceiling of anything that goes through here. That is what
- * `MEDIA_SVG_MAX_BYTES` is chosen against: no input this policy accepts
+ * `MEDIA_SVG_MAX_BYTES` is chosen against, and why the intake bounds the
+ * document's shape as well as its length: no input this policy accepts
  * can serialize into a value the body's invariant refuses, so an
  * oversized SVG is refused as `FileTooLarge` in Storage's own vocabulary
  * rather than as a note that is too long.

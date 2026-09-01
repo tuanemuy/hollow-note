@@ -122,11 +122,18 @@ export function WysiwygSurface({
   // 本文は React の子ではなくブラウザーが持つ（contenteditable の DOM を
   // React に再描画させると caret が飛ぶ）。差し替えは baseline が変わった
   // ときだけ行う。
+  //
+  // この面も live DOM なので、載せる前に `scrubForSurface` を通す
+  // （`baseline` には未保存の本文が入りうる — 退避の「復元する」）。
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface === null) return;
-    if (surface.innerHTML !== baseline) {
-      surface.innerHTML = baseline;
+    const template = document.createElement("template");
+    template.innerHTML = baseline;
+    scrubForSurface(template.content);
+    const next = template.innerHTML;
+    if (surface.innerHTML !== next) {
+      surface.innerHTML = next;
     }
   }, [baseline, surfaceRef]);
 
@@ -180,16 +187,24 @@ const TOKEN_CLASS: Readonly<Record<HtmlTokenKind, string>> = {
 const REPAIR_CHECK_DELAY_MS = 500;
 
 /**
- * プレビューに出してよい形へ落とすときに消えるもの。**プレビューは live
- * DOM**（`NoteBody` の shadow root）なので、保存前の本文をそのまま渡すと
+ * live DOM に入れてよい形へ落とすときに消えるもの。**3 つの面はどれも
+ * live DOM**（HTML のプレビューと ビジュアルは shadow root、WYSIWYG は
+ * `contenteditable` の本体）なので、保存前の本文をそのまま入れると
  * `<img onerror>` のようなハンドラーがこの画面で走る — Shadow DOM が
  * 隔離するのはスタイルだけで、配信している CSP にも `script-src` は無い。
+ * 未保存の本文が面へ入る経路は実在する（退避データの「復元する」）。
  *
  * 落とす対象は保存時のサニタイズ（`HtmlProcessor`）が落とすものの部分
- * 集合なので、プレビューは「実際に保存される形」から外れる向きには
- * 動かない。逆に言えばプレビューは保存後の姿ではない — 許可リスト外の
- * 要素・属性・CSS 宣言（`position: fixed` を含む）はここでは残るので、
- * 面の外へ出られないことはホスト側の `contain` が担保する。
+ * 集合なので、面は「実際に保存される形」から外れる向きには動かない
+ * （落ちるものはどのみち保存で落ちる）。逆に言えば面は保存後の姿では
+ * ない — 許可リスト外の要素・属性・CSS 宣言（`position: fixed` を含む）
+ * はここでは残るので、面の外へ出られないことはホスト側の `contain` が
+ * 担保する。
+ *
+ * 未保存の本文を live DOM へ入れる経路は 3 つとも（`WysiwygSurface` /
+ * `VisualSurface` / `HtmlSurface` のプレビュー）これを通す。木を渡す形に
+ * してあるのは、面ごとに通す位置が違うためである — ビジュアルは経路を
+ * 数え終えたあと、HTML のプレビューは構文補正の判定を取ったあとになる。
  */
 const UNSAFE_PREVIEW_ELEMENTS = new Set([
   "script",
@@ -213,7 +228,7 @@ const URL_ATTRIBUTES = new Set([
   "poster",
 ]);
 
-const scrubForPreview = (root: ParentNode): void => {
+const scrubForSurface = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("*"))) {
     if (UNSAFE_PREVIEW_ELEMENTS.has(element.localName)) {
       element.remove();
@@ -246,8 +261,10 @@ type SourceAnalysis = Readonly<{
 const analyzeMarkup = (source: string): SourceAnalysis => {
   const template = document.createElement("template");
   template.innerHTML = source;
+  // 補正の判定は scrub の前に取る（scrub が落とした分を「構文の補正」と
+  // して報せてしまわないため）。
   const parsed = template.innerHTML;
-  scrubForPreview(template.content);
+  scrubForSurface(template.content);
   return {
     repaired: parsed === source ? null : parsed,
     preview: template.innerHTML,
@@ -432,6 +449,11 @@ export function VisualSurface({
       entry.node.replaceWith(span);
       spans.push(span);
     }
+
+    // 載せるのは scrub したあとの木。経路を数え終えてから通すのは、
+    // 数える木がサーバー（`HtmlProcessor`）の見る木と 1 つでも違うと
+    // 編集が全件 `pathNotFound` に落ちるためである。
+    scrubForSurface(template.content);
 
     const style = document.createElement("style");
     style.textContent = `

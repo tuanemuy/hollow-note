@@ -58,6 +58,24 @@ describe("DOM-integration-007: ExternalFileRef", () => {
       IntegrationErrorCode.InvalidFileRef,
     );
   });
+
+  it("trims both halves and refuses one that is nothing but whitespace", () => {
+    expect(
+      ExternalFileRef.create("  drive-1  ", "  https://drive.example.test/1  "),
+    ).toEqual({
+      externalFileId: "drive-1",
+      webViewUrl: "https://drive.example.test/1",
+    });
+    // Whitespace is no more an address than emptiness is.
+    expect(
+      codeOf(() =>
+        ExternalFileRef.create("   ", "https://drive.example.test/1"),
+      ),
+    ).toBe(IntegrationErrorCode.InvalidFileRef);
+    expect(codeOf(() => ExternalFileRef.create("drive-1", "   "))).toBe(
+      IntegrationErrorCode.InvalidFileRef,
+    );
+  });
 });
 
 describe("DOM-integration-009: BackupRecord.reconstruct", () => {
@@ -75,7 +93,9 @@ describe("DOM-integration-009: BackupRecord.reconstruct", () => {
       { noteId: " " },
       { sourceFileId: " " },
       { externalFileId: "" },
+      { externalFileId: " " },
       { webViewUrl: "" },
+      { webViewUrl: " " },
     ]) {
       const thrown = ((): unknown => {
         try {

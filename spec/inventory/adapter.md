@@ -279,7 +279,7 @@
 | ADP-tag-016 | `TagAssignmentRepository.delete` | `spec/domains/tag.md#ポート` | AssignmentId の行を削除する |
 | ADP-tag-017 | `TagAssignmentRepository.deleteBatchByTag` | `spec/domains/tag.md#ポート` | tag の assignment を有界削除し影響行を返す |
 | ADP-tag-018 | `TagAssignmentRepository.deleteByScope` | `spec/domains/tag.md#ポート` | scope の assignment を有界削除する |
-| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を有界削除する |
+| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約） |
 | ADP-tag-020 | `TagAssignmentRepository.reassignBatch` | `spec/domains/tag.md#ポート` | assignment を衝突処理込みで有界付替えし影響 NoteId を返す |
 | ADP-tag-021 | `TagOperationStore.startDelete` | `spec/domains/tag.md#ポート` | delete operation と対象 lock を開始する |
 | ADP-tag-022 | `TagOperationStore.startMerge` | `spec/domains/tag.md#ポート` | merge operation と両 Tag lock を開始する |
@@ -306,7 +306,7 @@
 | ADP-integration-011 | `BackupRecordRepository.delete` | `spec/domains/integration.md#ポート` | 期待版一致時だけ BackupRecord を削除する |
 | ADP-integration-012 | `BackupRecordRepository.findByNoteAndFile` | `spec/domains/integration.md#ポート` | note・source file の記録を取得する |
 | ADP-integration-013 | `BackupRecordRepository.listByNotes` | `spec/domains/integration.md#ポート` | 複数ノートの backup 記録を列挙する |
-| ADP-integration-014 | `BackupRecordRepository.deleteByNote` | `spec/domains/integration.md#ポート` | ノートの記録を有界削除する |
+| ADP-integration-014 | `BackupRecordRepository.deleteByNote` | `spec/domains/integration.md#ポート` | ノートの記録を `BackupRecordId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約） |
 | ADP-integration-015 | `BackupRecordRepository.deleteByUser` | `spec/domains/integration.md#ポート` | current scope 内の利用者記録を有界削除する |
 | ADP-integration-016 | `SecretCipher.encrypt` | `spec/domains/integration.md#ポート` | plain secret を現行 key version で暗号化する |
 | ADP-integration-017 | `SecretCipher.decrypt` | `spec/domains/integration.md#ポート` | 保存 key version を使って secret を復号する |

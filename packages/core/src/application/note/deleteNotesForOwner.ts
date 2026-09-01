@@ -16,10 +16,18 @@ import { purgeNoteInternally } from "./purgeNote";
 export { NOTE_OWNER_PURGE_TASK_KIND };
 
 /**
- * Notes one turn purges. The cap is about the CPU of a single alarm turn
- * and the `note.purged` fan-out it emits, not about query count —
- * scope-local SQL carries no D1 budget (spec/platform/index.md「実行予算
- * と分割単位」).
+ * Notes one turn purges (spec/platform/index.md「実行予算と分割単位」,
+ * owner / workspace cleanup).
+ *
+ * The cap bounds three quantities at once: the CPU of a single alarm
+ * turn, the `note.purged` fan-out it emits, and — unlike the other rows
+ * of that table — the *global* queries the turn spends. A purge is a
+ * saga over the global route and the global public projection, so this
+ * is the one scope cleanup whose global query count grows with the
+ * batch, at roughly four to six per note. At the default the turn
+ * therefore sits at the section's 500-query ceiling rather than under
+ * it, which is why lowering `batchSize` — not raising it — is the
+ * adjustment a deployment has.
  */
 export const OWNER_PURGE_BATCH_SIZE = 100;
 
@@ -172,14 +180,17 @@ type TurnOutcome = Readonly<{
  * opposite of both: the work is finished, so the component is
  * acknowledged and the row completed.
  *
- * **Divergence from the spec's step 4**: the continuation cannot share
- * the transaction of the batch's last delete, because in this deployment
- * a purge is a saga over three stores (route, scope, public projection)
- * that owns its own transaction, and nesting `run` is forbidden. It is armed in a
- * transaction of its own, immediately after the batch. A response lost
- * between the two leaves the purged notes purged and the row unarmed —
- * recovered by the same command being redelivered, which is the normal
- * case for a cleanup command.
+ * The continuation cannot share the transaction of the batch's last
+ * delete: a purge is a saga over three stores (route, scope, public
+ * projection) that owns its own transactions, and nesting `run` is
+ * forbidden. It is armed in transactions of its own — one the moment a
+ * note is found stuck, and one at the end of the turn that settles the
+ * row. Losing the settling one costs only the *narrowing* of a payload
+ * the row already carries, which is why the ack cannot outrun the ids:
+ * they were written before it. What no write can cover is a process that
+ * dies between a purge's own commit and the detection that follows it —
+ * the residue named in spec/usecases/note.md#deletenotesforowner, closed
+ * only by a driver that can walk the routes of a scope.
  */
 export async function deleteNotesForOwner({
   container,
@@ -250,6 +261,14 @@ const targetsOf = (
  * single stuck route. The redelivery or the next continuation reads it
  * again from the start — or, when the route no longer resolves, from
  * the id this turn hands on.
+ *
+ * **A newly stuck id is written where it can be read back before the
+ * loop moves on**, rather than at the end of the turn. It is the only
+ * thing this usecase produces that a redelivery cannot reconstruct: the
+ * note is out of every enumeration, so an id that exists nowhere but in
+ * this turn's memory dies with the turn, and the next one reads an empty
+ * scope and acknowledges the `note` component irreversibly. Settling
+ * only rewrites what the row already carries.
  */
 async function purgeEachNote(
   container: NotePurgeContainer,
@@ -258,8 +277,14 @@ async function purgeEachNote(
 ): Promise<TurnOutcome> {
   let purgedCount = 0;
   let purgedFromPage = 0;
-  const stuckPurges: StuckPurge[] = [];
+  // Seeded with what the continuation already carries, so a write from
+  // inside the loop can never narrow the row: an entry leaves only by
+  // being purged, and an id the turn has not reached yet is still stuck.
+  const pending = new Map<string, StuckPurge>(
+    (input.stuckPurges ?? []).map((entry) => [String(entry.noteId), entry]),
+  );
   for (const target of targets) {
+    const key = String(target.noteId);
     try {
       await purgeNoteInternally({
         container,
@@ -272,6 +297,7 @@ async function purgeEachNote(
         },
       });
       purgedCount += 1;
+      pending.delete(key);
       if (target.enumerated) {
         purgedFromPage += 1;
       }
@@ -281,16 +307,78 @@ async function purgeEachNote(
         noteId: target.noteId,
         deletionOperationId: input.deletionOperationId,
       });
-      if (await isOutOfReach(container, target.noteId)) {
-        stuckPurges.push({
-          noteId: target.noteId,
-          expectedVersion: target.expectedVersion,
-        });
+      if (!(await isOutOfReach(container, target.noteId))) {
+        // Still resolvable, so the next turn meets it the ordinary way.
+        pending.delete(key);
+        continue;
       }
+      if (pending.has(key)) {
+        continue;
+      }
+      pending.set(key, {
+        noteId: target.noteId,
+        expectedVersion: target.expectedVersion,
+      });
+      await armStuckPurges(container, input, [...pending.values()]);
     }
   }
-  return { purgedCount, purgedFromPage, stuckPurges };
+  return {
+    purgedCount,
+    purgedFromPage,
+    stuckPurges: [...pending.values()],
+  };
 }
+
+/**
+ * Upserts the continuation row with the ids this turn cannot lose.
+ *
+ * Its own failure is logged rather than thrown: the turn is worth
+ * finishing for the notes it can still purge, and a throw would leave
+ * exactly the same ids unwritten. The transaction is opened here, one
+ * note at a time, because a purge owns transactions of its own and
+ * nesting `run` is forbidden — there is no enclosing unit this could
+ * join.
+ */
+async function armStuckPurges(
+  container: NotePurgeContainer,
+  input: DeleteNotesForOwnerInput,
+  stuckPurges: readonly StuckPurge[],
+): Promise<void> {
+  try {
+    await container.scopeUnitOfWorkProvider.run(input.scope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: NOTE_OWNER_PURGE_TASK_KIND,
+        operationId: input.deletionOperationId,
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAt: container.clock.now(),
+        payload: continuationPayload(input.deletionOperationId, stuckPurges),
+      }),
+    );
+  } catch (cause) {
+    container.logger.error(
+      "[deleteNotesForOwner] a stuck purge could not be armed for the next turn",
+      {
+        cause,
+        deletionOperationId: input.deletionOperationId,
+        stuckPurges: stuckPurges.map((stuck) => String(stuck.noteId)),
+      },
+    );
+  }
+}
+
+const continuationPayload = (
+  deletionOperationId: string,
+  stuckPurges: readonly StuckPurge[],
+): ScopeTaskPayload =>
+  stuckPurges.length === 0
+    ? { deletionOperationId }
+    : {
+        deletionOperationId,
+        [STUCK_PURGES]: stuckPurges.map((stuck) => ({
+          noteId: String(stuck.noteId),
+          expectedVersion: stuck.expectedVersion,
+        })),
+      };
 
 /**
  * Whether the failure left the note where no enumeration can find it.
@@ -328,16 +416,7 @@ async function settle(
 ): Promise<DeleteNotesForOwnerView> {
   const { purgedCount, stuckPurges } = outcome;
   const now = container.clock.now();
-  const payload: ScopeTaskPayload =
-    stuckPurges.length === 0
-      ? { deletionOperationId: input.deletionOperationId }
-      : {
-          deletionOperationId: input.deletionOperationId,
-          [STUCK_PURGES]: stuckPurges.map((stuck) => ({
-            noteId: String(stuck.noteId),
-            expectedVersion: stuck.expectedVersion,
-          })),
-        };
+  const payload = continuationPayload(input.deletionOperationId, stuckPurges);
 
   return container.scopeUnitOfWorkProvider.run(input.scope, async (ctx) => {
     if (outcome.targets > 0 && purgedCount === 0 && !outcome.newlyStuck) {

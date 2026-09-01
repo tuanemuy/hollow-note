@@ -541,6 +541,16 @@ async function claimRoute(
  * schema in this repository declares a foreign key, and the cross-row
  * cleanup the design calls `ON DELETE CASCADE` is carried by the write
  * that causes it or by the event it emits.
+ *
+ * The cleanup's ownership is asked *after* the note is found, not
+ * before. Every refusal this transaction can raise hands the route back
+ * ({@link isAbortableRefusal}), and once the local delete has committed
+ * there is nothing to hand back: a resumed purge that asked first would
+ * abort the route of a note that no longer exists, leaving a row that
+ * resolves to nothing for as long as it stands. Asking after `reclaim`
+ * keeps the question on the one path where it can still be answered by
+ * *not* deleting, and the route was already closed under this
+ * operation's own admission check.
  */
 async function deleteLocally(
   container: NotePurgeContainer,
@@ -548,10 +558,6 @@ async function deleteLocally(
 ): Promise<LocalOutcome> {
   const now = container.clock.now();
   return container.scopeUnitOfWorkProvider.run(plan.scope, async (ctx) => {
-    if (plan.deletionOperationId !== null) {
-      await ctx.cleanupAdmission.assertOwner(plan.deletionOperationId);
-    }
-
     const target = await reclaim(ctx, plan, now);
     if (target === null) {
       // Bumped even though nothing was written: the counter is the
@@ -564,6 +570,10 @@ async function deleteLocally(
           plan.noteId,
         ),
       };
+    }
+
+    if (plan.deletionOperationId !== null) {
+      await ctx.cleanupAdmission.assertOwner(plan.deletionOperationId);
     }
 
     const projectionRevision = await ctx.noteProjectionRevisionStore.bump(

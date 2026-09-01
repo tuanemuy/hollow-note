@@ -296,17 +296,25 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS stored_files_expires_idx
      ON ${SCOPE_TABLES.storedFiles} (expires_at) WHERE retention = 'ephemeral'`,
   // `id` is part of the key because the orphan sweep's keyset walk orders
-  // by `(created_at, id)` and resumes on `created_at = ? AND id > ?`: a
-  // scope with many rows sharing one instant would otherwise push the
-  // tie-break into a temporary B-tree.
+  // by `(created_at, id)` and resumes on the row value
+  // `(created_at, id) > (?, ?)`, which this index answers as the lower
+  // bound of one seek: a scope with many rows sharing one instant would
+  // otherwise push the tie-break into a temporary B-tree.
   `CREATE INDEX IF NOT EXISTS stored_files_purpose_created_idx
      ON ${SCOPE_TABLES.storedFiles} (purpose, created_at, id)`,
   `CREATE INDEX IF NOT EXISTS stored_files_note_idx
      ON ${SCOPE_TABLES.storedFiles} (note_id) WHERE note_id IS NOT NULL`,
 
-  // `note_id` carries no foreign key on purpose: Note is another domain,
-  // and a purged note's assignments are reclaimed by the `note.purged`
-  // fan-out rather than by a cascade (spec/database/index.md).
+  // Neither foreign key the spec names is declared, for two different
+  // reasons. `note_id` never had one: Note is another domain, and a
+  // purged note's assignments are reclaimed by the `note.purged` fan-out
+  // rather than by a cascade (spec/database/index.md). `tag_id` →
+  // `tags.id` ON DELETE CASCADE is dropped by this file's no-FOREIGN-KEY
+  // rule, not by `tags` being absent until the curation slice — that
+  // cascade is a safety net the design never divides work by
+  // (spec/domains/tag.md), so the slice adding `tags` reclaims
+  // assignments through `deleteBatchByTag` / `deleteByScope` in code and
+  // does not restore the constraint.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.tagAssignments} (
      id text PRIMARY KEY,
      tag_id text NOT NULL,

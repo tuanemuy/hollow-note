@@ -961,10 +961,14 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 1. 入力`scope`から`NoteOwner`を組み立てる。個人の退会で消えるのは個人所有ノートだけで、退会者が作成したワークスペース所有ノートには触れない（AC-09）
 2. `NoteRepository.listByOwner(owner, "all", pagination)` を `batchSize` 件ずつ読み、ゴミ箱かどうかを問わず1件ずつ`purgeNote({ kind: "scopeCleanup", noteId, expectedVersion, scope, deletionOperationId })`で内部purge operationを開始する。各Noteはrouteを`purging`にしてからlocal削除・public remove・30日tombstoneへ進み、1件の失敗はoperation recoveryへ残して次へ進む
 3. タグ付与・保管ファイル・バックアップ記録・読み取りモデル・件数の後始末は `note.purged` の購読者（`purgeNote` の手順 4 と同じ受け手）に委ねる
-4. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。`batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued { scope, deletionOperationId }` を 1 件だけ**、そのバッチの最後の削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
+4. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。`batchSize` 件を処理してまだ残りがあれば、**継続要求 `note.ownerPurgeContinued` を 1 件だけ** `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである。**継続はバッチの最後の削除と同じ transaction には積めない**。1 件の purge は route・scope・public projection の 3 ストアに跨るサガで自分の transaction を持ち、`run` の入れ子は禁止だからである。積むのは別 transaction で、位置は 2 か所ある
+   - **止まった purge を検知した時点**（手順 6）。持ち回る対象をその場で行へ upsert する。ここは後回しにできない。検知した ID は**この turn の記憶にしか無く、再配送では再構成できない**唯一の情報だからで、書く前に turn が死ぬと次の turn は空の列挙を根拠に ack してしまう（手順 7 のとおり ack は取り消せない）
+   - **turn の終わり**。残件と持ち回りの最終形で行を精算する。この transaction を失っても、行が既に持っている集合を狭め損ねるだけなので ack には至らない
 5. ただし**対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まない**。現在taskをbackoffし、上限到達時は `failed` + global運用通知とする。恒久的に失敗する 1 件が新しい継続を無限に増やすのを防ぐ。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）。**その turn で新たに持ち回る対象が生まれた場合もこれに当たらない**（手順 6） — backoff は既存行の payload を書き換えないため、backoff に落とすとその ID がどこにも残らない。1 つのノートが「新たに持ち回る対象」になるのは高々 1 度なので、ここで継続を積んでも無限には増えない
 6. **route を閉じたあとに止まった purge は、そのノート ID を継続要求の payload に載せて次の turn へ持ち回る**。`beginPurge` が通った時点でノートはどの列挙からも消える — `NoteRouteStore.resolve` は `purging` の route を隠し、`purging` の行を列挙する手段は無く、local delete が commit していれば `listByOwner` にも現れない。持ち回らなければ次の turn は「列挙が空 ＝ scope が空」と読み、公開行が残ったままのノートを置き去りにして `note` 成分を ack してしまう。次の turn は持ち回った ID を今回のページと併せて駆動し、route が閉じたままのノートは版が動きようがないので、止まった turn が使った expected Note version をそのまま再利用する
 7. **`note` 成分の ack は、ページの列挙が尽き、かつ持ち回る対象が 1 件も残らなかった turn だけが返す**。`purgeNote` の呼び出しが例外を投げずに返ることが「そのノートの purge が tombstone に到達した（あるいは既にしていた）」ことの証明であり、他人の operation が握る `purging` route は証明にならないので、`purgeNote` はそれを完全削除済みと畳まず競合として送出する。持ち回る対象が残るあいだ ack が出ないため、退会は `running` のまま可視化される — 閉じた barrier は後続の cleanup command を `assertOwner` で拒むので、ack は取り消せない
+
+**閉じ切れない残余**。purge の local delete が commit してから、その停止を検知して行へ書くまでの間にプロセスが死ぬと、そのノート ID はどこにも残らない。route は `purging`、ノート行は既に無く、`listByOwner` も `resolve` も空を返すため、次の turn は「scope が空」と読んで ack しうる。この窓を閉じるには scope の route を走査して停止した purge を拾い直す回収ドライバが要り、本設計はそれを持たない。手順 4 の 1 つ目（検知時点の書き込み）はこの窓を「検知の直前」まで狭めるためのものであって、無くすものではない。
 
 **カーソルは持たない**。対象は処理するそばから消えるため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。重複配送で 2 系列が並走しても、両方が残りを読んで消し、対象が 0 件になった系列から順に止まる。
 
@@ -972,7 +976,7 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 **継続の媒体を専用の要求にした理由**。以前は受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を再投入して継続していたが、これらは購読者を 8 つ / 4 つ持つため、残作業がある間じゅう購読者全員にコピーが配られ、outbox とキューを水増しした。購読者 1 件の要求に分ければ 1 系列 1 件で済む。継続の媒体としてジョブを使わない理由（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）は変わらない。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形になったため、両者の継続の仕方の違いは解消した。
 
-`batchSize` の既定 100 は、1 Alarm turn の CPU と `note.purged` event fan-out を一定に抑えるための作業量上限である。scope-local SQL に D1 の 500 query 予算は適用しない。正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
+`batchSize` の既定 100 は、1 Alarm turn の CPU と `note.purged` event fan-out に加えて、**この turn が使う global query 数**を抑えるための作業量上限である。scope-local SQL に D1 の予算は掛からないが、1 件の purge は route（`resolve` / `beginPurge` / `finishPurge`）と public projection という global 側を必ず叩くため、scope cleanup でありながら件数に比例して global 予算を消費する唯一の経路になる。正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 
 イベントを発行せず owner 単位の一括 DELETE で消す方式は採らない。ドメインをまたぐ参照（タグ付与・保管ファイル・バックアップ記録）は外部キーを持たずイベント駆動で後始末する規約であり（database 設計の共通規約）、特にバックアップ記録は owner 列を持たないため、ノートを消した後では `noteId` 経由でしか対象を解決できない。1 件ずつ `note.purged` を発行して既存の受け手に委ねるのが、新しいポートや列を増やさない最も単純な設計になる。イベント量は 1 バッチ `batchSize` 件（既定 100）に上限があり、受け手はすべて冪等に設計されている。
 

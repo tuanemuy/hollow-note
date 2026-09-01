@@ -8,10 +8,10 @@
 | local delete前にactorのMembershipが変わる | 再確認する | 削除せずrouteをactiveへabortする | |
 | abort応答を失う | recoveryする | Noteが残ることを確認して同じoperation IDのabortを再試行する | |
 | local delete後・public remove前に停止する | recoveryする | 同じoperation IDでpublic removeを再開し、古いeventはpublic行を復活させない | |
-| local deleteのcommit後に応答を失う | 完全削除する | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない | |
+| local deleteのcommit後に応答を失う | 完全削除する | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない。再送の時点で cleanup の所有が失われていても、消えたノートの route を abort せず前進する | |
 | public removeがackした | 完了する | routeが30日保持の`tombstone`になり、再配送しても同じ結果になる | |
 | remove ackの応答を失う | Cron recoveryする | public削除とoperation ackを冪等に再実行し、ack後だけtombstoneへ進む | |
-| 完全削除後 | 版（`note_revisions`）を確認する | DB の FK CASCADE で同時に削除される | |
+| 完全削除後 | 版（`note_revisions`）を確認する | purge の transaction が `NoteRevisionRepository.deleteByNote` で明示的に消す（本リポジトリのどのスキーマも FK を宣言しない） | |
 | 完全削除後 | タグ付与を確認する | Tag の `deleteAssignmentsForNote` が `note.purged` を受けて削除する | |
 | 完全削除後 | 保管ファイル（`source` / `media` / `reference`）を確認する | Storage の `deleteFilesForNote` が回収する | |
 | 完全削除後 | バックアップ記録を確認する | Integration の `deleteBackupRecordsForNote` が削除する | |

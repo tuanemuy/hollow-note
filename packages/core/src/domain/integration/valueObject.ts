@@ -28,12 +28,14 @@ export type ExternalFileRef = Readonly<{
 
 export const ExternalFileRef = {
   create: (externalFileId: string, webViewUrl: string): ExternalFileRef => {
-    if (externalFileId.length === 0 || webViewUrl.length === 0) {
+    const id = externalFileId.trim();
+    const url = webViewUrl.trim();
+    if (id.length === 0 || url.length === 0) {
       throw new BusinessRuleError(
         IntegrationErrorCode.InvalidFileRef,
         "Invalid external file reference",
       );
     }
-    return { externalFileId, webViewUrl };
+    return { externalFileId: id, webViewUrl: url };
   },
 };

@@ -299,7 +299,7 @@ describe("deleteFilesForNote", () => {
     expect(tasks(h)).toEqual([]);
   });
 
-  it("TC-storage-058: reclaims 250 rows a page at a time, each turn carrying the same deletion token", async () => {
+  it("TC-storage-058: reclaims 250 rows a hundred at a time, each turn carrying the same deletion token", async () => {
     const h = createTestHarness();
     for (let n = 0; n < 250; n += 1) {
       await seedFile(h, {

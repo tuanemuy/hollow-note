@@ -48,6 +48,12 @@ export interface BackupRecordRepository {
    * Deletes at most `limit` records of `noteId` (`limit <= 0` deletes
    * nothing) and answers how many went.
    *
+   * The page is taken from the start of the same `BackupRecordId`
+   * ascending order `listByNote` answers. Which rows a bounded call
+   * removes is part of the contract, not a backend's discretion — it is
+   * what makes the remainder after a partial delete the same on every
+   * backend.
+   *
    * The bound is what keeps one purge turn inside its budget: a caller
    * that deletes a full page reschedules itself, and because the rows it
    * deleted cannot come back, reading from the start always moves

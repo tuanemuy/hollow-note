@@ -316,6 +316,65 @@ const sanitizeCases: readonly SanitizeCase[] = [
     absent: ["evil.css"],
     removed: [{ kind: "css", name: "@import" }],
   },
+  // An escape swallows what follows the `\`, so a quote or a paren written
+  // escaped is an identifier character to the browser and never opens a
+  // string or a group. A scan that missed this found no terminator, read
+  // the whole run as one declaration, and judged it by its first property.
+  {
+    tc: "TC-note-705",
+    title: "drops position after an escaped double quote in a style attribute",
+    input: '<p style="content:\\&quot;;position:fixed">x</p>',
+    present: ["content:\\&quot;;"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after an escaped single quote in a style attribute",
+    input: '<p style="content:\\\';position:fixed">x</p>',
+    present: ["content:\\';"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after an escaped quote inside a style element",
+    input: '<style>.a{content:\\";position:fixed}</style>',
+    present: ['content:\\";'],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after an escaped opening paren in a style attribute",
+    input: '<p style="background:url\\(x;position:fixed">x</p>',
+    present: ["background:url\\(x;"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-708",
+    title: "drops sticky after an escaped opening paren inside a style element",
+    input: "<style>.a{background:url\\(x;position:sticky}</style>",
+    present: ["background:url\\(x;"],
+    absent: ["sticky"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-706",
+    title:
+      "drops only the @import an escaped paren follows, keeping the rule after it",
+    // The same blind spot read backwards: an escaped `(` that opens a group
+    // for the scanner but not for the browser swallows the decoration that
+    // follows the at-rule instead of letting a declaration through.
+    input: "<style>@import url\\(a;.b{position:fixed}</style>",
+    present: [".b{"],
+    absent: ["@import", "fixed"],
+    removed: [
+      { kind: "css", name: "@import" },
+      { kind: "css", name: "position" },
+    ],
+  },
   {
     tc: "TC-note-709",
     title: "keeps a property a comment splits, which no browser resolves",
@@ -572,6 +631,12 @@ describe("HtmlProcessor.process — ADP-note-001 is a fixed point", () => {
     "<h1>One</h1><h2>Two</h2><h2>Two</h2>",
     '<link rel="stylesheet" href="https://cdn.example/x.css">',
     "<style>@media (min-width:1px){.a{position:fixed;color:red}}</style>",
+    // An escaped quote or paren the scan has to consume as one lexeme: a
+    // pass that took either as opening a construct would find no
+    // terminator, and the terminator it supplied would land inside it.
+    "<style>.a{background:url\\(a</style>",
+    '<style>.a{content:\\"</style>',
+    "<style>.a{content:\\</style>",
   ];
 
   it.each(inputs.map((input, index) => ({ index, input })))(

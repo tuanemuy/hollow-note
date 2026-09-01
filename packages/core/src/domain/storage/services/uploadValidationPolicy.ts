@@ -29,13 +29,34 @@ export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
  * be unreachable — the upload would fail on the body's invariant, in
  * Note's vocabulary, for a file Storage said it would accept.
  *
- * 128 KB is what makes the ceiling reachable for *any* input: HTML
- * serialization expands a byte by at most six (`"` inside an attribute
- * becoming `&quot;`), and 131,072 × 6 = 786,432 stays under 800,000. The
- * bytes that are actually stored are measured against this same limit
- * again, since the sanitizer's output is what the file becomes.
+ * 128 KB is what makes the ceiling reachable, and it is reachable only
+ * because `readSvgDocument` bounds the *shape* of what is accepted as
+ * well as its length. For a well-formed document the HTML parser
+ * duplicates no element — reconstruction of the active formatting
+ * elements needs misnested or unclosed formatting tags, which is not
+ * well-formed — so the only growth left is character escaping, at most
+ * six bytes for one (`"` inside an attribute becoming `&quot;`), and
+ * 131,072 × 6 = 786,432 stays under 800,000. Without that gate the
+ * factor is not a constant at all: `<b a="1">…<b a="k"><p>…` is
+ * quadratic, and 3 KB of it serializes into 446 KB.
+ *
+ * The bytes that are actually stored are measured against this same
+ * limit again, since the sanitizer's output is what the file becomes.
  */
 export const MEDIA_SVG_MAX_BYTES = 128 * 1024;
+
+/**
+ * Deepest element nesting an accepted SVG may carry.
+ *
+ * `HtmlProcessor` walks the parsed tree with plain recursion (sanitize,
+ * text extraction, serialization), so the nesting of the input decides
+ * how deep the interpreter stack goes: 1,000 levels — 6 KB of
+ * `<b><i>…` — is enough for a `RangeError` that carries no `kind` and
+ * reaches the user as an unexplained 500. Real drawings nest a handful
+ * of groups deep, so 64 leaves a whole order of magnitude of headroom
+ * on both sides.
+ */
+export const MEDIA_SVG_MAX_DEPTH = 64;
 
 const MEDIA_LIMIT_BYTES = {
   "image/png": MEDIA_IMAGE_MAX_BYTES,
@@ -156,12 +177,7 @@ const isSpace = (character: string): boolean =>
  * and the upload is refused rather than guessed at — the guess would be
  * about a construct no editor emits.
  */
-const opensAsSvg = (body: Uint8Array): boolean => {
-  // The BOM never reaches the walk below: `TextDecoder` defaults to
-  // `ignoreBOM: false`, which means it *consumes* a leading UTF-8 BOM
-  // rather than emitting U+FEFF. Only the rest of the prologue is left
-  // to skip here.
-  const head = new TextDecoder().decode(body.subarray(0, SVG_SCAN_BYTES));
+const opensAsSvg = (head: string): boolean => {
   let index = 0;
   for (;;) {
     while (index < head.length && isSpace(head[index] ?? "")) {
@@ -189,6 +205,300 @@ const opensAsSvg = (body: Uint8Array): boolean => {
     delimiter === ">" ||
     delimiter === "/" ||
     (delimiter !== undefined && isSpace(delimiter))
+  );
+};
+
+// --- XML well-formedness (spec/adr/013, spec/usecases/storage.md#storeMedia) --
+
+/** XML's `S` production — space, tab, CR, LF — and nothing else. */
+const XML_SPACE_ONLY = /^[\t\n\r ]*$/;
+
+/**
+ * Code points XML 1.0 admits nowhere in a document. `String.prototype`
+ * has no ruler for this: the C0 controls other than tab / CR / LF and the
+ * two noncharacters below are a *fatal* error to an XML parser, so a
+ * document carrying one renders nothing at all.
+ */
+const XML_FORBIDDEN_CHAR =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters are exactly what XML forbids.
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/;
+
+/** XML's `Name`, kept to the ranges a single UTF-16 unit can express. */
+const XML_NAME = /^[A-Za-z_:\u00C0-\uFFFD][-.\w:\u00B7\u00C0-\uFFFD]*$/;
+
+/** What ends a name: XML's `S`, plus the delimiters of a tag. */
+const NAME_END = /[\t\n\r />=<'"]/;
+
+const PREDEFINED_ENTITY = /^&(?:amp|lt|gt|apos|quot);/;
+const NUMERIC_REFERENCE = /^&#(x)?([0-9a-fA-F]+);/;
+
+const isXmlChar = (code: number): boolean =>
+  code === 0x9 ||
+  code === 0xa ||
+  code === 0xd ||
+  (code >= 0x20 && code <= 0xd7ff) ||
+  (code >= 0xe000 && code <= 0xfffd) ||
+  (code >= 0x10000 && code <= 0x10ffff);
+
+/**
+ * Whether every `&` opens a reference the document itself defines.
+ *
+ * A `.svg` served on its own carries no DTD, so the only names XML knows
+ * are the five predefined ones; `&nbsp;` — which is what an HTML
+ * serializer writes U+00A0 as — is an undefined entity and therefore a
+ * fatal error. Asked of character data and attribute values only: inside
+ * a comment, a processing instruction or a CDATA section an `&` is just
+ * a character, and a real drawing's generator comment may carry one.
+ */
+const referencesAreDefined = (markup: string): boolean => {
+  for (
+    let index = markup.indexOf("&");
+    index !== -1;
+    index = markup.indexOf("&", index + 1)
+  ) {
+    const reference = markup.slice(index, index + 12);
+    const numeric = NUMERIC_REFERENCE.exec(reference);
+    if (numeric === null) {
+      if (!PREDEFINED_ENTITY.test(reference)) {
+        return false;
+      }
+      continue;
+    }
+    const code = Number.parseInt(
+      numeric[2] as string,
+      numeric[1] === undefined ? 10 : 16,
+    );
+    if (!isXmlChar(code)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const skipXmlSpace = (markup: string, from: number): number => {
+  let index = from;
+  while (
+    index < markup.length &&
+    XML_SPACE_ONLY.test(markup[index] as string)
+  ) {
+    index += 1;
+  }
+  return index;
+};
+
+/** Index just past the name starting at `from`, or -1 when it is not one. */
+const readName = (markup: string, from: number): number => {
+  let index = from;
+  while (index < markup.length && !NAME_END.test(markup[index] as string)) {
+    index += 1;
+  }
+  const name = markup.slice(from, index);
+  return name.length > 0 && XML_NAME.test(name) ? index : -1;
+};
+
+type TagEnd = Readonly<{ end: number; selfClosing: boolean }>;
+
+/**
+ * Reads the attribute list of the tag whose name ends at `from`. XML
+ * demands what HTML forgives — a separating space, an `=`, a quoted
+ * value, and no `<` inside it — so all four are required here.
+ */
+const readAttributes = (markup: string, from: number): TagEnd | null => {
+  let index = from;
+  for (;;) {
+    const at = skipXmlSpace(markup, index);
+    if (markup.startsWith("/>", at)) {
+      return { end: at + 2, selfClosing: true };
+    }
+    if (markup[at] === ">") {
+      return { end: at + 1, selfClosing: false };
+    }
+    if (at === index) {
+      return null;
+    }
+    const nameEnd = readName(markup, at);
+    if (nameEnd === -1) {
+      return null;
+    }
+    const equals = skipXmlSpace(markup, nameEnd);
+    if (markup[equals] !== "=") {
+      return null;
+    }
+    const quoteAt = skipXmlSpace(markup, equals + 1);
+    const quote = markup[quoteAt];
+    if (quote !== '"' && quote !== "'") {
+      return null;
+    }
+    const close = markup.indexOf(quote, quoteAt + 1);
+    const value = close === -1 ? "" : markup.slice(quoteAt + 1, close);
+    if (close === -1 || value.includes("<") || !referencesAreDefined(value)) {
+      return null;
+    }
+    index = close + 1;
+  }
+};
+
+/** Where a namespace declaration goes on a document that has none. */
+export type SvgDocumentShape = Readonly<{
+  /** Offset just past the root's tag name. */
+  rootNameEnd: number;
+  /** The root's start tag, delimited by the walk rather than by `>`. */
+  rootTag: string;
+}>;
+
+/**
+ * The shape of `markup` read as a standalone SVG document, or `null`
+ * when it is not one.
+ *
+ * A stored `.svg` is parsed as XML, where every departure from
+ * well-formedness is a *fatal* error: the file renders nothing at all,
+ * whatever else is right about it. So this asks the whole question and
+ * not a part of it — one `svg` root that closes with nothing but XML
+ * whitespace outside it, tags that match, names XML admits, references
+ * the document defines, characters XML allows, and nesting within
+ * `MEDIA_SVG_MAX_DEPTH`.
+ *
+ * The same predicate answers at both ends of `storeMedia`: on the bytes
+ * as they arrive, so nothing the sanitizer cannot bound is handed to it
+ * (see `MEDIA_SVG_MAX_BYTES`), and on the markup that comes back, so
+ * what is actually stored is a document rather than a fragment that
+ * happens to start with `<svg`. Refusing at the first end costs nothing
+ * a browser would have rendered.
+ */
+export const readSvgDocument = (markup: string): SvgDocumentShape | null => {
+  if (XML_FORBIDDEN_CHAR.test(markup)) {
+    return null;
+  }
+  const open: string[] = [];
+  let root: SvgDocumentShape | null = null;
+  let closed = false;
+  let index = 0;
+
+  while (index < markup.length) {
+    const next = markup.indexOf("<", index);
+    const text = markup.slice(index, next === -1 ? undefined : next);
+    if (open.length === 0 && !XML_SPACE_ONLY.test(text)) {
+      return null;
+    }
+    if (!referencesAreDefined(text)) {
+      return null;
+    }
+    if (next === -1) {
+      break;
+    }
+    index = next;
+
+    if (markup.startsWith("<!--", index)) {
+      const end = markup.indexOf("-->", index + 4);
+      if (end === -1) {
+        return null;
+      }
+      index = end + 3;
+      continue;
+    }
+    if (markup.startsWith("<?", index)) {
+      const end = markup.indexOf("?>", index + 2);
+      if (end === -1) {
+        return null;
+      }
+      index = end + 2;
+      continue;
+    }
+    if (markup.startsWith("<![CDATA[", index)) {
+      const end = markup.indexOf("]]>", index + 9);
+      if (open.length === 0 || end === -1) {
+        return null;
+      }
+      index = end + 3;
+      continue;
+    }
+    if (markup.startsWith("<!", index)) {
+      // A doctype, and only in the prolog. An internal subset is refused
+      // rather than parsed: it can define entities, and then what the
+      // references above are judged against is no longer fixed.
+      const end = markup.indexOf(">", index + 2);
+      if (
+        root !== null ||
+        end === -1 ||
+        markup.slice(index, end).includes("[")
+      ) {
+        return null;
+      }
+      index = end + 1;
+      continue;
+    }
+    if (markup.startsWith("</", index)) {
+      const nameEnd = readName(markup, index + 2);
+      if (nameEnd === -1) {
+        return null;
+      }
+      const after = skipXmlSpace(markup, nameEnd);
+      if (
+        markup[after] !== ">" ||
+        open.pop() !== markup.slice(index + 2, nameEnd)
+      ) {
+        return null;
+      }
+      closed = open.length === 0;
+      index = after + 1;
+      continue;
+    }
+    if (closed) {
+      return null;
+    }
+    const nameEnd = readName(markup, index + 1);
+    if (nameEnd === -1) {
+      return null;
+    }
+    const name = markup.slice(index + 1, nameEnd);
+    const tag = readAttributes(markup, nameEnd);
+    if (tag === null) {
+      return null;
+    }
+    if (root === null) {
+      if (name !== "svg") {
+        return null;
+      }
+      root = { rootNameEnd: nameEnd, rootTag: markup.slice(index, tag.end) };
+    }
+    // A self-closing tag is a level of the tree like any other, and the
+    // HTML serializer writes it back as a pair (`<rect/>` → `<rect></rect>`).
+    // Counting it only when it is written as a pair would make the same
+    // document pass on the way in and fail on the way out.
+    if (open.length + 1 > MEDIA_SVG_MAX_DEPTH) {
+      return null;
+    }
+    if (tag.selfClosing) {
+      closed = open.length === 0;
+    } else {
+      open.push(name);
+    }
+    index = tag.end;
+  }
+  return closed && open.length === 0 ? root : null;
+};
+
+/**
+ * Whether the bytes are an SVG this policy will hand to the sanitizer.
+ *
+ * The prologue decides *what the bytes claim to be*, and the document
+ * walk decides whether that claim can be honoured. The walk is skipped
+ * for a body past the ceiling on purpose: it is refused for its size a
+ * step later, in Storage's own vocabulary, and never reaches the
+ * sanitizer — reading a 200 MB body through as XML would be the only
+ * thing the check accomplished.
+ */
+const identifySvg = (body: Uint8Array): boolean => {
+  // The BOM never reaches either walk: `TextDecoder` defaults to
+  // `ignoreBOM: false`, which means it *consumes* a leading UTF-8 BOM
+  // rather than emitting U+FEFF.
+  const decoder = new TextDecoder();
+  if (!opensAsSvg(decoder.decode(body.subarray(0, SVG_SCAN_BYTES)))) {
+    return false;
+  }
+  return (
+    body.byteLength > MEDIA_SVG_MAX_BYTES ||
+    readSvgDocument(decoder.decode(body)) !== null
   );
 };
 
@@ -232,10 +542,7 @@ const identifyContentType = (body: Uint8Array): MimeType | null => {
   ) {
     return MimeType.create("video/webm");
   }
-  if (opensAsSvg(body)) {
-    return MimeType.create("image/svg+xml");
-  }
-  return null;
+  return identifySvg(body) ? MimeType.create("image/svg+xml") : null;
 };
 
 /** What the store may record about bytes this policy accepted. */
