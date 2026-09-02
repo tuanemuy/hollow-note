@@ -144,7 +144,7 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 | 経路 | 1 回の上限 | 根拠 |
 | --- | --- | --- |
 | `emptyTrash` の同期削除 | **50 notes** | HTTP mutation の CPU と response latency |
-| owner / workspace cleanup | **100 rows** | 1 Alarm turn の CPU と outbox fan-out（note の purge だけは下記のとおり global 予算も掛かる） |
+| owner / workspace cleanup | **100 rows**（`deleteNotesForOwner` だけ **40 notes**） | 1 Alarm turn の CPU と outbox fan-out。note の purge だけは下記のとおり global 予算が先に効き、そちらが上限を決める |
 | 強制終端 / `reapExpiredJobs` | **100 jobs** | transition + recovery + event の fan-out |
 | tag rename/delete/merge fan-out、unused delete | **200 assignments/tags** | revision bump・再投影task・監査payloadの上限 |
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
@@ -156,7 +156,9 @@ scope-local の一括削除は、**書き込みをバッチ件数によらず 1 
 
 全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。ここでの「往復」は**ポート呼び出しの追加往復**（件数ぶんの `listByOwner` を要求しない、の意）であって、上の RPC 往復とは別の量である。
 
-**`deleteNotesForOwner` だけは scope cleanup でありながら Global D1 の予算に掛かる**。1 件の purge は route の `resolve` / `beginPurge` / `finishPurge` と public projection の `removeForPurge` という global 側を必ず通るため、1 turn の global query 数は概ね「ノート数 × 4〜6」になる。上表の 100 rows は既定でこの 500 query 上限に張り付く値であり、余裕を取る側の調整は `batchSize` を**下げる**ことである。他の scope cleanup（storage / tag / integration）は scope-local に閉じるのでこの勘定に入らない。
+**`deleteNotesForOwner` だけは scope cleanup でありながら Global D1 の予算に掛かる**。1 件の purge は route の `resolve` / `beginPurge` / `finishPurge` と public projection の `removeForPurge` という global 側を必ず通る。ここで数える単位は**ポート呼び出しではなく D1 statement** である — 4 つの呼び出しはいずれも「行を読み、その行を pin する guard を先頭に置いた原子適用を書く」形を取り、guard も適用の各文もそれぞれ 1 query を消費する。1 件あたりの内訳は `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4〜5 ＋ `finishPurge` 3 で、**ノート数 × 11〜12** になる。中断からの再開（`beginPurge` の再 claim）も abort の枝もこの幅を超えない。
+
+したがって上表の 100 rows はこの経路には使えない — 100 × 12 = 1,200 で、500 query の設計上限どころか実上限 1,000 も超える。**`deleteNotesForOwner` の 1 turn は 40 notes を上限とする**（40 × 12 = 480 で設計上限の内側）。余裕を取る側の調整は `batchSize` を**下げる**ことである。持ち回る停止 purge（[usecases/note.md](../usecases/note.md) の `deleteNotesForOwner`）はページの上に載るので 1 turn が一時的に 480 を超えることはあるが、実上限 1,000 との差がその分の余地である。他の scope cleanup（storage / tag / integration）は scope-local に閉じるのでこの勘定に入らない。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 

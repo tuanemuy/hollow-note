@@ -15,8 +15,9 @@
  *
  * 退避だけは**保持期限**を持つ（{@link DRAFT_MAX_AGE_MS}）。中身はノート
  * 本文そのもので、保存に成功する以外に消える契機が無いため、置きっぱなし
- * にすると共用端末では次に使う人が読める state になる。期限切れは読まず、
- * 読みのついでに同じ前置きの鍵をまとめて捨てる。
+ * にすると共用端末では次に使う人が読める state になる。期限切れは読まず
+ * （{@link readDraft}）、前置きの下の一括の掃除は画面を開いたときに 1 回
+ * だけ行う（{@link sweepExpiredDrafts}）。
  */
 
 export type EditorMode = "wysiwyg" | "visual" | "html";
@@ -117,8 +118,15 @@ const isExpired = (draft: LocalDraft, now: number): boolean =>
  * 鍵ごとの期限判定だけでは、二度と開かないノートの退避が永久に残る。
  * 読めない値も落とす — この前置きの下にあるものはすべてこの層が書いた
  * 退避で、読めない以上もう復元には使えない。
+ *
+ * **呼ぶのは編集画面を開いたときの 1 回だけ**である。1 件が本文 1 つぶん
+ * （最大 800 KB）ある値を前置きの下から全部 `JSON.parse` する仕事なので、
+ * 退避を読むたび（＝保存が確定するたび）に走らせると、1.5 秒間隔の自動
+ * 保存がそのままメインスレッドの負荷になる。個別の鍵の期限判定は
+ * {@link readDraft} が毎回行うので、掃除が遅れても期限切れは読まれない。
  */
-const sweepExpiredDrafts = (now: number): void => {
+export function sweepExpiredDrafts(): void {
+  const now = Date.now();
   try {
     const storage = window.localStorage;
     const doomed: string[] = [];
@@ -132,11 +140,10 @@ const sweepExpiredDrafts = (now: number): void => {
   } catch {
     // 列挙そのものを拒む端末では掃除を諦める。個別の期限判定は残る。
   }
-};
+}
 
 export function readDraft(noteId: string): LocalDraft | null {
   const now = Date.now();
-  sweepExpiredDrafts(now);
   const draft = parseDraft(read(draftKey(noteId)));
   if (draft === null) return null;
   if (isExpired(draft, now)) {

@@ -270,7 +270,7 @@
 | ADP-tag-007 | `TagRepository.listByIds` | `spec/domains/tag.md#ポート` | 複数 TagId の Tag を取得する |
 | ADP-tag-008 | `TagRepository.deleteByScope` | `spec/domains/tag.md#ポート` | assignment なし Tag を scope 内で有界削除する |
 | ADP-tag-009 | `TagRepository.deleteUnusedInScope` | `spec/domains/tag.md#ポート` | 未使用・unlocked Tag を原子的に有界削除し ID を返す |
-| ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する |
+| ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する。2 つの一意制約を別のエラー種へ写し（`(tagId, noteId)` は `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`AssignmentId` の再利用は `SystemError(DatabaseError)`）、`scope_type` / `scope_id` は scope 鍵として scope object の pin と突き合わせる |
 | ADP-tag-011 | `TagAssignmentRepository.findByTagAndNote` | `spec/domains/tag.md#ポート` | tag・note の assignment を取得する |
 | ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を `AssignmentId` 昇順で列挙する |
 | ADP-tag-013 | `TagAssignmentRepository.listByNotes` | `spec/domains/tag.md#ポート` | 複数ノートの assignment を列挙する |
@@ -300,7 +300,7 @@
 | ADP-integration-005 | `ExternalConnectionRepository.findByUserAndProvider` | `spec/domains/integration.md#ポート` | 利用者・provider の connection を取得する |
 | ADP-integration-006 | `ExternalConnectionRepository.listByUser` | `spec/domains/integration.md#ポート` | 利用者の connection を列挙する |
 | ADP-integration-007 | `ExternalConnectionRepository.deleteByUser` | `spec/domains/integration.md#ポート` | 利用者の connection を有界削除する |
-| ADP-integration-008 | `BackupRecordRepository.insert` | `spec/domains/integration.md#ポート` | 新規 BackupRecord を保存する |
+| ADP-integration-008 | `BackupRecordRepository.insert` | `spec/domains/integration.md#ポート` | 新規 BackupRecord を保存する。2 つの一意制約を別のエラー種へ写す（`(noteId, sourceFileId)` は `ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`BackupRecordId` の再利用は `SystemError(DatabaseError)`）。`user_id` は帰属列なので scope 鍵として検査しない |
 | ADP-integration-009 | `BackupRecordRepository.findById` | `spec/domains/integration.md#ポート` | BackupRecordId で OCC token 付き集約を取得する |
 | ADP-integration-010 | `BackupRecordRepository.save` | `spec/domains/integration.md#ポート` | 期待版一致時だけ BackupRecord を更新する |
 | ADP-integration-011 | `BackupRecordRepository.delete` | `spec/domains/integration.md#ポート` | 期待版一致時だけ BackupRecord を削除する |

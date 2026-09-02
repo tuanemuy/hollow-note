@@ -1,5 +1,11 @@
-import type { DefaultTreeAdapterTypes, Token } from "parse5";
-import { parseFragment, serialize } from "parse5";
+import type {
+  DefaultTreeAdapterMap,
+  DefaultTreeAdapterTypes,
+  Token,
+  TreeAdapter,
+} from "parse5";
+import { defaultTreeAdapter, parseFragment, serialize } from "parse5";
+import { BusinessRuleError } from "../../domain/error";
 import type {
   EditTextNodesResult,
   ExternalReference,
@@ -8,6 +14,10 @@ import type {
   RemovedNode,
   SkippedEdit,
   TextNodeEdit,
+} from "../../domain/note/ports/htmlProcessor";
+import {
+  HTML_PROCESSOR_TOO_COMPLEX,
+  HtmlProcessorLimit,
 } from "../../domain/note/ports/htmlProcessor";
 import {
   Excerpt,
@@ -34,7 +44,7 @@ import {
   STYLESHEET_HREF_ATTRIBUTE,
   UNAVAILABLE_STYLESHEET_ATTRIBUTE,
 } from "./allowList";
-import { filterCss } from "./css";
+import { type CssBudget, createCssBudget, filterCss } from "./css";
 
 type Element = DefaultTreeAdapterTypes.Element;
 type TextNode = DefaultTreeAdapterTypes.TextNode;
@@ -287,6 +297,7 @@ const sanitizeAttributes = (
   element: Element,
   report: Report,
   svg: boolean,
+  budget: CssBudget,
 ): void => {
   const kept: Token.Attribute[] = [];
   const allowedForElement = ELEMENT_ATTRIBUTES.get(element.tagName);
@@ -336,8 +347,10 @@ const sanitizeAttributes = (
     }
 
     if (lower === "style") {
-      const filtered = filterCss(attribute.value, (removal) =>
-        report({ kind: "css", ...removal }),
+      const filtered = filterCss(
+        attribute.value,
+        (removal) => report({ kind: "css", ...removal }),
+        budget,
       );
       if (filtered.trim().length === 0) {
         continue;
@@ -404,10 +417,11 @@ const sanitizeNodes = (
   parent: ParentNode,
   report: Report,
   insideSvg: boolean,
+  budget: CssBudget,
 ): ChildNode[] => {
   const out: ChildNode[] = [];
   for (const node of nodes) {
-    out.push(...sanitizeNode(node, parent, report, insideSvg));
+    out.push(...sanitizeNode(node, parent, report, insideSvg, budget));
   }
   return out;
 };
@@ -428,6 +442,7 @@ const sanitizeNode = (
   parent: ParentNode,
   report: Report,
   insideSvg: boolean,
+  budget: CssBudget,
 ): ChildNode[] => {
   if (isTextNode(node)) {
     return [node];
@@ -463,24 +478,26 @@ const sanitizeNode = (
     if (svg || DROP_WITH_CONTENT.has(name)) {
       return [];
     }
-    return sanitizeNodes(node.childNodes, parent, report, insideSvg);
+    return sanitizeNodes(node.childNodes, parent, report, insideSvg, budget);
   }
 
-  sanitizeAttributes(node, report, svg);
+  sanitizeAttributes(node, report, svg, budget);
 
   if (!svg && name === "style") {
     const source = node.childNodes
       .filter(isTextNode)
       .map((child) => child.value)
       .join("");
-    const filtered = filterCss(source, (removal) =>
-      report({ kind: "css", ...removal }),
+    const filtered = filterCss(
+      source,
+      (removal) => report({ kind: "css", ...removal }),
+      budget,
     );
     adopt(node, filtered.length === 0 ? [] : [textNode(filtered, node)]);
     return [node];
   }
 
-  adopt(node, sanitizeNodes(node.childNodes, node, report, svg));
+  adopt(node, sanitizeNodes(node.childNodes, node, report, svg, budget));
   return [node];
 };
 
@@ -744,7 +761,150 @@ const resolveTextNode = (
 
 // --- adapter --------------------------------------------------------------
 
-const parse = (html: string): DocumentFragment => parseFragment(html);
+// `<tag>` + `</tag>` around the two copies of the name, and ` n="v"`.
+const ELEMENT_MARKUP_BYTES = 5;
+const ATTRIBUTE_MARKUP_BYTES = 4;
+const COMMENT_MARKUP_BYTES = 7;
+
+/**
+ * How much deeper than `maxNestingDepth` the parser's stack of open
+ * elements may get before the parse is abandoned. The stack is not the
+ * tree — a fragment parse keeps its context element on it, and the
+ * adoption agency holds elements there that are no longer ancestors — so
+ * the parse-time counter is deliberately slack and only exists to stop a
+ * run-away: parse5's own cost grows super-linearly with nesting, and
+ * 50,000 `<div>`s (550 KB) took 21 seconds to build a tree that the
+ * exact check below would then refuse. The boundary itself belongs to
+ * `enforceNestingLimit`, which measures the tree.
+ */
+const OPEN_ELEMENT_SLACK = 8;
+
+const nestsTooDeep = (): BusinessRuleError<string> =>
+  new BusinessRuleError(
+    HTML_PROCESSOR_TOO_COMPLEX,
+    `HTML nests deeper than ${HtmlProcessorLimit.maxNestingDepth} levels`,
+  );
+
+const expansionAllowance = (inputLength: number): number =>
+  Math.max(
+    HtmlProcessorLimit.minExpandedBytes,
+    Math.min(
+      HtmlProcessorLimit.maxExpandedBytes,
+      inputLength * HtmlProcessorLimit.maxExpansionFactor,
+    ),
+  );
+
+/**
+ * `defaultTreeAdapter`, metered.
+ *
+ * The tree is built by the parser, so a ceiling checked after
+ * `parseFragment` returns would be checked after the memory has already
+ * been spent: re-constructing the active formatting elements turns 128 KB
+ * of `<template><tr><font …>` into a 15 MB tree and 200 MB of heap
+ * before any code of ours runs. Charging each node as the parser asks
+ * for it stops the parse itself, which is the only place the cost can be
+ * refused.
+ *
+ * The unit is the length the node will serialize to, because that is what
+ * bounds both the tree and the string built from it. Every method not
+ * named here is `defaultTreeAdapter`'s, and below the allowance the two
+ * adapters build the identical tree — the meter observes, it never
+ * changes what is built.
+ */
+const createMeteredTreeAdapter = (
+  allowance: number,
+): TreeAdapter<DefaultTreeAdapterMap> => {
+  let remaining = allowance;
+  let open = 0;
+  const spend = (cost: number): void => {
+    remaining -= cost;
+    if (remaining < 0) {
+      throw new BusinessRuleError(
+        HTML_PROCESSOR_TOO_COMPLEX,
+        `HTML expands past ${allowance} bytes when parsed`,
+      );
+    }
+  };
+  return {
+    ...defaultTreeAdapter,
+    onItemPush() {
+      open += 1;
+      if (open > OPEN_ELEMENT_SLACK + HtmlProcessorLimit.maxNestingDepth) {
+        throw nestsTooDeep();
+      }
+    },
+    onItemPop() {
+      open -= 1;
+    },
+    createElement(tagName, namespaceURI, attrs) {
+      let cost = tagName.length * 2 + ELEMENT_MARKUP_BYTES;
+      for (const attribute of attrs) {
+        cost +=
+          attribute.name.length +
+          attribute.value.length +
+          ATTRIBUTE_MARKUP_BYTES;
+      }
+      spend(cost);
+      return defaultTreeAdapter.createElement(tagName, namespaceURI, attrs);
+    },
+    createCommentNode(data) {
+      spend(data.length + COMMENT_MARKUP_BYTES);
+      return defaultTreeAdapter.createCommentNode(data);
+    },
+    insertText(parentNode, text) {
+      spend(text.length);
+      defaultTreeAdapter.insertText(parentNode, text);
+    },
+    insertTextBefore(parentNode, text, referenceNode) {
+      spend(text.length);
+      defaultTreeAdapter.insertTextBefore(parentNode, text, referenceNode);
+    },
+  };
+};
+
+/**
+ * Rejects a tree that nests past `maxNestingDepth`.
+ *
+ * Its own walk is an explicit stack, because the depth it exists to
+ * refuse is exactly the depth that overflows a recursive one — 2,000
+ * nested `<div>`s are 22 KB. Every other walk in this file, and parse5's
+ * own serializer, is recursive and runs only after this returns, so the
+ * limit is what keeps all of them inside a few hundred frames instead of
+ * raising a `RangeError` that carries no `kind`.
+ *
+ * `<template>` content is walked too: the sanitizer drops `template`
+ * whole, but the serializer descends into it, so it has to be inside the
+ * bound as well.
+ */
+const enforceNestingLimit = (fragment: DocumentFragment): void => {
+  const pending: { node: ChildNode; depth: number }[] = fragment.childNodes.map(
+    (node) => ({ node, depth: 1 }),
+  );
+  while (pending.length > 0) {
+    const entry = pending.pop() as { node: ChildNode; depth: number };
+    if (entry.depth > HtmlProcessorLimit.maxNestingDepth) {
+      throw nestsTooDeep();
+    }
+    if ("content" in entry.node) {
+      for (const child of entry.node.content.childNodes) {
+        pending.push({ node: child, depth: entry.depth + 1 });
+      }
+    }
+    if ("childNodes" in entry.node) {
+      for (const child of entry.node.childNodes) {
+        pending.push({ node: child, depth: entry.depth + 1 });
+      }
+    }
+  }
+};
+
+const parse = (html: string): DocumentFragment => {
+  const fragment = parseFragment(html, {
+    treeAdapter: createMeteredTreeAdapter(expansionAllowance(html.length)),
+  });
+  enforceNestingLimit(fragment);
+  return fragment;
+};
 
 /**
  * The single application point of the sanitize policy (spec/adr/013).
@@ -784,7 +944,13 @@ export function createHtmlProcessor(): HtmlProcessor {
 
       adopt(
         fragment,
-        sanitizeNodes(fragment.childNodes, fragment, report, false),
+        sanitizeNodes(
+          fragment.childNodes,
+          fragment,
+          report,
+          false,
+          createCssBudget(),
+        ),
       );
       const headings = collectHeadings(fragment);
       const text = extractText(fragment.childNodes);

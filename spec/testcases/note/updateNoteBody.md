@@ -41,6 +41,15 @@
 | `script` / `foreignObject` / 外部を指す `href` を含むインライン `<svg>` | 保存する | `svg` の描画要素の部分集合だけが残り、それらは除去される（本文中のインライン `svg` と保管する SVG ファイルで同じ部分集合を使う） | |
 | 除去が複数の分類にまたがる HTML | 保存する | `removed` に要素・属性・URL スキーム・CSS 由来の除去がそれぞれ分類つきで積まれ、画面が分類ごとに畳める形で返る | |
 | 壊れた HTML | 保存する | 補正された結果が保存され、例外にならない | |
+| `<style>` に改行で終わる文字列を含む HTML（`content:"a⏎;position:fixed`。`\r` / `\f` と `style` 属性、ブロック境界をまたぐ形も同じ） | 保存する | 改行は文字列を bad-string として終わらせるので `position` の宣言だけが除去され、`removed` に含まれる（閉じ引用符まで走る走査は `;` を見失い、`<style>` 1 個のオーバーレイを素通しする） | |
+| `url()` でない関数トークンの内側に `;` と `position:fixed` を含む規則（`.a{background:myurl(a(b);position:fixed);color:red}`） | 保存する | 規則がそのまま残り、`removed` が空になる（`myurl(` はブラウザにとって関数トークンなので `;` は宣言を終端しない。ここで url-token として過剰に一致させると、除去した側が閉じ括弧を持ち去って `color:red` まで失われる） | |
+| 走査の深さの上限を超える入れ子の HTML（`<div>` を 2,000 段 = 22 KB） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（`toSerialized()` を持たない `RangeError` にはならない） | |
+| 入れ子がちょうど 256 段 / 257 段 | 保存する | 256 段は保存でき、257 段は `NOTE_HTML_TOO_COMPLEX` で拒まれる（境界値） | |
+| `<style>` のブロックが深く入れ子になった HTML（`@media a{` を 12,000 段 = 108 KB） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（ブロックの終端探索がそのブロックを読み直すため、深さがそのまま走査を二乗にする） | |
+| CSS のブロックの入れ子がちょうど 32 段 / 33 段 | 保存する | 32 段は保存でき、33 段は `NOTE_HTML_TOO_COMPLEX` で拒まれる（境界値） | |
+| 入れ子の上限には収まるが走査の総量が上限を超える `<style>`（32 段の中に 300 KB の宣言） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（深さの上限をすり抜ける形に対する歯止め） | |
+| パーサーが入力を 4 倍を超えて膨らませる HTML（`<table><tr>` の下に 60 個の `<font>` と `<tr>X</tr>` を 3,000 行。`<svg><desc><template><tr>` 経由も同じ） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる。すべてのタグは閉じ、入れ子も浅く、許可リストにも breakout tag の列挙にも掛からない（膨張は active formatting elements の再構成によるもので、要素名では塞げない） | |
+| 同じ形でも膨張が上限に収まる HTML | 保存する | 通常どおりサニタイズされて保存される（上限以下の入力の扱いは変わらない） | |
 | サニタイズ後が 800,000 バイトを超える | 保存する | `BusinessRuleError(ContentTooLarge)` が投げられる | |
 | サニタイズ後がちょうど 800,000 バイト | 保存する | 保存できる（境界値。上限は D1 の行サイズ 2,000,000 バイトから逆算した値） | |
 | 見出しが 200 件を超える HTML | 保存する | 先頭 200 件だけが `headings` に残り、超過分は捨てられる（本文の保存自体は成功する） | |

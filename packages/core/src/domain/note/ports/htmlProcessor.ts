@@ -1,5 +1,57 @@
 import type { Excerpt, NoteHtml, PlainTextContent } from "../valueObject";
 
+/**
+ * `BusinessRuleError` code raised when an input exceeds
+ * `HtmlProcessorLimit`. A resource ceiling is a rejection of the actor's
+ * input, not a fault of the service, so it carries the `business` kind
+ * like every other invariant violation — a bare `RangeError` has no
+ * `toSerialized()` and reaches the transport boundary as an unclassified
+ * fault.
+ */
+export const HTML_PROCESSOR_TOO_COMPLEX = "NOTE_HTML_TOO_COMPLEX";
+
+/**
+ * The resource ceiling `process` holds itself to (spec/adr/013 「サニタイズ
+ * は資源で有界である」).
+ *
+ * The point of these numbers is that sanitization costs a bounded amount
+ * of CPU and memory *whatever shape the input has*, so no caller has to
+ * argue that the markup it hands over cannot make an HTML parser
+ * duplicate content. Every one of them is far above what a document
+ * reachable through the 2,000,000-byte transport ceiling for a note body
+ * can legitimately reach, so an input under the ceiling is processed
+ * exactly as it was before the ceiling existed.
+ *
+ * - `maxExpansionFactor` / `minExpandedBytes` / `maxExpandedBytes` bound
+ *   the parse tree, measured as the length it would serialize to. HTML
+ *   parsing never duplicates content except by re-constructing the active
+ *   formatting elements (foster parenting / the adoption agency), so a
+ *   tree more than four times its source is that duplication and nothing
+ *   else — a legitimate 1,040,000-byte body measures 1.06× here. The
+ *   floor keeps very short inputs, where implied tags are a large
+ *   relative cost (`<table><tr><td>x` serializes to 2.8× its source),
+ *   away from the factor; the ceiling is twice the transport ceiling, so
+ *   the bound holds even for a caller that has no transport boundary.
+ * - `maxNestingDepth` bounds every depth-first walk over the tree. Real
+ *   documents nest in the tens; the value keeps the walks inside a few
+ *   hundred stack frames, more than an order of magnitude below where a
+ *   JavaScript stack gives out.
+ * - `maxCssNestingDepth` bounds `@media` / rule nesting. Finding the end
+ *   of a block re-reads that block, so depth is what turns CSS filtering
+ *   quadratic; capping it makes the cost linear again.
+ * - `maxCssScanSteps` is the backstop on the total low-level character
+ *   scanning of one `process` call: four passes over every byte the
+ *   transport ceiling admits.
+ */
+export const HtmlProcessorLimit = {
+  maxExpansionFactor: 4,
+  minExpandedBytes: 262_144,
+  maxExpandedBytes: 4_000_000,
+  maxNestingDepth: 256,
+  maxCssNestingDepth: 32,
+  maxCssScanSteps: 8_000_000,
+} as const;
+
 export type RemovedNode = Readonly<{
   kind: "element" | "attribute" | "url" | "css";
   name: string;
@@ -75,6 +127,13 @@ export type ProcessedHtml = Readonly<{
  * (`adapters/html/htmlProcessor.ts`) is backed by a total HTML5 fragment
  * parser and therefore never reaches that branch; a backend whose parser
  * can fail must translate into it rather than leak a driver error.
+ *
+ * The one input every method does reject is one that cannot be processed
+ * within `HtmlProcessorLimit`:
+ * `BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX)`. "Broken HTML is
+ * repaired, not rejected" is unchanged — what is refused is not a shape
+ * but a cost, and only above a ceiling no document reachable through the
+ * body's own size limits comes near.
  */
 export interface HtmlProcessor {
   process(rawHtml: string): ProcessedHtml;

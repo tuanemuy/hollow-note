@@ -2667,3 +2667,195 @@ ADR-089 は「保存が確定させるのは送った写し」を通したが、
 - 良い点: していない退避を「した」と告げなくなる。P-12 の状態表が持たない「退避の無い保存失敗」を、状態ではなく文言の分岐で表す
 - 良い点: 孤児の白紙ノートが押した回数だけ増えることが無くなる
 - トレードオフ: 新規作成の初回保存が落ちると、その画面からは保存し直せない。逃げ道はダウンロードだけで、続きは読み直してからになる。冪等鍵が入れば再試行を戻せる
+
+---
+
+## ADR-107: `deleteNotesForOwner` の 1 turn は global D1 の statement 数で決める — 40 notes
+
+### Context
+
+`spec/platform/index.md`「実行予算と分割単位」は 1 invocation の D1 query 上限を 500（実上限 1,000 の半分）と定め、同じ節で「`deleteNotesForOwner` の 1 turn の global query 数は概ねノート数 × 4〜6」「上表の 100 rows はこの 500 query 上限に張り付く値」と書いていた。この 4〜6 は**ポート呼び出し**の数であって query 数ではない。
+
+Cloudflare 実装を数えると、`NoteRouteStore` は autocommit session なので 1 呼び出しが「読み 1 + guard 1 + 書き 1〜」に開く（`d1/repositories/noteRouteStore.ts` の `requireRow` + `commit`）。public projection の `removeForPurge` も `readStored` 1 + `[vectorGuard, (fts delete), delete, tags delete]` の原子適用に開く（`projection/snapshotWriter.ts`）。1 件の purge は `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4〜5 ＋ `finishPurge` 3 ＝ **11〜12 statement**。既定 100 件では 1,100〜1,200 で、設計上限 500 どころか実上限 1,000 も超える。「張り付く」ではなく踏み抜いていた。
+
+### Decision
+
+見積もりの言い換えではなくバッチ側を直す。`OWNER_PURGE_BATCH_SIZE` を 100 → **40** にする（40 × 12 = 480 で設計上限の内側）。`spec/platform/index.md` には数える単位が statement であること、内訳、および上表の 100 rows がこの経路には使えないことを書く。表の「owner / workspace cleanup」行にも例外を併記する。
+
+持ち回る `StuckPurge` はページの**上に**載るので、回収中の turn は 480 を超えうる。これは実上限 1,000 との差で吸収する — 持ち回りはページと違って turn 側が選べる量ではないため、ページの上限をさらに下げても保証にはならない。
+
+### Alternatives
+
+- **1 件あたり 5 以下に抑えられる根拠を書いて見積もりの幅を狭める**（レビューが挙げたもう一方）: 実装が 11〜12 を使う以上、正典に嘘を書くことになる。
+- **100 のまま「予算超過を承知で運用する」と書く**: 設計上限を宣言している節に自己矛盾を残すのと同じ。
+- **1 件あたりの statement 数を減らす**（route の読みを `beginPurge` に畳む等）: アダプター契約に触れる変更で、今スライスの守備範囲外。将来 40 を上げたくなったときの正攻法はこちら。
+
+### Consequences
+
+- 良い点: Cloudflare 配備で 1 turn が D1 の実上限を踏まない。参照ランタイム（Node + memory）には D1 予算が無いので、効くのは turn 数が 2.5 倍になることだけ
+- 良い点: 「query 数」がポート呼び出し数ではないことが正典に明記され、次に予算を数える人が同じ取り違えをしない
+- トレードオフ: `100` を写している正典が 4 箇所残る（`spec/usecases/note.md`「既定・最大100」ほか、`spec/inventory/usecase.md` UC-note-022、`spec/inventory/test.md` TC-note-073 / 074 / 079、`spec/testcases/note/deleteNotesForOwner.md`）。本作業の担当ファイル外なので同時に直せていない
+- 変異スポットチェック: `OWNER_PURGE_BATCH_SIZE` を 41 にすると TC-note-079 が red
+
+---
+
+## ADR-108: 編集島の確定済み状態は `EditorSnapshot` 1 つで持ち、遷移は `confirm` と `reseed` の 2 つに限る
+
+### Context
+
+ラウンド 003・004・005・006 の Blocker はすべて「送った写しを確定させる」規則（ADR-089）の**別の穴**だった。003 はビジュアルの基準を `await` の後に読み直す穴、005 は `skipped` の経路を基準に取り込む穴、006 は 2 つ同時に出た — 載せ直し（ADR-105 の `reseedIfUnchanged`）の門が本文しか見ておらず往復中に打ったタイトルを捨てる穴（B-001）と、載せ直しに入らない枝がビジュアルの面と `body` state の食い違いを直さず `dirty` が永久に下りない穴（W-005）である。
+
+根は 1 つで、確定済み状態が `savedTitle` / `savedBody` / `savedRef` / `baseline` / `baselineSeed` / `visualOriginal` / `visualDirty` に散っていたことにある。散っている以上、保存の経路ごとに「どれを進めるか」が違ってよく、実際に違っていた — rename の直後は `savedTitle` だけを進め（本文を進めない）、丸ごと送る保存の確定は `savedBody` だけを進める（`body` state を揃えない）。B-001 と W-005 は同じ穴の裏表である。個別に塞いでも、次に枝を 1 つ足したときに同じ形の穴がもう 1 つ空く。
+
+ADR-105 の門（「面が写しと同じ値のままなら載せ直す」）は判断そのものは正しいが、比較の対象が本文 1 つだったために規則の適用範囲が本文に閉じていた。本 ADR はその門を写し全体の比較へ広げ、ADR-105 を置き換える。
+
+### Decision
+
+確定済み状態を `EditorSnapshot`（`title` / `body` / `visual`）**1 つの値**で持ち、確定値が動く経路を 2 つに限る。
+
+- `confirm(sent, next)` — 確定を 1 段**進める**。受け取るのは送った写しと、その往復のあとにサーバーが持っている**写し全体**の 2 つだけである。項目を 1 つだけ進める入口（旧 `rememberSaved(title, body)`）は消した。タイトルだけが通った窓（rename は通ったが本文の保存が落ちた）も、`{ ...confirmed, title: applied }` という**完全な写し**を渡す形でしか表せない
+- `reseed(title, body)` — 確定を丸ごと**置き換える**。サーバーの正本を面ごと載せ直す経路がこれで、面へ本文を載せるだけの操作（`loadSurface`：退避の復元、競合の「自分の内容で上書きする」の後半）は確定値を動かさない別の関数に分けた
+- 門は `sameSnapshot` で**写し全体**を比べる。本文だけ・タイトルだけを見る比較はコードから消えている
+- 経路単位で送れるか（旧 `body === savedBody` の近似）は `VisualPaths.pathwise` として確定値の中に持つ。`true` へ戻るのは面を正本から組み直したときだけで、その判定は `onReady` の `baseline === confirmed.body` 1 か所に閉じる
+- `confirm` はビジュアルモードで必ず `body` state を写しの本文へ揃える。ビジュアルの面は打鍵で `body` を動かさないので、揃えないと面と state が食い違ったまま `dirty` が下りない
+
+あわせて ED-04 の門（`needsWysiwygWarning`）の材料を「断片を描いた時点の本文」から「**これから面へ載る本文**」に変え、`enterMode`（確定値）と `reseedFromServer`（引き直した正本）の 2 か所で問う。判定は面が実際に落とすもの（`dropStyleElements`）と同じパーサーに聞く（`willDropStyleElements`）。サーバーコンポーネント側の走査による判定は取り込み由来の分と or で残す。
+
+### Consequences
+
+- 良い点: 「保存経路ごとに進める部分集合が違う」が構造として書けない。確定値を動かす関数は 2 つで、どちらも写しを丸ごと受け取る
+- 良い点: B-001（往復中のタイトルが消える）と W-005（`dirty` が永久に下りない）が個別の分岐ではなく同じ 1 か所で塞がる。次に保存の枝を足しても、確定に渡せるのは写し全体だけである
+- 良い点: 「経路単位で送れるか」が `body === savedBody` という偶然の等式ではなく明示の値になり、丸ごと送ったあとに `true` へ戻らないことが読んで分かる
+- 良い点: ED-04 の門が、自動保存で入った `<style>`（断片は描き直されない）にも掛かる
+- トレードオフ: 確定値の更新が 1 回の state 更新にまとまるので、`confirmed` を依存に持つ effect は本文とタイトルのどちらが動いても走る（退避の検出 effect 1 本のみ。読むのは 1 件だけなので無視できる）
+- トレードオフ: `pathwise` が `false` のあいだビジュアルの保存は丸ごと送る枝で走る。`true` へ戻るのは面の載せ直しが 1 回入ったときで、これは ADR-105 が置いた性質をそのまま引き継ぐ
+- **ADR-105 を置き換える**。載せ直しの契機と「載せ直せなかったら送った写しで確定させる」規則はそのまま生きているが、門の比較対象が本文から写し全体になった
+
+---
+
+## ADR-109: 面の scrub は保存側の「落とす / unwrap」の割り方まで写す
+
+### Context
+
+面の scrub（`scrubForSurface`）は「保存で落ちるものの部分集合しか落とさない」という不変条件で書かれていた（ADR-092）。ところが落とし方は写していなかった — 面は集合に載っている要素を `remove()`（subtree ごと）するのに対し、保存側（`adapters/html/allowList.ts`）が subtree ごと落とすのは `DROP_WITH_CONTENT` に載っているものだけで、それ以外の未許可要素は unwrap する（散文を黙って消さないという ADR 006 由来の要件）。両者がずれるのは `form` 1 つで、`script` / `noscript` / `iframe` / `object` / `embed` は両側とも subtree ごと、`link` / `meta` / `base` は子を持てないので差が出ない。
+
+WYSIWYG は面の DOM が本文の正本なので、これは表示だけの差では済まない。`<form>` に包まれた領域を貼ると中の散文が面から消え、そのまま次の保存でサーバーへ書き戻る。
+
+### Decision
+
+面の集合を 2 つに割る — `UNSAFE_DROP_ELEMENTS`（子ごと落とす。保存側の `DROP_WITH_CONTENT` の部分集合）と `UNSAFE_UNWRAP_ELEMENTS`（要素だけ外して子を残す）。割り方の正典は保存側の `DROP_WITH_CONTENT` である。
+
+### Consequences
+
+- 良い点: 「面が落とすものは保存でも落ちる」が、要素の集合だけでなく**落ち方**についても成り立つ
+- 良い点: `<form>` を含む Web ページを WYSIWYG へ貼っても散文が消えない
+- トレードオフ: 面に `<form>` の子（`input` / `button`）が残る。保存では未許可要素として unwrap されるので、保存後の姿とは違う — これは scrub がもともと「保存後の姿ではない」ことの一部である
+
+---
+
+## ADR-110: scrub 済みの木は直列化せずにそのまま面へ渡す
+
+### Context
+
+「サニタイズした木を直列化し、別の解析文脈で読み直す」は既知のサニタイザー迂回（mXSS）の形で、`<svg>` / `<math>` 由来の名前空間混同や `<style>` / `<title>` の raw text で属性境界が動くと、scrub 後に無かった `on*` が再パースで復活しうる。3 つの面のうちビジュアルだけが `root.replaceChildren(style, template.content)` で木のまま渡していて、WYSIWYG のシード（`surface.innerHTML = template.innerHTML`）と貼り付け（`execCommand("insertHTML", …, template.innerHTML)`）は挟んでいた。ここへ未保存の他所由来 markup が入る経路は実在する（WYSIWYG への貼り付け、ED-03 の中核である「保存済み Web ページを HTML モードへ貼る」）。
+
+### Decision
+
+WYSIWYG の 2 経路を木の受け渡しに変える。
+
+- シード: `surface.replaceChildren(template.content)`。直列化してよいのは「載せ替えが要るか」の比較だけで、比較した文字列は DOM へ戻さない
+- 貼り付け: `Range.insertNode(template.content)` で caret 位置へ差し込み、caret を差し込んだ末尾の直後へ移す
+
+HTML のプレビューだけは窓を承知で残す。`NoteBody` は本文を**文字列で**受け取る API で、そこを fragment に変えると保存済み本文を描く経路（`NoteDetail`）まで巻き込む。代わりに `<style>` の連結（`` `<style>${css}</style>${html}` ``）をやめて要素として組み、残る窓を JSDoc に明記した。
+
+### Consequences
+
+- 良い点: 未保存の他所由来 markup が入る 2 経路から窓が消える
+- 良い点: `<style>` の境界が本文の中身に依存しなくなる
+- トレードオフ: WYSIWYG の貼り付けがブラウザーの取り消し履歴に載らない（`execCommand` を通らないため）。Ctrl+Z で貼り付けが戻らない
+- トレードオフ: HTML のプレビューには窓が 1 本残る。閉じるには `NoteBody` の受け取り方を変える必要がある
+
+---
+
+## ADR-111: shadow root のホストは `contain` の親で包む — `:host` は shadow root では閉じない
+
+### Context
+
+「shadow root なのでセレクターの到達範囲はそこで閉じる」は `:host` に対しては成り立たない。shadow tree の中の `:host { … }` は**ホスト要素**（light DOM 側）に当たり、CSS Scoping の並び順は通常宣言なら外側の木が勝つが、`!important` が付くと内側の木が勝つ。したがって本文の `<style>` に `:host { transform: scale(40) !important }` が 1 行あると、ホストに掛けてある `relative` では止まらず、面・本文が編集画面や詳細画面を覆える。保存側の CSS フィルターが絞っているのは `position` だけで、`transform` / `width` / `margin` は通る。
+
+HTML のプレビューだけは外側の `[contain:layout_paint]` が包含ブロックと描画のクリップを作っていて閉じていたが、同じ包みがビジュアルの面と `NoteBody` に無かった。共有ワークスペースでは他のメンバーが書いた本文が閲覧者の画面を覆える（クリックの誘導も同じ形で作れる）。
+
+### Decision
+
+shadow root のホストは `[contain:layout_paint]` の**親**で包む。ホスト自身に掛けても、`:host` が当たる先はそのホストなので効かない。ビジュアルの面と `NoteBody` に HTML プレビューと同じ包みを足した。
+
+### Consequences
+
+- 良い点: 本文の CSS が面・本文の枠の外へ出られない。3 つの描画先で担保が揃う
+- 良い点: 「セレクターを閉じるのは shadow root、レイアウトと描画を閉じるのは `contain`、そして `:host` は前者の外側にある」が JSDoc と実装で一致する
+- トレードオフ: `NoteBody` のホストに div が 1 枚増える
+
+---
+
+## ADR-112: 決定的な業務拒否は「退避して再試行」に畳まない
+
+### Context
+
+編集島の `classify` は既知のコード以外をすべて `failed`（通信エラー＝退避して再試行）に畳んでいた。そこへ来るのは通信エラーだけではなく、`NOTE_CONTENT_TOO_LARGE`（800 KB 超）・`NOTE_INVALID_TITLE`・転送境界の `INVALID_INPUT` も同じ枝に落ちる。結果として、同じ本文を送るかぎり必ず同じ拒否が返るのに「再試行」を勧め、上限を超えた本文を毎回 `localStorage` へ書いていた。エラーの文言（「分割してからもう一度お試しください」）が分割を勧めているのに、隣のボタンが分割しない再送を勧める形である。
+
+### Decision
+
+`SaveStatus` に `rejected`（利用者が内容を直すまで再試行が意味を持たない拒否）を足し、退避も再試行も出さない。
+
+- 自動保存は `rejected` から自力で再開しない（同じ答えを返し続けるため）。再開の起点は打鍵（＝内容を直す操作）で、`markDirty` が `rejected` を降ろす
+- ただしノートがまだ作られていないあいだは降ろさない。初回作成は冪等ではないので、再送は白紙のノートを 1 件ずつ増やす。この場合の逃げ道は `failed` と同じダウンロードにする
+
+### Consequences
+
+- 良い点: 成功しない再試行を勧めなくなる。上限超えの本文で `localStorage` の quota を押さない
+- 良い点: 「通信エラー」と「内容の拒否」が別の状態として提示される
+- トレードオフ: `spec/pages/index.md#P-12` の状態表に「保存できません（内容の拒否）」に当たる行が無い。表への追記が要る（本作業の担当ファイル外）
+
+---
+
+## ADR-113: サニタイズは「入力の形」ではなく「使う資源」で有界にする
+
+### Context
+
+`HtmlProcessor.process` の費用を「この形の入力なら有界だ」と論証する試みは、**3 ラウンド続けて実測に否定された**。
+
+- ADR-095 は「膨張率を定数にできるのは整形式な入力に限られる（複製は入れ子が壊れているときだけ起きる）」と書き、128 KB という SVG の上限の根拠をそこに置いた。**これは偽である**（ラウンド 005 の実測: 完全に整形式・64 段以内の 131 KB が 11.3 MB = 86 倍）
+- ADR-099 はそれを「foster parenting の入口は breakout tag と HTML integration point の 2 つしかなく、後者から table 系の挿入モードへ入るにも `table` の開始タグが要り、それ自体が breakout 集合にある」と置き換えた。**これも偽である**（ラウンド 006 の実測: `<svg><desc><template><tr><font …>` の 131 KB が 21.9 MB = 180 倍・heap 186 MB。"in template" 挿入モードは `caption` / `tbody` / `tr` / `td` などで **`table` の開始タグを介さずに** table 系へ切り替わり、`template` / `tr` / `td` は breakout 集合に 1 つも無い）
+
+3 回とも、誤っていたのは集合の中身ではなく**集合が十分だという推論**である。列挙は HTML の挿入モード全体を相手にしており、名前の網羅で証明する形になっていない。次に `template` を集合へ足しても、同じ推論の穴が残る。
+
+同じラウンドで本文側も測られた。`sanitizeNodes` ↔ `sanitizeNode` の相互再帰は 22 KB（`<div>` 2,000 段）で `RangeError`、`filterCss` の `findBlockEnd` は階層ごとに残り全体を読み直すので 108 KB（`@media a{` 12,000 段）で 26 秒。`RangeError` は `CodedError` ではないので `toSerialized()` を持たず、`kind` による構造的な直列化に乗らない。転送境界は 2,000,000 バイトを通す。
+
+### Decision
+
+**`HtmlProcessor` が自分の使う資源に上限を持ち、超えたら `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で打ち切る。入力の形については何も論証しない。**
+
+| 上限 | 値 | 根拠 |
+| --- | --- | --- |
+| 解析後の木（直列化長で測る） | 入力長 × 4、下限 262,144 / 上限 4,000,000 バイト | HTML の解析は active formatting elements の再構成以外で内容を複製しない。正当な 1,040,000 バイトの本文の実測は 1.06 倍。下限は短い入力の省略タグ補完（`<table><tr><td>x` は 2.8 倍）、上限は転送境界 2,000,000 の 2 倍 |
+| 走査の深さ | 256 段 | 実在の文書は数十段。木を辿るすべての走査が数百フレームに収まり、スタックが尽きる水準から 1 桁以上遠い |
+| CSS のブロックの入れ子 | 32 段 | 実在のスタイルシートは 5 段程度。ブロックの終端探索が二乗を生むので、ここを切ると線形に戻る |
+| CSS の走査の総量 | `process` 1 回につき 8,000,000 歩 | 転送境界の 1 バイトあたり 4 回。深さの上限をすり抜ける形への歯止め |
+
+**測るのは解析が終わってからではなく、解析しながらである。** 木の大きさは `parse5` の tree adapter を `defaultTreeAdapter` の委譲で包み、`createElement` / `insertText` / `insertTextBefore` / `createCommentNode` が要求されるたびに直列化長を課金する。深さは同じ adapter の `onItemPush` / `onItemPop`（開いている要素の数）でも見る。解析が終わってから測る形は、費用を払い終えてから測ることになる — 180 倍の SVG は 15 MB の木と 200 MB の heap を作ったあとでしか測れず、`<div>` 50,000 段は木ができるまでに 21 秒かかる。
+
+**再帰は `RangeError` を投げない形にする。** 深さを測る走査だけを明示スタックで書き（それが溢れる深さこそがこの走査の対象である）、木を辿る他の走査・`filterCss` のブロック走査・`parse5` の直列化はすべて上限より深くならないので、`toSerialized()` を持たない例外はどこからも出ない。`sanitizeNode` を明示スタックへ書き換える案は採らない — 木の構築・再親子付け・`<style>` の特例・内容ごと除去・子の昇格の 5 分岐を持つので、書き換えは出力の同一性を壊す危険のほうが大きく、上限を先に置けば同じ結論（`RangeError` が出ない）が 1 つの走査で得られる。
+
+**上限以下の入力は 1 バイトも変わらない。** 上限は観測であって変換ではない（tree adapter は課金してから `defaultTreeAdapter` へ委譲し、深さの走査は木を読むだけ、CSS の予算は分岐を持たない）。`htmlProcessor.test.ts` の 204 ケース（サニタイズ表全体・不動点・派生情報・他の 4 メソッド）が変更前と同一のまま通ることがその証拠である。
+
+許可リストにも breakout 集合にも触らない。後者は前段の安価な防御として残す — 1 パスの走査で済み、サニタイザーを 1 度も走らせない。
+
+### Consequences
+
+- 良い点: SVG（`storeMedia`）と本文（`updateNoteBody`）の両方が、適用点 1 つで同時に有界になる。ADR-095 の残件（「note 本文は同じ二乗の膨張と深い再帰にいまも露出している」）と ADR-099 の残件（「本文側には foster parenting の入口を塞ぐ相当物が無い」）がここで閉じる。別 Issue に切っていた「境界のない markup を再帰的サニタイザーに渡す件」も同じ根なので同時に閉じる
+- 良い点: 実測（この worktree の Node）— `<div>` 2,000 段: `RangeError` 73 ms → 拒否 7 ms。`<div>` 50,000 段: `RangeError` 20.9 s → 拒否 2 ms。`@media a{` 12,000 段: `RangeError` 26.5 s → 拒否 164 ms。`<svg><desc><template><tr><font>` 131 KB: 306 ms / heap 202 MB → 拒否 15 ms。`<table><tr><font>` 131 KB（本文経路）: 同上 → 拒否 13 ms
+- 良い点: 失敗が `kind: "business"` を持つ 1 つの語彙（`NOTE_HTML_TOO_COMPLEX`）になる。`RangeError` も、Storage の語彙でない `NOTE_CONTENT_TOO_LARGE` も出なくなる
+- トレードオフ: **上限は `HtmlProcessor` の契約に属する定数として `domain/note/ports/htmlProcessor.ts` に置いた。** 値そのものはアダプターの実装事情（parse5 の費用）から決めているが、バックエンドごとに違うと「同じ本文がバックエンドによって通ったり通らなかったりする」ので、ポート側に 1 つ置く形にした
+- トレードオフ: 深さ 257 段の文書・CSS 33 段のスタイルシートは保存できなくなる。実在の文書には無い深さだが、機械生成の HTML には理論上ありうる
+- 残件: 費用のうち `parse5` 自体の解析時間は入力長に比例して残る（正当な 2 MB の本文で 3 秒前後）。これは形ではなく長さの関数なので、転送境界 2,000,000 バイトと SVG の 128 KB が上限として効いている
+- 変異スポットチェック: 改行の bad-string 分岐を落とすと 5 ケースが red、url-token の識別子境界の判定を落とすと 1 ケース、CSS の深さの上限を +1 すると境界の 1 ケース、走査の歩数の meter を落とすと 1 ケース、木の深さの上限を `>=` にすると境界の 1 ケース、`createElement` の課金を落とすと膨張の 2 ケース、解析中の深さの番人を落とすと「木ができる前に拒む」1 ケースが red になる

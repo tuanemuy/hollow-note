@@ -152,12 +152,19 @@ describe("renameNote", () => {
     const h = createTestHarness();
     const noteId = await createPersonalNote(h);
     await trash(h, noteId);
+    const before = storedNote(h, noteId);
 
     await expect(rename(h, noteId, "ゴミ箱の中で改名", 1)).rejects.toSatisfy(
       (error) =>
         isBusinessRuleError(error) &&
         error.code === NoteErrorCode.NoteIsTrashed,
     );
-    expect(storedNote(h, noteId)?.title.value).not.toBe("ゴミ箱の中で改名");
+    // The refusal is only half the case: the note has to be *unwritten*,
+    // which a negative assertion cannot tell from a blanked title or a
+    // deleted row. Pin the whole title and the version the trash left.
+    expect(before?.title).toEqual({ value: "無題", origin: "auto" });
+    expect(storedNote(h, noteId)?.title).toEqual(before?.title);
+    expect(storedNote(h, noteId)?.version).toBe(before?.version);
+    expect(eventsOfType(h, "note.renamed")).toHaveLength(0);
   });
 });

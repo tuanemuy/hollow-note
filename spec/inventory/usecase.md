@@ -83,7 +83,7 @@
 | UC-note-019 | `purgeNote` | `spec/usecases/note.md#purgeNote` | user request または scope cleanup の認可・版を固定し、route を purging にして local note を削除、購読者の後始末、public projection remove ack、30 日 tombstone まで forward recovery する。破壊開始前の競合だけ abort する |
 | UC-note-020 | `emptyTrash` | `spec/usecases/note.md#emptyTrash` | current owner の delete 権限と trash 件数を確認し、50 件以下は各 current version で同期 purge、51 件以上は 500 件単位の bulk purge jobs を登録して、完了済み件数と予約件数を mode で区別する |
 | UC-note-021 | `purgeExpiredTrash` | `spec/usecases/note.md#purgeExpiredTrash` | current scope の保持期限超過 notes を最大 100 件ずつ内部 purge operation へ進め、個別失敗を隔離し、残件または次期限に Alarm を設定する |
-| UC-note-022 | `deleteNotesForOwner` | `spec/usecases/note.md#deleteNotesForOwner` | scope cleanup owner を各 page で検査し、owner の active・trashed notes を 100 件ずつ scopeCleanup purge へ進め、専用 continuation と全 purge tombstone 完了確認で冪等に ack する |
+| UC-note-022 | `deleteNotesForOwner` | `spec/usecases/note.md#deleteNotesForOwner` | scope cleanup owner を各 page で検査し、owner の active・trashed notes を 40 件ずつ scopeCleanup purge へ進め、専用 continuation と全 purge tombstone 完了確認で冪等に ack する |
 | UC-note-023 | `listNoteRevisions` | `spec/usecases/note.md#listNoteRevisions` | 編集権限を確認し、最新 20 revisions と作成者表示を shard batch reader で解決して返す |
 | UC-note-024 | `restoreNoteRevision` | `spec/usecases/note.md#restoreNoteRevision` | note 所属 revision と版を検査し、現本文を restore revision として保存後、対象 HTML を再 sanitize して title・style・本文を復元し、必要なら参照取り込みを登録する |
 | UC-note-025 | `exportNote` | `spec/usecases/note.md#exportNote` | note ID または share token と password pass で毎回閲覧権限を評価し、ready 本文を HTML・Markdown は即時生成する。PDF は十分な TTL の同版 artifact 再利用、active job 相乗り、新規 job の順で選び、署名 ExportTicket を返す |

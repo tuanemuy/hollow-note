@@ -45,10 +45,59 @@
  * `readLexeme` returns the whole url-token as one lexeme too, honouring
  * only escapes inside it, and the ident it tests for `url` is the
  * escape-resolved one (`\75 rl(` is a url-token to a browser).
+ *
+ * The fifth rule ends a string without a closing quote: a raw newline
+ * makes it a bad-string-token and is re-consumed as the next token, so
+ * `content:"a⏎;position:fixed` is two declarations and the second one
+ * applies. Hunting for the closing quote to the end of the input loses
+ * that `;` and hands the overlay through as one `content` declaration.
+ *
+ * Every scan is metered. Finding the end of a block re-reads that block,
+ * so nesting multiplies the work per byte; a `<style>` holding
+ * `@media a{` twelve thousand times is 108 KB that used to burn 26
+ * seconds and then overflow the stack. Block nesting is capped, and
+ * `CssBudget` carries what is left of the scan allowance of one
+ * `HtmlProcessor.process` call; running out of either raises
+ * `BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX)` rather than letting
+ * the scan run to whatever the input asks for.
  */
+
+import { BusinessRuleError } from "../../domain/error";
+import {
+  HTML_PROCESSOR_TOO_COMPLEX,
+  HtmlProcessorLimit,
+} from "../../domain/note/ports/htmlProcessor";
 
 export type CssRemoval = Readonly<{ name: string; reason: string }>;
 export type ReportCssRemoval = (removal: CssRemoval) => void;
+
+/**
+ * What is left of the scan allowance of one `process` call. Mutable and
+ * shared by every `filterCss` call in that pass — a body with a thousand
+ * `style` attributes is one budget, not a thousand.
+ */
+export type CssBudget = { steps: number };
+
+export const createCssBudget = (): CssBudget => ({
+  steps: HtmlProcessorLimit.maxCssScanSteps,
+});
+
+const tooComplex = (detail: string): BusinessRuleError<string> =>
+  new BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX, detail);
+
+/**
+ * Charges one scan step. Called once per character a scan examines, which
+ * is what makes the meter independent of which scan is running and of how
+ * the input nests.
+ */
+const spend = (budget: CssBudget): void => {
+  budget.steps -= 1;
+  if (budget.steps < 0) {
+    throw tooComplex(
+      `CSS scanning exceeded ${HtmlProcessorLimit.maxCssScanSteps} steps`,
+    );
+  }
+};
 
 const POSITION_PROPERTY = /^(?:-[a-z]+-)?position$/i;
 
@@ -90,6 +139,15 @@ const skipString = (input: string, start: number): number => {
     }
     if (char === quote) {
       return i + 1;
+    }
+    if (char === "\n" || char === "\r" || char === "\f") {
+      // CSS Syntax § consume-a-string-token: a raw newline ends the
+      // string as a *bad-string-token* and is re-consumed as the next
+      // token. So `content:"a⏎;position:fixed` is two declarations to a
+      // browser, and a scan that ran to the end of the input looking for
+      // the closing quote would hand it over as one `content`
+      // declaration and let the overlay through.
+      return i;
     }
     i += 1;
   }
@@ -167,11 +225,22 @@ const readEscape = (input: string, start: number): Lexeme => {
  * starts tokenising again too.
  *
  * The ident is read forwards from `start` rather than backwards from the
- * `(`, so a caller that walks one position at a time meets it. An ident
- * this lands part-way into (`myurl(`) is over-matched, which only ever
- * makes the scan see a terminator the browser hides — never the reverse.
+ * `(`, so a caller that walks one position at a time meets it — but only
+ * when `start` is where an ident may begin. Landing part-way into one
+ * (`myurl(`) used to over-match, and although over-matching only ever
+ * makes the scan see a terminator the browser hides, the extra split
+ * costs the rest of the rule: dropping `position:fixed` out of
+ * `.a{background:myurl(a(b);position:fixed);color:red}` carried the `)`
+ * away with it and left the reader an unclosed function token that
+ * swallows `color:red`. An ident preceded by an ident character is a
+ * function token to the browser, which tokenises comments and strings
+ * inside it, so declining here is not a concession — it is the rule.
  */
 const readUrlToken = (input: string, start: number): Lexeme | null => {
+  const previous = input[start - 1];
+  if (previous !== undefined && IDENT_CHAR.test(previous)) {
+    return null;
+  }
   let i = start;
   let name = "";
   while (i < input.length && name.length < 4) {
@@ -252,10 +321,11 @@ const readLexeme = (input: string, start: number): Lexeme | null => {
  * it — never to emit it. Unescaping the emitted text would turn `\3c` into a
  * real `<` and let a `</style>` out of the raw text node the CSS lives in.
  */
-const canonicalize = (input: string): string => {
+const canonicalize = (input: string, budget: CssBudget): string => {
   let out = "";
   let i = 0;
   while (i < input.length) {
+    spend(budget);
     const lexeme = readLexeme(input, i);
     if (lexeme !== null) {
       out += lexeme.canonical;
@@ -274,10 +344,16 @@ const canonicalize = (input: string): string => {
  * `url(a;b)` and `@supports (a: b)` both hide characters that would
  * otherwise look like a terminator.
  */
-const scanTo = (input: string, start: number, stops: string): number => {
+const scanTo = (
+  input: string,
+  start: number,
+  stops: string,
+  budget: CssBudget,
+): number => {
   let i = start;
   let depth = 0;
   while (i < input.length) {
+    spend(budget);
     const lexeme = readLexeme(input, i);
     if (lexeme !== null) {
       i = lexeme.next;
@@ -303,10 +379,15 @@ const scanTo = (input: string, start: number, stops: string): number => {
 };
 
 /** Index just past the `}` matching the `{` at `openBrace`, or -1. */
-const findBlockEnd = (input: string, openBrace: number): number => {
+const findBlockEnd = (
+  input: string,
+  openBrace: number,
+  budget: CssBudget,
+): number => {
   let i = openBrace + 1;
   let depth = 1;
   while (i < input.length) {
+    spend(budget);
     const lexeme = readLexeme(input, i);
     if (lexeme !== null) {
       i = lexeme.next;
@@ -335,8 +416,11 @@ const isImportAtRule = (canonical: string): boolean =>
  * with the same scan the statement splitter uses, so what counts as a colon
  * here is what counts as one everywhere else in this module.
  */
-const disallowedPositionProperty = (canonical: string): string | undefined => {
-  const colon = scanTo(canonical, 0, ":");
+const disallowedPositionProperty = (
+  canonical: string,
+  budget: CssBudget,
+): string | undefined => {
+  const colon = scanTo(canonical, 0, ":", budget);
   if (colon === -1) {
     return undefined;
   }
@@ -368,12 +452,13 @@ const pushStatement = (
   terminated: boolean,
   parts: string[],
   report: ReportCssRemoval,
+  budget: CssBudget,
 ): void => {
   if (text.length === 0) {
     return;
   }
   const emitted = terminated ? `${text};` : text;
-  const canonical = canonicalize(text).trim();
+  const canonical = canonicalize(text, budget).trim();
   if (canonical.startsWith("@")) {
     if (isImportAtRule(canonical)) {
       report({ name: "@import", reason: IMPORT_REASON });
@@ -382,7 +467,7 @@ const pushStatement = (
     parts.push(emitted);
     return;
   }
-  const property = disallowedPositionProperty(canonical);
+  const property = disallowedPositionProperty(canonical, budget);
   if (property !== undefined) {
     report({ name: property, reason: POSITION_REASON });
     return;
@@ -394,11 +479,36 @@ const pushStatement = (
  * Filters a block of CSS — a whole stylesheet, the body of an at-rule, or
  * the value of a `style` attribute. One function covers all three because
  * the grammar difference is only which of `;` and `{` shows up first.
+ *
+ * `budget` is the remaining scan allowance of the whole `process` call
+ * and is spent, never reset, across every call made during that pass.
+ * Recursion is bounded by `HtmlProcessorLimit.maxCssNestingDepth`, so the
+ * stack depth this function reaches is a constant rather than a function
+ * of the input.
  */
-export function filterCss(input: string, report: ReportCssRemoval): string {
+export function filterCss(
+  input: string,
+  report: ReportCssRemoval,
+  budget: CssBudget,
+): string {
+  return filterBlock(input, report, budget, 0);
+}
+
+function filterBlock(
+  input: string,
+  report: ReportCssRemoval,
+  budget: CssBudget,
+  depth: number,
+): string {
+  if (depth > HtmlProcessorLimit.maxCssNestingDepth) {
+    throw tooComplex(
+      `CSS nests deeper than ${HtmlProcessorLimit.maxCssNestingDepth} blocks`,
+    );
+  }
   const parts: string[] = [];
   let i = 0;
   while (i < input.length) {
+    spend(budget);
     const char = input[i] as string;
     if (isWhitespace(char)) {
       i += 1;
@@ -417,9 +527,9 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
       i += 1;
       continue;
     }
-    const stop = scanTo(input, i, ";{}");
+    const stop = scanTo(input, i, ";{}", budget);
     if (stop === -1) {
-      pushStatement(input.slice(i).trim(), false, parts, report);
+      pushStatement(input.slice(i).trim(), false, parts, report, budget);
       break;
     }
     if (input[stop] !== "{") {
@@ -427,20 +537,24 @@ export function filterCss(input: string, report: ReportCssRemoval): string {
       // and is written back as one: a stop was found at all only because
       // no string or paren was left open before it, so the `;` cannot be
       // swallowed on the next pass.
-      pushStatement(input.slice(i, stop).trim(), true, parts, report);
+      pushStatement(input.slice(i, stop).trim(), true, parts, report, budget);
       i = stop + 1;
       continue;
     }
     const prelude = input.slice(i, stop).trim();
-    const end = findBlockEnd(input, stop);
+    const end = findBlockEnd(input, stop, budget);
     const body = input.slice(stop + 1, end === -1 ? input.length : end);
     i = end === -1 ? input.length : end + 1;
-    const canonicalPrelude = canonicalize(prelude).trim();
+    const canonicalPrelude = canonicalize(prelude, budget).trim();
     if (canonicalPrelude.startsWith("@") && isImportAtRule(canonicalPrelude)) {
       report({ name: "@import", reason: IMPORT_REASON });
       continue;
     }
-    parts.push(`${prelude}{${filterCss(body, report)}${end === -1 ? "" : "}"}`);
+    parts.push(
+      `${prelude}{${filterBlock(body, report, budget, depth + 1)}${
+        end === -1 ? "" : "}"
+      }`,
+    );
   }
   return parts.join("");
 }

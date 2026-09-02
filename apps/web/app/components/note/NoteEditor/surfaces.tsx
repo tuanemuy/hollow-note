@@ -127,6 +127,13 @@ export function WysiwygSurface({
   // （`baseline` には未保存の本文が入りうる — 退避の「復元する」）。
   // `<style>` も落とす（この面だけが shadow root の外にあるため。
   // `dropStyleElements` の JSDoc）。
+  //
+  // 載せるのは scrub した**木そのもの**である。直列化して `innerHTML` へ
+  // 入れ直すと、サニタイズした木を別の解析文脈で読み直すことになり、
+  // scrub 後に無かった属性が再パースで復活しうる（`<svg>` / `<math>` の
+  // 名前空間混同、`<style>` / `<title>` の raw text で属性境界が動く形）。
+  // 直列化してよいのは「載せ替えが要るか」の比較だけで、比較した文字列は
+  // DOM へ戻さない。
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface === null) return;
@@ -134,9 +141,8 @@ export function WysiwygSurface({
     template.innerHTML = baseline;
     scrubForSurface(template.content);
     dropStyleElements(template.content);
-    const next = template.innerHTML;
-    if (surface.innerHTML !== next) {
-      surface.innerHTML = next;
+    if (surface.innerHTML !== template.innerHTML) {
+      surface.replaceChildren(template.content);
     }
   }, [baseline, surfaceRef]);
 
@@ -163,16 +169,37 @@ export function WysiwygSurface({
         // 貼り付けもシードと同じ scrub を通す。ブラウザーが既定で挿す
         // `text/html` は他所の DOM そのままで、`on*` も `<style>` も
         // 載っている。プレーンテキストしか無いときは既定の挿入に任せる。
+        //
+        // 差し込むのも木そのもので、`insertHTML` は使わない（シードと同じ
+        // 理由 — scrub 済みの木を直列化して読み直す窓を作らないため）。
+        // 代償として、この貼り付けはブラウザーの取り消し履歴に載らない。
         onPaste={(event) => {
           const html = event.clipboardData.getData("text/html");
           if (html === "") return;
+          // 既定の挿入は scrub を通らないので、差し込み先が取れなかった
+          // ときは**何も入れない**（既定へ落とさない）。
           event.preventDefault();
+          const surface = event.currentTarget;
+          const selection = document.getSelection();
+          if (selection === null || selection.rangeCount === 0) return;
+          const range = selection.getRangeAt(0);
+          if (!surface.contains(range.commonAncestorContainer)) return;
           const template = document.createElement("template");
           template.innerHTML = html;
           scrubForSurface(template.content);
           dropStyleElements(template.content);
-          const surface = event.currentTarget;
-          document.execCommand("insertHTML", false, template.innerHTML);
+          // caret は差し込んだ最後のノードの直後へ置く（`insertNode` は
+          // fragment を空にするので、末尾の目印は先に控える）。
+          const tail = template.content.lastChild;
+          range.deleteContents();
+          range.insertNode(template.content);
+          if (tail !== null) {
+            const after = document.createRange();
+            after.setStartAfter(tail);
+            after.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(after);
+          }
           onChange(surface.innerHTML);
         }}
         onClick={(event) =>
@@ -219,8 +246,10 @@ const REPAIR_CHECK_DELAY_MS = 500;
  *
  * 残るものが面の外へ出ないことを担保しているのは**面ごとに違う**。
  * ビジュアルと HTML のプレビューは shadow root なので、本文の
- * `<style>` が持つセレクターの到達範囲はそこで閉じる。加えて HTML の
- * プレビューはホストに `contain: layout paint` を掛けてある — これは
+ * `<style>` が持つセレクターの到達範囲はそこで閉じる。ただし
+ * `:host { … !important }` だけはホスト要素に当たり、`!important` では
+ * 内側の木が勝つので shadow root では閉じない。どちらの面もホストを
+ * `contain: layout paint` の**親**で包んでいるのはそのためで、これは
  * レイアウトと描画の閉じ込め（`position: fixed` の包含ブロックになる）
  * であって、**セレクターの到達範囲は閉じない**。WYSIWYG だけは
  * shadow root でも `contain` でもないので、`<style>` を別途落とす
@@ -233,18 +262,29 @@ const REPAIR_CHECK_DELAY_MS = 500;
  * 差し込む残り 2 経路（`insertHTML` の仮の要素とメディア、`createLink`）
  * は親（`editor.tsx`）が組み立てる値で、属性は組み立てる側が
  * エスケープし、URL は組み立てる側がスキームで絞る。
+ *
+ * 落とし方も保存側に揃える。保存は「子ごと落とす集合」
+ * （`adapters/html/allowList.ts` の `DROP_WITH_CONTENT`）とそれ以外の
+ * unwrap に分かれるので、面も 2 つの集合に分ける。片側だけで済ませると
+ * `form` のように「保存は散文を残すのに面は消す」要素が出る。
  */
-const UNSAFE_PREVIEW_ELEMENTS = new Set([
+const UNSAFE_DROP_ELEMENTS = new Set([
   "script",
+  "noscript",
   "iframe",
   "object",
   "embed",
-  "link",
-  "meta",
-  "base",
-  "form",
-  "noscript",
 ]);
+
+/**
+ * 要素だけ外して子を残すもの。保存側は許可リスト外の要素を原則 unwrap
+ * する（散文を黙って消さないため）ので、面もそちらへ揃える — `form` を
+ * 子ごと落とすと、`<form>` に包まれた領域を貼った WYSIWYG では面の DOM が
+ * 本文の正本である以上、散文が恒久的に消えて次の保存でサーバーへ書き戻る。
+ * `link` / `meta` / `base` は子を持てないので、どちらの扱いでも結果は
+ * 同じである。
+ */
+const UNSAFE_UNWRAP_ELEMENTS = new Set(["form", "link", "meta", "base"]);
 
 const URL_ATTRIBUTES = new Set([
   "href",
@@ -258,8 +298,12 @@ const URL_ATTRIBUTES = new Set([
 
 const scrubForSurface = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("*"))) {
-    if (UNSAFE_PREVIEW_ELEMENTS.has(element.localName)) {
+    if (UNSAFE_DROP_ELEMENTS.has(element.localName)) {
       element.remove();
+      continue;
+    }
+    if (UNSAFE_UNWRAP_ELEMENTS.has(element.localName)) {
+      element.replaceWith(...Array.from(element.childNodes));
       continue;
     }
     for (const attribute of Array.from(element.attributes)) {
@@ -287,13 +331,27 @@ const scrubForSurface = (root: ParentNode): void => {
  * 壊せる。
  *
  * 失われることは ED-04 の門（装飾が失われうる警告と、保存前に残る版）が
- * 先に告げる — `<style>` を持つ本文は `mayLoseDecoration` に入るので、
- * この面は警告を了解しないかぎり開かない（`NoteEditor/index.tsx`）。
+ * 先に告げる。門の材料は {@link willDropStyleElements} で、断片を描いた
+ * 時点の本文ではなく**これから面へ載る本文**に当てる。
  */
 const dropStyleElements = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("style"))) {
     element.remove();
   }
+};
+
+/**
+ * この本文を WYSIWYG の面へ載せると装飾が落ちるか（ED-04 の門の材料）。
+ *
+ * {@link dropStyleElements} と**同じ問い**を同じパーサーに投げる — 走査で
+ * 近似すると、落とす側と門の側で答えがずれる。サーバーコンポーネント側
+ * （`NoteEditor/index.tsx`）は `document` を持たないので走査で判定して
+ * おり、そちらは取りこぼさない側へ倒してある。両者は or で使う。
+ */
+export const willDropStyleElements = (html: string): boolean => {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content.querySelector("style") !== null;
 };
 
 type SourceAnalysis = Readonly<{
@@ -554,7 +612,13 @@ img, video { max-width: 100%; height: auto; }
         ビジュアルモードでは本文のテキストの書き換えだけを行えます。段落や画像の追加・削除・並べ替えはできません（構造を変えるときは
         HTML か WYSIWYG モードに切り替えてください）。
       </p>
-      <div ref={hostRef} className="relative min-h-[46vh]" />
+      {/* shadow tree の中の `:host { … !important }` はホスト要素に当たり、
+          `!important` が付くと内側の木が外側に勝つ。ホストに掛けたクラス
+          （`relative`）では `transform` / `width` / `margin` を止められない
+          ので、閉じ込めは親側に置く（HTML のプレビューと同じ包み）。 */}
+      <div className="[contain:layout_paint]">
+        <div ref={hostRef} className="relative min-h-[46vh]" />
+      </div>
     </>
   );
 }

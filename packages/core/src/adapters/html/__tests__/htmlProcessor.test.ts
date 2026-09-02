@@ -541,6 +541,70 @@ const sanitizeCases: readonly SanitizeCase[] = [
     noRemovals: true,
     hasDecoration: true,
   },
+  // A raw newline ends a string as a bad-string-token and is re-consumed
+  // as the next token (CSS Syntax § consume-a-string-token), so what
+  // follows really is a declaration of its own. A scan that hunted for
+  // the closing quote to the end of the input would hand the whole run
+  // over as one `content` declaration and let the overlay through.
+  {
+    tc: "TC-note-705",
+    title: "drops position after a string a newline ends",
+    input:
+      '<style>.o{content:"a\n;position:fixed;top:0;left:0;width:100%}</style>',
+    present: ['content:"a;', "top:0"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-707",
+    title: "drops position after a style attribute string a newline ends",
+    input: '<p style="content:\'a\n;position:fixed">x</p>',
+    present: ["content:'a;"],
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after a string a carriage return ends",
+    input: '<style>.o{content:"a\r;position:fixed}</style>',
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position after a string a form feed ends",
+    input: '<style>.o{content:"a\f;position:fixed}</style>',
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-705",
+    title: "drops position in the rule after one a newline-ended string left",
+    input: '<style>div{content:"a\n} .x{position:fixed}</style>',
+    absent: ["fixed"],
+    removed: [{ kind: "css", name: "position" }],
+  },
+  {
+    tc: "TC-note-710",
+    title: "keeps a string a backslash continues onto the next line",
+    // The escape swallows the newline, so this is one string and the
+    // bad-string rule never applies to it.
+    input: '<style>.a{content:"a\\\nb";color:red}</style>',
+    present: ['content:"a\\\nb";', "color:red"],
+    noRemovals: true,
+  },
+  {
+    tc: "TC-note-710",
+    title: "keeps the rest of a rule whose function token is not url()",
+    // `myurl(` is a function token to a browser, not a url-token, so the
+    // `;` inside it terminates nothing. Reading it as a url-token used to
+    // split the declaration, drop the half holding `position:fixed`, and
+    // carry that half's `)` away — leaving `color:red` inside an unclosed
+    // function token.
+    input: "<style>.a{background:myurl(a(b);position:fixed);color:red}</style>",
+    html: "<style>.a{background:myurl(a(b);position:fixed);color:red}</style>",
+    noRemovals: true,
+  },
   {
     tc: "TC-note-711",
     title: "keeps a data:image/png resource reference",
@@ -742,6 +806,117 @@ describe("HtmlProcessor.process — ADP-note-001 is a fixed point", () => {
       expect(processor.process(once).html).toBe(once);
     },
   );
+});
+
+/**
+ * The ceiling of spec/adr/013 「サニタイズは資源で有界である」. Three
+ * rounds of review each refuted an argument that some shape of input
+ * could not be expensive, so nothing here reasons about shape: the
+ * adapter meters what it spends and refuses to spend more. Every case
+ * below is an input a reviewer measured against the unbounded version.
+ */
+describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () => {
+  const rejection = (input: string): BusinessRuleError<string> => {
+    let thrown: unknown;
+    try {
+      processor.process(input);
+    } catch (error) {
+      thrown = error;
+    }
+    // Named rather than `toThrow`: a `RangeError` is what this ceiling
+    // exists to replace, and it would satisfy a bare `toThrow`.
+    expect(thrown).toBeInstanceOf(BusinessRuleError);
+    return thrown as BusinessRuleError<string>;
+  };
+
+  it("TC-note-817: refuses nesting past the limit instead of overflowing", () => {
+    // 22 KB used to raise `RangeError: Maximum call stack size exceeded`,
+    // which carries no `kind` and so reaches the transport boundary
+    // unclassified.
+    const error = rejection("<div>".repeat(2_000));
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+    expect(error.toSerialized().kind).toBe("business");
+  });
+
+  it("TC-note-817: refuses deep nesting without building the tree first", () => {
+    // 550 KB of nesting took 21 seconds inside the parser before any code
+    // of ours saw the tree, so the refusal has to reach the parse itself.
+    const started = Date.now();
+    rejection("<div>".repeat(50_000));
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("TC-note-818: accepts nesting exactly at the limit", () => {
+    const at = "<div>".repeat(256);
+
+    expect(processor.process(at).html).toBe(`${at}${"</div>".repeat(256)}`);
+  });
+
+  it("TC-note-818: refuses nesting one level past the limit", () => {
+    expect(rejection("<div>".repeat(257)).code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-819: refuses CSS blocks nested past the limit", () => {
+    // 108 KB of `@media a{` burned 26 seconds and then overflowed: finding
+    // the end of a block re-reads it, so nesting makes the scan quadratic.
+    const error = rejection(`<style>${"@media a{".repeat(12_000)}</style>`);
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-820: accepts CSS blocks exactly at the nesting limit", () => {
+    const at = `<style>${"@media a{".repeat(32)}color:red</style>`;
+
+    expect(processor.process(at).html).toBe(at);
+  });
+
+  it("TC-note-820: refuses CSS blocks one level past the nesting limit", () => {
+    expect(
+      rejection(`<style>${"@media a{".repeat(33)}color:red</style>`).code,
+    ).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-821: refuses a stylesheet that asks for more scanning than the budget", () => {
+    // Inside the nesting limit, but every one of the 32 enclosing blocks
+    // re-reads the 300 KB body while looking for its own end.
+    const error = rejection(
+      `<style>${"@media a{".repeat(32)}${"color:red;".repeat(30_000)}</style>`,
+    );
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  const fosterRows = (rows: number, fonts: number): string =>
+    Array.from({ length: fonts }, (_, i) => `<font a="${i}">`).join("") +
+    "<tr>X</tr>".repeat(rows);
+
+  it("TC-note-822: refuses a body the parser expands past the allowance", () => {
+    // Foster parenting re-constructs the open formatting elements once per
+    // row, so the tree grows as rows × fonts while the source grows as
+    // rows + fonts. No tag is left unclosed and nothing nests deeply.
+    const error = rejection(`<table><tr>${fosterRows(3_000, 60)}</table>`);
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-822: refuses the same expansion reached through an svg integration point", () => {
+    // `<desc>` resumes HTML parsing and "in template" reaches the table
+    // insertion modes with no `<table>` start tag, so an allow list of
+    // element names does not close this route — the meter does.
+    const error = rejection(
+      `<svg><desc><template><tr>${fosterRows(3_000, 60)}</template></desc></svg>`,
+    );
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-822: still processes an expansion that stays inside the allowance", () => {
+    const result = processor.process(`<table><tr>${fosterRows(20, 5)}</table>`);
+
+    expect(result.html).toContain("<table>");
+  });
 });
 
 describe("HtmlProcessor.process — ADP-note-001 derived projections", () => {

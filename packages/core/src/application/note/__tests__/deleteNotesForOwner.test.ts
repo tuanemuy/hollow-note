@@ -224,9 +224,18 @@ describe("deleteNotesForOwner", () => {
     const personal = await createPersonalNote(h);
     await beginCleanup(h, workspaceScope);
 
-    await run(h, { scope: workspaceScope });
+    const view = await run(h, { scope: workspaceScope });
 
-    expect(h.backend.scope(userScope).notes.get(personal)).toBeDefined();
+    // "Still there" is what a surviving row has to prove, so the note is
+    // pinned as an untouched active note rather than merely present —
+    // and the workspace note really was purged, which is what makes the
+    // survival a scope boundary and not an idle turn.
+    expect(view.purgedCount).toBe(1);
+    expect(remainingNotes(h, workspaceScope)).toBe(0);
+    expect(h.backend.scope(userScope).notes.get(personal)?.lifecycle).toBe(
+      "active",
+    );
+    expect(remainingNotes(h)).toBe(1);
   });
 
   it("TC-note-072: hands the follow-up cleanup its own note.purged with the deletion token", async () => {
@@ -394,7 +403,11 @@ describe("deleteNotesForOwner", () => {
     await run(h, { batchSize: 5000, container });
 
     expect(limits).toEqual([OWNER_PURGE_BATCH_SIZE]);
-    expect(OWNER_PURGE_BATCH_SIZE).toBe(100);
+    // Pinned rather than derived: the value is the global D1 budget of
+    // spec/platform/index.md「実行予算と分割単位」divided by the eleven
+    // to twelve statements one purge spends there, so a change to it is
+    // a change to that section and not a free tuning knob.
+    expect(OWNER_PURGE_BATCH_SIZE).toBe(40);
   });
 
   it("TC-note-080: succeeds without doing anything when the scope holds no note", async () => {

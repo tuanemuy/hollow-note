@@ -24,12 +24,23 @@ export { NOTE_OWNER_PURGE_TASK_KIND };
  * of that table — the *global* queries the turn spends. A purge is a
  * saga over the global route and the global public projection, so this
  * is the one scope cleanup whose global query count grows with the
- * batch, at roughly four to six per note. At the default the turn
- * therefore sits at the section's 500-query ceiling rather than under
- * it, which is why lowering `batchSize` — not raising it — is the
+ * batch, and the global budget is what decides the value: the table's
+ * 100 rows would spend around 1,200 statements, past the section's
+ * 500-query design ceiling and past the real 1,000 as well.
+ *
+ * The unit is a *statement*, not a port call. Each of the four global
+ * calls a purge makes reads its row and then writes an atomic apply led
+ * by a guard pinning that row, so `resolve` costs 1, `beginPurge` 3,
+ * `removeForPurge` 4–5 and `finishPurge` 3 — eleven to twelve per note,
+ * which the resume and abort branches do not exceed. Forty notes leave
+ * the turn at 480, and lowering `batchSize` — not raising it — is the
  * adjustment a deployment has.
+ *
+ * The carried {@link StuckPurge} entries ride on top of the page rather
+ * than inside it, so a recovering turn can spend more than 480; the gap
+ * to the real 1,000 is the room that leaves.
  */
-export const OWNER_PURGE_BATCH_SIZE = 100;
+export const OWNER_PURGE_BATCH_SIZE = 40;
 
 /**
  * A note this cleanup claimed but could not carry to a tombstone.

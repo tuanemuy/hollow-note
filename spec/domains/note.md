@@ -369,7 +369,11 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 内部と外部の切り分けは呼び出し側が行う。判定は `StorageUrlPolicy.isInternal`（[domains/storage.md](./storage.md)）を使う。参照取り込みジョブを登録するかどうかも、抽出結果のうち内部を指さないものが 1 件以上あるかで判定する。
 
-**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）。壊れた HTML は例外にせず、補正した結果を返す
+**資源で有界**
+
+`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 4 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。上限は本文の長さの上限から到達しうるどの文書よりも高いところにあるため、「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
+
+**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）、`BusinessRuleError(NOTE_HTML_TOO_COMPLEX)`（資源の上限を超えた入力）。壊れた HTML は例外にせず、補正した結果を返す
 
 ### PdfRenderer
 
