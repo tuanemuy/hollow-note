@@ -1,10 +1,14 @@
 /**
- * Executable form of the sanitize allow-list of spec/adr/013.
+ * Executable form of the element and attribute tables of spec/adr/013.
  *
  * The ADR's tables are the canon; this module is a transcription of them
  * and nothing else. Every set here is closed — anything absent is
  * removed, which is the definition of the allow-list method. Adding an
  * element / attribute means changing the ADR first.
+ *
+ * The URL scheme table of the same ADR has its own executable form in
+ * `domain/note/services/urlPolicy.ts`, because the editor applies it to a
+ * body it has not saved yet and so cannot reach an adapter module.
  */
 
 const set = (...names: readonly string[]): ReadonlySet<string> =>
@@ -104,22 +108,10 @@ export const ALLOWED_ELEMENTS: ReadonlySet<string> = set(
 );
 
 /**
- * Elements removed together with their subtree rather than unwrapped.
- *
- * Everything else outside `ALLOWED_ELEMENTS` is unwrapped — the element
- * goes, its children stay — because an unlisted wrapper (`center`,
- * `font`, a web component) still wraps readable prose, and dropping it
- * whole would silently delete body text on import, which is the one
- * thing spec/adr/006 asks the import path to preserve.
- *
- * The elements listed here hold something that is *not* body prose:
- * script / markup source (`script`, `noscript`, `template`), an embedded
- * document (`iframe`, `frame`, `frameset`, `object`, `embed`, `applet`),
- * document metadata (`head`, `title`), or control-only content whose
- * text is a UI label rather than prose (`textarea`, `select`,
- * `optgroup`, `option`). Unwrapping those would promote their contents
- * into the body as text, which is exactly the `noscript` resurrection
- * path ADR 013 names.
+ * The rows of spec/adr/013 「明示的に許可しないもの」 that are removed
+ * together with their subtree. Everything else outside
+ * `ALLOWED_ELEMENTS` is unwrapped instead — the element goes, its
+ * children stay.
  */
 export const DROP_WITH_CONTENT: ReadonlySet<string> = set(
   "script",
@@ -235,26 +227,6 @@ export const RESOURCE_URL_ATTRIBUTES: ReadonlySet<string> = set(
 
 /** Attributes whose value is a comma-separated list of resource candidates. */
 export const SRCSET_ATTRIBUTES: ReadonlySet<string> = set("srcset");
-
-export const NAVIGATION_SCHEMES: ReadonlySet<string> = set(
-  "https",
-  "http",
-  "mailto",
-  "tel",
-);
-
-export const RESOURCE_SCHEMES: ReadonlySet<string> = set("https", "http");
-
-/**
- * `data:` MIME types allowed in a resource reference. Deliberately raster
- * only: `text/html` and `image/svg+xml` can carry script (ADR 013).
- */
-export const DATA_URL_MIME_TYPES: ReadonlySet<string> = set(
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-);
 
 /**
  * The SVG drawing subset of ADR 013: shapes, paths, text, gradients and

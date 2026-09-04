@@ -57,9 +57,9 @@
  * — are swallowed into a value.
  *
  * Every scan is metered. Finding the end of a block re-reads that block,
- * so nesting multiplies the work per byte; a `<style>` holding
- * `@media a{` twelve thousand times is 108 KB that used to burn 26
- * seconds and then overflow the stack. Block nesting is capped, and
+ * so nesting multiplies the work per byte: unbounded, a `<style>` holding
+ * `@media a{` twelve thousand times — 108 KB — costs 26 seconds and then
+ * overflows the stack. Block nesting is capped, and
  * `CssBudget` carries what is left of the scan allowance of one
  * `HtmlProcessor.process` call; running out of either raises
  * `BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX)` rather than letting
@@ -240,11 +240,11 @@ const readEscape = (input: string, start: number): Lexeme => {
  * The ident is read forwards from `start` rather than backwards from the
  * `(`, so a caller that walks one position at a time meets it — but only
  * when `start` is where an ident may begin. Landing part-way into one
- * (`myurl(`) used to over-match, and although over-matching only ever
- * makes the scan see a terminator the browser hides, the extra split
- * costs the rest of the rule: dropping `position:fixed` out of
- * `.a{background:myurl(a(b);position:fixed);color:red}` carried the `)`
- * away with it and left the reader an unclosed function token that
+ * (`myurl(`) must not match: over-matching only ever makes the scan see
+ * a terminator the browser hides, but the extra split costs the rest of
+ * the rule — dropping `position:fixed` out of
+ * `.a{background:myurl(a(b);position:fixed);color:red}` carries the `)`
+ * away with it and leaves the reader an unclosed function token that
  * swallows `color:red`. An ident preceded by an ident character is a
  * function token to the browser, which tokenises comments and strings
  * inside it, so declining here is not a concession — it is the rule.

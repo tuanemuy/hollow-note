@@ -130,6 +130,36 @@ export function NoteDetailIsland({
   /** 版を進めうる往復が走っているか。UI の活性と自動保存の歯止め。 */
   const busy = activity.kind !== "idle" || isPending;
 
+  /**
+   * 断片を引き直して正本を持ち帰る（P-11 状態表「操作実行中」）。整合の
+   * 失敗は握り潰す — 操作そのものはもう成立している。
+   *
+   * **成功した往復と落ちた往復の両方から呼ぶ。** この島が送る
+   * `expectedVersion` は応答からしか進まないので、落ちたところで止めると、
+   * 他のメンバーの保存で版が進んだあとは共通文言の「もう一度お試しくだ
+   * さい」に従って押し直しても同じ古い版を送り続け、画面を離れるまで永久
+   * に失敗する。持ち帰った値を島へ取り込むのは下の effect である。
+   */
+  const reconcile = async (): Promise<void> => {
+    await router.invalidate().catch(() => {
+      console.error("Note reconcile failed");
+    });
+  };
+
+  // 引き直した正本を島へ取り込む。`title`（打鍵中の入力）は触らない —
+  // サーバーの値で上書きすると書いている最中の文字が消える。差が残れば
+  // 自動保存の effect がそのまま拾う。島を `key` で組み直さないのも同じ
+  // 理由である。
+  //
+  // 往復が走っているあいだは取り込まない。送った版の応答のほうが新しく、
+  // 断片が持ち帰った版はその 1 つ前でありうる。
+  useEffect(() => {
+    if (busy) return;
+    versionRef.current = initialVersion;
+    setSavedTitle(initialTitle);
+    setStyleMode(initialStyleMode);
+  }, [busy, initialVersion, initialTitle, initialStyleMode]);
+
   const saveTitle = (next: string): void => {
     startSaving(async () => {
       await runExclusive({ kind: "renaming" }, async () => {
@@ -148,6 +178,7 @@ export function NoteDetailIsland({
           setError(displayError(failure));
           // PAGE-p11-002「競合・validation・権限失敗で巻き戻す」。
           setTitle(savedTitle);
+          await reconcile();
           return;
         }
         setError(null);
@@ -156,9 +187,7 @@ export function NoteDetailIsland({
         // （ED-07「空にした場合は「無題」に戻す」）。入力が先に進んで
         // いれば触らない。
         setTitle((value) => (value === next ? applied : value));
-        await router.invalidate().catch(() => {
-          console.error("Note reconcile failed");
-        });
+        await reconcile();
       });
     });
   };
@@ -195,12 +224,11 @@ export function NoteDetailIsland({
           setStyleMode(changed.styleMode);
         } catch (failure) {
           setError(displayError(failure));
+          await reconcile();
           return;
         }
         setError(null);
-        await router.invalidate().catch(() => {
-          console.error("Note reconcile failed");
-        });
+        await reconcile();
       });
     });
   };
@@ -220,6 +248,7 @@ export function NoteDetailIsland({
           ).version;
         } catch (failure) {
           setError(displayError(failure));
+          await reconcile();
           return;
         }
         setError(null);
@@ -248,12 +277,13 @@ export function NoteDetailIsland({
           setError(null);
           setTrashed(null);
         } catch (failure) {
+          // ここでは引き直さない。復元に使う版はゴミ箱へ移した往復の
+          // 応答が持っており、引き直しても断片はもうこのノートを返さない
+          // ので、いま出している「元に戻す」を消すだけになる。
           setError(displayError(failure));
           return;
         }
-        await router.invalidate().catch(() => {
-          console.error("Note reconcile failed");
-        });
+        await reconcile();
       });
     });
   };

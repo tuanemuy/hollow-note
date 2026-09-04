@@ -10,6 +10,9 @@
  * 走査は HTML パーサーではない。壊れた構文（閉じていないタグ・引用符の
  * 無い属性値）もそのまま色が付く形にしてあり、補正は保存側の
  * `HtmlProcessor` が行う。
+ *
+ * トークン列のもう 1 つの読み手が {@link markupStructure} で、ソースと
+ * パーサーの読み戻しが同じ木に読めるかを比べる（ED-03 の構文補正の警告）。
  */
 
 export type HtmlTokenKind =
@@ -104,6 +107,39 @@ function pushTag(tokens: TokenList, raw: string): void {
     }
     match = TAG_REST.exec(attributes);
   }
+}
+
+/**
+ * ソースの**構造**（要素と属性の名前の並び、小文字化）。
+ *
+ * `tokenizeHtml` の `tag` / `attr` だけを拾い、`punct` / `text` / `value`
+ * / `comment` は捨てる。捨てた分がちょうど「HTML5 として同じ意味を持つ
+ * 別の書き方」— 自己終了記法（`<br/>` と `<br>`）、タグ名の大文字小文字、
+ * 属性値の引用符の種類と省略、エンティティの表記、空白の入り方 — なので、
+ * 2 つのソースの構造が等しいことは「読み方が同じ」ことを意味する。
+ *
+ * 逆に構造が動くのは、閉じ忘れ・入れ子の違反・省略された要素の補完
+ * （`<table>` への `tbody`）のように**木の形が変わる**ときだけである。
+ *
+ * 色分けの上限（{@link HIGHLIGHT_MAX_LENGTH}）はここには掛けない。作るのは
+ * 文字列の配列 1 本で、`span` を作る色分けと違って長さに比例した DOM を
+ * 生まない。
+ */
+export function markupStructure(source: string): readonly string[] {
+  const names: string[] = [];
+  for (const token of tokenizeHtml(source)) {
+    if (token.kind === "tag" || token.kind === "attr") {
+      names.push(token.text.toLowerCase());
+    }
+  }
+  return names;
+}
+
+/** 2 つのソースが同じ木に読めるか（{@link markupStructure}）。 */
+export function sameMarkupStructure(left: string, right: string): boolean {
+  const a = markupStructure(left);
+  const b = markupStructure(right);
+  return a.length === b.length && a.every((name, index) => name === b[index]);
 }
 
 export function tokenizeHtml(source: string): readonly HtmlToken[] {

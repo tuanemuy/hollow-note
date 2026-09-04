@@ -33,6 +33,14 @@ export interface NoteRepository extends TransactionalRepository<Note, NoteId> {
    * retention sweep next has work, which is what the scope's alarm is
    * set from, so a window that has not opened yet is exactly the case it
    * exists for.
+   *
+   * Callers may run it in the same unit of work as a `save` that moved a
+   * note into the trash, and the answer includes that note. An ordered
+   * read whose `LIMIT` fills is refused only when a row the unit touched
+   * sits on the *stored* page (`spec/database/index.md` の「同一 UoW の
+   * 読み」(3)); a note flipped from `active` to `trashed` does not,
+   * because its stored shape fails the `trashed` predicate. `trashNote`
+   * step 5 depends on that.
    */
   findNextPurgeDeadline(): Promise<Date | null>;
   countByOwner(

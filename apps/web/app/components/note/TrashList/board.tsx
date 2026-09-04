@@ -76,8 +76,14 @@ export function TrashBoard({
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<EmptyOutcome | null>(null);
 
-  // 整合の失敗を「操作できなかった」と見せない。削除も復元ももう成立して
-  // いるので、読み直しの失敗は別の話である。
+  /**
+   * 断片を引き直して行の正本を持ち帰る。整合の失敗は握り潰す — 削除も
+   * 復元ももう成立しているので、読み直しの失敗は別の話である。
+   *
+   * **成功した往復と落ちた往復の両方から呼ぶ。** 行が運ぶ `version` は
+   * loader 由来なので、落ちたところで止めると、楽観的に消えた行が巻き
+   * 戻ったあとも古い版を持ち続け、押し直しても同じ競合で落ち続ける。
+   */
   const reconcile = async (): Promise<void> => {
     await router.invalidate().catch(() => {
       console.error("Trash reconcile failed");
@@ -93,6 +99,7 @@ export function TrashBoard({
         });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);
@@ -110,6 +117,7 @@ export function TrashBoard({
         });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);
@@ -125,6 +133,7 @@ export function TrashBoard({
         result = await emptyTrash({ data: { workspaceId } });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);

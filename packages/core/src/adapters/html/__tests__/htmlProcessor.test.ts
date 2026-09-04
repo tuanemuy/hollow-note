@@ -624,10 +624,10 @@ const sanitizeCases: readonly SanitizeCase[] = [
     tc: "TC-note-824",
     title: "keeps the rest of a rule whose function token is not url()",
     // `myurl(` is a function token to a browser, not a url-token, so the
-    // `;` inside it terminates nothing. Reading it as a url-token used to
-    // split the declaration, drop the half holding `position:fixed`, and
-    // carry that half's `)` away — leaving `color:red` inside an unclosed
-    // function token.
+    // `;` inside it terminates nothing. Reading it as a url-token splits
+    // the declaration, drops the half holding `position:fixed`, and
+    // carries that half's `)` away — leaving `color:red` inside an
+    // unclosed function token.
     input: "<style>.a{background:myurl(a(b);position:fixed);color:red}</style>",
     html: "<style>.a{background:myurl(a(b);position:fixed);color:red}</style>",
     noRemovals: true,
@@ -836,11 +836,10 @@ describe("HtmlProcessor.process — ADP-note-001 is a fixed point", () => {
 });
 
 /**
- * The ceiling of spec/adr/013 「サニタイズは資源で有界である」. Three
- * rounds of review each refuted an argument that some shape of input
- * could not be expensive, so nothing here reasons about shape: the
- * adapter meters what it spends and refuses to spend more. Every case
- * below is an input a reviewer measured against the unbounded version.
+ * The ceilings of spec/adr/013 「サニタイズは資源で有界である」. Nothing
+ * here reasons about the shape of the input: the adapter meters what it
+ * spends and refuses to spend more. Every case below is an input that
+ * costs super-linearly without a ceiling, with the measured cost.
  */
 describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () => {
   const rejection = (input: string): BusinessRuleError<string> => {
@@ -872,9 +871,9 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
   };
 
   it("TC-note-817: refuses nesting past the limit instead of overflowing", () => {
-    // 22 KB used to raise `RangeError: Maximum call stack size exceeded`,
-    // which carries no `kind` and so reaches the transport boundary
-    // unclassified.
+    // Unbounded, 22 KB raises `RangeError: Maximum call stack size
+    // exceeded`, which carries no `kind` and so reaches the transport
+    // boundary unclassified.
     const error = rejection("<div>".repeat(2_000));
 
     expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
@@ -984,9 +983,9 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
   it("TC-note-826: refuses the flat body the transport ceiling admits without paying for it", () => {
     // 1,760,000 bytes of `<br>` expand 1.0×, nest one deep and hold no
     // CSS, and are refused for the node count alone. The two prefixes
-    // are what used to route the same body onto the plain path: 364 ms
-    // wrapped against 16,477 ms and 82,347 ms plainly, all three on an
-    // input that could never have been stored.
+    // route the same body onto the plain path, where the parse is
+    // quadratic: 364 ms wrapped against 16,477 ms and 82,347 ms plainly,
+    // all three on an input that could never have been stored.
     for (const input of [
       "<br>".repeat(440_000),
       `</template>${"<br>".repeat(440_000)}`,
@@ -1016,11 +1015,11 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
   });
 
   it("TC-note-828: resolves duplicate heading anchors without re-trying the suffixes it passed", () => {
-    // Every heading used to restart its search at `-2`, so a body of
-    // identical headings cost the square of their number: 16,000 took
-    // 7.4 seconds and 120,000 never finished, inside every ceiling. The
-    // ids are the claim as much as the time — resuming the count must
-    // hand out the same ones, in the same order.
+    // Restarting each heading search at `-2` costs the square of the
+    // number of identical headings, inside every ceiling: 16,000 take
+    // 7.4 seconds and 120,000 never finish. The ids are the claim as
+    // much as the time — resuming the count must hand out the same ones,
+    // in the same order.
     const headings = (count: number): string => "<h1>a</h1>".repeat(count);
     const manyCost = cost(headings(16_000));
     const result = processor.process(headings(16_000));

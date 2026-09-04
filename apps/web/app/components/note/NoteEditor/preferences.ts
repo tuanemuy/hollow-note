@@ -86,11 +86,11 @@ export type LocalDraft = Readonly<{
  * 「いつまで復元できるか」の約束ではない。ED-08 が求めるのは保存に失敗
  * した直後に復元を提案できることで、それは分〜時間の話である。
  */
-const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const draftKey = (noteId: string): string => `${DRAFT_PREFIX}${noteId}`;
 
-const parseDraft = (raw: string | null): LocalDraft | null => {
+export const parseDraft = (raw: string | null): LocalDraft | null => {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -109,7 +109,7 @@ const parseDraft = (raw: string | null): LocalDraft | null => {
   }
 };
 
-const isExpired = (draft: LocalDraft, now: number): boolean =>
+export const isExpired = (draft: LocalDraft, now: number): boolean =>
   now - draft.savedAt > DRAFT_MAX_AGE_MS;
 
 /**

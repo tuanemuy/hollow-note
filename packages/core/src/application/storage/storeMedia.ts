@@ -57,6 +57,7 @@ const XMLNS_DECLARATION = /\sxmlns=/i;
 const XMLNS_XLINK_DECLARATION = /\sxmlns:xlink=/i;
 const HTML_NBSP_REFERENCE = "&nbsp;";
 const XML_NBSP_REFERENCE = "&#160;";
+const XML_LT_REFERENCE = "&lt;";
 
 const noteNotFound = (): NotFoundError =>
   new NotFoundError("NOTE_NOT_FOUND", "Note not found");
@@ -119,6 +120,52 @@ async function resolveEditableNote(
 }
 
 /**
+ * Puts back the `&lt;` an HTML serializer drops inside an attribute
+ * value.
+ *
+ * An attribute value serialized as HTML escapes `&`, `"` and U+00A0 and
+ * nothing more, so an `aria-label="a &lt; b"` the uploader wrote comes
+ * back as `aria-label="a < b"`. That is well-formed HTML and a fatal
+ * error to the XML parser a stored `.svg` is opened with, which is why
+ * `readSvgDocument` refuses a value holding one.
+ *
+ * The walk is quote-aware rather than a `replaceAll`, because a `<`
+ * outside an attribute value is a tag's own delimiter and text content
+ * already carries its `<` escaped. Only `"` opens a value: the
+ * serializer quotes every attribute that way and leaves an apostrophe
+ * inside a value raw, so reading `'` as a delimiter would lose the
+ * walk's place. Nothing else in the sanitized markup can hold a stray
+ * quote — the sanitizer keeps elements and text and drops comments and
+ * doctypes.
+ */
+const escapeAttributeLt = (markup: string): string => {
+  let escaped = "";
+  let copiedThrough = 0;
+  let inTag = false;
+  let inValue = false;
+  for (let index = 0; index < markup.length; index += 1) {
+    const char = markup[index];
+    if (inValue) {
+      if (char === '"') {
+        inValue = false;
+      } else if (char === "<") {
+        escaped += `${markup.slice(copiedThrough, index)}${XML_LT_REFERENCE}`;
+        copiedThrough = index + 1;
+      }
+    } else if (inTag) {
+      if (char === '"') {
+        inValue = true;
+      } else if (char === ">") {
+        inTag = false;
+      }
+    } else if (char === "<") {
+      inTag = true;
+    }
+  }
+  return `${escaped}${markup.slice(copiedThrough)}`;
+};
+
+/**
  * Puts back the namespace declarations a standalone `.svg` cannot go
  * without, or answers `null` when the sanitized markup is not one
  * document to begin with.
@@ -137,16 +184,23 @@ async function resolveEditableNote(
  * themselves, and this adds no element and no attribute the sanitizer
  * decided against.
  *
- * `&nbsp;` is rewritten for the same reason. It is the one reference an
- * HTML serializer emits that XML has no name for — U+00A0 comes back as
- * `&nbsp;`, and a `.svg` carries no DTD to define it — so the numeric
- * form says the same thing in a vocabulary the document owns. Nothing
- * else needs the treatment: every other `&` in parser output is already
- * one of the five XML predefines, which is what `readSvgDocument`
- * verifies afterwards rather than assumes.
+ * `&nbsp;` and a raw `<` inside an attribute value are rewritten for the
+ * same reason: each is what an HTML serializer writes where XML wants
+ * something else, and neither is a question about the allow list.
+ * `&nbsp;` is the one reference the serializer emits that XML has no
+ * name for — U+00A0 comes back as `&nbsp;`, and a `.svg` carries no DTD
+ * to define it — so the numeric form says the same thing in a vocabulary
+ * the document owns. The `<` is its mirror ({@link escapeAttributeLt}):
+ * an attribute value the uploader wrote as `a &lt; b` is serialized back
+ * as `a < b`, which XML forbids outright. Nothing else needs the
+ * treatment: every other `&` in parser output is already one of the five
+ * XML predefines, which is what `readSvgDocument` verifies afterwards
+ * rather than assumes.
  */
 const asStandaloneSvg = (markup: string): string | null => {
-  const document = markup.replaceAll(HTML_NBSP_REFERENCE, XML_NBSP_REFERENCE);
+  const document = escapeAttributeLt(
+    markup.replaceAll(HTML_NBSP_REFERENCE, XML_NBSP_REFERENCE),
+  );
   const root = readSvgDocument(document);
   if (root === null) {
     return null;

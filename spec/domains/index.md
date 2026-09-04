@@ -271,7 +271,7 @@ interface IdempotencyStore {
 
 イベントとは別に、**1 回で処理しきれなかった仕事の続き**を表す local task がある。scope task は `scheduled_tasks` と Alarm、global task は D1 outbox と Queue で運ぶ。どちらも購読者は1つだけである。
 
-**payload の欄は task 行に積む値そのものである。** scope は `scheduled_tasks` の行が持つので、どの payload にも現れない。
+**payload の欄は task 行に積む値そのものである。** scope task の payload に `scope` は現れない — 宛先の scope は `scheduled_tasks` の行が持つ。global task は宛先の scope を payload で運ぶ — 行が scope を持たないため。
 
 | 継続要求 | payload | 唯一の購読者 |
 | --- | --- | --- |
@@ -294,11 +294,11 @@ interface IdempotencyStore {
 | `projection.authorRedactionRequested` | `{ noteId, userId, redactionVersion, operationId }` | scope/global投影 → [`projectNoteChanges`](../usecases/note.md) |
 | `tag.deleteContinued` | `{ operationId, tagId }` | scope Alarm → [`deleteTag`](../usecases/tag.md) worker phase |
 | `tag.mergeContinued` | `{ operationId, sourceTagId, targetTagId }` | scope Alarm → [`mergeTags`](../usecases/tag.md) worker phase |
-| `tag.deleteUnusedContinued` | `{ operationId, scope }` | scope Alarm → [`deleteUnusedTags`](../usecases/tag.md) worker phase |
+| `tag.deleteUnusedContinued` | `{ operationId }` | scope Alarm → [`deleteUnusedTags`](../usecases/tag.md) worker phase |
 | `job.terminationContinued` | `{ origin }` | scope Alarm → [`continueForcedTermination`](../usecases/job.md) |
 | `job.removalLocalContinued` | `{ removalOperationId }` | scope Alarm → `pruneJobHistory` / `deleteJobsForRequester`の共通family removal worker |
 | `job.removalGlobalContinued` | `{ scope, removalOperationId }` | global Queue → [`projectJobHistory`](../usecases/job.md) のremoval分岐 |
-| `job.removalManifestCompactContinued` | `{ scope, removalOperationId }` | scope Alarm → [`projectJobHistory`](../usecases/job.md) の完了manifest縮約phase |
+| `job.removalManifestCompactContinued` | `{ removalOperationId }` | scope Alarm → [`projectJobHistory`](../usecases/job.md) の完了manifest縮約phase |
 | `job.targetHistoryCleanupContinued` | `{ target, operationId, cursor }` | global Queue → [`projectJobHistory`](../usecases/job.md) のtarget削除分岐 |
 | `job.globalTombstonePruneContinued` | `{ runId, generation, shardId, table, cursor, asOf }` | global Queue → [`pruneJobHistory`](../usecases/job.md) のD1 tombstone回収分岐 |
 | `job.globalTombstonePruneCron` | `{ type: "job.globalTombstonePruneCron" }` | Cron → [`pruneJobHistory`](../usecases/job.md) のglobal run開始分岐 |
@@ -309,10 +309,10 @@ interface IdempotencyStore {
 | `identity.accountDeletionManifestCompactContinued` | `{ operationId, cursor: string | null, continuationKey: string }` | global Queue → [`deleteAccount`](../usecases/identity.md) の完了manifest縮約 |
 | `identity.personalCleanupHandoverContinued` | `{ deletionOperationId }` | scope Alarm → scope平面のtask runnerが閉じたbarrierの引き渡しを行い、global manifestへ`personalCleanup` receiptをackする |
 | `identity.accountDeletionManifestPruneContinued` | `{ runId, generation, shardId, cursor, asOf }` | global Queue → [`deleteAccount`](../usecases/identity.md) のterminal manifest回収 |
-| `identity.personalBarrierPruneContinued` | `{ scope, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
+| `identity.personalBarrierPruneContinued` | `{ deletionOperationId, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
 | `global.maintenanceRunPruneContinued` | `{ cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) の共通maintenance run回収分岐（唯一の購読者） |
-| `integration.userCleanupContinued` | `{ operationId, userId, scope }` | scope Alarmまたはglobal Queue → [`deleteIntegrationsForUser`](../usecases/integration.md) |
-| `usage.userCleanupContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
+| `integration.userCleanupContinued` | `{ operationId, userId }`（global Queue で運ぶときは宛先 scope が無い global cleanup の分岐なので、scope は載せない） | scope Alarmまたはglobal Queue → [`deleteIntegrationsForUser`](../usecases/integration.md) |
+| `usage.userCleanupContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
 | `publicProjection.reprojectRequested` | `{ noteId, expectedRouteVersion? }` | global Queue → public projection consumer。scope-local tag fan-outはversionを省略し、consumerがcurrent routeを解決する |
 
 規約は 4 つ。

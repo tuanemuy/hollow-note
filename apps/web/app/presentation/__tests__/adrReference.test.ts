@@ -28,12 +28,23 @@ const SOURCE_ROOTS = ["apps/web/app", "packages/core/src"];
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx"];
 
+/**
+ * 設計の正典。ADR 番号の解決は markdown なら相対リンクが担保するので、
+ * ここには作業ログの引用検査だけが掛かる。
+ */
+const DOC_ROOTS = ["spec", "docs"];
+
+const DOC_EXTENSIONS = [".md"];
+
 /** 作業ログのディレクトリ。コード・`spec/`・`docs/` から引いてはならない。 */
 const WORK_LOG_DIR = ".thread/";
 
 const SELF = path.relative(REPO_ROOT, fileURLToPath(import.meta.url));
 
-const listSourceFiles = (root: string): readonly string[] => {
+const listFiles = (
+  root: string,
+  extensions: readonly string[],
+): readonly string[] => {
   const collected: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(path.join(REPO_ROOT, dir), {
@@ -45,7 +56,7 @@ const listSourceFiles = (root: string): readonly string[] => {
         walk(relative);
         continue;
       }
-      if (!SOURCE_EXTENSIONS.includes(path.extname(entry.name))) continue;
+      if (!extensions.includes(path.extname(entry.name))) continue;
       if (relative === SELF) continue;
       collected.push(relative);
     }
@@ -54,7 +65,14 @@ const listSourceFiles = (root: string): readonly string[] => {
   return collected;
 };
 
-const SOURCE_FILES = SOURCE_ROOTS.flatMap(listSourceFiles);
+const SOURCE_FILES = SOURCE_ROOTS.flatMap((root) =>
+  listFiles(root, SOURCE_EXTENSIONS),
+);
+
+const DOC_FILES = DOC_ROOTS.flatMap((root) => listFiles(root, DOC_EXTENSIONS));
+
+/** `CLAUDE.md` が作業ログの引用を禁じる 3 対象。 */
+const WORK_LOG_SCANNED_FILES = [...SOURCE_FILES, ...DOC_FILES];
 
 const ADR_FILE_NUMBERS: ReadonlySet<string> = new Set(
   readdirSync(path.join(REPO_ROOT, "spec/adr"))
@@ -79,6 +97,7 @@ const referencedNumbers = (source: string): readonly string[] => {
 describe("ADR references in source", () => {
   it("has source files to check", () => {
     expect(SOURCE_FILES.length).toBeGreaterThan(100);
+    expect(DOC_FILES.length).toBeGreaterThan(0);
     expect(ADR_FILE_NUMBERS.size).toBeGreaterThan(0);
   });
 
@@ -95,8 +114,8 @@ describe("ADR references in source", () => {
     expect(dangling).toEqual([]);
   });
 
-  it("cites no work-log path from source", () => {
-    const citing = SOURCE_FILES.filter((file) =>
+  it("cites no work-log path from source, spec/ or docs/", () => {
+    const citing = WORK_LOG_SCANNED_FILES.filter((file) =>
       readFileSync(path.join(REPO_ROOT, file), "utf8").includes(WORK_LOG_DIR),
     );
     expect(citing).toEqual([]);

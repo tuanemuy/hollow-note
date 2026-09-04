@@ -291,13 +291,28 @@ NoteAccess =
 
 **依存するポート**: なし
 
+### UrlSchemePolicy
+
+**責務**: [ADR 013](../adr/013-html-sanitization-policy.md) の「許可する URL スキーム」表を判定にする。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `isAllowedUrl` | `url: string, kind: "navigation" \| "resource"` | `boolean` | 制御文字と空白を取り除いてからスキームを読み、表の該当行に載っていれば真。スキームを持たない値（フラグメント・ルート相対・相対パス）は常に真。`resource` は加えて、許可された MIME の `data:` を真とする |
+| `filterAllowedSrcset` | `value: string` と拒否の通知 | `string \| null` | `srcset` を候補単位（コンマではなく HTML の候補規則）に分け、`isAllowedUrl(_, "resource")` に通らない候補を落として組み直す。1 つも残らなければ `null` |
+
+ブラウザーは URL のスキームを読むときに ASCII の制御文字と空白を無視するため、`java&#10;script:` のような値は素朴な前置き比較を素通りして遷移する。判定は必ずこの表を通す。
+
+**適用点は 1 つではない。** `HtmlProcessor` は保存する本文にこの表を適用し、編集画面は保存前の本文を DOM に載せる前に同じ表を適用する。判定をドメインサービスとして 1 本に集約するのは、適用点ごとに規則が分かれると、面が保存より**多く**落とす（読めていた本文が消える）向きにも**少なく**落とす（拒むはずのスキームが載る）向きにも壊れるためである。
+
+**依存するポート**: なし
+
 ## ポート
 
 ### HtmlProcessor
 
 **目的**: 生の HTML をサニタイズし、保存に必要な派生情報を 1 度の走査で取り出す。
 
-サニタイズ規則の正典は [ADR 013](../adr/013-html-sanitization-policy.md)（許可する要素・属性・URL スキームの列挙、CSS の内容制約）であり、`HtmlProcessor` はその唯一の適用点である。取り込み・編集・メディア挿入・SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）はいずれもこのポートを通す。
+サニタイズ規則の正典は [ADR 013](../adr/013-html-sanitization-policy.md)（許可する要素・属性・URL スキームの列挙、CSS の内容制約）であり、**保存する本文に対する唯一の適用点が `HtmlProcessor`** である（URL スキーム表だけは表示前の面も適用するため、判定は上の `UrlSchemePolicy` を共有する）。取り込み・編集・メディア挿入・SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）はいずれもこのポートを通す。
 
 ```ts
 interface HtmlProcessor {
@@ -371,7 +386,7 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 **資源で有界**
 
-`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 4 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。上限は本文の長さの上限から到達しうるどの文書よりも高いところにあるため、「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
+`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・節点数・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 5 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。節点数を除く 4 つは本文の長さの上限から到達しうるどの文書よりも高いところにある。節点数だけは正当な本文が届きうる高さにあり、その取引（長さの上限の内側でも拒まれる形がある）は ADR 013 が持つ。いずれにせよ「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
 
 **エラーケース**: `SystemError(ExternalServiceError)`（パース不能）、`BusinessRuleError(NOTE_HTML_TOO_COMPLEX)`（資源の上限を超えた入力）。壊れた HTML は例外にせず、補正した結果を返す
 

@@ -177,7 +177,7 @@ export const hasImportableReference = (
 };
 
 /**
- * Step 8 of `updateNoteBody`, shared with `restoreNoteRevision` step 6.
+ * Step 8 of `updateNoteBody`, shared with `restoreNoteRevision` step 7.
  *
  * Registration needs both an importable reference and the absence of an
  * unterminated `referenceImport` for the same note. The duplicate is

@@ -245,7 +245,7 @@ scope cleanupに合わせてquota行を消す。workspace deletionはlocal event
 
 1. `ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を確認する
 2. `scope`からsubject keyを作り`StorageQuotaRepository.delete`を呼ぶ
-3. 利用者の場合は `LlmUsageRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じUoWで`usage.userCleanupContinued { scope, deletionOperationId }`をscope Alarmへ再登録し、100件未満になってからaccount deletion operation IDのscope cleanup receiptへ完了ackを付ける
+3. 利用者の場合は `LlmUsageRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じUoWで`usage.userCleanupContinued { deletionOperationId }`をscope Alarmへ再登録し、100件未満になってからaccount deletion operation IDのscope cleanup receiptへ完了ackを付ける
 
 `IdempotencyStore` は使わない（[domains/index.md](../domains/index.md) の判断規則）。継続taskとcleanup receiptの進捗は同じscope-local UoWに保存する。冪等性の根拠は、鍵を指定した削除であり 2 回目以降は 0 行で終わることにある（`deleteStoredObjects` と同じ性質）。主体の削除は取り消されないため、削除後に同じ主体の行が正当に作り直されることもない。`applyStorageDelta` の減算が本ユースケースより遅れて届いた場合も、減算経路は不在の主体に行を作らずに終える（`applyStorageDelta` の手順 4）ため、消えた主体の行が復活することはない。
 

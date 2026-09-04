@@ -780,7 +780,7 @@ operation の終端はしたがって次の 5 通りだけである。
 2. `JobRepository.listActiveByTarget({ type: "note", noteId }, limit: 100)` を引き、`excludingJobId` に一致するものを除いたすべてを `Job.cancel` する。100 件に達していれば同じ UoW で継続要求 `job.terminationContinued { origin: { path: "trashNote", noteId, excludingJobId } }` を積む（[usecases/job.md](./job.md) の「共通: 強制終端の後始末」）。1 ノートの網なので実際には達しないが、規則は経路ごとに省かない
 3. 「共通: 強制終端の後始末」（[usecases/job.md](./job.md)）に従う。`kind: "conversion"` のジョブを止めた結果、対象ノートの `content.status` が `processing` のままなら `Note.markConversionFailed("canceled", now)` を適用する。生成物（`purpose: "artifact"`）は同規則の「2. 保管済みの生成物を回収する」が定める対象集合を `deleteFiles`（[usecases/storage.md](./storage.md)）で回収する — ただし対象（`target.type === "note"`）で引くこの経路は batch 親を返さないため、回収対象は実際には空になる。規則は経路ごとに省かず同じ形で適用する
 4. `Note.trash` を適用して保存し、イベントを収集する
-5. 同じ transaction で `NoteRepository.findNextPurgeDeadline()` を引き直し、その期限へ scope の保持期限回収 task（`purgeExpiredTrash` の行）を upsert する。行は scope に 1 つなので、いま捨てたノートの `purgeAfter` をそのまま書くと、より古いノートの期限を捨てるたびに押し出してしまう。同じ transaction の内側で引き直すことが、いま保存したノートを答えに含める条件でもある。ゴミ箱が空（`null`）になることはこの経路では起こらない
+5. 同じ transaction で `NoteRepository.findNextPurgeDeadline()` を引き直し、その期限へ scope の保持期限回収 task（`purgeExpiredTrash` の行）を upsert する。行は scope に 1 つなので、いま捨てたノートの `purgeAfter` をそのまま書くと、より古いノートの期限を捨てるたびに押し出してしまう。同じ transaction の内側で引き直すことが、いま保存したノートを答えに含める条件でもある。この読みは順序付きで `LIMIT` が埋まる形だが、手順 4 が反転させた行は `lifecycle = 'trashed'` の**保存済み**のページに載らないため、[database/index.md](../database/index.md) の「同一 UoW の読み」(3) の下で staged 行を重ねて答える。ゴミ箱が空（`null`）になることはこの経路では起こらない
 
 手順 3 は手順 4 より**先**に適用する — `Note.markConversionFailed` は `ActiveNote` しか受け取らないため、`Note.trash` を先に当てると回復の手立てがなくなる。
 
@@ -1036,17 +1036,18 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 ### 処理フロー
 
 1. 閲覧者コンテキストを解決し、`canEdit` を確認する
-2. `NoteRevisionRepository.findById` を引き、`noteId` の一致を確認する
-3. 現在の本文から `NoteRevision.capture("restore")` を作る
-4. 版の HTML を `HtmlProcessor.process` に通して `ProcessedHtml` を得る（下記）
-5. 手順 4 の `ProcessedHtml` とタイトル・スタイルで `Note.updateBody` と `Note.changeStyleMode`、必要なら `Note.rename` を適用して保存する
-6. 復元後の本文に外部参照があれば参照取り込みジョブを登録する。条件と形は `updateNoteBody` の手順 8 と同じ（内部を指さない参照が 1 件以上あり、かつ同じノートを対象とする未終端の `referenceImport` がない）
+2. `JobRepository.listActiveByTarget({ type: "note", noteId })` を引き、実行中の変換・再生成ジョブ（`kind: "conversion" | "regeneration"`）があれば `BusinessRuleError(NoteLockedByJob)`（[domains/note.md](../domains/note.md) の「再生成中は編集拒否」。復元も `Note.updateBody` を当てる本文の書き込みなので、`updateNoteBody` の手順 2 と同じ門を通る）
+3. `NoteRevisionRepository.findById` を引き、`noteId` の一致を確認する
+4. 現在の本文から `NoteRevision.capture("restore")` を作る
+5. 版の HTML を `HtmlProcessor.process` に通して `ProcessedHtml` を得る（下記）
+6. 手順 5 の `ProcessedHtml` とタイトル・スタイルで `Note.updateBody` と `Note.changeStyleMode`、必要なら `Note.rename` を適用して保存する
+7. 復元後の本文に外部参照があれば参照取り込みジョブを登録する。条件と形は `updateNoteBody` の手順 8 と同じ（内部を指さない参照が 1 件以上あり、かつ同じノートを対象とする未終端の `referenceImport` がない）。重複の判定は手順 2 で引いた結果をそのまま使い、ジョブの読みは 1 回で済ませる
 
 版の追加とノートの更新は同一の `UnitOfWorkProvider.run` で行い、イベントをまとめて収集する（`updateNoteBody` の手順 6 と同じ）。
 
 **版の HTML も `process` に通す**。`NoteRevision` が持つのは HTML だけで（[domains/note.md](../domains/note.md)）、`Note.updateBody` は `ProcessedHtml` を要求するため。派生情報を作り直さないと、復元後の抜粋・見出し・読み取りモデルが復元前のままになる。
 
-**復元は参照の状態を巻き戻す**。取り込みは版を作らない（[usecases/storage.md](./storage.md) の `importExternalReferences`）ため、直近の版は取り込み**前**の本文である。これを復元すると、取り込み済みだった内部 URL が外部 URL に戻り、`data-imported-stylesheet` になっていた痕跡が `data-stylesheet-href` に戻る。手順 6 で取り込みを登録し直すのはこのためで、これがないと本文に未取得の参照が残ったまま誰も取りに行かない状態になる。
+**復元は参照の状態を巻き戻す**。取り込みは版を作らない（[usecases/storage.md](./storage.md) の `importExternalReferences`）ため、直近の版は取り込み**前**の本文である。これを復元すると、取り込み済みだった内部 URL が外部 URL に戻り、`data-imported-stylesheet` になっていた痕跡が `data-stylesheet-href` に戻る。手順 7 で取り込みを登録し直すのはこのためで、これがないと本文に未取得の参照が残ったまま誰も取りに行かない状態になる。
 
 Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `ReferenceAttempt`）は復元で消さない。記録は URL ごとの「最後に試したときどうだったか」であり、本文が巻き戻っても事実は変わらないからである。再取り込みが走れば同じ鍵で上書きされる。
 
@@ -1057,6 +1058,7 @@ Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `Re
 | 版が不在・他ノートのもの | `NotFoundError("REVISION_NOT_FOUND")` |
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
 | ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
+| 実行中の変換・再生成ジョブがある | `BusinessRuleError(NoteLockedByJob)` |
 | サニタイズが資源の上限を超える（[ADR 013](../adr/013-html-sanitization-policy.md)） | `BusinessRuleError(HtmlTooComplex)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 

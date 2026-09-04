@@ -3309,3 +3309,65 @@ ADR-113 の 4 上限（膨張・深さ・CSS の入れ子・CSS の歩数）と 
 - トレードオフ: `<form>` を含む本文は素の経路のままなので、上限の内側でも包んだ経路より遅い（50,000 節点で 222 ms 対 23 ms）。速さのために解析の意味を変えないほうを採った ADR-120 の判断は据え置く
 - 残件: `spec/adr/013-html-sanitization-policy.md` の上限の表に 5 行目が要り、「4 上限をすべて満たす入力にも費用の上限がある」の節と「本文の長さの上限から到達しうるどの文書も届かない高さでだけ拒む」の断言を、節点数の上限が**到達しうる**唯一の上限であることに合わせて書き直す必要がある。`spec/inventory/test.md` の TC-note-826 も期待値が「`ContentTooLarge` まで走り切る」から「節点数で拒む」に変わる。どちらも本単位の担当外
 - 変異スポットチェック: `maxNodes` を 50,001 にすると境界の 2 ケースが red、49,999 にすると別の 2 ケースが red、`PARSE_SCAFFOLD_NODES` を 4 にすると境界の 2 ケースが red、`createElement` の節点課金を落とすと 4 ケースが red、素の経路にだけ枠を渡さないと逃げ道の 2 ケースが red（うち 1 つは 25,358 ms で壁時計の判定に掛かる）、`<template>` 包みを外すと増加率の 1 ケースが red、`collectHeadings` の再開位置を捨てると見出しの 1 ケースが red（28,597 ms）、`inlineStylesheets` の `filterCss` を外すと CSS 規則の 1 ケースが red。`sanitizeNodes` の `push(...)` を戻しても red にならない — 節点数の上限が引数上限へ届く入力を先に拒むためで、`for` 文は多層の防御として残す
+
+## ADR-128: 継続要求表の payload 規則を「scope task には無い / global task は運ぶ」に書き直す
+
+### Context
+
+ラウンド 008 で `spec/domains/index.md` の継続要求表に「どの payload にも scope は現れない（行が持つものは payload に書かない）」という一般規則を足した。ラウンド 009 のレビューで、この規則が同じ表の 5 行（`identity.personalBarrierPruneContinued` / `usage.userCleanupContinued` / `tag.deleteUnusedContinued` / `job.removalManifestCompactContinued` / `integration.userCleanupContinued`）と global Queue 行に反していることが判明した。global task は宛先 scope を payload で運ぶのが正しく、規則が一律すぎた。
+
+この表への指摘はラウンド 004 / 006 / 008 / 009 と 4 回続いており、そのつど「本 PR が触れた行だけ」を直してきた結果、表の物差しが増えていた。
+
+### Decision
+
+規則を実態に合わせて 2 文に分ける:
+
+- **scope task の payload に `scope` は現れない** — 宛先 scope は `scheduled_tasks` の行が持つ
+- **global task は宛先 scope を payload で運ぶ** — 行が scope を持たないため
+
+そのうえで、規則に反している scope Alarm 行 5 つと、対応する `spec/usecases/{tag,storage,usage,job,identity,integration}.md` の表記から `scope` を落とす。`identity.personalBarrierPruneContinued` は実装が `{ deletionOperationId, asOf }` なので表側が誤りである。
+
+他スライスが持つ行にも触れるが、これは本 PR がラウンド 008 で入れた一般規則が作った不整合であり、その帰結として本 PR が閉じる。ADR-039 が禁じるのは未実装機能の抹消であって、表記の整合はその外にある。
+
+### Consequences
+
+表の物差しが 1 つになり、「本 PR が触れた行だけ直す」ことで規則と行がずれ続ける構造が止まる。他スライスの usecase ドキュメントに差分が出るが、いずれも payload 表記から `scope` を落とす 1 行の修正に閉じる。
+
+## ADR-129: `analyzeMarkup` の警告をトークン列の構造比較に切り替える
+
+### Context
+
+`surfaces.tsx:analyzeMarkup` は `parsed === source` の文字列比較で「構文を補正しました」を出している。parse5 の直列化は `<br/>` → `<br>`、`<P>` → `<p>`、単引用符 → 二重引用符、エンティティ表記の正規化といった**構造を変えない差**を必ず生むため、正当な HTML を書いただけで警告が立つ。
+
+ADR-072 は警告文言の断言範囲を決めただけで、誤検知そのものは扱っていない。
+
+### Decision
+
+`tokenizeHtml` の `tag` / `attr` トークン列（小文字化し、`punct` / `text` / `value` / `comment` は無視）を `source` と `parsed` で比較し、**構造が変わったときだけ**警告する。
+
+- 同列として扱う: `<br/>` / `<P>` / 単引用符 / エンティティ表記の違い
+- 差として扱う: 閉じ忘れ、入れ子違反、`<table>` への `tbody` 補完
+
+文言だけ弱める案（「HTML を正規化しました」）は採らない — `<br/>` でも警告は出続け、「正当な HTML に常時警告が出る」が次ラウンドで再指摘される余地が残るため。
+
+### Consequences
+
+60,000 字の上限は比較に掛からず線形走査で足りる。TC-18 手順 1 の文言は据え置ける（警告のタイトルは変えない）。新規ロジックだがテスト付きの純関数 1 本に閉じる。
+
+## ADR-130: サニタイザーの URL スキーム規則をドメインサービスへ集約する
+
+### Context
+
+ラウンド 009 の Blocker は `surfaces.tsx:scrubForSurface` の `/^\s*javascript:/i` が `java&#9;script:` のような制御文字迂回を素通りさせるものだった。同じリポジトリに正しい判定が 2 つ（サーバー側の `stripControls` → `schemeOf`、島の `isSafeLinkUrl`）あり、規則が 3 つに割れていたことが原因である。
+
+同型の指摘はラウンド 005 [W-005] にも出ており、「別の適用点で規則が違う」型の再指摘が繰り返されている。
+
+### Decision
+
+ADR 013 の URL スキーム表の**実行形**を `packages/core/src/domain/note/services/urlPolicy.ts` に 1 本置き、3 つの適用点（HTML アダプター・編集島の面・リンクの表示）がすべてそれを呼ぶ形にする。`srcset` の候補絞りも共有ヘルパーにして、面がサーバーより多く落とす向きにならないようにする。
+
+規則の正典（ADR 013 の表）と実行形の対応が 2 か所に割れたと読まれないよう、`spec/domains/note.md` のドメインサービス節に `UrlSchemePolicy` を載せ、`allowList.ts` のヘッダは「URL スキーム表の実行形はドメインサービス」と指し直す。
+
+### Consequences
+
+「適用点ごとに規則が違う」型の欠陥が型と配置で構造的に止まる。ドメイン層に純粋な値判定のサービスが 1 つ増えるが、I/O もフレームワーク依存も持たないためドメインの制約に反しない。

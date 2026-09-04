@@ -142,6 +142,10 @@ const toStoredFile = (
  * rows it read are gone. A move reads without deleting, so it needs the
  * `PaginationResult` only `listByOwner` returns. The result is the same
  * set; only the cost differs.
+ *
+ * `listByNote`, which spec/domains/storage.md assigns to this path, is
+ * not on the port yet (`StoredFileRepository`), so the note's rows are
+ * composed here from `listByOwner` filtered on `noteId`.
  */
 async function listNoteFiles(
   ctx: ScopeUnitOfWorkContext,

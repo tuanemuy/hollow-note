@@ -18,3 +18,4 @@
 | 復元後の本文に外部参照がない | 戻す | 参照取り込みジョブは登録されない | |
 | 同じノートに未終端の `referenceImport` ジョブがある | 戻す | 新しいジョブは登録されない（`updateNoteBody` と同じ重複防止） | |
 | ゴミ箱のノート | 版を復元する | `BusinessRuleError(NoteIsTrashed)` が投げられ、ノートは変わらない |  |
+| 実行中の再生成ジョブがあるノート | 版を復元する | `BusinessRuleError(NoteLockedByJob)` が投げられ、本文も版も変わらない（復元も `Note.updateBody` を当てる本文の書き込みなので、`updateNoteBody` と同じ門を通る） | |

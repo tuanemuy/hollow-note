@@ -82,6 +82,34 @@ export const ORPHAN_MEDIA_BATCH_SIZE = 100;
 export const ORPHAN_MEDIA_NOTE_BUDGET = 5;
 
 /**
+ * Body characters one turn holds at once.
+ *
+ * {@link ORPHAN_MEDIA_NOTE_BUDGET} bounds the parses, not the memory:
+ * five notes each holding `NoteRevision.RETENTION + 1` bodies of
+ * `NoteHtml`'s 800,000 bytes is 84,000,000 characters resident at the
+ * moment the scan transaction closes, well past what a Cloudflare
+ * isolate has (spec/platform/index.md). This is the bound that answers
+ * for the memory: the turn stops before reading a note it has no room
+ * for, taking the same `outOfBudget` exit the note budget takes, so the
+ * position still advances and the work is postponed rather than lost.
+ *
+ * It counts `String.length` rather than bytes because what is held is
+ * the string, not its UTF-8 form, and V8 stores one in a one-byte or a
+ * two-byte representation depending on its content — so the same count
+ * is worth between one and two bytes a character. The value is chosen
+ * with that spread already paid for: the check is made before a note is
+ * read, so the worst case is this budget plus one whole note
+ * (21 × 800,000 = 16,800,000) ≈ 33,000,000 characters, which is 33 MB
+ * narrow and 66 MB wide. A quarter of the isolate at one byte leaves
+ * the doubling covered.
+ *
+ * A turn always reads at least one note: nothing has been held when the
+ * first is considered, so no scope can be stalled by a note too large
+ * for the budget.
+ */
+export const ORPHAN_MEDIA_BODY_BUDGET_CHARS = 16_000_000;
+
+/**
  * How long a media file is spared regardless of the body.
  *
  * Measured from creation rather than from the moment the reference was
@@ -291,8 +319,10 @@ type NoteBodies =
  * the turn's work by the retention depth. Memoization is not itself a
  * bound, though — a page spread over as many notes as it has files
  * memoizes nothing — which is why the caller also caps how many notes one
- * turn reads ({@link ORPHAN_MEDIA_NOTE_BUDGET}), and that cap is what
- * bounds the bodies this turn holds in memory as well.
+ * turn reads ({@link ORPHAN_MEDIA_NOTE_BUDGET}). That cap bounds the
+ * parses; what the caller holds in memory is bounded separately, by
+ * {@link ORPHAN_MEDIA_BODY_BUDGET_CHARS}, since five notes' worth of
+ * retained bodies is far more than an isolate can carry.
  */
 async function readNoteBodies(
   ctx: ScopeUnitOfWorkContext,
@@ -539,9 +569,10 @@ async function sweepOnce(
       const byNote = new Map<string, NoteBodies>();
       // The position of the last file this turn actually judged, which
       // is where the next one resumes. It is not simply the page's last
-      // row, because the note budget can stop the walk mid-page.
+      // row, because either budget can stop the walk mid-page.
       let judgedThrough: StoredFilePurposeCursor | null = null;
       let notesRead = 0;
+      let charsHeld = 0;
       let outOfBudget = false;
       for (const file of candidates) {
         const noteId = file.noteId;
@@ -549,11 +580,17 @@ async function sweepOnce(
         // is the listing contract restated where it is relied on.
         if (file.purpose === "media" && noteId !== null) {
           let bodies = byNote.get(noteId);
-          if (bodies === undefined && notesRead >= ORPHAN_MEDIA_NOTE_BUDGET) {
+          if (
+            bodies === undefined &&
+            (notesRead >= ORPHAN_MEDIA_NOTE_BUDGET ||
+              charsHeld >= ORPHAN_MEDIA_BODY_BUDGET_CHARS)
+          ) {
             // Stopping here rather than reading one more note is what
-            // bounds the turn's cost. `judgedThrough` has advanced over
-            // everything decided so far, so the continuation picks up
-            // behind this file instead of re-reading the page.
+            // bounds the turn's cost — its parses by the first budget,
+            // the bodies it keeps resident by the second.
+            // `judgedThrough` has advanced over everything decided so
+            // far, so the continuation picks up behind this file instead
+            // of re-reading the page.
             outOfBudget = true;
             break;
           }
@@ -565,6 +602,12 @@ async function sweepOnce(
               notesRead += 1;
               bodies = await readNoteBodies(ctx, noteId);
               byNote.set(noteId, bodies);
+              if (bodies.kind === "bodies") {
+                charsHeld += bodies.htmls.reduce(
+                  (total, html) => total + html.length,
+                  0,
+                );
+              }
             } catch (cause) {
               // Spares the file and carries on. This transaction only
               // reads, so a failed read leaves nothing half-written, and

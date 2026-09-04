@@ -157,6 +157,17 @@ const NBSP_SVG =
   `<text>a\u00A0b</text><rect data-x="c\u00A0d" width="4" height="4"/></svg>`;
 
 /**
+ * A `<` written the only way XML admits one — as `&lt;` — in an
+ * attribute value and in text. HTML serialization escapes `<` in text
+ * but not in an attribute value, so the attribute comes back holding
+ * the character raw, which XML forbids.
+ */
+const LESS_THAN_ATTRIBUTE_SVG =
+  `<svg xmlns="http://www.w3.org/2000/svg">` +
+  `<text aria-label="x &lt; y" data-note="p&lt;q">a&lt;b</text>` +
+  `<rect width="4" height="4"/></svg>`;
+
+/**
  * `desc` and `title` are HTML integration points: the parser resumes
  * HTML parsing under them, so without a rule of its own the whole HTML
  * allow list gets in — `<style>`, which XML then reads as SVG's own
@@ -774,6 +785,31 @@ describe("storeMedia", () => {
     expect(stored).not.toContain("&nbsp;");
     expect(stored).toContain("a&#160;b");
     expect(stored).toContain('data-x="c&#160;d"');
+  });
+
+  it("TC-storage-275: stores the `<` of an attribute value as the reference XML requires, the serializer having written it raw", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    // The sanitizer's own output carries the raw character: an HTML
+    // attribute value escapes `&`, `"` and U+00A0 and nothing else,
+    // while a text node escapes `<` as well.
+    const sanitized = h.container.htmlProcessor.process(
+      LESS_THAN_ATTRIBUTE_SVG,
+    ).html;
+    expect(sanitized).toContain('aria-label="x < y"');
+    expect(sanitized).toContain("a&lt;b");
+
+    await upload(h, noteId, {
+      body: svg(LESS_THAN_ATTRIBUTE_SVG),
+      fileName: "compared.svg",
+    });
+
+    const stored = await storedBytes(h, onlyFile(h, personalScope).objectKey);
+    expect(stored).toContain('aria-label="x &lt; y"');
+    expect(stored).toContain('data-note="p&lt;q"');
+    // The text node's own escape is left exactly as it was: the walk
+    // rewrites what is inside an attribute value and nothing else.
+    expect(stored).toContain("a&lt;b");
   });
 
   it("TC-storage-263: keeps the SVG subset under desc / title, where HTML parsing resumes", async () => {

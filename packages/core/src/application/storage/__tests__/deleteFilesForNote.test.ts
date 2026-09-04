@@ -391,6 +391,9 @@ describe("deleteFilesForNote", () => {
     );
 
     expect(isConflictError(error)).toBe(true);
+    expect(isConflictError(error) && error.code).toBe(
+      "CLEANUP_OPERATION_MISMATCH",
+    );
     expect(storedIds(h)).toEqual(["file-1"]);
     expect(deletionEvents(h)).toEqual([]);
   });

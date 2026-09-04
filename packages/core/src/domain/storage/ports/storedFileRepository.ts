@@ -43,9 +43,14 @@ export type StoredFilePurposeCursor = Readonly<{
  * count against and never overrides the physical scope.
  *
  * Declared here are the methods the avatar, owner-cleanup, note-purge
- * and orphan-media paths need; the artifact listings
+ * and orphan-media paths need. Three of the listings
+ * spec/domains/storage.md names are still to come: the artifact ones
  * (`findArtifactByNoteAndVersion`, `listExpired`) arrive with the slice
- * that generates artifacts.
+ * that generates artifacts, and `listByNote` — one note's rows of every
+ * purpose, which that design assigns to the move — arrives with the
+ * slice that needs the purposes a move leaves behind
+ * (`relocateFilesForNote` composes the relocatable subset it does need
+ * out of `listByOwner`).
  *
  * `listByOwner` returns a `PaginationResult` because a batch of exactly
  * `limit` rows has to be told apart from "there is more" — an owner

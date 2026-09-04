@@ -1,3 +1,11 @@
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
+import { NoteTitle } from "@repo/core/domain/note/valueObject";
+import {
+  AVATAR_MAX_BYTES,
+  MEDIA_IMAGE_MAX_BYTES,
+  MEDIA_SVG_MAX_BYTES,
+  MEDIA_VIDEO_MAX_BYTES,
+} from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { describe, expect, it } from "vitest";
 import { displayError, renderErrorMessage } from "../errorDisplay";
 import {
@@ -24,6 +32,29 @@ const KINDS = [
   "system",
   "unknown",
 ] as const satisfies readonly SerializedErrorKind[];
+
+const MB = 1024 * 1024;
+const megabytes = (bytes: number): string => `${bytes / MB} MB`;
+const kilobytes = (bytes: number): string => `${bytes / 1024} KB`;
+
+/**
+ * タイトルの上限。ドメインは定数を公開しないので、受け付ける最大の長さを
+ * `NoteTitle` 自身に引かせる — 辞書の数字がドメインから逸れたら落ちる。
+ */
+const TITLE_MAX_LENGTH = ((): number => {
+  const accepts = (length: number): boolean => {
+    try {
+      NoteTitle.create("a".repeat(length), "manual");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let length = 1; length <= 4096; length += 1) {
+    if (!accepts(length)) return length - 1;
+  }
+  throw new Error("NoteTitle accepts a title longer than the probed range");
+})();
 
 describe("renderErrorMessage", () => {
   it("falls back to the shared message of the kind for codes outside the dictionary", () => {
@@ -97,30 +128,34 @@ describe("renderErrorMessage", () => {
   });
 
   // P-12 ノート編集 / P-14 ゴミ箱 が実際に到達するコード。共通文言に落ちる
-  // と「何をすればいいか」が消えるので、辞書に載っていること自体を押さえる。
-  const EDITING_CODES: readonly (readonly [SerializedErrorKind, string])[] = [
-    ["business", "NOTE_IS_TRASHED"],
-    ["business", "NOTE_CONTENT_TOO_LARGE"],
-    ["business", "NOTE_HTML_TOO_COMPLEX"],
-    ["business", "NOTE_LOCKED_BY_JOB"],
-    ["business", "NOTE_INVALID_TITLE"],
-    ["business", "NOTE_INVALID_STYLE_MODE"],
-    ["business", "NOTE_CANNOT_CAPTURE_EMPTY_CONTENT"],
-    ["business", "USAGE_STORAGE_QUOTA_EXCEEDED"],
-    ["business", "STORAGE_UNSUPPORTED_MIME_TYPE"],
-    ["business", "STORAGE_FILE_TOO_LARGE"],
-    ["validation", "NOTE_NOT_TRASHED"],
-    ["notFound", "REVISION_NOT_FOUND"],
+  // と「何をすればいいか」が消えるので、各コードの文言が言うべきことを
+  // キーワードで押さえる。数字はドメイン定数から組み、辞書がドメインから
+  // 逸れたら落ちるようにする。
+  const EDITING_CODES: readonly (readonly [
+    SerializedErrorKind,
+    string,
+    string,
+  ])[] = [
+    ["business", "NOTE_IS_TRASHED", "ゴミ箱"],
+    ["business", "NOTE_CONTENT_TOO_LARGE", "分割"],
+    ["business", "NOTE_HTML_TOO_COMPLEX", "複雑"],
+    ["business", "NOTE_LOCKED_BY_JOB", "処理中"],
+    ["business", "NOTE_INVALID_TITLE", `${TITLE_MAX_LENGTH} 文字`],
+    ["business", "NOTE_INVALID_STYLE_MODE", "表示スタイル"],
+    ["business", "NOTE_CANNOT_CAPTURE_EMPTY_CONTENT", "取り込み"],
+    ["business", "USAGE_STORAGE_QUOTA_EXCEEDED", "容量"],
+    ["business", "STORAGE_UNSUPPORTED_MIME_TYPE", "形式"],
+    ["business", "STORAGE_FILE_TOO_LARGE", megabytes(AVATAR_MAX_BYTES)],
+    ["validation", "NOTE_NOT_TRASHED", "再読み込み"],
+    ["notFound", "REVISION_NOT_FOUND", `${NoteRevision.RETENTION} 版`],
     // `OPTIMISTIC_LOCK_FAILURE` はここに入れない。辞書の文言が conflict の
     // 共通文言と同一で、それが正しい（競合はどの経路でも「もう一度」でよい）
-    // ため、この形の判定では区別できない。
+    // ため、どのキーワードも辞書の当たり外れを区別しない。
   ];
 
-  it("has a dictionary entry for every editing / trash code the slice reaches", () => {
-    for (const [kind, code] of EDITING_CODES) {
-      expect(renderErrorMessage(withKind(kind, code))).not.toBe(
-        renderErrorMessage(withKind(kind, null)),
-      );
+  it("says what each editing / trash code the slice reaches asks the reader to do", () => {
+    for (const [kind, code, keyword] of EDITING_CODES) {
+      expect(renderErrorMessage(withKind(kind, code))).toContain(keyword);
     }
   });
 
@@ -156,8 +191,10 @@ describe("renderErrorMessage", () => {
     const tooLarge = renderErrorMessage(
       withKind("business", "STORAGE_FILE_TOO_LARGE"),
     );
-    expect(tooLarge).toContain("5 MB");
-    expect(tooLarge).toContain("200 MB");
+    expect(tooLarge).toContain(megabytes(AVATAR_MAX_BYTES));
+    expect(tooLarge).toContain(megabytes(MEDIA_IMAGE_MAX_BYTES));
+    expect(tooLarge).toContain(kilobytes(MEDIA_SVG_MAX_BYTES));
+    expect(tooLarge).toContain(megabytes(MEDIA_VIDEO_MAX_BYTES));
   });
 });
 

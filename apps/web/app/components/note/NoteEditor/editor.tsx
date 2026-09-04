@@ -1,6 +1,10 @@
 "use client";
 
 import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
+import {
+  isAllowedUrl,
+  NAVIGATION_SCHEMES,
+} from "@repo/core/domain/note/services/urlPolicy";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import {
   MEDIA_ALLOWED_MIME_TYPES,
@@ -23,10 +27,6 @@ import {
 import { Alert } from "@/components/ui/Alert";
 import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
 import {
-  extractSerializedError,
-  type SerializedErrorKind,
-} from "@/presentation/errorResponse";
-import {
   applyTextNodeEditsFn,
   createNoteWithBodyFn,
   listNoteRevisionsFn,
@@ -48,6 +48,11 @@ import {
   writeDraft,
   writePreferredMode,
 } from "./preferences";
+import {
+  classifySaveFailure,
+  type RetryTarget,
+  type SaveStatus,
+} from "./saveStatus";
 import {
   HtmlSurface,
   VisualSurface,
@@ -154,125 +159,6 @@ const sameVisual = (a: VisualPaths | null, b: VisualPaths | null): boolean => {
  */
 const sameSnapshot = (a: EditorSnapshot, b: EditorSnapshot): boolean =>
   a.title === b.title && a.body === b.body && sameVisual(a.visual, b.visual);
-
-/**
- * 落ちた往復を、もう一度だけ送り直せる形にしたもの。`failed` の「再試行」
- * が押す先である。
- *
- * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が同じ `failed`
- * を作る以上、「何が落ちたか」を値に持たないと再試行は 1 つの操作しか
- * 指せない。持たせないと、版の復元が通信エラーで落ちたあとの「再試行」が
- * 復元ではなく本文の保存を走らせる。
- */
-type RetryTarget =
-  | Readonly<{ kind: "save" }>
-  | Readonly<{ kind: "mode"; mode: EditorMode; acknowledged: boolean }>
-  | Readonly<{ kind: "conflict"; keepLocal: boolean }>
-  | Readonly<{ kind: "revision"; revisionId: string }>;
-
-type SaveStatus =
-  | Readonly<{ kind: "new" }>
-  | Readonly<{ kind: "idle" }>
-  | Readonly<{ kind: "dirty" }>
-  | Readonly<{ kind: "saving" }>
-  | Readonly<{ kind: "saved" }>
-  /**
-   * 往復そのものが成立しなかった失敗。`stashed` は**実際に端末へ退避
-   * できたか**で、退避の鍵が `noteId` である以上、まだ作られていない
-   * ノートでは偽になる。ただし偽の意味は「退避していない」だけで、
-   * 「ノートが無い」ではない — 保存以外の往復（モード切替・競合の解決・
-   * 版の復元）が落ちたときも偽で入る。退避を書けるのは保存の `catch`
-   * だけだからである。
-   *
-   * したがって案内と逃げ道（再試行 / ダウンロード）を分けるのは
-   * `creationFailed` のほうで、この値が語るのは「次に開けば復元できる」
-   * の 1 文だけである — 退避していないのに「退避した」と告げると、
-   * 利用者はそれを信じて画面を離れる。
-   *
-   * `retry` は落ちた往復そのもの（{@link RetryTarget}）。
-   */
-  | Readonly<{
-      kind: "failed";
-      message: string;
-      stashed: boolean;
-      retry: RetryTarget;
-    }>
-  /**
-   * 決定的な業務拒否。同じ内容を送るかぎり必ず同じ答えが返るので、
-   * `failed` と違って再試行も端末への退避も出さない — 解けるのは利用者が
-   * 内容を直したときだけである。集合の決め方は
-   * {@link classifySaveFailure} が持つ。
-   */
-  | Readonly<{ kind: "rejected"; message: string }>
-  /** 他者の更新。上書きするか破棄するかを選ばせる。 */
-  | Readonly<{ kind: "conflict" }>
-  /** 変換・再生成のジョブが実行中。編集を受け付けず完了を待つよう案内する。 */
-  | Readonly<{ kind: "locked" }>
-  /** 権限喪失・ゴミ箱。内容のダウンロードを出す。 */
-  | Readonly<{ kind: "blocked"; message: string }>;
-
-/**
- * 面ごと凍らせる失敗。ノートがもう編集の対象でないことを告げるので、
- * 内容を直しても再送しても解けない。残す逃げ道は内容のダウンロードだけ。
- */
-const BLOCKING_ERROR_CODES: ReadonlySet<string> = new Set([
-  "NOTE_NOT_FOUND",
-  "NOTE_ACCESS_DENIED",
-  "NOTE_IS_TRASHED",
-  "WORKSPACE_INSUFFICIENT_ROLE",
-]);
-
-/**
- * 往復そのものが成立しなかった失敗の `kind`。**再試行のボタンと端末への
- * 退避を出してよいのはここだけ**である。
- *
- * - `system` / `unknown` — 通信断・サーバー側の障害。同じ内容があとで通る
- * - `unauthorized` — 途中でセッションが切れた。サインインし直せば同じ
- *   内容がそのまま通るので、退避して次に開いたときに復元させるのが正しい
- *
- * 集合を**この向きで**閉じているのが要点である。拒否コードを列挙する形に
- * すると、ドメインが新しい拒否を足すたびにここが取りこぼし、成功しえない
- * 「再試行」と上限を超えた本文の `localStorage` への書き込みが同時に
- * 起きる。逆向きに閉じておけば、増えた拒否は既定で `rejected`（再試行も
- * 退避も出さない側）へ落ちる — 誤るとしても「一時的な失敗を決定的な拒否
- * として出す」方向にしかならず、内容を直す打鍵で降りて自動保存が再開する。
- */
-const TRANSIENT_ERROR_KINDS: ReadonlySet<SerializedErrorKind> = new Set([
-  "system",
-  "unknown",
-  "unauthorized",
-]);
-
-/**
- * 版を進めうる往復が投げたものを、この画面の状態へ写す純関数。
- *
- * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が共有するので、
- * 「何が落ちたか」は呼び出し元が {@link RetryTarget} で渡す。
- *
- * 決定的な業務拒否（`rejected`）は `spec/pages/index.md` の P-12 状態表
- * 「保存できません（内容の拒否）」に対応する。集合は
- * {@link TRANSIENT_ERROR_KINDS} の補集合として閉じてあり、列挙していない
- * コードは既定でこちらへ落ちる。
- */
-const classifySaveFailure = (
-  error: unknown,
-  retry: RetryTarget,
-): SaveStatus => {
-  const serialized = extractSerializedError(error);
-  const message = renderErrorMessage(serialized);
-  const code = serialized.code;
-  if (code === "OPTIMISTIC_LOCK_FAILURE") return { kind: "conflict" };
-  if (code === "NOTE_LOCKED_BY_JOB") return { kind: "locked" };
-  if (code !== null && BLOCKING_ERROR_CODES.has(code)) {
-    return { kind: "blocked", message };
-  }
-  if (TRANSIENT_ERROR_KINDS.has(serialized.kind)) {
-    // 退避したかどうかを知っているのは `writeDraft` を呼ぶ側だけなので、
-    // ここでは「していない」から始める。
-    return { kind: "failed", message, stashed: false, retry };
-  }
-  return { kind: "rejected", message };
-};
 
 /**
  * いま走っている「版を進めうる往復」。保存・面の載せ直し・版の復元は
@@ -546,8 +432,13 @@ export function NoteEditorIsland({
     preferenceAppliedRef.current = true;
     const preferred = readPreferredMode();
     if (preferred === null) return;
+    // ビジュアルを選べないノートでの逃げ先は `initialMode` である。
+    // `wysiwyg` へ倒すと `mayLoseDecoration` のノートでは ED-04 の門が
+    // 立ち、利用者が何も操作していないのに警告が出る（ED-05 が端末に
+    // 持つと定めているのは「選んだモード」であって、選べなかったときの
+    // 強制ではない）。
     const next =
-      preferred === "visual" && !visualAvailable ? "wysiwyg" : preferred;
+      preferred === "visual" && !visualAvailable ? initialMode : preferred;
     if (next === initialMode) return;
     // 復元も切り替えと同じ門を通す。既定が WYSIWYG だからといって ED-04 の
     // 警告と `wysiwygConversion` の版理由を飛ばしてよい理由は無い。門の
@@ -705,6 +596,15 @@ export function NoteEditorIsland({
    *
    * 必ず `runExclusive({ kind: "saving" }, …)` の中から呼ぶ（版を進める
    * 往復がここにあるため）。
+   *
+   * 往復は 2 段に分かれ、段ごとに `try` を持つ。**保存の確定**（作成 /
+   * rename / 本文の保存 → `confirm` → `markSaved`）と、そのあとの**面の
+   * 載せ直し**（{@link reseedIfUnchanged}）である。分けてあるのは、落ちた
+   * 往復と「再試行」が指す往復を一致させるためである（{@link RetryTarget}）
+   * — 載せ直しの失敗を `{ kind: "save" }` として出すと、もう通っている
+   * 保存が送り直されて版と `Revision` を 1 つ無駄にし、ビジュアルでは適用
+   * 済みの編集が再送されて全件 `contentChanged`（「反映できなかった編集が
+   * あります」の誤報）になる。
    */
   const commit = async (explicit: boolean): Promise<boolean> => {
     if (!explicit && !dirty) return true;
@@ -718,6 +618,16 @@ export function NoteEditorIsland({
     // 通る窓がある。通った分を落とさないよう、確定後のタイトルは `catch`
     // からも読める位置に置く。
     let appliedTitle = confirmedRef.current.title;
+    // どちらの通知も指すのは**直近の保存結果**なので、送らなかった保存でも
+    // 前回の結果を残さない。置くのは載せ直し（`reseed` が通知を畳む）より
+    // 後である。
+    let nextRemoved: readonly RemovedEntry[] = [];
+    let nextSkipped: readonly string[] = [];
+    /**
+     * 保存が面とサーバーの木の噛み合わせを崩したか。崩すのはビジュアルの
+     * 面だけで、WYSIWYG / HTML は caret を飛ばさないために載せ直さない。
+     */
+    let needsReseed = false;
     try {
       if (opening.kind === "new") {
         // 初回の自動保存でノートが生まれる（PAGE-p12-002）。
@@ -772,12 +682,6 @@ export function NoteEditorIsland({
         appliedTitle = renamed.title;
       }
 
-      // どちらの通知も指すのは**直近の保存結果**なので、送らなかった
-      // 保存でも前回の結果を残さない。まとめて最後に置くのは、面を
-      // 載せ直す枝（`reseed` が通知を畳む）より後に来させるため。
-      let nextRemoved: readonly RemovedEntry[] = [];
-      let nextSkipped: readonly string[] = [];
-
       // 経路単位で送れるかどうかは写しを取った時点で決まっている
       // （`takeSnapshot`）。送っていない保存を「保存済み」にすると、
       // 利用者が選んだ復元・上書きの内容が無言で消える。
@@ -796,10 +700,8 @@ export function NoteEditorIsland({
         }
         // サーバーが拒んだ経路が 1 つでもあれば、手元の経路表はもう
         // サーバーの木と噛み合っていない。載せ直して噛み合わせ直す。
-        if (nextSkipped.length === 0 || !(await reseedIfUnchanged(sent))) {
-          confirm(sent, settled(sent, appliedTitle, nextSkipped));
-        }
-        markSaved();
+        needsReseed = nextSkipped.length > 0;
+        confirm(sent, settled(sent, appliedTitle, nextSkipped));
       } else if (sent.body !== confirmedRef.current.body) {
         const saved = await saveBody({
           data: {
@@ -818,28 +720,18 @@ export function NoteEditorIsland({
         nextRemoved = saved.removed;
         // 丸ごと送ったあとの経路表は、サーバーがサニタイズ後に持つ木と
         // 噛み合わない。ビジュアルの面だけは載せ直して噛み合わせ直す。
-        if (mode !== "visual" || !(await reseedIfUnchanged(sent))) {
-          confirm(sent, settled(sent, appliedTitle));
-        }
-        markSaved();
+        needsReseed = mode === "visual";
+        confirm(sent, settled(sent, appliedTitle));
       } else {
         confirm(sent, settled(sent, appliedTitle));
-        markSaved();
       }
+      markSaved();
 
-      setRemoved(nextRemoved);
-      setSkipped(nextSkipped);
       clearDraft(noteId);
       // 退避が消えた以上、提案も消す。残すと「復元する」がいま保存した
       // 内容を古い退避で上書きできてしまう（本文が変わらない保存では
       // 退避を見張る effect が走らないので、ここで畳む）。
       setDraftOffer(null);
-      // 自動保存では断片を取り直さない。編集画面で無効化される loader は
-      // この画面自身の 1 本だけで、島は `target` を初期値としてしか読まない
-      // ので、持ち帰った本文・版は必ず捨てられる（往復 1 回分の無駄）。
-      // 戻す先ができるのは、画面を離れる契機だけである。
-      if (explicit) await reconcile();
-      return true;
     } catch (error) {
       // タイトルの rename だけが通っていたら、その分は確定させる — 送り
       // 直すと版と往復を 1 つ無駄にする。ここでも渡すのは写し**全体**で、
@@ -863,6 +755,33 @@ export function NoteEditorIsland({
       }
       return false;
     }
+
+    // 保存はもう確定している。載せ直しが落ちたら送り直す先は載せ直しの
+    // ほうで、そこは `applyMode` と同じ分類に乗せる。落ちたままでも次の
+    // 保存は「丸ごと送る枝」へ落ちて（`takeSnapshot` の `pathwise` は
+    // 確定値が握る）、打鍵の無い往復が 1 回あれば噛み合いが戻る。
+    if (needsReseed) {
+      try {
+        await reseedIfUnchanged(sent);
+      } catch (error) {
+        setStatus(
+          classifySaveFailure(error, {
+            kind: "mode",
+            mode,
+            acknowledged: false,
+          }),
+        );
+      }
+    }
+
+    setRemoved(nextRemoved);
+    setSkipped(nextSkipped);
+    // 自動保存では断片を取り直さない。編集画面で無効化される loader は
+    // この画面自身の 1 本だけで、島は `target` を初期値としてしか読まない
+    // ので、持ち帰った本文・版は必ず捨てられる（往復 1 回分の無駄）。
+    // 戻す先ができるのは、画面を離れる契機だけである。
+    if (explicit) await reconcile();
+    return true;
   };
 
   /**
@@ -935,21 +854,21 @@ export function NoteEditorIsland({
    * あいだに打った文字をそのまま捨ててしまう — 写しの規則
    * （`EditorSnapshot`）の逆向きである。
    *
-   * 載せ直せなかったときは、その保存を送った写しで確定させるだけにする。
-   * 面の値と確定済みの値が食い違ったまま残るので、次の保存は経路単位では
-   * なく丸ごと送る枝に落ち（`takeSnapshot` の分岐）、往復中の打鍵をそこで
-   * 拾う。打鍵の無い往復が 1 回あれば載せ直しが通って噛み合いが戻る。
+   * 載せ直さなかったときは、面の値と確定済みの値が食い違ったまま残るので、
+   * 次の保存は経路単位ではなく丸ごと送る枝に落ち（`takeSnapshot` の分岐）、
+   * 往復中の打鍵をそこで拾う。打鍵の無い往復が 1 回あれば載せ直しが通って
+   * 噛み合いが戻る。呼び出し元は先に `confirm` を済ませてから呼ぶので、
+   * 載せ直しが起きなくても保存は確定している。
    *
    * 門は**写し全体**で比べる（`sameSnapshot`）。本文だけを見ると、往復の
    * あいだに打ったタイトルが載せ直しの `setTitle` に黙って捨てられ、確定値
    * まで正本の値へ進むので未保存の表示すら出ない。
    *
-   * ED-04 の門はここでは**原理的に立たない**。呼び出しはどちらもビジュアル
-   * モード限定（`sent.visual?.pathwise` の枝と `mode !== "visual"` の枝）で、
-   * `needsWysiwygWarning` は WYSIWYG へ載せるとき以外は即座に偽を返すから
-   * である。門を通る載せ直しは版の復元・競合の解決・退避の復元の 3 つで、
-   * WYSIWYG / HTML モードの保存後には載せ直しそのものが起きない
-   * （caret を飛ばさないため）。
+   * ED-04 の門はここでは**原理的に立たない**。呼び出しは保存後のビジュアル
+   * モードに限られ（`commit` の `needsReseed`）、`needsWysiwygWarning` は
+   * WYSIWYG へ載せるとき以外は即座に偽を返すからである。門を通る載せ直しは
+   * 版の復元・競合の解決・退避の復元の 3 つで、WYSIWYG / HTML モードの保存
+   * 後には載せ直しそのものが起きない（caret を飛ばさないため）。
    *
    * 載せ直せたら `true`。占有は呼び出し元がすでに取っている。
    */
@@ -2451,37 +2370,11 @@ const FORMAT_COMMANDS: readonly Readonly<{
   { label: "コード", command: "formatBlock", value: "pre" },
 ];
 
-const SAFE_LINK_SCHEMES: ReadonlySet<string> = new Set([
-  "http",
-  "https",
-  "mailto",
-]);
-
-const LINK_SCHEME_REJECTED =
-  "リンク先には http / https / mailto の URL か、同じサイト内の相対パスだけを指定できます。";
-
 /**
- * 面へ載せてよいリンク先か。面は live DOM なので、`javascript:` の `href`
- * はこの画面（アプリのオリジン）でそのまま実行される — 保存時のサニタイズ
- * を通るので永続化はされないが、その面をクリックすればセッションの中で
- * 走る。`data:` も同じ理由で通さない。
- *
- * ブラウザーは `href` の中の制御文字と空白を捨ててからスキームを読むので、
- * 判定の前に同じように捨てる（`javascript:` の途中に改行やタブを挟んだ
- * 値を素通りさせない）。
- * スキームを名乗っていない値（相対パス・フラグメント・クエリ）は許す。
+ * 断る文言は許可集合そのものから組む。表を書き写すと、集合が増えたときに
+ * 案内だけが古いまま残る。
  */
-const isSafeLinkUrl = (value: string): boolean => {
-  const normalized = Array.from(value)
-    .filter((char) => (char.codePointAt(0) ?? 0) > 0x20)
-    .join("")
-    .toLowerCase();
-  if (normalized.length === 0) return false;
-  const separator = normalized.indexOf(":");
-  const slash = normalized.indexOf("/");
-  if (separator < 0 || (slash >= 0 && slash < separator)) return true;
-  return SAFE_LINK_SCHEMES.has(normalized.slice(0, separator));
-};
+const LINK_SCHEME_REJECTED = `リンク先には ${Array.from(NAVIGATION_SCHEMES).join(" / ")} の URL か、同じサイト内の相対パスだけを指定できます。`;
 
 function FormatBar({
   disabled,
@@ -2519,7 +2412,10 @@ function FormatBar({
         onClick={() => {
           const url = window.prompt("リンク先の URL");
           if (url === null || url.length === 0) return;
-          if (!isSafeLinkUrl(url)) {
+          // 面は live DOM なので、`javascript:` の `href` はこの画面
+          // （アプリのオリジン）でそのまま走る — 保存時のサニタイズは
+          // 永続化を防ぐだけで、セッション中の実行は防がない。
+          if (!isAllowedUrl(url, "navigation")) {
             window.alert(LINK_SCHEME_REJECTED);
             return;
           }

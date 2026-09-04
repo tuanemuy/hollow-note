@@ -26,6 +26,7 @@ import {
 import {
   collectOrphanMedia,
   ORPHAN_MEDIA_BATCH_SIZE,
+  ORPHAN_MEDIA_BODY_BUDGET_CHARS,
   ORPHAN_MEDIA_MIN_AGE_MS,
   ORPHAN_MEDIA_NOTE_BUDGET,
   ORPHAN_MEDIA_OPERATION_ID,
@@ -772,6 +773,59 @@ describe("collectOrphanMedia", () => {
     expect(second.collectedCount).toBe(1);
     expect(storedIds(h)).toEqual([]);
     expect(second.nextCursor).toBeNull();
+  });
+
+  it("TC-storage-276: stops at the body budget before reading another note, so what one turn holds resident is bounded as well as what it parses", async () => {
+    const h = createTestHarness();
+    // A single note's retained history is enough to meet the budget: 20
+    // bodies at `NoteHtml`'s 800,000-byte ceiling. The note budget is
+    // five, so nothing but the character budget can stop this turn.
+    const wide = "x".repeat(800_000);
+    const bodiesPerNote = ORPHAN_MEDIA_BODY_BUDGET_CHARS / wide.length;
+    const heavy = await seedNote(h, "note-0", wide);
+    for (let revision = 1; revision < bodiesPerNote; revision += 1) {
+      await seedRevision(h, {
+        id: `revision-${revision}`,
+        noteId: heavy,
+        html: wide,
+      });
+    }
+    const light = await seedNote(h, "note-1", "<p>no picture here</p>");
+    await seedFile(h, { id: "file-0", noteId: heavy, ageMs: 32 * DAY_MS });
+    await seedFile(h, { id: "file-1", noteId: light, ageMs: 31 * DAY_MS });
+
+    const now = h.clock.now();
+    const read: number[] = [];
+    const container: OrphanMediaContainer = {
+      ...h.workerContainer,
+      htmlProcessor: {
+        extractExternalReferences: (html) => {
+          read.push(html.length);
+          return [];
+        },
+      },
+    };
+
+    const first = await collectOrphanMedia({ container, input: { scope } });
+
+    // The second note's bodies were never read: reading them would have
+    // put the turn over the budget with the first note's still held.
+    expect(read).toHaveLength(bodiesPerNote);
+    expect(read.reduce((total, length) => total + length, 0)).toBe(
+      ORPHAN_MEDIA_BODY_BUDGET_CHARS,
+    );
+    expect(first.collectedCount).toBe(1);
+    expect(first.nextCursor?.id).toBe("file-0");
+    expect(sweepRow(h).dueAt).toEqual(now);
+    expect(storedIds(h)).toEqual(["file-1"]);
+
+    const second = await collectOrphanMedia({
+      container,
+      input: { scope, cursor: first.nextCursor },
+    });
+
+    expect(second.collectedCount).toBe(1);
+    expect(storedIds(h)).toEqual([]);
   });
 
   it("TC-storage-259: parses the bodies outside the transaction, which is held only for the reads the decision needs", async () => {

@@ -260,7 +260,7 @@
 | ADP-note-054 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
 | ADP-note-055 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | ADP-note-056 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
-| ADP-note-057 | `NoteRepository.findNextPurgeDeadline` | `spec/domains/note.md#ポート` | current scope のゴミ箱にある `purgeAfter` の最小値を返し、空なら `null` を返す。`now` で絞らないので、まだ到来していない期限も答える（scope の Alarm はこの値から張る） |
+| ADP-note-057 | `NoteRepository.findNextPurgeDeadline` | `spec/domains/note.md#ポート` | current scope のゴミ箱にある `purgeAfter` の最小値を返し、空なら `null` を返す。`now` で絞らないので、まだ到来していない期限も答える（scope の Alarm はこの値から張る）。同じ UoW で `active` → `trashed` に反転させたノートも答えに含める（`trashNote` 手順 5。[database/index.md](../database/index.md) の「同一 UoW の読み」(3)） |
 | ADP-tag-001 | `TagRepository.insert` | `spec/domains/tag.md#ポート` | 新規 Tag を保存する |
 | ADP-tag-002 | `TagRepository.findById` | `spec/domains/tag.md#ポート` | TagId で OCC token 付き Tag を取得する |
 | ADP-tag-003 | `TagRepository.save` | `spec/domains/tag.md#ポート` | 期待版一致時だけ Tag を更新する |

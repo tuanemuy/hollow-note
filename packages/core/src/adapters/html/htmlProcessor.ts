@@ -19,6 +19,15 @@ import {
   HTML_PROCESSOR_TOO_COMPLEX,
   HtmlProcessorLimit,
 } from "../../domain/note/ports/htmlProcessor";
+import type { UrlKind } from "../../domain/note/services/urlPolicy";
+import {
+  filterAllowedSrcset,
+  formatSrcset,
+  isAllowedUrl,
+  parseSrcset,
+  RESOURCE_SCHEMES,
+  schemeOf,
+} from "../../domain/note/services/urlPolicy";
 import {
   Excerpt,
   NoteHtml,
@@ -29,16 +38,13 @@ import {
   ALLOWED_SVG_ATTRIBUTES,
   ALLOWED_SVG_ELEMENTS,
   BLOCK_LEVEL_ELEMENTS,
-  DATA_URL_MIME_TYPES,
   DROP_WITH_CONTENT,
   ELEMENT_ATTRIBUTES,
   GLOBAL_ATTRIBUTE_PREFIXES,
   GLOBAL_ATTRIBUTES,
   HEADING_ELEMENTS,
   IMPORTED_STYLESHEET_ATTRIBUTE,
-  NAVIGATION_SCHEMES,
   NAVIGATION_URL_ATTRIBUTES,
-  RESOURCE_SCHEMES,
   RESOURCE_URL_ATTRIBUTES,
   SRCSET_ATTRIBUTES,
   STYLESHEET_HREF_ATTRIBUTE,
@@ -136,100 +142,6 @@ const walkElements = (
     walkElements(node.childNodes, visit);
   }
 };
-
-// --- URL policy (spec/adr/013 「許可する URL スキーム」) -------------------
-
-/**
- * Browsers ignore ASCII control characters and whitespace when they read
- * a URL's scheme, so `java&#10;script:alert(1)` navigates while a naive
- * prefix check sees a relative path. Strip them before deciding.
- */
-const stripControls = (url: string): string =>
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters are the threat being removed.
-  url.replace(/[\u0000-\u0020\u007f]/g, "");
-
-/**
- * Scheme of a URL, or `null` when it has none (fragment, root-relative or
- * relative path).
- */
-const schemeOf = (url: string): string | null => {
-  const stripped = stripControls(url);
-  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(stripped);
-  return match === null ? null : (match[1] as string).toLowerCase();
-};
-
-const isAllowedDataUrl = (url: string): boolean => {
-  const stripped = stripControls(url);
-  const match = /^data:([^;,]+)[;,]/i.exec(stripped);
-  return (
-    match !== null &&
-    DATA_URL_MIME_TYPES.has((match[1] as string).toLowerCase())
-  );
-};
-
-type UrlKind = "navigation" | "resource";
-
-const isAllowedUrl = (url: string, kind: UrlKind): boolean => {
-  const scheme = schemeOf(url);
-  if (scheme === null) {
-    return true;
-  }
-  if (kind === "navigation") {
-    return NAVIGATION_SCHEMES.has(scheme);
-  }
-  return RESOURCE_SCHEMES.has(scheme) || isAllowedDataUrl(url);
-};
-
-/**
- * Splits a `srcset` by the HTML candidate rule rather than on commas: a
- * `data:` URL carries commas of its own, and splitting on them would turn
- * one allowed image into several malformed candidates.
- */
-const parseSrcset = (
-  value: string,
-): readonly Readonly<{ url: string; descriptor: string }>[] => {
-  const candidates: { url: string; descriptor: string }[] = [];
-  let i = 0;
-  while (i < value.length) {
-    while (i < value.length && /[\s,]/.test(value[i] as string)) {
-      i += 1;
-    }
-    if (i >= value.length) {
-      break;
-    }
-    const start = i;
-    while (i < value.length && !/\s/.test(value[i] as string)) {
-      i += 1;
-    }
-    const raw = value.slice(start, i);
-    if (raw.endsWith(",")) {
-      candidates.push({ url: raw.replace(/,+$/, ""), descriptor: "" });
-      continue;
-    }
-    while (i < value.length && /\s/.test(value[i] as string)) {
-      i += 1;
-    }
-    const descriptorStart = i;
-    while (i < value.length && value[i] !== ",") {
-      i += 1;
-    }
-    candidates.push({
-      url: raw,
-      descriptor: value.slice(descriptorStart, i).trim(),
-    });
-    i += 1;
-  }
-  return candidates;
-};
-
-const formatSrcset = (
-  candidates: readonly Readonly<{ url: string; descriptor: string }>[],
-): string =>
-  candidates
-    .map(({ url, descriptor }) =>
-      descriptor.length === 0 ? url : `${url} ${descriptor}`,
-    )
-    .join(", ");
 
 // --- sanitization ---------------------------------------------------------
 
@@ -360,21 +272,17 @@ const sanitizeAttributes = (
     }
 
     if (!svg && SRCSET_ATTRIBUTES.has(lower)) {
-      const candidates = parseSrcset(attribute.value).filter((candidate) => {
-        if (isAllowedUrl(candidate.url, "resource")) {
-          return true;
-        }
+      const filtered = filterAllowedSrcset(attribute.value, ({ scheme }) => {
         report({
           kind: "url",
-          name: schemeOf(candidate.url) ?? "unknown",
+          name: scheme ?? "unknown",
           reason: `${lower} candidate uses a scheme outside the resource allow-list (spec/adr/013)`,
         });
-        return false;
       });
-      if (candidates.length === 0) {
+      if (filtered === null) {
         continue;
       }
-      kept.push({ ...attribute, value: formatSrcset(candidates) });
+      kept.push({ ...attribute, value: filtered });
       continue;
     }
 
@@ -989,11 +897,11 @@ const TEMPLATE_SENSITIVE = /<\/template|<form/i;
  * move an `indexOf` plus a `splice` over that root's child list — which
  * is quadratic in the number of top-level nodes. 130,000 flat elements
  * (1,950,000 bytes, inside the transport ceiling for a body, expanding
- * 1.0× and nesting three deep) spend 97% of the parse there: 1.4 seconds
- * of a 1.5-second `process` that then rejects the body for exceeding
- * 800,000 bytes. `HtmlProcessorLimit.maxNodes` now refuses that input
- * outright; the wrapper is what keeps the inputs *below* the node ceiling
- * — the legitimate ones included — off the same curve.
+ * 1.0× and nesting three deep) spend 97% of the parse on that curve —
+ * 1.4 seconds of a 1.5-second `process`. `HtmlProcessorLimit.maxNodes`
+ * refuses an input that large outright; the wrapper is what keeps the
+ * inputs *below* the node ceiling — the legitimate ones included — off
+ * the same curve.
  *
  * An unterminated `<template>` in front of the source puts those nodes
  * in the template's content fragment instead, which the parser only ever
@@ -1055,6 +963,12 @@ const parse = (html: string): DocumentFragment => {
  * source text.
  *
  * Stateless and pure — one instance may be shared by the whole process.
+ *
+ * Every composition root wires this same adapter, so the parser under it
+ * has to be plain JavaScript that runs unchanged on Node and on workerd:
+ * no `node:` imports, no `process` / `Buffer`, nothing that needs the
+ * `nodejs_compat` flag. parse5 meets that (its only dependency is
+ * `entities`); a replacement that does not cannot be wired here.
  */
 export function createHtmlProcessor(): HtmlProcessor {
   return {

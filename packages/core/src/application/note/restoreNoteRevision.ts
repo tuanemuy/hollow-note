@@ -1,3 +1,5 @@
+import { BusinessRuleError } from "@repo/core/domain/error";
+import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import { NoteTitle, RevisionId } from "@repo/core/domain/note/valueObject";
@@ -9,6 +11,7 @@ import {
   resolveEditableNote,
 } from "./editing";
 import {
+  bodyLockingJob,
   type NoteEditingJobs,
   noNoteEditingJobs,
   requestReferenceImportIfNeeded,
@@ -61,6 +64,19 @@ export async function restoreNoteRevision({
     input,
   );
   ensureNotTrashed(note);
+
+  // One read of the note's unterminated jobs serves both gates: the
+  // conversion / regeneration lock here, and the duplicate check the
+  // reference-import registration makes after the save.
+  const activeJobs = await jobs.listActiveForNote(container, noteId);
+  const locking = bodyLockingJob(activeJobs);
+  if (locking !== null) {
+    throw new BusinessRuleError(
+      NoteErrorCode.NoteLockedByJob,
+      `A running ${locking.kind} job holds this note`,
+    );
+  }
+
   const revisionId = RevisionId.create(input.revisionId);
 
   const now = clock.now();
@@ -123,7 +139,7 @@ export async function restoreNoteRevision({
     owner: restored.note.owner,
     html: restored.html,
     requestedBy: actorUserId,
-    activeJobs: await jobs.listActiveForNote(container, noteId),
+    activeJobs,
   });
 
   return { noteId, version: restored.note.version };

@@ -51,8 +51,8 @@ export const HTML_PROCESSOR_NOTE_ERROR_CODES: readonly string[] = [
  * reachable through the 2,000,000-byte transport ceiling for a note body
  * can legitimately reach; `maxNodes` is the one a legitimate body can
  * meet, and its own entry below says what that buys. An input under
- * every ceiling is processed exactly as it was before the ceilings
- * existed — they are observations, never transformations.
+ * every ceiling comes out of `process` unchanged by them — the ceilings
+ * are observations, never transformations.
  *
  * - `maxExpansionFactor` / `minExpandedBytes` / `maxExpandedBytes` bound
  *   the parse tree, measured as the length it would serialize to. HTML

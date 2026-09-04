@@ -1,6 +1,10 @@
 "use client";
 
 import {
+  filterAllowedSrcset,
+  isAllowedUrl,
+} from "@repo/core/domain/note/services/urlPolicy";
+import {
   type DragEvent,
   type RefObject,
   useEffect,
@@ -14,6 +18,7 @@ import { NoteBody } from "../NoteBody";
 import {
   HIGHLIGHT_MAX_LENGTH,
   type HtmlTokenKind,
+  sameMarkupStructure,
   tokenizeHtml,
 } from "./highlight";
 import { collectEditableTextNodes } from "./textNodes";
@@ -286,14 +291,21 @@ const UNSAFE_DROP_ELEMENTS = new Set([
  */
 const UNSAFE_UNWRAP_ELEMENTS = new Set(["form", "link", "meta", "base"]);
 
-const URL_ATTRIBUTES = new Set([
-  "href",
-  "src",
-  "srcset",
-  "xlink:href",
-  "action",
-  "formaction",
-  "poster",
+/**
+ * URL を運ぶ属性と、それが [ADR 013](spec/adr/013-html-sanitization-policy.md)
+ * の表のどちらの行に当たるか。ナビゲーション（クリックで移る先）は
+ * `data:` を拒み、リソース（自動で取りに行く先）はラスタ画像の `data:`
+ * だけを通す — 判定そのものは保存と共有の
+ * `domain/note/services/urlPolicy.ts` が持つ。
+ */
+const URL_ATTRIBUTES: ReadonlyMap<string, "navigation" | "resource"> = new Map([
+  ["href", "navigation"],
+  ["xlink:href", "navigation"],
+  ["cite", "navigation"],
+  ["action", "navigation"],
+  ["formaction", "navigation"],
+  ["src", "resource"],
+  ["poster", "resource"],
 ]);
 
 const scrubForSurface = (root: ParentNode): void => {
@@ -308,10 +320,22 @@ const scrubForSurface = (root: ParentNode): void => {
     }
     for (const attribute of Array.from(element.attributes)) {
       const name = attribute.name.toLowerCase();
-      if (
-        name.startsWith("on") ||
-        (URL_ATTRIBUTES.has(name) && /^\s*javascript:/i.test(attribute.value))
-      ) {
+      if (name.startsWith("on")) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+      // `srcset` は候補ごとに判定する。1 つ落ちただけで属性ごと捨てると、
+      // 保存が残す候補を面が落とすことになる。
+      if (name === "srcset") {
+        const kept = filterAllowedSrcset(attribute.value);
+        if (kept === null) element.removeAttribute(attribute.name);
+        else if (kept !== attribute.value) {
+          element.setAttribute(attribute.name, kept);
+        }
+        continue;
+      }
+      const kind = URL_ATTRIBUTES.get(name);
+      if (kind !== undefined && !isAllowedUrl(attribute.value, kind)) {
         element.removeAttribute(attribute.name);
       }
     }
@@ -361,7 +385,7 @@ export const willDropStyleElements = (html: string): boolean => {
 type SourceAnalysis = Readonly<{
   /**
    * ブラウザーの HTML パーサーが直した結果。壊れた構文（閉じていない
-   * タグ、引用符の無い属性値）はここで補われる。サーバー側の
+   * タグ、入れ子の違反、省略された要素）はここで補われる。サーバー側の
    * `HtmlProcessor` とは別の実装だが、どちらも HTML の構文解析規則その
    * ものを実装しているので、補正の結果は一致する。`null` は「補正が要ら
    * なかった」で、警告を出さない。
@@ -370,6 +394,18 @@ type SourceAnalysis = Readonly<{
   preview: string;
 }>;
 
+/**
+ * ソースとパーサーの読み戻しを比べて「構文を補正したか」を決める（ED-03
+ * の「構文が壊れている場合」）。
+ *
+ * 比べるのは**要素と属性の名前の並び**（{@link sameMarkupStructure}）で、
+ * 文字列そのものではない。`template.innerHTML` の読み戻しは正規化された
+ * 直列化を返すので、文字列で比べると `<br/>`・大文字のタグ名・単引用符・
+ * 引用符の無い属性値・エンティティ表記—どれも HTML5 として正しい書き方—が
+ * すべて「補正」に化け、本当に壊れているときの警告がその中に埋もれる。
+ * 名前の並びが動くのは閉じ忘れ・入れ子の違反・省略要素の補完のときだけ
+ * なので、それだけを警告に出す。
+ */
 const analyzeMarkup = (source: string): SourceAnalysis => {
   const template = document.createElement("template");
   template.innerHTML = source;
@@ -378,7 +414,7 @@ const analyzeMarkup = (source: string): SourceAnalysis => {
   const parsed = template.innerHTML;
   scrubForSurface(template.content);
   return {
-    repaired: parsed === source ? null : parsed,
+    repaired: sameMarkupStructure(source, parsed) ? null : parsed,
     preview: template.innerHTML,
   };
 };
@@ -482,7 +518,7 @@ export function HtmlSurface({
           プレビューで示す」。 */}
       {repaired === null ? null : (
         <Alert tone="warning" title="HTML の構文を補正しました" role="status">
-          閉じていないタグや引用符の無い属性値を補いました。下のプレビューは補正した構文で描いています。保存時にはさらに、許可されていない要素・属性・CSS
+          閉じていないタグや入れ子の誤りを補いました。下のプレビューは補正した構文で描いています。保存時にはさらに、許可されていない要素・属性・CSS
           宣言が取り除かれます（除去された分は保存後に一覧で示します）。
         </Alert>
       )}
@@ -492,8 +528,8 @@ export function HtmlSurface({
           {repaired === null ? "プレビュー" : "プレビュー（補正後）"}
         </div>
         {/* `contain` を掛けるのは、プレビューが落とすのが保存時のサニ
-            タイズの部分集合（`on*`・`javascript:` の URL・script 相当の
-            要素）に限られるため。`position: fixed` は残るので、ここが
+            タイズの部分集合（`on*`・許可外のスキームの URL・script 相当
+            の要素）に限られるため。`position: fixed` は残るので、ここが
             固定配置の包含ブロックにならないと本文が編集画面全体を覆える。
             Shadow DOM が隔離するのはスタイルの適用範囲だけで、ビュー
             ポート基準の配置は隔離しない。 */}

@@ -105,7 +105,14 @@ export function NoteListBoard({
   const [trashed, setTrashed] = useState<TrashedState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // 整合の失敗を「操作できなかった」と見せない（もう成立している）。
+  /**
+   * 断片を引き直して行の正本を持ち帰る（P-10 状態表「操作実行中」）。整合
+   * の失敗は握り潰す — 操作そのものはもう成立している。
+   *
+   * **成功した往復と落ちた往復の両方から呼ぶ。** 行が運ぶ `version` は
+   * loader 由来なので、落ちたところで止めると、楽観的に消えた行が巻き
+   * 戻ったあとも古い版を持ち続け、押し直しても同じ競合で落ち続ける。
+   */
   const reconcile = async (): Promise<void> => {
     await router.invalidate().catch(() => {
       console.error("Note list reconcile failed");
@@ -119,6 +126,7 @@ export function NoteListBoard({
         await moveNote({ data: { noteId, ...moveNotePayload(target) } });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);
@@ -148,6 +156,7 @@ export function NoteListBoard({
         ).version;
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);
@@ -174,6 +183,7 @@ export function NoteListBoard({
         });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);

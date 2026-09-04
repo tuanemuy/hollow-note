@@ -361,6 +361,29 @@ describe("restoreNoteRevision", () => {
     expect(eventsOfType(h, "note.renamed")).toHaveLength(1);
   });
 
+  it("TC-note-830: a running regeneration job locks the body against a restore", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    const version = await saveBody(h, noteId, "<p>current</p>", 0);
+    seedRevision(h, noteId, {
+      id: "revision-old",
+      html: "<p>older body</p>",
+      createdAt: AT,
+    });
+
+    await expect(
+      restore(h, noteId, "revision-old", version, {
+        jobs: recordingJobs([{ jobId: "job-1", kind: "regeneration" }]),
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        isBusinessRuleError(error) &&
+        error.code === NoteErrorCode.NoteLockedByJob,
+    );
+    expect(readyBody(storedNote(h, noteId))).toBe("<p>current</p>");
+    expect(storedNote(h, noteId)?.version).toBe(version);
+  });
+
   it("TC-note-787: refuses a trashed note with NoteIsTrashed", async () => {
     const h = createTestHarness();
     const noteId = await createPersonalNote(h);

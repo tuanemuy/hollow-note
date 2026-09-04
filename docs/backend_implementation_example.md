@@ -60,6 +60,7 @@ packages/core/src/
 │   │   └── passwordHasher.ts, secureTokenGenerator.ts, shareTokenProtector.ts, objectStorage.ts, …
 │   ├── node/                           inProcessRelayTrigger, inMemoryQueueDispatcher
 │   ├── oauth/                          Google / dev sign-in IdP clients + PKCE
+│   ├── html/                           HtmlProcessor — pure JS, runs on Node and workerd alike
 │   └── conformance/                    shared port-contract suites (spec/adr/026)
 ├── lib/error.ts                        CodedError base + SerializedErrorBase / FieldErrors / SerializableError
 │                                       (structure only; the union is assembled in presentation)
@@ -491,7 +492,7 @@ The test harness flattens both scopes into a single fat shape so a test can invo
 
 `adapters/memory/` is a regular backend, not a test fake: it is wired by the production DI path (`pnpm dev` runs on it) and it is held to the shared conformance suites any other backend must pass (spec/adr/024). The second backend — Cloudflare Durable Objects + D1 — implements the same ports and imports the same suites.
 
-Adapters are grouped by provider, not by layer. Alongside `memory/` there are two small groups: `adapters/node/` holds the process-local transport pieces — `createInProcessRelayTrigger` (a `kick()` that defers one relay tick via `setImmediate`, collapsing concurrent kicks and draining on `stop()`) and `createInMemoryQueueDispatcher` (the `ack` / `retry` / throw contract of a hosted queue, expressed as an `EventDispatcher`) — and `adapters/oauth/` holds the sign-in IdP clients (Google, plus the dev provider) behind `SignInOAuthClient`. Cryptographic and Intl adapters (password hasher, secure token generator, share-token protector, time-zone resolver) currently live under `memory/` because splitting them out while a single backend exists would buy nothing but import paths.
+Adapters are grouped by provider, not by layer. Alongside `memory/` there are three small groups: `adapters/node/` holds the process-local transport pieces — `createInProcessRelayTrigger` (a `kick()` that defers one relay tick via `setImmediate`, collapsing concurrent kicks and draining on `stop()`) and `createInMemoryQueueDispatcher` (the `ack` / `retry` / throw contract of a hosted queue, expressed as an `EventDispatcher`) — `adapters/oauth/` holds the sign-in IdP clients (Google, plus the dev provider) behind `SignInOAuthClient`, and `adapters/html/` holds `createHtmlProcessor`, the sanitizer behind `HtmlProcessor`. Both composition roots wire that same implementation, so it and the parser under it must be pure JavaScript that reaches for no Node-only API — it has to run unchanged on Node and on workerd. Cryptographic and Intl adapters (password hasher, secure token generator, share-token protector, time-zone resolver) currently live under `memory/` because splitting them out while a single backend exists would buy nothing but import paths.
 
 ### Repository (OCC implementation)
 
