@@ -17,16 +17,42 @@ import type { Excerpt, NoteHtml, PlainTextContent } from "../valueObject";
 export const HTML_PROCESSOR_TOO_COMPLEX = NoteErrorCode.HtmlTooComplex;
 
 /**
+ * Every code `process` can raise in Note's vocabulary, and the complete
+ * set of them.
+ *
+ * A caller from another domain has to answer all of them in its own
+ * vocabulary — Note's codes are in neither its error table nor the
+ * advice the display dictionary gives for them (`storeMedia` is the one
+ * such caller today, spec/usecases/storage.md#storeMedia). Declaring the
+ * set here rather than restating it at each boundary is what keeps a
+ * third code from being added without those boundaries seeing it.
+ *
+ * - `HTML_PROCESSOR_TOO_COMPLEX` — every resource ceiling refuses with
+ *   this one code (spec/adr/013 「サニタイズは資源で有界である」).
+ * - `NoteErrorCode.ContentTooLarge` — `NoteHtml` / `PlainTextContent` /
+ *   `Excerpt`, the only Note values `process` builds, measure the
+ *   *result* in UTF-8 bytes. The tree meter does not stand in for that:
+ *   it charges a node's pre-escape length in UTF-16 code units, while
+ *   the serializer writes `"` as `&quot;` and U+00A0 as `&nbsp;`.
+ */
+export const HTML_PROCESSOR_NOTE_ERROR_CODES: readonly string[] = [
+  HTML_PROCESSOR_TOO_COMPLEX,
+  NoteErrorCode.ContentTooLarge,
+];
+
+/**
  * The resource ceiling `process` holds itself to (spec/adr/013 「サニタイズ
  * は資源で有界である」).
  *
  * The point of these numbers is that sanitization costs a bounded amount
  * of CPU and memory *whatever shape the input has*, so no caller has to
  * argue that the markup it hands over cannot make an HTML parser
- * duplicate content. Every one of them is far above what a document
+ * duplicate content. All but `maxNodes` are far above what a document
  * reachable through the 2,000,000-byte transport ceiling for a note body
- * can legitimately reach, so an input under the ceiling is processed
- * exactly as it was before the ceiling existed.
+ * can legitimately reach; `maxNodes` is the one a legitimate body can
+ * meet, and its own entry below says what that buys. An input under
+ * every ceiling is processed exactly as it was before the ceilings
+ * existed — they are observations, never transformations.
  *
  * - `maxExpansionFactor` / `minExpandedBytes` / `maxExpandedBytes` bound
  *   the parse tree, measured as the length it would serialize to. HTML
@@ -42,6 +68,19 @@ export const HTML_PROCESSOR_TOO_COMPLEX = NoteErrorCode.HtmlTooComplex;
  *   documents nest in the tens; the value keeps the walks inside a few
  *   hundred stack frames, more than an order of magnitude below where a
  *   JavaScript stack gives out.
+ * - `maxNodes` bounds how many nodes the tree may hold, counted as the
+ *   parser asks for them. It is the one ceiling here that a *legitimate*
+ *   body can reach, and it is set from cost rather than from headroom:
+ *   the parser moves each top-level node out of the parse root one at a
+ *   time, so a flat tree costs the square of that count, and 50,000 nodes
+ *   is where that square lands on the 0.25 s the same parser already
+ *   spends on a body at the transport ceiling. Prose reaches the
+ *   800,000-byte body ceiling at about 12,000 nodes, so an article has
+ *   four times the room it needs; markup denser than ~16 bytes a node
+ *   (200,000 bare `<br>`s) is refused, which is the trade this ceiling
+ *   makes. The same count is what keeps the heading and unwrap walks —
+ *   both linear in it — from reaching a stack or argument-count limit
+ *   that would raise a `RangeError` instead of this code.
  * - `maxCssNestingDepth` bounds `@media` / rule nesting. Finding the end
  *   of a block re-reads that block, so depth is what turns CSS filtering
  *   quadratic; capping it makes the cost linear again.
@@ -54,6 +93,7 @@ export const HtmlProcessorLimit = {
   minExpandedBytes: 262_144,
   maxExpandedBytes: 4_000_000,
   maxNestingDepth: 256,
+  maxNodes: 50_000,
   maxCssNestingDepth: 32,
   maxCssScanSteps: 8_000_000,
 } as const;
@@ -118,6 +158,12 @@ export type ProcessedHtml = Readonly<{
  * External stylesheet traces use the three `data-stylesheet-*` states
  * (spec/adr/014); only `data-stylesheet-href` is extraction-eligible.
  *
+ * `inlineStylesheets` folds fetched CSS into the body, so it applies the
+ * same CSS rules `process` does before writing it — the sheet arrives
+ * from a third-party origin and nothing downstream re-sanitizes what it
+ * returns. The caller is not expected to run `process` again; it hands
+ * over the raw sheet as fetched.
+ *
  * `extractExternalReferences` reports the *resource* attributes (`src` /
  * `srcset` / `poster`) and the stylesheet trace, not navigation targets
  * (`a href`, `cite`): `importExternalReferences` stores and repoints
@@ -134,12 +180,17 @@ export type ProcessedHtml = Readonly<{
  * parser and therefore never reaches that branch; a backend whose parser
  * can fail must translate into it rather than leak a driver error.
  *
- * The one input every method does reject is one that cannot be processed
- * within `HtmlProcessorLimit`:
+ * Every method also rejects an input it cannot process within
+ * `HtmlProcessorLimit`, with
  * `BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX)`. "Broken HTML is
- * repaired, not rejected" is unchanged — what is refused is not a shape
- * but a cost, and only above a ceiling no document reachable through the
- * body's own size limits comes near.
+ * repaired, not rejected" is unchanged — what is refused there is not a
+ * shape but a cost.
+ *
+ * `process` has a second refusal on top of that: it builds Note's value
+ * objects, so a result past their own caps comes back as
+ * `BusinessRuleError(NoteErrorCode.ContentTooLarge)`. The complete set
+ * is `HTML_PROCESSOR_NOTE_ERROR_CODES`, which a caller outside Note
+ * translates rather than enumerates for itself.
  */
 export interface HtmlProcessor {
   process(rawHtml: string): ProcessedHtml;

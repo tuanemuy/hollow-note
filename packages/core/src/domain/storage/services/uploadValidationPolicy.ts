@@ -25,34 +25,32 @@ export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
  * SVG's own ceiling, well below the raster one.
  *
  * An SVG is the one media format that is *rewritten* before it is
- * stored: `storeMedia` runs it through `HtmlProcessor`, whose result is
- * a note-body fragment and therefore bound by that value object's
- * 800,000-byte cap. A limit above what the sanitizer can return would
- * be unreachable — the upload would fail on the body's invariant, in
- * Note's vocabulary, for a file Storage said it would accept.
+ * stored: `storeMedia` runs it through `HtmlProcessor`, and what comes
+ * back is measured against this same limit again, since the sanitizer's
+ * output is what the file becomes. 128 KB is a policy ceiling on what an
+ * editor may insert — an order of magnitude above the drawings that
+ * reach it and small enough that a body this size is cheap to sanitize.
  *
- * 128 KB is what makes the ceiling reachable, and what makes it
- * reachable is `HtmlProcessorLimit`, not any property of the accepted
- * markup. `process` refuses to build a tree past
- * `maxExpansionFactor` × the input (floor 262,144), so an input of
- * 131,072 bytes cannot serialize past 524,288 — comfortably under the
- * body's 800,000 — whatever an HTML parser does with it. Above that
- * cost the processor stops rather than paying it, and `storeMedia`
- * translates the refusal back into this vocabulary.
+ * **It is not derived, and nothing else rests on it.** Four attempts to
+ * derive a promise from this number have each been refuted by
+ * measurement: that a well-formed input bounds the output (131,064 bytes
+ * serialized into 11,300,523 — 86×), that refusing the element names
+ * which leave foreign content does (`<desc><template><tr>` reaches the
+ * table insertion modes without any of them — 180×), and that
+ * `maxExpansionFactor` × 131,072 < 800,000 does (the meter charges a
+ * node's *pre-escape* length, so 131,072 raw `"` in a single-quoted
+ * attribute value serialize into 786,073, and behind a hidden `<table>`
+ * 20 KB of the same trick passes 800,000). The promise those derivations
+ * were carrying — that an upload never fails in Note's vocabulary — is
+ * kept structurally instead, by `storeMedia`'s boundary translation
+ * covering every code `HtmlProcessor.process` raises. Changing this
+ * number, the body's cap, the allow list or the escape set therefore
+ * breaks nothing silently.
  *
- * Nothing here rests on the input's shape. That argument was tried
- * three times and refuted three times (spec/adr/013 「サニタイズは資源で
- * 有界である」): well-formedness does not bound the output — a measured
- * 131,064 bytes of `<svg><table><b a="0">…<b a="61">` with 13,018
- * `<tr>X</tr>` after it serialized into 11,300,523 (86×) — and neither
- * does refusing the element names that leave foreign content, since
- * `<desc><template><tr>` reaches the table insertion modes without any
- * of them. The name gate below is kept as a cheap front-line defence
- * that costs one pass and never starts the sanitizer; it is not what
- * the number above is derived from.
- *
- * The bytes that are actually stored are measured against this same
- * limit again, since the sanitizer's output is what the file becomes.
+ * What bounds the sanitizer's *cost*, at any value of this constant, is
+ * `HtmlProcessorLimit` (spec/adr/013 「サニタイズは資源で有界である」).
+ * The name gate below is kept as a cheap front-line defence that costs
+ * one pass and never starts the sanitizer.
  */
 export const MEDIA_SVG_MAX_BYTES = 128 * 1024;
 

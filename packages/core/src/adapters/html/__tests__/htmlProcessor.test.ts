@@ -856,6 +856,21 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
     return thrown as BusinessRuleError<string>;
   };
 
+  /**
+   * The cheapest of three runs. What the growth cases compare is a
+   * complexity class, and a single run of an input this size carries the
+   * garbage collector's noise.
+   */
+  const cost = (input: string): number => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < 3; run += 1) {
+      const started = performance.now();
+      processor.process(input);
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+
   it("TC-note-817: refuses nesting past the limit instead of overflowing", () => {
     // 22 KB used to raise `RangeError: Maximum call stack size exceeded`,
     // which carries no `kind` and so reaches the transport boundary
@@ -945,44 +960,100 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
     expect(result.html).toContain("<table>");
   });
 
-  it("TC-note-826: refuses a flat body the transport ceiling admits at a cost that grows with its length", () => {
-    // None of the four ceilings applies: 1,950,000 bytes expand 1.0×,
-    // nest three deep and hold no CSS. The body is still refused, for
-    // exceeding 800,000 bytes — the gap between the two ceilings is the
-    // room sanitization needs to shrink an imported page, so this cost
-    // is paid on an input that cannot succeed.
-    //
+  it("TC-note-826: accepts a flat body at the node ceiling and refuses one node past it", () => {
+    // Nothing else is near: 200,000 bytes expanding 1.0×, nesting one
+    // deep, holding no CSS. Only the node count separates the two.
+    expect(processor.process("<br>".repeat(50_000)).html).toHaveLength(200_000);
+
+    expect(rejection("<br>".repeat(50_001)).code).toBe("NOTE_HTML_TOO_COMPLEX");
+  });
+
+  it("TC-note-826: holds the node ceiling on the parse path a form or a closed template takes", () => {
+    // These two constructs are the ones whose parse depends on an open
+    // `<template>`, so they are parsed plainly — which is the path that
+    // still moves each top-level node out of the parse root one at a
+    // time. The ceiling has to be the same one there, or a 13-byte
+    // prefix buys the quadratic back.
+    for (const prefix of ["<form></form>", "</template>"]) {
+      expect(rejection(`${prefix}${"<br>".repeat(50_001)}`).code).toBe(
+        "NOTE_HTML_TOO_COMPLEX",
+      );
+    }
+  });
+
+  it("TC-note-826: refuses the flat body the transport ceiling admits without paying for it", () => {
+    // 1,760,000 bytes of `<br>` expand 1.0×, nest one deep and hold no
+    // CSS, and are refused for the node count alone. The two prefixes
+    // are what used to route the same body onto the plain path: 364 ms
+    // wrapped against 16,477 ms and 82,347 ms plainly, all three on an
+    // input that could never have been stored.
+    for (const input of [
+      "<br>".repeat(440_000),
+      `</template>${"<br>".repeat(440_000)}`,
+      `<form></form>${"<br>".repeat(440_000)}`,
+    ]) {
+      const started = Date.now();
+
+      expect(rejection(input).code).toBe("NOTE_HTML_TOO_COMPLEX");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }
+  });
+
+  it("TC-note-826: costs no more than its length asks for, up to the node ceiling", () => {
     // What is asserted is the growth rather than a wall clock, because
     // the defect it holds off is a complexity class rather than a
     // constant: parse5 moves every top-level node out of the parse root
-    // one at a time, which is quadratic in how many there are. A tenth
-    // of the body is the yardstick — ten times the nodes measured 10.2×
-    // the time here, against 44× when they are moved that way — and both
-    // measurements move together on a slower or busier machine.
-    const flatBody = (paragraphs: number): string =>
-      "<p>xxxxxxxx</p>".repeat(paragraphs);
-    const tenth = flatBody(13_000);
-    const whole = flatBody(130_000);
+    // one at a time, which is quadratic in how many there are, and the
+    // `<template>` the parse is wrapped in is what keeps them out of that
+    // root. A tenth of the body is the yardstick, taken at the ceiling
+    // where the two curves are furthest apart — ten times the nodes
+    // measured 10.9–21.8× the time here, against 89–150× when they are
+    // moved one at a time — and both measurements move together on a
+    // slower or busier machine.
+    const tenthCost = cost("<br>".repeat(5_000));
 
-    processor.process(tenth);
-    const tenthStarted = Date.now();
-    processor.process(tenth);
-    const tenthCost = Date.now() - tenthStarted;
+    expect(cost("<br>".repeat(50_000))).toBeLessThan(tenthCost * 45);
+  });
 
-    const wholeStarted = Date.now();
-    let thrown: unknown;
-    try {
-      processor.process(whole);
-    } catch (error) {
-      thrown = error;
-    }
-    const wholeCost = Date.now() - wholeStarted;
+  it("TC-note-828: resolves duplicate heading anchors without re-trying the suffixes it passed", () => {
+    // Every heading used to restart its search at `-2`, so a body of
+    // identical headings cost the square of their number: 16,000 took
+    // 7.4 seconds and 120,000 never finished, inside every ceiling. The
+    // ids are the claim as much as the time — resuming the count must
+    // hand out the same ones, in the same order.
+    const headings = (count: number): string => "<h1>a</h1>".repeat(count);
+    const manyCost = cost(headings(16_000));
+    const result = processor.process(headings(16_000));
 
-    expect(thrown).toBeInstanceOf(BusinessRuleError);
-    expect((thrown as BusinessRuleError<string>).code).toBe(
-      "NOTE_CONTENT_TOO_LARGE",
+    expect(result.headings.slice(0, 3).map(({ anchorId }) => anchorId)).toEqual(
+      ["a", "a-2", "a-3"],
     );
-    expect(wholeCost).toBeLessThan(Math.max(tenthCost, 1) * 20);
+    expect(result.headings[15_999]?.anchorId).toBe("a-16000");
+    expect(result.html).toContain('<h1 id="a-16000">a</h1>');
+    // A wall clock rather than a ratio: 16,000 headings measure 29\u201393 ms
+    // resumed and 28,201 ms restarted, so the two sit an order of
+    // magnitude away from this bound on either side.
+    expect(manyCost).toBeLessThan(3_000);
+  });
+
+  it("TC-note-829: refuses a mass of siblings under an unlisted element instead of overflowing", () => {
+    // Unwrapping an unlisted element hands all of its children back at
+    // once; 130,000 of them (520 KB) raised `RangeError`, which has no
+    // `toSerialized()` and reaches the transport boundary unclassified.
+    // Nothing here nests past two levels, so the depth ceiling never saw
+    // it.
+    const error = rejection(`<foo>${"<br>".repeat(130_000)}</foo>`);
+
+    expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
+    expect(error.toSerialized().kind).toBe("business");
+  });
+
+  it("TC-note-829: unwraps the widest mass of siblings the ceiling admits", () => {
+    // The unwrap itself, at the ceiling: 49,999 children promoted to the
+    // root beside the element that held them.
+    const at = "<br>".repeat(49_999);
+
+    expect(processor.process(`<foo>${at}</foo>`).html).toBe(at);
   });
 });
 
@@ -1157,6 +1228,23 @@ describe("HtmlProcessor.inlineStylesheets — ADP-note-004 (spec/adr/014)", () =
 
   it("leaves a trace named by neither map alone, so the next save can retry it", () => {
     expect(processor.inlineStylesheets(body, new Map(), new Set())).toBe(body);
+  });
+
+  it("applies the CSS rules to fetched CSS, which no later step re-sanitizes", () => {
+    const inlined = processor.inlineStylesheets(
+      body,
+      new Map([
+        [
+          "https://cdn.example/x.css",
+          "@import url(https://evil.example/y.css);.o{position:fixed;color:red}",
+        ],
+      ]),
+      new Set(),
+    );
+
+    expect(inlined).not.toContain("@import");
+    expect(inlined).not.toContain("position:fixed");
+    expect(inlined).toContain("color:red");
   });
 
   it("neutralizes a </style> inside fetched CSS instead of letting it close the element", () => {

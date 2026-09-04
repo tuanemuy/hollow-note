@@ -36,9 +36,12 @@ export { NOTE_OWNER_PURGE_TASK_KIND };
  * the turn at 480, and lowering `batchSize` — not raising it — is the
  * adjustment a deployment has.
  *
- * The carried {@link StuckPurge} entries ride on top of the page rather
- * than inside it, so a recovering turn can spend more than 480; the gap
- * to the real 1,000 is the room that leaves.
+ * The cap is on the notes of a turn, not on the page alone. The carried
+ * {@link StuckPurge} entries ride on top of the page, so the page is
+ * read `batchSize - carried.length` wide and 480 is a ceiling a
+ * recovering turn cannot exceed either — which is what makes it one: a
+ * carried id has already left every enumeration, so an outage that keeps
+ * failing the same purges would otherwise grow the list without bound.
  */
 export const OWNER_PURGE_BATCH_SIZE = 40;
 
@@ -218,17 +221,27 @@ export async function deleteNotesForOwner({
   // The enumeration shares that transaction rather than taking a read
   // view of its own — the scope's repository is the one surface both
   // planes reach, and a purge has to be drivable from either.
+  const carried = input.stuckPurges ?? [];
+  // The carried ids ride on top of the page, so the page is what has to
+  // make room for them: `batchSize` is a bound on the notes of one turn,
+  // not on one of its two sources. Reading a full page beside them would
+  // make the turn `batchSize + carried.length` notes wide, and since a
+  // carried id has already left every enumeration, an outage that keeps
+  // failing `removeForPurge` grows that list by up to `batchSize` per
+  // turn with nothing to shrink it — an unbounded turn, and an unbounded
+  // continuation payload with it. A page of zero is the right read when
+  // the carried ids already fill the turn: `count` still answers whether
+  // the enumeration has more, which is what decides the continuation.
   const page = await container.scopeUnitOfWorkProvider.run(
     input.scope,
     async (ctx) => {
       await ctx.cleanupAdmission.assertOwner(input.deletionOperationId);
       return ctx.noteRepository.listByOwner(owner, "all", {
         page: 1,
-        limit: batchSize,
+        limit: Math.max(0, batchSize - carried.length),
       });
     },
   );
-  const carried = input.stuckPurges ?? [];
   const targets = targetsOf(page.items, carried);
   const outcome = await purgeEachNote(container, input, targets);
 

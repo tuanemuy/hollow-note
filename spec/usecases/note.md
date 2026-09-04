@@ -1009,6 +1009,9 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 1. 閲覧者コンテキストを解決し、`canEdit` を確認する
 2. `NoteRevisionRepository.listByNote(noteId, 20)` を引く
 3. 最大20件の作成者IDを`UserBatchReader.resolveMany`でUserId shard別に最大6接続で解決する
+4. 版 1 件につき `HtmlProcessor.process` を 1 回走らせ、その `excerpt` を行に載せる
+
+**抜粋は保持せず、引くたびに導出する**。`NoteRevision` が持つのは HTML だけであり（[domains/note.md](../domains/note.md)）、20 件ぶんの本文をそのまま画面へ運ばないためでもある。**その代償として、1 回の一覧が `process` を版の数だけ同期で走らせる** — 保持件数 20 と `NoteHtml` の 800,000 バイトから、最悪 20 × 800 KB のフルサニタイズである。`process` は渡された HTML に対して解析・許可リストの適用・直列化・テキスト抽出・見出し収集を毎回行うので、入力が既にサニタイズ済みであることはこの費用を下げない。
 
 ### エラーケース
 

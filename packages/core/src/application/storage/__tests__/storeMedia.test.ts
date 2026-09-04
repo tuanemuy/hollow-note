@@ -1,5 +1,7 @@
+import { isBusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
+import { HtmlProcessorLimit } from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import type { FileStoredEvent } from "@repo/core/domain/storage/events";
@@ -278,6 +280,45 @@ const hiddenBreakoutSvg = (
 };
 
 /**
+ * The escape ratio, in its simplest form: an attribute value of nothing
+ * but raw `"`, quoted with `'` so XML reads the whole run as one
+ * well-formed value.
+ *
+ * The expansion meter charges `attribute.value.length` — the value
+ * *before* escaping — while the serializer writes each `"` back as
+ * `&quot;`. One byte charged, six bytes out. At the 128 KB ceiling that
+ * is a measured 786,073 bytes of output from an input the meter never
+ * came close to refusing, which is the review's counterexample to the
+ * derivation this ceiling used to carry.
+ */
+const quoteStuffedSvg = (bytes: number): string => {
+  const head = `<svg ${SVG_NAMESPACE}><text transform='`;
+  const tail = `'/></svg>`;
+  return `${head}${'"'.repeat(bytes - head.length - tail.length)}${tail}`;
+};
+
+/**
+ * The same ratio behind a hidden `<table>`, where reconstruction
+ * multiplies it.
+ *
+ * Each `<tr>` clears the stack back to the table and reconstructs the
+ * formatting element, so the quote-stuffed attribute is written out once
+ * per row — six output bytes for every byte the meter charged, times the
+ * rows. 20 KB of this serializes past the note body's 800,000-byte cap
+ * while spending well under the expansion allowance, so what `process`
+ * raises is `NOTE_CONTENT_TOO_LARGE` rather than the ceiling's own code:
+ * the second Note code this usecase's boundary has to answer for.
+ */
+const quoteStuffedFosterSvg = (valueLength: number, rows: number): string => {
+  const [hide, reveal] = HIDDEN_BREAKOUT_WRAPPERS.comment;
+  const open = `<b title='${'"'.repeat(valueLength)}'>`;
+  return (
+    `<svg ${SVG_NAMESPACE}>${hide}<table>${open}` +
+    `${"<tr>X</tr>".repeat(rows)}</b></table>${reveal}</svg>`
+  );
+};
+
+/**
  * The same shape with no breakout tag in it: the parser never leaves
  * foreign content, so `<a>` and `<font>` are SVG elements rather than
  * HTML formatting elements and nothing is reconstructed at all.
@@ -320,6 +361,16 @@ const upload = (
       ...overrides,
     },
   });
+
+/** The business code `process` refuses `markup` with, in Note's own vocabulary. */
+const processRefusalCode = (h: TestHarness, markup: string): string => {
+  try {
+    h.container.htmlProcessor.process(markup);
+  } catch (error) {
+    return isBusinessRuleError(error) ? error.code : String(error);
+  }
+  throw new Error("HtmlProcessor.process accepted the markup");
+};
 
 const filesIn = (h: TestHarness, scope: ScopeKey) =>
   h.backend.scope(scope).storedFiles.values();
@@ -906,6 +957,66 @@ describe("storeMedia", () => {
       expect(view.size).toBeLessThanOrEqual(MEDIA_SVG_MAX_BYTES);
       expect(filesIn(h, personalScope)).toHaveLength(index + 1);
     }
+  });
+
+  it("TC-storage-273: an accepted SVG serializes far past the expansion bound the ceiling used to be derived from", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    const markup = quoteStuffedSvg(MEDIA_SVG_MAX_BYTES);
+    const body = svg(markup);
+    expect(body.byteLength).toBe(MEDIA_SVG_MAX_BYTES);
+    expect(
+      UploadValidationPolicy.ensureAcceptable({ purpose: "media", body })
+        .mimeType,
+    ).toBe("image/svg+xml");
+
+    // The retired derivation read "an input of 131,072 bytes cannot
+    // serialize past `maxExpansionFactor` × that". It can: the meter
+    // charges an attribute value before it is escaped, and this one
+    // measures 786,073 bytes out. That it lands under the body's 800,000
+    // is a 1.7% margin, not a promise — which is why the promise moved
+    // to `processSvg`'s translation instead.
+    const sanitized = h.container.htmlProcessor.process(markup).html;
+    expect(sanitized.length).toBeGreaterThan(
+      MEDIA_SVG_MAX_BYTES * HtmlProcessorLimit.maxExpansionFactor,
+    );
+    expect(sanitized.length).toBeLessThan(800_000);
+
+    // Storage answers on its own re-measure of the sanitized bytes,
+    // which is the whole job this ceiling has.
+    await expectBusinessRule(
+      upload(h, noteId, { body, fileName: "quotes.svg" }),
+      StorageErrorCode.FileTooLarge,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-274: an SVG whose sanitized form passes the note body's cap is refused in Storage's vocabulary, not Note's", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+    const markup = quoteStuffedFosterSvg(20_000, 6);
+    const body = svg(markup);
+    // Twenty kilobytes, an eighth of the ceiling: the reach of this shape
+    // has nothing to do with how much of the ceiling it spends.
+    expect(body.byteLength).toBeLessThan(MEDIA_SVG_MAX_BYTES / 4);
+    expect(
+      UploadValidationPolicy.ensureAcceptable({ purpose: "media", body })
+        .mimeType,
+    ).toBe("image/svg+xml");
+
+    // The resource meter never fires — it is charged the pre-escape
+    // length and the parse completes inside its allowance — so the code
+    // that comes out is the note body's own. It is in neither this
+    // usecase's error table nor anything an uploader can act on.
+    expect(processRefusalCode(h, markup)).toBe(NoteErrorCode.ContentTooLarge);
+
+    await expectBusinessRule(
+      upload(h, noteId, { body, fileName: "foster-quotes.svg" }),
+      StorageErrorCode.FileTooLarge,
+    );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
   });
 
   it("TC-storage-183: an upload larger than the remaining capacity is refused before any byte is written", async () => {

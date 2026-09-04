@@ -421,7 +421,13 @@ const sanitizeNodes = (
 ): ChildNode[] => {
   const out: ChildNode[] = [];
   for (const node of nodes) {
-    out.push(...sanitizeNode(node, parent, report, insideSvg, budget));
+    // Appended one at a time rather than spread as arguments: unwrapping
+    // an unlisted element returns all of its children at once, and a
+    // spread of them is an argument list, which has an engine limit that
+    // raises a `RangeError` carrying no `kind`.
+    for (const child of sanitizeNode(node, parent, report, insideSvg, budget)) {
+      out.push(child);
+    }
   }
   return out;
 };
@@ -585,6 +591,13 @@ const collectHeadings = (fragment: DocumentFragment): readonly Heading[] => {
   });
 
   const claimed = new Set<string>();
+  // Where the search for a base left off. `taken` and `claimed` only
+  // grow, so a suffix this base has already passed over stays rejected
+  // and never has to be tried again — restarting the count at 2 for every
+  // heading is what made a body of identical headings quadratic (16,000
+  // of them took 7.4 seconds). The candidates a base yields, and the
+  // order it yields them in, are unchanged.
+  const resumeAt = new Map<string, number>();
   const headings: Heading[] = [];
   walkElements(fragment.childNodes, (element) => {
     if (isSvg(element) || !HEADING_ELEMENTS.has(element.tagName)) {
@@ -597,12 +610,14 @@ const collectHeadings = (fragment: DocumentFragment): readonly Heading[] => {
       anchorId = own;
     } else {
       const base = slugify(text) || "section";
-      let candidate = base;
-      let suffix = 2;
+      // 1 stands for the bare base, which carries no suffix.
+      let suffix = resumeAt.get(base) ?? 1;
+      let candidate = suffix === 1 ? base : `${base}-${suffix}`;
       while (taken.has(candidate) || claimed.has(candidate)) {
+        suffix = suffix === 1 ? 2 : suffix + 1;
         candidate = `${base}-${suffix}`;
-        suffix += 1;
       }
+      resumeAt.set(base, suffix + 1);
       anchorId = candidate;
       writeAttribute(element, "id", anchorId);
     }
@@ -779,6 +794,16 @@ const COMMENT_MARKUP_BYTES = 7;
  */
 const OPEN_ELEMENT_SLACK = 8;
 
+/**
+ * Nodes `parseFragment` builds before it reads a byte of the source: the
+ * `template` it takes as the fragment context, the mock document, and the
+ * `html` root every top-level node is appended to. They are the parser's,
+ * not the source's, so the node ceiling is granted them on top —
+ * `HtmlProcessorLimit.maxNodes` is then exactly how many nodes the
+ * source's own tree may hold, on either parse path.
+ */
+const PARSE_SCAFFOLD_NODES = 3;
+
 const nestsTooDeep = (): BusinessRuleError<string> =>
   new BusinessRuleError(
     HTML_PROCESSOR_TOO_COMPLEX,
@@ -810,11 +835,23 @@ const expansionAllowance = (inputLength: number): number =>
  * named here is `defaultTreeAdapter`'s, and below the allowance the two
  * adapters build the identical tree — the meter observes, it never
  * changes what is built.
+ *
+ * The same four points count *nodes*, which bytes do not bound: 200,000
+ * `<br>`s are 800,000 bytes and expand 1.0×. What the count holds off is
+ * everything downstream that is superlinear or capped in the number of
+ * siblings rather than in bytes — the parser's own move of each top-level
+ * node out of the parse root, the heading walk, and the argument count of
+ * an unwrap. A text insertion is charged a node only when it makes one:
+ * the parser hands over a run of characters at a time and the default
+ * adapter folds consecutive runs into the text node already there, so
+ * counting calls would count the tokenizer's chunking instead of the tree.
  */
 const createMeteredTreeAdapter = (
   allowance: number,
+  nodeAllowance: number,
 ): TreeAdapter<DefaultTreeAdapterMap> => {
   let remaining = allowance;
+  let remainingNodes = nodeAllowance;
   let open = 0;
   const spend = (cost: number): void => {
     remaining -= cost;
@@ -822,6 +859,15 @@ const createMeteredTreeAdapter = (
       throw new BusinessRuleError(
         HTML_PROCESSOR_TOO_COMPLEX,
         `HTML expands past ${allowance} bytes when parsed`,
+      );
+    }
+  };
+  const spendNode = (): void => {
+    remainingNodes -= 1;
+    if (remainingNodes < 0) {
+      throw new BusinessRuleError(
+        HTML_PROCESSOR_TOO_COMPLEX,
+        `HTML holds more than ${HtmlProcessorLimit.maxNodes} nodes when parsed`,
       );
     }
   };
@@ -845,19 +891,29 @@ const createMeteredTreeAdapter = (
           ATTRIBUTE_MARKUP_BYTES;
       }
       spend(cost);
+      spendNode();
       return defaultTreeAdapter.createElement(tagName, namespaceURI, attrs);
     },
     createCommentNode(data) {
       spend(data.length + COMMENT_MARKUP_BYTES);
+      spendNode();
       return defaultTreeAdapter.createCommentNode(data);
     },
     insertText(parentNode, text) {
       spend(text.length);
+      const before = parentNode.childNodes.length;
       defaultTreeAdapter.insertText(parentNode, text);
+      if (parentNode.childNodes.length !== before) {
+        spendNode();
+      }
     },
     insertTextBefore(parentNode, text, referenceNode) {
       spend(text.length);
+      const before = parentNode.childNodes.length;
       defaultTreeAdapter.insertTextBefore(parentNode, text, referenceNode);
+      if (parentNode.childNodes.length !== before) {
+        spendNode();
+      }
     },
   };
 };
@@ -910,9 +966,17 @@ const enforceNestingLimit = (fragment: DocumentFragment): void => {
  * allow list, so it is unwrapped), but the *nesting* around them can
  * shift, so an input containing either takes the plain path rather than
  * a path that reasons about what the difference costs. Everything else
- * matches: 20,000 random markup fragments over the tag vocabulary of the
- * allow list parse identically both ways, and every fragment that did
- * not, matched this pattern.
+ * matches: fragments drawn from the whole tag vocabulary rather than the
+ * allow list — sanitization runs *after* the parse, so an unlisted
+ * element still moves the tree — parse identically both ways over 390,000
+ * random sequences and an exhaustive 1,560,896 of length three across the
+ * 57 tags whose parse can branch. Every fragment that differed matched
+ * this pattern.
+ *
+ * The plain path is slower, not unbounded: the quadratic move it keeps is
+ * in the number of top-level nodes, which `HtmlProcessorLimit.maxNodes`
+ * caps. Comparing the two parses on every input instead would pay a
+ * pathological input's cost twice to save it once.
  */
 const TEMPLATE_SENSITIVE = /<\/template|<form/i;
 
@@ -925,9 +989,11 @@ const TEMPLATE_SENSITIVE = /<\/template|<form/i;
  * move an `indexOf` plus a `splice` over that root's child list — which
  * is quadratic in the number of top-level nodes. 130,000 flat elements
  * (1,950,000 bytes, inside the transport ceiling for a body, expanding
- * 1.0× and nesting three deep, so no ceiling of this module applies)
- * spend 97% of the parse there: 1.4 seconds of a 1.5-second `process`
- * that then rejects the body for exceeding 800,000 bytes.
+ * 1.0× and nesting three deep) spend 97% of the parse there: 1.4 seconds
+ * of a 1.5-second `process` that then rejects the body for exceeding
+ * 800,000 bytes. `HtmlProcessorLimit.maxNodes` now refuses that input
+ * outright; the wrapper is what keeps the inputs *below* the node ceiling
+ * — the legitimate ones included — off the same curve.
  *
  * An unterminated `<template>` in front of the source puts those nodes
  * in the template's content fragment instead, which the parser only ever
@@ -946,10 +1012,11 @@ const parseWrapped = (
 ): DocumentFragment | null => {
   const root = parseFragment(`<template>${html}`, {
     // The wrapper is this module's, not the source's, so what the meter
-    // charges for it is added back rather than taken out of what the
-    // source is allowed to expand to.
+    // charges for it — a node and its serialized length — is added back
+    // rather than taken out of what the source is allowed to expand to.
     treeAdapter: createMeteredTreeAdapter(
       allowance + "template".length * 2 + ELEMENT_MARKUP_BYTES,
+      HtmlProcessorLimit.maxNodes + PARSE_SCAFFOLD_NODES + 1,
     ),
   });
   const [wrapper] = root.childNodes;
@@ -967,7 +1034,12 @@ const parse = (html: string): DocumentFragment => {
     : parseWrapped(html, allowance);
   const fragment =
     wrapped ??
-    parseFragment(html, { treeAdapter: createMeteredTreeAdapter(allowance) });
+    parseFragment(html, {
+      treeAdapter: createMeteredTreeAdapter(
+        allowance,
+        HtmlProcessorLimit.maxNodes + PARSE_SCAFFOLD_NODES,
+      ),
+    });
   enforceNestingLimit(fragment);
   return fragment;
 };
@@ -1065,6 +1137,9 @@ export function createHtmlProcessor(): HtmlProcessor {
       unavailable: ReadonlySet<string>,
     ): NoteHtml {
       const fragment = parse(html);
+      // One budget for the call, like `process`: a page with fifty traces
+      // gets one scan allowance, not fifty.
+      const budget = createCssBudget();
       walkElements(fragment.childNodes, (element) => {
         if (isSvg(element) || element.tagName !== "style") {
           return;
@@ -1079,10 +1154,17 @@ export function createHtmlProcessor(): HtmlProcessor {
         const css = contents.get(url);
         if (css !== undefined) {
           attribute.name = IMPORTED_STYLESHEET_ATTRIBUTE;
+          // The sheet comes from a third-party origin and nothing
+          // downstream sanitizes what this method returns, so the CSS
+          // rules of ADR 013 apply here as they do in `process` —
+          // `position: fixed` and `@import` are as dangerous inlined as
+          // they are inline.
+          const filtered = filterCss(css, () => {}, budget);
           // A `</style` inside the fetched CSS would close the element
           // during the next parse and let the remainder of the sheet be
           // read as markup.
-          adopt(element, [textNode(css.replace(/<\/style/gi, ""), element)]);
+          const safe = filtered.replace(/<\/style/gi, "");
+          adopt(element, safe.length === 0 ? [] : [textNode(safe, element)]);
           return;
         }
         if (unavailable.has(url)) {

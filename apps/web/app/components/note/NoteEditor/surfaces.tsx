@@ -334,8 +334,9 @@ const scrubForSurface = (root: ParentNode): void => {
  * 先に告げる。門の材料は {@link willDropStyleElements} で、断片を描いた
  * 時点の本文ではなく**これから面へ載る本文**に当てる。ここは `baseline`
  * が変わるたびに無条件で落とすので、門もモードを変える瞬間ではなく
- * **面へ本文を載せるたび**に問われる（版の復元・競合の解決・退避の復元・
- * 保存後の載せ直しを含む）。
+ * **面へ本文を載せるたび**に問われる（モードを変えない載せ直しは版の復元・
+ * 競合の解決・退避の復元の 3 つ。WYSIWYG / HTML モードの保存後は caret を
+ * 飛ばさないために載せ直さないので、そこは門を通らない）。
  */
 const dropStyleElements = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("style"))) {

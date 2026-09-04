@@ -22,7 +22,10 @@ import {
 } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
-import { extractSerializedError } from "@/presentation/errorResponse";
+import {
+  extractSerializedError,
+  type SerializedErrorKind,
+} from "@/presentation/errorResponse";
 import {
   applyTextNodeEditsFn,
   createNoteWithBodyFn,
@@ -152,6 +155,21 @@ const sameVisual = (a: VisualPaths | null, b: VisualPaths | null): boolean => {
 const sameSnapshot = (a: EditorSnapshot, b: EditorSnapshot): boolean =>
   a.title === b.title && a.body === b.body && sameVisual(a.visual, b.visual);
 
+/**
+ * 落ちた往復を、もう一度だけ送り直せる形にしたもの。`failed` の「再試行」
+ * が押す先である。
+ *
+ * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が同じ `failed`
+ * を作る以上、「何が落ちたか」を値に持たないと再試行は 1 つの操作しか
+ * 指せない。持たせないと、版の復元が通信エラーで落ちたあとの「再試行」が
+ * 復元ではなく本文の保存を走らせる。
+ */
+type RetryTarget =
+  | Readonly<{ kind: "save" }>
+  | Readonly<{ kind: "mode"; mode: EditorMode; acknowledged: boolean }>
+  | Readonly<{ kind: "conflict"; keepLocal: boolean }>
+  | Readonly<{ kind: "revision"; revisionId: string }>;
+
 type SaveStatus =
   | Readonly<{ kind: "new" }>
   | Readonly<{ kind: "idle" }>
@@ -159,23 +177,31 @@ type SaveStatus =
   | Readonly<{ kind: "saving" }>
   | Readonly<{ kind: "saved" }>
   /**
-   * 通信エラー。`stashed` は**実際に端末へ退避できたか**で、退避の鍵が
-   * `noteId` である以上、まだ作られていないノートでは偽になる。ただし
-   * 偽の意味は「退避していない」だけで、「ノートが無い」ではない —
-   * 保存以外の往復（モード切替・競合の解決・版の復元）が落ちたときも
-   * 偽で入る。退避を書けるのは保存の `catch` だけだからである。
+   * 往復そのものが成立しなかった失敗。`stashed` は**実際に端末へ退避
+   * できたか**で、退避の鍵が `noteId` である以上、まだ作られていない
+   * ノートでは偽になる。ただし偽の意味は「退避していない」だけで、
+   * 「ノートが無い」ではない — 保存以外の往復（モード切替・競合の解決・
+   * 版の復元）が落ちたときも偽で入る。退避を書けるのは保存の `catch`
+   * だけだからである。
    *
    * したがって案内と逃げ道（再試行 / ダウンロード）を分けるのは
    * `creationFailed` のほうで、この値が語るのは「次に開けば復元できる」
    * の 1 文だけである — 退避していないのに「退避した」と告げると、
    * 利用者はそれを信じて画面を離れる。
+   *
+   * `retry` は落ちた往復そのもの（{@link RetryTarget}）。
    */
-  | Readonly<{ kind: "failed"; message: string; stashed: boolean }>
+  | Readonly<{
+      kind: "failed";
+      message: string;
+      stashed: boolean;
+      retry: RetryTarget;
+    }>
   /**
-   * 決定的な業務拒否（本文の上限超え・タイトルの上限超え・転送境界の
-   * 形の違反）。同じ内容を送るかぎり必ず同じ答えが返るので、`failed` と
-   * 違って再試行も端末への退避も出さない — 解けるのは利用者が内容を
-   * 直したときだけである。
+   * 決定的な業務拒否。同じ内容を送るかぎり必ず同じ答えが返るので、
+   * `failed` と違って再試行も端末への退避も出さない — 解けるのは利用者が
+   * 内容を直したときだけである。集合の決め方は
+   * {@link classifySaveFailure} が持つ。
    */
   | Readonly<{ kind: "rejected"; message: string }>
   /** 他者の更新。上書きするか破棄するかを選ばせる。 */
@@ -184,6 +210,69 @@ type SaveStatus =
   | Readonly<{ kind: "locked" }>
   /** 権限喪失・ゴミ箱。内容のダウンロードを出す。 */
   | Readonly<{ kind: "blocked"; message: string }>;
+
+/**
+ * 面ごと凍らせる失敗。ノートがもう編集の対象でないことを告げるので、
+ * 内容を直しても再送しても解けない。残す逃げ道は内容のダウンロードだけ。
+ */
+const BLOCKING_ERROR_CODES: ReadonlySet<string> = new Set([
+  "NOTE_NOT_FOUND",
+  "NOTE_ACCESS_DENIED",
+  "NOTE_IS_TRASHED",
+  "WORKSPACE_INSUFFICIENT_ROLE",
+]);
+
+/**
+ * 往復そのものが成立しなかった失敗の `kind`。**再試行のボタンと端末への
+ * 退避を出してよいのはここだけ**である。
+ *
+ * - `system` / `unknown` — 通信断・サーバー側の障害。同じ内容があとで通る
+ * - `unauthorized` — 途中でセッションが切れた。サインインし直せば同じ
+ *   内容がそのまま通るので、退避して次に開いたときに復元させるのが正しい
+ *
+ * 集合を**この向きで**閉じているのが要点である。拒否コードを列挙する形に
+ * すると、ドメインが新しい拒否を足すたびにここが取りこぼし、成功しえない
+ * 「再試行」と上限を超えた本文の `localStorage` への書き込みが同時に
+ * 起きる。逆向きに閉じておけば、増えた拒否は既定で `rejected`（再試行も
+ * 退避も出さない側）へ落ちる — 誤るとしても「一時的な失敗を決定的な拒否
+ * として出す」方向にしかならず、内容を直す打鍵で降りて自動保存が再開する。
+ */
+const TRANSIENT_ERROR_KINDS: ReadonlySet<SerializedErrorKind> = new Set([
+  "system",
+  "unknown",
+  "unauthorized",
+]);
+
+/**
+ * 版を進めうる往復が投げたものを、この画面の状態へ写す純関数。
+ *
+ * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が共有するので、
+ * 「何が落ちたか」は呼び出し元が {@link RetryTarget} で渡す。
+ *
+ * 決定的な業務拒否（`rejected`）は `spec/pages/index.md` の P-12 状態表
+ * 「保存できません（内容の拒否）」に対応する。集合は
+ * {@link TRANSIENT_ERROR_KINDS} の補集合として閉じてあり、列挙していない
+ * コードは既定でこちらへ落ちる。
+ */
+const classifySaveFailure = (
+  error: unknown,
+  retry: RetryTarget,
+): SaveStatus => {
+  const serialized = extractSerializedError(error);
+  const message = renderErrorMessage(serialized);
+  const code = serialized.code;
+  if (code === "OPTIMISTIC_LOCK_FAILURE") return { kind: "conflict" };
+  if (code === "NOTE_LOCKED_BY_JOB") return { kind: "locked" };
+  if (code !== null && BLOCKING_ERROR_CODES.has(code)) {
+    return { kind: "blocked", message };
+  }
+  if (TRANSIENT_ERROR_KINDS.has(serialized.kind)) {
+    // 退避したかどうかを知っているのは `writeDraft` を呼ぶ側だけなので、
+    // ここでは「していない」から始める。
+    return { kind: "failed", message, stashed: false, retry };
+  }
+  return { kind: "rejected", message };
+};
 
 /**
  * いま走っている「版を進めうる往復」。保存・面の載せ直し・版の復元は
@@ -544,35 +633,6 @@ export function NoteEditorIsland({
       console.error("Note editor reconcile failed");
     });
 
-  const classify = (error: unknown): SaveStatus => {
-    const serialized = extractSerializedError(error);
-    const message = displayError(error);
-    switch (serialized.code) {
-      case "OPTIMISTIC_LOCK_FAILURE":
-        return { kind: "conflict" };
-      case "NOTE_LOCKED_BY_JOB":
-        return { kind: "locked" };
-      case "NOTE_NOT_FOUND":
-      case "NOTE_ACCESS_DENIED":
-      case "NOTE_IS_TRASHED":
-      case "WORKSPACE_INSUFFICIENT_ROLE":
-        return { kind: "blocked", message };
-      // 決定的な業務拒否。同じ内容を送りつづけるかぎり必ず同じ答えが
-      // 返るので、「退避して再試行」の枝には落とさない — 再試行のボタンは
-      // 成功しない再送を勧め、退避は上限を超えた本文を毎回 `localStorage`
-      // へ書く。文言はどれも「短くする」「分割する」を案内している。
-      case "NOTE_CONTENT_TOO_LARGE":
-      case "NOTE_INVALID_TITLE":
-      case "NOTE_INVALID_STYLE_MODE":
-      case "INVALID_INPUT":
-        return { kind: "rejected", message };
-      default:
-        // 退避したかどうかを知っているのは `writeDraft` を呼ぶ側だけなので、
-        // ここでは「していない」から始める。
-        return { kind: "failed", message, stashed: false };
-    }
-  };
-
   /**
    * `locked` / `blocked` は面ごと凍っている状態なので、進行を語る表示
    * （`idle` / `saved`）で上書きしない。往復の途中で権限を失った・ジョブに
@@ -787,7 +847,7 @@ export function NoteEditorIsland({
       if (appliedTitle !== confirmedRef.current.title) {
         confirm(sent, { ...confirmedRef.current, title: appliedTitle });
       }
-      const next = classify(error);
+      const next = classifySaveFailure(error, { kind: "save" });
       const failed = identityRef.current;
       // 退避の鍵は `noteId` なので、まだ作られていないノートでは退避
       // そのものが成立しない。告げる文言と逃げ道はその事実に従わせる。
@@ -884,13 +944,17 @@ export function NoteEditorIsland({
    * あいだに打ったタイトルが載せ直しの `setTitle` に黙って捨てられ、確定値
    * まで正本の値へ進むので未保存の表示すら出ない。
    *
+   * ED-04 の門はここでは**原理的に立たない**。呼び出しはどちらもビジュアル
+   * モード限定（`sent.visual?.pathwise` の枝と `mode !== "visual"` の枝）で、
+   * `needsWysiwygWarning` は WYSIWYG へ載せるとき以外は即座に偽を返すから
+   * である。門を通る載せ直しは版の復元・競合の解決・退避の復元の 3 つで、
+   * WYSIWYG / HTML モードの保存後には載せ直しそのものが起きない
+   * （caret を飛ばさないため）。
+   *
    * 載せ直せたら `true`。占有は呼び出し元がすでに取っている。
    */
   const reseedIfUnchanged = async (sent: EditorSnapshot): Promise<boolean> => {
     if (!sameSnapshot(takeSnapshot(), sent)) return false;
-    // 門は通す。モードは変わらないが、引き直した正本が面に無い `<style>`
-    // を持っていれば装飾はここで落ちる（`needsWysiwygWarning`）。いま送った
-    // 本文が返ってくるだけの往復では、面と正本が一致するので掛からない。
     await reseedFromServer(mode, false);
     return true;
   };
@@ -1011,8 +1075,7 @@ export function NoteEditorIsland({
    * 「これから面へ載る本文の装飾が、いま面に載っている本文より多く
    * 落ちるか」である — WYSIWYG の面は `baseline` が変わるたびに無条件で
    * `<style>` を落とすので（`surfaces.tsx`）、モードを変えない載せ直し
-   * （版の復元・競合の解決・退避の復元・保存後の載せ直し）でも装飾は
-   * そこで失われる。
+   * （版の復元・競合の解決・退避の復元）でも装飾はそこで失われる。
    *
    * - WYSIWYG へ**入る**とき: 材料は `target.mayLoseDecoration`（取り込み
    *   由来か。島からは見えない値なので、サーバーコンポーネントが畳んで
@@ -1040,7 +1103,10 @@ export function NoteEditorIsland({
       );
     }
     // 面が組まれる前（ref が空）は「面には何も載っていない」と読む。
-    // 取りこぼさない側へ倒す判断で、ADR-104 の走査側と向きを揃えてある。
+    // 取りこぼさない側へ倒す判断である — 過検出は警告が 1 回余分に出る
+    // だけだが、見落とすと装飾が警告も版も無しに失われる。門のもう一方の
+    // 材料（`NoteEditor/index.tsx` の `hasStyleElement`）も同じ向きで、
+    // 2 つは or で使う。
     return (
       willDropStyleElements(nextBody) &&
       !willDropStyleElements(wysiwygRef.current?.innerHTML ?? "")
@@ -1069,6 +1135,11 @@ export function NoteEditorIsland({
     return mode === "wysiwyg" ? "html" : mode;
   };
 
+  /**
+   * 利用者が選んだモードへ入る（モードのラジオと「保存して切り替える」）。
+   * 端末の既定を書くのはここと {@link acknowledgeWysiwyg} だけである
+   * （{@link switchMode} の JSDoc）。
+   */
   const enterMode = (next: EditorMode): void => {
     // ここで見られる「これから載る本文」は確定値である。正本を引き直した
     // 結果が違っていたら `reseedFromServer` がもう一度同じ門を通す。
@@ -1077,6 +1148,7 @@ export function NoteEditorIsland({
       setPendingMode(next);
       return;
     }
+    writePreferredMode(next);
     applyMode(next);
   };
 
@@ -1106,7 +1178,13 @@ export function NoteEditorIsland({
       try {
         await reseedFromServer(next, acknowledged);
       } catch (error) {
-        setStatus(classify(error));
+        setStatus(
+          classifySaveFailure(error, {
+            kind: "mode",
+            mode: next,
+            acknowledged,
+          }),
+        );
         return;
       }
       setProgressStatus({ kind: "idle" });
@@ -1156,6 +1234,14 @@ export function NoteEditorIsland({
    * 面のモードだけを切り替える。本文を載せるのは呼び出し元で、正本を
    * 確定させる載せ直し（{@link seedMode}）と、未保存の内容を面へ載せる
    * だけの経路（退避の復元・競合の上書き）で載せる値が違うためである。
+   *
+   * 端末の既定（`writePreferredMode`）は**ここでは書かない**。この関数は
+   * 門の逃げ先（{@link surfaceModeFor} が返す強制された `html`）も通るので、
+   * ここで書くと利用者が選んでいないモードが既定になる — WYSIWYG で作業
+   * 中に `<style>` を持つ版を復元しただけで、以後どのノートを開いても
+   * HTML で開くことになる。ED-05 が端末に持つと定めているのは「**選んだ**
+   * モード」なので、書くのは利用者の操作に由来する 2 か所だけである
+   * （{@link enterMode} と {@link acknowledgeWysiwyg}）。
    */
   const switchMode = (next: EditorMode): void => {
     // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。同じ面へ
@@ -1164,7 +1250,6 @@ export function NoteEditorIsland({
       next === "wysiwyg" &&
       (mode !== "wysiwyg" || wysiwygConversionRef.current);
     setMode(next);
-    writePreferredMode(next);
   };
 
   const seedMode = (
@@ -1272,7 +1357,7 @@ export function NoteEditorIsland({
       try {
         latest = await readEditState({ data: { noteId } });
       } catch (error) {
-        setStatus(classify(error));
+        setStatus(classifySaveFailure(error, { kind: "conflict", keepLocal }));
         return;
       }
       rememberIdentity({ kind: "existing", noteId, version: latest.version });
@@ -1353,7 +1438,7 @@ export function NoteEditorIsland({
         setSavedAt(new Date());
         setRevisions(null);
       } catch (error) {
-        setStatus(classify(error));
+        setStatus(classifySaveFailure(error, { kind: "revision", revisionId }));
         return;
       }
       await reconcile();
@@ -1530,6 +1615,58 @@ export function NoteEditorIsland({
     selectedImage.setAttribute("alt", next);
     setBody(surface.innerHTML);
     markDirty();
+  };
+
+  /**
+   * ED-04 の警告の「了解して進む」。
+   *
+   * 面に未保存の内容があるときは**正本を引き直さない**。門を立てる 3 経路
+   * のうち退避の復元だけは未保存の内容を面に載せたまま門へ入るので、
+   * `applyMode` の引き直しをそのまま通すと、いま復元した内容がサーバーの
+   * 正本で丸ごと置き換わる（利用者から見ると「復元した内容が了解と同時に
+   * 消えて、また復元を勧められる」）。モードのラジオが未保存の変更に確認を
+   * 挟むのと同じ扱いで、ここでは面だけを差し替えて中身は残す。
+   *
+   * 未保存が無いときは他の 2 経路と同じく引き直す — 面の内容は確定値と
+   * 同じなので、引き直しても失われるものが無く、他の利用者の更新まで
+   * 取り込める。
+   */
+  const acknowledgeWysiwyg = (): void => {
+    const next = pendingMode;
+    if (next === null) return;
+    writePreferredMode(next);
+    if (!dirty) {
+      applyMode(next, true);
+      return;
+    }
+    setWysiwygWarning(false);
+    setPendingMode(null);
+    const kept = takeSnapshot();
+    switchMode(next);
+    loadSurface(kept.title, kept.body);
+    setStatus({ kind: "dirty" });
+  };
+
+  /**
+   * `failed` の「再試行」。**落ちた往復そのもの**を送り直す
+   * （{@link RetryTarget}）。保存に固定すると、版の復元が通信エラーで
+   * 落ちたあとの「再試行」が復元ではなく本文の保存を走らせる。
+   */
+  const retryFailed = (target: RetryTarget): void => {
+    switch (target.kind) {
+      case "save":
+        void runExclusive({ kind: "saving" }, () => commit(true));
+        return;
+      case "mode":
+        applyMode(target.mode, target.acknowledged);
+        return;
+      case "conflict":
+        resolveConflict(target.keepLocal);
+        return;
+      case "revision":
+        restore(target.revisionId);
+        return;
+    }
   };
 
   return (
@@ -1737,6 +1874,8 @@ export function NoteEditorIsland({
               // `catch` だけで、モード切替・競合の解決・版の復元が通信
               // エラーで落ちたときは退避が無いまま `failed` になる —
               // そこは既存のノートなので、再試行こそが逃げ道である。
+              // 送り直すのは**落ちた往復そのもの**（`status.retry`）で、
+              // 本文の保存に固定しない。
               creationFailed ? (
                 <button
                   type="button"
@@ -1753,9 +1892,7 @@ export function NoteEditorIsland({
                   type="button"
                   className={smallPrimaryClass}
                   disabled={busy}
-                  onClick={() => {
-                    void runExclusive({ kind: "saving" }, () => commit(true));
-                  }}
+                  onClick={() => retryFailed(status.retry)}
                 >
                   再試行
                 </button>
@@ -1811,7 +1948,7 @@ export function NoteEditorIsland({
                   type="button"
                   className={smallPrimaryClass}
                   disabled={busy}
-                  onClick={() => applyMode("wysiwyg", true)}
+                  onClick={acknowledgeWysiwyg}
                 >
                   了解して進む
                 </button>
@@ -2075,10 +2212,16 @@ export function NoteEditorIsland({
                     <span className="text-xs text-ink-tertiary">
                       {revision.createdByName ?? "退会した利用者"}
                     </span>
+                    {/* 版の復元は破棄よりさらに強い「版を進める往復」
+                        （`runExclusive({kind:"restoring"})`）なので、面ごと
+                        凍っているあいだは破棄と同じく落とす。押せると、
+                        権限を失ったノートで唯一操作できるボタンとして
+                        残り、サーバーの拒否で `blocked` に戻るだけの
+                        空振りになる。 */}
                     <button
                       type="button"
                       className={smallGhostClass}
-                      disabled={busy}
+                      disabled={busy || !editable}
                       onClick={() => restore(revision.revisionId)}
                     >
                       復元
@@ -2105,8 +2248,10 @@ export function NoteEditorIsland({
           <button
             type="button"
             className={actionButtonClass}
-            // 一覧の取得も版を進めない。落とすのは二重取得だけ。
-            disabled={noteId === null || isSideBusy}
+            // 一覧の取得は版を進めないが、面ごと凍っているあいだは落とす
+            // — 一覧が出す操作は「復元」だけで、それは版を進める往復で
+            // ある。開けても全行が押せない一覧を見せる意味が無い。
+            disabled={noteId === null || isSideBusy || !editable}
             onClick={openRevisions}
           >
             版を復元

@@ -5,7 +5,7 @@ import {
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { ActiveNote, Note } from "@repo/core/domain/note/note";
 import {
-  HTML_PROCESSOR_TOO_COMPLEX,
+  HTML_PROCESSOR_NOTE_ERROR_CODES,
   type HtmlProcessor,
 } from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
@@ -162,46 +162,56 @@ const asStandaloneSvg = (markup: string): string | null => {
 };
 
 /**
- * Sanitizes the uploaded bytes, restoring Storage's vocabulary on the
- * one failure `HtmlProcessor` answers in Note's.
+ * The port's own declaration of what `process` can raise in Note's
+ * vocabulary, as a set. Drawing it from there rather than restating the
+ * codes is what keeps this boundary from going stale: a third code added
+ * to the contract is answered here without an edit.
+ */
+const NOTE_LIMIT_CODES: ReadonlySet<string> = new Set(
+  HTML_PROCESSOR_NOTE_ERROR_CODES,
+);
+
+/**
+ * Sanitizes the uploaded bytes, restoring Storage's vocabulary on every
+ * failure `HtmlProcessor` answers in Note's.
  *
- * The processor bounds its own cost and refuses anything above the
- * ceiling as `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` (spec/adr/013
- * 「サニタイズは資源で有界である」). That code belongs to the note body:
- * it is in neither `storeMedia`'s error table nor the vocabulary an
- * uploader can act on, and the display dictionary answers it with advice
- * about simplifying a body.
+ * The note body's codes are in neither `storeMedia`'s error table nor
+ * the vocabulary an uploader can act on, and the display dictionary
+ * answers them with advice about a body this person never edited.
  *
- * The intake's element-name gate does not make this unreachable, and is
- * not asked to. It reads XML comments and processing instructions to
+ * **The promise is kept by covering the set, not by arguing the set is
+ * unreachable.** Every earlier version of this boundary translated one
+ * code and rested the rest on a derivation — first about the shape of
+ * the accepted markup, then about `maxExpansionFactor` × 131,072 staying
+ * under 800,000. Each was refuted by measurement (spec/adr/013 retired
+ * the first line of reasoning; the second dies on the meter charging a
+ * node's pre-escape length, so a single-quoted attribute value stuffed
+ * with raw `"` is six output bytes per byte charged). What is left is
+ * structural: every code the port declares means "the sanitized form is
+ * too big to keep", and all of them are answered here.
+ *
+ * The intake's element-name gate is not asked to make any of this
+ * unreachable. It reads XML comments and processing instructions to
  * *XML's* terminators, while the HTML tokenizer ends `<?a>` at the first
  * `>` and treats `<!-->` as a complete comment — so eight characters put
- * a `<table>` where only one of the two can see it. Closing that
- * particular difference would be the fourth version of an argument about
- * the shape of the input, and spec/adr/013 retired that line of
- * reasoning in favour of bounding the resource. The gate stays as the
- * cheap front-line defence it is; the promise that an upload fails in
- * Storage's words is kept here, at the boundary, instead.
+ * a `<table>` where only one of the two can see it. The gate stays as
+ * the cheap front-line defence it is.
  *
- * `FileTooLarge` is the translation because the ceiling an accepted
- * media SVG reaches is the expansion bound, and an input that trips it
- * is one whose sanitized form is far past `MEDIA_SVG_MAX_BYTES` — the
- * same answer step 4 gives once the parse has been paid for
- * (spec/usecases/storage.md#storeMedia). `UnsupportedMimeType` would
- * claim the format is not accepted, which is false and leaves the
- * uploader nothing to change.
+ * `FileTooLarge` is the translation because both codes are ceilings on
+ * length, and an input that trips either has a sanitized form far past
+ * `MEDIA_SVG_MAX_BYTES` — the same answer step 4 gives once the parse
+ * has been paid for (spec/usecases/storage.md#storeMedia).
+ * `UnsupportedMimeType` would claim the format is not accepted, which is
+ * false and leaves the uploader nothing to change.
  */
 const processSvg = (htmlProcessor: HtmlProcessor, body: Uint8Array): string => {
   try {
     return htmlProcessor.process(new TextDecoder().decode(body)).html;
   } catch (error) {
-    if (
-      isBusinessRuleError(error) &&
-      error.code === HTML_PROCESSOR_TOO_COMPLEX
-    ) {
+    if (isBusinessRuleError(error) && NOTE_LIMIT_CODES.has(error.code)) {
       throw new BusinessRuleError(
         StorageErrorCode.FileTooLarge,
-        "The SVG cannot be sanitized within the processor's resource ceiling",
+        "The SVG does not sanitize into anything this store will hold",
       );
     }
     throw error;
@@ -228,13 +238,12 @@ const processSvg = (htmlProcessor: HtmlProcessor, body: Uint8Array): string => {
  * `UnsupportedMimeType`: the row would otherwise claim `image/svg+xml`
  * for a file no XML parser opens.
  *
- * `process` answers a note-body fragment, so its 800,000-byte cap is the
- * real ceiling of anything that goes through here, and that is what
- * `MEDIA_SVG_MAX_BYTES` is chosen against. What keeps the work bounded
- * on the way there is not the intake's shape rules but the processor's
- * own resource ceiling (spec/adr/013), which is why `processSvg` — not
- * the gate — is what guarantees the answer stays in Storage's
- * vocabulary.
+ * `process` answers a note-body fragment, so a sanitized SVG is held to
+ * the note body's own caps on the way through — caps whose codes belong
+ * to Note. Nothing about the accepted bytes puts those caps out of
+ * reach, and no derivation is asked to: `processSvg` translates the
+ * whole set of them, which is what guarantees the answer stays in
+ * Storage's vocabulary.
  */
 const sanitizeSvg = (
   htmlProcessor: HtmlProcessor,

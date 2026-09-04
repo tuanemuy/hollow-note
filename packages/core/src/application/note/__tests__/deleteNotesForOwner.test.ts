@@ -700,7 +700,9 @@ describe("deleteNotesForOwner", () => {
       input: {
         deletionOperationId: OPERATION_ID,
         scope: userScope,
-        batchSize: 1,
+        // Two, because the carried id takes one of the turn's places
+        // (TC-note-827): a batch of one would leave the listing none.
+        batchSize: 2,
         ...carried,
       },
     });
@@ -711,6 +713,50 @@ describe("deleteNotesForOwner", () => {
     expect(view.purgedCount).toBe(2);
     expect(view.status).toBe("continued");
     expect(remainingNotes(h)).toBe(1);
+    expect(await acknowledged(h)).not.toContain("note");
+  });
+
+  it("TC-note-827: the carried purges take their places out of the page, so a turn is never wider than its batch", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, 4);
+    await beginCleanup(h);
+
+    // Two turns that each commit a local delete and lose the response,
+    // leaving two notes claimed but not tombstoned. Both are out of
+    // every enumeration from here on, which is why the ids have to be
+    // carried at all — and why nothing shrinks the list on its own.
+    const stuck: { noteId: NoteId; expectedVersion: number }[] = [];
+    for (let turn = 0; turn < 2; turn += 1) {
+      await run(h, {
+        batchSize: 1,
+        container: withLostResponseAfterCommit(h, 3),
+      });
+      const carried = readOwnerPurgeTurn(tasks(h)[0]?.payload ?? {});
+      expect(carried.stuckPurges).toHaveLength(1);
+      stuck.push(...carried.stuckPurges);
+    }
+    expect(remainingNotes(h)).toBe(2);
+
+    const view = await deleteNotesForOwner({
+      container: h.container,
+      input: {
+        deletionOperationId: OPERATION_ID,
+        scope: userScope,
+        batchSize: 2,
+        stuckPurges: stuck,
+      },
+    });
+
+    // The batch is spent entirely on the carried ids, so the listing is
+    // read no notes wide and the two rows still standing wait for the
+    // next turn. Reading a full page beside the carried ids would make
+    // this turn four notes — and an outage that keeps stranding purges
+    // would grow that list by a whole batch every turn, with nothing to
+    // bound the D1 statements or the continuation payload the turn
+    // after that.
+    expect(view.purgedCount).toBe(2);
+    expect(remainingNotes(h)).toBe(2);
+    expect(view.status).toBe("continued");
     expect(await acknowledged(h)).not.toContain("note");
   });
 

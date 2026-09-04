@@ -271,14 +271,16 @@ interface IdempotencyStore {
 
 イベントとは別に、**1 回で処理しきれなかった仕事の続き**を表す local task がある。scope task は `scheduled_tasks` と Alarm、global task は D1 outbox と Queue で運ぶ。どちらも購読者は1つだけである。
 
+**payload の欄は task 行に積む値そのものである。** scope は `scheduled_tasks` の行が持つので、どの payload にも現れない。
+
 | 継続要求 | payload | 唯一の購読者 |
 | --- | --- | --- |
-| `note.ownerPurgeContinued` | `{ scope, deletionOperationId, stuckPurges: { noteId, expectedVersion }[] }` | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
-| `note.trashExpiryContinued` | `{}`（scope は task 行が持ち、期限は turn 自身の `now` が決めるので payload に持つものが無い） | scope Alarm → [`purgeExpiredTrash`](../usecases/note.md) |
-| `storage.ownerDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
+| `note.ownerPurgeContinued` | `{ deletionOperationId, stuckPurges?: { noteId, expectedVersion }[] }`（`stuckPurges` は持ち回る停止 purge があるときだけ載る） | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
+| `note.trashExpiryContinued` | `{}`（期限は turn 自身の `now` が決めるので載せるものが無い） | scope Alarm → [`purgeExpiredTrash`](../usecases/note.md) |
+| `storage.ownerDeleteContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
 | `storage.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteFilesForNote`](../usecases/storage.md) |
 | `storage.orphanMediaContinued` | `{ afterCreatedAt, afterId }`（次の turn が再開する keyset 位置。読めなければ先頭から） | scope Alarm → [`collectOrphanMedia`](../usecases/storage.md) |
-| `tag.scopeDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
+| `tag.scopeDeleteContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
 | `tag.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteAssignmentsForNote`](../usecases/tag.md) |
 | `integration.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteBackupRecordsForNote`](../usecases/integration.md) |
 | `workspace.deletionLocalContinued` | `{ operationId, phase ("memberships" / "invitations" / "localDelete"), cursor, slug, advertisedSlug }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のmanifest build・local edge削除・Workspace行削除phase |
