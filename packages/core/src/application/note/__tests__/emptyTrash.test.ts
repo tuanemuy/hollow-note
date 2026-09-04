@@ -201,6 +201,12 @@ describe("emptyTrash", () => {
     expect(view).toEqual({ mode: "purged", purgedCount: 50, jobIds: [] });
     expect(jobs.chunks).toHaveLength(0);
     expect(await trashedCount(h)).toBe(0);
+    // Pinned deliberately, unlike the alarm-driven purge batches: 50 × 12
+    // global statements is over the 500-query design ceiling of
+    // spec/platform/index.md「実行予算と分割単位」and inside the real
+    // 1,000, and 50 is what the trash screen's「51 件以上はジョブ」branch
+    // is written against, so it moves only with those pages.
+    expect(EMPTY_TRASH_SYNCHRONOUS_LIMIT).toBe(50);
   });
 
   it("TC-note-102: registers one bulk job at 51, the first size past the boundary", async () => {

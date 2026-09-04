@@ -101,6 +101,7 @@ describe("renderErrorMessage", () => {
   const EDITING_CODES: readonly (readonly [SerializedErrorKind, string])[] = [
     ["business", "NOTE_IS_TRASHED"],
     ["business", "NOTE_CONTENT_TOO_LARGE"],
+    ["business", "NOTE_HTML_TOO_COMPLEX"],
     ["business", "NOTE_LOCKED_BY_JOB"],
     ["business", "NOTE_INVALID_TITLE"],
     ["business", "NOTE_INVALID_STYLE_MODE"],
@@ -131,6 +132,17 @@ describe("renderErrorMessage", () => {
     );
     expect(rendered).toContain("待って");
     expect(rendered).not.toContain("もう一度お試しください");
+  });
+
+  it("tells the reader what to change rather than to retry an unprocessable body", () => {
+    // 資源の上限による拒否は、同じ本文を送れば必ず同じ結果になる。共通文言の
+    // 「入力内容を確認してもう一度お試しください」は実行不能な助言なので、
+    // 何を変えれば通るかを言う（`NOTE_LOCKED_BY_JOB` と同じ判断）。
+    const rendered = renderErrorMessage(
+      withKind("business", "NOTE_HTML_TOO_COMPLEX"),
+    );
+    expect(rendered).toContain("複雑");
+    expect(rendered).not.toBe(renderErrorMessage(withKind("business", null)));
   });
 
   it("names both upload purposes in the shared storage codes", () => {

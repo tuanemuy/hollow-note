@@ -22,11 +22,23 @@ export const TRASH_EXPIRY_TASK_KIND = "note.trashExpiryContinued";
 export const TRASH_EXPIRY_OPERATION_ID = "note.trashExpiry";
 
 /**
- * Notes one turn reclaims. The cap bounds the CPU of a single alarm turn
- * and the `note.purged` fan-out it emits (spec/platform/index.md「実行
- * 予算と分割単位」).
+ * Notes one turn reclaims (spec/platform/index.md「実行予算と分割単位」).
+ *
+ * The cap bounds the CPU of a single alarm turn and the `note.purged`
+ * fan-out it emits — and, as for `deleteNotesForOwner` and unlike the
+ * rest of that section's table, the *global* queries the turn spends.
+ * The sweep calls `purgeNote` rather than repeating its steps, so every
+ * note carries the saga across the global route and the global public
+ * projection: `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4–5 ＋
+ * `finishPurge` 3, eleven to twelve statements apiece counted as
+ * statements and not as port calls. The table's 100 rows would spend
+ * around 1,200, past the section's 500-query design ceiling and past
+ * the real 1,000 as well, which is why the two alarm-driven purge
+ * sweeps share one value: forty notes leave the turn at 480, and
+ * lowering the limit — not raising it — is the adjustment a deployment
+ * has.
  */
-export const TRASH_EXPIRY_BATCH_SIZE = 100;
+export const TRASH_EXPIRY_BATCH_SIZE = 40;
 
 export type PurgeExpiredTrashInput = Readonly<{
   /** Scope whose alarm fired. The retention sweep is scope-local. */

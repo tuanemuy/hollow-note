@@ -2859,3 +2859,255 @@ shadow root のホストは `[contain:layout_paint]` の**親**で包む。ホ�
 - トレードオフ: 深さ 257 段の文書・CSS 33 段のスタイルシートは保存できなくなる。実在の文書には無い深さだが、機械生成の HTML には理論上ありうる
 - 残件: 費用のうち `parse5` 自体の解析時間は入力長に比例して残る（正当な 2 MB の本文で 3 秒前後）。これは形ではなく長さの関数なので、転送境界 2,000,000 バイトと SVG の 128 KB が上限として効いている
 - 変異スポットチェック: 改行の bad-string 分岐を落とすと 5 ケースが red、url-token の識別子境界の判定を落とすと 1 ケース、CSS の深さの上限を +1 すると境界の 1 ケース、走査の歩数の meter を落とすと 1 ケース、木の深さの上限を `>=` にすると境界の 1 ケース、`createElement` の課金を落とすと膨張の 2 ケース、解析中の深さの番人を落とすと「木ができる前に拒む」1 ケースが red になる
+
+---
+
+## ADR-114: global statement の勘定は `purgeNote` を回す 3 経路すべてに適用し、結論だけを制約ごとに分ける
+
+### Context
+
+ADR-107 は「1 件の purge は global に 11〜12 statement を費やす」ことを `spec/platform/index.md` の正典に書き、`OWNER_PURGE_BATCH_SIZE` を 40 に下げた。しかしその勘定を `deleteNotesForOwner` にしか当てていなかった。同じ `purgeNote` / `purgeNoteInternally` を回す経路は 3 つある。
+
+- `purgeExpiredTrash`（`TRASH_EXPIRY_BATCH_SIZE = 100`）→ 1 turn 1,100〜1,200 文。同じ節が「実上限 1,000 も超える」と名指しで不可能と宣言した数そのもの
+- `emptyTrash` の同期削除（`EMPTY_TRASH_SYNCHRONOUS_LIMIT = 50`）→ 1 mutation 550〜600 文。設計上限 500 は超えるが実上限 1,000 の内側
+- しかも `emptyTrash.ts` の JSDoc は「scope-local SQL carries no D1 budget」と、正典が新しく書いたことの逆を根拠付きで主張していた。手順の複製ではなく `purgeNote` を**呼ぶ**設計だからこそ、この経路は scope-local に閉じていない
+
+勘定そのものは Cloudflare 実装で裏取り済み — `noteRouteStore` の `resolve` は `readRow` 1 文、`beginPurge` / `finishPurge` は `requireRow` 1 ＋ `commit(unchangedGuard, upsert)` 2 で 3 文、`removeForPurge` は `readStored` 1 ＋ `remove` の原子適用（vectorGuard 1 ＋ FTS withdraw 0〜1 ＋ body DELETE 1 ＋ tags DELETE 1）で 4〜5 文。`emptyTrash` 側の `resolve` は `scopeRouter.resolveNote` 経由で同じ `routeStore.resolve` に落ちる。
+
+### Decision
+
+勘定は 3 経路に一律で当てる。ただし**結論は制約が違うので分かれる**。
+
+1. `TRASH_EXPIRY_BATCH_SIZE` を 100 → **40** へ下げる。この値は利用者に見える閾値を持たない alarm turn の内部値で、下げても画面も手順書も動かない。`deleteNotesForOwner` と同じ 40 を共有する
+2. `EMPTY_TRASH_SYNCHRONOUS_LIMIT` は **50 のまま据え置く**。600 は実上限の内側であり、かつ 50 は「51 件以上はジョブ」という利用者に見える閾値として `spec/pages/index.md` / `spec/inventory/{usecase,frontend}.md` / `spec/manual-tests/editing.md` / `spec/design/pages/P14-trash.html` に固定されている。値を下げよという指摘は、その 6 つの正典を同時に動かす提案としてしか成立しない。**許容の根拠のほうを正典に書く** — 設計上限を超える 100 文は「実上限の半分を余裕として宣言した」その余裕から支払う、と
+3. `emptyTrash.ts` の「scope-local SQL carries no D1 budget」は事実として撤回する
+4. `spec/platform/index.md` の除外の列挙は追随者しか数えていなかったので、`purgeNote` を回す 3 経路を明示し、除外側を「`purgeNote` を回さない経路」と書き直す
+
+### Alternatives
+
+- **`EMPTY_TRASH_SYNCHRONOUS_LIMIT` も 40 へ下げて 3 経路を 1 つの値に揃える**: 見た目は整うが、閾値を 6 つの正典から同時に動かす変更になる。予算の勘定は「51 件以上はジョブ」という利用者向けの分岐を動かす理由として弱い — 600 は実上限の内側だからである
+- **`purgeExpiredTrash` を「例外」として据え置き、根拠を書く**: 1,200 は実上限 1,000 も超えるので、書ける根拠が無い
+- **1 件あたりの statement 数を減らす**（route の読みを `beginPurge` に畳む等）: アダプター契約に触れる変更で、今スライスの守備範囲外。ADR-107 と同じ判断
+
+### Consequences
+
+- 良い点: 「global 予算が上限を決める」判断が 3 経路に一貫して当たり、どこが例外でなぜ例外かが正典から読める
+- 良い点: `EMPTY_TRASH_SYNCHRONOUS_LIMIT` は「予算の割り算の答え」ではなく「利用者に見える閾値」であることが JSDoc と正典に固定された。次に予算を数える人が黙って下げない
+- トレードオフ: 期限切れが 41 件以上溜まった scope は turn 数が 2.5 倍になる。参照ランタイム（Node + memory）には D1 予算が無いので効くのはそこだけ
+- トレードオフ: `100` を写している正典が担当外に 2 箇所残る（`spec/inventory/test.md` TC-note-343、`spec/testcases/note/purgeExpiredTrash.md`）
+- 残件: `SCOPE_TASK_TICK_LIMIT = 100` により 1 invocation が `note.ownerPurgeContinued`（480）と `note.trashExpiryContinued`（480）を同居させうる。960 は実上限の内側だが、持ち回る停止 purge がその上に載ると超えうる。**分割の再設計はせず、余地の根拠として 1 行だけ正典に書いた** — 次の一手は 40 を下げることではなく 1 turn が訪問する purge 系 task を 1 本に絞ること、と明記してある
+- 変異スポットチェック: `TRASH_EXPIRY_BATCH_SIZE` を 41 / 39 にすると TC-note-344 が red、`listPurgeable` の limit を +1 すると TC-note-343 の 2 ケースと TC-note-344 が red、`EMPTY_TRASH_SYNCHRONOUS_LIMIT` を 49 にすると TC-note-101 / 115 が、51 にすると TC-note-101 / 102 / 104 / 115 が red
+
+---
+
+## ADR-115: `HtmlProcessor` の資源上限は Storage の境界で `FileTooLarge` へ翻訳し、breakout tag の gate は「上限の根拠」から降ろす
+
+### Context
+
+`readSvgDocument` はコメントを `-->` まで、処理命令を `?>` まで読み飛ばす（XML の終端）。HTML のトークナイザーは `<?a>` を bogus comment として最初の `>` で、`<!-->` を abrupt-closing の完結したコメントとして即座に終える。この差の中に `<table>` を置くと、受理判定には見えないままパーサーには見える。レビュー 007 [B-001] の実証では、128 KB 以内・整形式・64 段以内の 2 形が `ensureAcceptable` を通り、`storeMedia` が `BusinessRuleError("NOTE_HTML_TOO_COMPLEX")` を投げた。このコードは `NoteErrorCode` にも `storeMedia` のエラー表にも表示辞書にも無く、UI では kind 共通の「入力内容を確認してもう一度お試しください」に倒れる（レビュー 007 backend-note [W-001] と同じ穴）。
+
+### Decision
+
+**構文を塞ぐ側は採らない。翻訳する側を採る。** 塞ぐのは「入力の形の論証」の 5 版目であり、ADR-113 がその路線を降ろした判断（資源で有界にする）と矛盾する。次に `<![CDATA[` や属性値の差を見つければ 6 版目が要る。
+
+1. `storeMedia` の `processSvg` が `HTML_PROCESSOR_TOO_COMPLEX` を捕まえ、`BusinessRuleError(StorageErrorCode.FileTooLarge)` へ写す。翻訳先に `FileTooLarge` を選ぶのは、受理された 128 KB 以内の SVG が届きうる上限が**膨張の上限**（入力長の 4 倍）であり、その上限に当たる入力はサニタイズが完走していれば手順 4 の測り直しで同じ `FileTooLarge` になるからである — 翻訳は「費用を払えば得られたはずの答えを、払わずに返す」形になる。`UnsupportedMimeType`（「この形式は扱えない」）は SVG を受理形式として案内している辞書と矛盾し、利用者に直せるものを示さない。
+2. `MEDIA_SVG_MAX_BYTES = 128 KB` の根拠を、受理する markup の形（エスケープの 6 倍、foster parenting の入口が 2 つ）から **`HtmlProcessorLimit.maxExpansionFactor`** へ置き換える。131,072 × 4 = 524,288 < 800,000 は入力の形に依存しない不等式で、これが「上限が到達可能である」ことの唯一の根拠になる。
+3. breakout tag の gate は**残す**が、位置づけを「前段の安価な防御」に降ろす。1 パスの走査でもっとも安い膨張を断り、サニタイザーを 1 度も走らせない価値はそのままである。
+4. `NoteErrorCode.HtmlTooComplex` を足し、ポートの定数はその別名にする。`spec/usecases/note.md` の `updateNoteBody` / `restoreNoteRevision` のエラー表と `errorDisplay.ts` の辞書に 1 行ずつ足し、`NOTE_HTML_TOO_COMPLEX` が「何を変えれば通るか」を言う文言で利用者へ届く経路を通す。
+
+### Consequences
+
+- 良い点: 「Storage の語彙で返す」という約束が、gate の完全性ではなく**境界の翻訳**で担保される。gate に穴が 1 つ残っていても約束は破れない
+- 良い点: 128 KB の根拠が、実測に 3 度否定された種類の論証から、上限どうしの不等式へ変わる
+- 良い点: 本文側（`updateNoteBody`）でも `NOTE_HTML_TOO_COMPLEX` が実行不能な共通文言に倒れなくなる
+- トレードオフ: 隠された breakout tag は**サニタイザーを 1 度走らせてから**拒まれる（実測 11〜16 ms、膨張なし）。gate を通る分の費用は資源メーターが断つ
+- トレードオフ: `FileTooLarge` は 128 KB 未満のファイルにも出うる。文言「ファイルが大きすぎます」は厳密には「この大きさでは扱えない」であり、利用者の取れる行動（小さく・単純にする）は一致する
+- 変異スポットチェック: `processSvg` の翻訳条件を `false` にすると TC-storage-272 が red（`BusinessRuleError: HTML expands past 524256 bytes when parsed` が漏れる）、`readSvgDocument` の `<?` の終端を HTML と同じ「最初の `>`」にすると TC-storage-272 の受理側アサーションが red、`errorDisplay` の `NOTE_HTML_TOO_COMPLEX` の行を落とすと errorDisplay の 2 ケースが red
+
+---
+
+## ADR-116: 形の検査を打ち切る物差しは purpose の上限表から引く
+
+### Context
+
+`identifySvg` は `ensureAcceptable` から purpose に依らず呼ばれるのに、`readSvgDocument` を飛ばす条件に `media` 専用の定数 `MEDIA_SVG_MAX_BYTES` を直接使っていた（レビュー 007 backend-storage [W-003]）。これが正しいのは「SVG を許す purpose は `media` ひとつで、その上限がこの定数である」あいだだけで、`RULES` に別の上限で SVG を許す purpose が増えると、2 つの上限のあいだのバイト列が形を検査されずに受理される。
+
+### Decision
+
+`identifyContentType` / `identifySvg` に `purpose` を渡し、打ち切りの物差しを `RULES` から引く（`limitOf(purpose, "image/svg+xml")`）。SVG を許さない purpose では `undefined` が返るので、本文の復号にも入らずに `false` を返す。
+
+### Consequences
+
+- 良い点: 「上限表がそのまま許可リスト」という `RULES` の性質が、形の検査の打ち切りにも及ぶ。purpose が増えても定数を書き換える場所が増えない
+- 良い点: `avatar` に SVG を投げた場合、従来は文書全体を復号・走査してから `UnsupportedMimeType` になっていたのが、復号せずに同じ答えを返す
+- トレードオフ: **今日の観測可能な挙動は変わらない**（`media` 以外に SVG を許す purpose が無いため）ので、この変更を単独で赤にする変異テストは書けない。守っているのは将来の `RULES` の変更であり、防御は JSDoc ではなく導出そのものに置いた
+
+---
+
+## ADR-121: ED-04 の門は「モードが変わるか」ではなく「面へ載る本文と面が持つ本文の差」で判定する
+
+### Context
+
+ADR-104 は「WYSIWYG の面だけが `<style>` を落とし、その喪失は ED-04 の門の後ろへ寄せる」と決め、ADR-108 は門の材料を「これから面へ載る本文」に直した。それでも門の条件には `next !== mode` が残っていた — 門は「モードを変える瞬間」にしか評価されない。
+
+一方 `WysiwygSurface` は `baseline` が変わるたびに無条件で `dropStyleElements` を掛ける。両者がずれる経路が 4 本あった。
+
+1. **版の復元** — `restore` は `reseedFromServer(mode, true)`。WYSIWYG に居るまま変換前の版へ戻すと、戻したはずの `<style>` が面へ載る前に落ちる。ED-04 が「保存前に版が保持され、版から戻せる」と約束している当の機能が戻らない（`spec/manual-tests/editing.md` TC-06 手順 7）
+2. **競合の解決** — `resolveConflict` は `reseedFromServer` を経由せず `reseed` へ直行する。共有ワークスペースで、他人が HTML モードで足したスタイルシートが自分の面から落ち、次の保存で本文からも消える
+3. **退避の復元** — 退避は HTML モードで書かれた `<style>` 入りの本文でもありうる
+4. **保存後の載せ直し** — `reseedIfUnchanged` が `acknowledged` を立てていた
+
+どれも「面に載っている本文より装飾が落ちる」経路で、モードが変わるかどうかは関係が無かった。しかも `confirmed.body` には `<style>` が入ったまま残るので `dirty` が下りず、次の 1 打鍵で `body` が面の `innerHTML`（`<style>` 無し）に置き換わり、その保存で本文からも消える。装飾の喪失が警告も版理由（`wysiwygConversion`）も無しに起きる。
+
+### Decision
+
+門の問いを「WYSIWYG へ入るか」から「**これから面へ載る本文の装飾が、いま面に載っている本文より多く落ちるか**」へ変える。
+
+- WYSIWYG へ**入る**とき（`mode !== "wysiwyg"`）の材料はこれまでどおり `target.mayLoseDecoration` と `willDropStyleElements(nextBody)` の or
+- すでに WYSIWYG に**居る**とき（`mode === "wysiwyg"`）は、比較対象を**面がいま持っている本文**（`wysiwygRef.current.innerHTML`）にする。そこからは `<style>` が既に落ちているので、載せ直す本文が `<style>` を持てば新しい喪失である。`mayLoseDecoration` は入る瞬間の材料なので足さない — 足すと取り込み由来のノートで保存のたびに警告が出る
+- 門に掛かったときの載せ先を `surfaceModeFor` に閉じ、**WYSIWYG から逃げる**（据え置きでは面がそのまま落とすので門が何も守らない）。逃げ先は HTML で、`initialMode` が `<style>` 持ちのノートを HTML で開くのと同じ理由である
+- 4 経路すべてを同じ門に通す。`restore` / `reseedIfUnchanged` の `acknowledged` 固定を外し、`resolveConflict` は `seedMode(surfaceModeFor(...))` を経由させ、退避の復元は `switchMode(surfaceModeFor(...))` を挟む
+- 面へ本文を載せるだけの経路が門を通せるよう、`seedMode` を `switchMode`（モードだけ）と `reseed`（確定＋載せる）に割った
+
+### Consequences
+
+- 良い点: 面が実際に落とすものと門が守るものが一致する。共有ワークスペースで他人の装飾が黙って消えない
+- 良い点: TC-06 手順 7 の「元の装飾を持つ内容に戻る」が成立する（HTML モードで戻り、警告から WYSIWYG へ入り直せる）
+- 良い点: 門の判定が「モードの遷移表」から「2 つの本文の比較」になったので、載せ直しの経路を足しても同じ 1 つの述語で守れる
+- トレードオフ: 版の復元・競合の破棄で、利用者が触っていないのに面のモードが HTML へ移ることがある。装飾を黙って捨てるよりは良いという判断で、警告がその場で理由を説明する
+- トレードオフ: 退避の復元で門に掛かった場合、警告の「了解して進む」は正本を引き直す（復元した退避は面から降りる）。退避そのものは `localStorage` に残っていて提案として出直すので失われない
+- **ADR-108 の門の部分を置き換える**（材料が「これから面へ載る本文」であることは引き継ぎ、条件から `next !== mode` を外した）
+
+---
+
+## ADR-122: 確定値の遷移は 3 つで、部分確定は `VisualPaths` しか受けない 1 つに閉じる
+
+### Context
+
+ADR-108 は「確定値を動かせるのは `confirm` と `reseed` の 2 つだけ」と宣言していたが、実装には 3 つ目があった — `VisualSurface` の `onReady` が `setConfirmedSnapshot({ ...confirmedRef.current, visual: … })` を呼んでいる。`setConfirmedSnapshot` は `EditorSnapshot` を受けるだけなので、型は部分確定を何も妨げていない。「illegal state を型で潰した」と JSDoc が宣言している一方で、その宣言を根拠に読む次の書き手が同じ入口から 4 つ目の部分確定を足せる状態だった。
+
+`onReady` の書き込み自体は正しい。面が組み上がったという事実は保存とは別種で、経路表は面が組まれるまで手元に無い。消せる 3 つ目ではない。
+
+### Decision
+
+3 つ目を**名前と型を持つ遷移**にし、汎用の書き込み口を消す。
+
+- `attachVisualPaths(paths)` を足す。受け取るのは経路表だけなので、タイトルと本文はここから動かせない。`pathwise` の判定（`baseline === confirmed.body`）もここに閉じる
+- `setConfirmedSnapshot` を**削除**する。`confirmedRef` と state を書くのは 3 つの遷移がそれぞれ自分で行う（各 2 行）。汎用の setter を残すと、それが「安全な入口」に見えてしまう
+- JSDoc を実態に合わせる。遷移は 3 つで、写しを丸ごと動かせるのは 2 つ、3 つ目は経路表しか触れない。`commit` の `catch` が書く `{ ...confirmed, title }` は `confirm` を通る**完全な写し**であり、部分確定の入口ではない
+
+### Consequences
+
+- 良い点: 部分確定を書ける場所が引数の型で 1 か所に閉じる。4 つ目を足すには遷移を 1 つ書き足すことになり、そのとき `EditorSnapshot` の JSDoc が目に入る
+- 良い点: 「型で閉じた」という主張と実装が一致する（CLAUDE.md の「illegal states unrepresentable」を根拠に読める記述だけが残る）
+- トレードオフ: ref と state を揃える 2 行が 3 か所に散る。1 か所の funnel より書き落としやすいので、`confirmedRef` の JSDoc に「3 つの遷移がそれぞれ同じ行で揃える」と明記した
+- **ADR-108 の「遷移は 2 つ」を 3 つへ改める**（写しを丸ごと動かす 2 つ、という性質はそのまま）
+
+---
+
+## ADR-117: 初回保存の URL 置き換えは書きかけが下りてから行い、blocker を素通りさせる
+
+### Context
+
+`/notes/new` の初回保存はノートを作ってから `router.navigate(..., { replace: true })` で編集の URL へ移していた。移る先は別のルートなので島はアンマウントされ、新しい編集画面はサーバーから読み直した本文で開く — 往復のあいだに打った分はどこにも無い。`confirm(sent, …)` が「送った写しだけを確定させる」ことで守った打鍵が、その 2 行あとで捨てられていた。
+
+加えてこの navigate はルーターの blocker の下にある。`dirty` が真なら `leaveConfirmRef.current` は離脱確認なので、**利用者が何も操作していないのに**「未保存の変更があります」という素の `confirm()` が出る。取り消すと URL は `/notes/new` のまま残り、了解すると打鍵が消える。自動保存は 1.5 秒の無操作で走るので、打ち続けている利用者は普通に踏む。
+
+### Decision
+
+置き換えを保存の中から外し、`createdNote` state と effect に移す。
+
+- `commit` は「作られたノート」を state に置くだけで、移らない
+- effect は `dirty` が下り、版を進めうる往復（`busy`）も無いときにだけ移す。打鍵が残っていれば自動保存が 1.5 秒後に拾い、下りた描画で移る
+- 遷移のあいだだけ `selfNavigateRef` を立て、blocker（`shouldBlockFn` / `enableBeforeUnload`）を素通りさせる
+
+### Consequences
+
+- 良い点: 往復中の打鍵が消えない。ADR-108 の「送った写しだけを確定させる」規則が、画面の遷移まで含めて成り立つ
+- 良い点: 自分が起こした遷移で自分の離脱確認が出ない。利用者に選べることが何も無い確認を出さない
+- トレードオフ: 打ち続けているあいだ URL は `/notes/new` のままである。`identity` は既に `existing` なので保存は正しいノートへ行くが、その状態で再読み込みすると画面の書きかけは失われる（サーバーには最後の自動保存まで入っている）
+- トレードオフ: 置き換えが 1 描画ぶん遅れる。`replace: true` なので履歴には残らない
+
+---
+
+## ADR-118: 保存の失敗の案内は「退避できたか」ではなく「ノートが作られたか」で分ける
+
+### Context
+
+`SaveStatus.failed.stashed` は「実際に端末へ退避できたか」で、退避を書けるのは `commit` の `catch` だけである。ところが `classify(error)` をそのまま `setStatus` へ渡す経路が 3 つある — モード切替 / 破棄（`applyMode`）・競合の解決・版の復元。そこは正本を引き直す往復で、**ノートは確実に存在している**のに `stashed: false` で入る。
+
+Alert は `status.stashed` の 1 本で分岐していたので、既存ノートで「ノートがまだ作られていないため、内容はこの端末に退避できていません」という事実に反する説明が出て、逃げ道が「内容をダウンロード」だけになり「再試行」が出なかった（`spec/pages/index.md#P-12` の「保存失敗 | 通信エラー（ローカル退避と再試行）」と逆を向く）。
+
+### Decision
+
+案内と逃げ道の分岐を `creationFailed`（= `identity.kind === "new"`）に掛け、文面を 3 通りに割る。
+
+- ノートがまだ作られていない → ダウンロードのみ（再送は白紙のノートを増やす。ADR-112 と同じ理由）
+- 退避できた → 再試行 ＋「次に開いたときに復元できます」
+- 退避していないが既存のノート → 再試行 ＋「まだ退避していません」
+
+`stashed` が語るのは 3 つ目の文だけになり、逃げ道の判断からは外れる。
+
+### Consequences
+
+- 良い点: 既存ノートで事実に反する説明が出ない。通信エラーの逃げ道（再試行）が 3 経路ぶん戻る
+- 良い点: `stashed` の意味が「退避の有無」だけに縮み、`failed` を作る場所が増えても案内が壊れない
+- トレードオフ: 保存以外の往復（版の復元など）が落ちたときの「再試行」は、その往復ではなく**保存**を走らせる。押して困ることは無い（書きかけがサーバーへ届く）が、押した操作と走る操作は一致しない
+
+---
+
+## ADR-119: 書き戻しは終端子を足さないだけでなく、**落とさない**
+
+### Context
+
+ADR-078 は「入力に無かった終端子を書き戻さない」で不動点を作った。逆向きの穴が残っていた。`filterCss` は文と規則の前置きを `input.slice(...).trim()` で切り出しており、**文字列を終わらせた当の改行**（CSS Syntax の bad-string。ADR 013 の 5 つ目の字句規則）が末尾にあると、それを落としてから `;` を書く。出力は `content:"a;` になり、そこから先はブラウザにとって開いたままの文字列なので、入力では効いていた後続の規則がまるごと値に飲まれる。
+
+実測（出荷アダプター）: `<style>.o{content:"a⏎;position:fixed}⏎.p{color:red}⏎.q{font-weight:bold}</style>` は `position` を 1 件だけ除去して `.p` / `.q` を出力に残すが、ブラウザに届く規則は `.o` だけになる。`position` を含まない同じ形（`content:"a⏎;color:blue}⏎.p{…}`）は `removed` が空のまま `.p` を失う — 利用者からは「何も除去されていないのに装飾が消えた」になり、ADR 013 の「除去した内容は提示する」も空振りする。規則の前置き（`.o"a⏎{…}`）にも同じ経路がある。
+
+### Decision
+
+**`pushStatement` と前置きに渡す文字列の末尾の空白を落とさない。** 切り出しの始点は `filterBlock` が空白を読み飛ばしたあとなので、前方の trim はもともと無効であり、`trim()` を外すことは「末尾を保つ」ことと同義である。これで各文・各前置きの出力は入力の部分文字列そのものに戻り、ADR-078 の「足さない」と合わせて**書き戻しは入力の切り出しそのもの**になる。
+
+閉じ引用符を補う案（`content:"a";`）は採らない。ブラウザが 1 つ目の宣言について計算する値そのものにはなるが、`css.ts` 冒頭の「filter は source が持たない `;` も `}` も供給しない」を破る。同じ約束を引用符について破れば、次に別の字句で同じ判断が要る。
+
+「bad-string で終わる文とだけ特例で扱う」案も採らない。ADR-078 と同じ理由で、特例を数えるより「入力の切り出しをそのまま押す」1 つの規則のほうが短い。
+
+### Consequences
+
+- 良い点: 壊れた宣言の後ろの正当な装飾がブラウザに届く。安全側（`position:fixed` の除去）はそのまま
+- 良い点: 不動点は保たれる（2 巡目が同じ位置で同じ分割をし、同じ部分文字列を押す）。サニタイズ表 209 ケース + 不動点の一覧が緑
+- トレードオフ: **`;` の前後の空白の正規化を失う。** `.a { color: red }` は `.a {color: red }` になる（従来は `.a{color: red}`）。宣言の意味は変わらず、「取り込んだ HTML をそのまま保つ」（ADR 006）の側に寄る
+- 変異スポットチェック: 文側の `trim()` を戻すと 5 ケース、前置き側の `trim()` を戻すと 1 ケースが red
+
+---
+
+## ADR-120: 解析は `<template>` で包んでから行う — parse5 は最上位の節点を 1 つずつ移す
+
+### Context
+
+4 つの資源上限のどれにも掛からない本文が、秒オーダーの CPU を焼いてから拒まれていた。`<p>xxxxxxxx</p>` を 130,000 個（1,950,000 バイト、転送境界の内側）は膨張 1.0 倍・深さ 3・CSS 0 で、`NoteHtml` の 800,000 バイト上限に当たるまで走り切る。**必ず失敗すると分かっている 1 リクエストに 1.5 秒**（参照ランタイムは HTTP と worker を兼ねる単一 Node プロセス、目標プラットフォームでは単一スレッドの DO）。
+
+`--cpu-prof` を取ると、その 97.7% が parse5 の `detachNode` だった。`parseFragment` は最上位の節点をいったん解析用の根に付け、最後に返す fragment へ 1 つずつ移す（`_adoptNodes`）。移すたびに根の子配列に対して `indexOf` + `splice` が走るので、**最上位の節点数の二乗**になる。実測: 同じ入力を `<div>` で包むと 1,407 ms → 81 ms。入力長に対しても超線形で、600 KB で 200 ms、1.95 MB で 1,400 ms。
+
+上限を足す案・上限を早く効かせる案はどちらも採れない。サニタイズは内容を大きく削りうる（ED-03 の中核要件は「スクリプト込み 1 MB → 数十 KB」）ので、**入力長から出力長を決めて事前に拒む安全な判定は無い**。かつ解析後の派生情報（見出し・本文テキスト）を後回しにしても、費用の 93% は解析そのものにある（実測: 解析 1,556 ms / それ以外 110 ms）。
+
+### Decision
+
+**解析は `<template>` を前置した `` `<template>${html}` `` に対して行い、その template の content fragment を結果として使う。** 最上位の節点は template の content に積まれ、解析用の根に残るのは包みの 1 つだけなので、二乗の移動が消える（1.95 MB で 1,407 ms → 87 ms）。
+
+包みは**閉じない**。`</template>` を後ろに足すと、原文が閉じていない raw text 要素（`<plaintext>`、閉じていない `<style>`）の内容にその文字列が入り、「filter は source が持たない文字を供給しない」を解析側で破る。EOF が包みを閉じるので閉じタグは要らない。
+
+**`</template` か `<form` を含む入力は従来どおり素で解析する。** parse5 で「template が開いているかどうか」に依存する分岐はこの 2 つだけである（`tmplCount` の参照箇所を全数確認した）: 前者は包みそのものを閉じ、後者は form 要素ポインタの扱いが変わって入れ子がずれる。どちらも安価な正規表現 1 本で振り分けられるので、包んだ結果を検査して再解析する（= 病的な入力で解析を 2 回払う）形にはしない。
+
+木を数える meter には包みの 1 要素分（21 バイト）を上乗せして渡す。包みはこの module のものであって原文の膨張枠ではない。
+
+fragment の文脈要素を `<div>` や `<body>` に替える案は採らない。それは挿入モードを "in body" に変えるので、最上位の `<tr>` / `<td>` / `<caption>` の扱いが変わる（parse5 の既定の文脈要素は `template` であり、包みはその挿入モードを保つ）。`detachNode` を tree adapter 側で速い実装に差し替える案も採らない — 配列の意味を保ったまま O(1) にはできず、解析中の他の `detachNode`（adoption agency / foster parenting）まで巻き込む。
+
+### Consequences
+
+- 良い点: 上限に掛からない大きい本文の費用が入力長に比例した範囲へ戻る。1.95 MB の平坦な本文で `process` 全体が 1,994 ms → 250 ms（vitest 内）。**拒まれる入力だけでなく、正当な大きい本文（ED-03 の取り込み）も同じだけ速くなる**
+- 良い点: 上限も許可リストも触っていないので、`spec/adr/013` の 4 上限はそのまま
+- 良い点: 出力は変わらない。許可リストの語彙で作った 20,000 個の無作為な markup で素の解析と包んだ解析が 1 バイトも違わず、違ったものはすべて上の 2 パターンに一致した。サニタイズ表 209 ケースも変更前と同一
+- トレードオフ: `<form` を含む本文（保存済みの Web ページにはありうる）は素の経路のままなので速くならない。速さのために解析の意味を変えないほうを採った
+- 残件: parse5 の `_adoptNodes` 自体は上流の問題である。包みはその回避であって修正ではない
+- 変異スポットチェック: 包みを外して素の解析に落とすと TC-note-826 が red（同じ入力で 1/10 の本文に対する比が 10.2 倍 → 44 倍以上）

@@ -175,7 +175,7 @@
 | ADP-storage-004 | `StoredFileRepository.delete` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を削除する |
 | ADP-storage-005 | `StoredFileRepository.listByIds` | `spec/domains/storage.md#ポート` | current scope の複数 file を ID で取得する |
 | ADP-storage-006 | `StoredFileRepository.listByNote` | `spec/domains/storage.md#ポート` | ノートに属する全 file metadata を返す |
-| ADP-storage-007 | `StoredFileRepository.listDeletableByNote` | `spec/domains/storage.md#ポート` | ノート削除対象 file を有界列挙する |
+| ADP-storage-007 | `StoredFileRepository.listDeletableByNote` | `spec/domains/storage.md#ポート` | ノート削除対象 file（`purpose` が `source` / `media` / `reference`）を `id` 昇順で最大 `limit` 件、有界列挙する。順序は契約でありバックエンドの裁量ではない |
 | ADP-storage-008 | `StoredFileRepository.findArtifactByNoteAndVersion` | `spec/domains/storage.md#ポート` | 有効期限内の同版 artifact を取得する |
 | ADP-storage-009 | `StoredFileRepository.listExpired` | `spec/domains/storage.md#ポート` | 期限切れ ephemeral file を有界列挙する |
 | ADP-storage-010 | `StoredFileRepository.listByPurposeOlderThan` | `spec/domains/storage.md#ポート` | current scope の用途・作成時刻（`createdBefore` は包含）で file を有界列挙する。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を排他的に指すキーセット（`null` は先頭）。位置は行ではないので、その行が既に消えていても解決する |
@@ -272,14 +272,14 @@
 | ADP-tag-009 | `TagRepository.deleteUnusedInScope` | `spec/domains/tag.md#ポート` | 未使用・unlocked Tag を原子的に有界削除し ID を返す |
 | ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する。2 つの一意制約を別のエラー種へ写し（`(tagId, noteId)` は `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`AssignmentId` の再利用は `SystemError(DatabaseError)`）、`scope_type` / `scope_id` は scope 鍵として scope object の pin と突き合わせる |
 | ADP-tag-011 | `TagAssignmentRepository.findByTagAndNote` | `spec/domains/tag.md#ポート` | tag・note の assignment を取得する |
-| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を `AssignmentId` 昇順で列挙する |
+| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を `AssignmentId` 昇順で列挙する。複数 scope の行が 1 つの表に載るバックエンドでは、復元する行の `scope_type` / `scope_id` を scope object の pin と突き合わせ、交差した行は消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-tag-013 | `TagAssignmentRepository.listByNotes` | `spec/domains/tag.md#ポート` | 複数ノートの assignment を列挙する |
 | ADP-tag-014 | `TagAssignmentRepository.listByTag` | `spec/domains/tag.md#ポート` | noteId 昇順の keyset page を最大 limit 件返す |
 | ADP-tag-015 | `TagAssignmentRepository.countByNote` | `spec/domains/tag.md#ポート` | ノートの assignment 数を返す |
 | ADP-tag-016 | `TagAssignmentRepository.delete` | `spec/domains/tag.md#ポート` | AssignmentId の行を削除する |
 | ADP-tag-017 | `TagAssignmentRepository.deleteBatchByTag` | `spec/domains/tag.md#ポート` | tag の assignment を有界削除し影響行を返す |
 | ADP-tag-018 | `TagAssignmentRepository.deleteByScope` | `spec/domains/tag.md#ポート` | scope の assignment を有界削除する |
-| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約） |
+| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約）。同じく、消す前にページ全体の `scope_type` / `scope_id` を pin と突き合わせ、交差した行があれば 1 件も消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-tag-020 | `TagAssignmentRepository.reassignBatch` | `spec/domains/tag.md#ポート` | assignment を衝突処理込みで有界付替えし影響 NoteId を返す |
 | ADP-tag-021 | `TagOperationStore.startDelete` | `spec/domains/tag.md#ポート` | delete operation と対象 lock を開始する |
 | ADP-tag-022 | `TagOperationStore.startMerge` | `spec/domains/tag.md#ポート` | merge operation と両 Tag lock を開始する |

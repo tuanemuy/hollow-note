@@ -4,6 +4,8 @@ import { ByteSize, type FilePurpose, MimeType } from "../valueObject";
 
 const MB = 1024 * 1024;
 
+const SVG_MIME_TYPE = "image/svg+xml";
+
 /**
  * The icon bounds, published so an upload form can hint the same limits
  * it will be judged against. The values themselves stay owned by the
@@ -29,27 +31,25 @@ export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
  * be unreachable — the upload would fail on the body's invariant, in
  * Note's vocabulary, for a file Storage said it would accept.
  *
- * 128 KB is what makes the ceiling reachable, and it is reachable only
- * because `readSvgDocument` bounds the *shape* of what is accepted as
- * well as its length — well-formedness alone does not bound it. What
- * multiplies output is foster parenting: an element popped from the
- * stack of open elements while it stays on the list of active
- * formatting elements is reconstructed again for every row that
- * follows, so `k` formatting elements and `m` rows serialize into
- * `k × m` of them. Perfectly well-formed input reaches it — a measured
- * 131,064 bytes of `<svg><table><b a="0">…<b a="61">` with 13,018
- * `<tr>X</tr>` after it serialized into 11,300,523 (86×) in 886 ms.
+ * 128 KB is what makes the ceiling reachable, and what makes it
+ * reachable is `HtmlProcessorLimit`, not any property of the accepted
+ * markup. `process` refuses to build a tree past
+ * `maxExpansionFactor` × the input (floor 262,144), so an input of
+ * 131,072 bytes cannot serialize past 524,288 — comfortably under the
+ * body's 800,000 — whatever an HTML parser does with it. Above that
+ * cost the processor stops rather than paying it, and `storeMedia`
+ * translates the refusal back into this vocabulary.
  *
- * That mechanism has exactly two entrances, and both are named: a
- * breakout tag leaves foreign content directly, and an HTML integration
- * point (`desc` / `title` / `foreignObject`) resumes HTML parsing —
- * from which reaching a table insertion mode still needs a `table`
- * start tag, itself a breakout tag. So `readSvgDocument` refuses those
- * element names outright, which closes both. What is left is character
- * escaping, at most six bytes for one (`"` inside an attribute becoming
- * `&quot;`, 131,072 × 6 = 786,432 under 800,000), and the adoption
- * agency on the formatting elements that survive the gate — `a` and
- * `font` — measured at 1.7× and 1.0× on the same construction.
+ * Nothing here rests on the input's shape. That argument was tried
+ * three times and refuted three times (spec/adr/013 「サニタイズは資源で
+ * 有界である」): well-formedness does not bound the output — a measured
+ * 131,064 bytes of `<svg><table><b a="0">…<b a="61">` with 13,018
+ * `<tr>X</tr>` after it serialized into 11,300,523 (86×) — and neither
+ * does refusing the element names that leave foreign content, since
+ * `<desc><template><tr>` reaches the table insertion modes without any
+ * of them. The name gate below is kept as a cheap front-line defence
+ * that costs one pass and never starts the sanitizer; it is not what
+ * the number above is derived from.
  *
  * The bytes that are actually stored are measured against this same
  * limit again, since the sanitizer's output is what the file becomes.
@@ -95,6 +95,10 @@ const RULES: Partial<Record<FilePurpose, Readonly<Record<string, number>>>> = {
   ),
   media: MEDIA_LIMIT_BYTES,
 };
+
+/** The ceiling `purpose` judges `mimeType` by, or `undefined` when it admits none. */
+const limitOf = (purpose: FilePurpose, mimeType: string): number | undefined =>
+  RULES[purpose]?.[mimeType];
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
@@ -242,6 +246,14 @@ const NAME_END = /[\t\n\r />=<'"]/;
 
 /**
  * The element names that take an HTML parser *out* of an `<svg>`.
+ *
+ * Refusing them is a front-line defence, not a proof: this walk reads
+ * comments and processing instructions to XML's terminators, and the
+ * HTML tokenizer ends `<?a>` at the first `>` and `<!-->` at once, so
+ * markup can hide one of these names from this walk and show it to the
+ * parser. What actually bounds the sanitizer is `HtmlProcessorLimit`
+ * (spec/adr/013); the value of this set is that the common case is
+ * refused in one pass, without the sanitizer running at all.
  *
  * Verbatim from the HTML Standard's rules for parsing tokens in foreign
  * content ("if the token is a start tag whose tag name is one of…"),
@@ -464,16 +476,16 @@ export type SvgDocumentShape = Readonly<{
  * `MEDIA_SVG_MAX_DEPTH`.
  *
  * It also refuses `HTML_BREAKOUT_ELEMENTS`, which XML has no opinion
- * about at all. That one is a bound on what the *sanitizer* can be made
- * to produce rather than on what a browser can open, and the reasoning
- * for it lives on `MEDIA_SVG_MAX_BYTES`.
+ * about at all. That one is not about what a browser can open but about
+ * turning away the cheapest way to make the sanitizer work hard, before
+ * the sanitizer is started; it is a filter and not a bound, and what
+ * bounds the sanitizer is `HtmlProcessorLimit` (spec/adr/013).
  *
  * The same predicate answers at both ends of `storeMedia`: on the bytes
- * as they arrive, so nothing the sanitizer cannot bound is handed to it
- * (see `MEDIA_SVG_MAX_BYTES`), and on the markup that comes back, so
- * what is actually stored is a document rather than a fragment that
- * happens to start with `<svg`. Refusing at the first end costs nothing
- * a browser would have rendered.
+ * as they arrive, where it is the cheap filter described above, and on
+ * the markup that comes back, so what is actually stored is a document
+ * rather than a fragment that happens to start with `<svg`. Refusing at
+ * the first end costs nothing a browser would have rendered.
  */
 export const readSvgDocument = (markup: string): SvgDocumentShape | null => {
   if (XML_FORBIDDEN_CHAR.test(markup)) {
@@ -593,12 +605,19 @@ export const readSvgDocument = (markup: string): SvgDocumentShape | null => {
  *
  * The prologue decides *what the bytes claim to be*, and the document
  * walk decides whether that claim can be honoured. The walk is skipped
- * for a body past the ceiling on purpose: it is refused for its size a
- * step later, in Storage's own vocabulary, and never reaches the
- * sanitizer — reading a 200 MB body through as XML would be the only
- * thing the check accomplished.
+ * for a body past `purpose`'s own SVG ceiling on purpose: it is refused
+ * for its size a step later, in Storage's own vocabulary, and never
+ * reaches the sanitizer — reading a 200 MB body through as XML would be
+ * the only thing the check accomplished. The ceiling is read from the
+ * rule table rather than named as a constant, so a purpose that admits
+ * SVG at a different limit skips exactly its own excess; a purpose that
+ * admits none skips the decode entirely.
  */
-const identifySvg = (body: Uint8Array): boolean => {
+const identifySvg = (body: Uint8Array, purpose: FilePurpose): boolean => {
+  const limit = limitOf(purpose, SVG_MIME_TYPE);
+  if (limit === undefined) {
+    return false;
+  }
   // The BOM never reaches either walk: `TextDecoder` defaults to
   // `ignoreBOM: false`, which means it *consumes* a leading UTF-8 BOM
   // rather than emitting U+FEFF.
@@ -607,8 +626,7 @@ const identifySvg = (body: Uint8Array): boolean => {
     return false;
   }
   return (
-    body.byteLength > MEDIA_SVG_MAX_BYTES ||
-    readSvgDocument(decoder.decode(body)) !== null
+    body.byteLength > limit || readSvgDocument(decoder.decode(body)) !== null
   );
 };
 
@@ -619,9 +637,14 @@ const identifySvg = (body: Uint8Array): boolean => {
  * refuses anything outside the rule table anyway.
  *
  * The textual test comes last because it is the only one that has to
- * decode the body rather than compare bytes at a fixed offset.
+ * decode the body rather than compare bytes at a fixed offset — and it
+ * is the only one that needs `purpose`, since how much of a body it is
+ * worth reading is decided by the ceiling that purpose judges an SVG by.
  */
-const identifyContentType = (body: Uint8Array): MimeType | null => {
+const identifyContentType = (
+  body: Uint8Array,
+  purpose: FilePurpose,
+): MimeType | null => {
   if (carries(body, PNG_SIGNATURE, 0)) {
     return MimeType.create("image/png");
   }
@@ -652,7 +675,7 @@ const identifyContentType = (body: Uint8Array): MimeType | null => {
   ) {
     return MimeType.create("video/webm");
   }
-  return identifySvg(body) ? MimeType.create("image/svg+xml") : null;
+  return identifySvg(body, purpose) ? MimeType.create(SVG_MIME_TYPE) : null;
 };
 
 /** What the store may record about bytes this policy accepted. */
@@ -680,7 +703,7 @@ export type AcceptedUpload = Readonly<{
  */
 export const UploadValidationPolicy = {
   limitFor: (purpose: FilePurpose, mimeType: MimeType): ByteSize => {
-    const limit = RULES[purpose]?.[mimeType];
+    const limit = limitOf(purpose, mimeType);
     if (limit === undefined) {
       throw new BusinessRuleError(
         StorageErrorCode.UnsupportedMimeType,
@@ -698,7 +721,9 @@ export const UploadValidationPolicy = {
   ): AcceptedUpload => {
     const rule = RULES[params.purpose];
     const mimeType =
-      rule === undefined ? null : identifyContentType(params.body);
+      rule === undefined
+        ? null
+        : identifyContentType(params.body, params.purpose);
     if (
       rule === undefined ||
       mimeType === null ||

@@ -51,6 +51,10 @@
  * `content:"a⏎;position:fixed` is two declarations and the second one
  * applies. Hunting for the closing quote to the end of the input loses
  * that `;` and hands the overlay through as one `content` declaration.
+ * The newline is part of what is written back, too: it is the only
+ * thing ending that string, so trimming it off before the `;` re-opens
+ * the string in the output and the rules after it — which the input had
+ * — are swallowed into a value.
  *
  * Every scan is metered. Finding the end of a block re-reads that block,
  * so nesting multiplies the work per byte; a `<style>` holding
@@ -86,9 +90,18 @@ const tooComplex = (detail: string): BusinessRuleError<string> =>
   new BusinessRuleError(HTML_PROCESSOR_TOO_COMPLEX, detail);
 
 /**
- * Charges one scan step. Called once per character a scan examines, which
- * is what makes the meter independent of which scan is running and of how
- * the input nests.
+ * Charges one scan step: one position a scan advances over, which is not
+ * the same as one character it reads. A comment, a string and a url-token
+ * are one lexeme each however long they are, so a single 1.8 MB comment
+ * costs one step, and every level of block nesting re-reads the block
+ * below it while spending steps only on the positions it passes.
+ *
+ * The count is therefore a proxy for the work, not an upper bound on it.
+ * What bounds the two factors it does not see is elsewhere: the length of
+ * a lexeme by the length of the input, and how many times a byte is
+ * re-read by `HtmlProcessorLimit.maxCssNestingDepth`. This meter is the
+ * backstop over their product — it is what stops 300 KB inside 32 legal
+ * levels of nesting.
  */
 const spend = (budget: CssBudget): void => {
   budget.steps -= 1;
@@ -446,6 +459,14 @@ const disallowedPositionProperty = (
  * — this module runs again on its own output, in every path that
  * re-sanitizes a stored body — no longer sees it, appends another, and the
  * text grows by one character per save.
+ *
+ * `text` keeps whatever trailing whitespace the source had, because a
+ * statement can be one a raw newline ended (`content:"a⏎`) and that
+ * newline is the whole of what closed its string. Trimming it and then
+ * writing the `;` leaves `content:"a;`, which re-opens the string over
+ * everything after it: the rules the input still applied are swallowed
+ * into a value, and nothing is reported, since the filter removed
+ * nothing.
  */
 const pushStatement = (
   text: string,
@@ -529,7 +550,7 @@ function filterBlock(
     }
     const stop = scanTo(input, i, ";{}", budget);
     if (stop === -1) {
-      pushStatement(input.slice(i).trim(), false, parts, report, budget);
+      pushStatement(input.slice(i), false, parts, report, budget);
       break;
     }
     if (input[stop] !== "{") {
@@ -537,11 +558,15 @@ function filterBlock(
       // and is written back as one: a stop was found at all only because
       // no string or paren was left open before it, so the `;` cannot be
       // swallowed on the next pass.
-      pushStatement(input.slice(i, stop).trim(), true, parts, report, budget);
+      pushStatement(input.slice(i, stop), true, parts, report, budget);
       i = stop + 1;
       continue;
     }
-    const prelude = input.slice(i, stop).trim();
+    // Trailing whitespace stays here for the same reason it stays on a
+    // statement: a prelude can end with the newline that closed a
+    // bad-string (`.o"a⏎{…}`), and dropping it re-opens that string over
+    // the block and everything after it.
+    const prelude = input.slice(i, stop);
     const end = findBlockEnd(input, stop, budget);
     const body = input.slice(stop + 1, end === -1 ? input.length : end);
     i = end === -1 ? input.length : end + 1;

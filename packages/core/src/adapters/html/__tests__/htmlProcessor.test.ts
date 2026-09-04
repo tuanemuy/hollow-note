@@ -546,46 +546,73 @@ const sanitizeCases: readonly SanitizeCase[] = [
   // follows really is a declaration of its own. A scan that hunted for
   // the closing quote to the end of the input would hand the whole run
   // over as one `content` declaration and let the overlay through.
+  //
+  // The newline is also part of what is written back. The exact output
+  // is the claim in these cases rather than a fragment of it: writing
+  // `content:"a;` — the string re-opened, because the only thing that
+  // closed it was trimmed — leaves every rule after it inside a value,
+  // so a substring assertion can hold while the decoration it names is
+  // gone from the page.
   {
-    tc: "TC-note-705",
-    title: "drops position after a string a newline ends",
+    tc: "TC-note-823",
+    title: "keeps the rules after a string a newline ends, and drops position",
     input:
-      '<style>.o{content:"a\n;position:fixed;top:0;left:0;width:100%}</style>',
-    present: ['content:"a;', "top:0"],
-    absent: ["fixed"],
+      '<style>.o{content:"a\n;position:fixed;top:0}\n.p{color:red}\n.q{font-weight:bold}</style>',
+    html: '<style>.o{content:"a\n;top:0}.p{color:red}.q{font-weight:bold}</style>',
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-707",
+    tc: "TC-note-823",
+    title: "carries a newline-ended string through when nothing is removed",
+    // The case that reports nothing: with the newline trimmed away, the
+    // sanitizer was the one breaking the page, and `removed` — which is
+    // what ED-03 shows the author — stayed empty while `.p` disappeared.
+    input: '<style>.o{content:"a\n;color:blue}\n.p{color:red}</style>',
+    html: '<style>.o{content:"a\n;color:blue}.p{color:red}</style>',
+    noRemovals: true,
+  },
+  {
+    tc: "TC-note-823",
+    title: "carries a newline-ended string in a rule's prelude through",
+    input: '<style>.o"a\n{color:blue}\n.p{color:red}</style>',
+    html: '<style>.o"a\n{color:blue}.p{color:red}</style>',
+    noRemovals: true,
+  },
+  {
+    tc: "TC-note-823",
     title: "drops position after a style attribute string a newline ends",
-    input: '<p style="content:\'a\n;position:fixed">x</p>',
-    present: ["content:'a;"],
-    absent: ["fixed"],
+    input: '<p style="content:\'a\n;position:fixed;top:0">x</p>',
+    html: '<p style="content:\'a\n;top:0">x</p>',
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705",
+    tc: "TC-note-823",
     title: "drops position after a string a carriage return ends",
+    // The HTML parser normalizes CR to LF before the CSS is ever read,
+    // so what is written back is the newline the tree holds.
     input: '<style>.o{content:"a\r;position:fixed}</style>',
+    html: '<style>.o{content:"a\n;}</style>',
     absent: ["fixed"],
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705",
+    tc: "TC-note-823",
     title: "drops position after a string a form feed ends",
     input: '<style>.o{content:"a\f;position:fixed}</style>',
+    html: '<style>.o{content:"a\f;}</style>',
     absent: ["fixed"],
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-705",
+    tc: "TC-note-823",
     title: "drops position in the rule after one a newline-ended string left",
     input: '<style>div{content:"a\n} .x{position:fixed}</style>',
+    html: '<style>div{content:"a\n}.x{}</style>',
     absent: ["fixed"],
     removed: [{ kind: "css", name: "position" }],
   },
   {
-    tc: "TC-note-710",
+    tc: "TC-note-823",
     title: "keeps a string a backslash continues onto the next line",
     // The escape swallows the newline, so this is one string and the
     // bad-string rule never applies to it.
@@ -594,7 +621,7 @@ const sanitizeCases: readonly SanitizeCase[] = [
     noRemovals: true,
   },
   {
-    tc: "TC-note-710",
+    tc: "TC-note-824",
     title: "keeps the rest of a rule whose function token is not url()",
     // `myurl(` is a function token to a browser, not a url-token, so the
     // `;` inside it terminates nothing. Reading it as a url-token used to
@@ -912,10 +939,50 @@ describe("HtmlProcessor.process — ADP-note-001 is bounded by resources", () =>
     expect(error.code).toBe("NOTE_HTML_TOO_COMPLEX");
   });
 
-  it("TC-note-822: still processes an expansion that stays inside the allowance", () => {
+  it("TC-note-825: still processes an expansion that stays inside the allowance", () => {
     const result = processor.process(`<table><tr>${fosterRows(20, 5)}</table>`);
 
     expect(result.html).toContain("<table>");
+  });
+
+  it("TC-note-826: refuses a flat body the transport ceiling admits at a cost that grows with its length", () => {
+    // None of the four ceilings applies: 1,950,000 bytes expand 1.0×,
+    // nest three deep and hold no CSS. The body is still refused, for
+    // exceeding 800,000 bytes — the gap between the two ceilings is the
+    // room sanitization needs to shrink an imported page, so this cost
+    // is paid on an input that cannot succeed.
+    //
+    // What is asserted is the growth rather than a wall clock, because
+    // the defect it holds off is a complexity class rather than a
+    // constant: parse5 moves every top-level node out of the parse root
+    // one at a time, which is quadratic in how many there are. A tenth
+    // of the body is the yardstick — ten times the nodes measured 10.2×
+    // the time here, against 44× when they are moved that way — and both
+    // measurements move together on a slower or busier machine.
+    const flatBody = (paragraphs: number): string =>
+      "<p>xxxxxxxx</p>".repeat(paragraphs);
+    const tenth = flatBody(13_000);
+    const whole = flatBody(130_000);
+
+    processor.process(tenth);
+    const tenthStarted = Date.now();
+    processor.process(tenth);
+    const tenthCost = Date.now() - tenthStarted;
+
+    const wholeStarted = Date.now();
+    let thrown: unknown;
+    try {
+      processor.process(whole);
+    } catch (error) {
+      thrown = error;
+    }
+    const wholeCost = Date.now() - wholeStarted;
+
+    expect(thrown).toBeInstanceOf(BusinessRuleError);
+    expect((thrown as BusinessRuleError<string>).code).toBe(
+      "NOTE_CONTENT_TOO_LARGE",
+    );
+    expect(wholeCost).toBeLessThan(Math.max(tenthCost, 1) * 20);
   });
 });
 

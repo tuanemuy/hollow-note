@@ -6,6 +6,7 @@ import type { FileStoredEvent } from "@repo/core/domain/storage/events";
 import {
   MEDIA_SVG_MAX_BYTES,
   MEDIA_SVG_MAX_DEPTH,
+  UploadValidationPolicy,
 } from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { ObjectKey } from "@repo/core/domain/storage/valueObject";
 import { UsageErrorCode } from "@repo/core/domain/usage/errorCode";
@@ -239,6 +240,38 @@ const fosterParentingSvg = (formatting: string, bytes: number): string => {
   const [open, close] = nested(formatting, MEDIA_SVG_MAX_DEPTH - 3);
   const head = `<svg ${SVG_NAMESPACE}><table>${open}`;
   const tail = `${close}</table></svg>`;
+  const row = "<tr>X</tr>";
+  const rows = Math.floor((bytes - head.length - tail.length) / row.length);
+  return `${head}${row.repeat(rows)}${tail}`;
+};
+
+/**
+ * The same document with the breakout tag hidden from the intake walk.
+ *
+ * `readSvgDocument` reads a comment to `-->` and a processing
+ * instruction to `?>`, which is what XML says. The HTML tokenizer ends
+ * `<?a>` at the first `>` (a bogus comment) and treats `<!-->` as a
+ * complete abrupt-closing comment, so everything after it is markup to
+ * the parser and invisible to the walk. Eight characters therefore put
+ * a `<table>` on exactly one side of the gate.
+ *
+ * Both forms are *accepted* by the intake and refused by `storeMedia`,
+ * in Storage's vocabulary, because the sanitizer stops at its own
+ * resource ceiling (spec/adr/013).
+ */
+const HIDDEN_BREAKOUT_WRAPPERS = {
+  processingInstruction: ["<?a>", "<?b?>"],
+  comment: ["<!-->", "-->"],
+} as const;
+
+const hiddenBreakoutSvg = (
+  wrapper: keyof typeof HIDDEN_BREAKOUT_WRAPPERS,
+  bytes: number,
+): string => {
+  const [hide, reveal] = HIDDEN_BREAKOUT_WRAPPERS[wrapper];
+  const [open, close] = nested("b", MEDIA_SVG_MAX_DEPTH - 3);
+  const head = `<svg ${SVG_NAMESPACE}>${hide}<table>${open}`;
+  const tail = `${close}</table>${reveal}</svg>`;
   const row = "<tr>X</tr>";
   const rows = Math.floor((bytes - head.length - tail.length) / row.length);
   return `${head}${row.repeat(rows)}${tail}`;
@@ -819,6 +852,33 @@ describe("storeMedia", () => {
       upload(h, noteId, { body: svg(markup), fileName: "foster.svg" }),
       StorageErrorCode.UnsupportedMimeType,
     );
+    expect(filesIn(h, personalScope)).toHaveLength(0);
+    expect(h.backend.objects.size).toBe(0);
+  });
+
+  it("TC-storage-272: refuses an SVG whose breakout tag is hidden from the intake, in Storage's vocabulary", async () => {
+    const h = harness();
+    const noteId = await createPersonalNote(h);
+
+    for (const wrapper of ["processingInstruction", "comment"] as const) {
+      const markup = hiddenBreakoutSvg(wrapper, MEDIA_SVG_MAX_BYTES);
+      const body = svg(markup);
+      expect(body.byteLength).toBeLessThanOrEqual(MEDIA_SVG_MAX_BYTES);
+      // The gate does not see the `<table>`, so the upload is accepted
+      // as an SVG and the sanitizer is what stops it. The point of the
+      // case is which vocabulary the failure comes back in: the note
+      // body's `NOTE_HTML_TOO_COMPLEX` is not in this usecase's error
+      // table and tells an uploader nothing they can act on.
+      expect(
+        UploadValidationPolicy.ensureAcceptable({ purpose: "media", body })
+          .mimeType,
+      ).toBe("image/svg+xml");
+
+      await expectBusinessRule(
+        upload(h, noteId, { body, fileName: `${wrapper}.svg` }),
+        StorageErrorCode.FileTooLarge,
+      );
+    }
     expect(filesIn(h, personalScope)).toHaveLength(0);
     expect(h.backend.objects.size).toBe(0);
   });

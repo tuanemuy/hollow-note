@@ -20,7 +20,11 @@
 | コメント・処理命令・CDATA の中に `&` を含む SVG | アップロードする | 成功する（実体参照の規則が効くのは文字データと属性値だけで、コメントの中の `&` は 1 文字にすぎない。書き出しツールの生成コメントが実際に持ちうる） | |
 | XML として整形式でない SVG（タブ・CR・LF 以外の C0 制御文字、閉じないタグ、未定義実体 `&nbsp;`、属性値中の生の `<`） | アップロードする | `BusinessRuleError(UnsupportedMimeType)` が投げられ、オブジェクトも行も残らない（ブラウザもこれらを開けないので、受理を断っても描けたものは失わない） | |
 | 入れ子が 64 段の SVG / 65 段の SVG | アップロードする | 64 段は成功し、65 段は `BusinessRuleError(UnsupportedMimeType)` になる（境界値。サニタイザーは木を素の再帰で歩くので、深さがそのままスタックの深さになる） | |
-| 閉じない整形要素とブロック要素を交互に並べた 128 KB の SVG（`<b><p>` / `<em><p>` / `<b><i><p>` の反復） | アップロードする | `BusinessRuleError(UnsupportedMimeType)` になる。整形要素の複製で出力が入力の二乗に膨らむため、受理してしまうと Note の語彙の `NOTE_CONTENT_TOO_LARGE` で落ちる | |
+| 閉じない整形要素とブロック要素を交互に並べた 128 KB の SVG（`<b><p>` / `<em><p>` / `<b><i><p>` の反復） | アップロードする | `BusinessRuleError(UnsupportedMimeType)` になる（閉じないタグは XML として整形式でないので、受理判定がそこで断る） | |
+| 整形式で、すべてのタグが閉じ、入れ子も 64 段以内、128 KB 以内でありながら HTML の breakout tag（`<table>` と 61 個の `<b>`、その下に `<tr>X</tr>` を約 13,000 行）を含む SVG | アップロードする | `BusinessRuleError(UnsupportedMimeType)` になる。整形式性でも長さでもなく**要素名**で拒む（前段の安価な防御。foster parenting で `<b>` が行ごとに作り直され、131 KB が 11 MB に膨らむ実測 86 倍の経路） | |
+| 同じ形から breakout tag だけを除いた 128 KB の SVG（`a` / `font` を 62 段 + `<text>` の反復） | アップロードする | 成功し、保管サイズが 128 KB 以内に収まる（境界値。上限が到達可能であることの根拠になる） | |
+| コメント（`<!-->`）または処理命令（`<?a>`）に隠して受理判定を素通りする breakout tag を持つ、128 KB 以内の整形式な SVG | アップロードする | 受理判定は通るが `BusinessRuleError(FileTooLarge)` になり、オブジェクトも行も残らない。Note の語彙（`NOTE_HTML_TOO_COMPLEX`）は漏れない — 資源の上限による打ち切りを境界で Storage の語彙へ翻訳する | |
+| サニタイズで縮む SVG（`<script>` の中身が落ちる）を残容量より大きいバイト列で / 膨らむ SVG（U+00A0 が `&#160;` になる）を残容量ぎりぎりのバイト列で | アップロードする | 縮む側は成功して消費量がサニタイズ後の長さと一致し、膨らむ側は `BusinessRuleError(StorageQuotaExceeded)` になる（容量を測る値・行に載る値・上限を当てる値が 1 つに揃っている） | |
 | ルート要素の前後に XML の空白（空白・タブ・CR・LF）だけがある SVG | アップロードする | 成功する（境界値） | |
 | ゴミ箱のノート | アップロードする | `BusinessRuleError(NoteIsTrashed)` が投げられ、オブジェクトも行も残らない（`NoteAccessPolicy` は所有者自身のゴミ箱のノートに `canEdit: true` を返すので、この門が無いと本文へ入れる手段のないメディアが容量だけ占める） | |
 | 保存容量の残りが足りない | アップロードする | `BusinessRuleError(StorageQuotaExceeded)` が投げられる | |

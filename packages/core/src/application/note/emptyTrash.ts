@@ -15,10 +15,24 @@ import { purgeNote } from "./purgeNote";
 import type { EmptyTrashView } from "./view";
 
 /**
- * Notes one HTTP request purges inline. The bound is about the response
- * time and the `note.purged` fan-out of a single mutation, not about
- * query count — scope-local SQL carries no D1 budget
- * (spec/platform/index.md「実行予算と分割単位」).
+ * Notes one HTTP request purges inline (spec/platform/index.md「実行予算
+ * と分割単位」).
+ *
+ * The bound is about the response time and the `note.purged` fan-out of
+ * a single mutation — and about global queries too, which this path is
+ * not exempt from: the inline loop *calls* `purgeNote`, so each of the
+ * fifty notes crosses the global route and the global public projection
+ * for eleven to twelve statements, some 600 for the request. Scope-local
+ * SQL carries no D1 budget, but this loop is not scope-local.
+ *
+ * The value stays at 50 all the same. 600 is over the section's
+ * 500-query design ceiling and inside the real 1,000, and an HTTP
+ * mutation — unlike an alarm turn, which may carry a sibling task in the
+ * same invocation — holds its invocation alone, so this path has no way
+ * of drifting toward that ceiling. What fixes the number is the other
+ * side: 50 is the user-visible threshold that the trash screen's
+ * 「51 件以上はジョブ」branch is written against (spec/pages/index.md),
+ * so moving it is a change to those pages rather than a tuning knob.
  */
 export const EMPTY_TRASH_SYNCHRONOUS_LIMIT = 50;
 

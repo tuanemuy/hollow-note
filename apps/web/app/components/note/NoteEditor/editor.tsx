@@ -1,7 +1,13 @@
 "use client";
 
 import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
-import { MEDIA_ALLOWED_MIME_TYPES } from "@repo/core/domain/storage/services/uploadValidationPolicy";
+import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
+import {
+  MEDIA_ALLOWED_MIME_TYPES,
+  MEDIA_IMAGE_MAX_BYTES,
+  MEDIA_SVG_MAX_BYTES,
+  MEDIA_VIDEO_MAX_BYTES,
+} from "@repo/core/domain/storage/services/uploadValidationPolicy";
 import { useBlocker, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -15,7 +21,7 @@ import {
   useTransition,
 } from "react";
 import { Alert } from "@/components/ui/Alert";
-import { displayError } from "@/presentation/errorDisplay";
+import { displayError, renderErrorMessage } from "@/presentation/errorDisplay";
 import { extractSerializedError } from "@/presentation/errorResponse";
 import {
   applyTextNodeEditsFn,
@@ -103,9 +109,16 @@ type VisualPaths = Readonly<{
 
 /**
  * 編集の状態を 1 つの瞬間から取った写し。**確定済みの値もこの型で持つ**
- * （`confirmed`）ので、「タイトルだけ進んだ」「本文だけ進んだ」確定は
- * 型として書けない — 確定値を動かせるのは写し 1 つを丸ごと渡す 2 つの
- * 遷移（`confirm` と `reseed`）だけである。
+ * （`confirmed`）ので、確定を動かすには写しを丸ごと渡すしかない —
+ * 「タイトルだけ」「本文だけ」を渡す引数の形が無く、進めない側は
+ * `{ ...confirmed, title }` と**明示的に**書いた分しか通らない。
+ *
+ * 確定値が動く経路は 3 つで、汎用の setter は**置いていない**（3 つの
+ * 遷移がそれぞれ自分で `confirmedRef` と state を書く）。写しを丸ごと
+ * 動かせるのは `confirm`（進める）と `reseed`（置き換える）の 2 つで、
+ * 3 つ目の `attachVisualPaths` は `VisualPaths` しか受け取らないので
+ * タイトルと本文を触れない。4 つ目の部分確定を足そうとすると、遷移を
+ * 1 つ書き足すことになり、この段落が目に入る。
  *
  * 面の内容を読めるのは `takeSnapshot()` の 1 か所だけで、写しは往復の
  * あいだ動かない。保存が確定させてよいのは**送った値**であって、往復の
@@ -147,9 +160,15 @@ type SaveStatus =
   | Readonly<{ kind: "saved" }>
   /**
    * 通信エラー。`stashed` は**実際に端末へ退避できたか**で、退避の鍵が
-   * `noteId` である以上、まだ作られていないノートでは偽になる。案内と
-   * 逃げ道（再試行 / ダウンロード）はこの値で分かれる — 退避していない
-   * のに「退避した」と告げると、利用者はそれを信じて画面を離れる。
+   * `noteId` である以上、まだ作られていないノートでは偽になる。ただし
+   * 偽の意味は「退避していない」だけで、「ノートが無い」ではない —
+   * 保存以外の往復（モード切替・競合の解決・版の復元）が落ちたときも
+   * 偽で入る。退避を書けるのは保存の `catch` だけだからである。
+   *
+   * したがって案内と逃げ道（再試行 / ダウンロード）を分けるのは
+   * `creationFailed` のほうで、この値が語るのは「次に開けば復元できる」
+   * の 1 文だけである — 退避していないのに「退避した」と告げると、
+   * 利用者はそれを信じて画面を離れる。
    */
   | Readonly<{ kind: "failed"; message: string; stashed: boolean }>
   /**
@@ -300,18 +319,13 @@ export function NoteEditorIsland({
   /**
    * 確定値の ref 版。面の載せ直し（`applyMode`）と保存は非同期の閉包の
    * 中から確定値を読むので、描画が捕まえた `confirmed` は 1 世代古い
-   * ことがある。書き戻しの入口を {@link setConfirmedSnapshot} に絞って、
-   * state と ref が食い違わないようにしてある。
+   * ことがある。ref と state はこの下の 3 つの遷移（`confirm` /
+   * `reseed` / `attachVisualPaths`）でしか動かず、どれも 2 つを同じ行で
+   * 揃えるので食い違わない。**汎用の書き込み口は置かない** — 置くと、
+   * 「1 つの項目だけ進める」呼び出しがその入口から入れてしまう
+   * （`EditorSnapshot` の JSDoc）。
    */
   const confirmedRef = useRef<EditorSnapshot>(confirmed);
-  /**
-   * 確定値の唯一の書き込み口。受け取るのは**写し全体**で、1 つの項目
-   * だけを進める入口は持たない（`EditorSnapshot` の JSDoc）。
-   */
-  const setConfirmedSnapshot = (next: EditorSnapshot): void => {
-    confirmedRef.current = next;
-    setConfirmed(next);
-  };
   const [title, setTitle] = useState(confirmed.title);
   const [body, setBody] = useState(confirmed.body);
   /** 書く面へ渡す値。差し替えたときだけ動かす（打鍵ごとに動かすと caret が飛ぶ）。 */
@@ -353,6 +367,17 @@ export function NoteEditorIsland({
     null,
   );
   const [revisionError, setRevisionError] = useState<string | null>(null);
+  /**
+   * 初回保存で作られたノート。URL の置き換え（`/notes/new` → 編集の URL）
+   * が**まだ済んでいない**あいだだけ入っている。保存の中で移らないのは、
+   * 移る先が別のルートで島がアンマウントされるためである — 新しい画面は
+   * サーバーから読み直した本文で開くので、往復のあいだに打った分がそこで
+   * 消える。
+   */
+  const [createdNote, setCreatedNote] = useState<Readonly<{
+    noteId: string;
+    workspaceId: string | null;
+  }> | null>(null);
   /**
    * 進行中・失敗したアップロード。楽観層は本文へ差し込む仮の要素
    * （`data-hollow-upload`）が担うので、この一覧に `useOptimistic` は
@@ -494,13 +519,24 @@ export function NoteEditorIsland({
     : dirty
       ? LEAVE_CONFIRM
       : null;
+  /**
+   * 自分が起こす遷移（初回保存後の URL 置き換え）のあいだだけ立てる。
+   * 立てないと、利用者が何も操作していないのに自分の離脱確認が出る —
+   * 取り消されれば URL は `/notes/new` のまま残り、了解されても確認の
+   * 意味が無い。
+   */
+  const selfNavigateRef = useRef(false);
 
   useBlocker({
     shouldBlockFn: useCallback(() => {
+      if (selfNavigateRef.current) return false;
       const message = leaveConfirmRef.current;
       return message !== null && !window.confirm(message);
     }, []),
-    enableBeforeUnload: useCallback(() => leaveConfirmRef.current !== null, []),
+    enableBeforeUnload: useCallback(
+      () => !selfNavigateRef.current && leaveConfirmRef.current !== null,
+      [],
+    ),
   });
 
   const reconcile = () =>
@@ -647,27 +683,14 @@ export function NoteEditorIsland({
         });
         markSaved();
         await reconcile();
-        // URL を編集の URL へ置き換える。以降は既存ノートの編集と同じ扱い。
-        await router
-          .navigate(
-            created.workspaceId === null
-              ? {
-                  to: "/notes/$noteId/edit",
-                  params: { noteId: created.noteId },
-                  replace: true,
-                }
-              : {
-                  to: "/workspaces/$workspaceId/notes/$noteId/edit",
-                  params: {
-                    noteId: created.noteId,
-                    workspaceId: created.workspaceId,
-                  },
-                  replace: true,
-                },
-          )
-          .catch(() => {
-            console.error("Navigation to the created note failed");
-          });
+        // URL の置き換えはここでは行わない。移る先は別のルートなので島は
+        // アンマウントされ、新しい編集画面はサーバーから読み直した本文で
+        // 開く — 往復のあいだに打った分がそこで消える。落ち着いてから
+        // 移す仕事は effect に渡す（`createdNote`）。
+        setCreatedNote({
+          noteId: created.noteId,
+          workspaceId: created.workspaceId,
+        });
         return true;
       }
 
@@ -828,7 +851,8 @@ export function NoteEditorIsland({
    * 送っていない打鍵を確定の値で上書きすると打鍵が黙って消える。
    */
   const confirm = (sent: EditorSnapshot, next: EditorSnapshot): void => {
-    setConfirmedSnapshot(next);
+    confirmedRef.current = next;
+    setConfirmed(next);
     setTitle((value) => (value === sent.title ? next.title : value));
     // ビジュアルの面は打鍵で本文 state を動かさないので、確定のたびに
     // 揃え直す。揃えないと、面が持つ本文と `body` state が食い違ったまま
@@ -864,9 +888,10 @@ export function NoteEditorIsland({
    */
   const reseedIfUnchanged = async (sent: EditorSnapshot): Promise<boolean> => {
     if (!sameSnapshot(takeSnapshot(), sent)) return false;
-    // モードは変わらないので ED-04 の門は掛からない（掛けると、いま居る
-    // 面へ載せ直すだけの往復で警告が出る）。
-    await reseedFromServer(mode, true);
+    // 門は通す。モードは変わらないが、引き直した正本が面に無い `<style>`
+    // を持っていれば装飾はここで落ちる（`needsWysiwygWarning`）。いま送った
+    // 本文が返ってくるだけの往復では、面と正本が一致するので掛からない。
+    await reseedFromServer(mode, false);
     return true;
   };
 
@@ -900,6 +925,40 @@ export function NoteEditorIsland({
   const creationFailed =
     identity.kind === "new" &&
     (status.kind === "failed" || status.kind === "rejected");
+
+  // 初回保存で作られたノートの URL へ置き換える（PAGE-p12-002）。**書き
+  // かけが残っているあいだは移らない** — 移った先の画面はサーバーの本文で
+  // 開くので、往復のあいだに打った分がそこで消える。残っていれば自動保存が
+  // 1.5 秒後に拾い、`dirty` が下りた描画でこの effect が移す。
+  //
+  // 遷移そのものは blocker を素通りさせる（`selfNavigateRef`）。自分が
+  // 起こした遷移で自分の離脱確認を出しても、利用者に選べることは何も無い。
+  useEffect(() => {
+    if (createdNote === null || dirty || busy) return;
+    const { noteId: createdId, workspaceId } = createdNote;
+    setCreatedNote(null);
+    selfNavigateRef.current = true;
+    void router
+      .navigate(
+        workspaceId === null
+          ? {
+              to: "/notes/$noteId/edit",
+              params: { noteId: createdId },
+              replace: true,
+            }
+          : {
+              to: "/workspaces/$workspaceId/notes/$noteId/edit",
+              params: { noteId: createdId, workspaceId },
+              replace: true,
+            },
+      )
+      .catch(() => {
+        console.error("Navigation to the created note failed");
+      })
+      .finally(() => {
+        selfNavigateRef.current = false;
+      });
+  }, [createdNote, dirty, busy, router]);
 
   // 自動保存（ED-08）。落ち着いてから 1 回だけ走らせる。
   //
@@ -948,25 +1007,67 @@ export function NoteEditorIsland({
   };
 
   /**
-   * ED-04 の警告を出すか。判定の材料は 2 つの or である。
+   * ED-04 の警告を出すか。問いは**モードが変わるか**ではなく、
+   * 「これから面へ載る本文の装飾が、いま面に載っている本文より多く
+   * 落ちるか」である — WYSIWYG の面は `baseline` が変わるたびに無条件で
+   * `<style>` を落とすので（`surfaces.tsx`）、モードを変えない載せ直し
+   * （版の復元・競合の解決・退避の復元・保存後の載せ直し）でも装飾は
+   * そこで失われる。
    *
-   * - `target.mayLoseDecoration` — 取り込み由来か（元ファイル・`styleMode`）。
-   *   島からは見えない値なので、サーバーコンポーネントが畳んで渡す
-   * - **これから面へ載る本文**が `<style>` を持つか。断片を描いた時点の
-   *   本文で判定すると、そのあと HTML モードで貼って自動保存した
-   *   スタイルシートが警告も版理由も無しに WYSIWYG の面から落ちる
-   *   （自動保存は断片を描き直さないので、プロップは古いままである）
+   * - WYSIWYG へ**入る**とき: 材料は `target.mayLoseDecoration`（取り込み
+   *   由来か。島からは見えない値なので、サーバーコンポーネントが畳んで
+   *   渡す）と、これから面へ載る本文が `<style>` を持つかの or。断片を
+   *   描いた時点の本文で判定すると、そのあと HTML モードで貼って自動保存
+   *   したスタイルシートが警告も版理由も無しに落ちる（自動保存は断片を
+   *   描き直さない）
+   * - すでに WYSIWYG に**居る**とき: 比較対象は面がいま持っている本文で、
+   *   そこからは `<style>` が既に落ちている。だから載せ直す本文が
+   *   `<style>` を持てば、それは面に無かった装飾がこれから落ちるという
+   *   ことである。`mayLoseDecoration` は入る瞬間の材料なので**足さない**
+   *   — 足すと、取り込み由来のノートで保存のたびに警告が出る
    *
    * 「今後表示しない」は**置いていない** — ED-04 は「設定画面から再表示に
    * 戻せる」ことまで込みで定めており、戻し口を持つ設定画面は本スライスの
    * 外にある。戻せない一方通行の抑止だけを先に出すと、一度押した端末では
    * 装飾の喪失が二度と告げられなくなる。
    */
-  const needsWysiwygWarning = (next: EditorMode, nextBody: string): boolean =>
-    next === "wysiwyg" &&
-    next !== mode &&
-    ((target.kind === "existing" && target.mayLoseDecoration) ||
-      willDropStyleElements(nextBody));
+  const needsWysiwygWarning = (next: EditorMode, nextBody: string): boolean => {
+    if (next !== "wysiwyg") return false;
+    if (mode !== "wysiwyg") {
+      return (
+        (target.kind === "existing" && target.mayLoseDecoration) ||
+        willDropStyleElements(nextBody)
+      );
+    }
+    // 面が組まれる前（ref が空）は「面には何も載っていない」と読む。
+    // 取りこぼさない側へ倒す判断で、ADR-104 の走査側と向きを揃えてある。
+    return (
+      willDropStyleElements(nextBody) &&
+      !willDropStyleElements(wysiwygRef.current?.innerHTML ?? "")
+    );
+  };
+
+  /**
+   * 門に掛かったときに本文を載せる面。**WYSIWYG から逃げる**のが要点で、
+   * 据え置きでは面がそのまま `<style>` を落としてしまい、門が何も守らない
+   * （ED-04 は「警告を了解するまで WYSIWYG に居ない」ことで装飾を守る）。
+   * 逃げ先が HTML なのは、開いた直後の既定（`initialMode`）と同じ理由 —
+   * `<style>` を落とさない面のうち、どんな本文でも開ける唯一のものである。
+   *
+   * 呼ぶと警告と保留中のモードも立てる。返り値をそのまま `seedMode` へ
+   * 渡す形にしてあるのは、門を通す経路すべてで「載せる面の決め方」を
+   * 1 か所に閉じるためである。
+   */
+  const surfaceModeFor = (
+    next: EditorMode,
+    nextBody: string,
+    acknowledged: boolean,
+  ): EditorMode => {
+    if (acknowledged || !needsWysiwygWarning(next, nextBody)) return next;
+    setWysiwygWarning(true);
+    setPendingMode(next);
+    return mode === "wysiwyg" ? "html" : mode;
+  };
 
   const enterMode = (next: EditorMode): void => {
     // ここで見られる「これから載る本文」は確定値である。正本を引き直した
@@ -1025,8 +1126,9 @@ export function NoteEditorIsland({
    *
    * ED-04 の門はここでも通す。引き直した本文こそが**面へ実際に載る本文**
    * であり、他の利用者がスタイルシートを足していれば手元の確定値には
-   * 現れないためである。門に掛かったら、正本は載せたうえでモードだけ
-   * 据え置き、警告を出して了解を待つ（`acknowledged` で通り抜ける）。
+   * 現れないためである。門に掛かったら、正本は載せたうえで面を
+   * `<style>` を落とさないほうへ倒し（{@link surfaceModeFor}）、警告を
+   * 出して了解を待つ（`acknowledged` で通り抜ける）。
    */
   const reseedFromServer = async (
     next: EditorMode,
@@ -1040,15 +1142,29 @@ export function NoteEditorIsland({
       noteId: current.noteId,
       version: latest.version,
     });
-    const blocked = !acknowledged && needsWysiwygWarning(next, latest.html);
-    seedMode(blocked ? mode : next, latest.title, latest.html);
-    if (blocked) {
-      setWysiwygWarning(true);
-      setPendingMode(next);
-    }
+    seedMode(
+      surfaceModeFor(next, latest.html, acknowledged),
+      latest.title,
+      latest.html,
+    );
     if (!latest.canEdit) {
       setStatus({ kind: "blocked", message: EDIT_PERMISSION_LOST });
     }
+  };
+
+  /**
+   * 面のモードだけを切り替える。本文を載せるのは呼び出し元で、正本を
+   * 確定させる載せ直し（{@link seedMode}）と、未保存の内容を面へ載せる
+   * だけの経路（退避の復元・競合の上書き）で載せる値が違うためである。
+   */
+  const switchMode = (next: EditorMode): void => {
+    // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。同じ面へ
+    // 載せ直す（破棄）ときは、まだ記録していない変換の予定を落とさない。
+    wysiwygConversionRef.current =
+      next === "wysiwyg" &&
+      (mode !== "wysiwyg" || wysiwygConversionRef.current);
+    setMode(next);
+    writePreferredMode(next);
   };
 
   const seedMode = (
@@ -1056,28 +1172,46 @@ export function NoteEditorIsland({
     nextTitle: string,
     nextBody: string,
   ): void => {
-    // 変換として記録するのは WYSIWYG へ**入った**最初の保存だけ。同じ面へ
-    // 載せ直す（破棄）ときは、まだ記録していない変換の予定を落とさない。
-    wysiwygConversionRef.current =
-      next === "wysiwyg" &&
-      (mode !== "wysiwyg" || wysiwygConversionRef.current);
-    setMode(next);
+    switchMode(next);
     reseed(nextTitle, nextBody);
-    writePreferredMode(next);
   };
 
   /**
    * 確定値を丸ごと置き換える（遷移その 2）。渡すのはサーバーが持っている
-   * 正本で、面もその値で組み直す。確定値を進めるのが `confirm`、置き換える
-   * のがこれで、確定値が動く経路はこの 2 つしかない。
+   * 正本で、面もその値で組み直す。
    *
    * 経路表を `null` へ落とすのは、面を組み直すまでサーバーの木と噛み合う
-   * 表が手元に無いためである。面が組み上がると `onReady` が表を報せ、
-   * そこで初めて経路単位の保存が使える状態に戻る。
+   * 表が手元に無いためである。面が組み上がると `onReady` が
+   * {@link attachVisualPaths} で表を報せ、そこで初めて経路単位の保存が
+   * 使える状態に戻る。
    */
   const reseed = (nextTitle: string, nextBody: string): void => {
-    setConfirmedSnapshot({ title: nextTitle, body: nextBody, visual: null });
+    const next: EditorSnapshot = {
+      title: nextTitle,
+      body: nextBody,
+      visual: null,
+    };
+    confirmedRef.current = next;
+    setConfirmed(next);
     loadSurface(nextTitle, nextBody);
+  };
+
+  /**
+   * 面が組み上がったことを確定値へ書く（遷移その 3）。受け取るのは
+   * 経路表だけなので、タイトルと本文はここから動かせない — 部分的な
+   * 確定を書ける入口はこれ 1 つで、触れる範囲が引数の型で閉じている。
+   *
+   * 経路単位で送ってよいのは、面が**確定値そのもの**から組まれたとき
+   * だけである。退避の復元・競合の上書きは確定値と違う本文を面へ載せる
+   * ので、その経路表はサーバーの木と噛み合わない。
+   */
+  const attachVisualPaths = (paths: ReadonlyMap<string, string>): void => {
+    const next: EditorSnapshot = {
+      ...confirmedRef.current,
+      visual: { paths, pathwise: baseline === confirmedRef.current.body },
+    };
+    confirmedRef.current = next;
+    setConfirmed(next);
   };
 
   /**
@@ -1155,12 +1289,24 @@ export function NoteEditorIsland({
         // ビジュアルの経路表は面が組み上がった時点で「正本と噛み合わない」
         // と判定される（`onReady`）— 次の保存は経路単位ではなく丸ごとの
         // `updateNoteBody` へ落ちる。
+        //
+        // 門の材料は面へ実際に載る `local.body` である。いまの面から取った
+        // 写しなので、面が落とすものは既に落ちている＝門は普通は掛からない。
+        const surface = surfaceModeFor(mode, local.body, false);
         reseed(latest.title, latest.html);
+        switchMode(surface);
         loadSurface(local.title, local.body);
         setStatus({ kind: "dirty" });
         return;
       }
-      reseed(latest.title, latest.html);
+      // 破棄する側は正本がそのまま面へ載るので、門は正本に当てる。他の
+      // 利用者が足したスタイルシートを、警告も版理由も無しに WYSIWYG の
+      // 面へ流し込まないための 1 本である。
+      seedMode(
+        surfaceModeFor(mode, latest.html, false),
+        latest.title,
+        latest.html,
+      );
       setStatus({ kind: "idle" });
       await reconcile();
     });
@@ -1199,7 +1345,10 @@ export function NoteEditorIsland({
           noteId: current.noteId,
           version: restored.version,
         });
-        await reseedFromServer(mode, true);
+        // 門は通す（`acknowledged` を立てない）。復元は**変換前の版へ
+        // 戻す**操作なので、戻した本文が `<style>` を持つのはむしろ普通で、
+        // WYSIWYG に居るまま載せると復元したはずの装飾がその場で落ちる。
+        await reseedFromServer(mode, false);
         setProgressStatus({ kind: "saved" });
         setSavedAt(new Date());
         setRevisions(null);
@@ -1265,7 +1414,11 @@ export function NoteEditorIsland({
       markDirty();
       return inserted;
     }
-    setBody((value) => value.replace(placeholderPattern(id), markup));
+    // 置換値は**関数で**渡す。文字列で渡すと `$&` / `$'` / `` $` `` が
+    // 展開され、`a$'b.png` のようなファイル名が本文の後半を `alt` の
+    // 中へ生で流し込んで要素の境界を壊す（`escapeAttribute` は `$` を
+    // 落とさない）。関数の戻り値はそのまま入る。
+    setBody((value) => value.replace(placeholderPattern(id), () => markup));
     markDirty();
     return null;
   };
@@ -1280,6 +1433,21 @@ export function NoteEditorIsland({
     if (!batched) insertAtRef.current = null;
     if (retryOf !== undefined) {
       setUploads((list) => list.filter((entry) => entry.id !== retryOf));
+    }
+    // 仮の要素は入れない。上限超えは往復しても答えが変わらないので、
+    // 本文へ差し込んでから取り除く意味が無い。
+    if (file.size > mediaLimitFor(file.type)) {
+      setUploads((list) => [
+        ...list,
+        {
+          id: nextUploadId(),
+          name: file.name,
+          status: "failed",
+          message: OVERSIZE_MESSAGE,
+          file,
+        },
+      ]);
+      return;
     }
     if (noteId === null) {
       setUploads((list) => [
@@ -1463,6 +1631,12 @@ export function NoteEditorIsland({
                     // 面が組み上がった時点で経路表は「正本と噛み合わない」
                     // と判定され、次の保存は丸ごとの `updateNoteBody` へ
                     // 落ちる（`onReady`）。
+                    //
+                    // 退避は HTML モードで書かれた本文でもありうるので、
+                    // ED-04 の門もここで通す。掛かったら `<style>` を
+                    // 落とさない面へ倒してから載せる — 倒さずに載せると、
+                    // 退避したはずの装飾が復元の瞬間に落ちる。
+                    switchMode(surfaceModeFor(mode, draftOffer.html, false));
                     loadSurface(draftOffer.title, draftOffer.html);
                     setStatus({ kind: "dirty" });
                     setDraftOffer(null);
@@ -1553,24 +1727,17 @@ export function NoteEditorIsland({
             tone="error"
             title="保存できませんでした"
             actions={
-              // 退避できていない = ノートがまだ作られていない、という
-              // ことなので再試行を出さない。作成は冪等ではなく（冪等鍵は
-              // 作成そのものの持ち分で、この画面からは運べない）、応答が
-              // 届かなかった往復の結果を画面から知る術も無いため、押す
-              // たびに白紙のノートが 1 件ずつ増える。逃げ道は
-              // 「権限喪失」と同じダウンロードにする。
-              status.stashed ? (
-                <button
-                  type="button"
-                  className={smallPrimaryClass}
-                  disabled={busy}
-                  onClick={() => {
-                    void runExclusive({ kind: "saving" }, () => commit(true));
-                  }}
-                >
-                  再試行
-                </button>
-              ) : (
+              // 再試行を出さないのは**ノートがまだ作られていない**ときだけ
+              // である。作成は冪等ではなく（冪等鍵は作成そのものの持ち分で、
+              // この画面からは運べない）、応答が届かなかった往復の結果を
+              // 画面から知る術も無いため、押すたびに白紙のノートが 1 件ずつ
+              // 増える。逃げ道は「権限喪失」と同じダウンロードにする。
+              //
+              // 退避できたかどうかでは分けない。退避を書けるのは保存の
+              // `catch` だけで、モード切替・競合の解決・版の復元が通信
+              // エラーで落ちたときは退避が無いまま `failed` になる —
+              // そこは既存のノートなので、再試行こそが逃げ道である。
+              creationFailed ? (
                 <button
                   type="button"
                   className={smallGhostClass}
@@ -1581,13 +1748,26 @@ export function NoteEditorIsland({
                 >
                   内容をダウンロード
                 </button>
+              ) : (
+                <button
+                  type="button"
+                  className={smallPrimaryClass}
+                  disabled={busy}
+                  onClick={() => {
+                    void runExclusive({ kind: "saving" }, () => commit(true));
+                  }}
+                >
+                  再試行
+                </button>
               )
             }
           >
             {status.message}{" "}
-            {status.stashed
-              ? "内容はこの端末に退避したので、次に開いたときに復元できます。"
-              : "ノートがまだ作られていないため、内容はこの端末に退避できていません。ダウンロードして残してください。"}
+            {creationFailed
+              ? "ノートがまだ作られていないため、内容はこの端末に退避できていません。ダウンロードして残してください。"
+              : status.stashed
+                ? "内容はこの端末に退避したので、次に開いたときに復元できます。"
+                : "内容はまだこの端末に退避していません。もう一度お試しください。"}
           </Alert>
         ) : null}
 
@@ -1792,16 +1972,7 @@ export function NoteEditorIsland({
             editable={editable}
             onReady={(paths) => {
               visualCurrent.current = paths;
-              // 経路単位で送ってよいのは、面が**確定値そのもの**から組まれた
-              // ときだけである。退避の復元・競合の上書きは確定値と違う本文を
-              // 面へ載せるので、その経路表はサーバーの木と噛み合わない。
-              setConfirmedSnapshot({
-                ...confirmedRef.current,
-                visual: {
-                  paths,
-                  pathwise: baseline === confirmedRef.current.body,
-                },
-              });
+              attachVisualPaths(paths);
               setVisualDirty(false);
             }}
             onChange={(current) => {
@@ -2230,6 +2401,29 @@ function FormatBar({
 
 /** 受理される形式はドメインの `UploadValidationPolicy` が持つ表が正典。 */
 const MEDIA_ACCEPT = MEDIA_ALLOWED_MIME_TYPES.join(",");
+
+/**
+ * 大きすぎるファイルは送る前に止める（ED-06）。止めないと、200 MB の動画も
+ * 128 KB を超える SVG も転送境界（256 MB）まで往復してから拒まれる。
+ * しきい値も文言も判定側と同じ出所から引くので、ドメインが上限を変えれば
+ * 追随する（`UploadValidationPolicy` が「フォームへ上限を配る」と約束して
+ * いる相手がこれである）。
+ *
+ * 手掛かりはブラウザーが名乗る `file.type` だけで、受理の判定はバイト列の
+ * 署名で行われる。名乗りが当てにならない以上**厳しい側へは倒さない** —
+ * 見覚えの無い型はいちばん緩い上限で通し、判定はサーバーに委ねる。
+ */
+const mediaLimitFor = (mimeType: string): number => {
+  if (mimeType === "image/svg+xml") return MEDIA_SVG_MAX_BYTES;
+  if (mimeType.startsWith("image/")) return MEDIA_IMAGE_MAX_BYTES;
+  return MEDIA_VIDEO_MAX_BYTES;
+};
+
+const OVERSIZE_MESSAGE = renderErrorMessage({
+  kind: "business",
+  code: StorageErrorCode.FileTooLarge,
+  message: "",
+});
 
 function MediaButton({
   disabled,

@@ -1,3 +1,4 @@
+import { NoteErrorCode } from "../errorCode";
 import type { Excerpt, NoteHtml, PlainTextContent } from "../valueObject";
 
 /**
@@ -7,8 +8,13 @@ import type { Excerpt, NoteHtml, PlainTextContent } from "../valueObject";
  * like every other invariant violation — a bare `RangeError` has no
  * `toSerialized()` and reaches the transport boundary as an unclassified
  * fault.
+ *
+ * It is an alias of `NoteErrorCode.HtmlTooComplex` rather than a literal
+ * of its own: the code reaches a person through the same dictionary
+ * every other Note business code does, so a second spelling of it would
+ * be one the display layer has no row for.
  */
-export const HTML_PROCESSOR_TOO_COMPLEX = "NOTE_HTML_TOO_COMPLEX";
+export const HTML_PROCESSOR_TOO_COMPLEX = NoteErrorCode.HtmlTooComplex;
 
 /**
  * The resource ceiling `process` holds itself to (spec/adr/013 「サニタイズ

@@ -332,7 +332,10 @@ const scrubForSurface = (root: ParentNode): void => {
  *
  * 失われることは ED-04 の門（装飾が失われうる警告と、保存前に残る版）が
  * 先に告げる。門の材料は {@link willDropStyleElements} で、断片を描いた
- * 時点の本文ではなく**これから面へ載る本文**に当てる。
+ * 時点の本文ではなく**これから面へ載る本文**に当てる。ここは `baseline`
+ * が変わるたびに無条件で落とすので、門もモードを変える瞬間ではなく
+ * **面へ本文を載せるたび**に問われる（版の復元・競合の解決・退避の復元・
+ * 保存後の載せ直しを含む）。
  */
 const dropStyleElements = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("style"))) {

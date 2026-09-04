@@ -499,6 +499,7 @@ HTML / WYSIWYG エディタからの保存を適用する（ED-03 / ED-04 / ED-0
 | ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
 | 実行中の変換・再生成ジョブがある | `BusinessRuleError(NoteLockedByJob)` |
 | サニタイズ後が 800,000 バイト超 | `BusinessRuleError(ContentTooLarge)` |
+| サニタイズが資源の上限を超える（[ADR 013](../adr/013-html-sanitization-policy.md)） | `BusinessRuleError(HtmlTooComplex)` |
 | 版の競合（他者が更新） | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## applyTextNodeEdits
@@ -886,7 +887,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
    - **50 件以下** → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` でゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
    - **50 件超** → `listByOwner(owner, "trashed", pagination)` でゴミ箱をページごとに列挙し、対象を500件ごとに分割して、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。**列挙は手順 2 で数えた総数が導くページ数（`ceil(総数 / ページ幅)`）までで打ち切る** — 1 要求の逐次読みは、その要求が既に支払って知っている数で束縛する（[platform/index.md](../platform/index.md) の「実行予算と分割単位」）。満たないページを引いた時点で早く抜けるのは従来どおり。数えたあとにゴミ箱へ入ったノートは次の要求の持ち分で、追いかけない。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
 
-**同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者はHTTP要求の中で開始・完了を待つpurge operation数、後者は**1つの親ジョブ**が受け持つ件数である。同期削除はroute/DO/D1投影をまたぐため応答時間とevent fan-outを50件に止める。子ジョブは1件ずつ別実行なので親は500件を持てる。scope-local SQLにD1 query予算は適用しない。値の正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
+**同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者はHTTP要求の中で開始・完了を待つpurge operation数、後者は**1つの親ジョブ**が受け持つ件数である。同期削除はroute/DO/D1投影をまたぐため応答時間とevent fan-outを50件に止める。子ジョブは1件ずつ別実行なので親は500件を持てる。**同期削除は scope-local に閉じないので D1 の query 予算に掛かる** — 手順 2 は `purgeNote` を**呼ぶ**設計なので、1 件が global 側に 11〜12 statement を費やし、50 件で約 600 文になる。これは設計上限 500 を超え実上限 1,000 の内側で、値は 50 のまま据え置く（根拠は [platform/index.md](../platform/index.md) の「実行予算と分割単位」）。50 は「51 件以上はジョブ」という利用者に見える閾値でもあるため、動かすときはこの節だけでなく [pages/index.md](../pages/index.md) のゴミ箱画面と手順書を同時に動かすことになる。
 
 **同期削除は `purgeNote` の呼び出しである**。複製ではなく合成であり、「共通: ユースケースを合成するときの副作用の範囲」と [usecases/identity.md](./identity.md) の「UoW の合成と、ユースケースどうしの呼び出し」に従う。
 
@@ -912,7 +913,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 
 ### 入力DTO
 
-`scope: ScopeKey`, `limit: number`（既定 100、上限 100）
+`scope: ScopeKey`, `limit: number`（既定 40、上限 40）
 
 `scope` は**内部専用**。回収は scope ローカルで、Alarm が鳴った scope そのものを名指しする。誰の要求でもないので actor は持たず、要求面・worker 面のどちらからでも駆動できる（`purgeNote` の `retention` と同じ）。
 
@@ -932,7 +933,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 | 満ページだった、または一部が削除できずに残った | task を直後へ再予定する |
 | 満ページでなく、期限の来た対象が残らなかった（0 件だった場合を含む） | `findNextPurgeDeadline` の返す期限へ task を移し、ゴミ箱が空（`null`）のときだけ task を完了する |
 
-`limit` の既定100は1 Alarm turnのCPUとevent fan-outを有界にする。**進捗ゼロだけを backoff に落とす**のは、恒久的に失敗する 1 件で直後の再予定が spin し続けるのを避けるためで、一部でも消えた turn は残りを直後に片づける。逆に、削除を拒まれたノートを残したまま行を次の期限へ動かすと、そのノートは次に誰かがゴミ箱へ何かを捨てるまで放置される。
+`limit` の既定 40 は 1 Alarm turn の CPU と event fan-out を有界にし、あわせて **global D1 の予算**を守る。手順 2 は `purgeNote` を**呼ぶ**（`deleteNotesForOwner` と同じ内部 purge command）ので、1 件が route と public projection をまたいで 11〜12 statement を global 側に費やす。上限を 100 に置くと 1 turn が 1,200 文となり、設計上限 500 どころか実上限 1,000 も超える。値の正典と内訳は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。**進捗ゼロだけを backoff に落とす**のは、恒久的に失敗する 1 件で直後の再予定が spin し続けるのを避けるためで、一部でも消えた turn は残りを直後に片づける。逆に、削除を拒まれたノートを残したまま行を次の期限へ動かすと、そのノートは次に誰かがゴミ箱へ何かを捨てるまで放置される。
 
 **期限が来ていないことは、残っていないことと同じではない**。したがって task を完了できるのはゴミ箱が空の turn だけである。Alarm はゴミ箱の唯一の駆動主体なので、まだ数えている最中のノートを残したまま行を完了すると、そのノートは永久に回収されない。
 
@@ -1053,6 +1054,7 @@ Storage 側の取得記録（[domains/storage.md](../domains/storage.md) の `Re
 | 版が不在・他ノートのもの | `NotFoundError("REVISION_NOT_FOUND")` |
 | 権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
 | ゴミ箱のノート | `BusinessRuleError(NoteIsTrashed)` |
+| サニタイズが資源の上限を超える（[ADR 013](../adr/013-html-sanitization-policy.md)） | `BusinessRuleError(HtmlTooComplex)` |
 | 版の競合 | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` |
 
 ## exportNote

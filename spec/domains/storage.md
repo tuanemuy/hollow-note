@@ -194,13 +194,13 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 
 **`image/svg+xml` だけがラスタ画像と別の上限を持つ。** SVG は保管前に書き換えられる唯一のメディアで、`storeMedia` が `HtmlProcessor.process` に通す（[usecases/storage.md](../usecases/storage.md) の手順 3）。`process` の戻り値は**本文の断片**であり、[domains/note.md](./note.md) の `NoteHtml` が持つ 800,000 バイトの上限に縛られる。したがってサニタイズ後にその上限を割れない値をここに置くと、Storage が受理すると言った形式が Note の不変条件で失敗する — 到達できない上限になる。
 
-128 KB は、**この規則が受理するどの入力に対しても**到達可能であるように選んだ値である。HTML の直列化で 1 バイトが増えるのは最大 6 倍（属性値中の `"` が `&quot;` になる場合）で、131,072 × 6 = 786,432 は 800,000 を超えない。さらに `storeMedia` は**サニタイズ後に実際に保管するバイト列**を同じ上限へ測り直す（保管するバイト列こそが容量に効き、行に載る値だから）。上限を上げるにはこの前提のどちらかを動かす必要がある。
+128 KB は、**この規則が受理するどの入力に対しても**到達可能であるように選んだ値である。根拠は受理する markup の性質ではなく、`HtmlProcessor` が自分に課す資源の上限のほうにある（[ADR 013](../adr/013-html-sanitization-policy.md)「サニタイズは資源で有界である」）。`process` は解析後の木を**入力長の 4 倍**（下限 262,144 バイト）で打ち切るので、131,072 バイトの入力が直列化しうる長さは 524,288 バイトを超えられず、本文の 800,000 バイトの内側に必ず収まる — 入力がどんな形であってもである。その費用を超える入力は木を作る前に `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で打ち切られ、`storeMedia` がそれを Storage の語彙（`FileTooLarge`）へ翻訳する（[usecases/storage.md](../usecases/storage.md) の手順 3）。さらに `storeMedia` は**サニタイズ後に実際に保管するバイト列**を同じ上限へ測り直す（保管するバイト列こそが容量に効き、行に載る値だから）。
 
-**この見積もりが成り立つのは、受理判定が長さだけでなく形も縛るからである。整形式であることだけでは足りない。** 出力を桁で膨らませるのは foster parenting である — open elements のスタックから外れた整形要素が active formatting elements のリストには残り、後続の行ごとに作り直されるため、整形要素 `k` 個と行 `m` 個が `k × m` 個に化ける。**完全に整形式で、すべてのタグが閉じ、入れ子も 64 段以内の入力がこれに届く**（実測: `<svg><table><b a="0">…<b a="61">` の下に `<tr>X</tr>` を 13,018 回並べた 131,064 バイトが 11,300,523 バイト = 86 倍、886 ms）。
+**この見積もりを入力の形から論証してはならない。** 出力を桁で膨らませるのは foster parenting である — open elements のスタックから外れた整形要素が active formatting elements のリストには残り、後続の行ごとに作り直されるため、整形要素 `k` 個と行 `m` 個が `k × m` 個に化ける。**完全に整形式で、すべてのタグが閉じ、入れ子も 64 段以内の入力がこれに届く**（実測: `<svg><table><b a="0">…<b a="61">` の下に `<tr>X</tr>` を 13,018 回並べた 131,064 バイトが 11,300,523 バイト = 86 倍、886 ms）。しかも入口を要素名で数え上げる論証も成立しない（`<desc><template><tr>` は `table` の開始タグを介さずに table 系の挿入モードへ入る）。この種の論証は 3 度続けて実測に否定されており、[ADR 013](../adr/013-html-sanitization-policy.md) はその路線を降ろして資源で有界にする形を採っている。
 
-この機構の入口は 2 つしかなく、どちらも名前で塞げる。**breakout tag**（HTML 仕様「foreign content 内のトークンの解析規則」が列挙する 44 の要素名 — `b` / `table` / `p` / `br` / `img` ほか — と、`color` / `face` / `size` のいずれかを持つ `font`）は foreign content から直接抜ける。**HTML integration point**（`desc` / `title` / `foreignObject`）は HTML の解析を再開させるが、そこから table 系の挿入モードへ入るにも `table` の開始タグが要り、それ自体が breakout tag である。したがって**受理判定は breakout tag の要素名を拒む**（HTML のトークナイザーは名前を小文字化するので、XML が別物として扱う `<TABLE>` も同じ扱いにする）。サニタイザーの SVG 部分集合にこれらの名前は 1 つも無いので、拒んで失う描画は無い。
+そのうえで**受理判定は breakout tag の要素名を拒む**（HTML 仕様「foreign content 内のトークンの解析規則」が列挙する 44 の要素名 — `b` / `table` / `p` / `br` / `img` ほか — と、`color` / `face` / `size` のいずれかを持つ `font`。HTML のトークナイザーは名前を小文字化するので、XML が別物として扱う `<TABLE>` も同じ扱いにする）。これは**上限の根拠ではなく前段の安価な防御**である — もっとも安く膨張を作れる形を 1 パスの走査で断り、サニタイザーを 1 度も走らせない。完全ではない（この走査はコメントと処理命令を XML の終端で読み、HTML のトークナイザーは `<?a>` を最初の `>` で、`<!-->` を即座に終えるので、片方にだけ見える位置に breakout tag を置ける）。塞ぐのではなく、その先を資源の上限が受け止める。サニタイザーの SVG 部分集合にこれらの名前は 1 つも無いので、拒んで失う描画は無い。
 
-残る膨張は、文字のエスケープ（上記の 6 倍）と、gate を通り抜ける整形要素（`a` と `font`）に対する adoption agency だけになる。同じ構成を `a` / `font` に替えた実測は 221 KB（1.7 倍）/ 130 KB（1.0 倍）で、`table` を落とせば foreign content から出ないためそもそも再構成が起きない。加えて入れ子の深さを 64 で切る — サニタイザーが木を素の再帰で歩くため、深さがそのままスタックの深さになり、1,000 段（`<b><i>` の反復でわずか 6 KB）で `RangeError` になる。実在の図版は数段しか入れ子にならないので、両側に 1 桁の余裕がある。
+加えて入れ子の深さを 64 で切る — サニタイザーが木を素の再帰で歩くため、深さがそのままスタックの深さになる。実在の図版は数段しか入れ子にならないので、両側に 1 桁の余裕がある（`HtmlProcessor` 側の走査の深さの上限は 256 段で、こちらが先に効く）。
 
 `ensureAcceptable` が判定できるのは、`media` と `avatar` が許可する 7 形式である。判定は次の順に行い、**先頭バイトを比べるものを先に、本文を復号するものを最後に**置く。
 
@@ -212,7 +212,7 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | `image/webp` | 先頭の `RIFF` と オフセット 8 の `WEBP`（コンテナの形まで見る） |
 | `video/mp4` | オフセット 4 の `ftyp` と、オフセット 8 のブランドが許可集合にあること。**`ftyp` だけでは足りない** — HEIC / 3GP / QuickTime も同じボックスを自分のブランドで持ち、受け入れると `video/mp4` として配信できないファイルを保管することになる |
 | `video/webm` | 先頭 4 バイトの EBML 署名と、先頭 64 バイト内の DocType `webm`。EBML 署名は Matroska と共有するのでこの走査が要る |
-| `image/svg+xml` | **署名を持たない**。先頭 4096 バイトを復号し、BOM とプロローグ（`<!--…-->` / `<?…?>` / `<!…>`）を読み飛ばして根要素が `<svg` であることを確かめる。閉じないプロローグ、および内部サブセットを持つ doctype は、推測せずに拒否する。**そのうえで本文全体を「単体の 1 文書として開けるか」で判定する**（下記）。ただし上限を超える長さのバイト列にはこの検査を行わない — どのみち次の段で `FileTooLarge` になり、サニタイザーへは渡らないので、縛る対象が無い |
+| `image/svg+xml` | **署名を持たない**。先頭 4096 バイトを復号し、BOM とプロローグ（`<!--…-->` / `<?…?>` / `<!…>`）を読み飛ばして根要素が `<svg` であることを確かめる。閉じないプロローグ、および内部サブセットを持つ doctype は、推測せずに拒否する。**そのうえで本文全体を「単体の 1 文書として開けるか」で判定する**（下記）。ただし**その purpose が SVG に与える上限**を超える長さのバイト列にはこの検査を行わない — どのみち次の段で `FileTooLarge` になり、サニタイザーへは渡らないので、縛る対象が無い。打ち切りの物差しは上限表から引く（`media` の 128 KB を直接名指さない）ので、SVG を許す purpose が別の上限で増えても、2 つの上限のあいだのバイト列が検査を免れることはない |
 
 `image/svg+xml` の「単体の 1 文書として開けるか」は、次を**すべて**満たすことをいう。`.svg` は XML として解析され、そこでは整形式でないことが**致命的エラー**（1 ドットも描かれない）なので、満たさないものはブラウザも開けない — 受理を断っても失うものは無い。同じ述語を `storeMedia` が**保管の直前にもう一度**、サニタイズ後の実体に対して適用する（[usecases/storage.md](../usecases/storage.md) の手順 3）。
 
@@ -222,7 +222,7 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 - 実体参照が XML の定義済み 5 つ（`lt` / `gt` / `amp` / `apos` / `quot`）か数値参照であり、数値が XML の `Char` である（DTD を持たない `.svg` に `&nbsp;` は定義されていない）
 - 文字が XML の `Char` である（タブ・CR・LF 以外の C0 制御文字は含まない）
 - 入れ子の深さが 64 以内である
-- **breakout tag の要素名を含まない**（XML の整形式性とは無関係な、サニタイザーの出力を有界にするための条件。上の 128 KB の議論を参照）
+- **breakout tag の要素名を含まない**（XML の整形式性とは無関係な、前段の安価な防御。上限を与えるのはこの条件ではなく `HtmlProcessor` の資源の上限である。上の 128 KB の議論を参照）
 
 `source` / `reference` / `artifact` にはまだ規則が無い。**これらの purpose を許可するスライスが、その入口の形を決める**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。規則を持たない purpose は署名判定にすら入らず、`UnsupportedMimeType` になる。
 
@@ -293,6 +293,8 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
 チェックサムによる重複保管の回避は行わない。`StoredFile` は `FileProvenance` で所属ノートと由来を持つため、同一内容でもノートごとに別の行が要る（1 行を複数ノートで共有すると `note.purged` 後の回収と所有者の付け替えが成立しない）。実体の共有はメタデータと blob を分ける設計を要し、本設計の範囲外とする。所有者単位の一括削除（`deleteFilesByOwner`）も、1 件ごとに `storage.fileDeleted` を発行して Usage の減算と実体の回収につなげる必要があるため、`listByOwner` + `deleteFiles` の反復で行い一括削除のメソッドは持たない。
 
 `listByNote` はcurrent scopeで `noteId` が一致する全ファイルを引く。moveでは `source` / `media` / `reference` metadataをsnapshotへ含め、target scopeへ同じR2 keyで復元する。artifactはJob scopeに残し `expiresAt` で回収する。`listByPurposeOlderThan` の所有者に依らない走査もcurrent scope内に限り、全DO走査ではない。`sumSizeByOwner` はartifactを除外する。
+
+`listDeletableByNote` は `purpose` が `source` / `media` / `reference` の行を **`id` 昇順**で最大 `limit` 件引く（`limit <= 0` は 0 件）。順序はバックエンドの裁量ではなく契約である — `deleteFilesForNote` が 100 件ずつ削っては継続する形なので、途中の turn で残っている集合がバックエンド間で一致しないと観測が揃わない。読んだ行はその turn が消すため、全順序でありさえすれば前進は保証される。
 
 `listByPurposeOlderThan` は**キーセットで前進する走査**である。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を**排他的に**指す（`null` は先頭から）。境界は `createdBefore` 側が包含（ちょうど `createdBefore` の行はページに入る）。
 

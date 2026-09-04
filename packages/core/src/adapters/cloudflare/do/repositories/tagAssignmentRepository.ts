@@ -100,8 +100,12 @@ export type CloudflareTagAssignmentRepositoryDeps = Readonly<{
  * (spec/domains/tag.md), so a row naming another object is either a
  * write that went to the wrong place or a read that crossed objects.
  * Like `notes.owner_type` / `owner_id`, it is checked against the
- * object's own `_scope_identity` pin on both save and restore
- * (`spec/database/index.md` の「共通の規約」). `backup_records.user_id`
+ * object's own `_scope_identity` pin on every path that touches these
+ * rows (`spec/database/index.md` の「共通の規約」): the save (`insert`),
+ * the restore (`listByNote`), and the bounded delete (`deleteByNote`),
+ * which is neither of the two yet is the only path the `note.purged`
+ * fan-out takes. The delete answers a crossing the way the read does —
+ * it reports it and removes nothing. `backup_records.user_id`
  * is the other case and is deliberately unchecked — it names the
  * connection whose Drive holds the copy, not the object holding the row.
  */
@@ -120,7 +124,7 @@ export function createCloudflareTagAssignmentRepository(
     }
   };
 
-  const restore = (row: SqlRow): TagAssignment => {
+  const ensureScopeOfRow = (row: SqlRow): void => {
     if (
       text(row, "scope_type") !== bound.type ||
       text(row, "scope_id") !== bound.id
@@ -129,6 +133,10 @@ export function createCloudflareTagAssignmentRepository(
         `Tag assignment ${text(row, "id")} is scoped to ${text(row, "scope_type")}:${text(row, "scope_id")} but the scope is ${bound.type}:${bound.id}`,
       );
     }
+  };
+
+  const restore = (row: SqlRow): TagAssignment => {
+    ensureScopeOfRow(row);
     return fromRow(row);
   };
 
@@ -233,6 +241,13 @@ export function createCloudflareTagAssignmentRepository(
       const rows = await rowsOfNote(noteId, bounded);
       if (rows.length === 0) {
         return 0;
+      }
+      // The page is checked before a single row goes, so a repository
+      // bound to the wrong object deletes nothing at all rather than
+      // partially — the same pin, and the same "report, do not repair",
+      // that the read side applies.
+      for (const row of rows) {
+        ensureScopeOfRow(row);
       }
       // One statement per row rather than a bulk `DELETE … LIMIT`: a
       // `remove` is also the overlay entry that stops a later read in the

@@ -15,7 +15,10 @@ import { statement } from "../sql/statement";
 
 /**
  * The scope-key columns this backend checks against the object it is
- * bound to (`spec/database/index.md` の「共通の規約」).
+ * bound to (`spec/database/index.md` の「共通の規約」). Every path over
+ * a `tag_assignments` row is exercised here — the save (ADP-tag-010),
+ * the restore (ADP-tag-012) and the bounded delete (ADP-tag-019) — since
+ * a guard that covers two of the three leaves the destructive one open.
  *
  * The counterpart of `memory/__tests__/scopeGuards.test.ts`, and the
  * only place the *restore* half of that rule is exercised at all: memory
@@ -52,6 +55,16 @@ const openObject = (): Readonly<{
     }),
   };
 };
+
+const boundAssignment = TagAssignment.reconstruct({
+  id: "assignment-0002",
+  tagId: "tag-0002",
+  noteId: NOTE_ID,
+  scopeType: "user",
+  scopeId: BOUND_USER,
+  assignedBy: BOUND_USER,
+  assignedAt: ASSIGNED_AT,
+});
 
 const foreignAssignment = TagAssignment.reconstruct({
   id: "assignment-0001",
@@ -105,19 +118,9 @@ describe("cloudflare scope-key guards", () => {
   it("ADP-tag-010: still saves an assignment of the bound scope", async () => {
     const { session, repository } = openObject();
 
-    await repository.insert(
-      TagAssignment.reconstruct({
-        id: "assignment-0002",
-        tagId: "tag-0002",
-        noteId: NOTE_ID,
-        scopeType: "user",
-        scopeId: BOUND_USER,
-        assignedBy: BOUND_USER,
-        assignedAt: ASSIGNED_AT,
-      }),
-    );
+    await repository.insert(boundAssignment);
 
-    expect(await storedIds(session)).toEqual(["assignment-0002"]);
+    expect(await storedIds(session)).toEqual([boundAssignment.id]);
   });
 
   it("ADP-tag-012: refuses to restore a row whose scope names another object", async () => {
@@ -129,6 +132,34 @@ describe("cloudflare scope-key guards", () => {
     );
     // The row is still there: the guard reports the crossing, it does not
     // repair it — nothing but the pin can say which object it belongs to.
-    expect(await storedIds(session)).toEqual(["assignment-0001"]);
+    expect(await storedIds(session)).toEqual([foreignAssignment.id]);
+  });
+
+  it("ADP-tag-019: refuses to delete a page holding a row scoped to another object", async () => {
+    const { session, repository } = openObject();
+    await seedForeignRow(session);
+    await repository.insert(boundAssignment);
+
+    // The page the note-purge fan-out asks for: the bounded delete is the
+    // only repository method that path touches, so a guard it skipped
+    // would silently take the foreign row with it.
+    await expect(repository.deleteByNote(NOTE_ID, 100)).rejects.toSatisfy(
+      isDataIntegrityError,
+    );
+    // Nothing went, not even the row of the bound scope: the page is
+    // checked before the first delete, so the crossing is reported rather
+    // than half-applied.
+    expect(await storedIds(session)).toEqual([
+      foreignAssignment.id,
+      boundAssignment.id,
+    ]);
+  });
+
+  it("ADP-tag-019: still deletes the bound scope's rows of the note", async () => {
+    const { session, repository } = openObject();
+    await repository.insert(boundAssignment);
+
+    expect(await repository.deleteByNote(NOTE_ID, 100)).toBe(1);
+    expect(await storedIds(session)).toEqual([]);
   });
 });

@@ -1,7 +1,13 @@
-import { BusinessRuleError } from "@repo/core/domain/error";
+import {
+  BusinessRuleError,
+  isBusinessRuleError,
+} from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import type { ActiveNote, Note } from "@repo/core/domain/note/note";
-import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
+import {
+  HTML_PROCESSOR_TOO_COMPLEX,
+  type HtmlProcessor,
+} from "@repo/core/domain/note/ports/htmlProcessor";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { StorageErrorCode } from "@repo/core/domain/storage/errorCode";
 import {
@@ -156,6 +162,53 @@ const asStandaloneSvg = (markup: string): string | null => {
 };
 
 /**
+ * Sanitizes the uploaded bytes, restoring Storage's vocabulary on the
+ * one failure `HtmlProcessor` answers in Note's.
+ *
+ * The processor bounds its own cost and refuses anything above the
+ * ceiling as `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` (spec/adr/013
+ * 「サニタイズは資源で有界である」). That code belongs to the note body:
+ * it is in neither `storeMedia`'s error table nor the vocabulary an
+ * uploader can act on, and the display dictionary answers it with advice
+ * about simplifying a body.
+ *
+ * The intake's element-name gate does not make this unreachable, and is
+ * not asked to. It reads XML comments and processing instructions to
+ * *XML's* terminators, while the HTML tokenizer ends `<?a>` at the first
+ * `>` and treats `<!-->` as a complete comment — so eight characters put
+ * a `<table>` where only one of the two can see it. Closing that
+ * particular difference would be the fourth version of an argument about
+ * the shape of the input, and spec/adr/013 retired that line of
+ * reasoning in favour of bounding the resource. The gate stays as the
+ * cheap front-line defence it is; the promise that an upload fails in
+ * Storage's words is kept here, at the boundary, instead.
+ *
+ * `FileTooLarge` is the translation because the ceiling an accepted
+ * media SVG reaches is the expansion bound, and an input that trips it
+ * is one whose sanitized form is far past `MEDIA_SVG_MAX_BYTES` — the
+ * same answer step 4 gives once the parse has been paid for
+ * (spec/usecases/storage.md#storeMedia). `UnsupportedMimeType` would
+ * claim the format is not accepted, which is false and leaves the
+ * uploader nothing to change.
+ */
+const processSvg = (htmlProcessor: HtmlProcessor, body: Uint8Array): string => {
+  try {
+    return htmlProcessor.process(new TextDecoder().decode(body)).html;
+  } catch (error) {
+    if (
+      isBusinessRuleError(error) &&
+      error.code === HTML_PROCESSOR_TOO_COMPLEX
+    ) {
+      throw new BusinessRuleError(
+        StorageErrorCode.FileTooLarge,
+        "The SVG cannot be sanitized within the processor's resource ceiling",
+      );
+    }
+    throw error;
+  }
+};
+
+/**
  * Runs an SVG through the sanitizer before it is stored.
  *
  * `HtmlProcessor` is the single application point of the sanitize policy
@@ -176,22 +229,18 @@ const asStandaloneSvg = (markup: string): string | null => {
  * for a file no XML parser opens.
  *
  * `process` answers a note-body fragment, so its 800,000-byte cap is the
- * real ceiling of anything that goes through here. That is what
- * `MEDIA_SVG_MAX_BYTES` is chosen against, and why the intake bounds the
- * document's shape — well-formedness, a depth, and the element names
- * that would take the parser out of foreign content — as well as its
- * length: an accepted input cannot reach the parser's foster parenting,
- * which is what let a 128 KB document serialize into 11 MB, so an
- * oversized SVG is refused as `FileTooLarge` in Storage's own vocabulary
- * rather than as a note that is too long.
+ * real ceiling of anything that goes through here, and that is what
+ * `MEDIA_SVG_MAX_BYTES` is chosen against. What keeps the work bounded
+ * on the way there is not the intake's shape rules but the processor's
+ * own resource ceiling (spec/adr/013), which is why `processSvg` — not
+ * the gate — is what guarantees the answer stays in Storage's
+ * vocabulary.
  */
 const sanitizeSvg = (
   htmlProcessor: HtmlProcessor,
   body: Uint8Array,
 ): Uint8Array => {
-  const document = asStandaloneSvg(
-    htmlProcessor.process(new TextDecoder().decode(body)).html,
-  );
+  const document = asStandaloneSvg(processSvg(htmlProcessor, body));
   if (document === null) {
     throw new BusinessRuleError(
       StorageErrorCode.UnsupportedMimeType,
@@ -278,8 +327,9 @@ export async function storeMedia({
   // about the bytes as they arrived would let an SVG that grows overrun
   // the remaining capacity and one that shrinks be refused for room it
   // does not need. Sanitizing an over-quota upload first is bounded work
-  // — the intake caps an SVG at `MEDIA_SVG_MAX_BYTES` and bounds its
-  // shape — and no byte reaches the object store before this gate.
+  // — the intake caps an SVG at `MEDIA_SVG_MAX_BYTES` and the processor
+  // holds itself to `HtmlProcessorLimit` whatever shape those bytes have
+  // — and no byte reaches the object store before this gate.
   await ensureUploadAllowed({
     container,
     input: {

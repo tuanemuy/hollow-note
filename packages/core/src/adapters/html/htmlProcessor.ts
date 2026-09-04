@@ -898,10 +898,76 @@ const enforceNestingLimit = (fragment: DocumentFragment): void => {
   }
 };
 
-const parse = (html: string): DocumentFragment => {
-  const fragment = parseFragment(html, {
-    treeAdapter: createMeteredTreeAdapter(expansionAllowance(html.length)),
+/**
+ * The two constructs whose parse depends on whether a `<template>` is
+ * open, and so the two that make the wrapped parse below differ from a
+ * plain one.
+ *
+ * `</template>` closes the wrapper itself. `<form>` is the parser's one
+ * piece of state that is scoped to the nearest open template: with none
+ * open, a second `<form>` start tag is ignored and `</form>` unwinds the
+ * stack differently. Neither survives sanitization (`form` is not on the
+ * allow list, so it is unwrapped), but the *nesting* around them can
+ * shift, so an input containing either takes the plain path rather than
+ * a path that reasons about what the difference costs. Everything else
+ * matches: 20,000 random markup fragments over the tag vocabulary of the
+ * allow list parse identically both ways, and every fragment that did
+ * not, matched this pattern.
+ */
+const TEMPLATE_SENSITIVE = /<\/template|<form/i;
+
+/**
+ * The fragment of `<template>${html}`, or `null` when the source closed
+ * the wrapper itself.
+ *
+ * parse5 appends every top-level node to the root element of the parse
+ * and then moves them into the fragment it returns one at a time, each
+ * move an `indexOf` plus a `splice` over that root's child list — which
+ * is quadratic in the number of top-level nodes. 130,000 flat elements
+ * (1,950,000 bytes, inside the transport ceiling for a body, expanding
+ * 1.0× and nesting three deep, so no ceiling of this module applies)
+ * spend 97% of the parse there: 1.4 seconds of a 1.5-second `process`
+ * that then rejects the body for exceeding 800,000 bytes.
+ *
+ * An unterminated `<template>` in front of the source puts those nodes
+ * in the template's content fragment instead, which the parser only ever
+ * appends to, leaving the root with the single wrapper to move. It is
+ * unterminated so that nothing is appended after the source: a `</…>`
+ * would land inside the content of a raw-text element the source left
+ * open (`<plaintext>`, an unclosed `<style>`), which is text the filter
+ * would then be carrying that the source never had. The wrapper is also
+ * the insertion mode a plain fragment parse already uses — parse5's
+ * default context element is a `template` — so what it parses to is the
+ * same tree, not a repaired variant of it.
+ */
+const parseWrapped = (
+  html: string,
+  allowance: number,
+): DocumentFragment | null => {
+  const root = parseFragment(`<template>${html}`, {
+    // The wrapper is this module's, not the source's, so what the meter
+    // charges for it is added back rather than taken out of what the
+    // source is allowed to expand to.
+    treeAdapter: createMeteredTreeAdapter(
+      allowance + "template".length * 2 + ELEMENT_MARKUP_BYTES,
+    ),
   });
+  const [wrapper] = root.childNodes;
+  return root.childNodes.length === 1 &&
+    wrapper !== undefined &&
+    "content" in wrapper
+    ? wrapper.content
+    : null;
+};
+
+const parse = (html: string): DocumentFragment => {
+  const allowance = expansionAllowance(html.length);
+  const wrapped = TEMPLATE_SENSITIVE.test(html)
+    ? null
+    : parseWrapped(html, allowance);
+  const fragment =
+    wrapped ??
+    parseFragment(html, { treeAdapter: createMeteredTreeAdapter(allowance) });
   enforceNestingLimit(fragment);
   return fragment;
 };

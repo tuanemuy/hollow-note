@@ -153,6 +153,29 @@ describe("purgeExpiredTrash", () => {
     ]);
   });
 
+  it("TC-note-343: takes exactly the default page and leaves the note past it for the re-armed turn", async () => {
+    const h = createTestHarness();
+    await trashNotes(h, TRASH_EXPIRY_BATCH_SIZE + 1);
+    h.clock.advance(31 * DAY_MS);
+
+    const first = await sweep(h);
+
+    expect(first).toEqual({ purgedCount: TRASH_EXPIRY_BATCH_SIZE });
+    expect(remainingNotes(h)).toBe(1);
+    expect(tasks(h)).toEqual([
+      expect.objectContaining({
+        kind: TRASH_EXPIRY_TASK_KIND,
+        operationId: TRASH_EXPIRY_OPERATION_ID,
+        attempt: 0,
+      }),
+    ]);
+
+    const second = await sweep(h);
+
+    expect(second).toEqual({ purgedCount: 1 });
+    expect(remainingNotes(h)).toBe(0);
+  });
+
   it("TC-note-344: caps an oversized limit at the fan-out budget of one alarm turn", async () => {
     const h = createTestHarness();
     await trashNotes(h, 2);
@@ -187,7 +210,12 @@ describe("purgeExpiredTrash", () => {
     await sweep(h, { limit: 5000, container });
 
     expect(limits).toEqual([TRASH_EXPIRY_BATCH_SIZE]);
-    expect(TRASH_EXPIRY_BATCH_SIZE).toBe(100);
+    // Pinned rather than derived, and pinned to the same value as
+    // `OWNER_PURGE_BATCH_SIZE`: the sweep calls `purgeNote`, so the
+    // global D1 budget of spec/platform/index.md「実行予算と分割単位」
+    // divided by the eleven to twelve statements one purge spends there
+    // is what decides it, not the alarm turn's CPU alone.
+    expect(TRASH_EXPIRY_BATCH_SIZE).toBe(40);
   });
 
   it("TC-note-345: records one failure, purges the rest, and keeps the sweep armed", async () => {
