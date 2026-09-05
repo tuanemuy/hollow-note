@@ -279,7 +279,7 @@
 | ADP-tag-016 | `TagAssignmentRepository.delete` | `spec/domains/tag.md#ポート` | AssignmentId の行を削除する |
 | ADP-tag-017 | `TagAssignmentRepository.deleteBatchByTag` | `spec/domains/tag.md#ポート` | tag の assignment を有界削除し影響行を返す |
 | ADP-tag-018 | `TagAssignmentRepository.deleteByScope` | `spec/domains/tag.md#ポート` | scope の assignment を有界削除する |
-| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約）。同じく、消す前にページ全体の `scope_type` / `scope_id` を pin と突き合わせ、交差した行があれば 1 件も消さずに `SystemError(DataIntegrityError)` を投げる |
+| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約）。複数 scope の行が 1 つの表に載るバックエンドでは、消す前にページ全体の `scope_type` / `scope_id` を pin と突き合わせ、交差した行があれば 1 件も消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-tag-020 | `TagAssignmentRepository.reassignBatch` | `spec/domains/tag.md#ポート` | assignment を衝突処理込みで有界付替えし影響 NoteId を返す |
 | ADP-tag-021 | `TagOperationStore.startDelete` | `spec/domains/tag.md#ポート` | delete operation と対象 lock を開始する |
 | ADP-tag-022 | `TagOperationStore.startMerge` | `spec/domains/tag.md#ポート` | merge operation と両 Tag lock を開始する |

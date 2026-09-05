@@ -255,7 +255,7 @@ export const renameNoteFn = createServerFn({ method: "POST" })
  * 断片を作り直すだけで、島が握っている版には届かないためである。
  *
  * `canEdit` を載せるのは、この往復が権限喪失を**次の保存を待たずに**知れる
- * 唯一の機会だからである。島は偽なら面を凍らせる（`reseedFromServer`）。
+ * 唯一の機会だからである。島は偽なら面を凍らせる（`seedLatest`）。
  */
 export const readNoteEditStateFn = createServerFn({ method: "GET" })
   .middleware([errorResponseMiddleware])

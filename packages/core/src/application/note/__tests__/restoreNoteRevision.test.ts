@@ -100,7 +100,7 @@ describe("restoreNoteRevision", () => {
     expect(view.version).toBe(note?.version);
   });
 
-  it("TC-note-470: the response carries the same title and body a read would return", async () => {
+  it("TC-note-832: the response carries the same title and body a read would return", async () => {
     const h = createTestHarness();
     const noteId = await createPersonalNote(h);
     const version = await saveBody(h, noteId, "<p>current</p>", 0);

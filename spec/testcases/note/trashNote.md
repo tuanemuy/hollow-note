@@ -24,4 +24,5 @@
 | ゴミ箱に入れた後 | 一覧を開く | そのノートは一覧に現れない | |
 | ゴミ箱に入れた後 | ゴミ箱を開く | そのノートが現れる | |
 | 他者が先に更新した | 古い `expectedVersion` で削除する | `ConflictError("OPTIMISTIC_LOCK_FAILURE")` が投げられる | |
+| ゴミ箱が空である | 1 件目をゴミ箱に入れる | scope の保持期限アラームがそのノートの `purgeAfter` に張られる。手順 5 は反転させたのと同じ transaction で期限を引き直すため、`findNextPurgeDeadline` の答えにはこの turn が `active` → `trashed` に反転させた行が含まれる |  |
 | 保持期限の違うノートが複数ゴミ箱にある | ゴミ箱に入れる | scope の保持期限アラームが最も早い `purgeAfter` に張り替わる（手順 5） |  |

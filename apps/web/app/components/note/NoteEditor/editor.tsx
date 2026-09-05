@@ -325,27 +325,6 @@ export function NoteEditorIsland({
   const initialMode: EditorMode =
     target.kind === "existing" && target.mayLoseDecoration ? "html" : "wysiwyg";
   const [mode, setMode] = useState<EditorMode>(initialMode);
-  /**
-   * 面の外側の「いまの値」。**往復をまたぐ関数はここからしか読まない** —
-   * 描画が捕まえた `title` / `mode` / `body` / `baseline` は往復のあいだ
-   * 固定されるので、`await` の後にそれを読むと判定が往復を始めた時点の値で
-   * 決まる（門なら恒真になり、モード判定なら前の面の値で走る）。ビジュアル
-   * の経路表が `visualCurrent` という ref で持たれているのと同じ理由で、
-   * 面の内容を組む材料をすべて生きた値に揃える。
-   *
-   * 毎描画で書き直すので、読む側は「最後に描画した値」を見る。ref を 1 つに
-   * まとめてあるのは、材料が増えたときに書き換える箇所を 1 か所に閉じる
-   * ためである（`leaveConfirmRef` と同じ形）。
-   */
-  const liveRef = useRef<
-    Readonly<{
-      title: string;
-      mode: EditorMode;
-      body: string;
-      baseline: string;
-    }>
-  >({ title, mode, body, baseline });
-  liveRef.current = { title, mode, body, baseline };
   const [status, setStatus] = useState<SaveStatus>(
     isNew ? { kind: "new" } : { kind: "idle" },
   );
@@ -447,6 +426,44 @@ export function NoteEditorIsland({
     title !== confirmed.title || body !== confirmed.body || visualDirty;
   const editable = status.kind !== "locked" && status.kind !== "blocked";
   const uploading = uploads.some((entry) => entry.status === "uploading");
+
+  /**
+   * 面の外側の「いまの値」。**往復をまたぐ関数はここからしか読まない**。
+   *
+   * 描画が捕まえた state は往復のあいだ固定されるので、`await` を挟んだ後
+   * （あるいは往復の途中で張られたタイマーの中）にそれを読むと、判定は
+   * 往復を始めた時点の値で決まる — 門なら恒真になり、モード判定なら前の
+   * 面の値で走り、選択肢の読み取りなら利用者が切り替える前の値で走る。
+   *
+   * 載せるのは**往復をまたぐ関数が読む値すべて**である。島に state を
+   * 足すことではなく、往復をまたぐ関数がそれを読むことが、ここへ足す条件
+   * である。範囲は `__tests__/liveReads.test.ts` が `editor.tsx` の AST から
+   * 計算して見張る。
+   *
+   * 毎描画で書き直すので、読む側は「最後に描画した値」を見る。ref を 1 つに
+   * まとめてあるのは、材料が増えたときに書き換える箇所を 1 か所に閉じる
+   * ためである（`leaveConfirmRef` と同じ形）。
+   */
+  const liveRef = useRef<
+    Readonly<{
+      title: string;
+      mode: EditorMode;
+      body: string;
+      baseline: string;
+      dirty: boolean;
+      importReferences: boolean;
+      pendingMode: EditorMode | null;
+    }>
+  >({ title, mode, body, baseline, dirty, importReferences, pendingMode });
+  liveRef.current = {
+    title,
+    mode,
+    body,
+    baseline,
+    dirty,
+    importReferences,
+    pendingMode,
+  };
 
   // 既定のモードは端末に持つ（ED-05）。新規作成だけは引き継がず常に
   // WYSIWYG で開く。読み出しを effect に置くのは、サーバー描画と初回の
@@ -646,7 +663,7 @@ export function NoteEditorIsland({
    * 編集があります」の誤報）になる。
    */
   const commit = async (explicit: boolean): Promise<boolean> => {
-    if (!explicit && !dirty) return true;
+    if (!explicit && !liveRef.current.dirty) return true;
     // 送る値をここで 1 つに固める。以降この関数は `title` / `body` /
     // `visualCurrent` の「いま」を読まない。
     const sent = takeSnapshot();
@@ -658,7 +675,9 @@ export function NoteEditorIsland({
      * 取り込みは `src` の差し替えとスタイルシートの埋め込みを起こす。
      */
     const importing =
-      liveRef.current.mode === "visual" ? false : importReferences;
+      liveRef.current.mode === "visual"
+        ? false
+        : liveRef.current.importReferences;
 
     setStatus({ kind: "saving" });
     const opening = identityRef.current;
@@ -792,12 +811,15 @@ export function NoteEditorIsland({
       // 退避の鍵は `noteId` なので、まだ作られていないノートでは退避
       // そのものが成立しない。告げる文言と逃げ道はその事実に従わせる。
       if (failed.kind === "existing" && next.kind === "failed") {
-        writeDraft(failed.noteId, {
+        // 退避できたかは書いた側だけが知っている。書けない端末で
+        // `stashed` を立てると、退避していない内容を「この端末に残って
+        // います」と告げることになる。
+        const stashed = writeDraft(failed.noteId, {
           html: sent.body,
           title: sent.title,
           savedAt: Date.now(),
         });
-        setStatus({ ...next, stashed: true });
+        setStatus({ ...next, stashed });
       } else {
         setStatus(next);
       }
@@ -1046,7 +1068,7 @@ export function NoteEditorIsland({
   // 入っていて、それを保存すると `data-hollow-upload` が落ちた素の `span`
   // が本文に残る。
   //
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに `commit` が読む値（タイトル・本文・ビジュアルの差分と打鍵世代）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。3 つの面のどれで打っても依存が 1 つ動く形になっていなければ、打ち続けている最中に保存が走る。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに**打鍵を表す値**（タイトル・本文・ビジュアルの差分と打鍵世代）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。3 つの面のどれで打っても依存が 1 つ動く形になっていなければ、打ち続けている最中に保存が走る。送る値はここではなく `liveRef` が決めるので、この一覧に載っていない材料（取り込みの選択など）でもタイマーの発火時点の値で保存される。
   useEffect(() => {
     if (!dirty || !editable || busy) return;
     if (
@@ -1460,7 +1482,7 @@ export function NoteEditorIsland({
       }
       rememberIdentity({ kind: "existing", noteId, version: latest.version });
       // 引き直した正本が権限喪失を告げたら、どちらの枝へも進まない
-      // （`reseedFromServer` と同じ理由）。上書きは保存が必ず拒まれ、
+      // （`seedLatest` と同じ理由）。上書きは保存が必ず拒まれ、
       // 破棄は書きかけを捨てるだけになる。
       if (!latest.canEdit) {
         setStatus({ kind: "blocked", message: EDIT_PERMISSION_LOST });
@@ -1650,7 +1672,11 @@ export function NoteEditorIsland({
       ]);
       return;
     }
-    if (noteId === null) {
+    // 保管先は同一性の ref から取る。初回保存はノートを作った時点で ref を
+    // 進めるので、描画が捕まえた `noteId` がまだ `null` の描画でも挿入
+    // できる。
+    const owner = identityRef.current;
+    if (owner.kind !== "existing") {
       setUploads((list) => [
         ...list,
         {
@@ -1680,7 +1706,7 @@ export function NoteEditorIsland({
       try {
         const payload = new FormData();
         payload.set("file", file);
-        payload.set("noteId", noteId);
+        payload.set("noteId", owner.noteId);
         const stored = await uploadMedia({ data: payload });
         const inserted = settlePlaceholder(
           id,
@@ -2152,7 +2178,11 @@ export function NoteEditorIsland({
                       const saved = await runExclusive({ kind: "saving" }, () =>
                         commit(true),
                       );
-                      if (saved === true) enterMode(pendingMode);
+                      // 切り替え先は往復の後に読む。「取りやめ」は往復中
+                      // でも押せるので、押されていれば `null` になって
+                      // いて、保存だけが通って切り替えは起きない。
+                      const next = liveRef.current.pendingMode;
+                      if (saved === true && next !== null) enterMode(next);
                     })();
                   }}
                 >

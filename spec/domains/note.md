@@ -436,7 +436,7 @@ interface NoteRepository extends TransactionalRepository<Note, NoteId> {
 ```
 
 - `listPurgeable` の順序は `purgeAfter ASC, id ASC` である。保持期限の回収は最も長く待ったノートから行うため、この順序は契約であって実装の都合ではない。`id` のタイブレークが順序を全順序にする
-- `findNextPurgeDeadline` は現在時刻を見ない。ゴミ箱にあるノートの `purgeAfter` の最小値を返し、ゴミ箱が空なら `null` を返す。「保持期限の回収に次に仕事があるのはいつか」を答える口であり、scope の Alarm はこの値から張る — **まだ開いていない窓こそがこのメソッドの用途**なので、`listPurgeable` と違って `now` で絞らない
+- `findNextPurgeDeadline` は現在時刻を見ない。ゴミ箱にあるノートの `purgeAfter` の最小値を返し、ゴミ箱が空なら `null` を返す。「保持期限の回収に次に仕事があるのはいつか」を答える口であり、scope の Alarm はこの値から張る — **まだ開いていない窓こそがこのメソッドの用途**なので、`listPurgeable` と違って `now` で絞らない。同じ UoW で `active` → `trashed` に反転させたノートも答えに含める（`trashNote` 手順 5。[database/index.md](../database/index.md) の「同一 UoW の読み」(3)）
 - `listByOwner` の順序は `updatedAt DESC, id DESC` である。`id` のタイブレークが順序を全順序にする — 半順序に対してオフセットページングを掛けると、同じ行が 1 ページ目に出て次のページから消えるといった重複・欠落が起きる。ここを入口に列挙する projection の再構築は、失敗もせずにノートを取りこぼすことになる
 - `listByOwner` の `lifecycle` は `countByOwner` と同じ 3 値を取る。ゴミ箱だけを対象にする `emptyTrash`、生死を問わない `deleteNotesForOwner` / `rebuildNoteProjection` がそれぞれ別の値で呼ぶため、件数と一覧で絞り込みの語彙を揃える
 - repository は現在の ScopeKey に束縛され、scope をまたぐ全件走査を提供しない。local projection の再構築は `listByOwner(currentScope, "all", ...)`、public projection の再構築は global D1 の `note_routes` を入口にする

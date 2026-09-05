@@ -583,7 +583,8 @@ node /tmp/hollow-manual-7/gen.cjs
   2. `pnpm test`
 - **期待結果:** 手順 1 が終了コード 0 で完了し、`pnpm lint:fix` / `pnpm format` の実行後に `git status` の差分が意図した変更だけであること。手順 2 が `node` / `workers` の両プロジェクトを実行して失敗 0 件で終わる
 - **確認ポイント:** `workers` プロジェクトは workerd 内で走るので、`StoredFileRepository` に足したメソッドの conformance が cloudflare 側でも通っていること（`pnpm test:workers` 単体でも確認できる）
-- **確認ポイント（設計参照の衛生）:** `apps/web/app/presentation/__tests__/adrReference.test.ts` が緑であること。この 1 本が (1) ソース（`apps/web/app` と `packages/core/src` の `.ts` / `.tsx`）に現れる ADR 番号がすべて `spec/adr/` の実在ファイルへ解決すること、(2) ソースが作業ログのディレクトリを 1 か所も引いていないことを固定する。番号は型でも識別子でもないので typecheck も lint も落とせず、機械で落とせる場所がここしかない。落ちたら、参照先の理由をその場に書き直す（番号を canon へ足すのは、その決定が Issue を越えて残るときだけ）
+- **確認ポイント（設計参照の衛生）:** `apps/web/app/__tests__/adrReference.test.ts` が緑であること。この 1 本が (1) ソース（`apps/web/app` と `packages/core/src` の `.ts` / `.tsx`）に現れる ADR 番号がすべて `spec/adr/` の実在ファイルへ解決すること、(2) ソースが作業ログのディレクトリを 1 か所も引いていないことを固定する。番号は型でも識別子でもないので typecheck も lint も落とせず、機械で落とせる場所がここしかない。落ちたら、参照先の理由をその場に書き直す（番号を canon へ足すのは、その決定が Issue を越えて残るときだけ）
+- **確認ポイント（編集島の生きた値）:** `apps/web/app/components/note/NoteEditor/__tests__/liveReads.test.ts` が緑であること。この 1 本が「往復をまたぐ関数は描画が捕まえた値を読まない」を固定する。禁止する識別子は書かれておらず、`editor.tsx` の AST から捕まえた値（`useState` の束縛と島の直下でそれらから作られる const）と往復をまたぐ関数（`await` を持つものと、そこから名前呼びで到達する局所関数）を計算して突き合わせる。落ちたら、報告された行が読む値を `liveRef` へ足して ref から読む（テスト側の識別子を足すのではない）
 
 ### 16. TC 台帳 ID を持つテストが実際に走っている
 
@@ -891,7 +892,7 @@ node /tmp/hollow-manual-7/gen.cjs
 | TC-13 手順 5〜7（51 件以上の一括削除ジョブ、その ID の突き合わせ） | Job 集約（#5 / #6） | `emptyTrash` の 51 件以上の経路は `requestBulkNoteOperation` を呼ぶ（adr.md ADR-002）。本スライスの `NoteBulkPurgeJobs` は `null` を返す縫い目だけなので `jobIds` は常に空で、手順 5 の案内は出るが ID は 1 件も並ばない。画面側（`TrashList/board.tsx`）は返った `jobIds` をそのまま出す形になっているので、Job 集約が入れば手順 5〜7 はそのまま実行できる。手順 7 は処理履歴（P-15）が本スライスの外にあるため、導線ではなく `emptyTrash` の応答の `jobIds` との突き合わせに読み替えてある（`spec/manual-tests/editing.md` の TC-13 確認ポイント）。P-15 が実装されたら手順書側を導線へ戻す |
 | TC-14 手順 4〜5（HTML でのダウンロード） | 書き出し（#10） | `exportNote` 以降が未実装 |
 | TC-29（処理中ノートの編集ロック） | 取り込み（#6）+ Job 集約 | 変換処理中のノートを作る手段がなく、`NoteLockedByJob` の分岐も Job 集約に依存する（adr.md ADR-002） |
-| TC-34 手順 3 / 7 / 8（取り込みの実行結果・再取り込み・`/jobs`） | 取り込み（#6） | 外部参照の取り込みジョブが未実装（本スライスが確認するのは選択肢の提示と痕跡の残り方まで） |
+| TC-34 手順 3 / 7 / 8 / 9（取り込みの実行結果・再取り込み・`/jobs`） | 取り込み（#6） | 外部参照の取り込みジョブが未実装（本スライスが確認するのは選択肢の提示と痕跡の残り方まで）。手順 9 が見る「デバウンス中に切り替えた選択で自動保存が走る」は `apps/web/app/components/note/NoteEditor/__tests__/liveReads.test.ts` が読みの側を固定する |
 
 ## 既存機能への影響確認
 

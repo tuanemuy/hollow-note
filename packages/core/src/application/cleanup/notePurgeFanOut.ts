@@ -61,10 +61,19 @@ export const readNotePurgeTurn = (
   if (token !== null && token !== undefined && typeof token !== "string") {
     throw corrupt("payload carries an invalid deletionOperationId");
   }
+  // A blank token names no barrier, and no writer produces one: absence
+  // is written as `null` or as no field at all, while every non-null
+  // token comes either from the decoded `note.purged` event or from this
+  // reader's own output written back by `settleNotePurgeTurn`. Reading
+  // it as `null` would skip admission and drop the re-arm from
+  // `securityCleanup` to `expiryCollection`, so it faults like the
+  // unreadable `noteId` above.
+  if (typeof token === "string" && token.trim().length === 0) {
+    throw corrupt("payload carries an empty deletionOperationId");
+  }
   return {
     noteId: NoteId.create(noteId),
-    deletionOperationId:
-      typeof token === "string" && token.length > 0 ? token : null,
+    deletionOperationId: typeof token === "string" ? token : null,
   };
 };
 

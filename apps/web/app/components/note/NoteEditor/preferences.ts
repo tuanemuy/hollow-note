@@ -10,8 +10,10 @@
  * 置くと、一度押した端末では装飾の喪失が二度と告げられなくなる。
  *
  * `localStorage` はプライベートウィンドウやサイトデータの遮断で読み書き
- * そのものが投げるので、すべての経路を握り潰す。ここが投げると編集画面が
- * 開かなくなり、失う実害（既定が 1 回戻る）より遥かに重い。
+ * そのものが投げる。読みと既定のモードは握り潰す — ここが投げて編集画面が
+ * 開かなくなる実害は、失うもの（既定が 1 回戻る）より遥かに重い。退避だけは
+ * 書けたかを返す（{@link writeDraft}）。「この端末に退避した」と告げるか
+ * どうかがその値で決まる。
  *
  * 退避だけは**保持期限**を持つ（{@link DRAFT_MAX_AGE_MS}）。中身はノート
  * 本文そのもので、保存に成功する以外に消える契機が無いため、置きっぱなし
@@ -45,11 +47,13 @@ const read = (key: string): string | null => {
   }
 };
 
-const write = (key: string, value: string): void => {
+/** 書けたら `true`。呼び出し元は退避できたかをこの値で告げる。 */
+const write = (key: string, value: string): boolean => {
   try {
     window.localStorage.setItem(key, value);
+    return true;
   } catch {
-    // 退避できない端末では「保存失敗」の表示だけが残る。
+    return false;
   }
 };
 
@@ -153,8 +157,15 @@ export function readDraft(noteId: string): LocalDraft | null {
   return draft;
 }
 
-export function writeDraft(noteId: string, draft: LocalDraft): void {
-  write(draftKey(noteId), JSON.stringify(draft));
+/**
+ * 退避を端末へ書く。書けたら `true`。
+ *
+ * 戻り値は捨ててはならない — 保存の失敗が告げる「内容はこの端末に退避
+ * した」は利用者がそれを信じて画面を離れる文言で、`localStorage` が投げる
+ * 端末（プライベートウィンドウ・サイトデータの遮断）では偽になる。
+ */
+export function writeDraft(noteId: string, draft: LocalDraft): boolean {
+  return write(draftKey(noteId), JSON.stringify(draft));
 }
 
 export function clearDraft(noteId: string): void {

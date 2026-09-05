@@ -518,7 +518,7 @@ describe("trashNote", () => {
     expect(storedNote(h, noteId)?.lifecycle).toBe("active");
   });
 
-  it("TC-note-793: the first note into an empty trash arms the sweep at its own purgeAfter", async () => {
+  it("TC-note-831: the first note into an empty trash arms the sweep at its own purgeAfter", async () => {
     const h = createTestHarness();
     const noteId = await createPersonalNote(h);
 

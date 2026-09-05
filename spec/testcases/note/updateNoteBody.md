@@ -43,7 +43,7 @@
 | 壊れた HTML | 保存する | 補正された結果が保存され、例外にならない | |
 | `<style>` に改行で終わる文字列を含む HTML（`content:"a⏎;position:fixed`。`\r` / `\f` と `style` 属性、規則の前置き、ブロック境界をまたぐ形も同じ） | 保存する | 改行は文字列を bad-string として終わらせるので `position` の宣言だけが除去され、`removed` に含まれる（閉じ引用符まで走る走査は `;` を見失い、`<style>` 1 個のオーバーレイを素通しする）。その改行は文字列を終わらせた当のものなので書き戻され、後続の規則は規則のまま残る（落とすと出力側で文字列が開き直し、除去が 0 件の入力でもサニタイズが装飾を壊す） | |
 | `url()` でない関数トークンの内側に `;` と `position:fixed` を含む規則（`.a{background:myurl(a(b);position:fixed);color:red}`） | 保存する | 規則がそのまま残り、`removed` が空になる（`myurl(` はブラウザにとって関数トークンなので `;` は宣言を終端しない。ここで url-token として過剰に一致させると、除去した側が閉じ括弧を持ち去って `color:red` まで失われる） | |
-| 走査の深さの上限を超える入れ子の HTML（`<div>` を 2,000 段 = 22 KB） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（`toSerialized()` を持たない `RangeError` にはならない） | |
+| 走査の深さの上限を超える入れ子の HTML（`<div>` を 2,000 段 = 22 KB / 50,000 段 = 550 KB） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（`toSerialized()` を持たない `RangeError` にはならない）。深さの拒否は木ができる前（解析中）に起きる | |
 | 入れ子がちょうど 256 段 / 257 段 | 保存する | 256 段は保存でき、257 段は `NOTE_HTML_TOO_COMPLEX` で拒まれる（境界値） | |
 | `<style>` のブロックが深く入れ子になった HTML（`@media a{` を 12,000 段 = 108 KB） | 保存する | `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` が投げられる（ブロックの終端探索がそのブロックを読み直すため、深さがそのまま走査を二乗にする） | |
 | CSS のブロックの入れ子がちょうど 32 段 / 33 段 | 保存する | 32 段は保存でき、33 段は `NOTE_HTML_TOO_COMPLEX` で拒まれる（境界値） | |

@@ -418,10 +418,20 @@ describe("readNotePurgeTurn", () => {
     expect(() =>
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: 12 }),
     ).toThrow(SystemError);
+    // A blank token is unreadable, not "no barrier": absence is written
+    // as `null` or as no field at all, so reading `""` as `null` would
+    // skip admission and re-arm at the wrong priority.
+    expect(() =>
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "" }),
+    ).toThrow(SystemError);
+    expect(() =>
+      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "   " }),
+    ).toThrow(SystemError);
 
     for (const payload of [
       { noteId: "   " },
       { noteId: "note-1", deletionOperationId: 12 },
+      { noteId: "note-1", deletionOperationId: "" },
     ]) {
       try {
         readNotePurgeTurn(payload);
@@ -435,16 +445,13 @@ describe("readNotePurgeTurn", () => {
     }
   });
 
-  it("reads an absent, null or empty deletion token as `null`, so an ordinary purge carries no barrier", () => {
+  it("reads an absent or null deletion token as `null`, so an ordinary purge carries no barrier", () => {
     expect(readNotePurgeTurn({ noteId: "note-1" })).toEqual({
       noteId: "note-1",
       deletionOperationId: null,
     });
     expect(
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: null }),
-    ).toEqual({ noteId: "note-1", deletionOperationId: null });
-    expect(
-      readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "" }),
     ).toEqual({ noteId: "note-1", deletionOperationId: null });
     expect(
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "op-1" }),
@@ -558,7 +565,7 @@ describe("identity.personalBarrierPruneContinued", () => {
  * with more than one sibling that actually does work in the same turn:
  * the `cleanup` phase is served by `accountDeletionCleanup` (scope
  * plane) and `accountDeletionGlobalCleanup` (global plane). The
- * dispatcher stopped depending on registration order, so the JSDoc's
+ * dispatcher does not depend on registration order, so the JSDoc's
  * claim that these two are independent has to be exercised on the real
  * registry rather than on a synthetic one.
  */
