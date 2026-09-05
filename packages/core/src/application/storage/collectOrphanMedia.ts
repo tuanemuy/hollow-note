@@ -66,10 +66,9 @@ export const ORPHAN_MEDIA_BATCH_SIZE = 100;
  * `NoteRevision.RETENTION + 1` body parses of up to `NoteHtml`'s
  * 800,000 bytes, so the page size alone leaves the turn's CPU unbounded:
  * a page whose 100 files belong to 100 notes would parse 2,100 bodies.
- * Five notes hold the worst case to 105 parses — the same order as the
- * one-parse-per-candidate turn this sweep costed before the bodies of the
- * retained revisions joined the reference set, which is what
- * {@link ORPHAN_MEDIA_BATCH_SIZE} was chosen against.
+ * Five notes hold the worst case to 105 parses — the same order as one
+ * parse per candidate, which is the cost
+ * {@link ORPHAN_MEDIA_BATCH_SIZE} is sized against.
  *
  * A page is usually one note's pictures, so the budget is normally never
  * reached. When it is, the turn stops at the last file it judged and

@@ -31,21 +31,19 @@ export const MEDIA_VIDEO_MAX_BYTES = 200 * MB;
  * editor may insert — an order of magnitude above the drawings that
  * reach it and small enough that a body this size is cheap to sanitize.
  *
- * **It is not derived, and nothing else rests on it.** Four attempts to
- * derive a promise from this number have each been refuted by
- * measurement: that a well-formed input bounds the output (131,064 bytes
- * serialized into 11,300,523 — 86×), that refusing the element names
- * which leave foreign content does (`<desc><template><tr>` reaches the
- * table insertion modes without any of them — 180×), and that
- * `maxExpansionFactor` × 131,072 < 800,000 does (the meter charges a
- * node's *pre-escape* length, so 131,072 raw `"` in a single-quoted
- * attribute value serialize into 786,073, and behind a hidden `<table>`
- * 20 KB of the same trick passes 800,000). The promise those derivations
- * were carrying — that an upload never fails in Note's vocabulary — is
- * kept structurally instead, by `storeMedia`'s boundary translation
- * covering every code `HtmlProcessor.process` raises. Changing this
- * number, the body's cap, the allow list or the escape set therefore
- * breaks nothing silently.
+ * **It is not derived, and nothing else rests on it.** No promise about
+ * the sanitized output follows from this number. A well-formed input
+ * does not bound the output (131,064 bytes serialize into 11,300,523 —
+ * 86×). Refusing the element names which leave foreign content does not
+ * (`<desc><template><tr>` reaches the table insertion modes without any
+ * of them — 180×). `maxExpansionFactor` × 131,072 < 800,000 does not
+ * (the meter charges a node's *pre-escape* length, so 131,072 raw `"` in
+ * a single-quoted attribute value serialize into 786,073, and behind a
+ * hidden `<table>` 20 KB of the same trick passes 800,000). The promise
+ * that an upload never fails in Note's vocabulary is kept structurally,
+ * by `storeMedia`'s boundary translation covering every code
+ * `HtmlProcessor.process` raises. Changing this number, the body's cap,
+ * the allow list or the escape set therefore breaks nothing silently.
  *
  * What bounds the sanitizer's *cost*, at any value of this constant, is
  * `HtmlProcessorLimit` (spec/adr/013 「サニタイズは資源で有界である」).

@@ -1,6 +1,10 @@
 import { readNotePurgeTurn } from "@repo/core/application/cleanup/notePurgeFanOut";
+import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "@repo/core/application/cleanup/participants";
+import { PERSONAL_BARRIER_PRUNE_TASK_KIND } from "@repo/core/application/cleanup/personalCleanup";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
 import type { ScopeUnitOfWorkProvider } from "@repo/core/application/execution/unitOfWork";
+import type { ScopeTaskPayload } from "@repo/core/application/ports/scopeTaskScheduler";
+import { ScopeTaskPriority } from "@repo/core/application/ports/scopeTaskScheduler";
 import { ScopeKey } from "@repo/core/application/scope";
 import { EventId } from "@repo/core/domain/common/event";
 import type { UserDeletedEvent } from "@repo/core/domain/identity/events";
@@ -27,6 +31,7 @@ import type { AccountDeletionDispatchContinuedEvent } from "../../identity/conti
 import { IdentityContinuations } from "../../identity/continuations";
 import { deleteAccount } from "../../identity/deleteAccount";
 import { continueAccountDeletionManifestBuild } from "../../identity/deleteAccount/manifestBuild";
+import { runDueScopeTasks } from "../scopeTaskRunner";
 import {
   continuationSubscribers,
   dispatchDomainEvent,
@@ -444,6 +449,83 @@ describe("readNotePurgeTurn", () => {
     expect(
       readNotePurgeTurn({ noteId: "note-1", deletionOperationId: "op-1" }),
     ).toEqual({ noteId: "note-1", deletionOperationId: "op-1" });
+  });
+});
+
+describe("identity.personalBarrierPruneContinued", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const OWNER = UserId.create("user-barrier");
+  const SCOPE = ScopeKey.user(OWNER);
+  const OPERATION_ID = "op-barrier";
+
+  const armPrune = async (
+    h: TestHarness,
+    retainUntil: Date,
+    payload: ScopeTaskPayload,
+    dueAt: Date,
+  ): Promise<void> => {
+    await h.container.scopeUnitOfWorkProvider.run(SCOPE, async (ctx) => {
+      await ctx.cleanupAdmission.beginPersonalAccountDeletion(
+        OPERATION_ID,
+        OWNER,
+      );
+      for (const component of REQUIRED_PERSONAL_CLEANUP_COMPONENTS) {
+        await ctx.cleanupAdmission.acknowledgePersonalComponent(
+          OPERATION_ID,
+          component,
+        );
+      }
+      await ctx.cleanupAdmission.markCompleted(OPERATION_ID, retainUntil);
+      await ctx.scopeTaskScheduler.schedule({
+        kind: PERSONAL_BARRIER_PRUNE_TASK_KIND,
+        operationId: OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt,
+        payload,
+      });
+    });
+  };
+
+  const receipts = (h: TestHarness) =>
+    h.backend.scope(SCOPE).cleanupReceipts.values();
+
+  it("sweeps against the deadline the row carries, so a receipt whose retention outlasts it is left standing", async () => {
+    const h = createTestHarness();
+    const armedAt = h.clock.now();
+    const asOf = new Date(armedAt.getTime() + 60 * DAY_MS);
+    await armPrune(
+      h,
+      new Date(armedAt.getTime() + 120 * DAY_MS),
+      { deletionOperationId: OPERATION_ID, asOf: asOf.toISOString() },
+      asOf,
+    );
+    // The turn runs long after its row came due, which is exactly when
+    // the clock and the row's own deadline disagree.
+    h.clock.advance(200 * DAY_MS);
+
+    await runDueScopeTasks(h.workerContainer);
+
+    expect(receipts(h)).toHaveLength(1);
+  });
+
+  it("falls back to the clock when the row names no readable deadline, rather than stranding the row", async () => {
+    for (const asOf of [undefined, "not-a-date", 12]) {
+      const h = createTestHarness();
+      const armedAt = h.clock.now();
+      await armPrune(
+        h,
+        new Date(armedAt.getTime() + 120 * DAY_MS),
+        asOf === undefined
+          ? { deletionOperationId: OPERATION_ID }
+          : { deletionOperationId: OPERATION_ID, asOf },
+        new Date(armedAt.getTime() + 120 * DAY_MS),
+      );
+      h.clock.advance(200 * DAY_MS);
+
+      await runDueScopeTasks(h.workerContainer);
+
+      expect(receipts(h)).toEqual([]);
+    }
   });
 });
 

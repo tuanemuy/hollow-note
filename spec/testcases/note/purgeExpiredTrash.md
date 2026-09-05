@@ -6,7 +6,7 @@
 | 削除から 29 日経過したノートがある | 実行する | そのノートは残る | |
 | `purgeAfter` のちょうど 1 ミリ秒前 | 実行する | 残る（境界値） | |
 | 対象が `limit`（既定 40）を超える | Alarmで実行する | `limit` 件だけ処理され、同じscopeのtaskが直後へ再設定される。global Cronは使わない | |
-| `limit` の既定値 | 根拠を確認する | 1回のscope Alarm turnのCPU時間とlocal event fan-outを有界にする値である | |
+| `limit` の既定値 | 根拠を確認する | `limit` 40 は 1 Alarm turn の CPU と local event fan-out に加えて、1 件 11〜12 文かかる global D1 statement 数（40 × 12 = 480）を設計上限 500 の内側に収める値である | |
 | 1 件の削除が失敗する | 実行する | 記録して継続し、他の削除は成功する | |
 | 対象が 0 件 | 実行する | `purgedCount: 0` が返る | |
 | 実行後 | 使用量を確認する | 削除した分だけ減っている | |

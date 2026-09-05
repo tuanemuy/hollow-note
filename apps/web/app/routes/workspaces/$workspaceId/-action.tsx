@@ -127,9 +127,8 @@ export const renderWorkspaceNoteDetail = createServerFn({ method: "GET" })
  * URL から来る。
  *
  * 詳細と同じ理由でワークスペース自身は読まない — この画面が読むのは
- * ノート 1 件だけで、その認可は `getNote` が持つ。非メンバーが URL を
- * 直接開けば `NOTE_NOT_FOUND` に落ちる（`spec/manual-tests/editing.md`
- * の TC-28 手順 3）。
+ * ノート 1 件だけで、その認可は `getNote` が持つ。非メンバーには
+ * `getNote` が `NOTE_NOT_FOUND` を返す。
  *
  * 保存・自動保存・メディア挿入・版の復元は `routes/notes/-action.tsx` の
  * ミューテーションを両文脈で共有する（`noteId` で対象が定まるため）。

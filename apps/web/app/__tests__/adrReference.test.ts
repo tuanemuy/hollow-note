@@ -14,14 +14,15 @@ import { describe, expect, it } from "vitest";
  * られた番号へ辿り着く。番号は型でも識別子でもないので、この違反は
  * typecheck も lint も通り抜ける — 機械で落とせる場所はここしかない。
  *
- * 置き場所が `presentation/__tests__/` なのは、`apps/web` でここだけが
- * 特定のルート / コンポーネントに属さない横断的な規則を持つためである
- * （検査そのものはリポジトリ全体のソースに掛かる）。
+ * 置き場所が `app/__tests__/` なのは、特定のルート / コンポーネントに属さず
+ * ソース走査で規約を見張るテストの家がここだからである
+ * （`serverFunctionRegistration.test.ts` と並ぶ。検査そのものはリポジトリ
+ * 全体のソースに掛かる）。
  */
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../../..",
+  "../../../..",
 );
 
 const SOURCE_ROOTS = ["apps/web/app", "packages/core/src"];

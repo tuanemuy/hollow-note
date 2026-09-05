@@ -243,9 +243,9 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
  * and never on the kind — but a reader diagnosing a stuck delivery has
  * to read the log, not the exception.
  *
- * That relaxation is the dispatcher's, not the fan-out's: it also drops
- * the ordering the continuation subscribers of one type used to inherit
- * from registration order. `identity.accountDeletionDispatchContinued`
+ * That relaxation is the dispatcher's, not the fan-out's: the
+ * continuation subscribers of one type are unordered too.
+ * `identity.accountDeletionDispatchContinued`
  * is the case with more than one, and its siblings stay safe for the
  * same reason rather than by running in sequence — each returns early
  * unless the continuation names its own phase, and the two that do share

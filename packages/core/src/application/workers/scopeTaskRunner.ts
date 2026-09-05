@@ -7,6 +7,7 @@ import {
 import {
   PERSONAL_BARRIER_PRUNE_TASK_KIND,
   prunePersonalCleanupBarriers,
+  readPersonalBarrierPruneTurn,
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
 import { isConflictError } from "../errors";
@@ -233,11 +234,14 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
       scope: task.scope,
       payload: task.payload,
     }),
+  // The barrier's expiry settles its own row, and sweeps against the
+  // deadline its payload carries so every turn of the row uses the one
+  // the completing barrier fixed.
   [PERSONAL_BARRIER_PRUNE_TASK_KIND]: async (container, task) => {
     await prunePersonalCleanupBarriers(container, {
       scope: task.scope,
       operationId: task.operationId,
-      asOf: container.clock.now(),
+      ...readPersonalBarrierPruneTurn(task.payload, container.clock.now()),
     });
   },
 };

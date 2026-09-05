@@ -146,19 +146,45 @@ export function NoteDetailIsland({
     });
   };
 
-  // 引き直した正本を島へ取り込む。`title`（打鍵中の入力）は触らない —
-  // サーバーの値で上書きすると書いている最中の文字が消える。差が残れば
-  // 自動保存の effect がそのまま拾う。島を `key` で組み直さないのも同じ
-  // 理由である。
-  //
-  // 往復が走っているあいだは取り込まない。送った版の応答のほうが新しく、
-  // 断片が持ち帰った版はその 1 つ前でありうる。
+  /**
+   * 引き直した正本を島へ取り込む（P-11 状態表「操作実行中」）。門は 2 つ
+   * ある。
+   *
+   * - **往復が走っているあいだは取り込まない**（`busy`）。送った版の応答の
+   *   ほうが新しく、断片が持ち帰った版はその 1 つ前でありうる
+   * - **島が持つ版より古い正本は取り込まない**（`initialVersion <
+   *   versionRef.current`）。版は単調増加なので、この 1 行が弾くのは古い
+   *   断片による巻き戻しだけで、失敗のあとの引き直しはそのまま通る
+   *
+   * 2 つ目が要るのは、`reconcile()` の解決が断片の到着より**先**だから
+   * である。loader は `renderServerFragment` を await せず、`Deferred` は
+   * Flight payload が届くまで旧 payload を保つので、`busy` が下りた瞬間の
+   * props はまだ 1 世代前でありうる。3 つの契機で追うと:
+   *
+   * - **往復が通った直後** — `versionRef` は応答が返した版、props は
+   *   まだ 1 つ前。版の門が閉じるので取り込まない（取り込むと版と保存済み
+   *   タイトルが巻き戻り、次の自動保存が古い版で送って必ず競合する）
+   * - **往復が落ちた直後** — 応答が無いので `versionRef` は送った版のまま
+   *   である。他の利用者の保存で進んだ正本は必ずそれ以上なので門を通り、
+   *   次の再試行が新しい版で送れる（これが引き直しの目的である）
+   * - **断片が届いたとき** — 版が追いついた時点で門が開き、版・保存済み
+   *   タイトル・表示スタイルが正本へ揃う
+   *
+   * `title`（打鍵中の入力）は確定済みの値と同じときだけ揃える。離れて
+   * いれば触らない — サーバーの値で上書きすると書いている最中の文字が
+   * 消える（差はそのまま自動保存の effect が拾う。島を `key` で組み直さ
+   * ないのも同じ理由である）。同じときに揃えるのは、競合で入力欄を
+   * `savedTitle` へ巻き戻したあとに他の利用者の正本が届く経路があるため
+   * で、揃えないと入力欄だけが古い値のまま残り、自動保存がそれをサーバー
+   * へ書き戻す。
+   */
   useEffect(() => {
-    if (busy) return;
+    if (busy || initialVersion < versionRef.current) return;
     versionRef.current = initialVersion;
     setSavedTitle(initialTitle);
     setStyleMode(initialStyleMode);
-  }, [busy, initialVersion, initialTitle, initialStyleMode]);
+    setTitle((value) => (value === savedTitle ? initialTitle : value));
+  }, [busy, initialVersion, initialTitle, initialStyleMode, savedTitle]);
 
   const saveTitle = (next: string): void => {
     startSaving(async () => {

@@ -112,15 +112,19 @@ export const listMoveTargetsFn = createServerFn({ method: "GET" })
 /**
  * ノートの移動（UC-note-013、OR-12）。
  *
- * `expectedVersion` を転送境界で受け取らないのは、`getNote` の DTO が
- * ノートの版を持たないため（`spec/usecases/note.md#getnote` の出力 DTO に
- * `version` が無い）。画面が見た版が無い以上ここでも作れないので、`null`
- * を渡して「版を持たない呼び出し元」であることを `moveNote` に伝える。
- * サーバー側で引き直した版を渡すと、`moveNote` が自分で読んだ値と突き
- * 合わせるだけの恒真な検査になり、楽観ロックが**あるように見えて無い**
- * 状態になる。`getNote` が版を返すようになったら、画面が見た版をここで
- * 受け取る形にする（そのときだけ「読んでから移動するまでの間の編集」を
- * 弾ける）。
+ * `expectedVersion` を転送境界で受け取らず、`moveNote` には `null` を
+ * 渡して「版を持たない呼び出し元」であることを伝える。版そのものは DTO に
+ * 届いている（`NoteDetailView.version` / `NoteRowView.version`）が、P-11
+ * では移動が**版の所有者の外**で走る — 版を握るのは詳細島
+ * （`NoteDetail/detail.tsx` の `versionRef`）で、タイトルの自動保存・表示
+ * スタイル・ゴミ箱への移動はそこで直列化されるのに対し、移動はメニュー
+ * （`NoteDetail/menu.tsx`）が自分で走らせる。直列化の外にいる呼び出し元へ
+ * 版を配ると、タイトルの自動保存が版を進めた直後の移動が古い版で落ちる。
+ *
+ * 呼び出し元ごとに送る・送らないを分けもしない。片方だけが版を送る境界は
+ * 楽観ロックが**あるように見えて無い**状態そのもので、サーバー側で引き
+ * 直した版を渡すのも同じ（`moveNote` が自分で読んだ値と突き合わせるだけの
+ * 恒真な検査になる）。
  */
 export const moveNoteFn = createServerFn({ method: "POST" })
   .middleware([errorResponseMiddleware])

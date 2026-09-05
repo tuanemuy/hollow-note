@@ -1076,8 +1076,14 @@ export function createHtmlProcessor(): HtmlProcessor {
           const filtered = filterCss(css, () => {}, budget);
           // A `</style` inside the fetched CSS would close the element
           // during the next parse and let the remainder of the sheet be
-          // read as markup.
-          const safe = filtered.replace(/<\/style/gi, "");
+          // read as markup. Escaped rather than removed, because a removal
+          // splices what surrounded it back together and a sheet spelled
+          // `</st</styleyle` re-forms the end tag the pass just took out.
+          // `\/` is CSS's escape for `/`, so the sheet means the same, and
+          // the escape is its own fixed point: it only ever inserts a `\`,
+          // which is not a character of `</style`, so no `</style` can
+          // survive or be formed by the substitution.
+          const safe = filtered.replace(/<\/(?=style)/gi, "<\\/");
           adopt(element, safe.length === 0 ? [] : [textNode(safe, element)]);
           return;
         }

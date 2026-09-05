@@ -692,7 +692,7 @@ describe("collectOrphanMedia", () => {
     );
   });
 
-  it("TC-storage-258: a failed turn keeps the position it started from, so the walk costs a day rather than starting over", async () => {
+  it("TC-storage-277: a failed turn keeps the position it started from, so the walk costs a day rather than starting over", async () => {
     const h = createTestHarness();
     const now = h.clock.now();
     const cursor = {

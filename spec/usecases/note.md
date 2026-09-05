@@ -975,7 +975,7 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 `deletionOperationId`はscope cleanupのadmission tokenであり、Noteごとの内部purge operation IDとは別である。各continuationは前者を保持し、個別Note purgeは親operation ID+NoteIdから導出した後者で冪等化する。通常要求の再送はrouteに保存済みのoperation IDを再利用する。
 
-**継続の媒体を専用の要求にした理由**。以前は受け取ったのと同じ `identity.user.deleted` / `workspace.deleted` を再投入して継続していたが、これらは購読者を 8 つ / 4 つ持つため、残作業がある間じゅう購読者全員にコピーが配られ、outbox とキューを水増しした。購読者 1 件の要求に分ければ 1 系列 1 件で済む。継続の媒体としてジョブを使わない理由（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）は変わらない。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形になったため、両者の継続の仕方の違いは解消した。
+**継続の媒体は購読者 1 件の専用要求である**。受け取った `identity.user.deleted` / `workspace.deleted` の再投入では継続しない — これらは購読者を 8 つ / 4 つ持ち、残作業があるあいだじゅう購読者全員にコピーが配られて outbox とキューを水増しするからで、専用要求なら 1 系列 1 件で済む。ジョブも媒体にしない（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形をとる。
 
 `batchSize` の既定 40 は、1 Alarm turn の CPU と `note.purged` event fan-out に加えて、**この turn が使う global query 数**を抑えるための作業量上限である。scope-local SQL に D1 の予算は掛からないが、1 件の purge は route（`resolve` / `beginPurge` / `finishPurge`）と public projection（`removeForPurge`）という global 側を必ず叩くため、scope cleanup でありながら件数に比例して global 予算を消費する唯一の経路になる。数える単位は**ポート呼び出しではなく D1 statement** で、1 件あたり `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4〜5 ＋ `finishPurge` 3 の **11〜12 文**になる。他の scope cleanup と同じ 100 件では 1,200 文となり 500 query の設計上限も実上限 1,000 も超えるため、この経路だけ 40 件（40 × 12 = 480）に下げてある。余裕を取る側の調整は `batchSize` を**下げる**ことである。正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 

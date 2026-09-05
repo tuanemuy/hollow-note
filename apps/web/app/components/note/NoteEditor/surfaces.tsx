@@ -272,6 +272,21 @@ const REPAIR_CHECK_DELAY_MS = 500;
  * （`adapters/html/allowList.ts` の `DROP_WITH_CONTENT`）とそれ以外の
  * unwrap に分かれるので、面も 2 つの集合に分ける。片側だけで済ませると
  * `form` のように「保存は散文を残すのに面は消す」要素が出る。
+ *
+ * SMIL のアニメーション要素（`animate` / `set` / `animateTransform` /
+ * `animateMotion`）は、自分では `on*` も URL 属性も持たないのに
+ * `attributeName="href"` と `values="javascript:…"` で**親の属性を後から
+ * 書き換える** — 下の属性走査は要素が今持っている属性しか見ないので、
+ * この経路だけは属性ではなく要素で塞ぐしかない。保存側は
+ * `ALLOWED_SVG_ELEMENTS` に無いので unwrap するが、面は子ごと落とす
+ * （どちらでも属性の書き換えは起きず、SMIL 要素は散文を持たない）。
+ *
+ * この 2 つの集合は保存側の表（`allowList.ts`）と**手で**揃えてある。
+ * `apps/web` から `@repo/core/adapters/*` を引くのは依存の向きに反する
+ * （presentation → application → domain の内向き一方通行で、アダプター
+ * はその外側にある）ので、表の共有ではなく「落とす集合は保存が落とす
+ * 集合の部分集合」という関係だけを保つ。保存側の表を広げたときは、
+ * ここが部分集合のままかを確かめる。
  */
 const UNSAFE_DROP_ELEMENTS = new Set([
   "script",
@@ -279,6 +294,10 @@ const UNSAFE_DROP_ELEMENTS = new Set([
   "iframe",
   "object",
   "embed",
+  "animate",
+  "set",
+  "animatetransform",
+  "animatemotion",
 ]);
 
 /**
@@ -310,11 +329,14 @@ const URL_ATTRIBUTES: ReadonlyMap<string, "navigation" | "resource"> = new Map([
 
 const scrubForSurface = (root: ParentNode): void => {
   for (const element of Array.from(root.querySelectorAll("*"))) {
-    if (UNSAFE_DROP_ELEMENTS.has(element.localName)) {
+    // `localName` は HTML パーサーが SVG の名前を camelCase へ直したあとの
+    // 形（`animateTransform`）なので、小文字にしてから照合する。
+    const localName = element.localName.toLowerCase();
+    if (UNSAFE_DROP_ELEMENTS.has(localName)) {
       element.remove();
       continue;
     }
-    if (UNSAFE_UNWRAP_ELEMENTS.has(element.localName)) {
+    if (UNSAFE_UNWRAP_ELEMENTS.has(localName)) {
       element.replaceWith(...Array.from(element.childNodes));
       continue;
     }

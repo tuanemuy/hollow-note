@@ -234,15 +234,14 @@ const NOTE_LIMIT_CODES: ReadonlySet<string> = new Set(
  * answers them with advice about a body this person never edited.
  *
  * **The promise is kept by covering the set, not by arguing the set is
- * unreachable.** Every earlier version of this boundary translated one
- * code and rested the rest on a derivation — first about the shape of
- * the accepted markup, then about `maxExpansionFactor` × 131,072 staying
- * under 800,000. Each was refuted by measurement (spec/adr/013 retired
- * the first line of reasoning; the second dies on the meter charging a
- * node's pre-escape length, so a single-quoted attribute value stuffed
- * with raw `"` is six output bytes per byte charged). What is left is
- * structural: every code the port declares means "the sanitized form is
- * too big to keep", and all of them are answered here.
+ * unreachable.** No derivation from the accepted markup's shape holds —
+ * spec/adr/013 bounds sanitization by resource rather than by input
+ * shape — and neither does `maxExpansionFactor` × 131,072 staying under
+ * 800,000: the meter charges a node's pre-escape length, so a
+ * single-quoted attribute value stuffed with raw `"` is six output
+ * bytes per byte charged. What holds is structural: every code the port
+ * declares means "the sanitized form is too big to keep", and all of
+ * them are answered here.
  *
  * The intake's element-name gate is not asked to make any of this
  * unreachable. It reads XML comments and processing instructions to

@@ -174,10 +174,9 @@ const LESS_THAN_ATTRIBUTE_SVG =
  * `style` element applying to the document, and void elements that
  * serialize with no closing tag at all.
  */
-// `img`, `br` and `b` — the elements this case used to carry — are
-// refused by name at the intake now (TC-storage-269), so the void
-// element and the formatting element here are the ones the HTML parser
-// keeps inside foreign content: `wbr`, `input` and `label`.
+// The intake refuses `img`, `br` and `b` by name (TC-storage-269), so
+// the void element and the formatting element here are the ones the
+// HTML parser keeps inside foreign content: `wbr`, `input` and `label`.
 const INTEGRATION_POINT_SVG =
   `<svg xmlns="http://www.w3.org/2000/svg"><desc>` +
   `<style>rect{fill:red}</style><input value="x"/>a<wbr/>b</desc>` +
@@ -299,8 +298,8 @@ const hiddenBreakoutSvg = (
  * *before* escaping — while the serializer writes each `"` back as
  * `&quot;`. One byte charged, six bytes out. At the 128 KB ceiling that
  * is a measured 786,073 bytes of output from an input the meter never
- * came close to refusing, which is the review's counterexample to the
- * derivation this ceiling used to carry.
+ * came close to refusing, so no bound on the output follows from this
+ * ceiling.
  */
 const quoteStuffedSvg = (bytes: number): string => {
   const head = `<svg ${SVG_NAMESPACE}><text transform='`;
@@ -632,9 +631,9 @@ describe("storeMedia", () => {
       MEDIA_SVG_MAX_BYTES,
     )}--></svg>`;
 
-    // The sanitizer answers a note-body fragment, so an SVG whose limit
-    // sat above what that value object accepts used to fail as
-    // `NOTE_CONTENT_TOO_LARGE` — Note's invariant, for a Storage intake.
+    // The sanitizer answers a note-body fragment, so the failure this
+    // path must not surface is `NOTE_CONTENT_TOO_LARGE` — Note's
+    // invariant, raised for a Storage intake.
     await expectBusinessRule(
       upload(h, noteId, { body: svg(oversized), fileName: "huge.svg" }),
       StorageErrorCode.FileTooLarge,
@@ -888,9 +887,9 @@ describe("storeMedia", () => {
       }),
       StorageErrorCode.UnsupportedMimeType,
     );
-    // 6 KB of this used to reach `sanitizeNodes` and answer a bare
-    // `RangeError`, which carries no `kind` and reaches the user as an
-    // unexplained 500.
+    // Without the depth gate 6 KB of this reaches `sanitizeNodes` and
+    // answers a bare `RangeError`, which carries no `kind` and reaches
+    // the user as an unexplained 500.
     await expectBusinessRule(
       upload(h, noteId, {
         body: svg(repeatedInsideDesc("<b><i>", 8 * 1024)),
@@ -995,7 +994,7 @@ describe("storeMedia", () => {
     }
   });
 
-  it("TC-storage-273: an accepted SVG serializes far past the expansion bound the ceiling used to be derived from", async () => {
+  it("TC-storage-273: an SVG at the ceiling that serializes past the expansion factor is refused by storage's own re-measure, not by the body limit", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
     const markup = quoteStuffedSvg(MEDIA_SVG_MAX_BYTES);
@@ -1006,12 +1005,12 @@ describe("storeMedia", () => {
         .mimeType,
     ).toBe("image/svg+xml");
 
-    // The retired derivation read "an input of 131,072 bytes cannot
-    // serialize past `maxExpansionFactor` × that". It can: the meter
-    // charges an attribute value before it is escaped, and this one
-    // measures 786,073 bytes out. That it lands under the body's 800,000
-    // is a 1.7% margin, not a promise — which is why the promise moved
-    // to `processSvg`'s translation instead.
+    // The meter charges an attribute value before it is escaped, so an
+    // input of 131,072 bytes serializes past `maxExpansionFactor` × that
+    // — 786,073 bytes here. Landing under the body's 800,000 is the
+    // premise of this case rather than a promise (a 1.7% margin): it is
+    // what keeps the upload out of `processSvg`'s translation path, so
+    // the refusal below is storage's own re-measure.
     const sanitized = h.container.htmlProcessor.process(markup).html;
     expect(sanitized.length).toBeGreaterThan(
       MEDIA_SVG_MAX_BYTES * HtmlProcessorLimit.maxExpansionFactor,

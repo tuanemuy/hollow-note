@@ -597,14 +597,15 @@ export function NoteEditorIsland({
    * 必ず `runExclusive({ kind: "saving" }, …)` の中から呼ぶ（版を進める
    * 往復がここにあるため）。
    *
-   * 往復は 2 段に分かれ、段ごとに `try` を持つ。**保存の確定**（作成 /
-   * rename / 本文の保存 → `confirm` → `markSaved`）と、そのあとの**面の
-   * 載せ直し**（{@link reseedIfUnchanged}）である。分けてあるのは、落ちた
-   * 往復と「再試行」が指す往復を一致させるためである（{@link RetryTarget}）
-   * — 載せ直しの失敗を `{ kind: "save" }` として出すと、もう通っている
-   * 保存が送り直されて版と `Revision` を 1 つ無駄にし、ビジュアルでは適用
-   * 済みの編集が再送されて全件 `contentChanged`（「反映できなかった編集が
-   * あります」の誤報）になる。
+   * 往復は 2 段に分かれる。**保存の確定**（作成 / rename / 本文の保存 →
+   * `confirm` → `markSaved`）と、そのあとの**面の載せ直し**
+   * （{@link reseedIfUnchanged}）である。分けてあるのは、載せ直しの結果を
+   * 保存の成否に混ぜないためである — 載せ直しが通らなくても保存はもう
+   * 確定しているので、状態は `saved` のままにして経路単位で送れる印
+   * （`pathwise`）だけを降ろす。失敗として出すと、通っている保存を失敗と
+   * 告げたうえで「再試行」が版と `Revision` を 1 つ無駄にし、ビジュアルでは
+   * 適用済みの編集が再送されて全件 `contentChanged`（「反映できなかった
+   * 編集があります」の誤報）になる。
    */
   const commit = async (explicit: boolean): Promise<boolean> => {
     if (!explicit && !dirty) return true;
@@ -756,22 +757,22 @@ export function NoteEditorIsland({
       return false;
     }
 
-    // 保存はもう確定している。載せ直しが落ちたら送り直す先は載せ直しの
-    // ほうで、そこは `applyMode` と同じ分類に乗せる。落ちたままでも次の
-    // 保存は「丸ごと送る枝」へ落ちて（`takeSnapshot` の `pathwise` は
-    // 確定値が握る）、打鍵の無い往復が 1 回あれば噛み合いが戻る。
+    // 保存はもう確定しているので、載せ直しが通らなくても状態は動かさない。
+    // 代わりに経路単位で送れる印を降ろす（`dropPathwise`）。落ちた
+    // ときも、面が写しから動いていて載せ直しを見送ったとき（`false`）も
+    // 同じで、どちらも手元の経路表がサーバーの木と噛み合っていない状態で
+    // ある。
+    //
+    // 落ちた通信そのものは状態にしない。次の保存が同じ相手へ行くので、
+    // 通信が続いていれば `{ kind: "save" }` の失敗として改めて出る。この
+    // 保存が出した `skipped` の通知は残るので、反映できなかった編集が
+    // あることは画面から消えない。
     if (needsReseed) {
-      try {
-        await reseedIfUnchanged(sent);
-      } catch (error) {
-        setStatus(
-          classifySaveFailure(error, {
-            kind: "mode",
-            mode,
-            acknowledged: false,
-          }),
-        );
-      }
+      const rehinged = await reseedIfUnchanged(sent).catch(() => {
+        console.error("Note editor reseed after save failed");
+        return false;
+      });
+      if (!rehinged) dropPathwise(sent);
     }
 
     setRemoved(nextRemoved);
@@ -843,6 +844,26 @@ export function NoteEditorIsland({
     );
   };
 
+  /**
+   * 経路単位で送れる印を降ろす（{@link confirm} を通す遷移。写しの
+   * 「本文」も「タイトル」も動かないので、確定値は 1 つも進まない）。
+   *
+   * 降ろすのは、保存のあとの載せ直しが通らなかったときである。手元の
+   * 経路表はサーバーの木と噛み合っていないので、そのまま経路単位で送ると
+   * 差し戻した `before` を `expected` に再送し、同じ経路が何度でも
+   * `contentChanged` で落ちる。降ろせば次の保存は丸ごと送る枝へ落ち
+   * （`takeSnapshot` の分岐）、その保存のあとの載せ直しが通った時点で
+   * `onReady` が印を立て直す（{@link attachVisualPaths}）。
+   */
+  const dropPathwise = (sent: EditorSnapshot): void => {
+    const current = confirmedRef.current;
+    if (current.visual === null || !current.visual.pathwise) return;
+    confirm(sent, {
+      ...current,
+      visual: { paths: current.visual.paths, pathwise: false },
+    });
+  };
+
   const markSaved = (): void => {
     setSavedAt(new Date());
     setProgressStatus({ kind: "saved" });
@@ -854,11 +875,12 @@ export function NoteEditorIsland({
    * あいだに打った文字をそのまま捨ててしまう — 写しの規則
    * （`EditorSnapshot`）の逆向きである。
    *
-   * 載せ直さなかったときは、面の値と確定済みの値が食い違ったまま残るので、
-   * 次の保存は経路単位ではなく丸ごと送る枝に落ち（`takeSnapshot` の分岐）、
-   * 往復中の打鍵をそこで拾う。打鍵の無い往復が 1 回あれば載せ直しが通って
-   * 噛み合いが戻る。呼び出し元は先に `confirm` を済ませてから呼ぶので、
-   * 載せ直しが起きなくても保存は確定している。
+   * 載せ直さなかったときは `false` を返す。面の値と確定済みの値が食い違った
+   * まま残るので、噛み合いを戻すのは呼び出し元の仕事である — `commit` は
+   * 経路単位で送れる印を降ろして（{@link dropPathwise}）次の保存を丸ごと
+   * 送る枝へ落とす。この関数が見ているのは「面が写しから動いたか」だけで、
+   * 降ろす判断まではここに無い。呼び出し元は先に `confirm` を済ませてから
+   * 呼ぶので、載せ直しが起きなくても保存は確定している。
    *
    * 門は**写し全体**で比べる（`sameSnapshot`）。本文だけを見ると、往復の
    * あいだに打ったタイトルが載せ直しの `setTitle` に黙って捨てられ、確定値
@@ -1567,9 +1589,54 @@ export function NoteEditorIsland({
   };
 
   /**
+   * 面を正本で載せ直す再試行の前に、未保存の内容を保存しておく
+   * （{@link retryFailed}）。保存が通らなければ載せ直さない — 載せ直しは
+   * 面を保存済みの内容へ戻すので、通らないまま進むと打鍵がそこで消える。
+   * 「保存して切り替える」の主ボタンと同じ順であり、新しい確認は挟まない。
+   */
+  const reseedAfterSaving = (reseedAgain: () => void): void => {
+    if (!dirty) {
+      reseedAgain();
+      return;
+    }
+    void (async () => {
+      const saved = await runExclusive({ kind: "saving" }, () => commit(true));
+      if (saved === true) reseedAgain();
+    })();
+  };
+
+  /**
    * `failed` の「再試行」。**落ちた往復そのもの**を送り直す
    * （{@link RetryTarget}）。保存に固定すると、版の復元が通信エラーで
    * 落ちたあとの「再試行」が復元ではなく本文の保存を走らせる。
+   *
+   * 面を正本で載せ直す 2 つ（`mode` / `revision`）には、モードのラジオと
+   * 同じ門を先に置く（{@link reseedAfterSaving}）。`failed` でも面は
+   * `editable` のままなので利用者は失敗の Alert を見ながら打ち続けられ、
+   * 門が無いと「再試行」が `discard` と同じ置き換えになってその打鍵を確認
+   * なしに捨てる。
+   *
+   * `RetryTarget` 4 種 × `dirty` の 8 通りは次のとおりで、どれも打鍵を
+   * 黙って捨てない。
+   *
+   * | 対象 | `dirty` | 押すと走るもの | 通ったとき | 落ちたとき |
+   * | --- | --- | --- | --- | --- |
+   * | `save` | 偽 | `commit(true)`（`explicit` なので差が無くても送る） | 落ちていた保存が確定して `saved` | `{ kind: "save" }` の `failed` を出し直す |
+   * | `save` | 真 | `commit(true)`。送るのは写しを取り直した**いまの面**なので、失敗後の打鍵も一緒に届く | 同上 | 同上 |
+   * | `mode` | 偽 | `applyMode`（正本を引き直して面ごと載せ直す） | モードが変わり `idle` | `{ kind: "mode" }` の `failed` |
+   * | `mode` | 真 | `commit(true)` → 通れば `applyMode` | 打鍵が保存されてからモードが変わる | 保存が落ちたら載せ直さず `{ kind: "save" }` の `failed`。面の内容はそのまま残る |
+   * | `conflict` | 偽 | `resolveConflict(keepLocal)` | 選んだ枝で解決（上書きは `dirty`、破棄は `idle`） | `{ kind: "conflict" }` の `failed` |
+   * | `conflict` | 真 | 同上（門は置かない） | 上書きは面の写しを取り直して未保存のまま載せ直すので打鍵が残り、破棄はまさにそれを捨てる操作である | 同上 |
+   * | `revision` | 偽 | `restore(revisionId)` | 本文がその版になり `saved` | `{ kind: "revision" }` の `failed` |
+   * | `revision` | 真 | `commit(true)` → 通れば `restore(revisionId)` | 打鍵が版として記録されてから復元が走るので、戻したくなればその版から戻せる | 保存が落ちたら復元せず `{ kind: "save" }` の `failed` |
+   *
+   * `conflict` に門を置かないのは、そこでは保存そのものが止まっている
+   * ためである — 先に `commit` を通しても同じ競合でもう一度落ちるだけで、
+   * 解決の 2 枝へ進めなくなる。
+   *
+   * 保存が通ったあとの面の載せ直しはこの表に無い。落ちても `failed` に
+   * せず、経路単位で送れる印を降ろして次の保存に噛み合わせ直させる
+   * （{@link dropPathwise}）。
    */
   const retryFailed = (target: RetryTarget): void => {
     switch (target.kind) {
@@ -1577,13 +1644,13 @@ export function NoteEditorIsland({
         void runExclusive({ kind: "saving" }, () => commit(true));
         return;
       case "mode":
-        applyMode(target.mode, target.acknowledged);
+        reseedAfterSaving(() => applyMode(target.mode, target.acknowledged));
         return;
       case "conflict":
         resolveConflict(target.keepLocal);
         return;
       case "revision":
-        restore(target.revisionId);
+        reseedAfterSaving(() => restore(target.revisionId));
         return;
     }
   };

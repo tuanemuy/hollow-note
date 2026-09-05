@@ -101,8 +101,7 @@ describe("the note body transport bound", () => {
   /**
    * The transport bound measures raw HTML and the domain's 800 KB measures
    * the sanitized body, so a save the domain has an opinion about has to
-   * get past transport first. While the two numbers were equal, ED-03's
-   * refusal came back as a transport shape violation instead.
+   * get past transport first.
    */
   it("lets an oversized body reach NOTE_CONTENT_TOO_LARGE, not INVALID_INPUT", () => {
     const rawHtml = `<script>${"s".repeat(400_000)}</script><p>${"あ".repeat(

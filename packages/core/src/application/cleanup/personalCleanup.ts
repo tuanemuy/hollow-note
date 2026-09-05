@@ -1,5 +1,6 @@
 import type { WorkerContainer } from "../di/types";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import type { ScopeTaskPayload } from "../ports/scopeTaskScheduler";
 import { ScopeTaskPriority } from "../ports/scopeTaskScheduler";
 import type { ScopeKey } from "../scope";
 import { REQUIRED_PERSONAL_CLEANUP_COMPONENTS } from "./participants";
@@ -74,6 +75,32 @@ export async function completePersonalCleanupIfDone(
 
 /** Receipts one prune turn reclaims. */
 export const PERSONAL_BARRIER_PRUNE_PAGE_SIZE = 100;
+
+/**
+ * Reads the deadline a prune turn sweeps against.
+ *
+ * The deadline belongs to the row, not to the turn: it is the retention
+ * instant fixed when the barrier completed and written into the payload
+ * there, so every turn the row drives sweeps against the same instant
+ * and a receipt that completes while the row is being worked is not
+ * reclaimed before its own retention lapses.
+ *
+ * A payload that cannot name it falls back to the caller's clock. The
+ * row is due at that same instant, so the current time selects the same
+ * receipts, and a turn that refused an unreadable payload would strand
+ * the row: nothing else settles it.
+ */
+export const readPersonalBarrierPruneTurn = (
+  payload: ScopeTaskPayload,
+  fallback: Date,
+): Readonly<{ asOf: Date }> => {
+  const asOf = payload.asOf;
+  if (typeof asOf !== "string") {
+    return { asOf: fallback };
+  }
+  const at = new Date(asOf);
+  return Number.isNaN(at.getTime()) ? { asOf: fallback } : { asOf: at };
+};
 
 /**
  * Reclaims completed barrier receipts whose retention has lapsed

@@ -3310,7 +3310,7 @@ ADR-113 の 4 上限（膨張・深さ・CSS の入れ子・CSS の歩数）と 
 - 残件: `spec/adr/013-html-sanitization-policy.md` の上限の表に 5 行目が要り、「4 上限をすべて満たす入力にも費用の上限がある」の節と「本文の長さの上限から到達しうるどの文書も届かない高さでだけ拒む」の断言を、節点数の上限が**到達しうる**唯一の上限であることに合わせて書き直す必要がある。`spec/inventory/test.md` の TC-note-826 も期待値が「`ContentTooLarge` まで走り切る」から「節点数で拒む」に変わる。どちらも本単位の担当外
 - 変異スポットチェック: `maxNodes` を 50,001 にすると境界の 2 ケースが red、49,999 にすると別の 2 ケースが red、`PARSE_SCAFFOLD_NODES` を 4 にすると境界の 2 ケースが red、`createElement` の節点課金を落とすと 4 ケースが red、素の経路にだけ枠を渡さないと逃げ道の 2 ケースが red（うち 1 つは 25,358 ms で壁時計の判定に掛かる）、`<template>` 包みを外すと増加率の 1 ケースが red、`collectHeadings` の再開位置を捨てると見出しの 1 ケースが red（28,597 ms）、`inlineStylesheets` の `filterCss` を外すと CSS 規則の 1 ケースが red。`sanitizeNodes` の `push(...)` を戻しても red にならない — 節点数の上限が引数上限へ届く入力を先に拒むためで、`for` 文は多層の防御として残す
 
-## ADR-128: 継続要求表の payload 規則を「scope task には無い / global task は運ぶ」に書き直す
+## ADR-131: 継続要求表の payload 規則を「scope task には無い / global task は運ぶ」に書き直す
 
 ### Context
 
@@ -3333,7 +3333,7 @@ ADR-113 の 4 上限（膨張・深さ・CSS の入れ子・CSS の歩数）と 
 
 表の物差しが 1 つになり、「本 PR が触れた行だけ直す」ことで規則と行がずれ続ける構造が止まる。他スライスの usecase ドキュメントに差分が出るが、いずれも payload 表記から `scope` を落とす 1 行の修正に閉じる。
 
-## ADR-129: `analyzeMarkup` の警告をトークン列の構造比較に切り替える
+## ADR-132: `analyzeMarkup` の警告をトークン列の構造比較に切り替える
 
 ### Context
 

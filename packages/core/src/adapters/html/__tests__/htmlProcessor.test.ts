@@ -1197,6 +1197,14 @@ describe("HtmlProcessor.rewriteReferences — ADP-note-003", () => {
 });
 
 describe("HtmlProcessor.inlineStylesheets — ADP-note-004 (spec/adr/014)", () => {
+  // What the next parse reads as raw text: an end tag anywhere in here is
+  // an end tag the sheet brought with it, not the element's own.
+  const inlinedCss = (html: string): string =>
+    html.slice(
+      html.indexOf(">", html.indexOf("<style")) + 1,
+      html.lastIndexOf("</style>"),
+    );
+
   const body = processor.process(
     '<p>a</p><link rel="stylesheet" href="https://cdn.example/x.css">',
   ).html;
@@ -1262,6 +1270,57 @@ describe("HtmlProcessor.inlineStylesheets — ADP-note-004 (spec/adr/014)", () =
         .process(inlined)
         .removed.filter(({ kind }) => kind === "element"),
     ).toEqual([]);
+  });
+
+  it("neutralizes overlapping </style spellings, which a removal pass would splice back together", () => {
+    for (const css of [
+      "a{}</st</styleyle><img src=x onerror=alert(1)>",
+      "a{}</st</st</styleyleyle><img src=x onerror=alert(1)>",
+      "a{}</s</st</styleyletyle><img src=x onerror=alert(1)>",
+    ]) {
+      const inlined = processor.inlineStylesheets(
+        body,
+        new Map([["https://cdn.example/x.css", css]]),
+        new Set(),
+      );
+      // A breakout here surfaces as an allowed `<img>` whose `onerror` is
+      // removed rather than as a removed element, so the whole `removed`
+      // list is the claim.
+      expect(inlinedCss(inlined)).not.toMatch(/<\/style/i);
+      const reprocessed = processor.process(inlined);
+      expect(reprocessed.removed).toEqual([]);
+      // Escaping is a fixed point where removal is not: a second pass over
+      // the result neither re-forms the end tag nor escapes the escape.
+      expect(reprocessed.html).toBe(inlined);
+    }
+  });
+
+  it("neutralizes the case and whitespace spellings the tokenizer closes on", () => {
+    for (const css of [
+      "a{}</STYLE><img src=x onerror=alert(1)>",
+      "a{}</style ><img src=x onerror=alert(1)>",
+      "a{}</StYlE\t><img src=x onerror=alert(1)>",
+      "a{}</style/><img src=x onerror=alert(1)>",
+    ]) {
+      const inlined = processor.inlineStylesheets(
+        body,
+        new Map([["https://cdn.example/x.css", css]]),
+        new Set(),
+      );
+      expect(inlinedCss(inlined)).not.toMatch(/<\/style/i);
+      expect(processor.process(inlined).removed).toEqual([]);
+    }
+  });
+
+  it("leaves a sheet carrying no end tag byte-identical, so the escape costs valid CSS nothing", () => {
+    const css = '.a::after{content:"</b>"}.b{color:red}';
+    const inlined = processor.inlineStylesheets(
+      body,
+      new Map([["https://cdn.example/x.css", css]]),
+      new Set(),
+    );
+    expect(inlined).toContain(css);
+    expect(processor.process(inlined).removed).toEqual([]);
   });
 });
 

@@ -53,9 +53,16 @@ export type MoveNoteInput = Readonly<{
   noteId: string;
   userId: string;
   /**
-   * Version the caller saw, or `null` when it holds none — `getNote` does
-   * not project one, so the transport boundary has nothing to send.
-   * `null` skips the optimistic check.
+   * Version the caller saw, or `null` when it holds none. `null` skips
+   * the optimistic check, so the move commits on whatever version the
+   * note is at when this usecase reads it.
+   *
+   * The views do project one (`NoteDetailView.version`), so `null` says
+   * something about the caller rather than about what reaches the
+   * transport boundary: a version may only be sent by a caller that
+   * serializes its own writes to the note with this call. One that does
+   * not would fail the check on a version its *own* concurrent save
+   * advanced, reporting a conflict where no one else touched the note.
    */
   expectedVersion: number | null;
 }> &
