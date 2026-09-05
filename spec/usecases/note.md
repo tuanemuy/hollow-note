@@ -885,7 +885,7 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 1. 権限を `deleteNote`（ワークスペースの場合）で確認する
 2. `NoteRepository.countByOwner(owner, "trashed")` で件数を数え、次のどちらか一方だけを行う
    - **50 件以下** → 同期削除。`NoteRepository.listByOwner(owner, "trashed", pagination)` でゴミ箱のノートを取り、1 件ずつ `purgeNote` を**呼ぶ**（下記「同期削除は `purgeNote` の呼び出しである」）。`mode: "purged"`、`purgedCount` は削除し終えた件数、`jobIds` は空
-   - **50 件超** → `listByOwner(owner, "trashed", pagination)` でゴミ箱をページごとに列挙し、対象を500件ごとに分割して、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。**列挙は手順 2 で数えた総数が導くページ数（`ceil(総数 / ページ幅)`）までで打ち切る** — 1 要求の逐次読みは、その要求が既に支払って知っている数で束縛する（[platform/index.md](../platform/index.md) の「実行予算と分割単位」）。満たないページを引いた時点で早く抜けるのは従来どおり。数えたあとにゴミ箱へ入ったノートは次の要求の持ち分で、追いかけない。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
+   - **50 件超** → `listByOwner(owner, "trashed", pagination)` でゴミ箱をページごとに列挙し、対象を500件ごとに分割して、各分割をsource ScopeKey付き `requestBulkNoteOperation` の `{ kind: "purge" }` として登録する。**列挙は手順 2 で数えた総数が導くページ数（`ceil(総数 / ページ幅)`）までで打ち切る** — 1 要求の逐次読みは、その要求が既に支払って知っている数で束縛する（[platform/index.md](../platform/index.md) の「実行予算と分割単位」）。満たないページを引いた時点で早く抜ける。数えたあとにゴミ箱へ入ったノートは次の要求の持ち分で、追いかけない。`mode: "scheduled"`、`purgedCount` は登録対象件数、`jobIds` は親Job ID
 
 **同期削除のしきい値が 50 で、ジョブの分割単位が 500 なのはなぜか**。前者はHTTP要求の中で開始・完了を待つpurge operation数、後者は**1つの親ジョブ**が受け持つ件数である。同期削除はroute/DO/D1投影をまたぐため応答時間とevent fan-outを50件に止める。子ジョブは1件ずつ別実行なので親は500件を持てる。**同期削除は scope-local に閉じないので D1 の query 予算に掛かる** — 手順 2 は `purgeNote` を**呼ぶ**設計なので、1 件が global 側に 11〜12 statement を費やし、50 件で約 600 文になる。これは設計上限 500 を超え実上限 1,000 の内側で、値は 50 のまま据え置く（根拠は [platform/index.md](../platform/index.md) の「実行予算と分割単位」）。50 は「51 件以上はジョブ」という利用者に見える閾値でもあるため、動かすときはこの節だけでなく [pages/index.md](../pages/index.md) のゴミ箱画面と手順書を同時に動かすことになる。
 

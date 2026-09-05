@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { isSystemError } from "../../application/errors";
+import { isSystemError, SystemErrorCode } from "../../application/errors";
 import { BackupRecord } from "../../domain/integration/backupRecord";
 import type { NoteId } from "../../domain/note/valueObject";
 import { expectConflict } from "./asserts";
@@ -90,7 +90,10 @@ export function describeBackupRecordRepositoryContract(
       // retry the one that will never succeed.
       await expect(
         repository.insert(record(1, noteId(2), "file-2")),
-      ).rejects.toSatisfy(isSystemError);
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          isSystemError(error) && error.code === SystemErrorCode.DatabaseError,
+      );
       expect(await repository.listByNote(noteId(2))).toEqual([]);
       expect((await repository.listByNote(noteId(1))).map((r) => r.id)).toEqual(
         ["backup-001"],

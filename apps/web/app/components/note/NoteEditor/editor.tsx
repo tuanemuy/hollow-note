@@ -453,8 +453,18 @@ export function NoteEditorIsland({
       dirty: boolean;
       importReferences: boolean;
       pendingMode: EditorMode | null;
+      target: EditorTarget;
     }>
-  >({ title, mode, body, baseline, dirty, importReferences, pendingMode });
+  >({
+    title,
+    mode,
+    body,
+    baseline,
+    dirty,
+    importReferences,
+    pendingMode,
+    target,
+  });
   liveRef.current = {
     title,
     mode,
@@ -463,6 +473,7 @@ export function NoteEditorIsland({
     dirty,
     importReferences,
     pendingMode,
+    target,
   };
 
   // 既定のモードは端末に持つ（ED-05）。新規作成だけは引き継がず常に
@@ -700,7 +711,10 @@ export function NoteEditorIsland({
         // 初回の自動保存でノートが生まれる（PAGE-p12-002）。
         const created = await createWithBody({
           data: {
-            workspaceId: target.kind === "new" ? target.workspaceId : null,
+            workspaceId:
+              liveRef.current.target.kind === "new"
+                ? liveRef.current.target.workspaceId
+                : null,
             title: sent.title,
             rawHtml: sent.body,
             importReferences: importing,
@@ -1145,9 +1159,10 @@ export function NoteEditorIsland({
    */
   const needsWysiwygWarning = (next: EditorMode, nextBody: string): boolean => {
     if (next !== "wysiwyg") return false;
-    if (liveRef.current.mode !== "wysiwyg") {
+    const live = liveRef.current;
+    if (live.mode !== "wysiwyg") {
       return (
-        (target.kind === "existing" && target.mayLoseDecoration) ||
+        (live.target.kind === "existing" && live.target.mayLoseDecoration) ||
         willDropStyleElements(nextBody)
       );
     }
@@ -2181,7 +2196,12 @@ export function NoteEditorIsland({
                       // 切り替え先は往復の後に読む。「取りやめ」は往復中
                       // でも押せるので、押されていれば `null` になって
                       // いて、保存だけが通って切り替えは起きない。
-                      const next = liveRef.current.pendingMode;
+                      // 門の材料は `liveRef` から取る（`requestMode` を呼ぶと
+                      // 描画の閉包の `dirty` を読むことになり、往復中の打鍵が
+                      // 見えない）。`pendingMode` は残るので確認が出直す。
+                      const live = liveRef.current;
+                      if (live.dirty) return;
+                      const next = live.pendingMode;
                       if (saved === true && next !== null) enterMode(next);
                     })();
                   }}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { isSystemError } from "../../application/errors";
+import { isSystemError, SystemErrorCode } from "../../application/errors";
 import type { NoteId } from "../../domain/note/valueObject";
 import { TagAssignment } from "../../domain/tag/tagAssignment";
 import { expectConflict } from "./asserts";
@@ -67,7 +67,10 @@ export function describeTagAssignmentRepositoryContract(
       // that will never succeed.
       await expect(
         repository.insert(assignment(1, 2, noteId(2))),
-      ).rejects.toSatisfy(isSystemError);
+      ).rejects.toSatisfy(
+        (error: unknown) =>
+          isSystemError(error) && error.code === SystemErrorCode.DatabaseError,
+      );
       expect(await repository.listByNote(noteId(2))).toEqual([]);
       expect((await repository.listByNote(noteId(1))).map((a) => a.id)).toEqual(
         ["assignment-001"],
