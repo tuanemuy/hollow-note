@@ -506,6 +506,46 @@ describe("emptyTrash", () => {
     expect(await trashedCount(h)).toBe(2);
   });
 
+  it("TC-note-778: reports the scope's write barrier instead of skipping every note behind it", async () => {
+    const h = createTestHarness();
+    await seedWorkspace(h, [{ userId: OWNER, role: "owner" }]);
+    const noteId = await createWorkspaceNote(h);
+    await trashNote({
+      container: h.container,
+      input: {
+        noteId,
+        userId: OWNER,
+        expectedVersion: 0,
+        excludingJobId: null,
+      },
+    });
+    const workspaceId = WorkspaceId.create(WORKSPACE);
+    await h.container.scopeUnitOfWorkProvider.run(
+      workspaceScope,
+      async (ctx) => {
+        const stored = await ctx.workspaceRepository.findById(workspaceId);
+        await ctx.workspaceOperationLockStore.beginDeletion({
+          workspaceId,
+          operationId: "workspace-deletion-1",
+          expectedWorkspaceVersion: stored?.expectedVersion ?? 0,
+        });
+      },
+    );
+
+    // `WORKSPACE_DELETING` is a `ConflictError` about the whole scope, so
+    // skipping it the way a moved version is skipped would empty nothing
+    // and still report「0 件を完全に削除しました」.
+    await expect(
+      empty(h, recordingBulkPurgeJobs(), { workspaceId: WORKSPACE }),
+    ).rejects.toMatchObject({
+      name: "ConflictError",
+      code: "WORKSPACE_DELETING",
+    });
+    expect(
+      await trashedCount(h, workspaceScope, NoteOwner.workspace(workspaceId)),
+    ).toBe(1);
+  });
+
   it("TC-note-112: composes purgeNote and opens no unit of work of its own", async () => {
     const h = createTestHarness();
     await trashPersonalNotes(h, 4);

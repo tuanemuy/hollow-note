@@ -6,6 +6,7 @@ import {
   type ScopeCleanupTurn,
 } from "../cleanup/personalCleanup";
 import type { NotePurgeContainer } from "../di/types";
+import { SystemError, SystemErrorCode } from "../errors";
 import {
   type ScopeTaskPayload,
   ScopeTaskPriority,
@@ -72,34 +73,53 @@ export type StuckPurge = Readonly<{
 
 const STUCK_PURGES = "stuckPurges";
 
+const corrupt = (detail: string): SystemError =>
+  new SystemError(
+    SystemErrorCode.DataIntegrityError,
+    `Owner purge continuation: ${detail}`,
+  );
+
 /**
  * Reads the stuck purges a continuation carries.
  *
- * An entry that does not parse is dropped rather than faulted: the
- * payload is one this usecase wrote, so a malformed entry is a bug with
- * no forward path — faulting the turn would park the row and strand the
- * very notes the list exists to recover.
+ * The list names the work itself — notes that have left every
+ * enumeration this usecase has — so an entry that does not parse faults
+ * the turn (`spec/domains/index.md#継続要求`). Dropping it would leave
+ * the turn enumerating nothing, and an empty enumeration is how this
+ * usecase concludes the scope is clean: the `note` component would be
+ * acknowledged over a note whose public projection is still standing,
+ * which no later turn can take back. A parked row is instead visible in
+ * the runner's report and keeps its `dueAt`.
  */
 export const readOwnerPurgeTurn = (
   payload: ScopeTaskPayload,
 ): Readonly<{ stuckPurges: readonly StuckPurge[] }> => {
   const raw = payload[STUCK_PURGES];
-  if (!Array.isArray(raw)) {
+  if (raw === undefined || raw === null) {
     return { stuckPurges: [] };
+  }
+  if (!Array.isArray(raw)) {
+    throw corrupt(`${STUCK_PURGES} is not a list`);
   }
   const stuckPurges: StuckPurge[] = [];
   for (const entry of raw) {
     if (typeof entry !== "object" || entry === null) {
-      continue;
+      throw corrupt(`${STUCK_PURGES} holds an entry that is not an object`);
     }
     const { noteId, expectedVersion } = entry as Record<string, unknown>;
+    // Trimmed, not merely non-empty: `NoteId.create` accepts exactly the
+    // strings that survive a trim, so anything else has to be answered
+    // here rather than reach the value object as a `BusinessRuleError`.
+    if (typeof noteId !== "string" || noteId.trim().length === 0) {
+      throw corrupt(`${STUCK_PURGES} holds an entry naming no note`);
+    }
     if (
-      typeof noteId !== "string" ||
-      noteId.trim().length === 0 ||
       typeof expectedVersion !== "number" ||
       !Number.isInteger(expectedVersion)
     ) {
-      continue;
+      throw corrupt(
+        `${STUCK_PURGES} entry ${noteId} carries no readable version`,
+      );
     }
     stuckPurges.push({ noteId: NoteId.create(noteId), expectedVersion });
   }

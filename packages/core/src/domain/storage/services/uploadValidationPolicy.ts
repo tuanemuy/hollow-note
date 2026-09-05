@@ -55,13 +55,17 @@ export const MEDIA_SVG_MAX_BYTES = 128 * 1024;
 /**
  * Deepest element nesting an accepted SVG may carry.
  *
- * `HtmlProcessor` walks the parsed tree with plain recursion (sanitize,
- * text extraction, serialization), so the nesting of the input decides
- * how deep the interpreter stack goes: 1,000 levels — 6 KB of
- * `<b><i>…` — is enough for a `RangeError` that carries no `kind` and
- * reaches the user as an unexplained 500. Real drawings nest a handful
- * of groups deep, so 64 leaves a whole order of magnitude of headroom
- * on both sides.
+ * A policy value. Real drawings nest a handful of groups deep, so 64
+ * leaves a whole order of magnitude of headroom on both sides, and a
+ * document past it is refused by the one pass the acceptance walk
+ * already makes — the same front-line position the name gate below
+ * holds, and for the same reason: the sanitizer never starts.
+ *
+ * The bound on the sanitizer's own recursion is
+ * `HtmlProcessorLimit.maxNestingDepth` (256), which answers
+ * `HTML_PROCESSOR_TOO_COMPLEX` and reaches the uploader as
+ * `FileTooLarge` through `storeMedia`'s boundary translation. This gate
+ * is the cheaper of the two and the one that answers first.
  */
 export const MEDIA_SVG_MAX_DEPTH = 64;
 

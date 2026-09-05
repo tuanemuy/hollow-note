@@ -3371,3 +3371,65 @@ ADR 013 の URL スキーム表の**実行形**を `packages/core/src/domain/not
 ### Consequences
 
 「適用点ごとに規則が違う」型の欠陥が型と配置で構造的に止まる。ドメイン層に純粋な値判定のサービスが 1 つ増えるが、I/O もフレームワーク依存も持たないためドメインの制約に反しない。
+
+## ADR-133: 再試行は一次経路の入口を呼ぶだけにし、retry 固有の方針を消す
+
+### Context
+
+編集島の「再試行」と一次経路（保存・モード切替・競合解決・版の復元・破棄）の方針の食い違いが、4 ラウンド続けて別の形の欠陥として現れた:
+
+- ラウンド008 [W-005] — 再試行が落ちた往復ではなく常に本文保存を実行する
+- ラウンド009 [W-004] — 保存後の載せ直しの失敗が `retry: save` に分類され、再試行が適用済みの編集を再送する
+- ラウンド010 [B-002] — 載せ直しを `mode` に分類した結果、再試行が `applyMode` 経由で打鍵を確認なしに捨てる
+- ラウンド011 [B-002] — ラウンド010 で足した `dirty` の門が破棄の再試行を `commit(true)` に反転させる（破棄は `dirty` でしか押せないため、「捨てる」が必ず「保存する」になる）
+
+いずれも `retryFailed` が**一次経路とは別の判断**（独自の分岐・独自の門・`RetryTarget` と経路の多対一の対応）を持っていることが根であり、そのつど表を増やす対処では同じ型の穴が空き続ける。
+
+### Decision
+
+`retryFailed` は**一次経路の入口をそのまま呼ぶだけ**にする。retry 固有の判断（`reseedAfterSaving` の門、`RetryTarget` × `dirty` の 8 行表）は削除する。
+
+- `RetryTarget` を一次経路と **1 対 1** に組み直す: `save` / `mode` / `conflict` / `revision` / **`reload`**（正本の引き直し）
+- `discard` は `applyMode` を経由せず自分の `reloadFromServer` を持ち、`reload` に分類する
+- `restore` は `restoreRevision` の `try` と載せ直しの `try` を分け、後者は `reload` に分類する
+- 門は一次経路が持つものだけ。`retryFailed` は門を持たない
+
+規則は「再試行は一次経路の入口を呼ぶ。門は一次経路が持つものだけ」の 1 文と 5 行表に置き換える。
+
+`commit` 本体（保存経路ごとの関数分割）には触れない — それは Issue #68 の持ち分として残す。本 ADR が取り込むのは #68 のうち「再試行の宛先が経路と 1 対 1」の半分だけである。
+
+### 検討した代替案
+
+- **対症（`RetryTarget` に `discard` を足し、門を `mode` にだけ残す）** — 差分は最小だが retry 固有の方針が残るため、表を 10 行に増やしても同じ型の穴が空く
+- **#68 全体の取り込み（`commit` の分割）** — 今回の 2 つの Blocker はどちらも `commit` の外（面の契約と `retryFailed`）にあるため**この案では防げない**。2,600 行の島の中核を書き換えるとレビューが新規コードの全面再検査になり、収束を遠ざける
+
+### Consequences
+
+再試行が一次経路と別の方針を持てなくなるため、ラウンド008〜011 の型（方針の食い違い）は構造的に書けなくなる。`RetryTarget` の 5 種が一次経路と 1 対 1 に対応するので、経路が増えたときに再試行側の追随漏れも起きない。
+
+`WysiwygSurface` の `seed` 欠落（ラウンド011 [B-001]）は本 ADR の範囲外で、面の契約を `VisualSurface` と揃えることで別に閉じる。
+
+## ADR-134: 継続要求の operation_id 規則を例外列挙から多重度の分類へ書き換える
+
+### Context
+
+`spec/domains/index.md` の継続要求表と `operation_id` の導出規則は、ラウンド004 / 006 / 008 / 009 / 010 / 011 と **6 回**指摘されている。ラウンド009 で payload の規則（ADR-131）を、ラウンド010 で id の規則を書いたが、いずれも「cursor から導出する」を原則とし、そこから外れる行を**例外として列挙する**形だった。
+
+列挙は毎回漏れる。ラウンド011 時点でも `workspace.membershipRemovalEdgeContinued`（対象の組が鍵）・`job.terminationContinued`（`operationId` が noteId）・`note.ownerPurgeContinued`（固定 id + payload に再開状態）が例外文の外にある。そもそも cursor を鍵に混ぜる scope task はツリーに 1 件も存在しない。
+
+### Decision
+
+例外列挙をやめ、**多重度による 4 分類**で規則を書き直す:
+
+- 対象ごとに 1 本（`operationId` が対象の id、または対象の組）
+- operation に 1 本（`operationId` が operation の id）
+- scope に 1 本の周期（固定 `(kind, operationId)` へ upsert し、再開位置は payload）
+- 対象に 1 本の義務
+
+`spec/database/index.md` の cursor に関する記述は global の `continuationKey` に限定する。
+
+他スライスが持つ行にも触れるが、ADR-131 と同じ理由 — 本 PR が書いた規則が作った不整合であり、その帰結として本 PR が閉じる。
+
+### Consequences
+
+表に行を足すたびに例外文を書き足す必要がなくなり、新しい行は 4 分類のどれかに必ず当てはまる。分類が規則と表の両方を同時に説明するので、片側だけ直して食い違う形にならない。

@@ -1322,6 +1322,29 @@ describe("HtmlProcessor.inlineStylesheets — ADP-note-004 (spec/adr/014)", () =
     expect(inlined).toContain(css);
     expect(processor.process(inlined).removed).toEqual([]);
   });
+
+  it("refuses a body the fetched sheet pushes past the NoteHtml cap", () => {
+    // The port's ContentTooLarge is not `process`'s alone: every method
+    // that builds a `NoteHtml` measures its own result, and folding a
+    // sheet in is how a body inside the cap crosses it.
+    let thrown: unknown;
+    try {
+      processor.inlineStylesheets(
+        body,
+        new Map([
+          ["https://cdn.example/x.css", `.a{content:"${"x".repeat(800_100)}"}`],
+        ]),
+        new Set(),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(BusinessRuleError);
+    expect((thrown as BusinessRuleError<string>).code).toBe(
+      "NOTE_CONTENT_TOO_LARGE",
+    );
+  });
 });
 
 describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
@@ -1416,5 +1439,21 @@ describe("HtmlProcessor.editTextNodes — ADP-note-005", () => {
         { path: "0", expected: "abold c", text: "x" },
       ]).skipped,
     ).toEqual([{ path: "0", reason: "pathNotFound" }]);
+  });
+
+  it("refuses an edit whose replacement text pushes the body past the cap", () => {
+    let thrown: unknown;
+    try {
+      processor.editTextNodes(body, [
+        { path: "0.0", expected: "a", text: "x".repeat(800_100) },
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(BusinessRuleError);
+    expect((thrown as BusinessRuleError<string>).code).toBe(
+      "NOTE_CONTENT_TOO_LARGE",
+    );
   });
 });

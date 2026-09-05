@@ -70,7 +70,12 @@ export async function NoteDetail({
           workspaceId={canonicalWorkspaceId}
         />
       )}
+      {/* 島の中の版・タイトルは「島＝ノート 1 件」を前提にしている
+          （`detail.tsx` の版の単調性の門）。ルーターはパラメーターだけの
+          遷移でルートコンポーネントを再マウントしないので、`key` で
+          その前提を構造として持つ。 */}
       <NoteDetailIsland
+        key={note.noteId}
         noteId={note.noteId}
         initialTitle={note.title}
         initialVersion={note.version}

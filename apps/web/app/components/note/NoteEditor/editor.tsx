@@ -50,6 +50,7 @@ import {
 } from "./preferences";
 import {
   classifySaveFailure,
+  describeFailure,
   type RetryTarget,
   type SaveStatus,
 } from "./saveStatus";
@@ -307,8 +308,9 @@ export function NoteEditorIsland({
   const [baseline, setBaseline] = useState(confirmed.body);
   /**
    * 面を組み直した回数。`baseline` の同一性だけでは破棄を鍵にできない
-   * （破棄はまさに同じ文字列へ戻す操作で、ビジュアルの面は文字列が
-   * 変わらないと span を作り直さない）。
+   * （破棄はまさに同じ文字列へ戻す操作で、面は文字列が変わらないと
+   * 中身を作り直さない）。書く面 2 つ（ビジュアル / WYSIWYG）は同じ
+   * 契約でこれを受け取る。
    */
   const [baselineSeed, setBaselineSeed] = useState(0);
 
@@ -401,6 +403,14 @@ export function NoteEditorIsland({
    * 動かないので、`dirty` はこの派生値でしか差を知れない。
    */
   const [visualDirty, setVisualDirty] = useState(false);
+  /**
+   * ビジュアルの面で打鍵した回数。自動保存のデバウンスを打鍵ごとに張り
+   * 直させるためだけに持つ（HTML / WYSIWYG では `body` がその役目を
+   * 果たす）。`visualDirty` は 2 打鍵目以降も真のままなので、これが無いと
+   * タイマーが**最初の打鍵**から 1.5 秒で発火し、打ち続けている最中に
+   * 1.5 秒 + RTT ごとの保存と版が積まれる。
+   */
+  const [visualEditSeq, setVisualEditSeq] = useState(0);
   /** 代替テキストを編集する対象（ED-06 手順 4）。面を差し替えると外れる。 */
   const [selectedImage, setSelectedImage] = useState<HTMLImageElement | null>(
     null,
@@ -612,6 +622,14 @@ export function NoteEditorIsland({
     // 送る値をここで 1 つに固める。以降この関数は `title` / `body` /
     // `visualCurrent` の「いま」を読まない。
     const sent = takeSnapshot();
+    /**
+     * 外部参照を取り込むか（ED-03）。ビジュアルの面では固定で偽である —
+     * `ImportChoice` はビジュアルでは出ないので、そのまま渡すと利用者が
+     * 選んでいない値（既定の真、または前に別の面で選んだ値）で取り込みが
+     * 走る。ビジュアルが動かすのはテキストノードだけであり（ED-02）、
+     * 取り込みは `src` の差し替えとスタイルシートの埋め込みを起こす。
+     */
+    const importing = mode === "visual" ? false : importReferences;
 
     setStatus({ kind: "saving" });
     const opening = identityRef.current;
@@ -637,7 +655,7 @@ export function NoteEditorIsland({
             workspaceId: target.kind === "new" ? target.workspaceId : null,
             title: sent.title,
             rawHtml: sent.body,
-            importReferences,
+            importReferences: importing,
           },
         });
         rememberIdentity({
@@ -712,7 +730,7 @@ export function NoteEditorIsland({
             reason: wysiwygConversionRef.current
               ? "wysiwygConversion"
               : "manualEdit",
-            importReferences,
+            importReferences: importing,
           },
         });
         version = saved.version;
@@ -983,7 +1001,7 @@ export function NoteEditorIsland({
   // 入っていて、それを保存すると `data-hollow-upload` が落ちた素の `span`
   // が本文に残る。
   //
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに `commit` が読む値（タイトル・本文・ビジュアルの差分）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `commit` は毎描画で作り直されるので依存に入れない（入れるとタイマーが打鍵のたびに張り直され、遅延が意味を失う）。代わりに `commit` が読む値（タイトル・本文・ビジュアルの差分と打鍵世代）を並べてある — 規則から見ると余分だが、これがタイマーを張り直す唯一の根拠である。3 つの面のどれで打っても依存が 1 つ動く形になっていなければ、打ち続けている最中に保存が走る。
   useEffect(() => {
     if (!dirty || !editable || busy) return;
     if (
@@ -999,13 +1017,36 @@ export function NoteEditorIsland({
       });
     }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [dirty, editable, busy, status.kind, title, body, visualDirty]);
+  }, [
+    dirty,
+    editable,
+    busy,
+    status.kind,
+    title,
+    body,
+    visualDirty,
+    visualEditSeq,
+  ]);
 
-  const requestMode = (next: EditorMode): void => {
-    if (next === mode) return;
+  /**
+   * モードの切り替えを申し出る（ED-05）。モードのラジオと、`failed` の
+   * 「再試行」がモード切替を送り直すときの**共通の入口**である。
+   *
+   * 未保存があれば確認を出す（`pendingMode`）。門をここに置いてあるので、
+   * 再試行は門を自分で持たずにこの関数を呼ぶだけでよい。
+   *
+   * `acknowledged` は ED-04 の警告を利用者がすでに了解しているか。真なら
+   * {@link enterMode} の門を通さずに載せ直す — 同じ警告を二度出しても
+   * 選べることは増えない。
+   */
+  const requestMode = (next: EditorMode, acknowledged = false): void => {
     if (next === "visual" && !visualAvailable) return;
     if (dirty) {
       setPendingMode(next);
+      return;
+    }
+    if (acknowledged) {
+      applyMode(next, true);
       return;
     }
     enterMode(next);
@@ -1270,18 +1311,52 @@ export function NoteEditorIsland({
   };
 
   /**
+   * サーバーの正本で面ごと載せ直す（モードは変えない）。破棄と、版を
+   * 復元したあとの載せ直しがここを通り、落ちれば `{ kind: "reload" }` の
+   * `failed` になる。
+   *
+   * {@link applyMode} と分けてあるのは、`RetryTarget` を一次経路と 1 対 1
+   * に保つためである。同じ `kind` に相乗りさせると、モード切替にしか
+   * 当てはまらない扱い（未保存があれば先に保存する門）が破棄の再試行にも
+   * 掛かり、「捨てる」が「保存する」に反転する。
+   *
+   * 確認は挟まない。破棄は利用者が捨てると決めた操作であり、復元後の
+   * 載せ直しは確定済みの正本へ面を揃える操作である。
+   */
+  const reloadFromServer = (): void => {
+    if (identityRef.current.kind === "new") {
+      setPendingMode(null);
+      setWysiwygWarning(false);
+      // まだサーバーに正本が無いので確定値をそのまま載せる。
+      seedMode(mode, confirmedRef.current.title, confirmedRef.current.body);
+      return;
+    }
+    void runExclusive({ kind: "reseeding" }, async () => {
+      // 確認を畳むのは占有を取れたときだけ（`applyMode` と同じ理由）。
+      setPendingMode(null);
+      setWysiwygWarning(false);
+      try {
+        await reseedFromServer(mode, false);
+      } catch (error) {
+        setStatus(classifySaveFailure(error, { kind: "reload" }));
+        return;
+      }
+      setProgressStatus({ kind: "idle" });
+    });
+  };
+
+  /**
    * 破棄（ED-08 手順 3）。**サーバーから正本を引き直す**のは、手元の
    * 「確定済みの値」が最後に保存した状態とは限らないためである — ビジュアル
    * モードの保存は経路単位の書き換えなので、確定した本文の HTML は
-   * 手元に無く、保存の応答も除去の一覧しか返さない。`applyMode` と同じく
-   * 引き直すしか手が無い。手元の値へ戻すと、
-   * 画面は保存済みの書き換えが消えた姿になり、次の編集が古い `expected` で
-   * 送られて全件 `contentChanged` に落ちる。
+   * 手元に無く、保存の応答も除去の一覧しか返さない。引き直すしか手が
+   * 無い。手元の値へ戻すと、画面は保存済みの書き換えが消えた姿になり、
+   * 次の編集が古い `expected` で送られて全件 `contentChanged` に落ちる。
    */
   const discard = (): void => {
     if (noteId !== null) clearDraft(noteId);
     setDraftOffer(null);
-    applyMode(mode);
+    reloadFromServer();
   };
 
   /** 競合の解決（ED-08）。どちらの枝も最新の版を引き直してから進む。 */
@@ -1353,6 +1428,15 @@ export function NoteEditorIsland({
     });
   };
 
+  /**
+   * 版の復元（ED-08）。往復は 2 段に分かれる — **復元の確定**と、そのあと
+   * サーバーの正本で面を載せ直す段である。`try` を分けてあるのは、確定
+   * したあとの失敗を復元の失敗として出さないためである。混ぜると、通って
+   * いる復元の再試行が同じ版をもう 1 版積む。
+   *
+   * 未保存の内容は復元で捨てる（TC-11 手順 5）。門を置かないのはそこが
+   * 一次経路の決めた形だからで、再試行も同じ形で走る。
+   */
   const restore = (revisionId: string): void => {
     if (identityRef.current.kind === "new") return;
     void runExclusive({ kind: "restoring" }, async () => {
@@ -1371,17 +1455,24 @@ export function NoteEditorIsland({
           noteId: current.noteId,
           version: restored.version,
         });
-        // 門は通す（`acknowledged` を立てない）。復元は**変換前の版へ
-        // 戻す**操作なので、戻した本文が `<style>` を持つのはむしろ普通で、
-        // WYSIWYG に居るまま載せると復元したはずの装飾がその場で落ちる。
-        await reseedFromServer(mode, false);
-        setProgressStatus({ kind: "saved" });
-        setSavedAt(new Date());
-        setRevisions(null);
       } catch (error) {
         setStatus(classifySaveFailure(error, { kind: "revision", revisionId }));
         return;
       }
+      try {
+        // 門は通す（`acknowledged` を立てない）。復元は**変換前の版へ
+        // 戻す**操作なので、戻した本文が `<style>` を持つのはむしろ普通で、
+        // WYSIWYG に居るまま載せると復元したはずの装飾がその場で落ちる。
+        await reseedFromServer(mode, false);
+      } catch (error) {
+        // 復元はもう確定しているので、残る仕事は面を正本へ揃えることだけ
+        // である。再試行の宛先も引き直しであって、復元ではない。
+        setStatus(classifySaveFailure(error, { kind: "reload" }));
+        return;
+      }
+      setProgressStatus({ kind: "saved" });
+      setSavedAt(new Date());
+      setRevisions(null);
       await reconcile();
     });
   };
@@ -1589,54 +1680,43 @@ export function NoteEditorIsland({
   };
 
   /**
-   * 面を正本で載せ直す再試行の前に、未保存の内容を保存しておく
-   * （{@link retryFailed}）。保存が通らなければ載せ直さない — 載せ直しは
-   * 面を保存済みの内容へ戻すので、通らないまま進むと打鍵がそこで消える。
-   * 「保存して切り替える」の主ボタンと同じ順であり、新しい確認は挟まない。
-   */
-  const reseedAfterSaving = (reseedAgain: () => void): void => {
-    if (!dirty) {
-      reseedAgain();
-      return;
-    }
-    void (async () => {
-      const saved = await runExclusive({ kind: "saving" }, () => commit(true));
-      if (saved === true) reseedAgain();
-    })();
-  };
-
-  /**
-   * `failed` の「再試行」。**落ちた往復そのもの**を送り直す
-   * （{@link RetryTarget}）。保存に固定すると、版の復元が通信エラーで
-   * 落ちたあとの「再試行」が復元ではなく本文の保存を走らせる。
+   * `failed` の「再試行」。**一次経路の入口をそのまま呼ぶ**。門は一次
+   * 経路が持つものだけで、再試行に固有の判断は 1 つも持たない。
    *
-   * 面を正本で載せ直す 2 つ（`mode` / `revision`）には、モードのラジオと
-   * 同じ門を先に置く（{@link reseedAfterSaving}）。`failed` でも面は
-   * `editable` のままなので利用者は失敗の Alert を見ながら打ち続けられ、
-   * 門が無いと「再試行」が `discard` と同じ置き換えになってその打鍵を確認
-   * なしに捨てる。
+   * この 1 文が規則である。再試行が独自の分岐や独自の門を持つと、同じ
+   * 入口を通る 2 つの操作のうち片方にしか当てはまらない扱いが紛れ込み、
+   * 一次経路と逆の結果（捨てると決めた内容を保存する、確認なしに打鍵を
+   * 捨てる、確定済みの操作をもう一度走らせる）を黙って起こす。
    *
-   * `RetryTarget` 4 種 × `dirty` の 8 通りは次のとおりで、どれも打鍵を
-   * 黙って捨てない。
+   * | 対象 | 呼ぶ入口 | 一次経路で同じ入口を押すもの |
+   * | --- | --- | --- |
+   * | `save` | `commit(true)` | 明示保存（自動保存と同じ関数） |
+   * | `mode` | `requestMode(mode, acknowledged)` | モードのラジオ |
+   * | `conflict` | `resolveConflict(keepLocal)` | 競合の「上書き」「破棄」 |
+   * | `revision` | `restore(revisionId)` | 版一覧の「復元」 |
+   * | `reload` | `reloadFromServer()` | 「破棄」、版を復元したあとの載せ直し |
    *
-   * | 対象 | `dirty` | 押すと走るもの | 通ったとき | 落ちたとき |
-   * | --- | --- | --- | --- | --- |
-   * | `save` | 偽 | `commit(true)`（`explicit` なので差が無くても送る） | 落ちていた保存が確定して `saved` | `{ kind: "save" }` の `failed` を出し直す |
-   * | `save` | 真 | `commit(true)`。送るのは写しを取り直した**いまの面**なので、失敗後の打鍵も一緒に届く | 同上 | 同上 |
-   * | `mode` | 偽 | `applyMode`（正本を引き直して面ごと載せ直す） | モードが変わり `idle` | `{ kind: "mode" }` の `failed` |
-   * | `mode` | 真 | `commit(true)` → 通れば `applyMode` | 打鍵が保存されてからモードが変わる | 保存が落ちたら載せ直さず `{ kind: "save" }` の `failed`。面の内容はそのまま残る |
-   * | `conflict` | 偽 | `resolveConflict(keepLocal)` | 選んだ枝で解決（上書きは `dirty`、破棄は `idle`） | `{ kind: "conflict" }` の `failed` |
-   * | `conflict` | 真 | 同上（門は置かない） | 上書きは面の写しを取り直して未保存のまま載せ直すので打鍵が残り、破棄はまさにそれを捨てる操作である | 同上 |
-   * | `revision` | 偽 | `restore(revisionId)` | 本文がその版になり `saved` | `{ kind: "revision" }` の `failed` |
-   * | `revision` | 真 | `commit(true)` → 通れば `restore(revisionId)` | 打鍵が版として記録されてから復元が走るので、戻したくなればその版から戻せる | 保存が落ちたら復元せず `{ kind: "save" }` の `failed` |
+   * 落ちる位置は往復ごとに 2 つ（確定の前と後）あり、確定後の失敗は
+   * **確定した操作ではなく残りの仕事**を指す `RetryTarget` になる。
    *
-   * `conflict` に門を置かないのは、そこでは保存そのものが止まっている
-   * ためである — 先に `commit` を通しても同じ競合でもう一度落ちるだけで、
-   * 解決の 2 枝へ進めなくなる。
+   * - `save` — 確定前に落ちれば `{ kind: "save" }`。確定後（面の載せ直し）
+   *   に落ちても `failed` にせず、状態は `saved` のまま経路単位で送れる印
+   *   だけを降ろす（{@link dropPathwise}）ので再試行の対象にならない
+   * - `mode` — 正本の引き直しが確定でありモードはその後に変わるので、
+   *   落ちる位置は確定前しかない。面もモードも動かない
+   * - `conflict` — 同じく正本の引き直しが確定。落ちる位置は確定前だけで、
+   *   2 枝のどちらにも進んでいない
+   * - `revision` — 確定前は `{ kind: "revision" }`。確定後（面の載せ直し）
+   *   は `{ kind: "reload" }` になり、再試行は復元ではなく引き直しを走らせる
+   * - `reload` — 確定は引き直しそのものなので、落ちる位置は確定前だけ。
+   *   面は前の内容のまま残る
    *
-   * 保存が通ったあとの面の載せ直しはこの表に無い。落ちても `failed` に
-   * せず、経路単位で送れる印を降ろして次の保存に噛み合わせ直させる
-   * （{@link dropPathwise}）。
+   * `mode` にだけ未保存の門が掛かるのは、その門が**一次経路にある**から
+   * である（モードのラジオは未保存があれば確認を出す）。`revision` と
+   * `reload` に門が無いのも同じ理由で、版の復元は未保存を捨てると
+   * 決めてあり（TC-11 手順 5）、破棄はまさに捨てる操作である。`conflict`
+   * では保存そのものが止まっているので、先に保存しても同じ競合で落ちる
+   * だけで解決の 2 枝へ進めない。
    */
   const retryFailed = (target: RetryTarget): void => {
     switch (target.kind) {
@@ -1644,13 +1724,16 @@ export function NoteEditorIsland({
         void runExclusive({ kind: "saving" }, () => commit(true));
         return;
       case "mode":
-        reseedAfterSaving(() => applyMode(target.mode, target.acknowledged));
+        requestMode(target.mode, target.acknowledged);
         return;
       case "conflict":
         resolveConflict(target.keepLocal);
         return;
       case "revision":
-        reseedAfterSaving(() => restore(target.revisionId));
+        restore(target.revisionId);
+        return;
+      case "reload":
+        reloadFromServer();
         return;
     }
   };
@@ -1848,7 +1931,8 @@ export function NoteEditorIsland({
         {status.kind === "failed" ? (
           <Alert
             tone="error"
-            title="保存できませんでした"
+            // 見出しと案内は落ちた往復ごとに分かれる（`describeFailure`）。
+            title={describeFailure(status, creationFailed).title}
             actions={
               // 再試行を出さないのは**ノートがまだ作られていない**ときだけ
               // である。作成は冪等ではなく（冪等鍵は作成そのものの持ち分で、
@@ -1857,8 +1941,9 @@ export function NoteEditorIsland({
               // 増える。逃げ道は「権限喪失」と同じダウンロードにする。
               //
               // 退避できたかどうかでは分けない。退避を書けるのは保存の
-              // `catch` だけで、モード切替・競合の解決・版の復元が通信
-              // エラーで落ちたときは退避が無いまま `failed` になる —
+              // `catch` だけで、モード切替・競合の解決・版の復元・正本の
+              // 引き直しが通信エラーで落ちたときは退避が無いまま `failed`
+              // になる —
               // そこは既存のノートなので、再試行こそが逃げ道である。
               // 送り直すのは**落ちた往復そのもの**（`status.retry`）で、
               // 本文の保存に固定しない。
@@ -1885,12 +1970,7 @@ export function NoteEditorIsland({
               )
             }
           >
-            {status.message}{" "}
-            {creationFailed
-              ? "ノートがまだ作られていないため、内容はこの端末に退避できていません。ダウンロードして残してください。"
-              : status.stashed
-                ? "内容はこの端末に退避したので、次に開いたときに復元できます。"
-                : "内容はまだこの端末に退避していません。もう一度お試しください。"}
+            {status.message} {describeFailure(status, creationFailed).hint}
           </Alert>
         ) : null}
 
@@ -2068,6 +2148,7 @@ export function NoteEditorIsland({
         {mode === "wysiwyg" ? (
           <WysiwygSurface
             baseline={baseline}
+            seed={baselineSeed}
             editable={editable}
             surfaceRef={wysiwygRef}
             onChange={(html) => {
@@ -2100,6 +2181,7 @@ export function NoteEditorIsland({
             }}
             onChange={(current) => {
               visualCurrent.current = current;
+              setVisualEditSeq((value) => value + 1);
               setVisualDirty(
                 diffTextNodeEdits(
                   confirmedRef.current.visual?.paths ?? EMPTY_PATHS,

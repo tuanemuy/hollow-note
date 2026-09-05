@@ -1,6 +1,9 @@
 import type { NotePurgeContainer } from "@repo/core/application/di/types";
 import { SystemError, SystemErrorCode } from "@repo/core/application/errors";
-import type { ScopeTaskPayload } from "@repo/core/application/ports/scopeTaskScheduler";
+import {
+  type ScopeTaskPayload,
+  ScopeTaskPriority,
+} from "@repo/core/application/ports/scopeTaskScheduler";
 import type { ScopeKey } from "@repo/core/application/scope";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId } from "@repo/core/domain/note/valueObject";
@@ -758,6 +761,66 @@ describe("deleteNotesForOwner", () => {
     expect(remainingNotes(h)).toBe(2);
     expect(view.status).toBe("continued");
     expect(await acknowledged(h)).not.toContain("note");
+  });
+
+  it("faults on a carried purge it cannot read, rather than dropping the entry", () => {
+    expect(readOwnerPurgeTurn({})).toEqual({ stuckPurges: [] });
+    expect(readOwnerPurgeTurn({ stuckPurges: null })).toEqual({
+      stuckPurges: [],
+    });
+
+    const unreadable: readonly ScopeTaskPayload[] = [
+      { stuckPurges: "note-1" },
+      { stuckPurges: ["note-1"] },
+      { stuckPurges: [{ expectedVersion: 0 }] },
+      { stuckPurges: [{ noteId: "  ", expectedVersion: 0 }] },
+      { stuckPurges: [{ noteId: "note-1" }] },
+      { stuckPurges: [{ noteId: "note-1", expectedVersion: "0" }] },
+      { stuckPurges: [{ noteId: "note-1", expectedVersion: 1.5 }] },
+    ];
+    for (const payload of unreadable) {
+      expect(() => readOwnerPurgeTurn(payload)).toThrowError(
+        expect.objectContaining({ code: SystemErrorCode.DataIntegrityError }),
+      );
+    }
+  });
+
+  it("parks the continuation whose carried purges cannot be read, instead of acknowledging an empty scope", async () => {
+    const h = createTestHarness();
+    await createPersonalNotes(h, 1);
+    await beginCleanup(h);
+    await run(h, {
+      batchSize: 1,
+      container: withLostResponseAfterCommit(h, 3),
+    });
+    const stuck = readOwnerPurgeTurn(tasks(h)[0]?.payload ?? {}).stuckPurges;
+    const noteId = stuck[0]?.noteId ?? "";
+    // The note has left every enumeration, so the row's list is the only
+    // record of it left.
+    expect(remainingNotes(h)).toBe(0);
+
+    await h.container.scopeUnitOfWorkProvider.run(userScope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: NOTE_OWNER_PURGE_TASK_KIND,
+        operationId: OPERATION_ID,
+        priority: ScopeTaskPriority.securityCleanup,
+        dueAt: h.clock.now(),
+        payload: {
+          deletionOperationId: OPERATION_ID,
+          stuckPurges: [{ noteId, expectedVersion: "0" }],
+        },
+      }),
+    );
+
+    const round = await runDueScopeTasks(h.workerContainer);
+
+    // Dropping the entry would leave the turn enumerating nothing, and
+    // an empty enumeration is how this cleanup concludes the scope is
+    // clean — an ack no later turn could take back.
+    expect(round.processed).toBe(0);
+    expect(route(h, noteId)?.state).toBe("purging");
+    expect(await acknowledged(h)).not.toContain("note");
+    expect(tasks(h)).toHaveLength(1);
   });
 
   it("refuses a command from an operation that does not own the scope", async () => {

@@ -83,7 +83,7 @@ const ADR_FILE_NUMBERS: ReadonlySet<string> = new Set(
 
 /** 番号での参照（`ADR 013` / `ADR-013`）と、パスでの参照の両方を拾う。 */
 const NUMBER_REFERENCE = /\bADR[-\s](\d{1,4})\b/g;
-const PATH_REFERENCE = /spec\/adr\/(\d{1,4})-/g;
+const PATH_REFERENCE = /spec\/adr\/(\d{1,4})\b/g;
 
 const referencedNumbers = (source: string): readonly string[] => {
   const numbers: string[] = [];

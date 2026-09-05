@@ -212,9 +212,9 @@
 | ADP-note-006 | `PdfRenderer.render` | `spec/domains/note.md#ポート` | style mode と timeout を守って本文を PDF bytes にする |
 | ADP-note-007 | `NoteExportComposer.composeSelfContainedHtml` | `spec/domains/note.md#ポート` | asset を可能な範囲で埋め込んだ単一 HTML を組み立てる |
 | ADP-note-008 | `NoteRepository.insert` | `spec/domains/note.md#ポート` | 新規 Note を保存する |
-| ADP-note-009 | `NoteRepository.findById` | `spec/domains/note.md#ポート` | NoteId で OCC token 付き Note を取得する |
+| ADP-note-009 | `NoteRepository.findById` | `spec/domains/note.md#ポート` | NoteId で OCC token 付き Note を取得する。複数 scope の行が 1 表に載るバックエンドでは、復元する行の `owner_type` / `owner_id` を scope object の pin と突き合わせ、交差した行は消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-note-010 | `NoteRepository.save` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を更新する |
-| ADP-note-011 | `NoteRepository.delete` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を削除する |
+| ADP-note-011 | `NoteRepository.delete` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を削除する。複数 scope の行が 1 表に載るバックエンドでは、版を照合する読みが行の `owner_type` / `owner_id` を pin と突き合わせ、交差していれば消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-note-012 | `NoteRepository.listByIds` | `spec/domains/note.md#ポート` | current scope の複数 Note を ID で取得する |
 | ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を `purgeAfter ASC, id ASC` の全順序で有界列挙し、最も長く待った 1 件を先頭に置く |
 | ADP-note-014 | `NoteRepository.countByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle 条件の Note 数を返す |

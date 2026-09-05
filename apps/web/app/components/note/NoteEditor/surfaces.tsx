@@ -103,6 +103,7 @@ const imageAtCaret = (surface: HTMLElement): HTMLImageElement | null => {
 
 export function WysiwygSurface({
   baseline,
+  seed,
   editable,
   surfaceRef,
   onChange,
@@ -111,6 +112,14 @@ export function WysiwygSurface({
 }: {
   /** 外から本文が差し替わったときだけ変わる値（復元・破棄・版の復元）。 */
   baseline: string;
+  /**
+   * 面を組み直す世代。{@link VisualSurface} の同名のプロップと同じ意味で、
+   * 2 つの面は同じ契約で載せ直す — 破棄・版の復元・競合の破棄はまさに
+   * **同じ文字列**へ戻しうる操作なので、`baseline` の同一性だけを鍵に
+   * すると打鍵が面に残ったまま `dirty` だけが下り、次の 1 打鍵で
+   * 捨てたはずの内容がサーバーへ書き戻される。
+   */
+  seed: number;
   /**
    * 保存が受け付けられる状態か（P-12 の「処理中で編集できない」「権限
    * 喪失」で `false`）。書けるのに絶対に保存されない面を出すと、書いた
@@ -124,9 +133,12 @@ export function WysiwygSurface({
   onSelectImage: (image: HTMLImageElement | null) => void;
   onDropFiles: ((files: readonly File[]) => void) | null;
 }) {
+  /** 最後に載せた世代。`null` は「まだ何も載せていない」。 */
+  const seededRef = useRef<number | null>(null);
+
   // 本文は React の子ではなくブラウザーが持つ（contenteditable の DOM を
-  // React に再描画させると caret が飛ぶ）。差し替えは baseline が変わった
-  // ときだけ行う。
+  // React に再描画させると caret が飛ぶ）。差し替えは `seed` が進んだとき
+  // だけ行う。
   //
   // この面も live DOM なので、載せる前に `scrubForSurface` を通す
   // （`baseline` には未保存の本文が入りうる — 退避の「復元する」）。
@@ -138,7 +150,8 @@ export function WysiwygSurface({
   // scrub 後に無かった属性が再パースで復活しうる（`<svg>` / `<math>` の
   // 名前空間混同、`<style>` / `<title>` の raw text で属性境界が動く形）。
   // 直列化してよいのは「載せ替えが要るか」の比較だけで、比較した文字列は
-  // DOM へ戻さない。
+  // DOM へ戻さない。その比較は**世代が同じ描画**にしか掛けない — 世代が
+  // 進んだ載せ直しで短絡すると、同じ文字列へ戻す破棄が面を変えずに終わる。
   useEffect(() => {
     const surface = surfaceRef.current;
     if (surface === null) return;
@@ -146,10 +159,12 @@ export function WysiwygSurface({
     template.innerHTML = baseline;
     scrubForSurface(template.content);
     dropStyleElements(template.content);
-    if (surface.innerHTML !== template.innerHTML) {
+    const reseeding = seededRef.current !== seed;
+    seededRef.current = seed;
+    if (reseeding || surface.innerHTML !== template.innerHTML) {
       surface.replaceChildren(template.content);
     }
-  }, [baseline, surfaceRef]);
+  }, [baseline, seed, surfaceRef]);
 
   return (
     <>

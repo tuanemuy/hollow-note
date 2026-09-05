@@ -18,20 +18,29 @@ import type { EditorMode } from "./preferences";
  * 落ちた往復を、もう一度だけ送り直せる形にしたもの。`failed` の「再試行」
  * が押す先である。
  *
- * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が同じ `failed`
- * を作る以上、「何が落ちたか」を値に持たないと再試行は 1 つの操作しか
- * 指せない。持たせないと、版の復元が通信エラーで落ちたあとの「再試行」が
- * 復元ではなく本文の保存を走らせる。
+ * **一次経路と 1 対 1** に対応する 5 種で閉じてある。再試行は対応する
+ * 一次経路の入口を呼ぶだけで、再試行に固有の判断（独自の分岐・独自の門）
+ * は持たない。多対一の対応を許すと、同じ `kind` を通る 2 つの操作のうち
+ * 片方にしか当てはまらない扱いが再試行に紛れ込む。
  *
- * 保存のあとの面の載せ直しはこの 4 つに入らない。保存はもう確定して
- * いるので、載せ直しが落ちても状態は `saved` のままであり、降ろすのは
- * 経路単位で送れる印だけで再試行の対象にはならない。
+ * | 種類 | 一次経路 | 再試行が呼ぶ入口 |
+ * | --- | --- | --- |
+ * | `save` | 自動保存・明示保存 | `commit(true)` |
+ * | `mode` | モードのラジオ・WYSIWYG 警告の了解 | `requestMode(mode, acknowledged)` |
+ * | `conflict` | 競合の「上書き」「破棄」 | `resolveConflict(keepLocal)` |
+ * | `revision` | 版一覧の「復元」 | `restore(revisionId)` |
+ * | `reload` | 破棄・版を復元したあとの載せ直し | `reloadFromServer()` |
+ *
+ * 保存が確定したあとの面の載せ直しはこの 5 種に入らない。保存はもう
+ * 確定しているので、載せ直しが落ちても状態は `saved` のままであり、
+ * 降ろすのは経路単位で送れる印だけで再試行の対象にはならない。
  */
 export type RetryTarget =
   | Readonly<{ kind: "save" }>
   | Readonly<{ kind: "mode"; mode: EditorMode; acknowledged: boolean }>
   | Readonly<{ kind: "conflict"; keepLocal: boolean }>
-  | Readonly<{ kind: "revision"; revisionId: string }>;
+  | Readonly<{ kind: "revision"; revisionId: string }>
+  | Readonly<{ kind: "reload" }>;
 
 export type SaveStatus =
   | Readonly<{ kind: "new" }>
@@ -44,8 +53,8 @@ export type SaveStatus =
    * できたか**で、退避の鍵が `noteId` である以上、まだ作られていない
    * ノートでは偽になる。ただし偽の意味は「退避していない」だけで、
    * 「ノートが無い」ではない — 保存以外の往復（モード切替・競合の解決・
-   * 版の復元）が落ちたときも偽で入る。退避を書けるのは保存の `catch`
-   * だけだからである。
+   * 版の復元・正本の引き直し）が落ちたときも偽で入る。退避を書けるのは
+   * 保存の `catch` だけだからである。
    *
    * したがって案内と逃げ道（再試行 / ダウンロード）を分けるのは
    * `creationFailed` のほうで、この値が語るのは「次に開けば復元できる」
@@ -107,10 +116,69 @@ export const TRANSIENT_ERROR_KINDS: ReadonlySet<SerializedErrorKind> = new Set([
 ]);
 
 /**
+ * `failed` の見出し。落ちた往復ごとに分けるのは、見出しが**押した操作の
+ * 結果**を語るためである — 版の復元が落ちたときに「保存できませんでした」
+ * と出すと、利用者は保存されていない打鍵を探しに行く。
+ */
+const FAILED_TITLE: Readonly<Record<RetryTarget["kind"], string>> = {
+  save: "保存できませんでした",
+  mode: "モードを切り替えられませんでした",
+  conflict: "競合を解決できませんでした",
+  revision: "版を復元できませんでした",
+  reload: "最新の内容を読み込めませんでした",
+};
+
+/** 往復そのものが成立せず、面もサーバーも動いていない。 */
+const UNCHANGED_HINT = "面の内容はそのままです。もう一度お試しください。";
+
+const FAILED_HINT: Readonly<Record<RetryTarget["kind"], string>> = {
+  save: "内容はまだこの端末に退避していません。もう一度お試しください。",
+  mode: UNCHANGED_HINT,
+  conflict: UNCHANGED_HINT,
+  revision: UNCHANGED_HINT,
+  // 正本の引き直しは、破棄（サーバーは動いていない）と版を復元したあとの
+  // 載せ直し（サーバーはもう動いている）の両方を通る。どちらでも真なのは
+  // 「面がまだサーバーに揃っていない」だけである。
+  reload: "面はまだサーバーの内容に揃っていません。もう一度お試しください。",
+};
+
+/**
+ * 退避できたときの案内。`stashed` が真になるのは保存の `catch` だけで、
+ * 他の往復は退避を書かない。
+ */
+const STASHED_HINT =
+  "内容はこの端末に退避したので、次に開いたときに復元できます。";
+
+/**
+ * ノートがまだ作られていないときの案内。退避の鍵は `noteId` なので退避
+ * そのものが成立せず、残る逃げ道はダウンロードだけである。
+ */
+const CREATION_FAILED_HINT =
+  "ノートがまだ作られていないため、内容はこの端末に退避できていません。ダウンロードして残してください。";
+
+/**
+ * `failed` の Alert が出す見出しと案内。表を島の外へ出してあるのは
+ * {@link RetryTarget} の 5 種と 1 対 1 であることを型で閉じるためで、
+ * 種類が増えれば `Record` がその場でコンパイルエラーになる。
+ */
+export const describeFailure = (
+  status: Readonly<{ stashed: boolean; retry: RetryTarget }>,
+  creationFailed: boolean,
+): Readonly<{ title: string; hint: string }> => ({
+  title: FAILED_TITLE[status.retry.kind],
+  hint: creationFailed
+    ? CREATION_FAILED_HINT
+    : status.stashed
+      ? STASHED_HINT
+      : FAILED_HINT[status.retry.kind],
+});
+
+/**
  * 版を進めうる往復が投げたものを、この画面の状態へ写す純関数。
  *
- * 4 つの `catch`（保存・モード切替・競合の解決・版の復元）が共有するので、
- * 「何が落ちたか」は呼び出し元が {@link RetryTarget} で渡す。
+ * 5 つの `catch`（保存・モード切替・競合の解決・版の復元・正本の引き直し）
+ * が共有するので、「何が落ちたか」は呼び出し元が {@link RetryTarget} で
+ * 渡す。
  *
  * 決定的な業務拒否（`rejected`）は `spec/pages/index.md` の P-12 状態表
  * 「保存できません（内容の拒否）」に対応する。集合は

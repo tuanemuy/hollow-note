@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { isSystemError, SystemErrorCode } from "../../../application/errors";
 import { ScopeKey } from "../../../application/scope";
 import { UserId } from "../../../domain/identity/valueObject";
+import type { NoteRepository } from "../../../domain/note/ports/noteRepository";
 import { NoteId } from "../../../domain/note/valueObject";
 import type { TagAssignmentRepository } from "../../../domain/tag/ports/tagAssignmentRepository";
 import { TagAssignment } from "../../../domain/tag/tagAssignment";
+import { makeBlankNote } from "../../conformance/fixtures";
+import { createCloudflareNoteRepository } from "../do/repositories/noteRepository";
 import { createCloudflareTagAssignmentRepository } from "../do/repositories/tagAssignmentRepository";
 import { SCOPE_TABLES } from "../do/schema";
 import { createScopeStubExecutor } from "../do/scopeStub";
@@ -16,9 +19,12 @@ import { statement } from "../sql/statement";
 /**
  * The scope-key columns this backend checks against the object it is
  * bound to (`spec/database/index.md` の「共通の規約」). Every path over
- * a `tag_assignments` row is exercised here — the save (ADP-tag-010),
- * the restore (ADP-tag-012) and the bounded delete (ADP-tag-019) — since
- * a guard that covers two of the three leaves the destructive one open.
+ * a row is exercised here — for `tag_assignments` the save
+ * (ADP-tag-010), the restore (ADP-tag-012) and the bounded delete
+ * (ADP-tag-019); for `notes` the restore (ADP-note-009) and the
+ * version-guarded delete (ADP-note-011), which reaches its row by id and
+ * version alone — since a guard that covers the reads but not the
+ * deletes leaves the destructive path open.
  *
  * The counterpart of `memory/__tests__/scopeGuards.test.ts`, and the
  * only place the *restore* half of that rule is exercised at all: memory
@@ -42,6 +48,7 @@ let namespaceSeq = 0;
 const openObject = (): Readonly<{
   session: SqlSession;
   repository: TagAssignmentRepository;
+  notes: NoteRepository;
 }> => {
   namespaceSeq += 1;
   const session = createAutocommitSession(
@@ -53,6 +60,7 @@ const openObject = (): Readonly<{
       session,
       scope: BOUND,
     }),
+    notes: createCloudflareNoteRepository({ session, scope: BOUND }),
   };
 };
 
@@ -97,6 +105,31 @@ const seedForeignRow = (session: SqlSession): Promise<void> =>
       ),
     ),
   ]);
+
+/**
+ * Moves a note row out of the bound scope behind the repository's back:
+ * only a misbound repository could see it, which is the configuration
+ * the pin exists to catch.
+ */
+const moveOutOfScope = (session: SqlSession, id: string): Promise<void> =>
+  session.write([
+    opaque(
+      statement(
+        `UPDATE ${SCOPE_TABLES.notes} SET owner_id = ? WHERE id = ?`,
+        FOREIGN_USER,
+        id,
+      ),
+    ),
+  ]);
+
+const storedNoteOwners = async (
+  session: SqlSession,
+): Promise<readonly unknown[]> =>
+  (
+    await session.query(
+      statement(`SELECT owner_id FROM ${SCOPE_TABLES.notes} ORDER BY id`),
+    )
+  ).map((row) => row.owner_id);
 
 const storedIds = async (session: SqlSession): Promise<readonly unknown[]> =>
   (
@@ -153,6 +186,50 @@ describe("cloudflare scope-key guards", () => {
       foreignAssignment.id,
       boundAssignment.id,
     ]);
+  });
+
+  it("ADP-note-009: refuses to restore a note row scoped to another object", async () => {
+    const { session, notes } = openObject();
+    const note = makeBlankNote(1, BOUND_USER, ASSIGNED_AT);
+    await notes.insert(note);
+    await moveOutOfScope(session, note.id);
+
+    await expect(notes.findById(note.id)).rejects.toSatisfy(
+      isDataIntegrityError,
+    );
+    expect(await storedNoteOwners(session)).toEqual([FOREIGN_USER]);
+  });
+
+  it("ADP-note-011: refuses to delete a note row scoped to another object", async () => {
+    const { session, notes } = openObject();
+    const note = makeBlankNote(1, BOUND_USER, ASSIGNED_AT);
+    await notes.insert(note);
+    const stored = await notes.findById(note.id);
+    if (stored === null) {
+      throw new Error("seeded note missing");
+    }
+    await moveOutOfScope(session, note.id);
+
+    // The delete reaches the row by id and version alone, so without the
+    // guard the version match would be the whole of its permission.
+    await expect(
+      notes.delete(note.id, stored.expectedVersion),
+    ).rejects.toSatisfy(isDataIntegrityError);
+    expect(await storedNoteOwners(session)).toEqual([FOREIGN_USER]);
+  });
+
+  it("ADP-note-011: still deletes a note row of the bound scope", async () => {
+    const { session, notes } = openObject();
+    const note = makeBlankNote(1, BOUND_USER, ASSIGNED_AT);
+    await notes.insert(note);
+    const stored = await notes.findById(note.id);
+    if (stored === null) {
+      throw new Error("seeded note missing");
+    }
+
+    await notes.delete(note.id, stored.expectedVersion);
+
+    expect(await storedNoteOwners(session)).toEqual([]);
   });
 
   it("ADP-tag-019: still deletes the bound scope's rows of the note", async () => {

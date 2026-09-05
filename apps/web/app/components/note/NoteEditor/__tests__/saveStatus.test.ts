@@ -4,9 +4,28 @@ import {
   type SerializedError,
   type SerializedErrorKind,
 } from "@/presentation/errorResponse";
-import { classifySaveFailure, type RetryTarget } from "../saveStatus";
+import {
+  classifySaveFailure,
+  describeFailure,
+  type RetryTarget,
+} from "../saveStatus";
 
 const RETRY: RetryTarget = { kind: "save" };
+
+/**
+ * 一次経路 5 つの見本。`satisfies` で網羅を型に見張らせてあるので、
+ * `RetryTarget` に種類が増えるとこの表がコンパイルエラーになる — 再試行の
+ * 宛先と一次経路が 1 対 1 であることの正典が表の側で欠けない。
+ */
+const TARGETS = {
+  save: { kind: "save" },
+  mode: { kind: "mode", mode: "html", acknowledged: false },
+  conflict: { kind: "conflict", keepLocal: true },
+  revision: { kind: "revision", revisionId: "rev-1" },
+  reload: { kind: "reload" },
+} satisfies { [K in RetryTarget["kind"]]: Extract<RetryTarget, { kind: K }> };
+
+const EVERY_TARGET: readonly RetryTarget[] = Object.values(TARGETS);
 
 const thrown = (
   kind: SerializedErrorKind,
@@ -97,5 +116,62 @@ describe("classifySaveFailure", () => {
         RETRY,
       ),
     ).toMatchObject({ kind: "blocked" });
+  });
+});
+
+/**
+ * `failed` の見出しと案内。落ちた往復ごとに分かれていないと、版の復元が
+ * 落ちた画面が「保存できませんでした」と告げ、利用者は保存されていない
+ * 打鍵を探しに行く。
+ */
+describe("describeFailure", () => {
+  it("names each failed roundtrip apart so the heading matches what was pressed", () => {
+    const titles = EVERY_TARGET.map(
+      (retry) => describeFailure({ stashed: false, retry }, false).title,
+    );
+    expect(new Set(titles).size).toBe(EVERY_TARGET.length);
+  });
+
+  it("offers a retry in every hint (the roundtrip never happened)", () => {
+    for (const retry of EVERY_TARGET) {
+      expect(describeFailure({ stashed: false, retry }, false).hint).toContain(
+        "もう一度お試しください",
+      );
+    }
+  });
+
+  it("promises the local stash only once it has actually been written", () => {
+    // 退避を書けるのは保存の `catch` だけなので、それ以外の往復が
+    // 「退避した」と告げると、利用者はそれを信じて画面を離れる。
+    expect(
+      describeFailure({ stashed: false, retry: TARGETS.save }, false).hint,
+    ).toContain("退避していません");
+    expect(
+      describeFailure({ stashed: true, retry: TARGETS.save }, false).hint,
+    ).toContain("退避したので");
+  });
+
+  it("never claims the surface is untouched after a reload (the restore already landed)", () => {
+    // 正本の引き直しは破棄（サーバーは動いていない）と復元後の載せ直し
+    // （サーバーはもう動いている）の両方を通る。どちらでも真なのは
+    // 「面がまだサーバーに揃っていない」だけである。
+    const reload = describeFailure(
+      { stashed: false, retry: TARGETS.reload },
+      false,
+    ).hint;
+    const unchanged = describeFailure(
+      { stashed: false, retry: TARGETS.revision },
+      false,
+    ).hint;
+    expect(unchanged).toContain("面の内容はそのまま");
+    expect(reload).not.toContain("面の内容はそのまま");
+  });
+
+  it("sends a note that does not exist yet to the download instead of the stash", () => {
+    const hint = describeFailure(
+      { stashed: false, retry: TARGETS.save },
+      true,
+    ).hint;
+    expect(hint).toContain("ダウンロード");
   });
 });

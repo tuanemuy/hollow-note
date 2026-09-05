@@ -238,10 +238,24 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   // deadline its payload carries so every turn of the row uses the one
   // the completing barrier fixed.
   [PERSONAL_BARRIER_PRUNE_TASK_KIND]: async (container, task) => {
+    const turn = readPersonalBarrierPruneTurn(
+      task.payload,
+      container.clock.now(),
+    );
+    if (!turn.fromPayload) {
+      container.logger.warn(
+        "[scope-tasks] barrier prune payload names no readable deadline; sweeping against the clock",
+        {
+          kind: task.kind,
+          operationId: task.operationId,
+          asOf: turn.asOf,
+        },
+      );
+    }
     await prunePersonalCleanupBarriers(container, {
       scope: task.scope,
       operationId: task.operationId,
-      ...readPersonalBarrierPruneTurn(task.payload, container.clock.now()),
+      asOf: turn.asOf,
     });
   },
 };

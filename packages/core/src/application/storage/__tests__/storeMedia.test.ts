@@ -866,7 +866,7 @@ describe("storeMedia", () => {
     expect(filesIn(h, personalScope)).toHaveLength(1);
   });
 
-  it("TC-storage-266: refuses an SVG nested past the depth the sanitizer's recursion can walk", async () => {
+  it("TC-storage-266: refuses an SVG nested past the policy depth", async () => {
     const h = harness();
     const noteId = await createPersonalNote(h);
     // The two sides below are relative to the constant, so the literal
@@ -887,12 +887,15 @@ describe("storeMedia", () => {
       }),
       StorageErrorCode.UnsupportedMimeType,
     );
-    // Without the depth gate 6 KB of this reaches `sanitizeNodes` and
-    // answers a bare `RangeError`, which carries no `kind` and reaches
-    // the user as an unexplained 500.
+    // `<g>` is in neither the breakout set nor anything else the walk
+    // refuses, so this document reaches the depth gate and nothing
+    // earlier. Without the gate it would be accepted and the sanitizer's
+    // own `maxNestingDepth` would answer `HTML_PROCESSOR_TOO_COMPLEX`,
+    // which `processSvg` translates to `FileTooLarge` — the same refusal
+    // in a different vocabulary, and one this assertion tells apart.
     await expectBusinessRule(
       upload(h, noteId, {
-        body: svg(repeatedInsideDesc("<b><i>", 8 * 1024)),
+        body: svg(nestedSvg(1024)),
         fileName: "recursive.svg",
       }),
       StorageErrorCode.UnsupportedMimeType,

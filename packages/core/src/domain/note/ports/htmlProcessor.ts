@@ -17,7 +17,7 @@ import type { Excerpt, NoteHtml, PlainTextContent } from "../valueObject";
 export const HTML_PROCESSOR_TOO_COMPLEX = NoteErrorCode.HtmlTooComplex;
 
 /**
- * Every code `process` can raise in Note's vocabulary, and the complete
+ * Every code this port can raise in Note's vocabulary, and the complete
  * set of them.
  *
  * A caller from another domain has to answer all of them in its own
@@ -29,11 +29,12 @@ export const HTML_PROCESSOR_TOO_COMPLEX = NoteErrorCode.HtmlTooComplex;
  *
  * - `HTML_PROCESSOR_TOO_COMPLEX` — every resource ceiling refuses with
  *   this one code (spec/adr/013 「サニタイズは資源で有界である」).
- * - `NoteErrorCode.ContentTooLarge` — `NoteHtml` / `PlainTextContent` /
- *   `Excerpt`, the only Note values `process` builds, measure the
- *   *result* in UTF-8 bytes. The tree meter does not stand in for that:
- *   it charges a node's pre-escape length in UTF-16 code units, while
- *   the serializer writes `"` as `&quot;` and U+00A0 as `&nbsp;`.
+ * - `NoteErrorCode.ContentTooLarge` — every method that builds a
+ *   `NoteHtml` measures the *result* in UTF-8 bytes, and `process`
+ *   measures the `PlainTextContent` and `Excerpt` it derives alongside
+ *   it. The tree meter does not stand in for that: it charges a node's
+ *   pre-escape length in UTF-16 code units, while the serializer writes
+ *   `"` as `&quot;` and U+00A0 as `&nbsp;`.
  */
 export const HTML_PROCESSOR_NOTE_ERROR_CODES: readonly string[] = [
   HTML_PROCESSOR_TOO_COMPLEX,
@@ -186,10 +187,16 @@ export type ProcessedHtml = Readonly<{
  * repaired, not rejected" is unchanged — what is refused there is not a
  * shape but a cost.
  *
- * `process` has a second refusal on top of that: it builds Note's value
- * objects, so a result past their own caps comes back as
- * `BusinessRuleError(NoteErrorCode.ContentTooLarge)`. The complete set
- * is `HTML_PROCESSOR_NOTE_ERROR_CODES`, which a caller outside Note
+ * Every method that builds a `NoteHtml` — `process`,
+ * `rewriteReferences`, `inlineStylesheets`, `editTextNodes` — has a
+ * second refusal on top of that: the value object measures the result,
+ * so an output past its cap comes back as
+ * `BusinessRuleError(NoteErrorCode.ContentTooLarge)` even though every
+ * input was inside it. Folding a fetched stylesheet into the body and
+ * replacing a text node with a longer one are both ways a body crosses
+ * the cap. `process` measures the `PlainTextContent` and `Excerpt` it
+ * derives as well. The complete set is
+ * `HTML_PROCESSOR_NOTE_ERROR_CODES`, which a caller outside Note
  * translates rather than enumerates for itself.
  */
 export interface HtmlProcessor {

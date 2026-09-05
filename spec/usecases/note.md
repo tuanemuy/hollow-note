@@ -893,8 +893,8 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 
 - このユースケース自身は `UnitOfWorkProvider.run` を開かない。`purgeNote` が 1 件ごとに自分の UoW を開いて確定する。50 件を 1 トランザクションに束ねないのは、`note.purged` の購読者が結果整合で後始末する設計（[ADR 008](../adr/008-domain-boundaries.md)）である以上、まとめても得られる保証が増えないためである。途中で失敗しても既に消えたノートは戻らないが、ゴミ箱を空にする操作は部分的に進んでも矛盾しない
 - `purgeNote` が要求する `expectedVersion` は**呼び出し側が渡す**。値の出所は手順 2 の `listByOwner` で引いた各ノートのその時点の `version` である（規約の「対象の版を持たない呼び出し元は、呼ぶ直前に自分で対象を引いてそのときの版を渡す」に当たる）
-- 版が競合した（`ConflictError`）ノートは**読み直さずに飛ばし**、`purgedCount` に数えない。列挙から削除までの間に版が動くのは、そのノートが `restoreNote` でゴミ箱から出された場合がほとんどで、読み直して再適用すると利用者が戻したばかりのノートを消してしまう。同じ理由で `NOTE_NOT_TRASHED`・不在（既に他の経路で消えた・戻された）も飛ばして続ける
-- **飛ばせるのはこの 3 つだけで、それ以外の失敗は要求ごと失敗する**。3 つはいずれも「このノートはもうこの要求の持ち分ではない」という 1 件についての事実だが、scope が応答しない・不変条件が壊れたといった失敗は、たまたま当たったノートについて何も語らない。全件がそれで落ちた要求を成功として返すと、画面は「0 件を完全に削除しました」という誤った完了通知を出す。途中で失敗しても既に確定した purge は戻らないが、これはこの操作が部分的に進んでも矛盾しないという上の性質そのものである
+- 版が競合した（`ConflictError("OPTIMISTIC_LOCK_FAILURE")`）ノートは**読み直さずに飛ばし**、`purgedCount` に数えない。列挙から削除までの間に版が動くのは、そのノートが `restoreNote` でゴミ箱から出された場合がほとんどで、読み直して再適用すると利用者が戻したばかりのノートを消してしまう。同じ理由で `NOTE_NOT_TRASHED`・不在（既に他の経路で消えた・戻された）も飛ばして続ける
+- **飛ばせるのはこの 3 つだけで、それ以外の失敗は要求ごと失敗する**。3 つはいずれも「このノートはもうこの要求の持ち分ではない」という 1 件についての事実だが、scope が応答しない・不変条件が壊れたといった失敗は、たまたま当たったノートについて何も語らない。**飛ばす条件を `ConflictError` 全体に広げてはならない** — `purgeNote` は入口で scope 全体の書き込み障壁を通り（`ConflictError("ACCOUNT_DELETING")` / `ConflictError("WORKSPACE_DELETING")`）、これはゴミ箱のどのノートにも等しく当たる scope についての事実なので、1 件についての事実として飛ばすと障壁の下の要求がまるごと「0 件を完全に削除しました」になる。全件がそれで落ちた要求を成功として返すと、画面は「0 件を完全に削除しました」という誤った完了通知を出す。途中で失敗しても既に確定した purge は戻らないが、これはこの操作が部分的に進んでも矛盾しないという上の性質そのものである
 - `purgeNote` が周辺を巻き込む副作用（ジョブの強制終端など）を持たないため、`trashNote` のような除外引数は要らない（本文冒頭の「共通: ユースケースを合成するときの副作用の範囲」）
 
 ### エラーケース
@@ -902,8 +902,8 @@ recoveryはpayloadに固定したactor/Membership version、scope、expected Not
 | 条件 | 種類 |
 | --- | --- |
 | 権限不足 | `BusinessRuleError(InsufficientRole)` |
-| 同期削除の途中で個々のノートの版が競合・既に削除済み（`ConflictError` / `ValidationError("NOTE_NOT_TRASHED")` / `NotFoundError`） | そのノートを飛ばして続ける（`purgedCount` に数えない） |
-| 同期削除の途中の上記以外の失敗 | そのまま送出して要求ごと失敗する。既に確定した purge は戻らない |
+| 同期削除の途中で個々のノートの版が競合・既に削除済み（`ConflictError("OPTIMISTIC_LOCK_FAILURE")` / `ValidationError("NOTE_NOT_TRASHED")` / `NotFoundError`） | そのノートを飛ばして続ける（`purgedCount` に数えない） |
+| 同期削除の途中の上記以外の失敗（scope 全体の書き込み障壁 `ConflictError("ACCOUNT_DELETING")` / `ConflictError("WORKSPACE_DELETING")` を含む） | そのまま送出して要求ごと失敗する。既に確定した purge は戻らない |
 
 ## purgeExpiredTrash
 
@@ -975,7 +975,7 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 `deletionOperationId`はscope cleanupのadmission tokenであり、Noteごとの内部purge operation IDとは別である。各continuationは前者を保持し、個別Note purgeは親operation ID+NoteIdから導出した後者で冪等化する。通常要求の再送はrouteに保存済みのoperation IDを再利用する。
 
-**継続の媒体は購読者 1 件の専用要求である**。受け取った `identity.user.deleted` / `workspace.deleted` の再投入では継続しない — これらは購読者を 8 つ / 4 つ持ち、残作業があるあいだじゅう購読者全員にコピーが配られて outbox とキューを水増しするからで、専用要求なら 1 系列 1 件で済む。ジョブも媒体にしない（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形をとる。
+**継続の媒体は購読者 1 件の専用要求 `note.ownerPurgeContinued` である**。既存のドメインイベントを再投入する形は採らない — イベントは購読者の数だけコピーが配られ、残作業があるあいだじゅう outbox とキューを水増しするからで、専用要求なら 1 系列 1 件で済む（[domains/index.md](../domains/index.md) の「継続要求」の「購読者を 1 つに保つ」）。ジョブも媒体にしない（`JobKind` にこの後始末に当たる種別がなく、退会した本人には処理履歴が見えない）。`deleteFilesByOwner`（[usecases/storage.md](./storage.md)）も同じ形をとる。
 
 `batchSize` の既定 40 は、1 Alarm turn の CPU と `note.purged` event fan-out に加えて、**この turn が使う global query 数**を抑えるための作業量上限である。scope-local SQL に D1 の予算は掛からないが、1 件の purge は route（`resolve` / `beginPurge` / `finishPurge`）と public projection（`removeForPurge`）という global 側を必ず叩くため、scope cleanup でありながら件数に比例して global 予算を消費する唯一の経路になる。数える単位は**ポート呼び出しではなく D1 statement** で、1 件あたり `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4〜5 ＋ `finishPurge` 3 の **11〜12 文**になる。他の scope cleanup と同じ 100 件では 1,200 文となり 500 query の設計上限も実上限 1,000 も超えるため、この経路だけ 40 件（40 × 12 = 480）に下げてある。余裕を取る側の調整は `batchSize` を**下げる**ことである。正典は [platform/index.md](../platform/index.md) の「実行予算と分割単位」。
 

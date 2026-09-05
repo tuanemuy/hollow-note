@@ -150,10 +150,19 @@ export async function emptyTrash({
 /**
  * The two refusals this loop is allowed to swallow, and the only two:
  * the note left the trash between the enumeration and its purge
- * (`ConflictError` from the version that moved, `NOTE_NOT_TRASHED` from
- * the barrier) or somebody else finished deleting it first
- * (`NotFoundError`). Both mean "this note is no longer this request's
- * to delete", which is a fact about one note and not about the trash.
+ * (`OPTIMISTIC_LOCK_FAILURE` from the version that moved,
+ * `NOTE_NOT_TRASHED` from the trash barrier) or somebody else finished
+ * deleting it first (`NotFoundError`). Both mean "this note is no longer
+ * this request's to delete", which is a fact about one note and not
+ * about the trash.
+ *
+ * Which is why the conflict is narrowed to that one code rather than
+ * taken as `isConflictError`. `purgeNote` also crosses the scope-wide
+ * write barriers on its way in (`editing.ts`), and those refuse with
+ * `ConflictError("ACCOUNT_DELETING")` / `ConflictError("WORKSPACE_DELETING")`
+ * — a statement about the whole scope that would hold for every note in
+ * the trash, so reading it as "that one note moved" turns a scope closed
+ * for writes into a silent `{ purgedCount: 0 }`.
  *
  * Everything else — a scope that will not answer, an invariant that
  * broke — says nothing about the note it happened to arrive on, so it
@@ -162,7 +171,7 @@ export async function emptyTrash({
  * (spec/usecases/note.md#emptyTrash のエラーケース).
  */
 const isSkippableRefusal = (cause: unknown): boolean =>
-  isConflictError(cause) ||
+  (isConflictError(cause) && cause.code === "OPTIMISTIC_LOCK_FAILURE") ||
   isNotFoundError(cause) ||
   (isValidationError(cause) && cause.code === "NOTE_NOT_TRASHED");
 

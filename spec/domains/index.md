@@ -316,11 +316,21 @@ interface IdempotencyStore {
 | `usage.userCleanupContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
 | `publicProjection.reprojectRequested` | `{ noteId, expectedRouteVersion? }` | global Queue → public projection consumer。scope-local tag fan-outはversionを省略し、consumerがcurrent routeを解決する |
 
-規約は 4 つ。
+規約は 5 つ。
 
-scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operation_id`は生成元operation/event/command IDと対象ID・version・cursorから決定的に導出する。同じ生成元が複数Noteへ`projection.reprojectRequested`を積む場合もNoteIdとprojectionRevisionを含めるため、1件へ潰れず、応答喪失時にも増殖しない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める。scopeに1本しか置かない周期の掃引（`note.trashExpiryContinued` / `storage.orphanMediaContinued`）と、1つのoperationが同じ行を次のphase・次の時刻へ進める継続（`workspace.deletion*Continued`）は、cursorを鍵に混ぜず固定の`(kind, operation_id)`へupsertし、再開位置はpayloadで運ぶ。行が1本であることが決定性を担保し、再開位置の寿命が行の寿命と一致する。global outboxで運ぶ継続要求では同じ役割を payload の`continuationKey`が担い、導出式は `` `${eventType}:${operationId}:${phase}:${cursor ?? "-"}` `` である。payloadに`phase`を持たない継続（`identity.accountDeletionManifestCompactContinued`）は、`phase`の位置に固定文字列`compact`を置く。commit応答を失ったターンが同じ鍵を再導出するため、再実行は先着の1行へ潰れて鎖が分岐しない（[ADR 041](../adr/041-deterministic-continuation-event-id.md) / [ADR 042](../adr/042-outbox-save-id-collision.md)）。鍵はターンごとに変わらなければならない。自分と同じ鍵を再発行するターンは、直後のrelay finalizeに処理済みとして印を付けられ、鎖がそこで止まる。global outboxで運ぶidentity系の継続要求のうちこの鍵を持たないのは`identity.userAuthResidueCleanupContinued`だけで、理由はカーソルを持たない継続だからである（仕事そのもの＝行の削除が次ターンの母集合から対象を外すので、ターンを鍵で区別しなくても常に前へ進む）。
+継続要求の鍵は、**同じ仕事に対して継続が何本立つか**で決まる。表の全行はこの 4 分類のいずれかに属し、どの分類でも cursor・`asOf`・持ち回り集合といった**再開状態は鍵に入らない**（それらは payload が運ぶ）。
+
+- **対象ごとに 1 本** — 1 つの生成元が対象の数だけ継続を積む。鍵は生成元 ID と対象 ID（と version / revision）で、同じ生成元が複数 Note へ`projection.reprojectRequested`を積んでも 1 件へ潰れない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める
+- **operation に 1 本** — 1 つの operation が何 turn 重ねても継続は 1 本。鍵はその operation の ID（`note.purged`の追随者なら、追随する purge の operation ID）で、phase も再開位置も payload が運ぶ
+- **平面に 1 本の周期** — 掃引はその平面に 1 本しか立たない（scope の掃引なら scope に 1 本、global の掃引なら global D1 に 1 本）。鍵は固定で、次に見る位置と時刻は payload と`dueAt`が持つ
+- **対象に 1 本の義務** — 生成元が誰であれ対象 1 つにつき義務は 1 つ。鍵は対象の識別子そのもの（`workspace.membershipRemovalEdgeContinued`は`(workspaceId, userId)`の組、`job.terminationContinued`は掃引する対象の ID）で、生成元 ID を含めない。同じ義務を二度 arm しても同じ行へ upsert される
+
+どの分類でも行は 1 本なので、応答を失った turn の再実行は同じ鍵へ upsert されて増殖せず、再開位置の寿命が行の寿命と一致する。scope 平面ではこの鍵が`scheduled_tasks`の`(kind, operation_id)`であり、public projection の outbox event ID も同じ分類に従う。
+
+global outbox で運ぶ継続要求では、鎖の同一性は上の分類どおり payload が運び、outbox 行の重複排除は payload の`continuationKey`が担う。この鍵だけは**turn ごとに変わり、cursor を材料に含める**。導出式は `` `${eventType}:${operationId}:${phase}:${cursor ?? "-"}` `` である。payloadに`phase`を持たない継続（`identity.accountDeletionManifestCompactContinued`）は、`phase`の位置に固定文字列`compact`を置く。commit応答を失ったターンが同じ鍵を再導出するため、再実行は先着の1行へ潰れて鎖が分岐しない（[ADR 041](../adr/041-deterministic-continuation-event-id.md) / [ADR 042](../adr/042-outbox-save-id-collision.md)）。鍵はターンごとに変わらなければならない。自分と同じ鍵を再発行するターンは、直後のrelay finalizeに処理済みとして印を付けられ、鎖がそこで止まる。global outboxで運ぶidentity系の継続要求のうちこの鍵を持たないのは`identity.userAuthResidueCleanupContinued`だけで、理由はカーソルを持たない継続だからである（仕事そのもの＝行の削除が次ターンの母集合から対象を外すので、ターンを鍵で区別しなくても常に前へ進む）。
 
 - **購読者を 1 つに保つ**。既存のイベントを再投入して継続する形は採らない（購読者の数だけコピーが増え、outbox とキューを水増しする）
+- **読めない payload の扱いは、その payload が何を運んでいるかで決まる**。**仕事そのものを名指す payload**（対象 ID・持ち回り集合・phase）は、読めなければ `SystemError(DataIntegrityError)` で turn を fault させる。捨てて先へ進むと空の列挙が「もう対象は無い」と読まれ、取り消せない ack になるからで、fault した行は `dueAt` を保ったまま backoff で残り、runner の報告に出る。**再開位置だけを運ぶ payload**（keyset cursor・`asOf`）は、読めなければ先頭または現在時刻へ戻す。選び直す集合が元の集合の上位集合に留まるので安全側で、fault させると誰も settle しない行を strand させる。後者を選んだ実装は `logger.warn` を 1 行残す
 - **継続要求は、続きを引き直すのに必要な情報をすべて運ぶ**。次の実行で網を引き直す形の継続（`job.terminationContinued`）では、payload が**元の経路の選択述語をそのまま再現できなければならない**。再現できないと、続きが元より広い集合を処理してしまう。強制終端の 9 経路は対象の選び方（対象・スコープ・要求者・`kind`）と当てる遷移（`cancel` か `fail` か）が経路ごとに違うため、payload は**どの経路の続きか**を判別子で持つ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）
 - **カーソルは、処理そのものが対象を検索結果から外す場合は持たない**。削除も終端も対象を `listBy*` / `listActive*` の結果から外すため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。処理しても母集合が残るtag assignment fan-out、Note routeのauthor/workspace fan-out、target history fan-outはkeyset cursorを持つ
   - 根拠を「対象が消えないから」と書いてはならない。付与そのものは `unassignTag` / `deleteTag` の CASCADE / `deleteAssignmentsForNote` / `relocateAssignmentsForNote` / `mergeTags` の衝突行削除によって並行して消えうる。カーソルが要るのは、消えるかどうかではなく**処理しても残る**ためである

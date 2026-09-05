@@ -85,21 +85,25 @@ export const PERSONAL_BARRIER_PRUNE_PAGE_SIZE = 100;
  * and a receipt that completes while the row is being worked is not
  * reclaimed before its own retention lapses.
  *
- * A payload that cannot name it falls back to the caller's clock. The
- * row is due at that same instant, so the current time selects the same
- * receipts, and a turn that refused an unreadable payload would strand
- * the row: nothing else settles it.
+ * The payload carries a resume position rather than the work itself, so
+ * one that cannot name it falls back to the caller's clock
+ * (`spec/domains/index.md#継続要求`). The row is due at that same
+ * instant, so the current time selects the same receipts, and a turn
+ * that refused an unreadable payload would strand the row: nothing else
+ * settles it. `fromPayload` lets the caller report the fallback.
  */
 export const readPersonalBarrierPruneTurn = (
   payload: ScopeTaskPayload,
   fallback: Date,
-): Readonly<{ asOf: Date }> => {
+): Readonly<{ asOf: Date; fromPayload: boolean }> => {
   const asOf = payload.asOf;
   if (typeof asOf !== "string") {
-    return { asOf: fallback };
+    return { asOf: fallback, fromPayload: false };
   }
   const at = new Date(asOf);
-  return Number.isNaN(at.getTime()) ? { asOf: fallback } : { asOf: at };
+  return Number.isNaN(at.getTime())
+    ? { asOf: fallback, fromPayload: false }
+    : { asOf: at, fromPayload: true };
 };
 
 /**

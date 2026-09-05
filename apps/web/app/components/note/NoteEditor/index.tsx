@@ -86,7 +86,12 @@ export async function NoteEditor({
   }
 
   return (
+    // 島は版・確定値・面の状態をノート 1 件ぶんしか持たない。ルーターは
+    // パラメーターだけの遷移で再マウントしないので、`key` で前提を構造と
+    // して持つ（別のノートへ移ったときに前のノートの版が残ると、版の
+    // 単調性の門が閉じたまま開かなくなる）。
     <NoteEditorIsland
+      key={note.noteId}
       backTo={backTo}
       target={{
         kind: "existing",
@@ -124,7 +129,11 @@ export function NewNoteEditor({
   context?: NoteDetailContext;
 }) {
   return (
+    // 作成先が変わる画面内遷移（個人 ⇄ ワークスペースの `/notes/new`）でも
+    // 島を組み直す。島は初回保存で生まれたノートの識別子を内部に持つので、
+    // 持ち越すと新しい作成先の画面が前の画面で作られたノートを編集し続ける。
     <NoteEditorIsland
+      key={context.kind === "workspace" ? context.workspaceId : "personal"}
       backTo={
         context.kind === "workspace"
           ? { kind: "workspaceNotes", workspaceId: context.workspaceId }

@@ -66,7 +66,7 @@ type WorkspaceUsageItem =
 
 ### 概要
 
-アップロードの前に容量と LLM 実行回数の残量を確認する（`storeUpload` から呼ばれる）。
+アップロードの前に容量と LLM 実行回数の残量を確認する（`storeUpload` / `storeMedia` から呼ばれる。`storeAvatar` は差し替えで累積しないため呼ばない）。
 
 ### 入力DTO
 
