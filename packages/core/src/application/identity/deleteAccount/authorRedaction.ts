@@ -72,7 +72,7 @@ export async function dispatchAccountDeletionRedaction(
   const localAcked: string[] = [];
   const publicAcked: string[] = [];
   for (const target of claimed.targets) {
-    const route = await container.noteRouteResolver.resolve(target.noteId);
+    const route = await container.noteRouteStore.resolve(target.noteId);
     const redaction = {
       noteId: target.noteId,
       createdBy: header.userId,

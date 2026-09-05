@@ -6,7 +6,7 @@
 | ジョブが実行中 | 照会する | `status: "running"` と `progress` が返る | |
 | ジョブが成功している | 照会する | `status: "succeeded"` と、artifact の `fileId` へ差し替えた `{ kind: "file" }` の新しい署名済みチケットが返る | |
 | `{ kind: "job" }` のチケットでジョブは `succeeded` だが、その artifact が既に回収されている | 照会する | `ValidationError("ARTIFACT_EXPIRED")` が投げられる。**新しいチケットを発行する前に `{ kind: "file" }` の分岐と同じ確認（`findById` / 期限 / `noteId` の一致）を行う** — 発行する側だからこそ確認が要る。省くと `succeeded` を表示したうえで到達できない 30 分のチケットを配ることになる | |
-| 同上 | 回収されうる経路を確認する | 保管と `Job.succeed` は同一 UoW なので保持期限（24 時間）がチケット（30 分）に負けることはないが、ワークスペース所有の公開ノートに対する匿名の書き出しでは `deleteFilesByOwner` と `deleteNotesForOwner` がどちらも 1 バッチ 100 件ずつ進むため、artifact だけが先に消えてジョブ行が残る窓が開く | |
+| 同上 | 回収されうる経路を確認する | 保管と `Job.succeed` は同一 UoW なので保持期限（24 時間）がチケット（30 分）に負けることはないが、ワークスペース所有の公開ノートに対する匿名の書き出しでは `deleteFilesByOwner`（1 バッチ 100 件）と `deleteNotesForOwner`（1 バッチ 40 件）がどちらもバッチずつ段階的に進むため、artifact だけが先に消えてジョブ行が残る窓が開く | |
 | ジョブが失敗している | 照会する | `status: "failed"` と `failureReason` が返る | |
 | 実行中の `pdfExport` ジョブに相乗りしたあと、実行前にノートが更新された | 完了まで照会し、`downloadExportArtifact` まで進む | 受け取る PDF は要求時点の版ではなく**実行時点の版**になる（相乗りは版を条件にしない。キュー待ちのジョブは描画される版が実行時点まで確定しないため、`exportNote` の相乗りに「同版であること」を事前条件として置けない。版を条件にするのは既存 artifact の再利用のみ） | |
 | `{ kind: "file" }` のチケットで、指す artifact が生きている | 照会する | `status: "succeeded"` と同じチケットが返る（`downloadExportArtifact` に進める） | |

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { createHtmlProcessor } from "@repo/core/adapters/html/htmlProcessor";
 import {
   createMemoryGlobalUnitOfWorkProvider,
   type MemoryUnitOfWorkOptions,
@@ -175,6 +176,9 @@ export function createMemoryRuntime(
   // instance on every request would re-derive that scrypt hash on every
   // unauthenticated attempt.
   const passwordHasher = createScryptPasswordHasher();
+  // Stateless and provider-independent, so one instance serves every
+  // container this runtime hands out.
+  const htmlProcessor = createHtmlProcessor();
   const sessionRepository = createMemorySessionRepository(backend);
   const authTokenRepository = createMemoryAuthTokenRepository(backend);
   const loginAttemptStore = createMemoryLoginAttemptStore(backend);
@@ -237,10 +241,13 @@ export function createMemoryRuntime(
         ),
         scopeRouter: createMemoryScopeRouter(backend),
         noteRouteStore: createMemoryNoteRouteStore(backend),
+        publicNoteProjectionWriter:
+          createMemoryPublicNoteProjectionWriter(backend),
         identityUniqueDirectory: createMemoryIdentityUniqueDirectory(backend),
         loginAttemptStore,
         oauthStateStore,
         objectStorage,
+        htmlProcessor,
         // Built per container because the dev IdP's consent screen lives
         // under the app's own origin, which only `config` knows.
         signInOAuthClient: createSignInOAuthClient(oauth, config.appUrl),
@@ -296,11 +303,12 @@ export function createMemoryRuntime(
           },
         ),
         noteRouteFanOutReader: createMemoryNoteRouteFanOutReader(backend),
-        noteRouteResolver: createMemoryNoteRouteStore(backend),
+        noteRouteStore: createMemoryNoteRouteStore(backend),
         publicNoteProjectionWriter:
           createMemoryPublicNoteProjectionWriter(backend),
         scopeTaskQueue: createMemoryScopeTaskQueue(backend),
         objectStorage,
+        htmlProcessor,
         workspaceDirectoryProjectionWriter:
           createMemoryWorkspaceDirectoryProjectionWriter(backend),
         workspaceSlugReservationStore:

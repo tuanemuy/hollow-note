@@ -26,7 +26,9 @@ export type NoteRoute = Readonly<{
  * with the same `operationId` (all three are idempotent per operation).
  * Move: `beginMove` (CAS on `expectedRouteVersion`) → `switchMove` flips
  * to the target, or `abortMove` (pre-switch only) returns to the source.
- * Purge: `beginPurge` closes external reach; before the local delete only
+ * Purge: `beginPurge` closes external reach and is idempotent per
+ * operation *ahead of* its CAS, which is what lets recovery read a
+ * `purging` route back (see the method); before the local delete only
  * the same operation's `abortPurge` may reopen (`purging → active`);
  * after it, recovery is forward-only through `finishPurge`, which leaves
  * an expiring tombstone.
@@ -85,6 +87,26 @@ export interface NoteRouteStore {
       expectedRouteVersion: number;
     }>,
   ): Promise<NoteRoute>;
+  /**
+   * Closes the note to external reads and claims it for `operationId`.
+   *
+   * **Idempotent before the CAS.** A row already `purging` under this
+   * same `operationId` is returned unchanged *without* comparing
+   * `expectedRouteVersion` — the order is contractual, not incidental.
+   * It is what makes the claim the only way back to a `purging` route:
+   * `resolve` hides those rows, so a purge whose process died between
+   * the claim and the tombstone would otherwise have no way to read
+   * back the scope and generation it was working on. Recovery relies on
+   * this by re-claiming with a generation no route can carry (see
+   * `purgeNote`'s `RESUME_CLAIM`); a store that checked the generation
+   * first would leave every interrupted purge stuck as an unreachable
+   * note while passing every other clause here.
+   *
+   * A row that is *not* this operation's is refused on its state
+   * (`ConflictError`, anything but `active`) or on the CAS
+   * (`ConflictError("STALE_SCOPE_ROUTE")`), so the sentinel generation
+   * can never take a route away from its holder.
+   */
   beginPurge(
     input: Readonly<{
       noteId: NoteId;

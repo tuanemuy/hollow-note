@@ -67,6 +67,7 @@ function WorkspaceNotesPage() {
         name: workspace.name,
         slug: workspace.slug,
         publication: workspace.publication,
+        canWrite: workspace.canWrite,
       }}
     >
       <Suspense fallback={<NoteListSkeleton />}>

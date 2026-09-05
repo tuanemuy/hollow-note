@@ -13,8 +13,9 @@ import type { ScopeKey } from "../scope";
  *
  * Not the type the shipped move carries: that one is `MoveSnapshot`,
  * local to `application/note/moveNote.ts`, and it holds what this
- * deployment actually transfers (Note, revisions, file metadata, bytes) —
- * tags and BackupRecord belong to slices that do not exist yet.
+ * deployment actually transfers (Note, revisions, file metadata, bytes).
+ * `TagAssignment` and `BackupRecord` exist only on their delete side, so
+ * a move has no write path to carry them across.
  */
 export interface NoteMoveSnapshot {
   readonly migrationId: string;

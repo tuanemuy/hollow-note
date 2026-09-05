@@ -1,6 +1,6 @@
 # Inventory — adapter
 
-生成元: `spec/domains/`（最終同期: 2026-08-30）
+生成元: `spec/domains/`（最終同期: 2026-09-05）
 
 **1 行 = 1 ポートメソッド**。適合スイートのケースは行にせず、ケース名（`it` の第 1 引数）の先頭に ADP ID を置く命名規約で追う（複数メソッドを拘束するケースは ID を短縮せず並べる）。**新規ポートメソッドには通常どおり採番し、各群の末尾に足す（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。同じポートメソッドの ADP 行と `domain.md` の DOM 行が食い違う場合、そろえるのは片側の主張が本文に由来するときだけとする（[ADR 059](../adr/059-ledger-row-asymmetry.md)）。
 
@@ -175,10 +175,10 @@
 | ADP-storage-004 | `StoredFileRepository.delete` | `spec/domains/storage.md#ポート` | 期待版一致時だけ StoredFile を削除する |
 | ADP-storage-005 | `StoredFileRepository.listByIds` | `spec/domains/storage.md#ポート` | current scope の複数 file を ID で取得する |
 | ADP-storage-006 | `StoredFileRepository.listByNote` | `spec/domains/storage.md#ポート` | ノートに属する全 file metadata を返す |
-| ADP-storage-007 | `StoredFileRepository.listDeletableByNote` | `spec/domains/storage.md#ポート` | ノート削除対象 file を有界列挙する |
+| ADP-storage-007 | `StoredFileRepository.listDeletableByNote` | `spec/domains/storage.md#ポート` | ノート削除対象 file（`purpose` が `source` / `media` / `reference`）を `id` 昇順で最大 `limit` 件、有界列挙する。順序は契約でありバックエンドの裁量ではない |
 | ADP-storage-008 | `StoredFileRepository.findArtifactByNoteAndVersion` | `spec/domains/storage.md#ポート` | 有効期限内の同版 artifact を取得する |
 | ADP-storage-009 | `StoredFileRepository.listExpired` | `spec/domains/storage.md#ポート` | 期限切れ ephemeral file を有界列挙する |
-| ADP-storage-010 | `StoredFileRepository.listByPurposeOlderThan` | `spec/domains/storage.md#ポート` | current scope の用途・作成時刻で file を有界列挙する |
+| ADP-storage-010 | `StoredFileRepository.listByPurposeOlderThan` | `spec/domains/storage.md#ポート` | current scope の用途・作成時刻（`createdBefore` は包含）で file を有界列挙する。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を排他的に指すキーセット（`null` は先頭）。位置は行ではないので、その行が既に消えていても解決する |
 | ADP-storage-011 | `StoredFileRepository.sumSizeByOwner` | `spec/domains/storage.md#ポート` | artifact を除く owner の使用容量を合計する |
 | ADP-storage-012 | `StoredFileRepository.listByOwner` | `spec/domains/storage.md#ポート` | owner と用途で file をページングする |
 | ADP-storage-013 | `ReferenceImportRecordRepository.saveAttempts` | `spec/domains/storage.md#ポート` | 取得試行を note・URL キーで上書き保存する |
@@ -212,11 +212,11 @@
 | ADP-note-006 | `PdfRenderer.render` | `spec/domains/note.md#ポート` | style mode と timeout を守って本文を PDF bytes にする |
 | ADP-note-007 | `NoteExportComposer.composeSelfContainedHtml` | `spec/domains/note.md#ポート` | asset を可能な範囲で埋め込んだ単一 HTML を組み立てる |
 | ADP-note-008 | `NoteRepository.insert` | `spec/domains/note.md#ポート` | 新規 Note を保存する |
-| ADP-note-009 | `NoteRepository.findById` | `spec/domains/note.md#ポート` | NoteId で OCC token 付き Note を取得する |
+| ADP-note-009 | `NoteRepository.findById` | `spec/domains/note.md#ポート` | NoteId で OCC token 付き Note を取得する。複数 scope の行が 1 表に載るバックエンドでは、復元する行の `owner_type` / `owner_id` を scope object の pin と突き合わせ、交差した行は消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-note-010 | `NoteRepository.save` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を更新する |
-| ADP-note-011 | `NoteRepository.delete` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を削除する |
+| ADP-note-011 | `NoteRepository.delete` | `spec/domains/note.md#ポート` | 期待版一致時だけ Note を削除する。複数 scope の行が 1 表に載るバックエンドでは、版を照合する読みが行の `owner_type` / `owner_id` を pin と突き合わせ、交差していれば消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-note-012 | `NoteRepository.listByIds` | `spec/domains/note.md#ポート` | current scope の複数 Note を ID で取得する |
-| ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を有界列挙する |
+| ADP-note-013 | `NoteRepository.listPurgeable` | `spec/domains/note.md#ポート` | purgeAfter 到来済み TrashedNote を `purgeAfter ASC, id ASC` の全順序で有界列挙し、最も長く待った 1 件を先頭に置く |
 | ADP-note-014 | `NoteRepository.countByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle 条件の Note 数を返す |
 | ADP-note-015 | `NoteRepository.listByOwner` | `spec/domains/note.md#ポート` | owner と lifecycle で Note を `updatedAt DESC, id DESC` の全順序でページングし、ページ境界で重複・欠落を出さない |
 | ADP-note-016 | `NoteRevisionRepository.insert` | `spec/domains/note.md#ポート` | 不変な NoteRevision を保存する |
@@ -246,7 +246,7 @@
 | ADP-note-040 | `NoteRouteStore.beginMove` | `spec/domains/note.md#ポート` | expected route version で moving 状態を開始する |
 | ADP-note-041 | `NoteRouteStore.abortMove` | `spec/domains/note.md#ポート` | switch 前の move route を source active へ戻す |
 | ADP-note-042 | `NoteRouteStore.switchMove` | `spec/domains/note.md#ポート` | moving route を target scope へ切り替える |
-| ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる |
+| ADP-note-043 | `NoteRouteStore.beginPurge` | `spec/domains/note.md#ポート` | purge 中へ遷移して外部到達を閉じる。同じ `operationId` で既に `purging` の行は `expectedRouteVersion` を見ずに返す（**操作単位の冪等が CAS より先**。recovery が番兵世代で claim し直して scope と世代を読み戻す経路がこれ）。他人の operation は state か CAS で拒む |
 | ADP-note-044 | `NoteRouteStore.abortPurge` | `spec/domains/note.md#ポート` | local 削除前の purge を active へ戻す |
 | ADP-note-045 | `NoteRouteStore.finishPurge` | `spec/domains/note.md#ポート` | purge route を期限付き tombstone にする |
 | ADP-note-046 | `NoteRouteFanOutReader.listByCreatedBy` | `spec/domains/note.md#ポート` | author の commit 済み route（`active` / `moving` / `purging`）を opaque cursor で shard 横断列挙し、`reserved` だけを除外する。`tombstone` は unspecified で、失効まで残しても物理的に回収してもよい |
@@ -260,6 +260,7 @@
 | ADP-note-054 | `NoteMovePort.abortBeforeSwitch` | `spec/domains/note.md#ポート` | switch 前の target credit・stage・lock・freeze を冪等に戻す |
 | ADP-note-055 | `LocalNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
 | ADP-note-056 | `PublicNoteProjectionWriter.redactAuthor` | `spec/domains/note.md#ポート` | 保存済みの著者表示を `redactionVersion` の退会既定値へ 1 行だけ置換し、行が変わったかを返す。行が無い / 別人が作った / 既に同世代以降はいずれも no-op |
+| ADP-note-057 | `NoteRepository.findNextPurgeDeadline` | `spec/domains/note.md#ポート` | current scope のゴミ箱にある `purgeAfter` の最小値を返し、空なら `null` を返す。`now` で絞らないので、まだ到来していない期限も答える（scope の Alarm はこの値から張る）。同じ UoW で `active` → `trashed` に反転させたノートも答えに含める（`trashNote` 手順 5。[database/index.md](../database/index.md) の「同一 UoW の読み」(3)） |
 | ADP-tag-001 | `TagRepository.insert` | `spec/domains/tag.md#ポート` | 新規 Tag を保存する |
 | ADP-tag-002 | `TagRepository.findById` | `spec/domains/tag.md#ポート` | TagId で OCC token 付き Tag を取得する |
 | ADP-tag-003 | `TagRepository.save` | `spec/domains/tag.md#ポート` | 期待版一致時だけ Tag を更新する |
@@ -269,16 +270,16 @@
 | ADP-tag-007 | `TagRepository.listByIds` | `spec/domains/tag.md#ポート` | 複数 TagId の Tag を取得する |
 | ADP-tag-008 | `TagRepository.deleteByScope` | `spec/domains/tag.md#ポート` | assignment なし Tag を scope 内で有界削除する |
 | ADP-tag-009 | `TagRepository.deleteUnusedInScope` | `spec/domains/tag.md#ポート` | 未使用・unlocked Tag を原子的に有界削除し ID を返す |
-| ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する |
+| ADP-tag-010 | `TagAssignmentRepository.insert` | `spec/domains/tag.md#ポート` | 不変な TagAssignment を保存する。2 つの一意制約を別のエラー種へ写し（`(tagId, noteId)` は `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`AssignmentId` の再利用は `SystemError(DatabaseError)`）、`scope_type` / `scope_id` は scope 鍵として scope object の pin と突き合わせる |
 | ADP-tag-011 | `TagAssignmentRepository.findByTagAndNote` | `spec/domains/tag.md#ポート` | tag・note の assignment を取得する |
-| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を列挙する |
+| ADP-tag-012 | `TagAssignmentRepository.listByNote` | `spec/domains/tag.md#ポート` | ノートの assignment を `AssignmentId` 昇順で列挙する。複数 scope の行が 1 つの表に載るバックエンドでは、復元する行の `scope_type` / `scope_id` を scope object の pin と突き合わせ、交差した行は消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-tag-013 | `TagAssignmentRepository.listByNotes` | `spec/domains/tag.md#ポート` | 複数ノートの assignment を列挙する |
 | ADP-tag-014 | `TagAssignmentRepository.listByTag` | `spec/domains/tag.md#ポート` | noteId 昇順の keyset page を最大 limit 件返す |
 | ADP-tag-015 | `TagAssignmentRepository.countByNote` | `spec/domains/tag.md#ポート` | ノートの assignment 数を返す |
 | ADP-tag-016 | `TagAssignmentRepository.delete` | `spec/domains/tag.md#ポート` | AssignmentId の行を削除する |
 | ADP-tag-017 | `TagAssignmentRepository.deleteBatchByTag` | `spec/domains/tag.md#ポート` | tag の assignment を有界削除し影響行を返す |
 | ADP-tag-018 | `TagAssignmentRepository.deleteByScope` | `spec/domains/tag.md#ポート` | scope の assignment を有界削除する |
-| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を有界削除する |
+| ADP-tag-019 | `TagAssignmentRepository.deleteByNote` | `spec/domains/tag.md#ポート` | note の assignment を `AssignmentId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約）。複数 scope の行が 1 つの表に載るバックエンドでは、消す前にページ全体の `scope_type` / `scope_id` を pin と突き合わせ、交差した行があれば 1 件も消さずに `SystemError(DataIntegrityError)` を投げる |
 | ADP-tag-020 | `TagAssignmentRepository.reassignBatch` | `spec/domains/tag.md#ポート` | assignment を衝突処理込みで有界付替えし影響 NoteId を返す |
 | ADP-tag-021 | `TagOperationStore.startDelete` | `spec/domains/tag.md#ポート` | delete operation と対象 lock を開始する |
 | ADP-tag-022 | `TagOperationStore.startMerge` | `spec/domains/tag.md#ポート` | merge operation と両 Tag lock を開始する |
@@ -299,13 +300,13 @@
 | ADP-integration-005 | `ExternalConnectionRepository.findByUserAndProvider` | `spec/domains/integration.md#ポート` | 利用者・provider の connection を取得する |
 | ADP-integration-006 | `ExternalConnectionRepository.listByUser` | `spec/domains/integration.md#ポート` | 利用者の connection を列挙する |
 | ADP-integration-007 | `ExternalConnectionRepository.deleteByUser` | `spec/domains/integration.md#ポート` | 利用者の connection を有界削除する |
-| ADP-integration-008 | `BackupRecordRepository.insert` | `spec/domains/integration.md#ポート` | 新規 BackupRecord を保存する |
+| ADP-integration-008 | `BackupRecordRepository.insert` | `spec/domains/integration.md#ポート` | 新規 BackupRecord を保存する。2 つの一意制約を別のエラー種へ写す（`(noteId, sourceFileId)` は `ConflictError("BACKUP_RECORD_ALREADY_EXISTS")`、`BackupRecordId` の再利用は `SystemError(DatabaseError)`）。`user_id` は帰属列なので scope 鍵として検査しない |
 | ADP-integration-009 | `BackupRecordRepository.findById` | `spec/domains/integration.md#ポート` | BackupRecordId で OCC token 付き集約を取得する |
 | ADP-integration-010 | `BackupRecordRepository.save` | `spec/domains/integration.md#ポート` | 期待版一致時だけ BackupRecord を更新する |
 | ADP-integration-011 | `BackupRecordRepository.delete` | `spec/domains/integration.md#ポート` | 期待版一致時だけ BackupRecord を削除する |
 | ADP-integration-012 | `BackupRecordRepository.findByNoteAndFile` | `spec/domains/integration.md#ポート` | note・source file の記録を取得する |
 | ADP-integration-013 | `BackupRecordRepository.listByNotes` | `spec/domains/integration.md#ポート` | 複数ノートの backup 記録を列挙する |
-| ADP-integration-014 | `BackupRecordRepository.deleteByNote` | `spec/domains/integration.md#ポート` | ノートの記録を有界削除する |
+| ADP-integration-014 | `BackupRecordRepository.deleteByNote` | `spec/domains/integration.md#ポート` | ノートの記録を `BackupRecordId` 昇順の先頭から有界削除する（どの `limit` 件を消すかも契約） |
 | ADP-integration-015 | `BackupRecordRepository.deleteByUser` | `spec/domains/integration.md#ポート` | current scope 内の利用者記録を有界削除する |
 | ADP-integration-016 | `SecretCipher.encrypt` | `spec/domains/integration.md#ポート` | plain secret を現行 key version で暗号化する |
 | ADP-integration-017 | `SecretCipher.decrypt` | `spec/domains/integration.md#ポート` | 保存 key version を使って secret を復号する |
@@ -321,6 +322,7 @@
 | ADP-integration-027 | `CloudDriveClient.upload` | `spec/domains/integration.md#ポート` | stream を folder へ upload し外部参照を返す |
 | ADP-integration-028 | `CloudDriveClient.download` | `spec/domains/integration.md#ポート` | external file を stream で取得する |
 | ADP-integration-029 | `CloudDriveClient.headFile` | `spec/domains/integration.md#ポート` | external file の size・MIME または不存在を返す |
+| ADP-integration-030 | `BackupRecordRepository.listByNote` | `spec/domains/integration.md#ポート` | ノートの backup 記録を `BackupRecordId` 昇順で列挙する |
 | ADP-job-001 | `JobRepository.insert` | `spec/domains/job.md#ポート` | 新規 Job を保存する |
 | ADP-job-002 | `JobRepository.findById` | `spec/domains/job.md#ポート` | JobId で OCC token 付き Job を取得する |
 | ADP-job-003 | `JobRepository.save` | `spec/domains/job.md#ポート` | 期待版一致時だけ Job を更新する |

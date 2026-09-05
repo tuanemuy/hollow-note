@@ -49,6 +49,27 @@ describe("httpStatusFor", () => {
     );
     expect(httpStatusFor(withKind("notFound", null))).toBe(404);
   });
+
+  // P-12 / P-14 が増やしたコードは、どれもクライアントの振る舞いを変えない
+  // （401 でサインインへ、429 で待つ、410 で索引から落とす、のいずれでもない）
+  // ので、例外表には**入らない**。ここはその「入っていないこと」を固定する。
+  it("keeps the editing and trash codes on their kind mapping", () => {
+    expect(httpStatusFor(withKind("business", "NOTE_LOCKED_BY_JOB"))).toBe(422);
+    expect(httpStatusFor(withKind("business", "NOTE_IS_TRASHED"))).toBe(422);
+    expect(httpStatusFor(withKind("business", "NOTE_CONTENT_TOO_LARGE"))).toBe(
+      422,
+    );
+    expect(httpStatusFor(withKind("business", "NOTE_INVALID_TITLE"))).toBe(422);
+    expect(httpStatusFor(withKind("business", "NOTE_INVALID_STYLE_MODE"))).toBe(
+      422,
+    );
+    expect(httpStatusFor(withKind("validation", "NOTE_NOT_TRASHED"))).toBe(422);
+    expect(httpStatusFor(withKind("notFound", "REVISION_NOT_FOUND"))).toBe(404);
+    // 競合は再試行が意味を持つ唯一の枝なので 409 で届く必要がある。
+    expect(httpStatusFor(withKind("conflict", "OPTIMISTIC_LOCK_FAILURE"))).toBe(
+      409,
+    );
+  });
 });
 
 describe("redactForClient", () => {

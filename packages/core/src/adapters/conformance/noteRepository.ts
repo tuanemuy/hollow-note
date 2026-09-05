@@ -11,7 +11,7 @@ import { makeBlankNote, noteId, scopeOf, userId } from "./fixtures";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Shared conformance suite for `NoteRepository` (ADP-note-008..015). */
+/** Shared conformance suite for `NoteRepository` (ADP-note-008..015, ADP-note-057). */
 export function describeNoteRepositoryContract(
   backendName: string,
   makeBackend: MakeConformanceBackend,
@@ -88,6 +88,76 @@ export function describeNoteRepositoryContract(
       const purgeable = await scoped.noteRepository.listPurgeable(arrived, 10);
       expect(purgeable.map((note) => note.id)).toEqual([noteId(2)]);
       expect(await scoped.noteRepository.listPurgeable(arrived, 0)).toEqual([]);
+    });
+
+    it("ADP-note-013: listPurgeable hands the longest-waiting note out first", async () => {
+      const now = backend.clock.now();
+      const later = Note.trash(makeBlankNote(1, userId(1), now), now).entity;
+      const earlier = Note.trash(
+        makeBlankNote(2, userId(1), now),
+        new Date(now.getTime() - 1_000),
+      ).entity;
+      await scoped.noteRepository.insert(later);
+      await scoped.noteRepository.insert(earlier);
+
+      const purgeable = await scoped.noteRepository.listPurgeable(
+        new Date(later.purgeAfter.getTime()),
+        10,
+      );
+      expect(purgeable.map((note) => note.id)).toEqual([noteId(2), noteId(1)]);
+      expect(
+        await scoped.noteRepository.listPurgeable(
+          new Date(later.purgeAfter.getTime()),
+          1,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("ADP-note-057: findNextPurgeDeadline answers the earliest purgeAfter, whether or not it has arrived", async () => {
+      const now = backend.clock.now();
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toBeNull();
+
+      await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toBeNull();
+
+      const later = Note.trash(makeBlankNote(2, userId(1), now), now).entity;
+      const earlier = Note.trash(
+        makeBlankNote(3, userId(1), now),
+        new Date(now.getTime() - 60_000),
+      ).entity;
+      await scoped.noteRepository.insert(later);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        later.purgeAfter,
+      );
+      await scoped.noteRepository.insert(earlier);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        earlier.purgeAfter,
+      );
+    });
+
+    it("ADP-note-057: findNextPurgeDeadline includes a note the same unit of work trashed", async () => {
+      const now = backend.clock.now();
+      const scope = scopeOf(1);
+      await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));
+      const stored = await scoped.noteRepository.findById(noteId(1));
+      if (stored === null || stored.entity.lifecycle !== "active") {
+        throw new Error("seeded note missing");
+      }
+      const trashed = Note.trash(stored.entity, now).entity;
+
+      // What `trashNote` step 5 does: it arms the scope's retention alarm
+      // from a deadline read back inside the transaction that flipped the
+      // note. A backend that answered from storage alone would leave the
+      // first note of an empty trash with no alarm at all.
+      const deadline = await backend.scopeUnitOfWork.run(scope, async (ctx) => {
+        await ctx.noteRepository.save(trashed, stored.expectedVersion);
+        return ctx.noteRepository.findNextPurgeDeadline();
+      });
+
+      expect(deadline).toEqual(trashed.purgeAfter);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        trashed.purgeAfter,
+      );
     });
 
     it("ADP-note-014/015: countByOwner and listByOwner respect owner and lifecycle filters", async () => {

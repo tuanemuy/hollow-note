@@ -1,4 +1,5 @@
-import type { Note } from "@repo/core/domain/note/note";
+import type { Note, TrashedNote } from "@repo/core/domain/note/note";
+import type { RevisionReason } from "@repo/core/domain/note/noteRevision";
 
 /**
  * DTO projections for the note usecases. Primitives only — branded value
@@ -28,11 +29,12 @@ export type NoteHeadingView = Readonly<{
 }>;
 
 /**
- * Import-provenance report (spec/usecases/note.md#getnote). In the
- * walking-skeleton slice every field is empty by construction: only
- * blank notes exist, so there is no body-derived reference to report,
- * and the supplying ports (`HtmlProcessor`, storage records) arrive with
- * the import slice. The shape ships now so the DTO is stable.
+ * Import-provenance report (spec/usecases/note.md#getnote). Every field
+ * is still empty by construction: the report describes what a *reference
+ * import* left behind, and the import itself is a Job seam with no
+ * implementation, so no body carries the traces the report is composed
+ * from and no fetch record exists to read the reasons out of. The shape
+ * ships now so the DTO is stable.
  */
 export type ReferenceReportView = Readonly<{
   imported: readonly Readonly<{ fileId: string; url: string | null }>[];
@@ -62,6 +64,27 @@ export type NotePermissionsView = Readonly<{
 export type NoteDetailView = Readonly<{
   noteId: string;
   title: string;
+  /**
+   * OCC token the editing screen holds. Every editing usecase
+   * (`updateNoteBody` / `applyTextNodeEdits` / `renameNote` /
+   * `changeNoteStyleMode` / `restoreNoteRevision` / `trashNote` /
+   * `restoreNote`) demands an `expectedVersion`, and this read is the
+   * only one a screen can learn the first one from — without it the
+   * editor's opening save has no version to send and the optimistic
+   * lock can never start.
+   */
+  version: number;
+  /**
+   * When the note is in the trash, `null` while it is live.
+   *
+   * The access policy lets an owner (and a workspace editor) read their
+   * own trashed note, so absence is not what tells the detail and the
+   * editing screens that the note is gone — without this field they draw
+   * a trashed note as an ordinary one and offer edits every save would
+   * refuse with `NOTE_IS_TRASHED`. It is what lets both reach the
+   * "見つかりません（削除済み）" state of `spec/pages/index.md#P-11`.
+   */
+  trashedAt: Date | null;
   content: NoteContentView;
   styleMode: "default" | "preserve";
   visibility: "private" | "unlisted" | "public";
@@ -78,9 +101,19 @@ export type NoteDetailView = Readonly<{
   updatedAt: Date;
 }>;
 
+/**
+ * One row of the note list (P-10).
+ *
+ * `version` is the row's OCC token, carried for the same reason
+ * `TrashedNoteListItemView` carries one: the list owns the delete
+ * (a list-membership change cannot be optimistically applied from the
+ * row), and `trashNote` demands the version the screen actually saw.
+ * Re-reading it server-side would make the check tautological.
+ */
 export type NoteListItemView = Readonly<{
   noteId: string;
   title: string;
+  version: number;
   visibility: "private" | "unlisted" | "public";
   contentStatus: NoteContentView["status"];
   createdAt: Date;
@@ -90,6 +123,139 @@ export type NoteListItemView = Readonly<{
 export type NoteListView = Readonly<{
   items: readonly NoteListItemView[];
   count: number;
+}>;
+
+/**
+ * One allow-list removal, as the editor lists them after a save. The
+ * `kind` is what lets the screen fold the report by category
+ * (spec/testcases/note/updateNoteBody.md).
+ */
+export type RemovedNodeView = Readonly<{
+  kind: "element" | "attribute" | "url" | "css";
+  name: string;
+  reason: string;
+}>;
+
+export type UpdatedNoteBodyView = Readonly<{
+  noteId: string;
+  version: number;
+  removed: readonly RemovedNodeView[];
+  referenceImportJobId: string | null;
+}>;
+
+export type SkippedTextNodeEditView = Readonly<{
+  path: string;
+  reason: string;
+}>;
+
+export type AppliedTextNodeEditsView = Readonly<{
+  noteId: string;
+  version: number;
+  skipped: readonly SkippedTextNodeEditView[];
+}>;
+
+export type RenamedNoteView = Readonly<{
+  noteId: string;
+  title: string;
+  version: number;
+}>;
+
+export type NoteStyleModeView = Readonly<{
+  noteId: string;
+  styleMode: "default" | "preserve";
+  version: number;
+}>;
+
+/**
+ * One entry of the revision list. `createdByName` is nullable because
+ * `UserBatchReader.resolveMany` omits ids it cannot answer — an author
+ * whose account is gone still has to render as a row. `excerpt` carries
+ * the body, never the whole HTML: the list is a picker, and 20 full
+ * bodies would be the note's size budget twenty times over.
+ */
+export type NoteRevisionView = Readonly<{
+  revisionId: string;
+  createdAt: Date;
+  createdBy: string;
+  createdByName: string | null;
+  reason: RevisionReason;
+  excerpt: string;
+}>;
+
+export type NoteRevisionListView = Readonly<{
+  revisions: readonly NoteRevisionView[];
+}>;
+
+/**
+ * Result of restoring a revision. It carries the note's whole next state
+ * — `version`, `title` and the sanitized `html` — because the editing
+ * screen has to put that state on its surface, and a second read to
+ * fetch it would leave a window where the restore has landed on the
+ * server while the screen still holds the body from before it. A save
+ * made in that window writes the pre-restore body back over the version
+ * the restore produced.
+ *
+ * `version` is the version after the restore: restoring composes body,
+ * style and title, so the caller cannot count the steps from the version
+ * it sent.
+ */
+export type RestoredNoteRevisionView = Readonly<{
+  noteId: string;
+  version: number;
+  title: string;
+  /** The restored body after `HtmlProcessor.process`, as it was stored. */
+  html: string;
+}>;
+
+/**
+ * Result of moving a note to the trash. `purgeAfter` is carried rather
+ * than derived on the screen: the retention window belongs to the
+ * domain (`TRASH_RETENTION_MS`), and the trash list shows the days left
+ * against it.
+ *
+ * `version` is the note's version after the move, and it is the version
+ * the screen's "元に戻す" has to send. It is carried rather than counted:
+ * the same transaction may also write the recovery of a body a cancelled
+ * conversion left mid-flight, so the number of steps between the version
+ * the screen sent and the one `restoreNote` demands is not fixed.
+ */
+export type TrashedNoteView = Readonly<{
+  noteId: string;
+  version: number;
+  trashedAt: Date;
+  purgeAfter: Date;
+}>;
+
+/**
+ * Result of restoring a note. The visibility is what the caller needs to
+ * know: a restored note gets its former publication back, so the screen
+ * has to say where the note is now reachable from.
+ *
+ * `version` is carried for the same reason `TrashedNoteView` carries
+ * one: the detail screen keeps editing the note it just restored, and
+ * its next title save needs the version this write left behind rather
+ * than one derived from how many saves the usecase happens to make.
+ */
+export type RestoredNoteView = Readonly<{
+  noteId: string;
+  version: number;
+  visibility: "private" | "unlisted" | "public";
+}>;
+
+/**
+ * Result of emptying the trash.
+ *
+ * `mode` is not decoration: it is what `purgedCount` has to be read
+ * against. `"purged"` counts notes this request destroyed, `"scheduled"`
+ * counts notes it enrolled into bulk-operation jobs — none of which have
+ * run yet — so a response that carried the number alone would announce a
+ * completed deletion that has not started. `jobIds` is the screen's link
+ * into the job history and is empty on the inline path.
+ */
+export type EmptyTrashView = Readonly<{
+  mode: "purged" | "scheduled";
+  purgedCount: number;
+  jobIds: readonly string[];
 }>;
 
 export const ownerOf = (
@@ -118,8 +284,41 @@ export const toNoteContentView = (note: Note): NoteContentView => {
 export const toNoteListItemView = (note: Note): NoteListItemView => ({
   noteId: note.id,
   title: note.title.value,
+  version: note.version,
   visibility: note.visibility.status,
   contentStatus: note.content.status,
   createdAt: note.createdAt,
   updatedAt: note.updatedAt,
+});
+
+/**
+ * One row of the trash (P-14).
+ *
+ * Carries the two things the trash screen cannot derive for itself: the
+ * version every trash mutation demands as its `expectedVersion`
+ * (`restoreNote` / `purgeNote`), and the retention deadline the remaining
+ * days are counted against — `TRASH_RETENTION_MS` belongs to the domain,
+ * so the screen reads the deadline rather than recomputing it.
+ */
+export type TrashedNoteListItemView = Readonly<{
+  noteId: string;
+  title: string;
+  version: number;
+  trashedAt: Date;
+  purgeAfter: Date;
+}>;
+
+export type TrashedNoteListView = Readonly<{
+  items: readonly TrashedNoteListItemView[];
+  count: number;
+}>;
+
+export const toTrashedNoteListItemView = (
+  note: TrashedNote,
+): TrashedNoteListItemView => ({
+  noteId: note.id,
+  title: note.title.value,
+  version: note.version,
+  trashedAt: note.trashedAt,
+  purgeAfter: note.purgeAfter,
 });

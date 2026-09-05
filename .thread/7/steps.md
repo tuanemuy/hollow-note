@@ -64,7 +64,18 @@ Note 集約の状態遷移は `packages/core/src/domain/note/note.ts` に既に�
 | PAGE-p12-001〜008 | `spec/pages/index.md#P-12: ノート編集` |
 | PAGE-p14-001〜004 | `spec/pages/index.md#P-14: ゴミ箱` |
 
-URL の割り当ては `spec/pages/index.md#URL の割り当て` が正典（`/notes/new`, `/notes/:noteId/edit`, `/notes/trash`）。デザインは `spec/design/index.md` / `spec/design/tokens.md` と `spec/design/pages/*.html` のモック。実装パターンは `docs/frontend_implementation_example.md`、三層ミューテーションと所有権の規則は `CLAUDE.md`「Frontend」。
+URL の割り当ては `spec/pages/index.md#URL の割り当て` が正典（`/notes/new`, `/notes/:noteId/edit`, `/notes/trash` と、同節が「ワークスペース文脈の同構成」と定める `/workspaces/:workspaceId/notes/{new,:noteId/edit,trash}`）。デザインは `spec/design/index.md` / `spec/design/tokens.md` と `spec/design/pages/*.html` のモック。実装パターンは `docs/frontend_implementation_example.md`、三層ミューテーションと所有権の規則は `CLAUDE.md`「Frontend」。
+
+#### 2 文脈のルートが 1 つの画面を共有する形（#3 が確立した先例）
+
+adr.md ADR-003 のとおり本スライスは両文脈を実装する。新しい形は起こさず、`routes/notes/*` と `routes/workspaces/$workspaceId/notes/*` の既存 4 ルートがとっている次の形に倣う。
+
+- **画面本体は `components/note/` の 1 コンポーネント。** 文脈は呼び出し側がプロップで渡し、既定値が個人（`NoteDetail` の `context = PERSONAL_NOTE_DETAIL_CONTEXT`、`NoteList` の `owner = PERSONAL_NOTE_LIST_OWNER`）。コンポーネントが URL から文脈を読むことはしない
+- **server function は文脈ごとに 1 本ずつ、別ファイルに置く。** 個人は `routes/notes/-action.tsx`、ワークスペースは `routes/workspaces/$workspaceId/-action.tsx`（設定レイアウトの子ではないので `settings/-action.tsx` とは分ける）。`renderNoteList` / `renderWorkspaceNoteList` のように、同じ断片を別の入力検証（`workspaceId` を含む / 含まない）で包む
+- **ミューテーションの server function は 1 本を両文脈で共有する。** `noteId` が対象を一意に決めるので文脈を取らない（`moveNoteFn` は `routes/notes/-action.tsx` にあり、共有コンポーネント `NoteDetail/menu.tsx` が文脈によらず import している）
+- **シェルの差だけがルート側に残る。** 一覧系は `AppShell`（ワークスペースは `scope={{ kind: "workspace", ... }}`）、読む画面は `ReaderShell`（ワークスペースは `workspaceId` を渡す）
+- **ワークスペース側でワークスペース自身を読むかは、画面が何を必要とするかで決まる。** シェルの名前・スラッグ・公開状態や書き込み可否（`WorkspaceRole.atLeast(role, "editor")`）が要る一覧型は `getWorkspaceSettings` を読み、失敗時に `scopeCookie.foldScopeSelectionForUnavailable` を呼んでから再送出し、`errorComponent` は `workspaceUnavailability` で「開けません」に畳む。ノート 1 件だけを扱う画面は読まない — 認可は `getNote` が持ち、非メンバーも削除済みも `NOTE_NOT_FOUND` に収斂する
+- **正規 URL への送り直しは `NoteDetail` の `NoteUrlNormalizer` が 1 か所で行う**（OR-12）。編集画面も同じ判断を二重に持たない
 
 ### 既存ドキュメントへの影響
 
@@ -151,18 +162,21 @@ URL の割り当ては `spec/pages/index.md#URL の割り当て` が正典（`/n
 
 ### 10. P-12 ノート編集ページ
 
-- **対象ファイル:** `apps/web/app/routes/notes/new.tsx`, `apps/web/app/routes/notes/$noteId.edit.tsx`, `apps/web/app/routes/notes/-action.tsx`, `apps/web/app/components/note/NoteEditor/`（3 モード・モード切替・自動保存状態・メディア挿入・版一覧・破棄）
+- **対象ファイル:** `apps/web/app/routes/notes/new.tsx`, `apps/web/app/routes/notes/$noteId.edit.tsx`, `apps/web/app/routes/workspaces/$workspaceId/notes/new.tsx`, `apps/web/app/routes/workspaces/$workspaceId/notes/$noteId.edit.tsx`, `apps/web/app/routes/notes/-action.tsx`, `apps/web/app/routes/workspaces/$workspaceId/-action.tsx`, `apps/web/app/components/note/NoteEditor/`（3 モード・モード切替・自動保存状態・メディア挿入・版一覧・破棄）
 - **台帳 ID:** PAGE-p12-001〜008
 - **spec:** `spec/pages/index.md#P-12: ノート編集`（機能表・状態表）, `spec/pages/index.md#URL の割り当て`, `spec/scenario/editing.md#ED-02`〜`#ED-06` / `#ED-08`, `spec/design/index.md`, `spec/design/tokens.md`, `docs/frontend_implementation_example.md`
 - **変更内容:** 状態表の全状態（新規未保存 / 読み込み中 / 編集中 / 保存中・保存済み・未保存 / 保存失敗 / 復元の提案 / WYSIWYG 警告 / サニタイズ通知 / 競合 / 処理中で編集できない / 権限喪失 / メディアアップロード中・失敗 / ビジュアル不可）を持つ。ミューテーションは `CLAUDE.md`「Frontend」の三層で、`version` は編集画面の所有者側が握る。モードの既定は端末に保持しサーバーへ永続化しない
+- **文脈:** 個人とワークスペースの 2 本ずつ計 4 ルートを、上記「2 文脈のルートが 1 つの画面を共有する形」に従って作る。`NoteEditor` は文脈プロップ（既定は個人）だけを受け、URL からは読まない。断片 server function は `renderNoteEditor` / `renderWorkspaceNoteEditor` の 2 本、保存・自動保存・メディア挿入・版の復元・破棄のミューテーションは `noteId` で対象が定まるので `routes/notes/-action.tsx` の 1 本を両文脈で共有する。`/notes/new` 相当のワークスペース版は作成先スコープを URL から取り、既存の `CreateNoteButton` の `workspaceId` プロップと同じ渡し方に合わせる。編集画面はノート 1 件だけを扱うので、詳細と同じくワークスペース自身は読まない（認可は usecase 側、失敗は `NOTE_NOT_FOUND` へ収斂 — TC-28 手順 3 の「URL を直接開くと見つからない」はこの経路）
+- **注意:** TanStack のファイルベースルーティングで `new.tsx` は `$noteId.tsx` と同階層に置くと静的セグメントが優先される。既存の `routes/notes/$noteId.tsx` / `routes/workspaces/$workspaceId/notes/$noteId.tsx` と衝突しない命名（`$noteId.edit.tsx`）を守る
 - **理由:** ED-02〜ED-06 / ED-08 の唯一の入口
 
 ### 11. P-11 のタイトル編集・表示スタイル・削除導線と P-14 ゴミ箱ページ
 
-- **対象ファイル:** `apps/web/app/components/note/NoteDetail/`, `apps/web/app/routes/notes/trash.tsx`, `apps/web/app/components/note/TrashList/`
+- **対象ファイル:** `apps/web/app/components/note/NoteDetail/`, `apps/web/app/routes/notes/trash.tsx`, `apps/web/app/routes/workspaces/$workspaceId/notes/trash.tsx`, `apps/web/app/routes/workspaces/$workspaceId/-action.tsx`, `apps/web/app/components/note/TrashList/`
 - **台帳 ID:** PAGE-p11-002, PAGE-p14-001〜004
 - **spec:** `spec/pages/index.md#P-11: ノート詳細`, `#P-14: ゴミ箱`, `spec/scenario/editing.md#ED-07` / `#ED-09` / `#ED-10` / `#ED-11`
-- **変更内容:** P-11 にはタイトルのインライン編集と、本スライスが担うメニュー項目（編集・表示スタイル・削除）だけを足す — タグ / 共有 / 移動 / ダウンロード / 再生成は他スライスの持ち分なので出さない。P-14 は一覧・残り日数・復元・完全削除・ゴミ箱を空にする（`mode` による文言分岐）・空状態・権限なしを持つ。削除直後の「元に戻す」は一覧を握る島が所有する（楽観的な除去がリーフを unmount するため、`CLAUDE.md`「Frontend」の所有権の規則）
+- **変更内容:** P-11 にはタイトルのインライン編集と、本スライスが担うメニュー項目（編集・表示スタイル・削除）を、既存の `NoteDetail/menu.tsx`（いまは「移動」だけ）に足す — タグ / 共有 / ダウンロード / 再生成は他スライスの持ち分なので出さない。P-14 は一覧・残り日数・復元・完全削除・ゴミ箱を空にする（`mode` による文言分岐）・空状態・権限なしを持つ。削除直後の「元に戻す」は一覧を握る島が所有する（楽観的な除去がリーフを unmount するため、`CLAUDE.md`「Frontend」の所有権の規則）
+- **文脈:** P-11 は既存の `NoteDetail` が両文脈で共有済みなので、足すのはメニュー項目とタイトル編集だけ（`noteId` で対象が定まるミューテーションなので server function は 1 本を共有）。P-14 は `/notes/trash` と `/workspaces/:workspaceId/notes/trash` の 2 ルートを作り、`TrashList` を文脈プロップで共有する。ゴミ箱はワークスペース側で**書き込み可否がシェルと表示の両方に効く**ので、一覧型と同じく `getWorkspaceSettings` を読み、`WorkspaceRole.atLeast(role, "editor")` で判定する（`spec/pages/index.md` の L-01「viewer にゴミ箱を出さない」と TC-32）。失敗時の `foldScopeSelectionForUnavailable` → `workspaceUnavailability` の畳み方も一覧と同じにする。スコープトークン（`components/layout/ScopeToken`）のゴミ箱への導線も、権限で使えないときは並べずに消す
 - **理由:** ED-07 / ED-09 / ED-10 / ED-11
 
 ### 12. 検証と手順書の同期

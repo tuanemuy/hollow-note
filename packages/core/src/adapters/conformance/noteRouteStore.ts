@@ -264,6 +264,71 @@ export function describeNoteRouteStoreContract(
       );
     });
 
+    it("ADP-note-043: a claim replays to its own purging route before the generation is compared", async () => {
+      const active = await activated();
+      const claimed = await store.beginPurge({
+        noteId: noteId(1),
+        scope: scopeOf(1),
+        expectedRouteVersion: active.routeVersion,
+        operationId: "purge-1",
+      });
+
+      // Recovery's read: `resolve` hides a `purging` row, so re-claiming
+      // with a generation no route can carry is the only way back to the
+      // scope and generation a stopped purge was working on. A store
+      // that compared the generation first would refuse this.
+      const resumed = await store.beginPurge({
+        noteId: noteId(1),
+        scope: scopeOf(1),
+        expectedRouteVersion: -1,
+        operationId: "purge-1",
+      });
+      expect(resumed).toEqual(claimed);
+
+      // …and the sentinel takes nothing that is not already ours: a
+      // foreign operation is refused on the state, at any generation.
+      await expectConflict(
+        store.beginPurge({
+          noteId: noteId(1),
+          scope: scopeOf(1),
+          expectedRouteVersion: -1,
+          operationId: "purge-2",
+        }),
+      );
+      await expectConflict(
+        store.beginPurge({
+          noteId: noteId(1),
+          scope: scopeOf(1),
+          expectedRouteVersion: claimed.routeVersion,
+          operationId: "purge-2",
+        }),
+      );
+    });
+
+    it("ADP-note-043: an active route still refuses a claim quoting the wrong generation", async () => {
+      const active = await activated();
+
+      // The idempotent branch is entered by state + operation, never by
+      // the sentinel alone: nothing is `purging` yet, so the CAS decides.
+      await expectConflict(
+        store.beginPurge({
+          noteId: noteId(1),
+          scope: scopeOf(1),
+          expectedRouteVersion: -1,
+          operationId: "purge-1",
+        }),
+      );
+      expect((await store.resolve(noteId(1)))?.state).toBe("active");
+
+      const claimed = await store.beginPurge({
+        noteId: noteId(1),
+        scope: scopeOf(1),
+        expectedRouteVersion: active.routeVersion,
+        operationId: "purge-1",
+      });
+      expect(claimed.state).toBe("purging");
+    });
+
     it("ADP-note-036: resolveMany returns externally readable routes only", async () => {
       await activated(1);
       await reserve("op-2", 2);

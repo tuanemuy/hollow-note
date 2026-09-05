@@ -35,6 +35,7 @@ import type { SessionRepository } from "../../domain/identity/ports/sessionRepos
 import type { UserBatchReader } from "../../domain/identity/ports/userBatchReader";
 import type { UserRepository } from "../../domain/identity/ports/userRepository";
 import type { UserId } from "../../domain/identity/valueObject";
+import type { BackupRecordRepository } from "../../domain/integration/ports/backupRecordRepository";
 import type { LocalNoteProjectionWriter } from "../../domain/note/ports/localNoteProjectionWriter";
 import type { LocalNoteQueryService } from "../../domain/note/ports/localNoteQueryService";
 import type { NoteProjectionRevisionStore } from "../../domain/note/ports/noteProjectionRevisionStore";
@@ -44,6 +45,7 @@ import type { NoteRevisionRepository } from "../../domain/note/ports/noteRevisio
 import type { PublicNoteProjectionWriter } from "../../domain/note/ports/publicNoteProjectionWriter";
 import type { PublicNoteQueryService } from "../../domain/note/ports/publicNoteQueryService";
 import type { StoredFileRepository } from "../../domain/storage/ports/storedFileRepository";
+import type { TagAssignmentRepository } from "../../domain/tag/ports/tagAssignmentRepository";
 import type { LlmUsageRepository } from "../../domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "../../domain/usage/ports/storageQuotaRepository";
 import type { InvitationRepository } from "../../domain/workspace/ports/invitationRepository";
@@ -100,6 +102,8 @@ export type ScopedConformancePorts = Readonly<{
   storageQuotaRepository: StorageQuotaRepository;
   llmUsageRepository: LlmUsageRepository;
   storedFileRepository: StoredFileRepository;
+  tagAssignmentRepository: TagAssignmentRepository;
+  backupRecordRepository: BackupRecordRepository;
 }>;
 
 export type MembershipEdgeSeedInput = Readonly<{

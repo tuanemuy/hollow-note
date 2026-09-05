@@ -4,11 +4,13 @@ import type { IdentityRepository } from "@repo/core/domain/identity/ports/identi
 import type { IdentityUniqueDirectory } from "@repo/core/domain/identity/ports/identityUniqueDirectory";
 import type { SessionRepository } from "@repo/core/domain/identity/ports/sessionRepository";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
+import type { BackupRecordRepository } from "@repo/core/domain/integration/ports/backupRecordRepository";
 import type { LocalNoteProjectionWriter } from "@repo/core/domain/note/ports/localNoteProjectionWriter";
 import type { NoteProjectionRevisionStore } from "@repo/core/domain/note/ports/noteProjectionRevisionStore";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { NoteRevisionRepository } from "@repo/core/domain/note/ports/noteRevisionRepository";
 import type { StoredFileRepository } from "@repo/core/domain/storage/ports/storedFileRepository";
+import type { TagAssignmentRepository } from "@repo/core/domain/tag/ports/tagAssignmentRepository";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
 import type { StorageQuotaRepository } from "@repo/core/domain/usage/ports/storageQuotaRepository";
 import type { InvitationRepository } from "@repo/core/domain/workspace/ports/invitationRepository";
@@ -98,7 +100,10 @@ export interface GlobalUnitOfWorkContext extends UnitOfWorkContextBase {
 
 /**
  * Scope-plane transaction context: one scope object's repositories and
- * its local outbox. Later slices add the tag repositories here.
+ * its local outbox. `tagAssignmentRepository` and
+ * `backupRecordRepository` carry only their delete side so far — the
+ * `note.purged` fan-out needs them; the tag vocabulary and the backup
+ * write paths arrive with the slices that own them.
  * `cleanupAdmission` is bound to the same scope — every normal write
  * entry point calls `assertWritable` (and `assertActorWritable` where an
  * actor is involved) before mutating.
@@ -134,6 +139,8 @@ export interface ScopeUnitOfWorkContext extends UnitOfWorkContextBase {
   readonly storageQuotaRepository: StorageQuotaRepository;
   readonly llmUsageRepository: LlmUsageRepository;
   readonly storedFileRepository: StoredFileRepository;
+  readonly tagAssignmentRepository: TagAssignmentRepository;
+  readonly backupRecordRepository: BackupRecordRepository;
   readonly workspaceRepository: WorkspaceRepository;
   readonly membershipRepository: MembershipRepository;
   readonly invitationRepository: InvitationRepository;

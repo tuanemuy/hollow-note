@@ -64,6 +64,20 @@ export function createMemoryNoteRepository(scope: ScopeStore): NoteRepository {
         .map(clone);
     },
 
+    async findNextPurgeDeadline(): Promise<Date | null> {
+      let earliest: number | null = null;
+      for (const note of table.values()) {
+        if (note.lifecycle !== "trashed") {
+          continue;
+        }
+        const at = note.purgeAfter.getTime();
+        if (earliest === null || at < earliest) {
+          earliest = at;
+        }
+      }
+      return earliest === null ? null : new Date(earliest);
+    },
+
     async countByOwner(
       owner: NoteOwner,
       lifecycle: NoteLifecycleFilter,

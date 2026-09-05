@@ -14,6 +14,7 @@ import { createMemoryObjectStorage } from "../objectStorage";
 import { createMemoryAccountDeletionManifestStore } from "../repositories/accountDeletionManifestStore";
 import { createMemoryAppliedOperationStore } from "../repositories/appliedOperationStore";
 import { createMemoryAuthTokenRepository } from "../repositories/authTokenRepository";
+import { createMemoryBackupRecordRepository } from "../repositories/backupRecordRepository";
 import { createMemoryDistributedOperationStore } from "../repositories/distributedOperationStore";
 import { createMemoryGlobalMaintenanceRunStore } from "../repositories/globalMaintenanceRunStore";
 import { createMemoryIdempotencyStore } from "../repositories/idempotencyStore";
@@ -47,6 +48,7 @@ import { createMemoryScopeTaskScheduler } from "../repositories/scopeTaskSchedul
 import { createMemorySessionRepository } from "../repositories/sessionRepository";
 import { createMemoryStorageQuotaRepository } from "../repositories/storageQuotaRepository";
 import { createMemoryStoredFileRepository } from "../repositories/storedFileRepository";
+import { createMemoryTagAssignmentRepository } from "../repositories/tagAssignmentRepository";
 import { createMemoryUserBatchReader } from "../repositories/userBatchReader";
 import { createMemoryUserRepository } from "../repositories/userRepository";
 import { createMemoryUserWorkspaceDirectory } from "../repositories/userWorkspaceDirectory";
@@ -181,6 +183,9 @@ export function makeMemoryConformanceBackend(
         storageQuotaRepository: createMemoryStorageQuotaRepository(scopeStore),
         llmUsageRepository: createMemoryLlmUsageRepository(scopeStore),
         storedFileRepository: createMemoryStoredFileRepository(scopeStore),
+        tagAssignmentRepository:
+          createMemoryTagAssignmentRepository(scopeStore),
+        backupRecordRepository: createMemoryBackupRecordRepository(scopeStore),
       };
     },
     async seedMembershipEdges(

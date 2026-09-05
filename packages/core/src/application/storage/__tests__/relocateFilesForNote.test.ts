@@ -17,6 +17,12 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import type { ScopeUnitOfWorkContext } from "../../execution/unitOfWork";
+import { ScopeTaskPriority } from "../../ports/scopeTaskScheduler";
+import {
+  ORPHAN_MEDIA_OPERATION_ID,
+  ORPHAN_MEDIA_SWEEP_INTERVAL_MS,
+  ORPHAN_MEDIA_TASK_KIND,
+} from "../collectOrphanMedia";
 import {
   type MovedFileMetadata,
   type RelocateFilesForNoteView,
@@ -174,6 +180,17 @@ const filesIn = (h: TestHarness, scope: ScopeKey): readonly StoredFile[] =>
 const outboxTypes = (h: TestHarness): readonly string[] =>
   h.backend.outbox.values().map((row) => row.type);
 
+/** The orphan-media sweep rows of one scope, as `(operationId, dueAt)`. */
+const sweepRows = (h: TestHarness, scope: ScopeKey) =>
+  h.backend
+    .scope(scope)
+    .scheduledTasks.values()
+    .filter((task) => task.kind === ORPHAN_MEDIA_TASK_KIND)
+    .map((task) => ({
+      operationId: task.operationId,
+      dueAt: task.state === "failed" ? null : task.dueAt,
+    }));
+
 describe("relocateFilesForNote", () => {
   it("TC-storage-134: snapshotSource returns the note's three portable rows and deletes nothing", async () => {
     const h = createTestHarness();
@@ -215,6 +232,71 @@ describe("relocateFilesForNote", () => {
     // The route still points at the source, so nothing may be removed yet.
     expect(filesIn(h, sourceScope)).toHaveLength(3);
     expect(filesIn(h, targetScope)).toHaveLength(0);
+  });
+
+  it("TC-storage-026: media that arrives by a move arms the target scope's orphan sweep", async () => {
+    const h = createTestHarness();
+    await seedFile(h, { id: "file-media", purpose: "media" });
+    await seedFile(h, { id: "file-source", purpose: "source" });
+    const { files } = await snapshot(h);
+    const stagedAt = h.clock.now();
+
+    await stage(h, files);
+
+    // Without this, a scope whose only media arrived by a move would
+    // never sweep: `storeMedia` arms on the *first* media, and the
+    // staged rows already make that answer "no".
+    expect(sweepRows(h, targetScope)).toEqual([
+      {
+        operationId: ORPHAN_MEDIA_OPERATION_ID,
+        dueAt: new Date(stagedAt.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+      },
+    ]);
+  });
+
+  it("TC-storage-026: a move carrying no media leaves the target scope's sweep unarmed", async () => {
+    const h = createTestHarness();
+    await seedFile(h, { id: "file-source", purpose: "source" });
+    await seedFile(h, { id: "file-reference", purpose: "reference" });
+    const { files } = await snapshot(h);
+
+    await stage(h, files);
+
+    expect(sweepRows(h, targetScope)).toEqual([]);
+  });
+
+  it("TC-storage-026: a move into a scope that already holds media leaves the sweep where it is", async () => {
+    const h = createTestHarness();
+    await seedFile(h, {
+      id: "file-there",
+      purpose: "media",
+      owner: targetOwner,
+      noteId: OTHER_NOTE,
+    });
+    const armedAt = h.clock.now();
+    await h.container.scopeUnitOfWorkProvider.run(targetScope, (ctx) =>
+      ctx.scopeTaskScheduler.schedule({
+        kind: ORPHAN_MEDIA_TASK_KIND,
+        operationId: ORPHAN_MEDIA_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: new Date(armedAt.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+        payload: {},
+      }),
+    );
+    await seedFile(h, { id: "file-media", purpose: "media" });
+    const { files } = await snapshot(h);
+    h.clock.advance(ORPHAN_MEDIA_SWEEP_INTERVAL_MS / 2);
+
+    await stage(h, files);
+
+    // `schedule` overwrites `dueAt`, so arming again on a scope that
+    // already sweeps would push the sweep it is waiting for out of reach.
+    expect(sweepRows(h, targetScope)).toEqual([
+      {
+        operationId: ORPHAN_MEDIA_OPERATION_ID,
+        dueAt: new Date(armedAt.getTime() + ORPHAN_MEDIA_SWEEP_INTERVAL_MS),
+      },
+    ]);
   });
 
   it("TC-storage-134: rows of another note in the same scope stay behind", async () => {

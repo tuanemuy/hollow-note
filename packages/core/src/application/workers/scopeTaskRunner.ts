@@ -1,21 +1,49 @@
+import { readNotePurgeTurn } from "../cleanup/notePurgeFanOut";
 import {
+  NOTE_OWNER_PURGE_TASK_KIND,
   STORAGE_OWNER_DELETE_TASK_KIND,
   USAGE_USER_CLEANUP_TASK_KIND,
 } from "../cleanup/participants";
 import {
   PERSONAL_BARRIER_PRUNE_TASK_KIND,
   prunePersonalCleanupBarriers,
+  readPersonalBarrierPruneTurn,
 } from "../cleanup/personalCleanup";
 import type { WorkerContainer } from "../di/types";
 import { isConflictError } from "../errors";
 import { acknowledgePersonalCleanup } from "../identity/deleteAccount/cleanupDispatch";
+import {
+  deleteBackupRecordsForNote,
+  NOTE_BACKUP_DELETE_TASK_KIND,
+} from "../integration/deleteBackupRecordsForNote";
+import {
+  deleteNotesForOwner,
+  readOwnerPurgeTurn,
+} from "../note/deleteNotesForOwner";
+import {
+  purgeExpiredTrash,
+  TRASH_EXPIRY_TASK_KIND,
+} from "../note/purgeExpiredTrash";
 import {
   SCOPE_TASK_LEASE_MS,
   type ScopeTask,
   ScopeTaskPriority,
 } from "../ports/scopeTaskScheduler";
 import { ScopeKey } from "../scope";
+import {
+  collectOrphanMedia,
+  ORPHAN_MEDIA_TASK_KIND,
+  readOrphanMediaSweepTurn,
+} from "../storage/collectOrphanMedia";
 import { deleteFilesByOwner } from "../storage/deleteFilesByOwner";
+import {
+  deleteFilesForNote,
+  NOTE_FILE_DELETE_TASK_KIND,
+} from "../storage/deleteFilesForNote";
+import {
+  deleteAssignmentsForNote,
+  NOTE_ASSIGNMENT_DELETE_TASK_KIND,
+} from "../tag/deleteAssignmentsForNote";
 import { deleteQuota } from "../usage/deleteQuota";
 import {
   continueRemovalEdgeSettlement,
@@ -117,7 +145,77 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
     });
     await settleCleanupTurn(container, task, turn);
   },
+  // The payload carries the purges an earlier turn could not finish;
+  // dropping it would let the next turn read an empty listing as a
+  // finished scope.
+  [NOTE_OWNER_PURGE_TASK_KIND]: async (container, task) => {
+    const turn = await deleteNotesForOwner({
+      container,
+      input: {
+        deletionOperationId: task.operationId,
+        scope: task.scope,
+        ...readOwnerPurgeTurn(task.payload),
+      },
+    });
+    await settleCleanupTurn(container, task, turn);
+  },
   [PERSONAL_CLEANUP_HANDOVER_TASK_KIND]: handOverPersonalCleanup,
+  // The retention sweep settles its own row: it re-arms for the rest of
+  // a full page, moves the row to the next deadline when nothing is due,
+  // and completes it only once the trash is empty.
+  [TRASH_EXPIRY_TASK_KIND]: async (container, task) => {
+    await purgeExpiredTrash({ container, input: { scope: task.scope } });
+  },
+  // The orphan sweep moves its own row instead of settling it: it is
+  // periodic, so it re-arms for immediately after while the listing has
+  // a page left and for the next day otherwise. The payload carries the
+  // keyset position that continuation resumes from.
+  [ORPHAN_MEDIA_TASK_KIND]: async (container, task) => {
+    const turn = readOrphanMediaSweepTurn(task.payload);
+    if (!turn.fromPayload) {
+      container.logger.warn(
+        "[scope-tasks] orphan sweep payload names no readable position; restarting the pass from the head",
+        { kind: task.kind, operationId: task.operationId },
+      );
+    }
+    await collectOrphanMedia({
+      container,
+      input: { scope: task.scope, cursor: turn.cursor },
+    });
+  },
+  // The `note.purged` followers settle their own rows: a turn either
+  // re-arms the row it was claimed for or completes it, in the same
+  // transaction as the page it reclaimed.
+  [NOTE_FILE_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteFilesForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
+  [NOTE_ASSIGNMENT_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteAssignmentsForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
+  [NOTE_BACKUP_DELETE_TASK_KIND]: async (container, task) => {
+    await deleteBackupRecordsForNote({
+      container,
+      input: {
+        ...readNotePurgeTurn(task.payload),
+        scope: task.scope,
+        operationId: task.operationId,
+      },
+    });
+  },
   // The workspace deletion settles its own rows: every turn either
   // re-arms the row it was claimed for or completes it, in the same
   // transaction as the work it did.
@@ -143,11 +241,28 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
       scope: task.scope,
       payload: task.payload,
     }),
+  // The barrier's expiry settles its own row, and sweeps against the
+  // deadline its payload carries so every turn of the row uses the one
+  // the completing barrier fixed.
   [PERSONAL_BARRIER_PRUNE_TASK_KIND]: async (container, task) => {
+    const turn = readPersonalBarrierPruneTurn(
+      task.payload,
+      container.clock.now(),
+    );
+    if (!turn.fromPayload) {
+      container.logger.warn(
+        "[scope-tasks] barrier prune payload names no readable deadline; sweeping against the clock",
+        {
+          kind: task.kind,
+          operationId: task.operationId,
+          asOf: turn.asOf,
+        },
+      );
+    }
     await prunePersonalCleanupBarriers(container, {
       scope: task.scope,
       operationId: task.operationId,
-      asOf: container.clock.now(),
+      asOf: turn.asOf,
     });
   },
 };

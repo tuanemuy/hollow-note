@@ -1,6 +1,6 @@
 # Inventory — usecase
 
-生成元: `spec/usecases/`（最終同期: 2026-08-30）
+生成元: `spec/usecases/`（最終同期: 2026-09-05）
 
 **1 行 = 1 ユースケース**。**新規ユースケースには各ドメイン群の末尾に採番し、出現順の位置に挿入しない（ID は行位置ではない）**（[ADR 052](../adr/052-adapter-inventory-granularity.md)）。UC ID をユースケース実装の JSDoc に書くことは推奨するが要求しない（[ADR 058](../adr/058-ledger-id-callout-scope.md)）。
 
@@ -82,8 +82,8 @@
 | UC-note-018 | `restoreNote` | `spec/usecases/note.md#restoreNote` | 削除権限と expected version を確認して trashed note を active に戻し、visibility を保持してイベントを保存する |
 | UC-note-019 | `purgeNote` | `spec/usecases/note.md#purgeNote` | user request または scope cleanup の認可・版を固定し、route を purging にして local note を削除、購読者の後始末、public projection remove ack、30 日 tombstone まで forward recovery する。破壊開始前の競合だけ abort する |
 | UC-note-020 | `emptyTrash` | `spec/usecases/note.md#emptyTrash` | current owner の delete 権限と trash 件数を確認し、50 件以下は各 current version で同期 purge、51 件以上は 500 件単位の bulk purge jobs を登録して、完了済み件数と予約件数を mode で区別する |
-| UC-note-021 | `purgeExpiredTrash` | `spec/usecases/note.md#purgeExpiredTrash` | current scope の保持期限超過 notes を最大 100 件ずつ内部 purge operation へ進め、個別失敗を隔離し、残件または次期限に Alarm を設定する |
-| UC-note-022 | `deleteNotesForOwner` | `spec/usecases/note.md#deleteNotesForOwner` | scope cleanup owner を各 page で検査し、owner の active・trashed notes を 100 件ずつ scopeCleanup purge へ進め、専用 continuation と全 purge tombstone 完了確認で冪等に ack する |
+| UC-note-021 | `purgeExpiredTrash` | `spec/usecases/note.md#purgeExpiredTrash` | current scope の保持期限超過 notes を最大 40 件ずつ内部 purge operation へ進め、個別失敗を隔離し、残件または次期限に Alarm を設定する |
+| UC-note-022 | `deleteNotesForOwner` | `spec/usecases/note.md#deleteNotesForOwner` | scope cleanup owner を各 page で検査し、owner の active・trashed notes を 40 件ずつ scopeCleanup purge へ進め、専用 continuation と全 purge tombstone 完了確認で冪等に ack する |
 | UC-note-023 | `listNoteRevisions` | `spec/usecases/note.md#listNoteRevisions` | 編集権限を確認し、最新 20 revisions と作成者表示を shard batch reader で解決して返す |
 | UC-note-024 | `restoreNoteRevision` | `spec/usecases/note.md#restoreNoteRevision` | note 所属 revision と版を検査し、現本文を restore revision として保存後、対象 HTML を再 sanitize して title・style・本文を復元し、必要なら参照取り込みを登録する |
 | UC-note-025 | `exportNote` | `spec/usecases/note.md#exportNote` | note ID または share token と password pass で毎回閲覧権限を評価し、ready 本文を HTML・Markdown は即時生成する。PDF は十分な TTL の同版 artifact 再利用、active job 相乗り、新規 job の順で選び、署名 ExportTicket を返す |
@@ -98,18 +98,20 @@
 | UC-note-034 | `listSitemapEntries` | `spec/usecases/note.md#listSitemapEntries` | 全 public shards の公開 note IDs と更新日時を opaque cursor で merge・page してサイトマップ用に返す |
 | UC-note-035 | `projectNoteChanges` | `spec/usecases/note.md#projectNoteChanges` | local または public plane で current route と Note・tags・Identity・Workspace の atomic snapshot を読み、世代ベクトル付き projection を更新・削除する。tag、author、workspace の fan-out と redaction を有界・冪等 continuation で処理する |
 | UC-note-036 | `rebuildNoteProjection` | `spec/usecases/note.md#rebuildNoteProjection` | 指定 local scope または global active routes を page し、note ごとの再投影要求を積み、任意で正データと合わない orphan projections を削除する |
+| UC-note-037 | `listNotes` | `spec/usecases/note.md#listNotes` | current owner scope の閲覧権限を確認し、`NoteRepository.listByOwner` で active notes を page して一覧と件数を返す。`searchNotes` が読み取りモデルを備えるまでの代役 |
+| UC-note-038 | `listTrashedNotes` | `spec/usecases/note.md#listTrashedNotes` | current owner scope の `viewTrash` を確認し、trashed notes を削除日時の新しい順に page して `version` と `purgeAfter` 付きで返す。`searchNotes(lifecycle: "trashed")` までの代役 |
 | UC-storage-001 | `startBulkUpload` | `spec/usecases/storage.md#startBulkUpload` | 最大 100 files と合計容量、owner 権限、公開 handle、file acceptance、storage quota を検査し、宣言情報から暫定 LLM 件数を返して conversion batch 親を対象所有 scope に登録する |
 | UC-storage-002 | `storeUpload` | `spec/usecases/storage.md#storeUpload` | owner・file・quota・公開要件を検査して stream を保管し、先頭 bytes で conversion plan を決め、source file、初期状態 note、必須 conversion child、任意 backup job を route reservation と同一 scope UoW で作る。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
-| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize して note 所属の media file を保管し配信 URL を返す。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める |
+| UC-storage-003 | `storeMedia` | `spec/usecases/storage.md#storeMedia` | current note route・編集権限、media 形式・size・quota を検査し、SVG は sanitize したうえで HTML 直列化と XML の差（`&nbsp;`・属性値中の生の `<`）を書き戻し、名前空間を復元してから note 所属の media file を保管し配信 URL を返す。入力に宣言 MIME・宣言サイズを受け取らず、型はバイト列そのものから、サイズは実バイト長から決める |
 | UC-storage-004 | `storeAvatar` | `spec/usecases/storage.md#storeAvatar` | 本人または workspace 管理権限（workspace 主体は書き込む transaction の中で `manageWorkspace` を読み直す）と avatar 制約を検査し、新 avatar 保存と旧 avatar metadata 削除を同一 UoW で行う。入力に宣言 MIME・宣言サイズを受け取らず、型は先頭バイトの署名から、サイズは実バイト長から決める。容量 quota は意図的に拒否条件にしない |
 | UC-storage-005 | `issueDownloadUrl` | `spec/usecases/storage.md#issueDownloadUrl` | 入力 scope の file だけを読み、owner 本人または workspace download 権限、artifact 期限を検査して 5 分の download URL を返す |
 | UC-storage-006 | `importExternalReferences` | `spec/usecases/storage.md#importExternalReferences` | referenceImport job の冪等・リース規則に従い、ready 本文の外部 resources と stylesheet 痕跡を SSRF・件数・size・timeout 予算内で最大 6 並行取得し、resources は保管・差替え、CSS は sanitize・inline 化する。本文、試行記録、removed CSS、job を同一 UoW で保存する |
 | UC-storage-007 | `deleteFiles` | `spec/usecases/storage.md#deleteFiles` | file IDs の存在する metadata だけを同一 UoW の共有削除手順で削除し、object key と cleanup operation を含む fileDeleted events を発行して実体削除へ委ねる |
 | UC-storage-008 | `deleteStoredObjects` | `spec/usecases/storage.md#deleteStoredObjects` | fileDeleted events の object keys を外部 storage から一括冪等削除し、不在を成功、一部失敗を再配送対象として返す。処理済み記録は先行保存しない |
 | UC-storage-009 | `collectExpiredArtifacts` | `spec/usecases/storage.md#collectExpiredArtifacts` | current scope の期限切れ ephemeral files を最大 100 件ずつ deleteFiles し、残件または次の期限へ Alarm を合わせる |
-| UC-storage-010 | `collectOrphanMedia` | `spec/usecases/storage.md#collectOrphanMedia` | current scope で作成から 30 日超の media を最大 100 件ずつ調べ、所属 note 本文から参照されない、または note 不在の files を削除して日次・即時継続を設定する |
+| UC-storage-010 | `collectOrphanMedia` | `spec/usecases/storage.md#collectOrphanMedia` | current scope で作成から 30 日超の media を、キーセットカーソル（`cursor` / `nextCursor`）で 1 turn 最大 100 行ずつ読み、所属 note の現在の本文と保持中の版（`NoteRevision.RETENTION`）の本文から参照されない、または note 不在の files を削除する。1 turn が本文を読むノート数は 5 件まで、同時に保持する本文は 16,000,000 文字までで、どちらかで打ち切ったページも判定し終えた位置から継続する。継続の条件は「回収できたか」ではなく「まだ検査していない行が残っているか」で、完了後は日次へ戻す。turn 全体が失敗したときは throw せず、開始位置を載せて翌日の掃引を張り直す |
 | UC-storage-011 | `relocateFilesForNote` | `spec/usecases/storage.md#relocateFilesForNote` | move Saga の phase ごとに source・media・reference metadata を snapshot、同一 object key の target stage、R2 delete event なしの source retire として冪等移送する。snapshot は戻り値の `files` としてサガへ渡り、phase を打ち消す側は同じ transaction で receipt を消す。artifact は移さない |
-| UC-storage-012 | `deleteFilesForNote` | `spec/usecases/storage.md#deleteFilesForNote` | note purge に追随し、cleanup owner を検査して source・media・reference files と reference import records を各 100 件ずつ削除・継続し、artifact を対象外にする |
+| UC-storage-012 | `deleteFilesForNote` | `spec/usecases/storage.md#deleteFilesForNote` | note purge に追随し、cleanup owner を `describePersonalCleanup` で検査して（`running` も `completed` も通し、別 operation・不在・abort 済み・prune 済みだけを拒む）source・media・reference files と reference import records を各 100 件ずつ削除・継続し、artifact を対象外にする。継続の判断は列挙が返した件数であって削除できた件数ではない |
 | UC-storage-013 | `deleteFilesByOwner` | `spec/usecases/storage.md#deleteFilesByOwner` | scope cleanup owner を各 UoW で検査し、owner files を最大 100 件ずつ metadata delete と fileDeleted event 発行へ進め、残件時だけ専用 continuation を同一 UoW で積む。出力は `ScopeCleanupTurn & { deletedCount }` で、turn の `status`（`settled` / `continued` / `stalled` / `alreadyApplied`）と `personalCleanupCompleted` を呼び出し側へ返す |
 | UC-tag-001 | `assignTag` | `spec/usecases/tag.md#assignTag` | primary note route と current scope の編集権限・lifecycle を検査し、tag name を正規化して既存または新 tag を使い、note あたり上限・operation lock・重複を守って assignment と projection revision event を保存する |
 | UC-tag-002 | `unassignTag` | `spec/usecases/tag.md#unassignTag` | current note scope と編集権限を検査し、存在する assignment を operation lock 下で削除して projection revision event を保存する。不在 assignment は成功にする |

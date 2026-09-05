@@ -94,6 +94,30 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
     "このノートはゴミ箱にあります。元に戻してからもう一度お試しください。",
   NOTE_CONTENT_TOO_LARGE:
     "内容が上限を超えています。分割してからもう一度お試しください。",
+  // 資源の上限（[ADR 013](spec/adr/013-html-sanitization-policy.md)）による
+  // 拒否。共通文言の「入力内容を確認してもう一度お試しください」は、同じ本文を
+  // 送れば必ず同じ結果になるこの失敗に対しては実行不能な助言になる
+  // （`NOTE_LOCKED_BY_JOB` と同じ理由）。見た目からは分からない性質なので、
+  // 何を変えれば通るかを言う。
+  NOTE_HTML_TOO_COMPLEX:
+    "本文の構造が複雑すぎて処理できません。入れ子やスタイルを単純にするか、本文を分割してからもう一度お試しください。",
+  // 編集（P-12）とゴミ箱（P-14）が届く分。`NOTE_LOCKED_BY_JOB` の共通文言
+  // （「もう一度お試しください」）は、ジョブが終わるまで成功しない再試行を
+  // 勧めてしまうので、待つことを言う（移動サガの 4 コードと同じ理由）。
+  NOTE_LOCKED_BY_JOB:
+    "このノートは処理中のため編集できません。変換または再生成が終わるまで待ってから、画面を再読み込みしてください。",
+  NOTE_INVALID_TITLE:
+    "タイトルは 200 文字までです。短くしてからもう一度お試しください。",
+  NOTE_INVALID_STYLE_MODE:
+    "表示スタイルの指定が正しくありません。既定スタイルを適用 / 元の装飾のみ から選んでください。",
+  NOTE_CANNOT_CAPTURE_EMPTY_CONTENT:
+    "本文がまだ用意できていないため編集できません。取り込みが終わってからお試しください。",
+  // ゴミ箱の一覧が古いときに出る。再読み込みを促す（`restoreNote` は
+  // 冪等ではないので、成功として畳まず理由を返す）。
+  NOTE_NOT_TRASHED:
+    "このノートはゴミ箱にありません。すでに元に戻されたか完全に削除された可能性があります。画面を再読み込みしてください。",
+  REVISION_NOT_FOUND:
+    "この版は見つかりません。保持されるのは直近 20 版までです。版の一覧を開き直してください。",
 
   IDENTITY_PASSWORD_IDENTITY_ALREADY_EXISTS:
     "この方法はすでに登録されています。パスワードを変えたいときは「パスワードを変更」をお使いください。",
@@ -117,9 +141,17 @@ const MESSAGE_BY_CODE: Readonly<Record<string, string>> = {
   IDENTITY_INVALID_AVATAR_URL:
     "このアイコンの場所は保存できません。画像を選び直してからお試しください。",
 
+  // 用途（アイコン / 本文のメディア）で許す形式も上限も違うのに、
+  // ドメインが投げるコードは 1 つである。辞書は `code` しか読まないので、
+  // 用途で文言を分けることはできない — 両方の条件を書くことでしか
+  // 「何を選べばいいか」を伝えられない（`UploadValidationPolicy` の
+  // `RULES` が正典）。
   STORAGE_UNSUPPORTED_MIME_TYPE:
-    "この形式のファイルは扱えません。PNG / JPEG / WebP を選んでください。",
-  STORAGE_FILE_TOO_LARGE: "ファイルが大きすぎます。アイコンは 5 MB までです。",
+    "この形式のファイルは扱えません。アイコンは PNG / JPEG / WebP、本文に挿入する画像・動画は PNG / JPEG / GIF / WebP / SVG / MP4 / WebM が使えます。",
+  STORAGE_FILE_TOO_LARGE:
+    "ファイルが大きすぎます。アイコンは 5 MB、画像は 20 MB（SVG は 128 KB）、動画は 200 MB までです。",
+  USAGE_STORAGE_QUOTA_EXCEEDED:
+    "保存できる容量の上限に達しました。不要なノートやファイルを削除してからもう一度お試しください。",
   WORKSPACE_INSUFFICIENT_ROLE: "この操作を行う権限がありません。",
   WORKSPACE_NOT_FOUND: WORKSPACE_INACCESSIBLE_MESSAGE,
   WORKSPACE_INVALID_ID: WORKSPACE_INACCESSIBLE_MESSAGE,

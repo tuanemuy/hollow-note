@@ -1,3 +1,4 @@
+import { Note } from "@repo/core/domain/note/note";
 import { NoteId } from "@repo/core/domain/note/valueObject";
 import { NotFoundError } from "../errors";
 import type { ServiceArgs } from "../types";
@@ -25,8 +26,8 @@ const noteNotFound = (): NotFoundError =>
  *
  * `shareUrl` is revealed (decrypted) only for a viewer with
  * `canChangeVisibility` on an unlisted note; anonymous / read-only
- * paths never decrypt. `references` is structurally empty in this slice
- * (see {@link emptyReferenceReport}).
+ * paths never decrypt. `references` is structurally empty until the
+ * reference import runs (see {@link emptyReferenceReport}).
  */
 export async function getNote({
   container,
@@ -64,6 +65,8 @@ export async function getNote({
   return {
     noteId: note.id,
     title: note.title.value,
+    version: note.version,
+    trashedAt: Note.isTrashed(note) ? note.trashedAt : null,
     content: toNoteContentView(note),
     styleMode: note.styleMode,
     visibility: note.visibility.status,

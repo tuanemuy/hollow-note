@@ -143,8 +143,9 @@ scope-local SQL に D1 の query count は掛からない。ただし CPU、Alar
 
 | 経路 | 1 回の上限 | 根拠 |
 | --- | --- | --- |
-| `emptyTrash` の同期削除 | **50 notes** | HTTP mutation の CPU と response latency |
-| owner / workspace cleanup | **100 rows** | 1 Alarm turn の CPU と outbox fan-out |
+| `emptyTrash` の同期削除 | **50 notes** | HTTP mutation の CPU と response latency。下記のとおり global 予算にも掛かるが、設計上限を超える分は据え置く |
+| owner / workspace cleanup | **100 rows**（`deleteNotesForOwner` だけ **40 notes**） | 1 Alarm turn の CPU と outbox fan-out。note の purge だけは下記のとおり global 予算が先に効き、そちらが上限を決める |
+| 保持期限回収（`purgeExpiredTrash`） | **40 notes** | 同上。`purgeNote` を回すので上の 100 rows ではなく global 予算が上限を決める |
 | 強制終端 / `reapExpiredJobs` | **100 jobs** | transition + recovery + event の fan-out |
 | tag rename/delete/merge fan-out、unused delete | **200 assignments/tags** | revision bump・再投影task・監査payloadの上限 |
 | expired artifact / orphan media | **100 files** | R2 delete event の生成量 |
@@ -155,6 +156,16 @@ scope-local の一括削除は、**書き込みをバッチ件数によらず 1 
 一方で **1 turn の SQL 文の総数と、読み側の RPC 往復は件数に比例する**。所有者単位の一括削除メソッドを持たない設計（[domains/storage.md](../domains/storage.md)。1 件ごとに `storage.fileDeleted` を出すため `listByOwner` + `deleteFiles` の反復で行う）と、OCC の版トークンを `findById` でしか採れない契約から、読みは 1 件につき往復を持つ。Cloudflare 実装の実測は 1 turn `4n + 3` 文（`n` 件に対し読み `2n + 2` ＋ commit 内 `2n + 1`）で、commit は件数によらず 1 回である。これも上限ではなく実装が満たすべき設計目標として置く（[ADR 056](../adr/056-performance-budget-placement.md) 決定 2）。どのバックエンドがこの数に届かないかは同 ADR のコンテキストが持ち、この節には書かない（同 決定 3）。
 
 全バックエンドに課す契約のほうは「件数に比例した追加の往復を要求しない」という観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く。ここでの「往復」は**ポート呼び出しの追加往復**（件数ぶんの `listByOwner` を要求しない、の意）であって、上の RPC 往復とは別の量である。
+
+**ノートの purge を回す経路は、scope 側にありながら Global D1 の予算に掛かる**。1 件の purge は route の `resolve` / `beginPurge` / `finishPurge` と public projection の `removeForPurge` という global 側を必ず通る。ここで数える単位は**ポート呼び出しではなく D1 statement** である — 4 つの呼び出しはいずれも「行を読み、その行を pin する guard を先頭に置いた原子適用を書く」形を取り、guard も適用の各文もそれぞれ 1 query を消費する。1 件あたりの内訳は `resolve` 1 ＋ `beginPurge` 3 ＋ `removeForPurge` 4〜5 ＋ `finishPurge` 3 で、**ノート数 × 11〜12** になる。中断からの再開（`beginPurge` の再 claim）も abort の枝もこの幅を超えない。
+
+**この勘定は `purgeNote` を回す 3 経路すべてに掛かる** — `deleteNotesForOwner`、`purgeExpiredTrash`、`emptyTrash` の同期削除である。いずれも手順の複製ではなく `purgeNote` を**呼ぶ**設計（[usecases/note.md](../usecases/note.md)）なので、1 件あたりの幅をそのまま負う。
+
+したがって上表の 100 rows は Alarm から回る 2 経路には使えない — 100 × 12 = 1,200 で、500 query の設計上限どころか実上限 1,000 も超える。**`deleteNotesForOwner` と `purgeExpiredTrash` の 1 turn は 40 notes を上限とする**（40 × 12 = 480 で設計上限の内側）。余裕を取る側の調整は `batchSize` / `limit` を**下げる**ことである。**持ち回る停止 purge（[usecases/note.md](../usecases/note.md) の `deleteNotesForOwner`）はページの上に載らず、ページの席を取る** — 列挙は `batchSize - 持ち回り件数` 件しか読まないので、1 turn は障害が続いている間も 40 notes = 480 文で閉じる。持ち回りをページの上に積む形だと、その id は列挙に二度と現れないため、`removeForPurge` が失敗し続ける障害で持ち回り集合が turn ごとに最大 40 件ずつ増え、turn も継続 payload も有界でなくなる。一方 **1 turn は 1 経路とは限らない** — 1 turn は合計 100 行を処理する（下記「Scope Alarm」）ので、同じ scope で `note.ownerPurgeContinued` と `note.trashExpiryContinued` が同時に due なら 1 invocation が両方を負って 80 notes = 960 に達しうる。**実上限 1,000 との差が吸収するのはこの同居だけである。** したがって **40 は下げる余地はあっても上げる余地は無い**。さらに削るなら次の一手は 40 を下げることではなく、1 turn が訪問する purge 系 task を 1 本に絞ることである。
+
+**`emptyTrash` の同期削除 50 件だけは、この算術の内側の例外として据え置く**。50 × 12 = 600 で設計上限 500 は超えるが、実上限 1,000 の内側である。据え置く根拠は 2 つで、(1) 50 は「51 件以上はジョブ」という**利用者に見える閾値**として [pages/index.md](../pages/index.md) のゴミ箱画面と手順書に固定されており、下げれば画面の分岐そのものが動く、(2) HTTP mutation は 1 invocation を自分だけで使う — 上段の Alarm turn と違って別の task が同居しないので、この経路が実上限へ向かって伸びる道が無い。500 を超える 100 文は、実上限の半分を余裕として宣言したその余裕から支払う。値を下げよという指摘は、閾値を持つ画面と手順書を同時に動かす提案としてしか成立しない。
+
+`purgeNote` を回さない経路 — 他の scope cleanup（storage / tag / integration）、強制終端、projection rebuild — は scope-local に閉じるのでこの勘定に入らない。
 
 上限に達したら同じ scope の `scheduled_tasks` に continuation を保存し、Alarm を再設定する。対象が残っているのに進捗 0 なら continuation を増やさず、その task を failed にして運用イベントを global queue へ送る。対象 0 は正常終了である。
 
@@ -170,6 +181,8 @@ bulk operation の対象上限（500 notes）と bulk upload（100 files）は�
 | `*-dlq` | retry exhausted | 10 | 既定 |
 
 全 message は event / operation ID を持つ。Job message は `scope` と `jobId` を必ず持つ。scope object の outbox relay は送信成功後に row を完了するため、送信後・完了前の停止は重複になる。consumer は冪等に処理する。
+
+**scope object の outbox relay は、その scope でしか駆動できない後始末の唯一の経路である。** scope UoW が集める event — 回収した各ファイルの `storage.fileDeleted` と、ノートの完全削除の `note.purged`（tag 付与・バックアップ記録・保管ファイルの 3 購読者へ fan-out する）— は global outbox には載らないため、scope ごとの relay が無い配備ではこれらの後始末が一切走らない。global outbox の reader だけを配線した状態は、この relay を実装していない状態と同じである。
 
 private projection と scope cleanup continuation は Queue へ出さず、scope object の local task と Alarm で直列に処理する。public projection はroute・Note/tag・author・workspaceの世代ベクトル条件付き書き込みで競合を吸収するため、サービス全体の単一consumerにはしない。初期並行度4とし、D1 write latency / overloaded errorを見て下げるか、物理shardへ移す。
 

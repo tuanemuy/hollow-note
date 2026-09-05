@@ -39,6 +39,13 @@ export interface NoteAccessPolicy {
     now: Date,
   ): NoteAccess;
   ensureCanEdit(note: Note, viewer: NoteViewer): void;
+  /**
+   * The pair of `ensureCanEdit` for the trash / purge paths. Kept
+   * separate from it because the two capabilities part company for a
+   * workspace role the moment `WorkspaceAuthorization` gives
+   * `deleteNote` and `editNote` different minimum roles.
+   */
+  ensureCanDelete(note: Note, viewer: NoteViewer): void;
   isPassValid(link: ShareLink, pass: SharePass | null, now: Date): boolean;
   issuePass(link: ShareLink, now: Date): SharePass;
 }
@@ -60,6 +67,28 @@ const constantTimeHashEquals = (a: TokenHash, b: TokenHash): boolean => {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+};
+
+const CAPABILITY_VERB = {
+  canEdit: "edit",
+  canDelete: "delete",
+} as const;
+
+const ensureCapability = (
+  policy: NoteAccessPolicy,
+  note: Note,
+  viewer: NoteViewer,
+  capability: keyof typeof CAPABILITY_VERB,
+): void => {
+  // `now` does not influence the ownership path, which is the only one
+  // that can yield either capability — an epoch value keeps this pure.
+  const access = policy.evaluate(note, viewer, NO_CREDENTIAL, new Date(0));
+  if (access.kind !== "granted" || !access[capability]) {
+    throw new BusinessRuleError(
+      NoteErrorCode.AccessDenied,
+      `The viewer cannot ${CAPABILITY_VERB[capability]} this note`,
+    );
+  }
 };
 
 const READ_ONLY_ACCESS: NoteAccess = {
@@ -135,15 +164,11 @@ export function createNoteAccessPolicy(
     },
 
     ensureCanEdit: (note, viewer) => {
-      // `now` does not influence the ownership path, which is the only
-      // one that can yield canEdit — an epoch value keeps this pure.
-      const access = policy.evaluate(note, viewer, NO_CREDENTIAL, new Date(0));
-      if (access.kind !== "granted" || !access.canEdit) {
-        throw new BusinessRuleError(
-          NoteErrorCode.AccessDenied,
-          "The viewer cannot edit this note",
-        );
-      }
+      ensureCapability(policy, note, viewer, "canEdit");
+    },
+
+    ensureCanDelete: (note, viewer) => {
+      ensureCapability(policy, note, viewer, "canDelete");
     },
 
     isPassValid: (link, pass, now) => {

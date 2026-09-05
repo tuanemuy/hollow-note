@@ -4,6 +4,7 @@ import {
   REQUIRED_PERSONAL_CLEANUP_COMPONENTS,
 } from "../../cleanup/participants";
 import type { WorkerContainer } from "../../di/types";
+import { deleteNotesForOwner } from "../../note/deleteNotesForOwner";
 import type { PersonalCleanupProgress } from "../../ports/scopeCleanupAdmissionStore";
 import { ScopeKey } from "../../scope";
 import { deleteFilesByOwner } from "../../storage/deleteFilesByOwner";
@@ -57,6 +58,17 @@ const PERSONAL_CLEANUP_COMMANDS: Record<
         deletionOperationId: params.operationId,
         scope: params.scope,
         commandKey: cleanupCommandKey(params.operationId, "usage"),
+      },
+    }),
+  // No command key: this turn enumerates and destroys, so a redelivery
+  // reads what the first pass left and converges on its own. There is no
+  // "already applied" state to suppress — only fewer notes.
+  note: (container, params) =>
+    deleteNotesForOwner({
+      container,
+      input: {
+        deletionOperationId: params.operationId,
+        scope: params.scope,
       },
     }),
 };

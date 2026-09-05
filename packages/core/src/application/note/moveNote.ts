@@ -2,7 +2,7 @@ import { BusinessRuleError } from "@repo/core/domain/error";
 import { UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteEvents } from "@repo/core/domain/note/events";
 import { type ActiveNote, Note } from "@repo/core/domain/note/note";
-import type { NoteRevision } from "@repo/core/domain/note/noteRevision";
+import { NoteRevision } from "@repo/core/domain/note/noteRevision";
 import { NoteOwnershipPolicy } from "@repo/core/domain/note/services/noteOwnershipPolicy";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
 import { StorageOwner } from "@repo/core/domain/storage/valueObject";
@@ -28,7 +28,7 @@ import type {
   DistributedOperationPayload,
 } from "../ports/distributedOperationStore";
 import type { NoteRoute } from "../ports/noteRouteStore";
-import { ScopeKey } from "../scope";
+import { ScopeKey, scopeOfNoteOwner } from "../scope";
 import {
   type MovedFileMetadata,
   relocateFilesCommandKey,
@@ -53,9 +53,16 @@ export type MoveNoteInput = Readonly<{
   noteId: string;
   userId: string;
   /**
-   * Version the caller saw, or `null` when it holds none — `getNote` does
-   * not project one, so the transport boundary has nothing to send.
-   * `null` skips the optimistic check.
+   * Version the caller saw, or `null` when it holds none. `null` skips
+   * the optimistic check, so the move commits on whatever version the
+   * note is at when this usecase reads it.
+   *
+   * The views do project one (`NoteDetailView.version`), so `null` says
+   * something about the caller rather than about what reaches the
+   * transport boundary: a version may only be sent by a caller that
+   * serializes its own writes to the note with this call. One that does
+   * not would fail the check on a version its *own* concurrent save
+   * advanced, reporting a conflict where no one else touched the note.
    */
   expectedVersion: number | null;
 }> &
@@ -72,8 +79,10 @@ export type MovedNoteView = Readonly<{
 /**
  * Seam for the tag half of a move.
  *
- * The tag domain does not exist yet, so this
- * slice ships the call sites and no implementation. The three members are
+ * The tag domain carries only its delete side — `TagAssignment` and the
+ * `deleteByNote` half of its repository, which the `note.purged` fan-out
+ * needs — so there is nothing here to reassign yet and the call sites
+ * ship without an implementation. The three members are
  * the same phases the note itself moves through: `plan` runs before the
  * operation is created, so its answer can be fixed into the operation
  * payload, and the names the move reports are read back from that payload
@@ -106,7 +115,7 @@ export interface NoteMoveTagRelocation {
   ): Promise<void>;
 }
 
-/** The seam's only implementation until the tag slice lands. */
+/** The seam's only implementation until tag assignment gains a write side. */
 export const noTagRelocation: NoteMoveTagRelocation = {
   targetScopeCommandKeys: [],
   async plan(): Promise<readonly string[]> {
@@ -118,9 +127,6 @@ export const noTagRelocation: NoteMoveTagRelocation = {
 
 export type MoveNoteArgs = ServiceArgs<MoveNoteInput> &
   Readonly<{ tagRelocation?: NoteMoveTagRelocation }>;
-
-/** Retention invariant of `NoteRevision`: the newest 20 per note. */
-const REVISION_RETENTION = 20;
 
 const STAGE_TARGET_COMMAND = "note.moveStageTarget";
 const RETIRE_SOURCE_COMMAND = "note.moveRetireSource";
@@ -456,7 +462,7 @@ async function snapshotSource(
 
     const revisions = await ctx.noteRevisionRepository.listByNote(
       plan.noteId,
-      REVISION_RETENTION,
+      NoteRevision.RETENTION,
     );
     const { files } = await relocateFilesForNote(ctx, {
       migrationId: plan.migrationId,
@@ -1056,10 +1062,7 @@ export async function moveNote({
     );
   }
 
-  const target =
-    targetOwner.type === "user"
-      ? ScopeKey.user(targetOwner.userId)
-      : ScopeKey.workspace(targetOwner.workspaceId);
+  const target = scopeOfNoteOwner(targetOwner);
   const droppedTagNames = await tagRelocation.plan(container, {
     noteId,
     source,

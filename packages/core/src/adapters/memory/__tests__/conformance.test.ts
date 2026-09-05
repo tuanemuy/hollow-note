@@ -1,6 +1,7 @@
 import { describeAccountDeletionManifestStoreContract } from "../../conformance/accountDeletionManifestStore";
 import { describeAppliedOperationStoreContract } from "../../conformance/appliedOperationStore";
 import { describeAuthTokenRepositoryContract } from "../../conformance/authTokenRepository";
+import { describeBackupRecordRepositoryContract } from "../../conformance/backupRecordRepository";
 import { describeDistributedOperationStoreContract } from "../../conformance/distributedOperationStore";
 import { describeGlobalMaintenanceRunStoreContract } from "../../conformance/globalMaintenanceRunStore";
 import { describeIdempotencyStoreContract } from "../../conformance/idempotencyStore";
@@ -31,6 +32,7 @@ import { describeScopeTaskSchedulerContract } from "../../conformance/scopeTaskS
 import { describeSessionRepositoryContract } from "../../conformance/sessionRepository";
 import { describeStorageQuotaRepositoryContract } from "../../conformance/storageQuotaRepository";
 import { describeStoredFileRepositoryContract } from "../../conformance/storedFileRepository";
+import { describeTagAssignmentRepositoryContract } from "../../conformance/tagAssignmentRepository";
 import { describeUnitOfWorkContract } from "../../conformance/unitOfWork";
 import { describeUserBatchReaderContract } from "../../conformance/userBatchReader";
 import { describeUserRepositoryContract } from "../../conformance/userRepository";
@@ -73,6 +75,8 @@ describeDistributedOperationStoreContract(
 describeStorageQuotaRepositoryContract(BACKEND, makeMemoryConformanceBackend);
 describeLlmUsageRepositoryContract(BACKEND, makeMemoryConformanceBackend);
 describeStoredFileRepositoryContract(BACKEND, makeMemoryConformanceBackend);
+describeTagAssignmentRepositoryContract(BACKEND, makeMemoryConformanceBackend);
+describeBackupRecordRepositoryContract(BACKEND, makeMemoryConformanceBackend);
 describeObjectStorageContract(BACKEND, makeMemoryConformanceBackend);
 describeNoteRouteFanOutReaderContract(BACKEND, makeMemoryConformanceBackend);
 describeNoteProjectionContract(BACKEND, makeMemoryConformanceBackend);

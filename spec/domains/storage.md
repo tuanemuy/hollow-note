@@ -53,12 +53,14 @@
 | 値 | 意味 | 回収 |
 | --- | --- | --- |
 | `source` | アップロードされた元ファイル | ノートの完全削除時 |
-| `media` | 編集中に挿入した画像・動画 | 作成から 30 日が経過し、かつ本文から参照されていないとき |
+| `media` | 編集中に挿入した画像・動画 | 作成から 30 日が経過し、かつ現在の本文からも保持中の版の本文からも参照されていないとき |
 | `reference` | 本文から取り込んだ外部リソース | ノートの完全削除時 |
 | `artifact` | 生成物（PDF / ZIP） | `expiresAt` の経過時 |
 | `avatar` | 利用者・ワークスペースのアイコン | 差し替え時 |
 
 `source` / `reference` の「ノートの完全削除時」の回収と、`media` の孤児判定は、`StoredFile` の `noteId` で所属ノートを解決して行う（`note.purged` の購読と孤児メディアの走査）。`media` の回収の起点を「参照が外れた時刻」ではなく作成時刻に取るのは、本文から参照が外れた時刻を保持しないため。走査時点で本文に現れないことを確認してから消す（[usecases/storage.md](../usecases/storage.md) の `collectOrphanMedia`）。
+
+**参照元には保持中の版（[note.md](./note.md) の `NoteRevision`、直近 20 版）の本文も数える**。版は `restoreNoteRevision` がそのまま書き戻せる生きた参照であり、回収の起点が作成時刻である以上、「挿入 → 翌日に本文から外す → 29 日後に回収」の順で復元可能な版が指すメディアが消える。20 版は数か月をまたぐので稀なケースではなく、復元しても画像が 404 になる状態は AC-8 の「直近 20 版から復元できる」を満たさない。
 
 ### StorageOwner
 
@@ -169,7 +171,7 @@ StoredFile = PersistentFile | EphemeralFile
 
 削除はユースケースが `StorageEvents.fileDeleted` を直接発行する。
 
-application層は `registerEphemeral` の保存と同じscope-local UoWで最小`expiresAt`のartifact cleanup taskをupsertする。`register`で`purpose: "media"`を初めて保存するときも日次orphan-media taskを自己登録する。これらはStoredFile集約の状態遷移ではなくscope Alarmの起動責務なので、ドメインメソッドのeventへ暗黙に含めない。
+application層は `registerEphemeral` の保存と同じscope-local UoWで最小`expiresAt`のartifact cleanup taskをupsertする。scopeに`purpose: "media"`が初めて現れるときも日次orphan-media taskを自己登録する。**登録の起点は「初めての保管」ではなく「初めての流入」である** — `storeMedia`のほか、ノート移動の`relocateFilesForNote`（`stageTarget`）でもmediaがtarget scopeへ入るため、両方が同じ登録を行う（片方を欠くと、そのscopeの孤児mediaは二度と回収されない）。これらはStoredFile集約の状態遷移ではなくscope Alarmの起動責務なので、ドメインメソッドのeventへ暗黙に含めない。
 
 ## ドメインサービス
 
@@ -180,17 +182,51 @@ application層は `registerEphemeral` の保存と同じscope-local UoWで最小
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
 | `limitFor` | `purpose: FilePurpose, mimeType: MimeType` | `ByteSize` | 下表の上限を引く |
-| `ensureAcceptable` | `params: { purpose: FilePurpose; body: Uint8Array }` | `AcceptedUpload = { mimeType: MimeType; size: ByteSize }` | MIME は申告値ではなく**先頭バイトの署名**（PNG / JPEG / WebP）で決め、サイズは実バイト長で測る。どの許可形式にも一致しなければ `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)`。判定結果を返すので、呼び出し側は申告値を保管できない（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)） |
+| `ensureAcceptable` | `params: { purpose: FilePurpose; body: Uint8Array }` | `AcceptedUpload = { mimeType: MimeType; size: ByteSize }` | MIME は申告値ではなく**バイト列そのもの**から決め、サイズは実バイト長で測る。どの許可形式にも一致しなければ `BusinessRuleError(UnsupportedMimeType)`、`size.exceeds(limitFor(purpose, mimeType))` なら `BusinessRuleError(FileTooLarge)`。判定結果を返すので、呼び出し側は申告値を保管できない（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)） |
 
 | 用途 | 許可する MIME | 上限 |
 | --- | --- | --- |
 | `source` | 取り込み対応形式（`text/html`, `text/markdown`, `text/plain`, Office 3 種, `application/pdf`, `image/*`, `audio/*`） | 音声 200 MB、その他 50 MB |
-| `media` | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `video/mp4`, `video/webm` | 画像 20 MB、動画 200 MB |
+| `media` | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `video/mp4`, `video/webm` | ラスタ画像 20 MB、`image/svg+xml` 128 KB、動画 200 MB |
 | `reference` | 任意（取得できたもの） | 1 件 20 MB |
 | `artifact` | `application/pdf`, `application/zip`, `text/html`, `text/markdown` | 1 GB |
 | `avatar` | `image/png`, `image/jpeg`, `image/webp` | 5 MB |
 
-`ensureAcceptable` が署名から判定できるのは、現時点では PNG / JPEG / WebP である。**署名を持たない形式（`text/markdown`、`image/svg+xml` など）を許可する purpose を足すスライスが、入口の形をさらに広げる**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。
+**`image/svg+xml` だけがラスタ画像と別の上限を持つ。** SVG は保管前に書き換えられる唯一のメディアで、`storeMedia` が `HtmlProcessor.process` に通す（[usecases/storage.md](../usecases/storage.md) の手順 3）。`process` の戻り値は**本文の断片**であり、[domains/note.md](./note.md) の `NoteHtml` が持つ 800,000 バイトの上限に縛られる。したがってサニタイズ後にその上限を割れない値をここに置くと、Storage が受理すると言った形式が Note の不変条件で失敗する — 到達できない上限になる。
+
+**128 KB は方針値であり、導出された値ではない。** エディタが挿せる図版の大きさの上限として、実際に届く図版より 1 桁大きく、この大きさの本文ならサニタイズが安く済む点に置いてある。**この値から何かを導いてはならない** — とくに「`process` は解析後の木を入力長の 4 倍で打ち切るので 131,072 バイトの入力は 524,288 バイトを超えられず、本文の 800,000 バイトの内側に収まる」という導出は**偽である**。木の上限が課金するのは節点の**エスケープ前**の長さを UTF-16 code unit で数えた量であり、直列化は属性値の `"` を `&quot;` に展開する（実測: 単一引用符の属性値に生の `"` を詰めた 131,072 バイトの SVG は 786,073 バイトに直列化する）。`NoteHtml` の 800,000 は UTF-8 バイトで測る別の量でもある（[ADR 013](../adr/013-html-sanitization-policy.md) の上限の表）。
+
+**アップロードが Note の語彙で失敗しない**という約束は、導出ではなく `storeMedia` の境界翻訳が担保する。`HtmlProcessor.process` が Note の語彙で投げうるコードは資源の上限（`NOTE_HTML_TOO_COMPLEX`）と本文の長さの上限（`NOTE_CONTENT_TOO_LARGE`）の 2 つで、`storeMedia` はその集合を**すべて** Storage の語彙（`FileTooLarge`）へ翻訳する（[usecases/storage.md](../usecases/storage.md) の手順 3）。したがって 128 KB を動かしても、本文の上限を動かしても、許可リストに要素を足しても、この約束は静かに壊れない。サニタイズの**費用**のほうは、この定数の値によらず `HtmlProcessor` 自身の資源の上限が有界にする。さらに `storeMedia` は**サニタイズ後に実際に保管するバイト列**を 128 KB へ測り直す（保管するバイト列こそが容量に効き、行に載る値だから）。
+
+**この見積もりを入力の形から論証してはならない。** 出力を桁で膨らませるのは foster parenting である — open elements のスタックから外れた整形要素が active formatting elements のリストには残り、後続の行ごとに作り直されるため、整形要素 `k` 個と行 `m` 個が `k × m` 個に化ける。**完全に整形式で、すべてのタグが閉じ、入れ子も 64 段以内の入力がこれに届く**（実測: `<svg><table><b a="0">…<b a="61">` の下に `<tr>X</tr>` を 13,018 回並べた 131,064 バイトが 11,300,523 バイト = 86 倍、886 ms）。しかも入口を要素名で数え上げる論証も成立しない（`<desc><template><tr>` は `table` の開始タグを介さずに table 系の挿入モードへ入る）。この種の論証はどれも成立せず、[ADR 013](../adr/013-html-sanitization-policy.md) は入力の形から論証する路線を採らずに資源で有界にする形を採っている。
+
+そのうえで**受理判定は breakout tag の要素名を拒む**（HTML 仕様「foreign content 内のトークンの解析規則」が列挙する 44 の要素名 — `b` / `table` / `p` / `br` / `img` ほか — と、`color` / `face` / `size` のいずれかを持つ `font`。HTML のトークナイザーは名前を小文字化するので、XML が別物として扱う `<TABLE>` も同じ扱いにする）。これは**上限の根拠ではなく前段の安価な防御**である — もっとも安く膨張を作れる形を 1 パスの走査で断り、サニタイザーを 1 度も走らせない。完全ではない（この走査はコメントと処理命令を XML の終端で読み、HTML のトークナイザーは `<?a>` を最初の `>` で、`<!-->` を即座に終えるので、片方にだけ見える位置に breakout tag を置ける）。塞ぐのではなく、その先を資源の上限が受け止める。サニタイザーの SVG 部分集合にこれらの名前は 1 つも無いので、拒んで失う描画は無い。
+
+加えて入れ子の深さを 64 で切る — これも方針値である。実在の図版は数段しか入れ子にならないので、両側に 1 桁の余裕がある。サニタイザー側の走査の深さの上限は 256 段（`HtmlProcessorLimit.maxNestingDepth`）で、深さの門はそれより先に効き、サニタイザーを 1 度も走らせずに断る。
+
+`ensureAcceptable` が判定できるのは、`media` と `avatar` が許可する 7 形式である。判定は次の順に行い、**先頭バイトを比べるものを先に、本文を復号するものを最後に**置く。
+
+| 形式 | 判定 |
+| --- | --- |
+| `image/png` | 先頭 8 バイトの署名 |
+| `image/jpeg` | 先頭 3 バイトの署名 |
+| `image/gif` | 先頭 6 バイトの署名（`GIF87a` / `GIF89a`） |
+| `image/webp` | 先頭の `RIFF` と オフセット 8 の `WEBP`（コンテナの形まで見る） |
+| `video/mp4` | オフセット 4 の `ftyp` と、オフセット 8 のブランドが許可集合にあること。**`ftyp` だけでは足りない** — HEIC / 3GP / QuickTime も同じボックスを自分のブランドで持ち、受け入れると `video/mp4` として配信できないファイルを保管することになる |
+| `video/webm` | 先頭 4 バイトの EBML 署名と、先頭 64 バイト内の DocType `webm`。EBML 署名は Matroska と共有するのでこの走査が要る |
+| `image/svg+xml` | **署名を持たない**。先頭 4096 バイトを復号し、BOM とプロローグ（`<!--…-->` / `<?…?>` / `<!…>`）を読み飛ばして根要素が `<svg` であることを確かめる。閉じないプロローグ、および内部サブセットを持つ doctype は、推測せずに拒否する。**そのうえで本文全体を「単体の 1 文書として開けるか」で判定する**（下記）。ただし**その purpose が SVG に与える上限**を超える長さのバイト列にはこの検査を行わない — どのみち次の段で `FileTooLarge` になり、サニタイザーへは渡らないので、縛る対象が無い。打ち切りの物差しは上限表から引く（`media` の 128 KB を直接名指さない）ので、SVG を許す purpose が別の上限で増えても、2 つの上限のあいだのバイト列が検査を免れることはない |
+
+`image/svg+xml` の「単体の 1 文書として開けるか」は、次を**すべて**満たすことをいう。`.svg` は XML として解析され、そこでは整形式でないことが**致命的エラー**（1 ドットも描かれない）なので、満たさないものはブラウザも開けない — 受理を断っても失うものは無い。同じ述語を `storeMedia` が**保管の直前にもう一度**、サニタイズ後の実体に対して適用する（[usecases/storage.md](../usecases/storage.md) の手順 3）。
+
+- 根要素が `svg` ひとつで、それが閉じ、その外には XML の `S`（空白・タブ・CR・LF）とプロローグ（コメント・処理命令・内部サブセットの無い doctype）しか無い
+- 開始タグと終了タグが名前まで一致して入れ子が閉じる
+- 要素名・属性名が XML の `Name` であり、属性値が引用され、その中に `<` が無い
+- 実体参照が XML の定義済み 5 つ（`lt` / `gt` / `amp` / `apos` / `quot`）か数値参照であり、数値が XML の `Char` である（DTD を持たない `.svg` に `&nbsp;` は定義されていない）
+- 文字が XML の `Char` である（タブ・CR・LF 以外の C0 制御文字は含まない）
+- 入れ子の深さが 64 以内である
+- **breakout tag の要素名を含まない**（XML の整形式性とは無関係な、前段の安価な防御。上限を与えるのはこの条件ではなく `HtmlProcessor` の資源の上限である。上の 128 KB の議論を参照）
+
+`source` / `reference` / `artifact` にはまだ規則が無い。**これらの purpose を許可するスライスが、その入口の形を決める**（[ADR 050](../adr/050-upload-acceptance-from-bytes.md) が「そのスライスが判断を行う」と定めている）。規則を持たない purpose は署名判定にすら入らず、`UnsupportedMimeType` になる。
 
 `limitFor` はユースケースからは直接呼ばない。上限の表を引く責務を切り出して `ensureAcceptable` の実装に使うもので、外向きの入口は `ensureAcceptable` に限る。
 
@@ -225,14 +261,15 @@ FetchState  = Readonly<{ fetchedCount: number; fetchedBytes: number }>;
 
 | メソッド | 引数 | 戻り値 | 処理 |
 | --- | --- | --- | --- |
-| `isInternal` | `url: string` | `boolean` | 配信元がサービス自身のストレージなら真 |
+| `create` | `params: { appUrl: string; deliveryBaseUrl: string }` | `StorageUrlPolicy` | 2 つの構成値を焼き込んだ判定器を作る。値の組が不正なら投げる（業務規則違反ではなく配備の設定誤りなので `BusinessRuleError` にしない） |
+| `isInternal` | `url: string` | `boolean` | `appUrl` を基準に解決した URL が `deliveryBaseUrl` で始まるなら真。**本文相対の URL も対象**（アプリ相対の配信パスを持つ配備ではこれが本題）。解決できない URL は投げずに偽 |
 
 `ExternalFetchPolicy.ensureFetchable` の複合条件から**この 1 つだけを切り出した**ものである。切り出す理由は 2 つある。
 
 - `ensureFetchable` は `DnsResolver` に依存し、ホスト名を解決して private / loopback / メタデータ用アドレスを弾く。読み取り経路（ノート詳細で「未解決の参照はどれか」を求める）で呼ぶには重すぎるうえ、I/O を伴う
 - 同じ判定を `importExternalReferences` の `skipped` の判定、参照取り込みジョブの登録条件（[usecases/note.md](../usecases/note.md) の `updateNoteBody`、[usecases/conversion.md](../usecases/conversion.md) の `runConversion` / `runRegeneration`）、`collectOrphanMedia` の参照判定、そしてノート詳細の合成が使う。1 か所に置かないと規則が分岐する
 
-判定材料（配信元のホストや URL の前置き）は構成に依存するため、値は `AppConfig`（[presentation/index.md](../presentation/index.md)）から供給する。`ensureFetchable` は引き続きこの判定を内部で使い、内部を指す URL を `RefusedUrl` として弾く。
+`appUrl` は `AppConfig`（[presentation/index.md](../presentation/index.md)）から供給する。**`deliveryBaseUrl` は構成に持たず、`ObjectStorage.publicUrl` の答えから読み戻す** — 配信 URL の形はアダプターに閉じる（[ADR 049](../adr/049-object-storage-public-url.md)）ので、アプリ相対の配信パスも公開ドメインの URL も「共通の前置き」に畳める。`ensureFetchable` は引き続きこの判定を内部で使い、内部を指す URL を `RefusedUrl` として弾く。
 
 **依存するポート**: なし
 
@@ -249,7 +286,7 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
   listDeletableByNote(noteId: NoteId, limit: number): Promise<readonly StoredFile[]>;
   findArtifactByNoteAndVersion(noteId: NoteId, noteVersion: number, mimeType: MimeType, now: Date): Promise<EphemeralFile | null>;
   listExpired(now: Date, limit: number): Promise<readonly EphemeralFile[]>;
-  listByPurposeOlderThan(purpose: FilePurpose, createdBefore: Date, limit: number): Promise<readonly StoredFile[]>;
+  listByPurposeOlderThan(purpose: FilePurpose, createdBefore: Date, limit: number, after: StoredFilePurposeCursor | null): Promise<readonly StoredFile[]>;
   sumSizeByOwner(owner: StorageOwner): Promise<number>;
   listByOwner(owner: StorageOwner, purpose: FilePurpose | null, pagination: Pagination): Promise<PaginationResult<StoredFile>>;
 }
@@ -258,6 +295,18 @@ interface StoredFileRepository extends TransactionalRepository<StoredFile, Store
 チェックサムによる重複保管の回避は行わない。`StoredFile` は `FileProvenance` で所属ノートと由来を持つため、同一内容でもノートごとに別の行が要る（1 行を複数ノートで共有すると `note.purged` 後の回収と所有者の付け替えが成立しない）。実体の共有はメタデータと blob を分ける設計を要し、本設計の範囲外とする。所有者単位の一括削除（`deleteFilesByOwner`）も、1 件ごとに `storage.fileDeleted` を発行して Usage の減算と実体の回収につなげる必要があるため、`listByOwner` + `deleteFiles` の反復で行い一括削除のメソッドは持たない。
 
 `listByNote` はcurrent scopeで `noteId` が一致する全ファイルを引く。moveでは `source` / `media` / `reference` metadataをsnapshotへ含め、target scopeへ同じR2 keyで復元する。artifactはJob scopeに残し `expiresAt` で回収する。`listByPurposeOlderThan` の所有者に依らない走査もcurrent scope内に限り、全DO走査ではない。`sumSizeByOwner` はartifactを除外する。
+
+`listDeletableByNote` は `purpose` が `source` / `media` / `reference` の行を **`id` 昇順**で最大 `limit` 件引く（`limit <= 0` は 0 件）。順序はバックエンドの裁量ではなく契約である — `deleteFilesForNote` が 100 件ずつ削っては継続する形なので、途中の turn で残っている集合がバックエンド間で一致しないと観測が揃わない。読んだ行はその turn が消すため、全順序でありさえすれば前進は保証される。
+
+`listByPurposeOlderThan` は**キーセットで前進する走査**である。順序は `createdAt` 昇順・同時刻は `id` 昇順の全順序で、`after` はその順序上の位置を**排他的に**指す（`null` は先頭から）。境界は `createdBefore` 側が包含（ちょうど `createdBefore` の行はページに入る）。
+
+```ts
+type StoredFilePurposeCursor = { createdAt: Date; id: StoredFileId };
+```
+
+カーソルは**行ではなく位置**である。カーソルを採った行がその後削除されていても位置は解決できる（掃引は読んだページの一部を消すのが常態なので、これは例外ではなく既定の状況にあたる）。offset ではなくキーセットにするのはそのためで、前方の行が消えても後方の行が走査から漏れない。
+
+カーソルが契約に要るのは `collectOrphanMedia` のためである。この掃引は**残すと決めた行をそのまま残す**ので、毎 turn 先頭から読む形だと、scope の最古の `limit` 件がすべて本文から参照されている（稼働中の scope ではごく普通の状態）とき、その後ろにある孤児へ永久に到達できない。満ページを受け取った呼び出し側は、そのページ末尾の `(createdAt, id)` を次の turn の `after` に渡す。
 
 **エラーケース**: `ConflictError("OPTIMISTIC_LOCK_FAILURE")`、`ConflictError("OBJECT_KEY_ALREADY_USED")`、`SystemError(DatabaseError)`
 
@@ -301,7 +350,15 @@ type ObjectBody = Readonly<{ bytes: Uint8Array; meta: ObjectMeta }>;
 type PutResult = Readonly<{ size: ByteSize; checksum: Checksum }>;
 ```
 
-`publicUrl` は公開配信するオブジェクトの読み取り先を組み立てる。**公開 URL の組み立てをポートに持たせ、配備ごとの形をアダプターに閉じる** — アプリ相対の配信パスを返す配備も、公開ドメインを持つストレージの URL を返す配備も、呼び出し側は戻り値をそのまま返すだけになる。**期限つき URL と公開 URL は別のメソッドとして型で分ける**（[ADR 049](../adr/049-object-storage-public-url.md)）。`createDownloadUrl` は短命なダウンロード用なので、プロフィールに埋め込むような長命な参照には流用できない。使ってよいのは公開してよい用途に限る（現時点では `avatar`）。
+`publicUrl` は公開配信するオブジェクトの読み取り先を組み立てる。**公開 URL の組み立てをポートに持たせ、配備ごとの形をアダプターに閉じる** — アプリ相対の配信パスを返す配備も、公開ドメインを持つストレージの URL を返す配備も、呼び出し側は戻り値をそのまま返すだけになる。**期限つき URL と公開 URL は別のメソッドとして型で分ける**（[ADR 049](../adr/049-object-storage-public-url.md)）。`createDownloadUrl` は短命なダウンロード用なので、プロフィールに埋め込むような長命な参照には流用できない。使ってよいのは公開してよい用途に限る — **`avatar` と `media` の 2 つ**である。
+
+`media` を公開側に置くのは、本文に挿した画像・動画の URL が本文にそのまま載り、**公開ノートを匿名の閲覧者が読むときにも解決できなければならない**ため。読める条件は「鍵を知っていること」で、鍵は推測できないファイル ID を含み、鍵を列挙する経路も持たない（`avatar` と同じ扱い）。`source` / `reference` / `artifact` は同じストアを共有するので、**配信側がこの境界を自分で保つ**（`ObjectStorage.publicUrl` の JSDoc と `apps/web/app/routes/storage.$.tsx` の許可集合が同じ決定の適用点で、3 か所を同時に動かす）。配信するときは `X-Content-Type-Options: nosniff` と `Content-Security-Policy: sandbox; default-src 'none'` を付ける — SVG は保管時にサニタイズ済みだが、鍵空間に何が積まれても実行させないのは配信側の担保である。
+
+`collectOrphanMedia` が本文と突き合わせる住所も `publicUrl` の戻り値なので、配信経路と回収規則は同じ 1 つの住所を見る。片方だけを動かすと、挿した直後のメディアが孤児として回収されるか、配信できない URL を本文に配ることになる。
+
+**非公開化もゴミ箱への移動もメディア URL を失効させない**。配信口はセッションも `StoredFile` の行も見ず鍵だけで通し、行と実体はノートの完全削除（`purgeNote` → `deleteFilesForNote` → `storage.fileDeleted`、ゴミ箱の既定保持期間は 30 日）まで残るため、本文を見たことがある閲覧者はその間メディアを読み続けられる。失効の時点は公開範囲の変更ではない — capability URL を選んだことの帰結であり、ノート URL 自体は非公開化と同時に閉じる（AC-9）。
+
+**失効させるのは行の削除ではなく実体の削除である**。配信口が引くのはオブジェクトストレージだけなので、鍵が読めなくなるのは `storage.fileDeleted` の購読者（`deleteStoredObjects`。[usecases/storage.md](../usecases/storage.md)）が実体を消したときで、`StoredFile` の行が消えた時点ではない。`deleteStoredObjects` は恒久的に失敗した鍵を孤児オブジェクトとして残すことを認めているため、**公開配信する purpose（`avatar` / `media`）では、行が消えたあとも鍵を知っている閲覧者に配られ続ける実体がありうる**。これは capability URL の窓が purge のあとへ伸びうるということであり、配信口が `Cache-Control: private` を選ぶ根拠にしている削除の約束（[pages/index.md](../pages/index.md) の P-25）が、実体については「消そうと試みる」ところまでしか届かない範囲を示している。孤児オブジェクトを回収できるのはオブジェクトストレージ側の列挙を持つ経路だけで、その列挙は `ObjectStorage` の契約に無い。
 
 `put` が受けるのはバイト列だけで、ストリーム受け（`ReadableStream<Uint8Array>`）は契約に持たない。受理判定を実体から行う形（[ADR 050](../adr/050-upload-acceptance-from-bytes.md)）が「受理判定の時点で実体を握っていること」「ポートがバイト列だけを受ける形であること（ストリームを通す用途が現れた時点で、その要求とともに広げる）」を前提に置いているためで、**契約を弱めた側として責務の移転をここに残す**。**ストリームを入力に持つ要求元は設計上すでに実在する** — [usecases/storage.md](../usecases/storage.md) の `storeUpload` で、入力 DTO の `body: ReadableStream<Uint8Array>` と、**同ユースケース手順 2 の `UploadValidationPolicy.ensureAcceptable` 呼び出し**がそれに当たる（バイト列が手に入るのは手順 5 の `put` 以降なので、実体判定を手順 2 で行う形への手順の組み替えもそのスライスの仕事になる）。**この経路を実装するスライスが、上記の前提に従って `put` の入口を広げ、読み切る前に上限で切る形をそこで設計する。**
 

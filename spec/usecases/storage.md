@@ -145,11 +145,11 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 
 ### 処理フロー
 
-1. D1 primaryの`NoteRouteStore.resolve(noteId)`でactive routeを解決し、その1つのscope objectでノート・routeVersion・`canEdit`を確認する。`moving`は切替前source、`purging` / `tombstone`はnot found、scope missはprimaryで1回だけ引き直す
-2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ
-3. `ensureUploadAllowed`（Usage のユースケース）で容量を確認する
-4. SVG の場合は `HtmlProcessor.process` と同じサニタイズ規則を適用してから保管する
-5. `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる
+1. 「共通: 閲覧者コンテキストの解決」（[usecases/note.md](note.md)）と同じ手順でノートを解決し、`canEdit` を確認する。`moving` は切替前 source、`purging` / `tombstone` は not found、scope miss は primary で 1 回だけ引き直す。**route の CAS は取らない** — この経路が書くのは scope 内の `StoredFile` 1 行だけで、route の状態遷移（`beginMove` / `beginPurge`）ではないため `routeVersion` を固定する相手がいない。解決から手順 4 までの間にノートが移動した場合は、`resolveNote` の 1 回の引き直しに間に合ったものだけが新しい scope へ届き、間に合わなければ旧 scope に行が残って `collectOrphanMedia` の回収対象になる（編集系ユースケースがどれも同じ窓を持つ）。**`canEdit` のあとに、ゴミ箱に入っているノートを `BusinessRuleError(NoteIsTrashed)` で拒む** — 本文側の編集ユースケース（`updateNoteBody` ほか）と同じ門を通す。`NoteAccessPolicy` は所有者自身の trashed ノートに `canEdit: true` を返す（trash の壁は所有者以外の経路にしかない）ので、ここで見ないと本文へ入れる手段のないメディアが保管され、容量だけ占めたまま完全削除か 30 日後の孤児回収まで残る
+2. `UploadValidationPolicy.ensureAcceptable({ purpose: "media", ... })` を呼ぶ。SVG はここで**長さだけでなく形も**受理の条件になる（単体の 1 文書として開けること、入れ子の深さが 64 以内であること、**breakout tag の要素名を含まないこと**。[domains/storage.md](../domains/storage.md)）。このうち breakout tag の拒否は**前段の安価な防御**であり、サニタイザーの費用を有界にする根拠ではない — 有界にするのは `HtmlProcessor` 自身の資源の上限（[ADR 013](../adr/013-html-sanitization-policy.md)）で、この判定はもっとも安く膨張を作れる形を 1 パスで断ってサニタイザーを走らせないためにある。実際この走査はコメントと処理命令を XML の終端で読むのに対し HTML のトークナイザーは `<?a>` を最初の `>` で終えるので、片方にだけ見える位置に breakout tag を置いた markup は受理される。それが失敗するときに Storage の語彙で失敗することは、この門ではなく手順 3 の翻訳が担保する
+3. SVG の場合は `HtmlProcessor.process` に通してから保管する。`process` は本文の断片を前提にするので XML 名前空間の宣言を落とす。単体の `.svg` として開けるよう、**サニタイズが残した内容に `xmlns` を（`xlink:` 属性が残っていれば `xmlns:xlink` も）付け直す**。これは文書の**形**の復元であって許可リストの話ではない — サニタイズ規則の適用点を 1 つに保つため（[ADR 013](../adr/013-html-sanitization-policy.md)）、要素も属性も足さない。あわせて、**HTML の直列化と XML の差を 2 つ書き戻す**。1 つは **`&nbsp;` を `&#160;` へ** — U+00A0 を HTML の直列化はこの名前で書くが、DTD を持たない `.svg` にその実体は定義されておらず、未定義実体は XML の致命的エラーになる。もう 1 つは **属性値の中の生の `<` を `&lt;` へ** — HTML の属性値がエスケープするのは `&` と `"` と U+00A0 だけなので、入力が `&lt;` と書いていた `<` が直列化で生の文字に戻り、XML は属性値の中の `<` を認めない。書き戻しは引用符を追う走査で行い（直列化はどの属性値も二重引用符で囲む）、タグの区切りである `<` と、既にエスケープされているテキストの `<` には触れない。差はこの 2 つで尽きる — ほかの `&` は XML の定義済み 5 つに収まる。**そのうえで、サニタイズ後の markup が単体の 1 文書であることを、受理判定と同じ述語で確かめる**（[domains/storage.md](../domains/storage.md) の「単体の 1 文書として開けるか」: 根要素が `svg` ひとつで閉じ、その外に XML の `S` 以外が無く、タグが名前まで一致し、実体参照も文字も XML が認めるものだけであること）。受理判定が見たのは**受け取ったバイト列**だが、配られるのは**サニタイザーの出力**で、両者は SVG では別物になる — `process` が返すのは本文の断片なので `</svg>` の後ろの内容はそのまま残り、直列化も HTML の規則で行われる（`<desc>` の中で HTML 解析が再開した結果の void 要素、U+00A0 の `&nbsp;`）。だから同じ問いを、保管する実体にもう一度当てるほかない。1 文書にならなければ `BusinessRuleError(UnsupportedMimeType)` で返す。**`process` が Note の語彙で投げるコードは、ここで `BusinessRuleError(FileTooLarge)` へ翻訳する。** その集合は 2 つ — 資源の上限による打ち切り（`NOTE_HTML_TOO_COMPLEX`。[ADR 013](../adr/013-html-sanitization-policy.md)）と、サニタイズ後の長さが本文の上限を超えたこと（`NOTE_CONTENT_TOO_LARGE`）である。`process` が組み立てる Note の値は `NoteHtml` / `PlainTextContent` / `Excerpt` の 3 つだけなので、Note の語彙でほかのコードは出てこない。**約束（この経路が Storage の語彙でしか失敗しないこと）を支えるのは、この集合を覆い切ることであって「片方は到達不能だ」という論証ではない** — 128 KB からその種の論証は成り立たない（[domains/storage.md](../domains/storage.md) の実測）。翻訳先が `FileTooLarge` なのは、2 つのコードがどちらも長さの上限であり、そこに当たる入力はサニタイズが完了していれば手順 4 の測り直しで同じ `FileTooLarge` になるからである（`UnsupportedMimeType` は「この形式は扱えない」という偽の説明になり、直せるものを示さない）
+4. **保管する直前に、サニタイズ後の実バイト長を測り直し、上限と容量の両方をその値に当てる**。`UploadValidationPolicy.limitFor("media", mimeType)` を超えていれば `BusinessRuleError(FileTooLarge)`、`ensureUploadAllowed`（Usage のユースケース、`llmCalls: 0`）が容量の残量で拒めば `BusinessRuleError(StorageQuotaExceeded)` で返す。手順 2 が測ったのは受け取ったバイト列で、手順 3 は SVG をそのバイト列とは別のものに書き換えるため、判定の対象と実際に保管される実体が食い違う。**容量に効くのも行に載るのもサニタイズ後の長さなので、上限も容量もその 1 つの値に当てる** — 受け取ったバイト列で容量を測ると、膨らむ SVG は残容量を超過でき、縮む SVG は要らない残量で拒まれる（`image/svg+xml` の上限が 128 KB である理由は [domains/storage.md](../domains/storage.md)）。**容量の門がサニタイズの後にあることは意図的である**: 手順 2 が SVG を 128 KB で縛り、`HtmlProcessor` が入力の形によらず自分の資源の上限を守るためサニタイズの費用は有界で、オブジェクトストレージへは 1 バイトも書いていない。そのうえで `ObjectStorage.put` し、`StoredFile.register` を保存する。`FileProvenance` は `{ purpose: "media", noteId, uploadedBy: userId }`。永続化した `noteId` が、孤児判定（`collectOrphanMedia`）と `note.purged` 後の回収（`deleteFilesForNote`）の手がかりになる
+5. 手順 4 の transaction が失敗した場合は、手順 4 で置いたオブジェクトを消す。`storeSource` が孤児として回収に任せるのと違うのは、**メディアには回収の手掛かりになる行が残らない**ためである（`StoredFile` が保存されていないので `collectOrphanMedia` が見つけられない）。この後始末自体が失敗した場合は記録して元のエラーを投げる。**この補償が届かない窓がある**: `put` が返ったあと commit の前にプロセス／isolate が落ちると `catch` は走らず、行を持たないオブジェクトが恒久的に残る。行が無いので容量には計上されず鍵も配られないが、回収の手掛かりも無いため `collectOrphanMedia` も `deleteFilesByOwner` も永久に届かない。オブジェクトストレージ側の列挙を持つスライスへ handoff する既知の窓として置く
 6. 配信用の URL を返す
 
 ### エラーケース
@@ -157,8 +157,14 @@ Note ID は手順 4 の前に operation ID とともに採番し、global D1 の
 | 条件 | 種類 |
 | --- | --- |
 | 未対応の形式・サイズ超過 | `BusinessRuleError(UnsupportedMimeType)` / `BusinessRuleError(FileTooLarge)` |
+| アップロードされた SVG が単体の 1 文書として開けない（整形式でない・入れ子が 64 段を超える・breakout tag を含む） | `BusinessRuleError(UnsupportedMimeType)` |
+| サニタイズ後の SVG が単体の 1 文書にならない | `BusinessRuleError(UnsupportedMimeType)` |
+| サニタイズが `HtmlProcessor` の資源の上限（[ADR 013](../adr/013-html-sanitization-policy.md)）を超える SVG | `BusinessRuleError(FileTooLarge)`（`NOTE_HTML_TOO_COMPLEX` を翻訳する） |
+| サニタイズ後の本文が `NoteHtml` の長さの上限を超える SVG | `BusinessRuleError(FileTooLarge)`（`NOTE_CONTENT_TOO_LARGE` を翻訳する。資源のメーターはエスケープ前の長さを課金するので、直列化で 6 倍に伸びる入力はメーターに掛からずここへ届く） |
 | 容量の上限到達 | `BusinessRuleError(StorageQuotaExceeded)` |
 | ノート不在・権限なし | `NotFoundError("NOTE_NOT_FOUND")` |
+| ノートがゴミ箱にある | `BusinessRuleError(NoteIsTrashed)` |
+| 保管の失敗 | `SystemError(ExternalServiceError)` |
 
 ## storeAvatar
 
@@ -359,7 +365,7 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 このユースケースは `IdempotencyStore` による重複排除を行わない。鍵を指定した削除は本質的に冪等（存在しない鍵の削除は成功）であり、加算・減算を伴う集計の購読者（`applyStorageDelta`）とは事情が異なる。むしろ外部ストレージへの書き込みは UoW に入れられないため、先に処理済みを記録すると削除に失敗したイベントが再配送で弾かれ、実体が永久に残る。重複配送で 2 回消えても結果は変わらないので、記録を持たないほうが安全側に倒れる。
 
-削除に失敗し続けた実体は孤児オブジェクトとして残るが、メタデータが存在しないため参照されず、害はない（[domains/storage.md](../domains/storage.md)）。
+削除に失敗し続けた実体は孤児オブジェクトとして残る。メタデータが存在しないので容量にも列挙にも現れないが、**公開配信する purpose（`avatar` / `media`）では鍵を知っている閲覧者に配られ続ける** — 配信口が引くのはオブジェクトストレージだけだからである（[domains/storage.md](../domains/storage.md)）。
 
 ### エラーケース
 
@@ -398,30 +404,36 @@ run 系の共通規則（[usecases/job.md](./job.md)）の判定順に対する�
 
 ### 概要
 
-作成から 30 日が経過し、本文から参照されていないメディアを回収する。scopeで最初のmediaを登録するときに日次taskを自己登録し、そのscope objectのAlarmから呼ぶ。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
+作成から 30 日が経過し、本文から参照されていないメディアを回収する。scopeにmediaが**初めて流入する**とき（`storeMedia` の保管、および `relocateFilesForNote` の `stageTarget` が運ぶ移動）に日次taskを自己登録し、そのscope objectのAlarmから呼ぶ。参照が外れた時刻は保持しないため、起点は作成時刻に取る（[domains/storage.md](../domains/storage.md) の `FilePurpose`）。
 
 ### 入力DTO
 
-`limit: number`（既定100。1件ごとの本文検査に使うAlarm turnのCPU時間を有界にする値）
+`scope: ScopeKey`, `limit: number`（既定100。1 turn が**読む行数**の上限で、`storage.fileDeleted` の発行量もこれで有界にする。CPU の上限はこの値では決まらない — 費用がかかるのは本文解析で、その回数はページに載るファイル数ではなく**ノート数**に従うため（手順 2））, `cursor: StoredFilePurposeCursor | null`（既定 `null`。前の turn が止まったキーセット位置で、`null` は scope の最も古い media から始める）
 
 ### 出力DTO
 
-`collectedCount: number`
+| フィールド | 型 |
+| --- | --- |
+| `collectedCount` | `number` |
+| `nextCursor` | `StoredFilePurposeCursor \| null` |
+
+`nextCursor` は次の turn が再開する位置。走査し切って日次へ戻る turn は `null` を返すので、呼び手は継続が要るかどうかを `collectedCount` から推測せずに観測できる。turn 全体が失敗した turn は `null` ではなく**開始位置をそのまま返す**（エラーケース表）。
 
 ### 処理フロー
 
-1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）
-2. 各ファイルの `noteId` から所属ノートを引き、本文に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
+1. current scope の `StoredFileRepository.listByPurposeOlderThan("media", now - 30 日, limit, cursor)` で走査する。scope内では所有者を絞らないため、所有者を必須とする `listByOwner` ではなくこのクエリを使う（`stored_files_purpose_created_idx` に対応）。`cursor` はその順序上の位置を**排他的**に指し、位置は行ではないので、その行が既に消えていても解決する — 掃引は読んだページの一部を消すのが常態だからである
+2. 各ファイルの `noteId` から所属ノートを引き、**現在の本文と保持している版（`NoteRevision.RETENTION` 件）の本文**に当該ファイルの URL が現れるかを `HtmlProcessor.extractExternalReferences` で調べる。版の本文も参照元に数えるのは、`restoreNoteRevision` が復元できる版が指すメディアを回収すると、復元は成功して画像だけが 404 になるためである（回収の起点は作成時刻なので、本文から外して 30 日経てば版はまだ生きている）。読み取りはファイル単位ではなく**ノート単位**にして 1 turn のあいだ持ち回る — 1 ページは 1 つのノートの画像であることが普通なので、版の数だけ本文解析が増えるのをこれで抑える（`media` の `FileProvenance` は `noteId` を必須で持つため、所属の解決に本文の逆引きは要らない）。持ち回りはそれ自体が上限ではない（ページがファイル数と同じ数のノートに散れば何も再利用されない）ので、**1 turn が本文を読むノート数にも上限を置く（5 件）**。ノート 1 件あたりの解析は現在の本文＋保持中の版で最大 `RETENTION + 1` 本になるため、この上限が 1 turn の解析回数を 105 本 —「1 候補につき 1 解析」と同じ桁 — に抑える。上限に達したらそのページの残りは読まず、**判定し終えた最後の行を位置にして直後の継続を張る**（位置が前進するので取りこぼしにはならず、後回しになるだけ）。ノート数の上限が縛るのは解析回数であって常駐メモリではない（5 ノート × 21 本 × 800,000 バイトは 84,000,000 文字で、isolate の上限の内側とは言えない）ため、**1 turn が同時に保持する本文の量にも上限を置く（16,000,000 文字）**。次のノートを読む前に判定し、超えていればノート数の上限とまったく同じ経路で打ち切る。数えるのはバイトではなく `String.length` である — 保持しているのは文字列そのもので、V8 の 1 バイト／2 バイト表現によって同じ文字数の実メモリが 1〜2 倍に振れる。判定が読み込みの手前にあるので最悪でも「予算＋ノート 1 件（21 × 800,000 = 16,800,000）≒ 33,000,000 文字」、狭い表現で 33 MB・広い表現で 66 MB に収まり、isolate の 128 MB（[platform/index.md](../platform/index.md)）の内側にある。保持量 0 から始まるので 1 turn は必ず 1 件はノートを読む（予算が原因で永久に前へ進まない状態は作らない）。**ここでは `StorageUrlPolicy.isInternal` で絞らない** — 探しているのはサービス内のストレージを指す URL そのものだからである。このポートが「外部」参照だけを返すのではなく本文中の属性ベースの URL 参照をすべて返すこと（[domains/note.md](../domains/note.md)）が、この経路の前提になっている
 3. 現れないものを `deleteFiles` で削除する
 
-処理後は翌日のtaskを自己登録する。`limit`件に達したときは残件を先に処理するため直後にも継続taskを設定し、完了後に日次へ戻す。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。
+処理後は翌日のtaskを自己登録する。**ページが満ちたとき（またはノート数の上限でページを読み切らずに打ち切ったとき）は残件を先に処理するため直後にも継続taskを設定し**、判定し終えた最後の行の `(createdAt, id)` を位置として task の payload に載せる。完了後に日次へ戻す。継続の条件は「回収できたか」ではなく「まだ検査していない行が残っているか（満ページ、またはノート数の上限で打ち切ったか）」である — 掃引は残すと決めた行をそのまま残すので、回収数を条件にすると、最も古い `limit` 件がすべて本文から参照されている scope（稼働中なら普通の状態）で毎日同じページを読み直し、その後ろの孤児が 1 度も検査されない。カーソルが毎回厳密に前進するので、満ページで直後を張っても spin にはならない。位置を task の payload に置くのは、payload が `(kind, operationId)` の upsert で掃引行そのものと一緒に書かれ、位置の寿命が掃引行の寿命と一致するためである。**読めない payload は失敗させず、先頭からやり直す** — 位置は周期的な全走査の再開位置でしかなく、先頭から読み直せば作業は重複するが取りこぼしはない。逆に失敗させると backoff が回り、上限で scope 唯一の掃引行が `failed` に駐車されて、掃引は自分を張り直せないためその scope の回収が二度と動かなくなる。継続 turn は自分の `now` から 30 日境界を引き直すので、パスの途中で境界を越えた行はカーソルの先（まだ読んでいない側）に並び、同じパスの継続 turn が判定する。大量の低優先media taskがsecurity cleanupを妨げないようpriorityは期限回収（3）とする。
 
 ### エラーケース
 
 | 条件 | 種類 |
 | --- | --- |
 | `noteId` の指す所属ノートが既に削除済み | 削除対象として扱う |
-| 個々の失敗 | 記録して継続 |
+| 個々の失敗（1 ファイルの判定・削除） | 記録して継続 |
+| turn 全体の失敗 | 記録して翌日の掃引を張り直し、`collectedCount: 0` で正常終了する。`backoff` を回して scope 唯一の掃引行を上限で `failed` に駐車させないためで、張り直し自体が失敗したときだけ throw する。**張り直す payload には開始位置を残し**、`nextCursor` にも同じ位置を返す — 位置を捨てると次の turn が先頭へ戻り、恒久的に失敗するページを毎日読み直してその後ろへ永久に到達しなくなる |
 
 ## relocateFilesForNote
 
@@ -462,7 +474,7 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 
 ### 入力DTO
 
-`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
+`noteId`, `scope: ScopeKey`, `operationId: string`（追随する purge の operation ID。継続行 `(kind, operationId)` の鍵）, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -470,10 +482,12 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`StoredFileRepository.listDeletableByNote(noteId, 100)` で `purpose` が `source` / `media` / `reference` のファイルを最大100件列挙する。`artifact` は対象にしない
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`StoredFileRepository.listDeletableByNote(noteId, 100)` で `purpose` が `source` / `media` / `reference` のファイルを最大100件列挙する。`artifact` は対象にしない
 2. `deleteFiles(fileIds, deletionOperationId)` を呼んで削除する（各`storage.fileDeleted`へ同じtokenを引き継ぐ）
-3. 100件なら同じUoWで`storage.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。100件未満になったturnから`ReferenceImportRecordRepository.deleteByNote(noteId, 100)`で取得記録と要約を最大100件ずつ消し、100件なら同じtaskを再登録する（[ADR 014](../adr/014-import-result-provenance.md)）
-4. 両集合が100件未満になったときだけ完了する。削除済み行は次回に現れず、同じoperation/tokenで再実行しても結果は変わらない（冪等）
+3. **列挙したページが 100 件なら**同じUoWで`storage.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。**再登録の priority は turn の出自で決める** — `deletionOperationId` が非 null なら security cleanup（0）、null なら期限回収（3）とする。class 0 は障壁が待つ削除 turn のためのもので、通常の完全削除（ゴミ箱の手動空け・保持期限の掃引）まで class 0 に入れると、class 内には fairness が無い（同一 class は `(dueAt, kind, operationId)` だけで並ぶ）ぶん [platform/index.md](../platform/index.md) の飢餓保証が崩れる。判断の主語は `listDeletableByNote` が返した件数であって削除できた件数ではない — 別の turn が先に消した行はページを縮めずに削除数だけを縮めるので、削除数で判断すると残りがあるのに継続が止まる（tag / integration は行そのものを消すので両者が一致し、この曖昧さがない）。100件未満になったturnから`ReferenceImportRecordRepository.deleteByNote(noteId, 100)`で取得記録と要約を最大100件ずつ消し、100件なら同じtaskを再登録する（[ADR 014](../adr/014-import-result-provenance.md)）
+4. 両集合が100件未満になったときだけ、同じUoWで`storage.noteDeleteContinued`の継続task行を`ScopeTaskScheduler.complete`する — これが継続の連鎖を止める唯一の手段で、呼ばなければ scope-task runner が同じ行を claim し続ける。削除済み行は次回に現れず、同じoperation/tokenで再実行しても結果は変わらない（冪等）
+
+手順 1 で `assertOwner` を使わないのは、それが完了済みの障壁を拒否する述語だからである。障壁を完了させるのは Note 自身の ack で、その ack が待った purge の `note.purged` はリレーがそのあと配送するため、完了と fan-out は必ず競合する。完了済みを通してよいのは、この追随者が receipt に触れず purge 済みノートの行を消すだけだからである（`deleteFilesByOwner` のように障壁へ ack する経路は `assertOwner` のまま）。
 
 ### エラーケース
 
@@ -501,7 +515,7 @@ scope cleanup commandに従って所有file metadataを回収する。継続はc
 ### 処理フロー
 
 1. 入力`scope`から`StorageOwner`を組み立てる。各UoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼び、`StoredFileRepository.listByOwner` を `batchSize` 件読んで`deleteFiles(fileIds, deletionOperationId)`を呼ぶ
-2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { scope, deletionOperationId }` を 1 件だけ**、その削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
+2. まだ残りがあれば、**継続要求 `storage.ownerDeleteContinued { deletionOperationId }` を 1 件だけ**、その削除と同じ scope-local `UnitOfWorkProvider.run` の中で `scheduled_tasks` に積み、Alarm を再設定する。この継続要求の実行者は本ユースケースだけである
 3. 対象が残っているのにそのバッチで 1 件も削除できなかった場合は新しい継続要求を積まず、現在taskをbackoffする。上限到達時は `failed` + global運用通知とする。**対象が 0 件だった場合はこれに当たらない** — 仕事が尽きた正常な終端なので、継続を積まずに成功として返る（[domains/index.md](../domains/index.md) の「継続要求」）
 
 `batchSize` の既定 100 は、**1 回で発行するイベント数**を抑えるための上限である。`deleteFiles` はファイル 1 件につき `storage.fileDeleted` を出し、その購読者（`deleteStoredObjects`）が R2 の実体を消す。性能上の性質（1 turn の SQL 文数がバッチ件数に比例しないこと）はここでは扱わない — 実行基盤の設計目標として [platform/index.md](../platform/index.md) の `## 実行予算と分割単位` → `### Scope DO` に置き、全バックエンドに課す契約のほうは観測可能な性質として [testcases/storage/deleteFilesByOwner.md](../testcases/storage/deleteFilesByOwner.md) に置く（[ADR 056](../adr/056-performance-budget-placement.md)）。

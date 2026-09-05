@@ -23,6 +23,7 @@ import { createD1WorkspaceDirectoryBatchReader } from "../../adapters/cloudflare
 import { createD1WorkspaceDirectoryProjectionWriter } from "../../adapters/cloudflare/d1/repositories/workspaceDirectoryProjectionWriter";
 import { createD1WorkspaceSlugReservationStore } from "../../adapters/cloudflare/d1/repositories/workspaceSlugReservationStore";
 import { createCloudflareAppliedOperationStore } from "../../adapters/cloudflare/do/repositories/appliedOperationStore";
+import { createCloudflareBackupRecordRepository } from "../../adapters/cloudflare/do/repositories/backupRecordRepository";
 import { createCloudflareInvitationRepository } from "../../adapters/cloudflare/do/repositories/invitationRepository";
 import { createCloudflareLlmUsageRepository } from "../../adapters/cloudflare/do/repositories/llmUsageRepository";
 import { createCloudflareMembershipRemovalPreparationStore } from "../../adapters/cloudflare/do/repositories/membershipRemovalPreparationStore";
@@ -37,6 +38,7 @@ import { createCloudflareScopeCleanupAdmissionStore } from "../../adapters/cloud
 import { createCloudflareScopeTaskScheduler } from "../../adapters/cloudflare/do/repositories/scopeTaskScheduler";
 import { createCloudflareStorageQuotaRepository } from "../../adapters/cloudflare/do/repositories/storageQuotaRepository";
 import { createCloudflareStoredFileRepository } from "../../adapters/cloudflare/do/repositories/storedFileRepository";
+import { createCloudflareTagAssignmentRepository } from "../../adapters/cloudflare/do/repositories/tagAssignmentRepository";
 import { createCloudflareWorkspaceDeletionManifestStore } from "../../adapters/cloudflare/do/repositories/workspaceDeletionManifestStore";
 import { createCloudflareWorkspaceOperationLockStore } from "../../adapters/cloudflare/do/repositories/workspaceOperationLockStore";
 import { createCloudflareWorkspaceRepository } from "../../adapters/cloudflare/do/repositories/workspaceRepository";
@@ -58,6 +60,7 @@ import {
   createAutocommitSession,
   type SqlSession,
 } from "../../adapters/cloudflare/sql/session";
+import { createHtmlProcessor } from "../../adapters/html/htmlProcessor";
 import { createScryptPasswordHasher } from "../../adapters/memory/passwordHasher";
 import { createNodeSecureTokenGenerator } from "../../adapters/memory/secureTokenGenerator";
 import {
@@ -236,6 +239,9 @@ export function createCloudflareRuntime(
   });
 
   const passwordHasher = createScryptPasswordHasher();
+  // Stateless and provider-independent: the same adapter the reference
+  // runtime uses, so the sanitize policy cannot diverge between backends.
+  const htmlProcessor = createHtmlProcessor();
   const secureTokenGenerator = createNodeSecureTokenGenerator();
   const shareTokenProtector =
     createWebCryptoShareTokenProtector(shareTokenKeyRing);
@@ -324,6 +330,13 @@ export function createCloudflareRuntime(
         }),
         llmUsageRepository: createCloudflareLlmUsageRepository({ session }),
         storedFileRepository: createCloudflareStoredFileRepository({ session }),
+        tagAssignmentRepository: createCloudflareTagAssignmentRepository({
+          session,
+          scope,
+        }),
+        backupRecordRepository: createCloudflareBackupRecordRepository({
+          session,
+        }),
         workspaceRepository: createCloudflareWorkspaceRepository({ session }),
         membershipRepository: createCloudflareMembershipRepository({ session }),
         invitationRepository: createCloudflareInvitationRepository({ session }),
@@ -385,6 +398,7 @@ export function createCloudflareRuntime(
           namespace: objectNamespace,
         }),
         noteRouteStore: createD1NoteRouteStore({ session, clock }),
+        publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         identityUniqueDirectory: createD1IdentityUniqueDirectory({
           session,
           clock,
@@ -393,6 +407,7 @@ export function createCloudflareRuntime(
         loginAttemptStore: createD1LoginAttemptStore({ session, clock }),
         oauthStateStore: createD1OAuthStateStore({ session, clock }),
         objectStorage,
+        htmlProcessor,
         signInOAuthClient: createSignInOAuthClient(oauth, config.appUrl),
         oauthDevMode: oauth.mode === "dev",
         userReader: createD1UserRepository({ session }),
@@ -443,6 +458,11 @@ export function createCloudflareRuntime(
         ...sharedDeps,
         globalUnitOfWorkProvider: globalUnitOfWorkProvider(),
         scopeUnitOfWorkProvider: scopeUnitOfWorkProvider(),
+        // Global plane only. Each scope object also collects into an
+        // outbox of its own (`storage.fileDeleted`, `note.purged` and
+        // its fan-out), and this wiring has no reader for those —
+        // `application/cleanup/participants.ts` declares the gap, and
+        // spec/platform/index.md holds the design that closes it.
         outboxRepository: createD1OutboxRepository({ session, clock }),
         idempotencyStore: createD1IdempotencyStore({ session, clock }),
         maintenanceRunStore: createD1GlobalMaintenanceRunStore({
@@ -463,10 +483,11 @@ export function createCloudflareRuntime(
           requiredFinalizeReceipts: REQUIRED_FINALIZE_RECEIPTS,
         }),
         noteRouteFanOutReader: createD1NoteRouteFanOutReader({ session }),
-        noteRouteResolver: createD1NoteRouteStore({ session, clock }),
+        noteRouteStore: createD1NoteRouteStore({ session, clock }),
         publicNoteProjectionWriter: createD1PublicNoteProjectionWriter(session),
         scopeTaskQueue: createCloudflareScopeTaskQueue({ session }),
         objectStorage,
+        htmlProcessor,
         workspaceDirectoryProjectionWriter:
           createD1WorkspaceDirectoryProjectionWriter({ session, clock }),
         workspaceSlugReservationStore: createD1WorkspaceSlugReservationStore({

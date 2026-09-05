@@ -168,9 +168,15 @@ type TagAssignmentPage = Readonly<{
 }>;
 ```
 
+**`listByNote` は必ず `AssignmentId` の昇順で返す。** 順序が無ければ同じノートの読み取りがバックエンド間でも再読の間でも一致せず、比較できるのは集合だけになる。カーソルを持たないので昇順であること以外の要求はない。
+
+**`deleteByNote` は同じ `AssignmentId` 昇順の先頭から最大 `limit` 件を消す。** どの `limit` 件を消すかは契約であってバックエンドの裁量ではない — 途中まで消した時点の残りがバックエンド間で一致し、`listByNote` で観測できることがそのまま有界削除の検証手段になる。
+
 **`listByTag` は必ず `noteId` の昇順で返す。** 順序は契約であって実装の裁量ではない — 読み取りモデルのタグのファンアウト（[usecases/note.md](../usecases/note.md) の `projectNoteChanges`）が `afterNoteId` をカーソルにしてページを進めるため、順序が安定しないとノートを取りこぼす。索引は `tag_assignments_tag_note_uq` (`tag_id`, `note_id`) がそのまま使える（[database/index.md](../database/index.md)）。
 
 `listByTag` / delete / reassignはいずれも最大200件のpage/batchだけを扱う。全件を返す契約は提供しない。scope cleanup用`deleteByScope`もTagが同scopeであるassignmentを最大200件だけ消す。delete/reassign batchは影響Noteを返し、同じUoWでprojection revisionをbumpできるようにする。
+
+`insert` は 2 つの一意制約を別の種類のエラーへ写す。`(tagId, noteId)` の重複は呼び手が受け入れられる衝突なので `ConflictError("ASSIGNMENT_ALREADY_EXISTS")`、`AssignmentId` の再利用は採番の誤りなので `SystemError(DatabaseError)` とする。両者を 1 つのエラーに畳むと、直すべき事故に対して「再試行せよ」と答えることになる（同じ整理を `BackupRecordRepository` の `BACKUP_RECORD_ALREADY_EXISTS` にも置く。[domains/integration.md](./integration.md)）。
 
 ### TagOperationStore
 

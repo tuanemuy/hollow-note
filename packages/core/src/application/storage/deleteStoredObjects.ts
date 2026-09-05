@@ -11,6 +11,12 @@ import type { WorkerContainer } from "../di/types";
  * Idempotence basis (no `IdempotencyStore`): deleting a key is
  * idempotent, and the key travels in the event, so a redelivery neither
  * needs the row back nor does anything new.
+ *
+ * TC-storage-074 — the same `storage.fileDeleted` reaching Usage's
+ * `applyStorageDelta` (UC-usage-003) after this subscriber returns it
+ * unprocessed — lands with that subscriber, in issue #6. What is fixed
+ * here is the half this slice owns: that no delivery is ever marked
+ * processed (TC-storage-069 / TC-storage-070).
  */
 export async function deleteStoredObjects(
   event: FileDeletedEvent,

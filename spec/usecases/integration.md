@@ -383,7 +383,7 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 入力DTO
 
-`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
+`noteId`, `scope: ScopeKey`, `operationId: string`（追随する purge の operation ID。継続行 `(kind, operationId)` の鍵）, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -391,9 +391,11 @@ Drive からの取得は記録所有者（`BackupRecord.userId`）の連携ト�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録する
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認し（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）、`BackupRecordRepository.deleteByNote(noteId, 100)` を1回実行する。100件なら同じscope UoWで`integration.noteDeleteContinued { noteId, deletionOperationId }`を再登録し（**再登録の priority は turn の出自で決める** — `deletionOperationId` が非 null なら security cleanup（0）、null なら期限回収（3）とする。class 0 は障壁が待つ削除 turn のためのもので、通常の完全削除まで class 0 に入れると、class 内には fairness が無い（同一 class は `(dueAt, kind, operationId)` だけで並ぶ）ぶん [platform/index.md](../platform/index.md) の飢餓保証が崩れる）、100件未満なら同じUoWでその継続task行を`ScopeTaskScheduler.complete`する — これが継続の連鎖を止める唯一の手段で、呼ばなければ scope-task runner が同じ行を claim し続ける
 2. Drive 上のファイルは消さない。バックアップは利用者自身の Drive にあり、その扱いは利用者に委ねる（IN-09 と同じ整理）
 3. 同じイベントを 2 回受け取っても、2 回目は削除対象が既にないため 0 件削除で終わり、結果は変わらない
+
+手順 1 で `assertOwner` を使わないのは、それが完了済みの障壁を拒否する述語だからである。障壁を完了させるのは Note 自身の ack で、その ack が待った purge の `note.purged` はリレーがそのあと配送するため、完了と fan-out は必ず競合する。完了済みを通してよいのは、この追随者が receipt に触れず purge 済みノートの行を消すだけだからである（`deleteBackupRecordsByUser` のように障壁へ ack する経路は `assertOwner` のまま）。
 
 ### エラーケース
 
@@ -447,7 +449,7 @@ account deletion operationのglobal cleanupまたはscope cleanupとして、連
 ### 処理フロー
 
 1. `ExternalConnectionRepository.listByUser(userId)` を引き、`ActiveConnection` それぞれについて `CredentialResolver.resolve` を呼び、`resolved` なら平文で `IntegrationOAuthClient.revoke` を試みる（`disconnectIntegration` の手順 2 と同じ。`reauthorizationRequired` なら取り消し要求を省き、`expired` も保存しない。失敗しても続行する）
-2. `scope = null` のglobal cleanupはD1で `ExternalConnectionRepository.deleteByUser(userId, 100)` を1回呼ぶ。100件なら`integration.userCleanupContinued { operationId, userId, scope: null }`をglobal Queueへ再登録する。scope指定時は`ScopeCleanupAdmissionStore.assertOwner(operationId)`を確認し、そのobjectの `BackupRecordRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じpayloadをscope Alarmへ再登録する。削除件数が100未満になった側だけ完了ackを返し、orchestratorがglobalと全scopeのackを待つ
+2. `scope = null` のglobal cleanupはD1で `ExternalConnectionRepository.deleteByUser(userId, 100)` を1回呼ぶ。100件なら`integration.userCleanupContinued { operationId, userId }`をglobal Queueへ再登録する。scope指定時は`ScopeCleanupAdmissionStore.assertOwner(operationId)`を確認し、そのobjectの `BackupRecordRepository.deleteByUser(userId, 100)` を1回だけ呼ぶ。100件なら同じpayloadをそのscopeのAlarmへ再登録する。どちらの分岐かは payload ではなく届いた経路が決める — scope Alarm の行は宛先scopeを行そのものが持ち、global Queue で運ぶ側に宛先scopeは無い（[domains/index.md](../domains/index.md) の「継続要求」）。削除件数が100未満になった側だけ完了ackを返し、orchestratorがglobalと全scopeのackを待つ
 3. Drive 上のバックアップファイルは消さない（IN-09。`deleteBackupRecordsForNote` と同じ整理）
 4. イベントは発行しない（`integration.disconnected` は監査のためのイベントであり、実行中ジョブの取り消しは `deleteAccount` の手順 3 で済んでいる）
 

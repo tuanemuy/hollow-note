@@ -27,6 +27,8 @@ export const SCOPE_TABLES = {
   noteProjectionRevisions: "note_projection_revisions",
   noteRevisions: "note_revisions",
   storedFiles: "stored_files",
+  tagAssignments: "tag_assignments",
+  backupRecords: "backup_records",
   storageQuotas: "storage_quotas",
   llmUsages: "llm_usages",
   noteSearch: "note_search",
@@ -48,11 +50,12 @@ export const SCOPE_TABLES = {
  */
 export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
   // The object's own ScopeKey, pinned on first contact. Columns that act
-  // as a scope key — `notes.owner_type`/`owner_id` and this row — are
-  // checked against it on both restore and save. The attribution columns
-  // of `stored_files` / `storage_quotas` / `llm_usages` are not scope
-  // keys and are not checked; the physical separation rests on this pin
-  // alone.
+  // as a scope key — `notes.owner_type`/`owner_id`,
+  // `tag_assignments.scope_type`/`scope_id` and this row — are checked
+  // against it on both restore and save. The attribution columns of
+  // `stored_files` / `storage_quotas` / `llm_usages` and
+  // `backup_records.user_id` are not scope keys and are not checked;
+  // the physical separation rests on this pin alone.
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.scopeIdentity} (
      id integer PRIMARY KEY CHECK (id = 0),
      scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),
@@ -293,10 +296,65 @@ export const SCOPE_SCHEMA_STATEMENTS: readonly string[] = [
      ON ${SCOPE_TABLES.storedFiles} (owner_type, owner_id, purpose)`,
   `CREATE INDEX IF NOT EXISTS stored_files_expires_idx
      ON ${SCOPE_TABLES.storedFiles} (expires_at) WHERE retention = 'ephemeral'`,
+  // `id` is part of the key because the orphan sweep's keyset walk orders
+  // by `(created_at, id)` and resumes on the row value
+  // `(created_at, id) > (?, ?)`, which this index answers as the lower
+  // bound of one seek: a scope with many rows sharing one instant would
+  // otherwise push the tie-break into a temporary B-tree.
   `CREATE INDEX IF NOT EXISTS stored_files_purpose_created_idx
-     ON ${SCOPE_TABLES.storedFiles} (purpose, created_at)`,
+     ON ${SCOPE_TABLES.storedFiles} (purpose, created_at, id)`,
   `CREATE INDEX IF NOT EXISTS stored_files_note_idx
      ON ${SCOPE_TABLES.storedFiles} (note_id) WHERE note_id IS NOT NULL`,
+
+  // Neither foreign key the spec names is declared, for two different
+  // reasons. `note_id` never had one: Note is another domain, and a
+  // purged note's assignments are reclaimed by the `note.purged` fan-out
+  // rather than by a cascade (spec/database/index.md). `tag_id` →
+  // `tags.id` ON DELETE CASCADE is dropped by this file's no-FOREIGN-KEY
+  // rule, not by `tags` being absent until the curation slice — that
+  // cascade is a safety net the design never divides work by
+  // (spec/domains/tag.md), so the slice adding `tags` reclaims
+  // assignments through `deleteBatchByTag` / `deleteByScope` in code and
+  // does not restore the constraint.
+  // `scope_type`/`scope_id` is a scope key, not attribution: an
+  // assignment lives in the scope of the note it is on
+  // (spec/domains/tag.md), so the repository checks it against
+  // `_scope_identity` on both save and restore.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.tagAssignments} (
+     id text PRIMARY KEY,
+     tag_id text NOT NULL,
+     note_id text NOT NULL,
+     scope_type text NOT NULL CHECK (scope_type IN ('user', 'workspace')),
+     scope_id text NOT NULL,
+     assigned_by text NOT NULL,
+     assigned_at integer NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS tag_assignments_tag_note_uq
+     ON ${SCOPE_TABLES.tagAssignments} (tag_id, note_id)`,
+  `CREATE INDEX IF NOT EXISTS tag_assignments_note_idx
+     ON ${SCOPE_TABLES.tagAssignments} (note_id)`,
+  `CREATE INDEX IF NOT EXISTS tag_assignments_tag_assigned_idx
+     ON ${SCOPE_TABLES.tagAssignments} (tag_id, assigned_at DESC)`,
+
+  // `user_id` names the connection whose Drive holds the copy; it is
+  // attribution, not a scope key — the row lives in the scope of its
+  // note, which is why `note_id` is the only way in.
+  `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.backupRecords} (
+     id text PRIMARY KEY,
+     user_id text NOT NULL,
+     note_id text NOT NULL,
+     source_file_id text NOT NULL,
+     external_file_id text NOT NULL,
+     web_view_url text NOT NULL,
+     checksum_value text NOT NULL,
+     version integer NOT NULL DEFAULT 0,
+     backed_up_at integer NOT NULL,
+     updated_at integer NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS backup_records_note_file_uq
+     ON ${SCOPE_TABLES.backupRecords} (note_id, source_file_id)`,
+  `CREATE INDEX IF NOT EXISTS backup_records_user_idx
+     ON ${SCOPE_TABLES.backupRecords} (user_id)`,
 
   `CREATE TABLE IF NOT EXISTS ${SCOPE_TABLES.storageQuotas} (
      subject_type text NOT NULL CHECK (subject_type IN ('user', 'workspace')),

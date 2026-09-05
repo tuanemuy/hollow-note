@@ -37,20 +37,37 @@ const absent = (reason: string, handoff: string): CleanupAbsentReason => ({
 export const STORAGE_OWNER_DELETE_TASK_KIND = "storage.ownerDeleteContinued";
 /** Scope-task kind of the usage cleanup turns. */
 export const USAGE_USER_CLEANUP_TASK_KIND = "usage.userCleanupContinued";
+/**
+ * Scope-task kind of the note purge turns (`note.ownerPurgeContinued`,
+ * spec/domains/index.md「継続要求」). One row per cleanup operation, so a
+ * turn replayed after a lost response rewrites the row instead of
+ * forking a second series.
+ */
+export const NOTE_OWNER_PURGE_TASK_KIND = "note.ownerPurgeContinued";
 
 export const personalCleanupParticipants = {
   storage: { kind: "participant", taskKind: STORAGE_OWNER_DELETE_TASK_KIND },
   usage: { kind: "participant", taskKind: USAGE_USER_CLEANUP_TASK_KIND },
   job: absent("The Job aggregate does not exist", "#5"),
-  note: absent("`deleteNotesForOwner` does not exist", "editing / curation"),
-  tag: absent("The Tag aggregate does not exist", "curation"),
-  backup: absent("BackupRecord does not exist", "#4"),
+  note: { kind: "participant", taskKind: NOTE_OWNER_PURGE_TASK_KIND },
+  // Both aggregates exist only on their delete side, which the
+  // `note.purged` fan-out drives one note at a time. Neither has the
+  // scope-wide sweep a barrier can wait on — `deleteTagsForScope` and
+  // the per-user record cleanup — so neither may acknowledge here.
+  tag: absent("Nothing sweeps a whole scope's tags", "curation"),
+  backup: absent("Nothing sweeps a user's backup records", "#4"),
   localProjection: absent(
     "Nothing enqueues deletion-driven local projection tasks; author redaction is counted as a manifest item ack instead",
-    "editing / curation",
+    "curation",
   ),
+  // Everything the scope plane collects rides this outbox: the
+  // `storage.fileDeleted` of each reclaimed file, and the `note.purged`
+  // that fans out to the three followers above. The reference runtime
+  // relays it because its outbox is one table; a deployment whose scope
+  // objects hold their own (spec/platform/index.md) needs a reader per
+  // scope before either of those arrives.
   outbox: absent(
-    "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`",
+    "The scope plane has no reader for its own outbox; delivery of `storage.fileDeleted` rests on the idempotent `deleteStoredObjects`, and the `note.purged` fan-out has no second path at all",
     "the slice adding a scope outbox read side",
   ),
 } as const satisfies Record<

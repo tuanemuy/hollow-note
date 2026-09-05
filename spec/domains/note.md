@@ -258,6 +258,7 @@ NoteAccess =
 | --- | --- | --- | --- |
 | `evaluate` | `note: Note, viewer: NoteViewer, credential: ShareCredential, now: Date` | `NoteAccess` | 下表の順に判定する |
 | `ensureCanEdit` | `note: Note, viewer: NoteViewer` | `void` | 編集不可なら `BusinessRuleError(AccessDenied)` |
+| `ensureCanDelete` | `note: Note, viewer: NoteViewer` | `void` | 削除不可なら `BusinessRuleError(AccessDenied)`。`ensureCanEdit` と分けるのは、`WorkspaceAuthorization` が `deleteNote` と `editNote` に別の最小ロールを与えた時点で 2 つの権能が離れるため |
 | `isPassValid` | `link: ShareLink, pass: SharePass \| null, now: Date` | `boolean` | `pass` が `null`、`link.password` が `null`、`tokenHash` が不一致、発行から 24 時間経過、`pass.passwordUpdatedAt` が `link.password.updatedAt` と異なる、のいずれかなら偽 |
 | `issuePass` | `link: ShareLink, now: Date` | `SharePass` | パスワード照合に成功した直後に発行する |
 
@@ -290,13 +291,28 @@ NoteAccess =
 
 **依存するポート**: なし
 
+### UrlSchemePolicy
+
+**責務**: [ADR 013](../adr/013-html-sanitization-policy.md) の「許可する URL スキーム」表を判定にする。
+
+| メソッド | 引数 | 戻り値 | 処理 |
+| --- | --- | --- | --- |
+| `isAllowedUrl` | `url: string, kind: "navigation" \| "resource"` | `boolean` | 制御文字と空白を取り除いてからスキームを読み、表の該当行に載っていれば真。スキームを持たない値（フラグメント・ルート相対・相対パス）は常に真。`resource` は加えて、許可された MIME の `data:` を真とする |
+| `filterAllowedSrcset` | `value: string` と拒否の通知 | `string \| null` | `srcset` を候補単位（コンマではなく HTML の候補規則）に分け、`isAllowedUrl(_, "resource")` に通らない候補を落として組み直す。1 つも残らなければ `null` |
+
+ブラウザーは URL のスキームを読むときに ASCII の制御文字と空白を無視するため、`java&#10;script:` のような値は素朴な前置き比較を素通りして遷移する。判定は必ずこの表を通す。
+
+**適用点は 1 つではない。** `HtmlProcessor` は保存する本文にこの表を適用し、編集画面は保存前の本文を DOM に載せる前に同じ表を適用する。判定をドメインサービスとして 1 本に集約するのは、適用点ごとに規則が分かれると、面が保存より**多く**落とす（読めていた本文が消える）向きにも**少なく**落とす（拒むはずのスキームが載る）向きにも壊れるためである。
+
+**依存するポート**: なし
+
 ## ポート
 
 ### HtmlProcessor
 
 **目的**: 生の HTML をサニタイズし、保存に必要な派生情報を 1 度の走査で取り出す。
 
-サニタイズ規則の正典は [ADR 013](../adr/013-html-sanitization-policy.md)（許可する要素・属性・URL スキームの列挙、CSS の内容制約）であり、`HtmlProcessor` はその唯一の適用点である。取り込み・編集・メディア挿入・SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）はいずれもこのポートを通す。
+サニタイズ規則の正典は [ADR 013](../adr/013-html-sanitization-policy.md)（許可する要素・属性・URL スキームの列挙、CSS の内容制約）であり、**保存する本文に対する唯一の適用点が `HtmlProcessor`** である（URL スキーム表だけは表示前の面も適用するため、判定は上の `UrlSchemePolicy` を共有する）。取り込み・編集・メディア挿入・SVG ファイルの保管（[usecases/storage.md](../usecases/storage.md) の `storeMedia`）はいずれもこのポートを通す。
 
 ```ts
 interface HtmlProcessor {
@@ -325,7 +341,7 @@ type TextNodeEdit = Readonly<{ path: string; expected: string; text: string }>;
 
 `expected` は編集前にそのノードが持っていた文字列。`editTextNodes` は経路が解決できない、または現在の文字列が `expected` と一致しない場合、その編集だけを適用せず `SkippedEdit` として返す。要素の追加・削除・並べ替えは行わない。空文字列への更新はノードを削除せず空のまま残す。
 
-**`<style>` の子テキストノードには経路を割り当てない**。`<style>` の中身はテキストノードなので、経路を与えるとビジュアルエディタから CSS を直接書き換えられ、[ADR 013](../adr/013-html-sanitization-policy.md) の内容制約（`position: fixed` / `sticky` / `@import` の除去）を迂回して再注入できてしまう。ビジュアルモードは「テキストノードのみを書き換える」（[ADR 006](../adr/006-html-content-model.md)）が、その「テキスト」は読み物としての文字列を指し、スタイルシートの中身は含まない。経路が割り当たらないため、この位置を指す編集は `pathNotFound` として `skipped` に落ちる。呼び出し側は結果を `process` に通してから保存する（[usecases/note.md](../usecases/note.md) の `applyTextNodeEdits`）。
+**`<style>` と `<script>` の子テキストノードには経路を割り当てない**。どちらも中身はテキストノードだが、運んでいるのは読み物ではなく CSS / スクリプトのソースである。`<style>` に経路を与えるとビジュアルエディタから CSS を直接書き換えられ、[ADR 013](../adr/013-html-sanitization-policy.md) の内容制約（`position: fixed` / `sticky` / `@import` の除去）を迂回して再注入できてしまう。`<script>` は ADR 013 が内容ごと除去する要素なので、そもそも経路の対象にならない。ビジュアルモードは「テキストノードのみを書き換える」（[ADR 006](../adr/006-html-content-model.md)）が、その「テキスト」は読み物としての文字列を指し、スタイルシート・スクリプトの中身は含まない。経路が割り当たらないため、この位置を指す編集は `pathNotFound` として `skipped` に落ちる。呼び出し側は結果を `process` に通してから保存する（[usecases/note.md](../usecases/note.md) の `applyTextNodeEdits`）。
 
 ```ts
 type EditTextNodesResult = Readonly<{ html: NoteHtml; skipped: readonly SkippedEdit[] }>;
@@ -368,7 +384,11 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 内部と外部の切り分けは呼び出し側が行う。判定は `StorageUrlPolicy.isInternal`（[domains/storage.md](./storage.md)）を使う。参照取り込みジョブを登録するかどうかも、抽出結果のうち内部を指さないものが 1 件以上あるかで判定する。
 
-**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）。壊れた HTML は例外にせず、補正した結果を返す
+**資源で有界**
+
+`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・節点数・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 5 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(HtmlTooComplex)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。節点数を除く 4 つは本文の長さの上限から到達しうるどの文書よりも高いところにある。節点数だけは正当な本文が届きうる高さにあり、その取引（長さの上限の内側でも拒まれる形がある）は ADR 013 が持つ。いずれにせよ「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
+
+**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）、`BusinessRuleError(HtmlTooComplex)`（資源の上限を超えた入力）。壊れた HTML は例外にせず、補正した結果を返す
 
 ### PdfRenderer
 
@@ -409,11 +429,14 @@ interface NoteExportComposer {
 interface NoteRepository extends TransactionalRepository<Note, NoteId> {
   listByIds(ids: readonly NoteId[]): Promise<readonly Note[]>;
   listPurgeable(now: Date, limit: number): Promise<readonly TrashedNote[]>;
+  findNextPurgeDeadline(): Promise<Date | null>;
   countByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all"): Promise<number>;
   listByOwner(owner: NoteOwner, lifecycle: "active" | "trashed" | "all", pagination: Pagination): Promise<PaginationResult<Note>>;
 }
 ```
 
+- `listPurgeable` の順序は `purgeAfter ASC, id ASC` である。保持期限の回収は最も長く待ったノートから行うため、この順序は契約であって実装の都合ではない。`id` のタイブレークが順序を全順序にする
+- `findNextPurgeDeadline` は現在時刻を見ない。ゴミ箱にあるノートの `purgeAfter` の最小値を返し、ゴミ箱が空なら `null` を返す。「保持期限の回収に次に仕事があるのはいつか」を答える口であり、scope の Alarm はこの値から張る — **まだ開いていない窓こそがこのメソッドの用途**なので、`listPurgeable` と違って `now` で絞らない。同じ UoW で `active` → `trashed` に反転させたノートも答えに含める（`trashNote` 手順 5。[database/index.md](../database/index.md) の「同一 UoW の読み」(3)）
 - `listByOwner` の順序は `updatedAt DESC, id DESC` である。`id` のタイブレークが順序を全順序にする — 半順序に対してオフセットページングを掛けると、同じ行が 1 ページ目に出て次のページから消えるといった重複・欠落が起きる。ここを入口に列挙する projection の再構築は、失敗もせずにノートを取りこぼすことになる
 - `listByOwner` の `lifecycle` は `countByOwner` と同じ 3 値を取る。ゴミ箱だけを対象にする `emptyTrash`、生死を問わない `deleteNotesForOwner` / `rebuildNoteProjection` がそれぞれ別の値で呼ぶため、件数と一覧で絞り込みの語彙を揃える
 - repository は現在の ScopeKey に束縛され、scope をまたぐ全件走査を提供しない。local projection の再構築は `listByOwner(currentScope, "all", ...)`、public projection の再構築は global D1 の `note_routes` を入口にする
@@ -667,7 +690,7 @@ interface NoteMovePort {
 }
 ```
 
-`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`が3表の削除を1 transactionで確定できる配置を維持する。冪等はend state（行が消えていること）で満たし、operationへのack行は契約しない — operationは既にrouteを閉じており、比較する世代が残っていないため、再配送は同じend stateへ到達する。
+`reserved` route は作成途中、`purging` は完全削除中なので外部readに解決しない。完全削除は`beginPurge`で到達を閉じる。**`beginPurge` の操作単位の冪等は routeVersion の CAS より先に効く** — 既に同じ `operationId` で `purging` になっている行は `expectedRouteVersion` を比較せずそのまま返る。この順序は契約であって実装の偶然ではない。`resolve` が `purging` を隠す以上、claim し直すことが停止した purge が自分の scope と世代を読み戻す唯一の経路であり、recovery はどの route も持ちえない番兵世代でこれを呼ぶ。CAS を先に置いたバックエンドは、停止した purge をすべて復旧不能（route は `purging` のまま＝ノートは永久に到達不能）にする。他人の operation の行は state（`active` 以外）か CAS で拒まれるので、番兵世代が route を奪うことはない。local再認可・expected Note version/lifecycleが競合した場合、削除前なら同じoperation IDの`abortPurge`だけが`purging → active`へ戻せる。local削除後はabortせずpublic removeと`tombstone`へforward recoveryする。物理分割後もroute・notePurge operation・public 3表を同じNoteId shardへ置き、`removeForPurge`が3表の削除を1 transactionで確定できる配置を維持する。冪等はend state（行が消えていること）で満たし、operationへのack行は契約しない — operationは既にrouteを閉じており、比較する世代が残っていないため、再配送は同じend stateへ到達する。
 
 `resolveMany`は最大500 NoteIdをNoteId hashでshard別にgroupingし、最大32 shardを同時6接続のwaveでbatch queryする。cutover中は旧新generationを読み、routeVersionが大きい行をNoteIdごとに1件へ重複排除する。bulk系は入力source scopeと一致するactive routeだけを選び、別scope / moving / purgingは`notFound`へ積んで、その1つのscope DOだけを呼ぶ。500 件の上限を超える入力は `SystemError(DatabaseError)` になる — 呼び出し側のプログラミングエラーであって並行状態の衝突ではないため `ConflictError` にはしない（`UserBatchReader.resolveMany` の 100 件上限と同じ契約。[domains/identity.md](./identity.md)）。
 
@@ -719,7 +742,7 @@ NoteErrorCode =
   | "InvalidId" | "InvalidTitle" | "ContentTooLarge" | "InvalidStyleMode" | "InvalidOwner"
   | "CannotPublishEmptyNote" | "NotUnlisted" | "ShareLinkRequired"
   | "CannotCaptureEmptyContent" | "CannotMoveWhileProcessing"
-  | "AccessDenied" | "NoteIsTrashed" | "NoteLockedByJob"
+  | "AccessDenied" | "NoteIsTrashed" | "NoteLockedByJob" | "HtmlTooComplex"
 ```
 
 ## ユースケース（概要）

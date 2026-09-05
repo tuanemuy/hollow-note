@@ -10,6 +10,8 @@
 | 「要 LLM 連携」のノート | 引く | `content.status: "awaitingIntegration"` が返る | |
 | 変換に失敗したノート | 引く | `content.status: "failed"` と `failureReason` が返る | |
 | ゴミ箱のノート（所有者） | 引く | 取得できる | |
+| ゴミ箱のノート（所有者） | `trashedAt` を確認する | 移動した時刻が入る。`permissions` は真のままなので、詳細（P-11）と編集（P-12）が「削除済み」を判別できる材料はこれだけである | |
+| ゴミ箱にないノート | `trashedAt` を確認する | `null` が返る | |
 | ゴミ箱のノート（他人） | 引く | `NotFoundError("NOTE_NOT_FOUND")` が投げられる | |
 | ワークスペースの viewer | そのワークスペースのゴミ箱のノートを引く | `NotFoundError("NOTE_NOT_FOUND")` が投げられる（`viewTrash` は editor 以上のため、メンバーでも到達できない） | |
 | ワークスペースの editor | そのワークスペースのゴミ箱のノートを引く | 取得できる（`viewTrash` を持つ） | |

@@ -12,6 +12,7 @@ export const NoteErrorCode = {
   AccessDenied: "NOTE_ACCESS_DENIED",
   NoteIsTrashed: "NOTE_IS_TRASHED",
   NoteLockedByJob: "NOTE_LOCKED_BY_JOB",
+  HtmlTooComplex: "NOTE_HTML_TOO_COMPLEX",
 } as const;
 
 export type NoteErrorCode = (typeof NoteErrorCode)[keyof typeof NoteErrorCode];

@@ -9,6 +9,7 @@ import type { SessionRepository } from "@repo/core/domain/identity/ports/session
 import type { SignInOAuthClient } from "@repo/core/domain/identity/ports/signInOAuthClient";
 import type { UserBatchReader } from "@repo/core/domain/identity/ports/userBatchReader";
 import type { UserRepository } from "@repo/core/domain/identity/ports/userRepository";
+import type { HtmlProcessor } from "@repo/core/domain/note/ports/htmlProcessor";
 import type { NoteRepository } from "@repo/core/domain/note/ports/noteRepository";
 import type { PublicNoteProjectionWriter } from "@repo/core/domain/note/ports/publicNoteProjectionWriter";
 import type { LlmUsageRepository } from "@repo/core/domain/usage/ports/llmUsageRepository";
@@ -136,11 +137,38 @@ export type NoteRouteFanOutReadView = Pick<
   "listByCreatedBy"
 >;
 /**
- * Where a note currently lives. Author redaction fixed its targets by
- * NoteId, and a note may have moved (or been purged) since, so the plane
- * it writes to is re-resolved per target rather than assumed.
+ * The ports a note purge is a saga over, and nothing else.
+ *
+ * A purge spans three stores that cannot share a transaction — the
+ * global route, the scope's own data, and the global public projection —
+ * and both planes have to be able to drive it: the screen purges one
+ * note, while the deletion cleanup and the retention sweep purge a
+ * scope's worth of them from the worker plane. Naming the trio as its
+ * own type is what lets `purgeNote` be reached from either container
+ * without the worker plane taking on the request-path viewer resolution
+ * it has no actor for (`RequestContainer` and `WorkerContainer` both
+ * satisfy it structurally).
  */
-export type NoteRouteResolver = Pick<NoteRouteStore, "resolve">;
+export type NotePurgeContainer = SharedDeps &
+  Readonly<{
+    scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
+    noteRouteStore: NoteRouteStore;
+    publicNoteProjectionWriter: PublicNoteProjectionWriter;
+  }>;
+/**
+ * The half of `HtmlProcessor` a body is only *read* through.
+ *
+ * Sanitizing is a write decision — it produces the html, text, excerpt
+ * and headings a body-write usecase then persists — and no worker-plane
+ * path makes that decision, so the worker container is handed the
+ * reference listing alone. The orphan-media sweep is its only caller:
+ * deciding whether a stored file still appears in a body is a read of
+ * that body, not a rewrite of it.
+ */
+export type HtmlReferenceReader = Pick<
+  HtmlProcessor,
+  "extractExternalReferences"
+>;
 /** Scope-bound read view over notes for detail / minimal-list reads. */
 export type NoteReader = Pick<
   NoteRepository,
@@ -254,6 +282,12 @@ export type MembershipDirectoryReservations = Pick<
  * (`loginAttemptStore`), the OAuth flow state whose `take` is its own
  * atomic step (`oauthStateStore`), and the pure read views above.
  *
+ * `publicNoteProjectionWriter` joins them for the last phase of the
+ * purge saga: the public projection is global, so it belongs to no
+ * scope's unit of work, and `purgeNote` may only tombstone the route
+ * once that removal has committed — the phase therefore runs on the
+ * request that drives the saga forward.
+ *
  * `objectStorage` is here for the same reason: `storeAvatar` writes the
  * bytes *before* the transaction that records the file, and the delivery
  * route reads them back — both request-path work that no unit of work
@@ -273,6 +307,11 @@ export type MembershipDirectoryReservations = Pick<
  * instead of `process.env`, so no request-path code inspects the
  * environment directly.
  *
+ * `htmlProcessor` is here rather than inside a unit-of-work context
+ * because sanitizing is a pure computation over a string: every body-write
+ * usecase runs it *before* opening its transaction, on input it has not
+ * yet decided to keep.
+ *
  * Intentionally does NOT carry `outboxRepository` or `idempotencyStore`:
  * those are worker concerns. A request that needs to enqueue a domain
  * event uses the UoW's `collectEvents`.
@@ -284,10 +323,12 @@ export type RequestContainer = SharedDeps &
     scopeUnitOfWorkProvider: ScopeUnitOfWorkProvider;
     scopeRouter: ScopeRouter;
     noteRouteStore: NoteRouteStore;
+    publicNoteProjectionWriter: PublicNoteProjectionWriter;
     identityUniqueDirectory: IdentityUniqueDirectory;
     loginAttemptStore: LoginAttemptStore;
     oauthStateStore: OAuthStateStore;
     objectStorage: ObjectStorage;
+    htmlProcessor: HtmlProcessor;
     signInOAuthClient: SignInOAuthClient;
     oauthDevMode: boolean;
     userReader: UserReader;
@@ -373,14 +414,25 @@ export type ExpirySweep = Readonly<{
  * a routing-catalog read that the manifest's transaction may not
  * enclose, which is why deletion continuations are worker-plane
  * consumers rather than request-path calls. Author redaction adds the
- * other two halves of that same fan-out: the route resolver that says
+ * other two halves of that same fan-out: `noteRouteStore`, which says
  * where each fixed target lives now, and the public projection, which is
  * global and therefore belongs to no scope's unit of work.
+ *
+ * `noteRouteStore` is the whole port rather than a `resolve` view
+ * because the route saga is what a purge *is*: the deletion cleanup and
+ * the retention sweep both purge notes from this plane, and neither can
+ * claim, abort or tombstone a route through a read (see
+ * {@link NotePurgeContainer}). Author redaction's use of it stays a
+ * `resolve`, by call and not by type.
+ *
  * `scopeTaskQueue` is the runner's only way to learn which scopes have
  * continuation work due — it reads, and the claim still happens inside
  * each scope's unit of work. `objectStorage` is here because reclaiming
  * an object is the subscriber's job, after the metadata row it belonged
- * to is already gone.
+ * to is already gone, and because the orphan-media sweep asks it for the
+ * URL a body would have to name. `htmlProcessor` is the read half of the
+ * same sweep (see {@link HtmlReferenceReader}); the alarm that drives it
+ * arrives on this plane, so the port has to.
  *
  * The four workspace ports are the global half of the workspace-deletion
  * saga: its cleanup
@@ -406,10 +458,11 @@ export type WorkerContainer = SharedDeps &
     identityRemovalReceiptStore: IdentityRemovalReceiptStore;
     accountDeletionManifestStore: AccountDeletionManifestStore;
     noteRouteFanOutReader: NoteRouteFanOutReadView;
-    noteRouteResolver: NoteRouteResolver;
+    noteRouteStore: NoteRouteStore;
     publicNoteProjectionWriter: PublicNoteProjectionWriter;
     scopeTaskQueue: ScopeTaskQueue;
     objectStorage: ObjectStorage;
+    htmlProcessor: HtmlReferenceReader;
     workspaceDirectoryProjectionWriter: WorkspaceDirectoryProjectionWriter;
     workspaceSlugReservationStore: WorkspaceSlugReservationStore;
     invitationRouteStore: InvitationRouteStore;

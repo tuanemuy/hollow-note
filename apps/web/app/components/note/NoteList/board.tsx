@@ -3,9 +3,15 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useOptimistic, useState, useTransition } from "react";
-import { errorTextClass } from "@/components/settings/panelStyles";
+import {
+  dangerButtonClass,
+  errorTextClass,
+  ghostButtonClass,
+  subtleButtonClass,
+} from "@/components/settings/panelStyles";
+import { Alert } from "@/components/ui/Alert";
 import { displayError } from "@/presentation/errorDisplay";
-import { moveNoteFn } from "@/routes/notes/-action";
+import { moveNoteFn, restoreNoteFn, trashNoteFn } from "@/routes/notes/-action";
 import {
   type MoveTarget,
   moveNotePayload,
@@ -16,8 +22,8 @@ import type { NoteListOwner } from "./action";
 /**
  * P-10 の一覧を所有する島（PAGE-p10-007）。
  *
- * 移動は**一覧メンバーシップの変更**（移動元の一覧からノートが消える）
- * なので、CLAUDE.md「Frontend」の所有権の規則どおり親であるこの一覧が
+ * 移動も削除も**一覧メンバーシップの変更**（一覧からノートが消える）な
+ * ので、CLAUDE.md「Frontend」の所有権の規則どおり親であるこの一覧が
  * `useOptimistic` と server function を持つ。行に持たせると、楽観的な
  * 除去が行を先にアンマウントして失敗表示ごと消えてしまう。
  *
@@ -28,10 +34,21 @@ import type { NoteListOwner } from "./action";
 export type NoteRowView = Readonly<{
   noteId: string;
   title: string;
+  /** `trashNote` の `expectedVersion`。画面が見た版をそのまま運ぶ。 */
+  version: number;
+  /** 公開・限定公開のいずれか。削除の確認で警告を出し分ける（ED-09）。 */
+  isPublished: boolean;
   visibilityLabel: string;
   visibilityDotClass: string;
   updatedLabel: string;
   dateLabel: string;
+}>;
+
+/** ゴミ箱へ移した直後の通知。版は「元に戻す」のためだけに持つ。 */
+type TrashedState = Readonly<{
+  noteId: string;
+  title: string;
+  restoreVersion: number;
 }>;
 
 /** 行を開く先は文脈で変わる（PAGE-p10-005「current scope 用 P-11 URL」）。 */
@@ -62,6 +79,9 @@ function withoutNote(
   return current.filter((row) => row.noteId !== noteId);
 }
 
+const rowMenuItemClass =
+  "block w-full rounded-sm px-2 py-1.5 text-left text-sm text-ink transition-colors hover:bg-surface disabled:opacity-55";
+
 export function NoteListBoard({
   rows,
   owner,
@@ -70,14 +90,34 @@ export function NoteListBoard({
   owner: NoteListOwner;
 }) {
   const router = useRouter();
+  // `moveNote` / `deleteNote` はどちらも最小ロールが editor なので、
+  // 1 つの可否で両方を出し分ける。
   const canMove = owner.kind === "personal" || owner.canWrite;
   const moveNote = useServerFn(moveNoteFn);
+  const trashNote = useServerFn(trashNoteFn);
+  const restoreNote = useServerFn(restoreNoteFn);
 
   const [visibleRows, removeRow] = useOptimistic(rows, withoutNote);
   const [isMoving, startMoving] = useTransition();
   const [openMenuNoteId, setOpenMenuNoteId] = useState<string | null>(null);
   const [pickingNoteId, setPickingNoteId] = useState<string | null>(null);
+  const [confirmingNoteId, setConfirmingNoteId] = useState<string | null>(null);
+  const [trashed, setTrashed] = useState<TrashedState | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * 断片を引き直して行の正本を持ち帰る（P-10 状態表「操作実行中」）。整合
+   * の失敗は握り潰す — 操作そのものはもう成立している。
+   *
+   * **成功した往復と落ちた往復の両方から呼ぶ。** 行が運ぶ `version` は
+   * loader 由来なので、落ちたところで止めると、楽観的に消えた行が巻き
+   * 戻ったあとも古い版を持ち続け、押し直しても同じ競合で落ち続ける。
+   */
+  const reconcile = async (): Promise<void> => {
+    await router.invalidate().catch(() => {
+      console.error("Note list reconcile failed");
+    });
+  };
 
   const onMove = (noteId: string, target: MoveTarget) => {
     startMoving(async () => {
@@ -86,21 +126,107 @@ export function NoteListBoard({
         await moveNote({ data: { noteId, ...moveNotePayload(target) } });
       } catch (failure) {
         setError(displayError(failure));
+        await reconcile();
         return;
       }
       setError(null);
       setPickingNoteId(null);
       setOpenMenuNoteId(null);
-      // 移動はもう成立しているので、整合の失敗を「移動できなかった」と
-      // 見せない（try の外に置く）。
-      await router.invalidate().catch(() => {
-        console.error("Note list reconcile failed");
+      await reconcile();
+    });
+  };
+
+  /**
+   * 一覧からの削除（ED-09 手順 1「ノート詳細または一覧のメニューから
+   * 『削除』を選ぶ」）。
+   *
+   * 「元に戻す」に要る版は `trashNote` の応答が持ってくる。移動のついでに
+   * ジョブの強制終端で版がもう 1 つ進むことがあるので、行が見た版から
+   * 数えて当てることはできない（詳細画面と同じ）。
+   */
+  const onTrash = (row: NoteRowView) => {
+    startMoving(async () => {
+      removeRow(row.noteId);
+      let restoreVersion: number;
+      try {
+        restoreVersion = (
+          await trashNote({
+            data: { noteId: row.noteId, expectedVersion: row.version },
+          })
+        ).version;
+      } catch (failure) {
+        setError(displayError(failure));
+        await reconcile();
+        return;
+      }
+      setError(null);
+      setConfirmingNoteId(null);
+      setOpenMenuNoteId(null);
+      setTrashed({
+        noteId: row.noteId,
+        title: row.title,
+        restoreVersion,
       });
+      // 楽観的な除去は transition が終わると戻るので、行を実際に消すのは
+      // この読み直しである。通知は島の state なので作り直されない。
+      await reconcile();
+    });
+  };
+
+  const onRestore = () => {
+    if (trashed === null) return;
+    const { noteId, restoreVersion } = trashed;
+    startMoving(async () => {
+      try {
+        await restoreNote({
+          data: { noteId, expectedVersion: restoreVersion },
+        });
+      } catch (failure) {
+        setError(displayError(failure));
+        await reconcile();
+        return;
+      }
+      setError(null);
+      setTrashed(null);
+      await reconcile();
     });
   };
 
   return (
     <>
+      {/* ED-09 手順 3「削除直後は画面上の『元に戻す』で取り消せる」。
+          一覧に留まるので、詳細（`NoteDetail`）と違って行き先の案内は
+          要らない。 */}
+      {trashed === null ? null : (
+        <Alert
+          tone="success"
+          title={`「${trashed.title}」をゴミ箱に移しました`}
+          role="status"
+          actions={
+            <>
+              <button
+                type="button"
+                disabled={isMoving}
+                onClick={onRestore}
+                className={subtleButtonClass}
+              >
+                {isMoving ? "元に戻しています..." : "元に戻す"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrashed(null)}
+                className={ghostButtonClass}
+              >
+                閉じる
+              </button>
+            </>
+          }
+        >
+          30 日以内ならゴミ箱から元に戻せます。公開・共有の URL
+          からは読めなくなりました。
+        </Alert>
+      )}
+
       <section aria-label="ノート">
         {visibleRows.map((row) => (
           <div
@@ -180,14 +306,61 @@ export function NoteListBoard({
                     onCancel={() => setPickingNoteId(null)}
                   />
                 ) : (
-                  <button
-                    type="button"
-                    disabled={isMoving}
-                    onClick={() => setPickingNoteId(row.noteId)}
-                    className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-ink transition-colors hover:bg-surface disabled:opacity-55"
-                  >
-                    移動...
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={isMoving}
+                      onClick={() => setPickingNoteId(row.noteId)}
+                      className={rowMenuItemClass}
+                    >
+                      移動...
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isMoving}
+                      onClick={() =>
+                        setConfirmingNoteId((current) =>
+                          current === row.noteId ? null : row.noteId,
+                        )
+                      }
+                      className={`${rowMenuItemClass} text-error`}
+                    >
+                      削除...
+                    </button>
+                    {confirmingNoteId === row.noteId ? (
+                      <div className="mt-2">
+                        <Alert
+                          tone="error"
+                          title="このノートをゴミ箱へ移しますか"
+                          role="alert"
+                          actions={
+                            <>
+                              <button
+                                type="button"
+                                disabled={isMoving}
+                                onClick={() => onTrash(row)}
+                                className={dangerButtonClass}
+                              >
+                                {isMoving ? "移しています..." : "ゴミ箱へ移す"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isMoving}
+                                onClick={() => setConfirmingNoteId(null)}
+                                className={ghostButtonClass}
+                              >
+                                やめる
+                              </button>
+                            </>
+                          }
+                        >
+                          {row.isPublished
+                            ? "公開中のノートです。ゴミ箱へ移すと、公開・共有の URL からは読めなくなります。30 日以内なら元に戻せます。"
+                            : "30 日以内ならゴミ箱から元に戻せます。変換や再生成が実行中の場合は、それを取り消してから移します。"}
+                        </Alert>
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
             ) : null}

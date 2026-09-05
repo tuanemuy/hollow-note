@@ -12,6 +12,7 @@ import type {
   StoredFileId,
 } from "@repo/core/domain/storage/valueObject";
 import type { ScopeUnitOfWorkContext } from "../execution/unitOfWork";
+import { armOrphanMediaSweepOnFirstMedia } from "./collectOrphanMedia";
 
 /**
  * Purposes a note move carries. `artifact` stays behind in the Job scope
@@ -134,10 +135,17 @@ const toStoredFile = (
 /**
  * Enumerates the note's relocatable rows.
  *
- * The scan goes through `listByOwner` and filters on `noteId` because the
- * port carries no note-scoped listing yet (`StoredFileRepository`: "the
- * import slice adds the note / artifact / expiry listings"). The result is
- * the same set a note-keyed query would answer; only the cost differs.
+ * The scan goes through `listByOwner` and filters on `noteId` rather
+ * than through `listDeletableByNote`, which covers exactly the same
+ * purposes: that one is capped at `limit` with no way to tell a full
+ * page from the end, because a purge turn reschedules itself and the
+ * rows it read are gone. A move reads without deleting, so it needs the
+ * `PaginationResult` only `listByOwner` returns. The result is the same
+ * set; only the cost differs.
+ *
+ * `listByNote`, which spec/domains/storage.md assigns to this path, is
+ * not on the port yet (`StoredFileRepository`), so the note's rows are
+ * composed here from `listByOwner` filtered on `noteId`.
  */
 async function listNoteFiles(
   ctx: ScopeUnitOfWorkContext,
@@ -216,6 +224,14 @@ export async function relocateFilesForNote(
   }
 
   if (input.phase === "stageTarget") {
+    // A move is the other way media enters a scope, and the target may
+    // never have held any. Arming has to happen before the rows land:
+    // "no media yet" is read from the rows themselves, and a staged row
+    // carries the *source*'s `createdAt`, so afterwards the answer is
+    // already no.
+    if (files.some((meta) => meta.purpose === "media")) {
+      await armOrphanMediaSweepOnFirstMedia(ctx, input.now);
+    }
     for (const meta of files) {
       await ctx.storedFileRepository.insert(
         toStoredFile(meta, input.targetOwner, input.now),

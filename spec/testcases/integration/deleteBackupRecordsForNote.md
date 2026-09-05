@@ -8,7 +8,7 @@
 | 記録の所有者が削除実行者と異なるメンバー | 処理する | 所有者によらず、そのノートの記録がすべて削除される | |
 | 対象ノートの記録が 1 件もない | 処理する | 何もせず `deletedCount: 0` で成功として返る | |
 | 同じイベントを 2 回受け取る | 2 回処理する | 2 回目は削除対象がなく `deletedCount: 0` で終わり、結果は変わらない（冪等） | |
-| ワークスペース削除に伴う `note.purged` を受け取る | 処理する | ワークスペース所有ノートの記録もこの経路で削除される（`backup_records` は owner 列を持たず `noteId` 経由でしか特定できないため） | |
+| ワークスペース所有ノートの `note.purged` を受け取る | 処理する | ワークスペース scope でも同じ経路で記録が削除される（`backup_records` は owner 列を持たず `noteId` 経由でしか特定できないため）。受理判定は personal barrier の receipt 1 本なので、`deletionOperationId` を積んだ turn がワークスペース scope で通ることはない | |
 | 記録が250件ある | 処理する | 100件ずつ`integration.noteDeleteContinued`で再開し、同じ`deletionOperationId`を保持する | |
-| personal account deletion由来 | 処理する | personal scopeのcleanup owner receipt一致時だけ削除する | |
+| personal account deletion由来 | 処理する | personal scopeのcleanup owner receipt一致時だけ削除する。障壁が既に `completed` でも削除する（この追随者は receipt に触れないため） | |
 | 書き込みが失敗する | 処理する | `SystemError(DatabaseError)` が投げられ、再配送に委ねられる | |

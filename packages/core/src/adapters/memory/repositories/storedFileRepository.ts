@@ -3,7 +3,13 @@ import type {
   Pagination,
   PaginationResult,
 } from "../../../domain/common/pagination";
-import type { StoredFileRepository } from "../../../domain/storage/ports/storedFileRepository";
+import type { NoteId } from "../../../domain/note/valueObject";
+import {
+  NOTE_DELETABLE_PURPOSES,
+  type NoteDeletablePurpose,
+  type StoredFilePurposeCursor,
+  type StoredFileRepository,
+} from "../../../domain/storage/ports/storedFileRepository";
 import type { StoredFile } from "../../../domain/storage/storedFile";
 import {
   type FilePurpose,
@@ -15,11 +21,27 @@ import { clone, compareStrings, createOccRepository } from "../support";
 
 const TABLE = "stored_files";
 
+const isPastCursor = (
+  file: StoredFile,
+  after: StoredFilePurposeCursor | null,
+): boolean => {
+  if (after === null) {
+    return true;
+  }
+  const drift = file.createdAt.getTime() - after.createdAt.getTime();
+  return drift > 0 || (drift === 0 && compareStrings(file.id, after.id) > 0);
+};
+
 export function createMemoryStoredFileRepository(
   scope: ScopeStore,
 ): StoredFileRepository {
   const table = scope.storedFiles;
   const occ = createOccRepository<StoredFile, StoredFileId>(TABLE, table);
+
+  const isDeletableByNote = (
+    file: StoredFile,
+  ): file is StoredFile & Readonly<{ purpose: NoteDeletablePurpose }> =>
+    (NOTE_DELETABLE_PURPOSES as readonly FilePurpose[]).includes(file.purpose);
 
   const ownedBy = (owner: StorageOwner): readonly StoredFile[] =>
     table
@@ -48,6 +70,41 @@ export function createMemoryStoredFileRepository(
       return ids
         .map((id) => table.get(id))
         .filter((file): file is StoredFile => file !== undefined)
+        .map(clone);
+    },
+
+    async listDeletableByNote(
+      noteId: NoteId,
+      limit: number,
+    ): Promise<readonly StoredFile[]> {
+      return table
+        .values()
+        .filter((file) => file.noteId === noteId && isDeletableByNote(file))
+        .sort((a, b) => compareStrings(a.id, b.id))
+        .slice(0, Math.max(0, limit))
+        .map(clone);
+    },
+
+    async listByPurposeOlderThan(
+      purpose: FilePurpose,
+      createdBefore: Date,
+      limit: number,
+      after: StoredFilePurposeCursor | null,
+    ): Promise<readonly StoredFile[]> {
+      return table
+        .values()
+        .filter(
+          (file) =>
+            file.purpose === purpose &&
+            file.createdAt.getTime() <= createdBefore.getTime() &&
+            isPastCursor(file, after),
+        )
+        .sort(
+          (a, b) =>
+            a.createdAt.getTime() - b.createdAt.getTime() ||
+            compareStrings(a.id, b.id),
+        )
+        .slice(0, Math.max(0, limit))
         .map(clone);
     },
 

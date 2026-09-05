@@ -356,7 +356,7 @@ move Saga の source snapshot作成とtarget stagingで、タグ付与を移送�
 
 ### 入力DTO
 
-`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
+`noteId`, `scope: ScopeKey`, `operationId: string`（追随する purge の operation ID。継続行 `(kind, operationId)` の鍵）, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 
@@ -364,8 +364,10 @@ move Saga の source snapshot作成とtarget stagingで、タグ付与を移送�
 
 ### 処理フロー
 
-1. `deletionOperationId`が非nullなら各turnで`ScopeCleanupAdmissionStore.assertOwner`を確認し、`UnitOfWorkProvider.run` で `TagAssignmentRepository.deleteByNote(noteId, 200)` を1回呼ぶ
-2. 200件なら同じUoWで`tag.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。イベントは発行しない（読み取りモデルの行は `note.purged` を処理するlocal/public projection writerが消すため）
+1. `deletionOperationId`が非nullなら各turnで**同じ operation の receipt が current scope にあること**を確認する（`ScopeCleanupAdmissionStore.describePersonalCleanup` で引き、`running` でも `completed` でも通す。別 operation・不在・abort 済み・prune 済みは `ConflictError("CLEANUP_OPERATION_MISMATCH")`）。そのうえで `UnitOfWorkProvider.run` で `TagAssignmentRepository.deleteByNote(noteId, 200)` を1回呼ぶ
+2. 200件なら同じUoWで`tag.noteDeleteContinued { noteId, deletionOperationId }`を再登録する。**再登録の priority は turn の出自で決める** — `deletionOperationId` が非 null なら security cleanup（0）、null なら期限回収（3）とする。class 0 は障壁が待つ削除 turn のためのもので、通常の完全削除（ゴミ箱の手動空け・保持期限の掃引）まで class 0 に入れると、class 内には fairness が無い（同一 class は `(dueAt, kind, operationId)` だけで並ぶ）ぶん [platform/index.md](../platform/index.md) の飢餓保証が崩れる。200件未満なら、同じUoWで`tag.noteDeleteContinued`の継続task行を`ScopeTaskScheduler.complete`する — これが継続の連鎖を止める唯一の手段で、呼ばなければ scope-task runner が同じ行を claim し続ける。イベントは発行しない（読み取りモデルの行は `note.purged` を処理するlocal/public projection writerが消すため）
+
+手順 1 で `ScopeCleanupAdmissionStore.assertOwner`（「まだ掃除してよいか」を問う述語で、完了済みの障壁を拒否する）**は使えない**。障壁を完了させるのは Note コンポーネント自身の ack であり、その ack が待った purge は自分の transaction から `note.purged` を outbox へ入れて、リレーが**そのあと**配送する。したがって完了と fan-out は必ず競合し、`assertOwner` を通すと初回配送も継続も毎回拒否され、outbox 行は隔離、継続 task は `failed` になって付与が恒久的に取り残される。完了済みを通してよいのは、この追随者が何も ack しないからである — purge 済みノートの行を消すだけで receipt に触れないので、完了した receipt を `running` へ巻き戻すことがない。`deleteTagsForScope` のように障壁へ ack する経路は `assertOwner` を使う。
 
 削除は対象がなければ 0 件で終わるため、同じイベントを 2 回受け取っても結果は変わらない（冪等）。
 
@@ -393,7 +395,7 @@ scope cleanup commandに従って、そのscopeのタグをすべて削除する
 ### 処理フロー
 
 1. 入力`scope`から`TagScope`を組み立てる
-2. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。最初のphaseは`TagAssignmentRepository.deleteByScope(scope, 200)`で付与を最大200件だけ消す。1件以上消したturnは件数にかかわらず同じUoWで`tag.scopeDeleteContinued { scope, deletionOperationId }`を保存して終了する
+2. 各pageのUoW前に`ScopeCleanupAdmissionStore.assertOwner(deletionOperationId)`を呼ぶ。最初のphaseは`TagAssignmentRepository.deleteByScope(scope, 200)`で付与を最大200件だけ消す。1件以上消したturnは件数にかかわらず同じUoWで`tag.scopeDeleteContinued { deletionOperationId }`を保存して終了する
 3. assignment削除が0件だった次のturnだけ`TagRepository.deleteByScope(scope, 100)`でtagを最大100件消す。100件なら同じ継続を保存し、100件未満なら残るtag operation/lock行を縮約して完了する。1turnはassignment最大200またはtag最大100のどちらかで、1つのtagに数万assignmentがあっても親DELETEのCASCADEへ渡さない
 4. イベントは発行しない（`tag.unassigned` の投影先である読み取りモデルの行自体を、同じ削除イベントを購読する Note の `deleteNotesForOwner` が消すため）
 

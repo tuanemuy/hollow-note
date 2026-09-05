@@ -16,9 +16,25 @@ import { useEffect, useRef, useState } from "react";
  *
  * ホストは絶対配置の包含ブロック（relative）にする — 本文の
  * `position: absolute` の基準を本文の内側に閉じるのは描画側の責務。
- * Shadow DOM が隔離するのはスタイルであって権限ではない: 本文の安全は
- * サニタイズ（後続スライス）と CSP が担い、本スライスで届く本文は
- * 白紙由来のみ。
+ * そのホストをさらに `contain: layout paint` の親で包む。shadow tree の
+ * 中の `:host { … !important }` は**ホスト要素**に当たり、`!important`
+ * が付くと内側の木が外側に勝つので、ホスト自身に掛けたクラスでは
+ * `transform` / `width` / `margin` を止められない。閉じ込めは親側に要る
+ * （ホストに掛けても、当たる先がそのホストなので効かない）。
+ *
+ * Shadow DOM が隔離するのはスタイルであって権限ではない。ここへ届く
+ * 本文は 2 種類ある。
+ *
+ * - 保存済みの本文 — `HtmlProcessor`（`adapters/html/htmlProcessor.ts`）の
+ *   サニタイズを通っている（[ADR 013](spec/adr/013-html-sanitization-policy.md)）
+ * - P-12 の HTML モードが出す**未保存**の本文 — `NoteEditor/surfaces.tsx` の
+ *   `scrubForSurface` しか通っていない。これは保存時のサニタイズの
+ *   **部分集合**で、許可リスト外の要素・属性・CSS 宣言は落ちない
+ *
+ * どちらもクライアントでは `shadowRoot.innerHTML` から入るので、本文の
+ * `<script>` はそこで実行されない。したがってここで効くのは属性
+ * ハンドラー（`on*`）と `javascript:` URL であり、それを落とす責任は
+ * 渡す側（上の 2 経路）にある。CSP はその外側の防波堤として効く。
  */
 
 // styleMode "default" の既定スタイル。GitHub 構造 × Apple Calm
@@ -82,9 +98,23 @@ export function NoteBody({
     // parser already attached one, reuse it. Either way the shadow root
     // is the single write target from now on.
     const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-    shadowRoot.innerHTML = shadowHtml;
+    // 既定スタイルは**要素として**組んで木ごと渡す。文字列で連結すると
+    // `<style>` の境界が本文の中身に依存し、本文をどこで切り出したかで
+    // 意味が変わりうる（サーバー描画の `<template>` は静的な css が先に
+    // 閉じるので同じ危険が無い）。
+    //
+    // 本文そのものはここでも文字列から読み直している。P-12 の HTML モード
+    // が渡すのは `scrubForSurface` を通した木を直列化した値なので、
+    // 「サニタイズした木を別の解析文脈で読み直す」窓（mXSS）がこの 1 経路
+    // にだけ残る。閉じるには本文を fragment で受け取る必要があり、それは
+    // このコンポーネントを使う保存済み本文側の経路まで変える話になる。
+    const styleElement = document.createElement("style");
+    styleElement.textContent = css;
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    shadowRoot.replaceChildren(styleElement, template.content);
     setPromoted(true);
-  }, [shadowHtml]);
+  }, [css, html]);
 
   // PAGE-p11-014。見出しは shadow root の中なので素の `#anchor` では
   // ブラウザーが辿れない。移動はこちらで行い、URL の fragment は現在地の
@@ -140,8 +170,10 @@ export function NoteBody({
           </ul>
         </details>
       ) : null}
-      <div ref={hostRef} className="relative">
-        {promoted ? null : <template {...shadowTemplateProps(shadowHtml)} />}
+      <div className="[contain:layout_paint]">
+        <div ref={hostRef} className="relative">
+          {promoted ? null : <template {...shadowTemplateProps(shadowHtml)} />}
+        </div>
       </div>
     </>
   );

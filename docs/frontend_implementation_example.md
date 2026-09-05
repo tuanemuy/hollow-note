@@ -210,7 +210,7 @@ export function LoadMoreButton({ userId }: { userId: string }) {
 
 ### 4. Composite Component (embedding client slots)
 
-> **Current status**: not adopted. Every screen so far is complete with a loader + a server component + an ordinary `"use client"` island — `NoteList` / `NoteDetail` render read-only markup, and the interactive parts (`IdentityBoard`, `ProfileEditor`, `CreateNoteButton`) are whole client components the server component renders as children. It is kept as a reference pattern for when you eventually need to inject client interactivity *into the middle of* server-rendered markup.
+> **Current status**: not adopted. Every screen so far is complete with a loader + a server component + an ordinary `"use client"` island — `NoteList` / `NoteDetail` render the server-side markup and hand the interactive parts to whole client components (`NoteListBoard`, `NoteDetailIsland`, `IdentityBoard`, `ProfileEditor`, `CreateNoteButton`) the server component renders as children. It is kept as a reference pattern for when you eventually need to inject client interactivity *into the middle of* server-rendered markup.
 
 Use this when you want to inject client interactivity into server-rendered markup. Three kinds of slots are available: `children`, a render prop, and a component prop.
 

@@ -55,10 +55,12 @@ const REQUEST_PORTS = [
   "scopeUnitOfWorkProvider",
   "scopeRouter",
   "noteRouteStore",
+  "publicNoteProjectionWriter",
   "identityUniqueDirectory",
   "loginAttemptStore",
   "oauthStateStore",
   "objectStorage",
+  "htmlProcessor",
   "signInOAuthClient",
   "oauthDevMode",
   "userReader",
@@ -97,10 +99,11 @@ const WORKER_PORTS = [
   "identityRemovalReceiptStore",
   "accountDeletionManifestStore",
   "noteRouteFanOutReader",
-  "noteRouteResolver",
+  "noteRouteStore",
   "publicNoteProjectionWriter",
   "scopeTaskQueue",
   "objectStorage",
+  "htmlProcessor",
   "workspaceDirectoryProjectionWriter",
   "workspaceSlugReservationStore",
   "invitationRouteStore",
@@ -184,6 +187,23 @@ describe("createCloudflareRuntime", () => {
     expect(new Set(DEFAULT_MAINTENANCE_TABLES.authStatePrune)).toEqual(
       new Set(Object.keys(container.authStateSweeps)),
     );
+  });
+
+  it("parses and serializes HTML on workerd, not only imports the parser", () => {
+    // The allow-list table is held by the node-side suite; what only
+    // workerd can answer is whether the underlying parser runs at all
+    // here — an import and a factory call would still pass if it reached
+    // for a Node-only API on the first parse.
+    const container = makeRuntime().createRequestContainer(CONFIG);
+    const result = container.htmlProcessor.process(
+      "<p>a<script>x</script></p>",
+    );
+
+    expect(result.html).toBe("<p>a</p>");
+    expect(result.text).toBe("a");
+    expect(result.removed).toEqual([
+      { kind: "element", name: "script", reason: expect.any(String) },
+    ]);
   });
 
   it("wires the global plane to D1: a unit of work commits where the read views read", async () => {

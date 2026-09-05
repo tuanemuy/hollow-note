@@ -20,6 +20,8 @@ import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as InvitationsTokenRouteImport } from './routes/invitations/$token'
 import { Route as NotesIndexRouteImport } from './routes/notes/index'
 import { Route as NotesNoteIdRouteImport } from './routes/notes/$noteId'
+import { Route as NotesNewRouteImport } from './routes/notes/new'
+import { Route as NotesTrashRouteImport } from './routes/notes/trash'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as SettingsAuthRouteImport } from './routes/settings/auth'
 import { Route as SettingsDangerRouteImport } from './routes/settings/danger'
@@ -30,13 +32,17 @@ import { Route as WSlugRouteImport } from './routes/w/$slug'
 import { Route as WorkspacesNewRouteImport } from './routes/workspaces/new'
 import { Route as AuthCallbackProviderRouteImport } from './routes/auth/callback.$provider'
 import { Route as DevOauthAuthorizeRouteImport } from './routes/dev/oauth/authorize'
+import { Route as NotesNoteIdEditRouteImport } from './routes/notes/$noteId_.edit'
 import { Route as WorkspacesWorkspaceIdSettingsRouteRouteImport } from './routes/workspaces/$workspaceId/settings/route'
 import { Route as WorkspacesWorkspaceIdNotesIndexRouteImport } from './routes/workspaces/$workspaceId/notes/index'
 import { Route as WorkspacesWorkspaceIdNotesNoteIdRouteImport } from './routes/workspaces/$workspaceId/notes/$noteId'
+import { Route as WorkspacesWorkspaceIdNotesNewRouteImport } from './routes/workspaces/$workspaceId/notes/new'
+import { Route as WorkspacesWorkspaceIdNotesTrashRouteImport } from './routes/workspaces/$workspaceId/notes/trash'
 import { Route as WorkspacesWorkspaceIdSettingsDangerRouteImport } from './routes/workspaces/$workspaceId/settings/danger'
 import { Route as WorkspacesWorkspaceIdSettingsGeneralRouteImport } from './routes/workspaces/$workspaceId/settings/general'
 import { Route as WorkspacesWorkspaceIdSettingsMembersRouteImport } from './routes/workspaces/$workspaceId/settings/members'
 import { Route as WorkspacesWorkspaceIdSettingsPublishRouteImport } from './routes/workspaces/$workspaceId/settings/publish'
+import { Route as WorkspacesWorkspaceIdNotesNoteIdEditRouteImport } from './routes/workspaces/$workspaceId/notes/$noteId_.edit'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -93,6 +99,16 @@ const NotesNoteIdRoute = NotesNoteIdRouteImport.update({
   path: '/notes/$noteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotesNewRoute = NotesNewRouteImport.update({
+  id: '/notes/new',
+  path: '/notes/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NotesTrashRoute = NotesTrashRouteImport.update({
+  id: '/notes/trash',
+  path: '/notes/trash',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -143,6 +159,11 @@ const DevOauthAuthorizeRoute = DevOauthAuthorizeRouteImport.update({
   path: '/dev/oauth/authorize',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotesNoteIdEditRoute = NotesNoteIdEditRouteImport.update({
+  id: '/notes/$noteId_/edit',
+  path: '/notes/$noteId/edit',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspacesWorkspaceIdSettingsRouteRoute =
   WorkspacesWorkspaceIdSettingsRouteRouteImport.update({
     id: '/workspaces/$workspaceId/settings',
@@ -159,6 +180,18 @@ const WorkspacesWorkspaceIdNotesNoteIdRoute =
   WorkspacesWorkspaceIdNotesNoteIdRouteImport.update({
     id: '/workspaces/$workspaceId/notes/$noteId',
     path: '/workspaces/$workspaceId/notes/$noteId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const WorkspacesWorkspaceIdNotesNewRoute =
+  WorkspacesWorkspaceIdNotesNewRouteImport.update({
+    id: '/workspaces/$workspaceId/notes/new',
+    path: '/workspaces/$workspaceId/notes/new',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const WorkspacesWorkspaceIdNotesTrashRoute =
+  WorkspacesWorkspaceIdNotesTrashRouteImport.update({
+    id: '/workspaces/$workspaceId/notes/trash',
+    path: '/workspaces/$workspaceId/notes/trash',
     getParentRoute: () => rootRouteImport,
   } as any)
 const WorkspacesWorkspaceIdSettingsDangerRoute =
@@ -185,6 +218,12 @@ const WorkspacesWorkspaceIdSettingsPublishRoute =
     path: '/publish',
     getParentRoute: () => WorkspacesWorkspaceIdSettingsRouteRoute,
   } as any)
+const WorkspacesWorkspaceIdNotesNoteIdEditRoute =
+  WorkspacesWorkspaceIdNotesNoteIdEditRouteImport.update({
+    id: '/workspaces/$workspaceId/notes/$noteId_/edit',
+    path: '/workspaces/$workspaceId/notes/$noteId/edit',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -197,6 +236,8 @@ export interface FileRoutesByFullPath {
   '/verify-email': typeof VerifyEmailRoute
   '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/notes/new': typeof NotesNewRoute
+  '/notes/trash': typeof NotesTrashRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
@@ -209,12 +250,16 @@ export interface FileRoutesByFullPath {
   '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/notes/$noteId/edit': typeof NotesNoteIdEditRoute
   '/workspaces/$workspaceId/notes/$noteId': typeof WorkspacesWorkspaceIdNotesNoteIdRoute
+  '/workspaces/$workspaceId/notes/new': typeof WorkspacesWorkspaceIdNotesNewRoute
+  '/workspaces/$workspaceId/notes/trash': typeof WorkspacesWorkspaceIdNotesTrashRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
   '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
   '/workspaces/$workspaceId/notes/': typeof WorkspacesWorkspaceIdNotesIndexRoute
+  '/workspaces/$workspaceId/notes/$noteId/edit': typeof WorkspacesWorkspaceIdNotesNoteIdEditRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -226,6 +271,8 @@ export interface FileRoutesByTo {
   '/verify-email': typeof VerifyEmailRoute
   '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/notes/new': typeof NotesNewRoute
+  '/notes/trash': typeof NotesTrashRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
@@ -238,12 +285,16 @@ export interface FileRoutesByTo {
   '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/notes/$noteId/edit': typeof NotesNoteIdEditRoute
   '/workspaces/$workspaceId/notes/$noteId': typeof WorkspacesWorkspaceIdNotesNoteIdRoute
+  '/workspaces/$workspaceId/notes/new': typeof WorkspacesWorkspaceIdNotesNewRoute
+  '/workspaces/$workspaceId/notes/trash': typeof WorkspacesWorkspaceIdNotesTrashRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
   '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
   '/workspaces/$workspaceId/notes': typeof WorkspacesWorkspaceIdNotesIndexRoute
+  '/workspaces/$workspaceId/notes/$noteId/edit': typeof WorkspacesWorkspaceIdNotesNoteIdEditRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -257,6 +308,8 @@ export interface FileRoutesById {
   '/verify-email': typeof VerifyEmailRoute
   '/invitations/$token': typeof InvitationsTokenRoute
   '/notes/$noteId': typeof NotesNoteIdRoute
+  '/notes/new': typeof NotesNewRoute
+  '/notes/trash': typeof NotesTrashRoute
   '/settings/auth': typeof SettingsAuthRoute
   '/settings/danger': typeof SettingsDangerRoute
   '/settings/profile': typeof SettingsProfileRoute
@@ -269,12 +322,16 @@ export interface FileRoutesById {
   '/workspaces/$workspaceId/settings': typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   '/auth/callback/$provider': typeof AuthCallbackProviderRoute
   '/dev/oauth/authorize': typeof DevOauthAuthorizeRoute
+  '/notes/$noteId_/edit': typeof NotesNoteIdEditRoute
   '/workspaces/$workspaceId/notes/$noteId': typeof WorkspacesWorkspaceIdNotesNoteIdRoute
+  '/workspaces/$workspaceId/notes/new': typeof WorkspacesWorkspaceIdNotesNewRoute
+  '/workspaces/$workspaceId/notes/trash': typeof WorkspacesWorkspaceIdNotesTrashRoute
   '/workspaces/$workspaceId/settings/danger': typeof WorkspacesWorkspaceIdSettingsDangerRoute
   '/workspaces/$workspaceId/settings/general': typeof WorkspacesWorkspaceIdSettingsGeneralRoute
   '/workspaces/$workspaceId/settings/members': typeof WorkspacesWorkspaceIdSettingsMembersRoute
   '/workspaces/$workspaceId/settings/publish': typeof WorkspacesWorkspaceIdSettingsPublishRoute
   '/workspaces/$workspaceId/notes/': typeof WorkspacesWorkspaceIdNotesIndexRoute
+  '/workspaces/$workspaceId/notes/$noteId_/edit': typeof WorkspacesWorkspaceIdNotesNoteIdEditRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -289,6 +346,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/invitations/$token'
     | '/notes/$noteId'
+    | '/notes/new'
+    | '/notes/trash'
     | '/settings/auth'
     | '/settings/danger'
     | '/settings/profile'
@@ -301,12 +360,16 @@ export interface FileRouteTypes {
     | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/notes/$noteId/edit'
     | '/workspaces/$workspaceId/notes/$noteId'
+    | '/workspaces/$workspaceId/notes/new'
+    | '/workspaces/$workspaceId/notes/trash'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
     | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
     | '/workspaces/$workspaceId/notes/'
+    | '/workspaces/$workspaceId/notes/$noteId/edit'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -318,6 +381,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/invitations/$token'
     | '/notes/$noteId'
+    | '/notes/new'
+    | '/notes/trash'
     | '/settings/auth'
     | '/settings/danger'
     | '/settings/profile'
@@ -330,12 +395,16 @@ export interface FileRouteTypes {
     | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/notes/$noteId/edit'
     | '/workspaces/$workspaceId/notes/$noteId'
+    | '/workspaces/$workspaceId/notes/new'
+    | '/workspaces/$workspaceId/notes/trash'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
     | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
     | '/workspaces/$workspaceId/notes'
+    | '/workspaces/$workspaceId/notes/$noteId/edit'
   id:
     | '__root__'
     | '/'
@@ -348,6 +417,8 @@ export interface FileRouteTypes {
     | '/verify-email'
     | '/invitations/$token'
     | '/notes/$noteId'
+    | '/notes/new'
+    | '/notes/trash'
     | '/settings/auth'
     | '/settings/danger'
     | '/settings/profile'
@@ -360,12 +431,16 @@ export interface FileRouteTypes {
     | '/workspaces/$workspaceId/settings'
     | '/auth/callback/$provider'
     | '/dev/oauth/authorize'
+    | '/notes/$noteId_/edit'
     | '/workspaces/$workspaceId/notes/$noteId'
+    | '/workspaces/$workspaceId/notes/new'
+    | '/workspaces/$workspaceId/notes/trash'
     | '/workspaces/$workspaceId/settings/danger'
     | '/workspaces/$workspaceId/settings/general'
     | '/workspaces/$workspaceId/settings/members'
     | '/workspaces/$workspaceId/settings/publish'
     | '/workspaces/$workspaceId/notes/'
+    | '/workspaces/$workspaceId/notes/$noteId_/edit'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -379,6 +454,8 @@ export interface RootRouteChildren {
   VerifyEmailRoute: typeof VerifyEmailRoute
   InvitationsTokenRoute: typeof InvitationsTokenRoute
   NotesNoteIdRoute: typeof NotesNoteIdRoute
+  NotesNewRoute: typeof NotesNewRoute
+  NotesTrashRoute: typeof NotesTrashRoute
   StorageSplatRoute: typeof StorageSplatRoute
   WSlugRoute: typeof WSlugRoute
   WorkspacesNewRoute: typeof WorkspacesNewRoute
@@ -386,8 +463,12 @@ export interface RootRouteChildren {
   WorkspacesWorkspaceIdSettingsRouteRoute: typeof WorkspacesWorkspaceIdSettingsRouteRouteWithChildren
   AuthCallbackProviderRoute: typeof AuthCallbackProviderRoute
   DevOauthAuthorizeRoute: typeof DevOauthAuthorizeRoute
+  NotesNoteIdEditRoute: typeof NotesNoteIdEditRoute
   WorkspacesWorkspaceIdNotesNoteIdRoute: typeof WorkspacesWorkspaceIdNotesNoteIdRoute
+  WorkspacesWorkspaceIdNotesNewRoute: typeof WorkspacesWorkspaceIdNotesNewRoute
+  WorkspacesWorkspaceIdNotesTrashRoute: typeof WorkspacesWorkspaceIdNotesTrashRoute
   WorkspacesWorkspaceIdNotesIndexRoute: typeof WorkspacesWorkspaceIdNotesIndexRoute
+  WorkspacesWorkspaceIdNotesNoteIdEditRoute: typeof WorkspacesWorkspaceIdNotesNoteIdEditRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -469,6 +550,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesNoteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notes/new': {
+      id: '/notes/new'
+      path: '/notes/new'
+      fullPath: '/notes/new'
+      preLoaderRoute: typeof NotesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notes/trash': {
+      id: '/notes/trash'
+      path: '/notes/trash'
+      fullPath: '/notes/trash'
+      preLoaderRoute: typeof NotesTrashRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings/': {
       id: '/settings/'
       path: '/'
@@ -539,6 +634,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DevOauthAuthorizeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notes/$noteId_/edit': {
+      id: '/notes/$noteId_/edit'
+      path: '/notes/$noteId/edit'
+      fullPath: '/notes/$noteId/edit'
+      preLoaderRoute: typeof NotesNoteIdEditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workspaces/$workspaceId/settings': {
       id: '/workspaces/$workspaceId/settings'
       path: '/workspaces/$workspaceId/settings'
@@ -558,6 +660,20 @@ declare module '@tanstack/react-router' {
       path: '/workspaces/$workspaceId/notes/$noteId'
       fullPath: '/workspaces/$workspaceId/notes/$noteId'
       preLoaderRoute: typeof WorkspacesWorkspaceIdNotesNoteIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId/notes/new': {
+      id: '/workspaces/$workspaceId/notes/new'
+      path: '/workspaces/$workspaceId/notes/new'
+      fullPath: '/workspaces/$workspaceId/notes/new'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdNotesNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId/notes/trash': {
+      id: '/workspaces/$workspaceId/notes/trash'
+      path: '/workspaces/$workspaceId/notes/trash'
+      fullPath: '/workspaces/$workspaceId/notes/trash'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdNotesTrashRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/workspaces/$workspaceId/settings/danger': {
@@ -587,6 +703,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/workspaces/$workspaceId/settings/publish'
       preLoaderRoute: typeof WorkspacesWorkspaceIdSettingsPublishRouteImport
       parentRoute: typeof WorkspacesWorkspaceIdSettingsRouteRoute
+    }
+    '/workspaces/$workspaceId/notes/$noteId_/edit': {
+      id: '/workspaces/$workspaceId/notes/$noteId_/edit'
+      path: '/workspaces/$workspaceId/notes/$noteId/edit'
+      fullPath: '/workspaces/$workspaceId/notes/$noteId/edit'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdNotesNoteIdEditRouteImport
+      parentRoute: typeof rootRouteImport
     }
   }
 }
@@ -646,6 +769,8 @@ const rootRouteChildren: RootRouteChildren = {
   VerifyEmailRoute: VerifyEmailRoute,
   InvitationsTokenRoute: InvitationsTokenRoute,
   NotesNoteIdRoute: NotesNoteIdRoute,
+  NotesNewRoute: NotesNewRoute,
+  NotesTrashRoute: NotesTrashRoute,
   StorageSplatRoute: StorageSplatRoute,
   WSlugRoute: WSlugRoute,
   WorkspacesNewRoute: WorkspacesNewRoute,
@@ -654,8 +779,13 @@ const rootRouteChildren: RootRouteChildren = {
     WorkspacesWorkspaceIdSettingsRouteRouteWithChildren,
   AuthCallbackProviderRoute: AuthCallbackProviderRoute,
   DevOauthAuthorizeRoute: DevOauthAuthorizeRoute,
+  NotesNoteIdEditRoute: NotesNoteIdEditRoute,
   WorkspacesWorkspaceIdNotesNoteIdRoute: WorkspacesWorkspaceIdNotesNoteIdRoute,
+  WorkspacesWorkspaceIdNotesNewRoute: WorkspacesWorkspaceIdNotesNewRoute,
+  WorkspacesWorkspaceIdNotesTrashRoute: WorkspacesWorkspaceIdNotesTrashRoute,
   WorkspacesWorkspaceIdNotesIndexRoute: WorkspacesWorkspaceIdNotesIndexRoute,
+  WorkspacesWorkspaceIdNotesNoteIdEditRoute:
+    WorkspacesWorkspaceIdNotesNoteIdEditRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

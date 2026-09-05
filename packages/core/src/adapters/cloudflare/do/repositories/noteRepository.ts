@@ -235,7 +235,8 @@ export type CloudflareNoteRepositoryDeps = Readonly<{
  * object it lives in, `notes.owner_type` / `owner_id` **is** the scope —
  * routing resolves a note to exactly the object its owner names — so the
  * `scope 検証` rule of `spec/database/index.md` の「共通の規約」 applies
- * here and is checked on both save and restore.
+ * here and is checked on every path over a row: the save, the restore,
+ * and the version-guarded read that leads both `save` and `delete`.
  */
 export function createCloudflareNoteRepository(
   deps: CloudflareNoteRepositoryDeps,
@@ -265,7 +266,7 @@ export function createCloudflareNoteRepository(
     }
   };
 
-  const restore = (row: SqlRow): Note => {
+  const ensureRowInScope = (row: SqlRow): SqlRow => {
     if (
       text(row, "owner_type") !== bound.type ||
       text(row, "owner_id") !== bound.id
@@ -274,8 +275,10 @@ export function createCloudflareNoteRepository(
         `Note ${text(row, "id")} is owned by ${text(row, "owner_type")}:${text(row, "owner_id")} but the scope is ${bound.type}:${bound.id}`,
       );
     }
-    return fromRow(row);
+    return row;
   };
+
+  const restore = (row: SqlRow): Note => fromRow(ensureRowInScope(row));
 
   const selectById = (id: NoteId): SqlStatement =>
     statement(`SELECT ${SELECTION} FROM ${TABLE} WHERE id = ?`, id);
@@ -294,6 +297,11 @@ export function createCloudflareNoteRepository(
    * here is what turns a stale token into `OPTIMISTIC_LOCK_FAILURE` even
    * while the write is only staged; the `occGuard` staged alongside the
    * update is the fence against a unit that commits in between.
+   *
+   * The row is also held to the scope pin, which is what carries the
+   * guard into `delete`: the version alone says nothing about which
+   * object the row belongs to, so a repository bound to the wrong object
+   * would otherwise reach the most destructive path unchecked.
    */
   const readForUpdate = async (
     id: NoteId,
@@ -304,7 +312,11 @@ export function createCloudflareNoteRepository(
       key: id,
       statement: selectById(id),
     });
-    if (current === null || int(current, "version") !== expectedVersion) {
+    if (current === null) {
+      throw optimisticLockFailure(contextOf(id));
+    }
+    ensureRowInScope(current);
+    if (int(current, "version") !== expectedVersion) {
       throw optimisticLockFailure(contextOf(id));
     }
   };
@@ -434,6 +446,26 @@ export function createCloudflareNoteRepository(
         limit: bounded,
       });
       return rows.map(restore).filter(Note.isTrashed);
+    },
+
+    async findNextPurgeDeadline(): Promise<Date | null> {
+      const rows = await session.readRows({
+        table: TABLE,
+        statement: statement(
+          `SELECT ${SELECTION} FROM ${TABLE}
+             WHERE lifecycle = 'trashed'
+             ORDER BY purge_after, id LIMIT 1`,
+        ),
+        keyOf: (row) => text(row, "id"),
+        matches: (row) => text(row, "lifecycle") === "trashed",
+        compare: (a, b) =>
+          (intOrNull(a, "purge_after") ?? 0) -
+            (intOrNull(b, "purge_after") ?? 0) ||
+          compareText(text(a, "id"), text(b, "id")),
+        limit: 1,
+      });
+      const first = rows[0];
+      return first === undefined ? null : dateOrNull(first, "purge_after");
     },
 
     async countByOwner(

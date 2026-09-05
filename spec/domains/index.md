@@ -271,17 +271,22 @@ interface IdempotencyStore {
 
 イベントとは別に、**1 回で処理しきれなかった仕事の続き**を表す local task がある。scope task は `scheduled_tasks` と Alarm、global task は D1 outbox と Queue で運ぶ。どちらも購読者は1つだけである。
 
+**payload の欄は task 行に積む値そのものである。** scope task の payload に `scope` は現れない — 宛先の scope は `scheduled_tasks` の行が持つ。global task は宛先の scope を payload で運ぶ — 行が scope を持たないため。
+
 | 継続要求 | payload | 唯一の購読者 |
 | --- | --- | --- |
-| `note.ownerPurgeContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
-| `storage.ownerDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
+| `note.ownerPurgeContinued` | `{ deletionOperationId, stuckPurges?: { noteId, expectedVersion }[] }`（`stuckPurges` は持ち回る停止 purge があるときだけ載る） | scope Alarm → [`deleteNotesForOwner`](../usecases/note.md) |
+| `note.trashExpiryContinued` | `{}`（期限は turn 自身の `now` が決めるので載せるものが無い） | scope Alarm → [`purgeExpiredTrash`](../usecases/note.md) |
+| `storage.ownerDeleteContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteFilesByOwner`](../usecases/storage.md) |
 | `storage.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteFilesForNote`](../usecases/storage.md) |
-| `tag.scopeDeleteContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
+| `storage.orphanMediaContinued` | `{ afterCreatedAt, afterId }`（次の turn が再開する keyset 位置。読めなければ先頭から） | scope Alarm → [`collectOrphanMedia`](../usecases/storage.md) |
+| `tag.scopeDeleteContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteTagsForScope`](../usecases/tag.md) |
 | `tag.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteAssignmentsForNote`](../usecases/tag.md) |
 | `integration.noteDeleteContinued` | `{ noteId, deletionOperationId }` | scope Alarm → [`deleteBackupRecordsForNote`](../usecases/integration.md) |
 | `workspace.deletionLocalContinued` | `{ operationId, phase ("memberships" / "invitations" / "localDelete"), cursor, slug, advertisedSlug }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のmanifest build・local edge削除・Workspace行削除phase |
 | `workspace.deletionGlobalCleanupContinued` | `{ operationId, cursor, slug, advertisedSlug }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のglobal cleanup phase（directory tombstone・slug解放・directory edge / invitation route削除） |
 | `workspace.deletionManifestCompactContinued` | `{ operationId }` | workspace scope Alarm → [`deleteWorkspace`](../usecases/workspace.md) のack済みmanifest縮約phase |
+| `workspace.membershipRemovalEdgeContinued` | `{ memberUserId }` | workspace scope Alarm → [`removeMember` / `leaveWorkspace`](../usecases/workspace.md) のdirectory edge削除 |
 | `projection.reprojectRequested` | `{ noteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
 | `projection.tagFanOutContinued` | `{ tagId, afterNoteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
 | `projection.authorRefreshRequested` | `{ userId, identityVersion, afterNoteId }` | scope Alarm → [`projectNoteChanges`](../usecases/note.md) |
@@ -290,11 +295,11 @@ interface IdempotencyStore {
 | `projection.authorRedactionRequested` | `{ noteId, userId, redactionVersion, operationId }` | scope/global投影 → [`projectNoteChanges`](../usecases/note.md) |
 | `tag.deleteContinued` | `{ operationId, tagId }` | scope Alarm → [`deleteTag`](../usecases/tag.md) worker phase |
 | `tag.mergeContinued` | `{ operationId, sourceTagId, targetTagId }` | scope Alarm → [`mergeTags`](../usecases/tag.md) worker phase |
-| `tag.deleteUnusedContinued` | `{ operationId, scope }` | scope Alarm → [`deleteUnusedTags`](../usecases/tag.md) worker phase |
+| `tag.deleteUnusedContinued` | `{ operationId }` | scope Alarm → [`deleteUnusedTags`](../usecases/tag.md) worker phase |
 | `job.terminationContinued` | `{ origin }` | scope Alarm → [`continueForcedTermination`](../usecases/job.md) |
 | `job.removalLocalContinued` | `{ removalOperationId }` | scope Alarm → `pruneJobHistory` / `deleteJobsForRequester`の共通family removal worker |
 | `job.removalGlobalContinued` | `{ scope, removalOperationId }` | global Queue → [`projectJobHistory`](../usecases/job.md) のremoval分岐 |
-| `job.removalManifestCompactContinued` | `{ scope, removalOperationId }` | scope Alarm → [`projectJobHistory`](../usecases/job.md) の完了manifest縮約phase |
+| `job.removalManifestCompactContinued` | `{ removalOperationId }` | scope Alarm → [`projectJobHistory`](../usecases/job.md) の完了manifest縮約phase |
 | `job.targetHistoryCleanupContinued` | `{ target, operationId, cursor }` | global Queue → [`projectJobHistory`](../usecases/job.md) のtarget削除分岐 |
 | `job.globalTombstonePruneContinued` | `{ runId, generation, shardId, table, cursor, asOf }` | global Queue → [`pruneJobHistory`](../usecases/job.md) のD1 tombstone回収分岐 |
 | `job.globalTombstonePruneCron` | `{ type: "job.globalTombstonePruneCron" }` | Cron → [`pruneJobHistory`](../usecases/job.md) のglobal run開始分岐 |
@@ -305,17 +310,27 @@ interface IdempotencyStore {
 | `identity.accountDeletionManifestCompactContinued` | `{ operationId, cursor: string | null, continuationKey: string }` | global Queue → [`deleteAccount`](../usecases/identity.md) の完了manifest縮約 |
 | `identity.personalCleanupHandoverContinued` | `{ deletionOperationId }` | scope Alarm → scope平面のtask runnerが閉じたbarrierの引き渡しを行い、global manifestへ`personalCleanup` receiptをackする |
 | `identity.accountDeletionManifestPruneContinued` | `{ runId, generation, shardId, cursor, asOf }` | global Queue → [`deleteAccount`](../usecases/identity.md) のterminal manifest回収 |
-| `identity.personalBarrierPruneContinued` | `{ scope, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
+| `identity.personalBarrierPruneContinued` | `{ deletionOperationId, asOf }` | scope Alarm → [`deleteAccount`](../usecases/identity.md) のcompleted barrier回収 |
 | `global.maintenanceRunPruneContinued` | `{ cursor, asOf }` | global Queue → [`pruneExpiredAuthState`](../usecases/identity.md) の共通maintenance run回収分岐（唯一の購読者） |
-| `integration.userCleanupContinued` | `{ operationId, userId, scope }` | scope Alarmまたはglobal Queue → [`deleteIntegrationsForUser`](../usecases/integration.md) |
-| `usage.userCleanupContinued` | `{ scope, deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
+| `integration.userCleanupContinued` | `{ operationId, userId }`（global Queue で運ぶときは宛先 scope が無い global cleanup の分岐なので、scope は載せない） | scope Alarmまたはglobal Queue → [`deleteIntegrationsForUser`](../usecases/integration.md) |
+| `usage.userCleanupContinued` | `{ deletionOperationId }` | scope Alarm → [`deleteQuota`](../usecases/usage.md) |
 | `publicProjection.reprojectRequested` | `{ noteId, expectedRouteVersion? }` | global Queue → public projection consumer。scope-local tag fan-outはversionを省略し、consumerがcurrent routeを解決する |
 
-規約は 4 つ。
+規約は 5 つ。
 
-scopeの継続・個別taskを`scheduled_tasks`へ保存するとき、`operation_id`は生成元operation/event/command IDと対象ID・version・cursorから決定的に導出する。同じ生成元が複数Noteへ`projection.reprojectRequested`を積む場合もNoteIdとprojectionRevisionを含めるため、1件へ潰れず、応答喪失時にも増殖しない。具体式は [database/index.md](../database/index.md) の`scheduled_tasks`に定める。global outboxで運ぶ継続要求では同じ役割を payload の`continuationKey`が担い、導出式は `` `${eventType}:${operationId}:${phase}:${cursor ?? "-"}` `` である。payloadに`phase`を持たない継続（`identity.accountDeletionManifestCompactContinued`）は、`phase`の位置に固定文字列`compact`を置く。commit応答を失ったターンが同じ鍵を再導出するため、再実行は先着の1行へ潰れて鎖が分岐しない（[ADR 041](../adr/041-deterministic-continuation-event-id.md) / [ADR 042](../adr/042-outbox-save-id-collision.md)）。鍵はターンごとに変わらなければならない。自分と同じ鍵を再発行するターンは、直後のrelay finalizeに処理済みとして印を付けられ、鎖がそこで止まる。global outboxで運ぶidentity系の継続要求のうちこの鍵を持たないのは`identity.userAuthResidueCleanupContinued`だけで、理由はカーソルを持たない継続だからである（仕事そのもの＝行の削除が次ターンの母集合から対象を外すので、ターンを鍵で区別しなくても常に前へ進む）。
+継続要求の鍵は、**同じ仕事に対して継続が何本立つか**で決まる。表の全行はこの 4 分類のいずれかに属し、どの分類でも cursor・`asOf`・持ち回り集合といった**再開状態は鍵に入らない**（それらは payload が運ぶ）。
+
+- **対象ごとに 1 本** — 1 つの生成元が対象の数だけ継続を積む。鍵は生成元 ID と対象 ID（と version / revision）で、同じ生成元が複数 Note へ`projection.reprojectRequested`を積んでも 1 件へ潰れない。具体式は [database/index.md](../database/index.md) の「物理配置」節の導出規則に定める
+- **operation に 1 本** — 1 つの operation が何 turn 重ねても継続は 1 本。鍵はその operation の ID（`note.purged`の追随者なら、追随する purge の operation ID）で、phase も再開位置も payload が運ぶ
+- **平面に 1 本の周期** — 掃引はその平面に 1 本しか立たない（scope の掃引なら scope に 1 本、global の掃引なら global D1 に 1 本）。鍵は固定で、次に見る位置と時刻は payload と`dueAt`が持つ
+- **対象に 1 本の義務** — 生成元が誰であれ対象 1 つにつき義務は 1 つ。鍵は対象の識別子そのもの（`workspace.membershipRemovalEdgeContinued`は`(workspaceId, userId)`の組、`job.terminationContinued`は掃引する対象の ID）で、生成元 ID を含めない。同じ義務を二度 arm しても同じ行へ upsert される
+
+どの分類でも行は 1 本なので、応答を失った turn の再実行は同じ鍵へ upsert されて増殖せず、再開位置の寿命が行の寿命と一致する。scope 平面ではこの鍵が`scheduled_tasks`の`(kind, operation_id)`であり、public projection の outbox event ID も同じ分類に従う。
+
+global outbox で運ぶ継続要求では、鎖の同一性は上の分類どおり payload が運び、outbox 行の重複排除は payload の`continuationKey`が担う。この鍵だけは**turn ごとに変わり、cursor を材料に含める**。導出式は `` `${eventType}:${operationId}:${phase}:${cursor ?? "-"}` `` である。payloadに`phase`を持たない継続（`identity.accountDeletionManifestCompactContinued`）は、`phase`の位置に固定文字列`compact`を置く。commit応答を失ったターンが同じ鍵を再導出するため、再実行は先着の1行へ潰れて鎖が分岐しない（[ADR 041](../adr/041-deterministic-continuation-event-id.md) / [ADR 042](../adr/042-outbox-save-id-collision.md)）。鍵はターンごとに変わらなければならない。自分と同じ鍵を再発行するターンは、直後のrelay finalizeに処理済みとして印を付けられ、鎖がそこで止まる。global outboxで運ぶidentity系の継続要求のうちこの鍵を持たないのは`identity.userAuthResidueCleanupContinued`だけで、理由はカーソルを持たない継続だからである（仕事そのもの＝行の削除が次ターンの母集合から対象を外すので、ターンを鍵で区別しなくても常に前へ進む）。
 
 - **購読者を 1 つに保つ**。既存のイベントを再投入して継続する形は採らない（購読者の数だけコピーが増え、outbox とキューを水増しする）
+- **読めない payload の扱いは、その payload が何を運んでいるかで決まる**。**仕事そのものを名指す payload**（対象 ID・持ち回り集合・phase）は、読めなければ `SystemError(DataIntegrityError)` で turn を fault させる。捨てて先へ進むと空の列挙が「もう対象は無い」と読まれ、取り消せない ack になるからである。fault した turn は行を残し、runner がその行を `backoff` する — `dueAt` は次の再試行時刻へ進み、試行上限に達した行は `failed` へ駐車されて以後 claim されない。空の列挙を根拠にした ack は出ず、可視化は error ログ（`[scope-tasks] task threw`）と `failed` 行が担う。**再開位置だけを運ぶ payload**（keyset cursor・`asOf`）は、読めなければ先頭または現在時刻へ戻す。選び直す集合が元の集合の上位集合に留まるので安全側で、fault させると誰も settle しない行を strand させる。後者を選んだ実装は `logger.warn` を 1 行残す
 - **継続要求は、続きを引き直すのに必要な情報をすべて運ぶ**。次の実行で網を引き直す形の継続（`job.terminationContinued`）では、payload が**元の経路の選択述語をそのまま再現できなければならない**。再現できないと、続きが元より広い集合を処理してしまう。強制終端の 9 経路は対象の選び方（対象・スコープ・要求者・`kind`）と当てる遷移（`cancel` か `fail` か）が経路ごとに違うため、payload は**どの経路の続きか**を判別子で持つ（[usecases/job.md](../usecases/job.md) の「共通: 強制終端の後始末」）
 - **カーソルは、処理そのものが対象を検索結果から外す場合は持たない**。削除も終端も対象を `listBy*` / `listActive*` の結果から外すため、「残っているものを先頭から `batchSize` 件読む」だけで必ず前に進む。処理しても母集合が残るtag assignment fan-out、Note routeのauthor/workspace fan-out、target history fan-outはkeyset cursorを持つ
   - 根拠を「対象が消えないから」と書いてはならない。付与そのものは `unassignTag` / `deleteTag` の CASCADE / `deleteAssignmentsForNote` / `relocateAssignmentsForNote` / `mergeTags` の衝突行削除によって並行して消えうる。カーソルが要るのは、消えるかどうかではなく**処理しても残る**ためである

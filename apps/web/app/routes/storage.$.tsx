@@ -1,4 +1,26 @@
+import type { FilePurpose } from "@repo/core/domain/storage/valueObject";
 import { createFileRoute } from "@tanstack/react-router";
+
+/**
+ * 公開配信してよい purpose。`ObjectStorage.publicUrl` の契約
+ * （`packages/core/src/application/ports/objectStorage.ts`）と
+ * `spec/domains/storage.md` の同じ記述が正典で、ここはその適用点。
+ *
+ * `media` が入るのは、本文に挿した画像・動画が**公開ノートの匿名の
+ * 閲覧者にも見える**必要があるため。鍵は推測できないファイル ID を
+ * 含み、一覧する経路も無いので、URL を知っていることが読める条件に
+ * なる（avatar と同じ扱い）。
+ *
+ * `FilePurpose` で型付けするのは、3 つの適用点のうちここだけが機械で
+ * 守れるため。綴り違いも、`FILE_PURPOSES` から消えた purpose も型で
+ * 落ちる。増えた側は型では落ちないので、
+ * `__tests__/storage.delivery.test.ts` が `FILE_PURPOSES` との差分を
+ * 走査して「載せていない purpose は 404」を押さえる。
+ */
+export const PUBLICLY_SERVED_PURPOSES: readonly FilePurpose[] = [
+  "avatar",
+  "media",
+];
 
 /**
  * 保管オブジェクトの配信口。
@@ -27,12 +49,13 @@ export const Route = createFileRoute("/storage/$")({
         } catch {
           return notFound();
         }
-        // `publicUrl` is only for objects that really are public, and
-        // today that is avatars alone. The rest of the key space (note
-        // sources, media, generated artifacts) shares this store, so the
-        // route has to hold that line itself rather than trust that
-        // nothing else was ever written.
-        if (ObjectKey.purposeOf(key) !== "avatar") {
+        // `publicUrl` is only for objects that really are public. The
+        // rest of the key space (note sources, imported references,
+        // generated artifacts) shares this store, so the route has to
+        // hold that line itself rather than trust that nothing else was
+        // ever written.
+        const purpose = ObjectKey.purposeOf(key);
+        if (purpose === null || !PUBLICLY_SERVED_PURPOSES.includes(purpose)) {
           return notFound();
         }
         const container = await getContainer();
@@ -51,8 +74,10 @@ export const Route = createFileRoute("/storage/$")({
             // に載ると退会後もオリジンに無い画像が読めてしまう。
             "Cache-Control": "private, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
-            // 画像として配信するものだけを置く鍵空間だが、万一 HTML を
-            // 積まれてもオリジン上で実行させない。
+            // 画像・動画として配信するものだけを置く鍵空間だが、万一
+            // HTML を積まれてもオリジン上で実行させない。SVG は
+            // `storeMedia` がサニタイズ済みでも、直接開かれたときに
+            // script を走らせないのはこのヘッダーの担当。
             "Content-Security-Policy": "sandbox; default-src 'none'",
           },
         });
@@ -66,7 +91,7 @@ export const Route = createFileRoute("/storage/$")({
 const downloadName = (key: string): string => {
   const last = key.slice(key.lastIndexOf("/") + 1);
   const safe = last.replace(/[^A-Za-z0-9._-]/g, "");
-  return safe.length === 0 ? "avatar" : safe;
+  return safe.length === 0 ? "object" : safe;
 };
 
 const notFound = (): Response =>

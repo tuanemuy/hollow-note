@@ -9,7 +9,11 @@ import { finalizeAccountDeletion } from "../identity/deleteAccount/finalize";
 import { runAccountDeletionGlobalCleanup } from "../identity/deleteAccount/globalCleanup";
 import { continueAccountDeletionManifestBuild } from "../identity/deleteAccount/manifestBuild";
 import { identityRemovalRelease } from "../identity/identityRemovalRelease";
+import { deleteBackupRecordsForNote } from "../integration/deleteBackupRecordsForNote";
+import { scopeOfNoteOwner } from "../scope";
+import { deleteFilesForNote } from "../storage/deleteFilesForNote";
 import { deleteStoredObjects } from "../storage/deleteStoredObjects";
+import { deleteAssignmentsForNote } from "../tag/deleteAssignmentsForNote";
 import { projectMembershipRole } from "../workspace/membershipRoleProjection";
 import type { AllDomainEvents } from "./eventRelayWorker";
 
@@ -165,14 +169,91 @@ const domainEventSubscribers: readonly EventSubscriber[] = [
     consumerName: "workspace.membershipRoleProjection",
     handle: projectMembershipRole,
   },
+  // The `note.purged` fan-out. Each follower owns one aggregate's rows
+  // and settles its own continuation, so they are independent
+  // subscribers rather than steps of one handler: a redelivery re-runs
+  // every one of them, and each is a no-op once its own rows are gone.
+  {
+    eventType: "note.purged",
+    consumerName: "storage.deleteFilesForNote",
+    handle: async (event, deps) => {
+      await deleteFilesForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
+  },
+  {
+    eventType: "note.purged",
+    consumerName: "tag.deleteAssignmentsForNote",
+    handle: async (event, deps) => {
+      await deleteAssignmentsForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
+  },
+  {
+    eventType: "note.purged",
+    consumerName: "integration.deleteBackupRecordsForNote",
+    handle: async (event, deps) => {
+      await deleteBackupRecordsForNote({
+        container: deps,
+        input: {
+          noteId: event.payload.noteId,
+          scope: scopeOfNoteOwner(event.payload.owner),
+          operationId: event.payload.operationId,
+          deletionOperationId: event.payload.deletionOperationId,
+        },
+      });
+    },
+  },
 ];
 
 /**
  * The single entry point for events the relay delivered: the consumer
  * role of every runtime looks the event up here instead of holding its
- * own switch. Several subscribers may share an event type; they run in
- * registration order and a throw fails the whole delivery, so every
- * handler must be safe to re-run (delivery is at-least-once).
+ * own switch.
+ *
+ * Several subscribers may share an event type. They run in registration
+ * order, and **each one runs even when an earlier sibling threw**: the
+ * followers of one event clean up aggregates that know nothing of each
+ * other, so letting the first failure skip the rest would strand their
+ * rows behind an unrelated fault until the row quarantined. The first
+ * failure is re-thrown once every sibling has had its turn, so the
+ * delivery still fails and the relay redelivers it — which is why every
+ * handler must be safe to re-run (delivery is at-least-once), including
+ * the ones that already succeeded.
+ *
+ * Only the *first* failure is re-thrown, so when several siblings fail
+ * in one delivery the later ones survive as `logger.error` lines alone:
+ * a follower's `ConflictError` can hide a sibling's transient
+ * `SystemError` from whatever inspects the thrown error. Nothing depends
+ * on the distinction today — `eventRelayWorker` quarantines on attempts
+ * and never on the kind — but a reader diagnosing a stuck delivery has
+ * to read the log, not the exception.
+ *
+ * That relaxation is the dispatcher's, not the fan-out's: the
+ * continuation subscribers of one type get no completion guarantee from
+ * that order either — a sibling runs whether or not the one registered
+ * before it succeeded. `identity.accountDeletionDispatchContinued`
+ * is the case with more than one, and its siblings stay safe for the
+ * same reason rather than by running in sequence — each returns early
+ * unless the continuation names its own phase, and the two that do share
+ * a phase (`accountDeletionCleanup` / `accountDeletionGlobalCleanup`)
+ * each skip their half once its receipt is in. **A new phase subscriber
+ * must carry that independence itself**: it may not assume an earlier
+ * sibling of the same event ran, or ran to completion.
  */
 export const subscribers: readonly EventSubscriber[] = [
   ...domainEventSubscribers,
@@ -199,6 +280,7 @@ export async function dispatchDomainEvent(
     });
     return;
   }
+  let firstFailure: { error: unknown } | null = null;
   for (const subscriber of matched) {
     // The `eventType` match above is what pairs a handler with its own
     // event shape; TS cannot follow that narrowing across two separately
@@ -208,6 +290,17 @@ export async function dispatchDomainEvent(
       event: DomainEvent,
       deps: WorkerContainer,
     ) => Promise<void>;
-    await handle(event, deps);
+    try {
+      await handle(event, deps);
+    } catch (error) {
+      deps.logger.error(
+        `[subscribers] ${subscriber.consumerName} failed for ${event.type}`,
+        { eventId: event.id, eventType: event.type, cause: error },
+      );
+      firstFailure ??= { error };
+    }
+  }
+  if (firstFailure !== null) {
+    throw firstFailure.error;
   }
 }
