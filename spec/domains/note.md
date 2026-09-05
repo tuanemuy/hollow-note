@@ -386,9 +386,9 @@ type SkippedEdit = Readonly<{ path: string; reason: "pathNotFound" | "contentCha
 
 **資源で有界**
 
-`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・節点数・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 5 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(NOTE_HTML_TOO_COMPLEX)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。節点数を除く 4 つは本文の長さの上限から到達しうるどの文書よりも高いところにある。節点数だけは正当な本文が届きうる高さにあり、その取引（長さの上限の内側でも拒まれる形がある）は ADR 013 が持つ。いずれにせよ「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
+`HtmlProcessor` は入力の形について何も論証せず、**自分が使う資源の上限を自分で持つ**。解析後の木の大きさ・節点数・走査の深さ・CSS のブロックの入れ子・CSS の走査の総量の 5 つに上限があり、超えた入力はどのメソッドでも `BusinessRuleError(HtmlTooComplex)` で拒む。値と根拠の正典は [ADR 013](../adr/013-html-sanitization-policy.md) の「サニタイズは資源で有界である」。節点数を除く 4 つは本文の長さの上限から到達しうるどの文書よりも高いところにある。節点数だけは正当な本文が届きうる高さにあり、その取引（長さの上限の内側でも拒まれる形がある）は ADR 013 が持つ。いずれにせよ「壊れた HTML は補正して返す」約束は変わらない — 拒むのは形ではなく費用である。
 
-**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）、`BusinessRuleError(NOTE_HTML_TOO_COMPLEX)`（資源の上限を超えた入力）。壊れた HTML は例外にせず、補正した結果を返す
+**エラーケース**: `SystemError(ExternalServiceError)`（パース不能）、`BusinessRuleError(HtmlTooComplex)`（資源の上限を超えた入力）。壊れた HTML は例外にせず、補正した結果を返す
 
 ### PdfRenderer
 
@@ -742,7 +742,7 @@ NoteErrorCode =
   | "InvalidId" | "InvalidTitle" | "ContentTooLarge" | "InvalidStyleMode" | "InvalidOwner"
   | "CannotPublishEmptyNote" | "NotUnlisted" | "ShareLinkRequired"
   | "CannotCaptureEmptyContent" | "CannotMoveWhileProcessing"
-  | "AccessDenied" | "NoteIsTrashed" | "NoteLockedByJob"
+  | "AccessDenied" | "NoteIsTrashed" | "NoteLockedByJob" | "HtmlTooComplex"
 ```
 
 ## ユースケース（概要）

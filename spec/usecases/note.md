@@ -951,7 +951,7 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 ### 入力DTO
 
-`deletionOperationId`, `scope: ScopeKey`, `batchSize: number`（既定・最大 40）
+`deletionOperationId`, `scope: ScopeKey`, `batchSize: number`（既定・最大 40）, `stuckPurges?: { noteId: string; expectedVersion: number }[]`（前の turn が閉じ切れなかった purge。継続が payload で持ち回る。cleanup を開く command では空）
 
 ### 出力DTO
 
@@ -1031,7 +1031,9 @@ scope cleanup commandに従って、そのscopeのNoteを完全削除する。wo
 
 ### 出力DTO
 
-`noteId`, `version`
+`noteId`, `version`, `title: string`, `html: string`
+
+`version` は復元後の版、`title` と `html` は復元が確定した本文である。復元が確定したあと別の往復で正本を引き直すと、その往復だけが落ちたとき手元の確定値がサーバーと食い違う。呼び出し側は次の保存と画面の描き直しをこの応答だけで行う。
 
 ### 処理フロー
 

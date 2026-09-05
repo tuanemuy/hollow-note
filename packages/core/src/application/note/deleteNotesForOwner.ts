@@ -88,8 +88,15 @@ const corrupt = (detail: string): SystemError =>
  * the turn enumerating nothing, and an empty enumeration is how this
  * usecase concludes the scope is clean: the `note` component would be
  * acknowledged over a note whose public projection is still standing,
- * which no later turn can take back. A parked row is instead visible in
- * the runner's report and keeps its `dueAt`.
+ * which no later turn can take back.
+ *
+ * The faulted turn leaves the row behind and the runner backs it off, so
+ * `dueAt` moves forward with every attempt and the row parks as `failed`
+ * once `SCOPE_TASK_MAX_ATTEMPTS` is reached, after which nothing claims
+ * it and only `schedule` brings it back. What makes the stall visible is
+ * therefore the runner's `[scope-tasks] task threw` log and the `failed`
+ * row — not a `dueAt` ageing in place, which a backed-off row never
+ * does.
  */
 export const readOwnerPurgeTurn = (
   payload: ScopeTaskPayload,

@@ -474,7 +474,7 @@ move Saga のsnapshot / stagingでStoredFile metadataを別scopeへ移送する�
 
 ### 入力DTO
 
-`noteId`, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
+`noteId`, `scope: ScopeKey`, `operationId: string`（追随する purge の operation ID。継続行 `(kind, operationId)` の鍵）, `deletionOperationId: string | null`（`note.purged`から引き継ぐ）
 
 ### 出力DTO
 

@@ -3433,3 +3433,53 @@ ADR 013 の URL スキーム表の**実行形**を `packages/core/src/domain/not
 ### Consequences
 
 表に行を足すたびに例外文を書き足す必要がなくなり、新しい行は 4 分類のどれかに必ず当てはまる。分類が規則と表の両方を同時に説明するので、片側だけ直して食い違う形にならない。
+
+## ADR-135: 復元の応答が次の状態を全部運び、第 2 往復を消す
+
+### Context
+
+ADR-133 で `RetryTarget` を一次経路と 1 対 1 に組み直したとき、`restore` は「版を復元する往復」と「正本を載せ直す往復」の 2 段に分け、後者を `reload` に分類した。
+
+その結果、**復元は確定したのに手元の確定値は復元前のまま**という状態が生まれる。`failed { reload }` から「保存」が押せてしまい、復元前の本文を復元後の版で書いて復元を黙って取り消す経路が残る。`commit` は「`confirmed` はサーバーの姿」を前提にしているので、この 1 種類の `failed` だけがその前提を破る。
+
+破棄の失敗（何も動いていない）と復元後の載せ直しの失敗（版は進んでいる）を同じ `reload` に載せたため、この違いが型からも JSDoc からも見えなくなっていた。
+
+### Decision
+
+**第 2 往復そのものを消す。** `RestoredNoteRevisionView` に `title` と `html`（`next.title.value` / `processed.html`）を載せ、`restore` の 2 段目を同期処理（`seedMode(surfaceModeFor(...), restored.title, restored.html)`）にする。
+
+- `try` は 1 つ、`failed` は `{ kind: "revision" }` だけ
+- `reload` は破棄と 1 対 1 に戻る
+
+これは ADR-133 の集約を戻すのではなく**完成させる**方向である。一次経路が 1 往復であれば `RetryTarget` は自然に 1 対 1 になり、`failed` のどの種でも「`confirmed` はサーバーの姿」が成り立つ。
+
+### 検討した代替案
+
+- **`failed { reload }` に「確定値が古い」印を足して `commit` を閉じる** — 再試行固有の門であり、ADR-133 が消した型そのもの
+- **2 段目を `revision` に戻す** — ラウンド011 [W-001] の「再試行が版を 1 つ無駄にする」が戻る
+
+### Consequences
+
+`failed` の 5 種すべてで `confirmed == サーバー` が不変条件として成り立つ。応答が 1 つ大きくなるが、`restoreNote` が `version` を返しているのと同じ形で、画面が復元の応答の値を使うという ADR-014 の帰結にも沿う。
+
+## ADR-136: 面の内容を読む関数は生きた値だけを読む
+
+### Context
+
+`takeSnapshot` は `title` / `mode` / `body` / `baseline` を**描画時の閉包**から読んでいた。`reseedIfUnchanged` は `sameSnapshot(takeSnapshot(), sent)` で「送ったあとに変わっていないか」を判定するが、閉包が固定されているためタイトル側の比較が恒真になり、往復中に打ったタイトルが門をすり抜けて載せ直しで消える。
+
+同じ閉包を `commit` / `confirm` / `surfaceModeFor` も読んでおり、`acknowledgeWysiwyg` の未保存枝では effect の依存が動かないため、1.5 秒以内のタイマーが前モードの `commit` を走らせる経路もあった。
+
+これは「往復をまたぐ関数が、いつの値を読むのか」が関数ごとに違うことが根で、個々の呼び出しに門を足しても別の呼び出しで同じことが起きる。
+
+### Decision
+
+描画ごとに `{ title, mode, body, baseline }` を書く **ref を 1 つ**置き（既存の `leaveConfirmRef` と同形）、往復をまたぐ関数（`takeSnapshot` / `commit` / `confirm` / `reseedIfUnchanged` / `surfaceModeFor`）はそこから読む。
+
+完了条件は grep で確認できる形にする — **`await` の後に state 識別子（`title` / `mode` / `body` / `baseline`）を直接読む箇所がゼロ**であること。
+
+あわせて `reseedIfUnchanged` の門は**置き換えの直前**（fetch の後）で評価する。`reseedFromServer` を「読む」と「載せる」に分け、読んでから門を通し、通ったときだけ載せる。**版を取り込むのは本文も取り込むときだけ** — fetch した `version` を seed せずに覚えると、他者の更新を次の保存が黙って上書きする。
+
+### Consequences
+
+「閉包から読む」というクラスの欠陥が消え、`await` をまたぐ読みが grep で機械的に検査できる。門の評価が置き換えの直前に揃うので、fetch の RTT 中に打った内容が上書きされる窓も同時に閉じる。

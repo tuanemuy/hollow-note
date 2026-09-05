@@ -525,7 +525,31 @@ describe("identity.personalBarrierPruneContinued", () => {
       await runDueScopeTasks(h.workerContainer);
 
       expect(receipts(h)).toEqual([]);
+      // The fallback is the half of the convention the sweep's own
+      // result cannot show: a turn that read the deadline and one that
+      // invented it both reclaim the same receipts, so the warn is the
+      // only record that the row lost its position.
+      expect(h.logger.byLevel("warn").map((entry) => entry.message)).toContain(
+        "[scope-tasks] barrier prune payload names no readable deadline; sweeping against the clock",
+      );
     }
+  });
+
+  it("says nothing when the row names its deadline, so the fallback stays a signal", async () => {
+    const h = createTestHarness();
+    const armedAt = h.clock.now();
+    const asOf = new Date(armedAt.getTime() + 60 * DAY_MS);
+    await armPrune(
+      h,
+      new Date(armedAt.getTime() + 120 * DAY_MS),
+      { deletionOperationId: OPERATION_ID, asOf: asOf.toISOString() },
+      asOf,
+    );
+    h.clock.advance(200 * DAY_MS);
+
+    await runDueScopeTasks(h.workerContainer);
+
+    expect(h.logger.byLevel("warn")).toEqual([]);
   });
 });
 

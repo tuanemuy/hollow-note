@@ -29,7 +29,7 @@ import type { EditorMode } from "./preferences";
  * | `mode` | モードのラジオ・WYSIWYG 警告の了解 | `requestMode(mode, acknowledged)` |
  * | `conflict` | 競合の「上書き」「破棄」 | `resolveConflict(keepLocal)` |
  * | `revision` | 版一覧の「復元」 | `restore(revisionId)` |
- * | `reload` | 破棄・版を復元したあとの載せ直し | `reloadFromServer()` |
+ * | `reload` | 破棄 | `reloadFromServer()` |
  *
  * 保存が確定したあとの面の載せ直しはこの 5 種に入らない。保存はもう
  * 確定しているので、載せ直しが落ちても状態は `saved` のままであり、
@@ -128,6 +128,20 @@ const FAILED_TITLE: Readonly<Record<RetryTarget["kind"], string>> = {
   reload: "最新の内容を読み込めませんでした",
 };
 
+/**
+ * 上部バーが出す `failed` の短いラベル。{@link FAILED_TITLE} と同じ理由で
+ * 往復ごとに分ける — Alert の見出しだけを分けても、同じ画面のバーが
+ * 「保存に失敗しました」と言えば利用者は保存されていない打鍵を探しに行く。
+ * バーは幅が狭いので、見出しより短い言い回しを持つ。
+ */
+export const FAILED_LABEL: Readonly<Record<RetryTarget["kind"], string>> = {
+  save: "保存に失敗しました",
+  mode: "切り替えに失敗しました",
+  conflict: "解決に失敗しました",
+  revision: "復元に失敗しました",
+  reload: "読み込みに失敗しました",
+};
+
 /** 往復そのものが成立せず、面もサーバーも動いていない。 */
 const UNCHANGED_HINT = "面の内容はそのままです。もう一度お試しください。";
 
@@ -136,10 +150,7 @@ const FAILED_HINT: Readonly<Record<RetryTarget["kind"], string>> = {
   mode: UNCHANGED_HINT,
   conflict: UNCHANGED_HINT,
   revision: UNCHANGED_HINT,
-  // 正本の引き直しは、破棄（サーバーは動いていない）と版を復元したあとの
-  // 載せ直し（サーバーはもう動いている）の両方を通る。どちらでも真なのは
-  // 「面がまだサーバーに揃っていない」だけである。
-  reload: "面はまだサーバーの内容に揃っていません。もう一度お試しください。",
+  reload: UNCHANGED_HINT,
 };
 
 /**

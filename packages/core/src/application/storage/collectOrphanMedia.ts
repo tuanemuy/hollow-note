@@ -159,24 +159,38 @@ const CURSOR_ID = "afterId";
  * scope: restarting from the head repeats work but loses none, whereas
  * throwing would back the row off and, at the attempt ceiling, park the
  * scope's only sweep as `failed` with nothing left to re-arm it.
+ *
+ * `fromPayload` is what lets the caller report that fallback
+ * (`spec/domains/index.md#継続要求`) without warning on every ordinary
+ * turn: the head of a pass is written as a payload naming no position at
+ * all ({@link sweepPayload} of `null`), which is the daily cadence's own
+ * shape, so only a payload that names a position and still yields none
+ * is a loss.
  */
 export const readOrphanMediaSweepTurn = (
   payload: ScopeTaskPayload,
-): Readonly<{ cursor: StoredFilePurposeCursor | null }> => {
+): Readonly<{
+  cursor: StoredFilePurposeCursor | null;
+  fromPayload: boolean;
+}> => {
   const createdAt = payload[CURSOR_CREATED_AT];
   const id = payload[CURSOR_ID];
+  const names = createdAt !== undefined || id !== undefined;
   if (
     typeof createdAt !== "string" ||
     typeof id !== "string" ||
     id.trim().length === 0
   ) {
-    return { cursor: null };
+    return { cursor: null, fromPayload: !names };
   }
   const at = new Date(createdAt);
   if (Number.isNaN(at.getTime())) {
-    return { cursor: null };
+    return { cursor: null, fromPayload: false };
   }
-  return { cursor: { createdAt: at, id: StoredFileId.create(id) } };
+  return {
+    cursor: { createdAt: at, id: StoredFileId.create(id) },
+    fromPayload: true,
+  };
 };
 
 const sweepPayload = (

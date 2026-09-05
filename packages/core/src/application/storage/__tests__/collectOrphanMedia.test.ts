@@ -16,6 +16,7 @@ import { WorkspaceId } from "@repo/core/domain/workspace/valueObject";
 import { describe, expect, it } from "vitest";
 import { createTestHarness, type TestHarness } from "../../__tests__/helpers";
 import { createBlankNote } from "../../note/createBlankNote";
+import type { ScopeTaskPayload } from "../../ports/scopeTaskScheduler";
 import { ScopeTaskPriority } from "../../ports/scopeTaskScheduler";
 import { ScopeKey } from "../../scope";
 import { runDueScopeTasks } from "../../workers/scopeTaskRunner";
@@ -557,26 +558,64 @@ describe("collectOrphanMedia", () => {
   });
 
   it("TC-storage-255: starts a fresh pass from the head when the payload carries no readable position", async () => {
-    expect(readOrphanMediaSweepTurn({}).cursor).toBeNull();
-    expect(
-      readOrphanMediaSweepTurn({ afterCreatedAt: "not a date", afterId: "f" })
-        .cursor,
-    ).toBeNull();
-    expect(
-      readOrphanMediaSweepTurn({ afterCreatedAt: 12, afterId: "f" }).cursor,
-    ).toBeNull();
-    expect(
-      readOrphanMediaSweepTurn({
-        afterCreatedAt: new Date(0).toISOString(),
-        afterId: "   ",
-      }).cursor,
-    ).toBeNull();
+    // A payload naming neither half is what every daily turn carries, so
+    // it is the head of a pass rather than a position that went missing.
+    expect(readOrphanMediaSweepTurn({})).toEqual({
+      cursor: null,
+      fromPayload: true,
+    });
+    const unreadable: readonly ScopeTaskPayload[] = [
+      { afterCreatedAt: "not a date", afterId: "file-1" },
+      { afterCreatedAt: 12, afterId: "file-1" },
+      { afterCreatedAt: new Date(0).toISOString(), afterId: "   " },
+      { afterCreatedAt: new Date(0).toISOString() },
+      { afterId: "file-1" },
+    ];
+    for (const payload of unreadable) {
+      expect(readOrphanMediaSweepTurn(payload)).toEqual({
+        cursor: null,
+        fromPayload: false,
+      });
+    }
     expect(
       readOrphanMediaSweepTurn({
         afterCreatedAt: new Date(1_000).toISOString(),
         afterId: "file-1",
-      }).cursor,
-    ).toEqual({ createdAt: new Date(1_000), id: "file-1" });
+      }),
+    ).toEqual({
+      cursor: { createdAt: new Date(1_000), id: "file-1" },
+      fromPayload: true,
+    });
+  });
+
+  it("TC-storage-255: warns once when a row names a position it cannot read, and stays quiet on the daily payload", async () => {
+    const armSweep = async (h: TestHarness, payload: ScopeTaskPayload) => {
+      await h.container.scopeUnitOfWorkProvider.run(scope, (ctx) =>
+        ctx.scopeTaskScheduler.schedule({
+          kind: ORPHAN_MEDIA_TASK_KIND,
+          operationId: ORPHAN_MEDIA_OPERATION_ID,
+          priority: ScopeTaskPriority.expiryCollection,
+          dueAt: h.clock.now(),
+          payload,
+        }),
+      );
+    };
+    const WARNING =
+      "[scope-tasks] orphan sweep payload names no readable position; restarting the pass from the head";
+
+    const lost = createTestHarness();
+    await armSweep(lost, { afterCreatedAt: "not a date", afterId: "file-1" });
+    expect((await runDueScopeTasks(lost.workerContainer)).processed).toBe(1);
+    // The sweep runs either way, so the warn is the only record that the
+    // row went back to the head instead of resuming.
+    expect(lost.logger.byLevel("warn").map((entry) => entry.message)).toContain(
+      WARNING,
+    );
+
+    const daily = createTestHarness();
+    await armSweep(daily, {});
+    expect((await runDueScopeTasks(daily.workerContainer)).processed).toBe(1);
+    expect(daily.logger.byLevel("warn")).toEqual([]);
   });
 
   it("TC-storage-027: is resumed by the scope-task runner until the scope is swept clean", async () => {

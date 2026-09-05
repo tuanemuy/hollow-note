@@ -135,6 +135,31 @@ export function describeNoteRepositoryContract(
       );
     });
 
+    it("ADP-note-057: findNextPurgeDeadline includes a note the same unit of work trashed", async () => {
+      const now = backend.clock.now();
+      const scope = scopeOf(1);
+      await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));
+      const stored = await scoped.noteRepository.findById(noteId(1));
+      if (stored === null || stored.entity.lifecycle !== "active") {
+        throw new Error("seeded note missing");
+      }
+      const trashed = Note.trash(stored.entity, now).entity;
+
+      // What `trashNote` step 5 does: it arms the scope's retention alarm
+      // from a deadline read back inside the transaction that flipped the
+      // note. A backend that answered from storage alone would leave the
+      // first note of an empty trash with no alarm at all.
+      const deadline = await backend.scopeUnitOfWork.run(scope, async (ctx) => {
+        await ctx.noteRepository.save(trashed, stored.expectedVersion);
+        return ctx.noteRepository.findNextPurgeDeadline();
+      });
+
+      expect(deadline).toEqual(trashed.purgeAfter);
+      expect(await scoped.noteRepository.findNextPurgeDeadline()).toEqual(
+        trashed.purgeAfter,
+      );
+    });
+
     it("ADP-note-014/015: countByOwner and listByOwner respect owner and lifecycle filters", async () => {
       const now = backend.clock.now();
       await scoped.noteRepository.insert(makeBlankNote(1, userId(1), now));

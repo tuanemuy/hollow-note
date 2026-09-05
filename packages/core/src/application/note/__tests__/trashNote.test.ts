@@ -3,6 +3,7 @@ import {
   isNotFoundError,
 } from "@repo/core/application/errors";
 import { noteAccessPolicy } from "@repo/core/application/note/accessControl";
+import { ScopeTaskPriority } from "@repo/core/application/ports/scopeTaskScheduler";
 import { Version } from "@repo/core/domain/common/version";
 import { type TokenHash, UserId } from "@repo/core/domain/identity/valueObject";
 import { NoteId, NoteOwner } from "@repo/core/domain/note/valueObject";
@@ -20,6 +21,10 @@ import { describe, expect, it } from "vitest";
 import { getNote } from "../getNote";
 import type { ActiveNoteJob } from "../jobs";
 import { listNotes } from "../listNotes";
+import {
+  TRASH_EXPIRY_OPERATION_ID,
+  TRASH_EXPIRY_TASK_KIND,
+} from "../purgeExpiredTrash";
 import { renameNote } from "../renameNote";
 import { restoreNote } from "../restoreNote";
 import { JOB_TERMINATION_CONTINUATION_KIND, trashNote } from "../trashNote";
@@ -511,5 +516,42 @@ describe("trashNote", () => {
         isConflictError(error) && error.code === "OPTIMISTIC_LOCK_FAILURE",
     );
     expect(storedNote(h, noteId)?.lifecycle).toBe("active");
+  });
+
+  it("TC-note-793: the first note into an empty trash arms the sweep at its own purgeAfter", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+
+    const view = await trash(h, noteId);
+
+    // Step 5 reads the deadline back inside the transaction that trashed
+    // the note, so the answer has to include the row this turn flipped.
+    expect(h.backend.scope(userScope).scheduledTasks.values()).toEqual([
+      expect.objectContaining({
+        kind: TRASH_EXPIRY_TASK_KIND,
+        operationId: TRASH_EXPIRY_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: view.purgeAfter,
+      }),
+    ]);
+  });
+
+  it("TC-note-793: a later note joining the trash leaves the sweep on the earliest purgeAfter", async () => {
+    const h = createTestHarness();
+    const first = await trash(h, await createPersonalNote(h));
+    h.clock.advance(DAY_MS);
+    const second = await trash(h, await createPersonalNote(h));
+
+    expect(second.purgeAfter.getTime()).toBeGreaterThan(
+      first.purgeAfter.getTime(),
+    );
+    expect(h.backend.scope(userScope).scheduledTasks.values()).toEqual([
+      expect.objectContaining({
+        kind: TRASH_EXPIRY_TASK_KIND,
+        operationId: TRASH_EXPIRY_OPERATION_ID,
+        priority: ScopeTaskPriority.expiryCollection,
+        dueAt: first.purgeAfter,
+      }),
+    ]);
   });
 });

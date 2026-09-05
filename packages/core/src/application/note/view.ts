@@ -186,9 +186,25 @@ export type NoteRevisionListView = Readonly<{
   revisions: readonly NoteRevisionView[];
 }>;
 
+/**
+ * Result of restoring a revision. It carries the note's whole next state
+ * — `version`, `title` and the sanitized `html` — because the editing
+ * screen has to put that state on its surface, and a second read to
+ * fetch it would leave a window where the restore has landed on the
+ * server while the screen still holds the body from before it. A save
+ * made in that window writes the pre-restore body back over the version
+ * the restore produced.
+ *
+ * `version` is the version after the restore: restoring composes body,
+ * style and title, so the caller cannot count the steps from the version
+ * it sent.
+ */
 export type RestoredNoteRevisionView = Readonly<{
   noteId: string;
   version: number;
+  title: string;
+  /** The restored body after `HtmlProcessor.process`, as it was stored. */
+  html: string;
 }>;
 
 /**

@@ -821,6 +821,15 @@ describe("deleteNotesForOwner", () => {
     expect(route(h, noteId)?.state).toBe("purging");
     expect(await acknowledged(h)).not.toContain("note");
     expect(tasks(h)).toHaveLength(1);
+    // The runner backs the faulted row off rather than leaving it where
+    // it was: the attempt is spent and `dueAt` moves forward, so the row
+    // walks towards `failed` instead of ageing in place.
+    const row = tasks(h)[0];
+    expect(row?.attempt).toBe(1);
+    expect(row?.state).toBe("pending");
+    expect(row?.state === "pending" ? row.dueAt.getTime() : 0).toBeGreaterThan(
+      h.clock.now().getTime(),
+    );
   });
 
   it("refuses a command from an operation that does not own the scope", async () => {

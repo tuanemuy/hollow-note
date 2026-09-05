@@ -171,9 +171,16 @@ export const scopeTaskHandlers: Readonly<Record<string, ScopeTaskHandler>> = {
   // a page left and for the next day otherwise. The payload carries the
   // keyset position that continuation resumes from.
   [ORPHAN_MEDIA_TASK_KIND]: async (container, task) => {
+    const turn = readOrphanMediaSweepTurn(task.payload);
+    if (!turn.fromPayload) {
+      container.logger.warn(
+        "[scope-tasks] orphan sweep payload names no readable position; restarting the pass from the head",
+        { kind: task.kind, operationId: task.operationId },
+      );
+    }
     await collectOrphanMedia({
       container,
-      input: { scope: task.scope, ...readOrphanMediaSweepTurn(task.payload) },
+      input: { scope: task.scope, cursor: turn.cursor },
     });
   },
   // The `note.purged` followers settle their own rows: a turn either

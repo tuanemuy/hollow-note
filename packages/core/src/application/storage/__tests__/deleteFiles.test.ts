@@ -203,6 +203,10 @@ describe("deleteStoredFiles", () => {
   });
 });
 
+// TC-storage-074 lands with Usage's `applyStorageDelta` subscriber
+// (UC-usage-003, issue #6), which is the second consumer that row is
+// about. The half this slice owns is fixed below: `deleteStoredObjects`
+// marks no delivery processed (TC-storage-069 / TC-storage-070).
 describe("deleteStoredObjects", () => {
   it("TC-storage-063: reclaims the object of every delivered event", async () => {
     const h = createTestHarness();

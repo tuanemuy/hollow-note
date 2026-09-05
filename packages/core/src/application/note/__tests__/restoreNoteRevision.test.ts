@@ -8,6 +8,7 @@ import { NoteErrorCode } from "@repo/core/domain/note/errorCode";
 import { Note } from "@repo/core/domain/note/note";
 import { NoteId, ShareLink } from "@repo/core/domain/note/valueObject";
 import { describe, expect, it } from "vitest";
+import { getNote } from "../getNote";
 import { restoreNoteRevision } from "../restoreNoteRevision";
 import { trashNote } from "../trashNote";
 import { updateNoteBody } from "../updateNoteBody";
@@ -97,6 +98,30 @@ describe("restoreNoteRevision", () => {
     expect(note?.title.value).toBe("元のタイトル");
     expect(note?.styleMode).toBe("preserve");
     expect(view.version).toBe(note?.version);
+  });
+
+  it("TC-note-470: the response carries the same title and body a read would return", async () => {
+    const h = createTestHarness();
+    const noteId = await createPersonalNote(h);
+    const version = await saveBody(h, noteId, "<p>current</p>", 0);
+    seedRevision(h, noteId, {
+      id: "revision-old",
+      html: '<p onclick="steal()">older body</p>',
+      createdAt: AT,
+      title: "元のタイトル",
+    });
+
+    const view = await restore(h, noteId, "revision-old", version);
+
+    // 画面はこの応答をそのまま面へ載せるので、あとから読み直した姿と
+    // 一致していなければならない（`html` はサニタイズ後の本文である）。
+    const read = await getNote({
+      container: h.container,
+      input: { noteId, userId: OWNER },
+    });
+    expect(view.title).toBe(read.title);
+    expect(view.html).toBe(read.content.html);
+    expect(view.html).not.toContain("onclick");
   });
 
   it("TC-note-471: records the body being replaced as a restore revision", async () => {

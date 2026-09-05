@@ -7,6 +7,7 @@ import {
 import {
   classifySaveFailure,
   describeFailure,
+  FAILED_LABEL,
   type RetryTarget,
 } from "../saveStatus";
 
@@ -151,20 +152,31 @@ describe("describeFailure", () => {
     ).toContain("退避したので");
   });
 
-  it("never claims the surface is untouched after a reload (the restore already landed)", () => {
-    // 正本の引き直しは破棄（サーバーは動いていない）と復元後の載せ直し
-    // （サーバーはもう動いている）の両方を通る。どちらでも真なのは
-    // 「面がまだサーバーに揃っていない」だけである。
-    const reload = describeFailure(
-      { stashed: false, retry: TARGETS.reload },
-      false,
-    ).hint;
-    const unchanged = describeFailure(
-      { stashed: false, retry: TARGETS.revision },
-      false,
-    ).hint;
-    expect(unchanged).toContain("面の内容はそのまま");
-    expect(reload).not.toContain("面の内容はそのまま");
+  it("tells every roundtrip but the save that nothing moved", () => {
+    // `failed` はどの種でも「往復そのものが成立しなかった」を意味するので、
+    // 面もサーバーも動いていない。退避を書けるのは保存の `catch` だけなので、
+    // 保存だけが別の案内を持つ。
+    for (const retry of EVERY_TARGET) {
+      const hint = describeFailure({ stashed: false, retry }, false).hint;
+      if (retry.kind === "save") {
+        expect(hint).toContain("退避していません");
+      } else {
+        expect(hint).toContain("面の内容はそのまま");
+      }
+    }
+  });
+
+  it("labels the bar by the roundtrip that fell, not by 保存", () => {
+    // 上部バーは Alert と同じ画面に並ぶ。版の復元が落ちた画面のバーが
+    // 「保存に失敗しました」と言うと、利用者は保存されていない打鍵を
+    // 探しに行く。
+    const labels = EVERY_TARGET.map((retry) => FAILED_LABEL[retry.kind]);
+    expect(new Set(labels).size).toBe(EVERY_TARGET.length);
+    expect(FAILED_LABEL.save).toContain("保存");
+    for (const retry of EVERY_TARGET) {
+      if (retry.kind === "save") continue;
+      expect(FAILED_LABEL[retry.kind]).not.toContain("保存");
+    }
   });
 
   it("sends a note that does not exist yet to the download instead of the stash", () => {

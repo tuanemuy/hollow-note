@@ -1078,7 +1078,7 @@
 | TC-note-108 | emptyTrash: ワークスペースの viewer — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | `BusinessRuleError(InsufficientRole)` が投げられる |
 | TC-note-109 | emptyTrash: ワークスペースの editor — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | 成功する |
 | TC-note-110 | emptyTrash: 個人とワークスペースの両方にゴミ箱がある — 個人の文脈で空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | ワークスペースのゴミ箱は残る |
-| TC-note-111 | emptyTrash: 一部の削除が飛ばせる理由（`ConflictError` / `NOTE_NOT_TRASHED` / 不在）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その 1 件だけを飛ばして他の削除は継続し、数えた総数と `purgedCount` の差で失敗件数が分かる |
+| TC-note-111 | emptyTrash: 一部の削除が飛ばせる理由（`ConflictError("OPTIMISTIC_LOCK_FAILURE")` / `NOTE_NOT_TRASHED` / 不在）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その 1 件だけを飛ばして他の削除は継続し、数えた総数と `purgedCount` の差で失敗件数が分かる |
 | TC-note-112 | emptyTrash: 同期削除の経路 — `purgeNote` の呼び出しを確認する | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | 手順の複製ではなくユースケースの呼び出しで、`expectedVersion` には `listByOwner` で引いた各ノートのその時点の版を渡す。`emptyTrash` 自身は `UnitOfWorkProvider.run` を開かず、`purgeNote` が 1 件ごとに確定する |
 | TC-note-113 | emptyTrash: 列挙後・削除前に 1 件が `restoreNote` でゴミ箱から戻された — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | そのノートは版の競合（`ConflictError`）で飛ばされ、`purgedCount` に数えられない。読み直して再適用はしない（戻したばかりのノートを消さないため） |
 | TC-note-114 | emptyTrash: 列挙後・削除前に 1 件が別の経路で完全削除された — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | `NOTE_NOT_TRASHED` / 不在として飛ばして続け、`purgedCount` に数えない |
@@ -1745,7 +1745,7 @@
 | TC-note-775 | moveNote: 一度失敗して `rejected` で閉じた移動を同じ actor が同じ移動先へやり直す — route switch 後に停止する | spec/testcases/note/moveNote.md#テストケース-movenote | 引き直した終端行を駆動前に `running` へ開き直すので、停止が `running` のまま記録され両 scope の move lock を解放できる主体が残る |
 | TC-note-776 | moveNote: 自分の行が終端しているあいだに別の編集者の移動が走り始めた — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | 終端行の開き直しが「partition ごとに running は 1 件」に阻まれ `NOTE_MOVE_IN_PROGRESS` になる。走行中の行も終端した行もそのまま残る |
 | TC-note-777 | moveNote: 終端した行の payload が読めない — 同じ入力で再試行する | spec/testcases/note/moveNote.md#テストケース-movenote | plan を読むのが開き直しより先なので、decode に失敗した行は終端したまま残り、誰も閉じない `running` を作らない |
-| TC-note-778 | emptyTrash: 一部の削除が飛ばせない理由（`SystemError(DatabaseError)` など）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その失敗がそのまま送出されて要求ごと失敗し、「0 件を完全に削除しました」という誤った完了通知にならない。既に確定した purge は戻らない |
+| TC-note-778 | emptyTrash: 一部の削除が飛ばせない理由（`SystemError(DatabaseError)`、scope 全体の書き込み障壁 `ConflictError("WORKSPACE_DELETING")` / `ConflictError("ACCOUNT_DELETING")` など）で失敗する — 空にする | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | その失敗がそのまま送出されて要求ごと失敗し、「0 件を完全に削除しました」という誤った完了通知にならない。既に確定した purge は戻らない。scope 全体の障壁はゴミ箱のどのノートにも等しく当たるので、版の競合と同列に飛ばさない |
 | TC-note-779 | emptyTrash: ジョブ経路（51 件以上）の列挙 — ページの読み方を確認する | spec/testcases/note/emptyTrash.md#テストケース-emptytrash | 手順 2 で数えた総数が導くページ数までで打ち切る（満たないページで早く抜けるのは従来どおり）。数えたあとにゴミ箱へ入ったノートは追いかけない |
 | TC-note-780 | purgeNote: local deleteのcommit後に応答を失う — 完全削除する | spec/testcases/note/purgeNote.md#テストケース-purgenote | abortせずrouteを`purging`のまま残す（Noteは消え`note.purged`は1件出る）。同じコマンドの再送がpublic remove以降を再開し、`note.purged`は二重にならない |
 | TC-note-781 | deleteNotesForOwner: 対象ノートの route が別 operation の `purging` のまま停止している — 処理する | spec/testcases/note/deleteNotesForOwner.md#テストケース-deletenotesforowner | そのノートは purge されず `purgedCount` に数えられず、`note` 成分も ack されない。`purgeNote` は他人が握る route を完全削除済みと畳まず競合として送出する |

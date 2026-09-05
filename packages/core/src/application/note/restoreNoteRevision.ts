@@ -142,5 +142,10 @@ export async function restoreNoteRevision({
     activeJobs,
   });
 
-  return { noteId, version: restored.note.version };
+  return {
+    noteId,
+    version: restored.note.version,
+    title: restored.note.title.value,
+    html: restored.html,
+  };
 }
